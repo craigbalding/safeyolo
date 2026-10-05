@@ -170,9 +170,82 @@ Replace `origin.example` with your intended host. Matching requests without vali
 context return 428 under `block`; this response does not create a network approval.
 An explicit valid header takes precedence over declared context. Clearing or
 expiry removes the declaration from later requests. Bob cannot inherit Alice's
-declaration or read Alice's trace, explanation or stored flows. The supported
+declaration or read Alice's trace or stored flows. Explanations also belong to
+their agent unless the operator selects the limited peer read described below. The supported
 Agent API readback paths are `/trace`, `/explain`, and `/api/flows/*`, with the
 same bearer authentication and evidence scope.
+
+## Selected evidence and network approvals
+
+An operator can let Helper read one Worker's network approval and its diagnostic.
+Helper can prepare that fixed action for a human decision. Approval grants
+reusable network access for Worker at the recorded host and port until explicitly
+removed. Rejection records a terminal disposition and leaves permissions unchanged.
+
+Use the running native instance and its trusted agent listeners. The operator
+assigns a durable `agent_id` in each agent's policy metadata. Keep that identity
+when editing its policy; assign a new identity when recreating the agent. Helper
+uses its normal Agent API token. Keep `data/admin_token` on the host.
+
+First, read Worker's pending request from the authenticated operator
+`GET /admin/approvals` endpoint. A native network prompt records `request_id` and
+`details.network_action`. The action binds Worker's durable identity, the host,
+the port and the relevant network-policy revision. Historical prompts without
+that binding remain available through their existing operator actions.
+
+In a policy candidate, select Helper's reads for that exact request. This example
+is illustrative: replace both durable identities and `request_id` with the
+host-owned identities and pending request you selected. Retain the rest of your
+current policy.
+
+```toml
+[agents.worker]
+agent_id = "ag-11111111111111111111111111111111"
+
+[agents.helper]
+agent_id = "ag-22222222222222222222222222222222"
+evidence_reads = [{reader_id="ag-22222222222222222222222222222222", agent="worker", agent_id="ag-11111111111111111111111111111111", request_id="req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", reads=["diagnostic", "approval"]}]
+```
+
+On the host, save that candidate as `selected-policy.toml` in your current
+directory. Apply it through the existing native command:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy apply selected-policy.toml
+```
+
+The result reports `active`. Adding selected reads does not invalidate Worker's
+network action. Removing a selected read or changing either agent identity
+withdraws Helper's access. These reads return the fixed diagnostic and approval
+projection. They do not expose captured bodies, headers, raw audit rows, other
+requests or the untrusted preparation reason.
+
+The shared operations use the following authenticated routes. Replace `ID` with
+the selected request ID. Agent routes use the plain-HTTP internal Agent API
+through Helper's configured proxy; operator routes use the host Admin API.
+
+| Caller | Request | Result |
+| --- | --- | --- |
+| Helper | `GET /explain?request_id=ID` | Selected network diagnostic, action and trusted effect. |
+| Helper | `GET /approvals/ID` | Canonical action and disposition. |
+| Helper | `POST /approvals/ID/prepare` with `{"action":ACTION,"reason":"literal explanation"}` | Pending preparation of the exact action returned by the read; no policy change. |
+| Operator | `GET /admin/approvals/ID` | Canonical action, actual reusable effect and separately labelled `untrusted_reason_text`, when retained. |
+| Operator | `POST /admin/approvals/ID` with `{"decision":"approve"}` or `{"decision":"reject"}` | Canonical terminal disposition and exact action; the resolver does not accept caller-supplied scope. |
+
+CLI and Commander network decisions use this common resolver for bound native
+prompts. Repeat or concurrent decisions return the first terminal disposition.
+A relevant policy change or recreated Worker makes a pending action stale;
+approval returns 409 and needs a new request and human decision. The operator
+can still reject that stale request without changing permissions. A changed
+action cannot be substituted during preparation. Helper cannot call the operator
+mutation or grant itself evidence reads.
+
+If the resolution response is lost, read `GET /admin/approvals/ID` before taking
+another action. A committed allow rule carries its request and action identity,
+so the canonical approved outcome remains readable if its audit receipt fails.
+Unavailable evidence returns 503. Direct operator policy commands remain usable.
+Raw audit files and separately authorised flow reads and exports retain their
+existing access; selected Helper reads do not redact that operator evidence.
 
 ## Policy and runtime settings
 

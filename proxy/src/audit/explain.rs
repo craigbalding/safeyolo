@@ -80,7 +80,7 @@ pub(super) fn explain(
         false
     });
     let files = retained(current, backups)?;
-    let mut scan = scan(&files, request_id, agent)?;
+    let mut scan = scan_scoped(&files, request_id, Some(agent))?;
     let status = if scan.read_error {
         "error"
     } else if pending {
@@ -168,7 +168,7 @@ impl Drop for Scan {
     }
 }
 
-fn scan(files: &[PathBuf], request_id: &str, agent: &str) -> Result<Scan> {
+fn scan_scoped(files: &[PathBuf], request_id: &str, agent: Option<&str>) -> Result<Scan> {
     let mut result = Scan {
         events: CircuitValue::Array(Vec::new()),
         incomplete: false,
@@ -211,7 +211,9 @@ fn scan(files: &[PathBuf], request_id: &str, agent: &str) -> Result<Scan> {
                 return Err(ExplainError(ExplainErrorKind::Attribute));
             };
             let matches = |key, expected: &str| matches!(object.get(key), Some(CircuitValue::Other(Value::String(value))) if value == expected);
-            if matches("request_id", request_id) && matches("agent", agent) {
+            if matches("request_id", request_id)
+                && agent.is_none_or(|agent| matches("agent", agent))
+            {
                 let CircuitValue::Array(events) = &mut result.events else {
                     unreachable!()
                 };
@@ -222,6 +224,36 @@ fn scan(files: &[PathBuf], request_id: &str, agent: &str) -> Result<Scan> {
         }
     }
     Ok(result)
+}
+
+/// Private lookup for canonical approvals. Agent readers disclose only the
+/// fixed projection after checking selected reads and recorded beneficiary ID.
+pub(super) fn approval(
+    writer: &Writer,
+    current: &Path,
+    backups: &BigInt,
+    request_id: &str,
+) -> Result<CircuitValue> {
+    if !writer
+        .wait_for_drain(DRAIN)
+        .map_err(|_| ExplainError(ExplainErrorKind::Io))?
+    {
+        return Err(ExplainError(ExplainErrorKind::Io));
+    }
+    let files = retained(current, backups)?;
+    let mut result = scan_scoped(&files, request_id, None)?;
+    if result.read_error {
+        return Err(ExplainError(ExplainErrorKind::Io));
+    }
+    Ok(std::mem::replace(
+        &mut result.events,
+        CircuitValue::Array(Vec::new()),
+    ))
+}
+
+#[cfg(test)]
+fn scan(files: &[PathBuf], request_id: &str, agent: &str) -> Result<Scan> {
+    scan_scoped(files, request_id, Some(agent))
 }
 
 enum ReadError {

@@ -56,6 +56,11 @@ def approve(
         return result.get("grant_id")
 
     if approval_type == "network_egress":
+        if details.get("network_action", {}).get("kind") == "network_allow":
+            status = api.resolve_network_approval(event["request_id"], "approve").get("status")
+            if status != "approved":
+                raise ApprovalActionError(f"Canonical network approval is {status}; this decision did not grant access")
+            return status
         host = event.get("host", approval.get("target", ""))
         result = api.allow_host(host=host, rate=600, **network_scope(event))
         return result.get("status", "ok")
@@ -133,6 +138,11 @@ def deny(event: dict, api: AdminAPI) -> None:
         return
 
     if approval_type == "network_egress":
+        if details.get("network_action", {}).get("kind") == "network_allow":
+            status = api.resolve_network_approval(event["request_id"], "reject").get("status")
+            if status != "rejected":
+                raise ApprovalActionError(f"Canonical network approval is {status}; this decision did not reject it")
+            return
         host = event.get("host", approval.get("target", ""))
         expires = (datetime.now(UTC) + timedelta(days=1)).isoformat()
         api.deny_host(host=host, expires=expires, **network_scope(event))

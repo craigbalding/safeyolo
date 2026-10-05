@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod approvals;
 mod coord;
 mod declarations;
 mod discovery;
@@ -60,6 +61,8 @@ const ENDPOINTS: &[&str] = &[
     "/budgets",
     "/config",
     "/explain",
+    "/approvals/{request_id}",
+    "/approvals/{request_id}/prepare (POST)",
     "/trace",
     "/memory",
     "/agents",
@@ -657,7 +660,7 @@ pub async fn respond_read_with_circuits<'p>(
     authenticated_read(request, policy, tasks, now_ms, circuits, None).await
 }
 
-fn valid_request_id(value: &str) -> bool {
+pub(crate) fn valid_request_id(value: &str) -> bool {
     // Python's ^req-[a-f0-9]{32}$ accepts one terminal LF. Preserve it for
     // the exact retained-record lookup after validation.
     let value = value.strip_suffix('\n').unwrap_or(value);
@@ -685,6 +688,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
             || path.starts_with("/api/coord/")
             || path == "/api/test-context/current"
             || path == "/desktop/present")
+        && !path.starts_with("/approvals/")
     {
         return Err(response(
             405,

@@ -30,6 +30,7 @@ use zeroize::Zeroizing;
 use crate::policy::{BudgetStatsError, Policy};
 use crate::tasks::{self, Registry};
 
+mod approvals;
 mod audit_events;
 mod gateway;
 mod services;
@@ -844,7 +845,7 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
                 vec![format!("{agent}:{service}:{capability}:{service}")]
             }
         }
-        "admin.host_allowed" | "admin.host_denied" => {
+        "admin.host_allowed" | "admin.host_denied" | "admin.network_action_rejected" => {
             let Some(host) = details.get("host").and_then(Value::as_str) else {
                 return Vec::new();
             };
@@ -897,7 +898,8 @@ fn pending_approvals(path: &Path) -> Value {
     // to both an earlier prompt and a later retry.
     for (sequence, event) in events.iter().rev().enumerate() {
         for key in resolved_approval_keys(event) {
-            let repeatable = key.starts_with("desktop.present:desktop:");
+            let repeatable = key.starts_with("desktop.present:desktop:")
+                || event.pointer("/details/network_action").is_some();
             if repeatable {
                 let Some((_, prompt)) = pending.get(&key) else {
                     continue;
@@ -931,7 +933,8 @@ fn pending_approvals(path: &Path) -> Value {
         let Some(key) = approval_key(event) else {
             continue;
         };
-        if durable_resolutions.contains(&key) {
+        if durable_resolutions.contains(&key) && event.pointer("/details/network_action").is_none()
+        {
             continue;
         }
         pending.insert(key, (sequence, event.clone()));
@@ -1438,6 +1441,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             StatusCode::OK,
             json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),
         ));
+    }
+    if path.starts_with("/admin/approvals/") {
+        return approvals::respond(request, &path, policy, audit, task_state, service_audit).await;
     }
     if method == Method::GET && path == "/admin/plumb/pending" {
         let Some(owner) = plumb else {

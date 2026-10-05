@@ -19,6 +19,8 @@ use crate::policy::{
     restore_large_toml_integers, split_destination,
 };
 
+pub(crate) mod network_action;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     Invalid,
@@ -687,17 +689,7 @@ pub(crate) enum PolicyActivation {
     Rollback { list_mtime: f64 },
 }
 
-/// A whole replacement does not need to parse the rejected saved candidate.
-/// Keep its bytes for rollback, and use the same durable transaction as edits.
-pub(crate) fn replace_policy(
-    path: &Path,
-    source: &str,
-    activate: impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
-) -> Result<()> {
-    policy_transaction(path, false, |_| Ok(((), source.to_owned())), activate)
-}
-
-fn policy_transaction<T>(
+pub(crate) fn policy_transaction<T>(
     path: &Path,
     skip_unchanged: bool,
     prepare: impl FnOnce(&str) -> Result<(T, String)>,

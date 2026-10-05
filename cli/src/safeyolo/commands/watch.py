@@ -593,9 +593,9 @@ def _network_egress_deny(event: dict, api: admin_api.AdminAPI) -> None:
 def _prompt_egress_approval(item: BatchItem, api: admin_api.AdminAPI) -> bool:
     """Interactive prompt for network egress approval.
 
-    Single prompt following the existing a/d/l pattern. Scope modifiers
-    can be appended: domain scope (D suffix), duration (1h/8h/1d/7d suffix),
-    all-agents (A suffix).
+    A native typed action resolves its recorded scope through the common
+    resolver. Other network prompts retain the existing scope modifiers:
+    domain (D), duration (1h/8h/1d/7d), and all agents (A).
 
     Input examples:
         a       → approve, host scope, this agent, permanent
@@ -631,6 +631,24 @@ def _prompt_egress_approval(item: BatchItem, api: admin_api.AdminAPI) -> bool:
         if response.lower() in ("l", "later", ""):
             console.print("[dim]Deferred[/dim]")
             return False
+
+        if event.get("details", {}).get("network_action", {}).get("kind") == "network_allow":
+            # Resolve the fixed proposal, rather than transcribing its scope
+            # into another mutation that could bypass stale/race checks.
+            try:
+                if response.lower() in ("a", "approve", "y", "yes"):
+                    dispatch.approve(event, api)
+                    console.print("[green]Approved[/green] reusable access at the recorded host/port")
+                    return True
+                if response.lower() in ("d", "deny", "n", "no"):
+                    dispatch.deny(event, api)
+                    console.print("[red]Rejected[/red]; permissions unchanged")
+                    return False
+            except (admin_api.APIError, NotImplementedError) as error:
+                console.print(f"[red]Error:[/red] {escape(str(error))}")
+                return False
+            console.print("[dim]Use a, d, or l for this fixed request. Direct policy commands remain available for other scopes.[/dim]")
+            continue
 
         # Parse: first char is action, rest are modifiers
         raw = response.lower()
@@ -709,8 +727,10 @@ def _network_egress_format_detail(event: dict) -> Panel:
     agent = event.get("agent", "\u2014")
     endpoint = destination_key(host, operator_approvals.network_scope(event).get("port"))
     table.add_row("Destination", f"[bold]{escape(endpoint)}[/bold]")
-    table.add_row("Agent", agent)
+    table.add_row("Agent", escape(agent))
     table.add_row("Type", "Network egress approval")
+    if details.get("network_action", {}).get("kind") == "network_allow":
+        table.add_row("Effect", escape(str(details.get("effect", ""))))
     if details.get("decision_type"):
         table.add_row("Decision", details["decision_type"])
     ts = event.get("ts", "")

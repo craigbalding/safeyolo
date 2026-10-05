@@ -220,6 +220,10 @@ final class SafeYoloClient: ObservableObject {
                 let result: ResolutionResult
                 if plan.expectsDesktop {
                     result = .desktop(try JSONDecoder().decode(DesktopPresentation.self, from: data))
+                } else if plan.path.hasPrefix("/admin/approvals/") {
+                    let resolution = try JSONDecoder().decode(NetworkApprovalResolution.self, from: data)
+                    guard ["approved", "rejected"].contains(resolution.status) else { throw ClientError.invalidResponse }
+                    result = .decided(resolution.status == "approved" ? "Approved" : "Rejected")
                 } else {
                     result = .decided(allow ? "Allowed" : "Denied")
                 }

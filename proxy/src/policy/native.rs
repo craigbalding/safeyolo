@@ -279,7 +279,7 @@ impl Controls {
 #[derive(Clone)]
 pub(super) struct Snapshot {
     source: Zeroizing<String>,
-    authored: Value,
+    pub(super) authored: Value,
     pub(crate) controls: Controls,
 }
 
@@ -382,6 +382,21 @@ impl Policy {
         }
         let mut fields = authored.as_object().expect("TOML root is a table").clone();
         fields.shift_remove("controls");
+        // Approval receipts belong to the saved host permission. They are not
+        // evaluator fields; keep the authoritative authored copy for outcome
+        // reconciliation while compiling only existing egress/rate inputs.
+        if let Some(agents) = fields.get_mut("agents").and_then(Value::as_object_mut) {
+            for agent in agents.values_mut() {
+                if let Some(hosts) = agent.get_mut("hosts").and_then(Value::as_object_mut) {
+                    for host in hosts.values_mut() {
+                        if let Some(host) = host.as_object_mut() {
+                            host.shift_remove("approval_request_id");
+                            host.shift_remove("approval_action");
+                        }
+                    }
+                }
+            }
+        }
         let logging: Logging =
             serde_json::from_value(fields.shift_remove("logging").unwrap_or_else(|| json!({})))
                 .map_err(|error| invalid(format!("logging: {error}")))?;
@@ -584,6 +599,7 @@ fn validate_authoring(document: &Value) -> Result<()> {
                 super::egress_effect(egress)?;
             }
             validate_hosts(agent.get("hosts"), &format!("agents.{name}.hosts"))?;
+            super::evidence::validate_reads(agent.get("evidence_reads"))?;
         }
     }
     Ok(())

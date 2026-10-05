@@ -22,6 +22,7 @@ from safeyolo.commands.watch import (
     _host_to_domain,
     _network_egress_format_row,
     _parse_duration,
+    _prompt_egress_approval,
     _resolved_key_from_admin_event,
     _risky_route_dedup_key,
     _service_approve,
@@ -1060,6 +1061,46 @@ class TestServiceFormatRow:
 # ---------------------------------------------------------------------------
 
 class TestNetworkEgressDispatch:
+    def test_native_action_uses_request_identity_and_rejects_without_deny_policy(self):
+        api = _api()
+        api.resolve_network_approval.return_value = {"status": "approved"}
+        event = _network_egress_event(host="cdn.example.com")
+        event["request_id"] = "req-" + "a" * 32
+        event["details"]["network_action"] = {"kind": "network_allow"}
+        dispatch = DISPATCH["network_egress"]
+        assert dispatch.approve(event, api) == "approved"
+        api.resolve_network_approval.assert_called_once_with(event["request_id"], "approve")
+        api.resolve_network_approval.reset_mock()
+        api.resolve_network_approval.return_value = {"status": "rejected"}
+        dispatch.deny(event, api)
+        api.resolve_network_approval.assert_called_once_with(event["request_id"], "reject")
+        api.allow_host.assert_not_called()
+        api.deny_host.assert_not_called()
+
+    @pytest.mark.parametrize("decision", ["approve", "deny"])
+    def test_native_decision_does_not_claim_the_opposite_canonical_outcome(self, decision):
+        api = _api()
+        api.resolve_network_approval.return_value = {"status": "rejected" if decision == "approve" else "approved"}
+        event = _network_egress_event(host="cdn.example.com")
+        event["request_id"] = "req-" + "b" * 32
+        event["details"]["network_action"] = {"kind": "network_allow"}
+        with pytest.raises(NotImplementedError, match="Canonical network approval"):
+            getattr(DISPATCH["network_egress"], decision)(event, api)
+
+    @pytest.mark.parametrize("response, status", [("a", "approved"), ("d", "rejected")])
+    def test_native_individual_prompt_uses_the_same_resolver(self, response, status):
+        api = _api()
+        api.resolve_network_approval.return_value = {"status": status}
+        event = _network_egress_event(host="cdn.example.com")
+        event["request_id"] = "req-" + "c" * 32
+        event["details"].update(network_action={"kind": "network_allow"}, effect="Reusable Worker access until explicitly removed")
+        item = build_batch_items([event])[0]
+        with patch("safeyolo.commands.watch.console.input", autospec=True, return_value=response):
+            assert _prompt_egress_approval(item, api) == (response == "a")
+        api.resolve_network_approval.assert_called_once_with(event["request_id"], "approve" if response == "a" else "reject")
+        api.allow_host.assert_not_called()
+        api.deny_host.assert_not_called()
+
     def test_approve_calls_allow_host(self):
         api = _api()
         api.allow_host.return_value = {"status": "ok"}

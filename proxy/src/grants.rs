@@ -521,26 +521,40 @@ impl Store {
     /// Whole native policy replacement retains this store's established lock
     /// order: store, policy file, then the runtime activation callback. The
     /// callback must not re-enter this store.
-    pub(crate) fn replace_native_policy(
+    pub(crate) fn edit_native_policy<T>(
         &self,
-        source: &str,
+        skip_unchanged: bool,
+        prepare: impl FnOnce(&str) -> Result<(T, String)>,
         activate: impl FnMut(
             &str,
             crate::approvals::PolicyActivation,
         ) -> std::result::Result<(), String>,
-    ) -> Result<()> {
+    ) -> Result<T> {
         let mut current = self.lock()?;
-        let (document, context) = crate::policy::parse_toml_for_edit(source)
-            .map_err(|error| invalid(error.to_string()))?;
-        let next = Snapshot::from_document(
-            &document,
-            OffsetDateTime::now_utc(),
-            Some(&current),
-            &context,
+        let mut next = None;
+        let result = crate::approvals::policy_transaction(
+            &self.path,
+            skip_unchanged,
+            |original| {
+                let (result, source) = prepare(original)?;
+                if !skip_unchanged || source != original {
+                    let (document, context) = crate::policy::parse_toml_for_edit(&source)
+                        .map_err(|error| invalid(error.to_string()))?;
+                    next = Some(Snapshot::from_document(
+                        &document,
+                        OffsetDateTime::now_utc(),
+                        Some(&current),
+                        &context,
+                    )?);
+                }
+                Ok((result, source))
+            },
+            activate,
         )?;
-        crate::approvals::replace_policy(&self.path, source, activate)?;
-        *current = next;
-        Ok(())
+        if let Some(next) = next {
+            *current = next;
+        }
+        Ok(result)
     }
 
     /// Reconcile an externally edited native policy without rewriting it. The
