@@ -62,7 +62,7 @@ the operator connection. With the default tmux prefix on both servers, press
 After staging and booting an agent, manually running `/home/agent/.safeyolo-command`
 reports the agent as running with a `manual` launcher. A second `agent start`
 leaves it running; return to the original guest terminal to interact with it.
-Exiting the command reports it as exited while the sandbox stays ready.
+After the command exits, the sandbox stays ready for diagnosis or another launch.
 
 Command Centre requests a persistent launch before opening a terminal viewer.
 For a CLI launch, use `agent start NAME`, then `agent attach NAME`. Use

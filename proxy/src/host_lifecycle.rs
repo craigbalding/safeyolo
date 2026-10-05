@@ -1225,7 +1225,10 @@ async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
         .get("agent_state")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    if matches!(state, "starting" | "launching" | "running" | "managed") {
+    if matches!(
+        state,
+        "starting" | "launching" | "running" | "managed" | "manual" | "observed"
+    ) {
         return Ok(observed);
     }
     if !matches!(state, "stopped" | "exited" | "failed") {
@@ -1249,7 +1252,7 @@ async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
         if observed["backend"].is_object() {
             crate::host_platform::stop_sandbox(&agent.name).await?;
         }
-        clear_stale_guest_command(&agent.name)?;
+        clear_stopped_command_state(&agent.name)?;
         let slot = crate::host_agents::reserve_network_slot(&agent.name)?;
         let address = u32::from(slot) + 1;
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
@@ -1781,8 +1784,11 @@ async fn stop(agent: &Agent) -> Result<Value, Error> {
     Ok(result)
 }
 
-fn clear_stale_guest_command(name: &str) -> Result<(), Error> {
+fn clear_stopped_command_state(name: &str) -> Result<(), Error> {
+    // Fresh boot and cleanup reach this only after proving the old backend
+    // stopped. Its previous command/launch must not describe the new run.
     for relative in [
+        "current-launch.json",
         "home/.safeyolo-command-supervisor.json",
         "home/.safeyolo-command-supervisor.stop",
         "config-share/command-supervisor-enabled",
@@ -1815,10 +1821,9 @@ async fn cleanup(agent: &Agent) -> Result<Value, Error> {
                 .into(),
         );
     }
-    clear_stale_guest_command(&agent.name)?;
+    clear_stopped_command_state(&agent.name)?;
     for file in [
         "runtime.json",
-        "current-launch.json",
         "userns.pid",
         "container.pid",
         "vm.pid",
