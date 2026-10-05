@@ -209,7 +209,11 @@ def test_invalid_command_centre_configuration_fails_before_native_launch(launch,
 
 
 @pytest.mark.parametrize("initial_token", [None, "", " \n", "existing-agent-token"])
-def test_rust_start_stages_usable_agent_token_and_reuses_it_on_restart(launch, initial_token):
+def test_rust_start_stages_usable_agent_token_and_reuses_it_on_restart(launch, initial_token, monkeypatch):
+    # This test copies the guest helper into the share without executing it.
+    guest_helper = launch.root / "guest-helper-fixture"
+    guest_helper.write_bytes(b"\x7fELF" + b"\0" * 16)
+    monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(guest_helper))
     token_path = safeyolo_config.get_agent_token_path()
     token_path.parent.mkdir(parents=True, exist_ok=True)
     if initial_token is not None:
