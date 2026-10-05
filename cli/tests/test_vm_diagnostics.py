@@ -45,8 +45,8 @@ def _server(path, chunks, *, delay=0.0):
             assert not errors
 
 
-def test_fragmented_banner_with_preidentification_lines(tmp_path):
-    path = tmp_path / "shell.sock"
+def test_fragmented_banner_with_preidentification_lines(socket_dir):
+    path = socket_dir / "shell.sock"
     with _server(path, [b"notice\r\nSS", b"H-2.0-OpenSSH_test\r", b"\n"]):
         result = probe_shell_socket(path)
     assert result.connected and result.error is None
@@ -61,8 +61,8 @@ def test_fragmented_banner_with_preidentification_lines(tmp_path):
     ([b"SSH-2.0-" + b"a" * 255 + b"\r\n"], "invalid"),
     ([b"x" * 8192], "8192"),
 ])
-def test_connection_is_not_a_successful_shell_probe(tmp_path, chunks, error):
-    path = tmp_path / "shell.sock"
+def test_connection_is_not_a_successful_shell_probe(socket_dir, chunks, error):
+    path = socket_dir / "shell.sock"
     with _server(path, chunks) as accepted:
         result = probe_shell_socket(path)
         assert accepted.is_set()
@@ -71,8 +71,8 @@ def test_connection_is_not_a_successful_shell_probe(tmp_path, chunks, error):
     assert error in result.error
 
 
-def test_slow_trickle_uses_one_deadline(tmp_path):
-    path = tmp_path / "shell.sock"
+def test_slow_trickle_uses_one_deadline(socket_dir):
+    path = socket_dir / "shell.sock"
     start = time.monotonic()
     with _server(path, [b"S", b"S", b"H", b"-", b"2"], delay=0.04) as accepted:
         result = probe_shell_socket(path, timeout=0.11)
@@ -82,8 +82,8 @@ def test_slow_trickle_uses_one_deadline(tmp_path):
     assert time.monotonic() - start < 0.5
 
 
-def test_missing_and_refused_socket_are_connect_failures(tmp_path):
-    path = tmp_path / "shell.sock"
+def test_missing_and_refused_socket_are_connect_failures(socket_dir):
+    path = socket_dir / "shell.sock"
     assert not probe_shell_socket(path).connected
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.bind(str(path))

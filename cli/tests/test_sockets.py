@@ -11,40 +11,40 @@ from safeyolo.sockets import _SUN_PATH_MAX, parse, path_for, remove_stale_socket
 class TestPathFor:
     """`path_for(agent, ip)` round-trips with `parse()` and validates inputs."""
 
-    def test_happy_path(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    def test_happy_path(self, monkeypatch, socket_dir):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
         p = path_for("alice", "10.200.0.5")
         assert p.name == "proxy.sock"
         assert p.parent.name == "10.200.0.5_alice"
         assert p.parent.parent.name == "sockets"
 
-    def test_parse_round_trip(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    def test_parse_round_trip(self, monkeypatch, socket_dir):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
         p = path_for("my-agent", "10.200.1.2")
         ip, agent = parse(p)
         assert ip == "10.200.1.2"
         assert agent == "my-agent"
 
-    def test_rejects_underscore_in_name(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    def test_rejects_underscore_in_name(self, socket_dir, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
         with pytest.raises(ValueError, match="invalid agent name"):
             path_for("my_agent", "10.200.0.5")
 
-    def test_rejects_uppercase_in_name(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    def test_rejects_uppercase_in_name(self, socket_dir, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
         with pytest.raises(ValueError, match="invalid agent name"):
             path_for("MyAgent", "10.200.0.5")
 
-    def test_rejects_malformed_ip(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    def test_rejects_malformed_ip(self, socket_dir, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
         with pytest.raises(ValueError):
             path_for("alice", "not-an-ip")
 
-    def test_rejects_path_over_sun_limit(self, tmp_path, monkeypatch):
+    def test_rejects_path_over_sun_limit(self, socket_dir, monkeypatch):
         """Very long home dirs + long agent names trip the sun_path cap."""
         # Cover both platform caps (104 on darwin, 108 elsewhere) by
         # padding well past either — any agent name will bust.
-        long_dir = tmp_path / ("x" * 120)
+        long_dir = socket_dir / ("x" * 120)
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(long_dir))
         with pytest.raises(ValueError, match="sun_path"):
             path_for("long-agent-name-here", "10.200.0.5")
@@ -85,9 +85,9 @@ class TestParse:
             parse("/s/10.0.0.1_Alice/proxy.sock")
 
 
-def test_remove_stale_sockets_only_removes_socket_inodes(tmp_path, monkeypatch):
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
-    directory = tmp_path / "data" / "sockets"
+def test_remove_stale_sockets_only_removes_socket_inodes(socket_dir, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
+    directory = socket_dir / "data" / "sockets"
     directory.mkdir(parents=True)
     stale = directory / "10.200.0.1_demo" / "proxy.sock"
     stale.parent.mkdir()
@@ -104,8 +104,8 @@ def test_remove_stale_sockets_only_removes_socket_inodes(tmp_path, monkeypatch):
     assert ordinary.exists()
 
 
-def test_rebinding_replaces_socket_inside_stable_agent_directory(tmp_path, monkeypatch):
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+def test_rebinding_replaces_socket_inside_stable_agent_directory(socket_dir, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
     path = path_for("demo", "10.200.0.1")
     path.parent.mkdir(parents=True)
     directory_inode = path.parent.stat().st_ino
@@ -125,8 +125,8 @@ def test_rebinding_replaces_socket_inside_stable_agent_directory(tmp_path, monke
         second.close()
 
 
-def test_agents_have_distinct_private_socket_directories(tmp_path, monkeypatch):
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+def test_agents_have_distinct_private_socket_directories(socket_dir, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
 
     alice = path_for("alice", "10.200.0.1")
     bob = path_for("bob", "10.200.0.2")
