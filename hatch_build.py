@@ -130,6 +130,14 @@ class CustomBuildHook(BuildHookInterface):
         build_data["force_include"][str(generated)] = "safeyolo/_build_identity.json"
 
         self.include_native_proxy(project_root, build_data)
+        self.include_native_guest(project_root, build_data)
+
+    def include_native_guest(self, project_root: Path, build_data: dict) -> None:
+        guest_binary = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(project_root / "guest/command/target/release/safeyolo-guest")))
+        if os.environ.get("SAFEYOLO_GUEST_HELPER") and not guest_binary.is_file():
+            raise ValueError(f"SAFEYOLO_GUEST_HELPER is not a file: {guest_binary}")
+        if guest_binary.is_file():
+            build_data["force_include"][str(guest_binary.resolve())] = "safeyolo/bin/safeyolo-guest"
 
     def include_native_proxy(self, project_root: Path, build_data: dict) -> None:
         # The installer builds the native proxy before invoking uv. Include

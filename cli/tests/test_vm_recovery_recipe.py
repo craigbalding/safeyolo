@@ -1,188 +1,222 @@
-"""Execute the documented recovery recipe against the shipped PID-1 owner."""
+"""Native shared-home recovery, deadlines and ownership at the host boundary.
+
+The local result fixture executes the real native probe and supplies the guest
+owner's terminal acknowledgement. Actual PID-1/systrap proof is a separate run.
+"""
 
 from __future__ import annotations
 
-import importlib.util
+import fcntl
 import json
 import os
 import signal
+import socket
 import subprocess
+import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from safeyolo import agent_command_supervisor as supervisor
-from safeyolo.config import get_agent_command_supervisor_state_path, get_data_dir
-from safeyolo.vm import get_agent_config_share_dir, get_agent_home_dir
-
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("vm_guest_probe_recipe", ROOT / "contrib/vm-guest-probe.py")
-recipe = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(recipe)
+CLI = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", ROOT / "proxy/target/debug")) / "safeyolo"
+GUEST = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", ROOT / "guest/command/target/debug/safeyolo-guest"))
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Selected native guest probe requires Linux")
+
+
+def write_json(path, value):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value))
+    temporary.chmod(0o600)
+    temporary.replace(path)
 
 
 @pytest.fixture
-def staged_guest(tmp_config_dir, tmp_path):
-    home = get_agent_home_dir("demo")
+def staged_guest(tmp_path):
+    directory = tmp_path / "agents/demo"
+    home, share = directory / "home", directory / "config-share"
     home.mkdir(parents=True)
-    config_share = get_agent_config_share_dir("demo")
-    config_share.mkdir()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    source_dir = ROOT / "cli/src/safeyolo"
-    artifact = config_share / "guest-command-supervisor.py"
-    source = (source_dir / artifact.name).read_text()
-    assert source.count('cwd="/workspace"') == 1
-    artifact.write_text(source.replace('cwd="/workspace"', f"cwd={str(workspace)!r}"))
-    artifact.chmod(0o755)
-    state = get_agent_command_supervisor_state_path("demo")
-    stop = state.with_name(".safeyolo-command-supervisor.stop")
-    init = (source_dir / "guest-init-per-run.sh").read_text()
-    owner = init[init.index("COMMAND_SUPERVISOR_PID="):init.index("# All per-run setup is complete.")]
-    owner = owner.replace("/home/agent/.safeyolo-command-supervisor.json", str(state))
-    owner = owner.replace("/home/agent/.safeyolo-command-supervisor.stop", str(stop))
-    owner = owner.replace("/run/safeyolo/guest-command-supervisor.py", str(artifact))
-    owner = owner.replace("/safeyolo/command-supervisor-enabled", str(config_share / "command-supervisor-enabled"))
-    owner = owner.replace("setsid su agent -s /bin/bash -c", "setsid bash -c")
-    script = tmp_path / "pid1-owner.sh"
-    script.write_text(owner + "\nkeep_pid1_alive\n")
-    return {"state": state, "stop": stop, "config": config_share, "script": script}
+    share.mkdir()
+    (share / "safeyolo-guest").write_bytes(GUEST.read_bytes())
+    (share / "host-launch-context.json").write_text(json.dumps({"generation": "recovery-run"}))
+    return {"root": tmp_path, "directory": directory, "home": home, "share": share,
+            "state": home / ".safeyolo-command-supervisor.json",
+            "stop": home / ".safeyolo-command-supervisor.stop"}
 
 
-@pytest.fixture
-def guest_owner(staged_guest):
-    env = {**os.environ, "SAFEYOLO_COMMAND_SUPERVISOR_STATE": str(staged_guest["state"]),
-           "SAFEYOLO_COMMAND_SUPERVISOR_STOP": str(staged_guest["stop"])}
-    owner = subprocess.Popen(["/bin/bash", str(staged_guest["script"])], env=env,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
-    try:
-        yield owner
-    finally:
-        supervisor.request_command_supervisor_stop("demo")
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            state = supervisor.read_command_supervisor_state("demo")
-            if not state or state["state"] in {"stopped", "failed"}:
-                break
-            time.sleep(0.05)
-        os.killpg(owner.pid, signal.SIGTERM)
-        owner.communicate(timeout=3)
+def recover(guest, timeout=2):
+    return subprocess.run([str(CLI), "--root", str(guest["root"]), "agent", "recover", "demo",
+                           "--timeout", str(timeout)], capture_output=True, text=True, timeout=timeout + 3)
 
 
-def test_recipe_runs_once_through_guest_owner_without_shell(staged_guest, guest_owner):
-    try:
-        output = recipe.probe("demo")
-    except RuntimeError:
-        print("Guest supervisor failure state:", supervisor.read_command_supervisor_state("demo"))
-        raise
-    result = json.loads((output / "result.json").read_text())
-    invocation = json.loads((output / "invocation.json").read_text())
-    state = supervisor.read_command_supervisor_state("demo")
-    assert result["uid"] == os.getuid()
-    assert result["probe_id"] == invocation["probe_id"]
-    assert "sshd_loopback" in result
-    assert state["state"] == "stopped"
-    assert state["restart_count"] == 0
-    assert state["command_pid"] is None
-    assert guest_owner.poll() is None
+def published(guest):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if guest["state"].exists():
+            state = json.loads(guest["state"].read_text())
+            if state["command"].startswith("exec /safeyolo/safeyolo-guest probe "):
+                return state
+        time.sleep(0.01)
+    raise AssertionError("host did not publish the recovery command")
+
+
+@pytest.mark.parametrize("prior_terminal", [None, "stopped", "failed", "exited"])
+def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_guest, prior_terminal):
+    if prior_terminal:
+        write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec prior",
+                                         "state": prior_terminal, "command_pid": None, "command_start_token": None})
+        staged_guest["stop"].write_text("prior stop fence")
+        (staged_guest["share"] / "command-supervisor-enabled").touch()
+    with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as pool:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        future = pool.submit(recover, staged_guest)
+        state = published(staged_guest)
+        assert state["command"] == f"exec /safeyolo/safeyolo-guest probe {state['supervision_id']}"
+        probe = subprocess.run([str(GUEST), "--stop", str(staged_guest["stop"]), "probe",
+                                state["supervision_id"], "--ssh-port", str(listener.getsockname()[1])],
+                               capture_output=True, text=True, timeout=3)
+        assert probe.returncode == 0, probe.stderr
+        result = json.loads(probe.stderr)
+        assert result["sshd_loopback"]["received"] is False
+        assert result["uid"] == os.getuid()
+        state.update(state="stopped", last_stderr=probe.stderr,
+                     last_stderr_truncated=False, last_exit_code=0, command_pid=None)
+        write_json(staged_guest["state"], state)
+        response = future.result(timeout=3)
+    assert response.returncode == 0, response.stderr
+    observed = json.loads(response.stdout)
+    assert observed["generation"] == "recovery-run"
+    assert observed["result"] == result
+    assert staged_guest["state"].stat().st_mode & 0o777 == 0o600
     assert staged_guest["stop"].exists()
-    assert not (staged_guest["config"] / "command-supervisor-enabled").exists()
-    assert output.stat().st_mode & 0o777 == 0o700
-    assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
-    time.sleep(0.3)
-    assert supervisor.read_command_supervisor_state("demo") == state
-
-
-@pytest.mark.parametrize("stall", [False, True], ids=["complete", "blocked-finalization"])
-def test_payload_fences_without_losing_exit_status_or_deadline(tmp_path, stall):
-    # The stop watcher can observe the marker before Python finishes exiting.
-    # Deliver the real signal at that exact boundary instead of relying on
-    # scheduler timing to reproduce the failed CI probe.
-    stop = tmp_path / "stop"
-    script = """
-import os, runpy, signal, sys, time
-from pathlib import Path
-stall = sys.argv[2] == 'stall'
-write_text = Path.write_text
-def publish_and_signal(path, *args, **kwargs):
-    result = write_text(path, *args, **kwargs)
-    if path == Path(os.environ['SAFEYOLO_COMMAND_SUPERVISOR_STOP']):
-        os.kill(os.getpid(), signal.SIGTERM)
-        if stall:
-            time.sleep(10)
-    return result
-Path.write_text = publish_and_signal
-sys.argv = [sys.argv[1], 'completion-race']
-runpy.run_path(sys.argv[0], run_name='__main__')
-"""
-    result = subprocess.run(
-        [os.sys.executable, "-c", script, str(ROOT / "contrib/vm-guest-probe-payload.py"),
-         "stall" if stall else "complete"],
-        env={**os.environ, "SAFEYOLO_COMMAND_SUPERVISOR_STOP": str(stop)},
-        capture_output=True, text=True, timeout=10,
-    )
-    assert result.returncode == (-signal.SIGALRM if stall else 0), result.stderr
-    assert json.loads(result.stderr)["probe_id"] == "completion-race"
-    assert json.loads(stop.read_text())["probe_id"] == "completion-race"
+    assert not (staged_guest["share"] / "command-supervisor-enabled").exists()
 
 
 @pytest.mark.parametrize("fenced", [False, True])
 def test_recipe_refuses_occupied_supervisor_even_with_stop_fence(staged_guest, fenced):
-    supervisor.start_command_supervisor("demo", "exec worker --resume checkpoint")
+    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec worker",
+                                     "state": "running", "command_pid": 123})
+    enabled = staged_guest["share"] / "command-supervisor-enabled"
+    enabled.touch()
     if fenced:
         staged_guest["stop"].write_text("existing fence")
     original = staged_guest["state"].read_bytes()
-    with pytest.raises(RuntimeError, match="occupied or unverified"):
-        recipe.probe("demo")
+    response = recover(staged_guest)
+    assert response.returncode != 0 and "occupied or unverified" in response.stderr
     assert staged_guest["state"].read_bytes() == original
-    assert (staged_guest["config"] / "command-supervisor-enabled").exists()
+    assert enabled.exists()
     assert staged_guest["stop"].exists() is fenced
 
 
-def test_recipe_timeout_fences_only_its_command_and_records_unverified_state(staged_guest):
+@pytest.mark.parametrize("terminal", ["stopped", "failed", "exited"])
+@pytest.mark.parametrize(("pid", "token"), [
+    (None, "retained-start-token"),
+    (os.getpid(), None),
+    (os.getpid(), "retained-start-token"),
+    (0, "retained-start-token"),
+    (-1, "retained-start-token"),
+    (2**31, "retained-start-token"),
+    (2**64 - 1, "retained-start-token"),
+    (1.5, "retained-start-token"),
+    (True, "retained-start-token"),
+    ("123", "retained-start-token"),
+    ([], "retained-start-token"),
+    ({}, "retained-start-token"),
+    (None, ""),
+    (None, 123),
+    (None, True),
+    (None, []),
+    (None, {}),
+])
+def test_recipe_preserves_unverified_terminal_identity_and_markers(staged_guest, terminal, pid, token):
+    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec existing",
+                                     "state": terminal, "command_pid": pid, "command_start_token": token})
+    enabled = staged_guest["share"] / "command-supervisor-enabled"
+    enabled.write_text("existing enabled marker")
+    staged_guest["stop"].write_text("existing stop fence")
+    original = staged_guest["state"].read_bytes()
+    response = recover(staged_guest, timeout=0.2)
+    assert response.returncode != 0 and "occupied or unverified" in response.stderr
+    assert staged_guest["state"].read_bytes() == original
+    assert enabled.read_text() == "existing enabled marker"
+    assert staged_guest["stop"].read_text() == "existing stop fence"
+
+
+def test_recipe_timeout_fences_its_command_without_claiming_termination(staged_guest):
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match="completion is unverified"):
-        recipe.probe("demo", timeout=0.2)
+    response = recover(staged_guest, timeout=0.2)
+    assert response.returncode != 0 and "completion is unverified" in response.stderr
     assert time.monotonic() - started < 1
-    output, = (get_data_dir() / "vm-recovery").iterdir()
-    assert not (output / "result.json").exists()
-    assert json.loads((output / "supervisor-state.json").read_text())["state"] == "starting"
+    assert published(staged_guest)["state"] == "starting"
     assert staged_guest["stop"].exists()
-    assert not (staged_guest["config"] / "command-supervisor-enabled").exists()
+    assert not (staged_guest["share"] / "command-supervisor-enabled").exists()
 
 
-def test_recipe_lock_wait_has_same_deadline(staged_guest):
-    # The ordinary launcher uses this lock too. Hold it in another process
-    # to prove the emergency command does not wait indefinitely on setup.
-    script = "from safeyolo.commands.agent import _agent_host_setup_lock; import time; "
-    script += "\nwith _agent_host_setup_lock('demo'):\n print('locked', flush=True)\n time.sleep(5)\n"
-    child = subprocess.Popen([os.sys.executable, "-c", script], stdout=subprocess.PIPE)
-    try:
-        assert child.stdout.readline() == b"locked\n"
+@pytest.mark.parametrize("lock", ["home/.safeyolo/host-setup.lock", "current-launch.lock"])
+def test_recipe_lock_wait_has_same_deadline(staged_guest, lock):
+    path = staged_guest["directory"] / lock
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
         started = time.monotonic()
-        with pytest.raises(RuntimeError, match="deadline expired"):
-            recipe.probe("demo", timeout=0.2)
-        assert time.monotonic() - started < 1
-        assert not staged_guest["state"].exists()
-    finally:
-        child.terminate()
-        child.wait(timeout=3)
+        response = recover(staged_guest, timeout=0.2)
+    assert response.returncode != 0 and "deadline expired" in response.stderr
+    assert time.monotonic() - started < 1
+    assert not staged_guest["state"].exists()
 
 
-def test_recipe_preserves_replacement_owner(staged_guest, monkeypatch):
-    def replaced(*_args):
-        supervisor._write_json(staged_guest["state"], supervisor._base_state("demo", "exec replacement"))
-        raise RuntimeError("supervisor ownership changed")
-
-    monkeypatch.setattr(recipe, "wait_for_result", replaced)
-    with pytest.raises(RuntimeError, match="ownership changed"):
-        recipe.probe("demo")
-    assert supervisor.read_command_supervisor_state("demo")["command"] == "exec replacement"
+def test_recipe_preserves_replacement_owner(staged_guest):
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(recover, staged_guest)
+        state = published(staged_guest)
+        state.update(command="exec replacement", supervision_id="replacement-owner")
+        write_json(staged_guest["state"], state)
+        response = future.result(timeout=3)
+    assert response.returncode != 0 and "ownership changed" in response.stderr
+    assert json.loads(staged_guest["state"].read_text())["command"] == "exec replacement"
     assert not staged_guest["stop"].exists()
+    assert (staged_guest["share"] / "command-supervisor-enabled").exists()
 
 
-def test_recipe_rejects_absent_guest_without_creating_supervisor(tmp_config_dir):
-    with pytest.raises(RuntimeError, match="boot this agent first"):
-        recipe.probe("demo")
-    assert not get_agent_command_supervisor_state_path("demo").exists()
+def test_terminal_label_does_not_hide_a_remaining_command(staged_guest):
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(recover, staged_guest)
+        state = published(staged_guest)
+        state.update(state="failed", command_pid=os.getpid(), command_start_token="still-occupied",
+                     last_exit_code=0, last_stderr=json.dumps({"probe_id": state["supervision_id"]}))
+        write_json(staged_guest["state"], state)
+        response = future.result(timeout=3)
+    assert response.returncode != 0 and "completion is unverified" in response.stderr
+    assert json.loads(staged_guest["state"].read_text())["command_pid"] == os.getpid()
+    assert staged_guest["stop"].exists()
+
+
+def test_recipe_rejects_absent_guest_without_creating_supervisor(tmp_path):
+    response = recover({"root": tmp_path})
+    assert response.returncode != 0 and "boot this agent first" in response.stderr
+    assert not (tmp_path / "agents").exists()
+
+
+def test_probe_output_block_retains_its_hard_deadline(tmp_path):
+    read_fd, write_fd = os.pipe()
+    try:
+        os.set_blocking(write_fd, False)
+        with pytest.raises(BlockingIOError):
+            while True:
+                os.write(write_fd, b"x" * 4096)
+        os.set_blocking(write_fd, True)
+        started = time.monotonic()
+        child = subprocess.Popen([str(GUEST), "--stop", str(tmp_path / "stop"), "probe", "a" * 32],
+                                 stderr=write_fd)
+        try:
+            assert child.wait(timeout=3) == -signal.SIGALRM
+            assert time.monotonic() - started < 3
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=3)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

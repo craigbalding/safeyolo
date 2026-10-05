@@ -121,6 +121,15 @@ jobs:
           uv run --frozen pytest -q cli/tests/test_config.py cli/tests/test_api.py \
             cli/tests/test_sockets.py cli/tests/test_rust_proxy.py cli/tests/test_policy_cli.py
 
+      - name: Build native guest and recovery test inputs
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          SAFEYOLO_BUILD_PROFILE: debug
+          CARGO_BUILD_JOBS: "1"
+        run: |
+          scripts/build_guest_command.sh
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+
       - name: All retained CLI tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv run --frozen pytest cli/tests/ -v --tb=short

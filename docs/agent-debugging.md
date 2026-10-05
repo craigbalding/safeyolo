@@ -262,15 +262,18 @@ to run a fixed guest health probe. PID 1 must still be responsive, and the
 guest must still see its home and configuration shares. This path does not
 use the helper control socket, shell relay or proxy relay.
 
-From a checkout of the matching SafeYolo version on the host, run the recipe
-below. Replace `NAME` with an existing, booted agent. The checkout needs its
-usual Python dependencies; `uv run` uses the project environment.
+Use the installed native CLI from the matching SafeYolo version on the host.
+Replace `ROOT` with the instance directory and `NAME` with an existing, booted
+agent. Its current configuration share must contain the matching
+`safeyolo-guest` Linux executable and `host-launch-context.json` with a current-run
+generation. The native installer supplies guest assets; the host staging path
+must bind them before boot. This operation needs no Python or SSH connection.
 
 ```sh
-uv run python contrib/vm-guest-probe.py NAME
+ROOT/bin/safeyolo --root ROOT agent recover NAME
 ```
 
-The recipe is intended for a sandbox started with `agent run NAME
+The probe is intended for a sandbox started with `agent run NAME
 --sandbox-only`, or another running sandbox whose command supervisor is idle.
 It also works alongside a normal interactive/terminal launcher if that launcher
 does not occupy the command supervisor. It refuses an active, starting or
@@ -278,7 +281,7 @@ restarting supervisor, including one that has a stop fence but has not yet
 reported termination. It also refuses an in-progress launcher transition.
 Do not clear another command's state to make the probe run.
 
-The recipe takes the existing host setup and launch locks before checking and
+The command takes the existing host setup and launch locks before checking and
 publishing state. Concurrent normal launch/stop operations use those same locks.
 Guest PID 1 launches the probe through the normal `agent` account. The probe
 records its UID, selected bridge/service process names and PIDs, and a bounded
@@ -299,14 +302,30 @@ matching probe result. On timeout it publishes a stop fence for its own command
 and reports that completion is unverified. A stop request alone is not proof
 that the guest has stopped the command.
 
-Each invocation creates a private directory under the configured data directory
-at `vm-recovery/NAME-*`. It contains the invocation ID, operator UID, payload
-hash, deadline, prior terminal state when present, and the observed supervisor
-state and result or error. The recipe prints that evidence path. It removes
-its supervisor-enabled marker after completion or timeout and leaves the stop
-fence in place. The next ordinary agent launch uses the existing startup path
-to replace terminal state and clear the fence. Saved previous state is evidence;
-the recipe does not automatically restart a prior command.
+The command prints JSON containing its invocation ID, generation, terminal
+supervisor state and guest result. Errors return nonzero. It removes only its
+own supervisor-enabled marker after completion or timeout and leaves its stop
+fence in place. The next ordinary launch can replace terminal state and clear
+the fence; recovery does not restart a prior command. Keep any earlier saved
+recovery results when diagnosing an existing incident.
+
+The guest executable also supplies `observe exec -- PROGRAM ARGS`,
+`observe check`, `supervise`, and `supervise check`. Observation uses the
+current-run generation plus the kernel boot ID and process start time. The
+generated configured-command wrapper invokes the observer with literal argv;
+the supervisor retains the configured shell command. A missing helper fails
+with an actionable error. A failed observation or conflicting process identity
+returns an error rather than reporting that a command stopped.
+
+Host callers publish schema-1 state in
+`agents/NAME/home/.safeyolo-command-supervisor.json` through the existing setup
+and launch locks. State binds `command`, `started_at`, `supervision_id` and
+`generation`; the guest owner adds its PID/start token and the command's PID/start
+token. JSON state and context use mode 0600; guest executables use mode 0755.
+The host stop marker requests termination. Only the guest owner retires its
+verified process group and reports terminal state. An occupied supervisor or
+unverified surviving group remains an error; a transport PID cannot prove
+guest-command liveness.
 
 If the guest loopback banner succeeds while the host shell banner fails, inspect
 the recorded guest bridge processes and helper vsock errors to separate those

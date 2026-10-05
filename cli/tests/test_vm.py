@@ -397,6 +397,9 @@ class TestPrepareConfigShare:
     def setup_config_share_deps(self, tmp_config_dir, monkeypatch):
         """Set up dependencies for prepare_config_share tests."""
         self.config_dir = tmp_config_dir
+        helper = tmp_config_dir / "guest-helper-fixture"
+        helper.write_bytes(b"\x7fELF" + b"\0" * 16)
+        monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(helper))
 
         # Create the guest-init*.sh source files where the code expects
         # them (same directory as vm.py). Three files: the orchestrator
@@ -458,6 +461,10 @@ class TestPrepareConfigShare:
     def test_native_boot_staging_prepares_stopped_agent_without_running_python_later(
         self, tmp_config_dir, tmp_path, monkeypatch,
     ):
+        from safeyolo.platform.linux import LinuxPlatform
+
+        monkeypatch.setattr("safeyolo.platform.get_platform", LinuxPlatform)
+        monkeypatch.setattr("safeyolo.vm.sys.platform", "linux")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         rootfs = tmp_config_dir / "share" / "rootfs-tree"
@@ -465,7 +472,7 @@ class TestPrepareConfigShare:
         (tmp_config_dir / "policy.toml").write_text(
             f'[agents.agent1]\nfolder = "{workspace}"\n'
         )
-        with tempfile.TemporaryDirectory(prefix="sy-nb-") as short:
+        with tempfile.TemporaryDirectory(prefix="sy-nb-", dir="/tmp") as short:
             alias = Path(short) / "config"
             alias.symlink_to(tmp_config_dir, target_is_directory=True)
             monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(alias))
@@ -958,6 +965,10 @@ class TestPrepareConfigShare:
         idle_source = source.split('PID1_IDLE_CHILD=""', 1)[1].split(
             "# All per-run setup is complete.", 1
         )[0]
+        idle_source = idle_source.replace(
+            "COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/safeyolo-guest",
+            f"COMMAND_SUPERVISOR_SCRIPT={share / 'safeyolo-guest'}",
+        )
         harness = 'PID1_IDLE_CHILD=""' + idle_source + """
 start_command_supervisor_if_needed() { printf 'supervisor-check\\n'; }
 wait() { printf 'idle=%s\\n' "$1"; builtin wait "$@"; }
