@@ -517,6 +517,57 @@ impl Store {
         // edit without racing a service-catalog token publication.
         self.transaction(now, true, |_, _, _| Ok(()), activate)
     }
+
+    /// Whole native policy replacement retains this store's established lock
+    /// order: store, policy file, then the runtime activation callback. The
+    /// callback must not re-enter this store.
+    pub(crate) fn replace_native_policy(
+        &self,
+        source: &str,
+        activate: impl FnMut(
+            &str,
+            crate::approvals::PolicyActivation,
+        ) -> std::result::Result<(), String>,
+    ) -> Result<()> {
+        let mut current = self.lock()?;
+        let (document, context) = crate::policy::parse_toml_for_edit(source)
+            .map_err(|error| invalid(error.to_string()))?;
+        let next = Snapshot::from_document(
+            &document,
+            OffsetDateTime::now_utc(),
+            Some(&current),
+            &context,
+        )?;
+        crate::approvals::replace_policy(&self.path, source, activate)?;
+        *current = next;
+        Ok(())
+    }
+
+    /// Reconcile an externally edited native policy without rewriting it. The
+    /// existing store protects its own snapshot while the caller activates the
+    /// matching policy under the same file lock.
+    pub(crate) fn reload_native_policy(
+        &self,
+        activate: impl FnOnce(&str) -> std::result::Result<(), String>,
+    ) -> Result<()> {
+        let mut current = self.lock()?;
+        let _lock = crate::approvals::lock_policy(&self.path)?;
+        let source = zeroize::Zeroizing::new(std::fs::read_to_string(&self.path)?);
+        let (document, context) = crate::policy::parse_toml_for_edit(&source)
+            .map_err(|error| invalid(error.to_string()))?;
+        let next = Snapshot::from_document(
+            &document,
+            OffsetDateTime::now_utc(),
+            Some(&current),
+            &context,
+        )?;
+        activate(&source).map_err(|message| crate::approvals::ApprovalError {
+            kind: crate::approvals::ErrorKind::Activation,
+            message,
+        })?;
+        *current = next;
+        Ok(())
+    }
     pub fn add_grant(
         &self,
         request: GrantRequest,

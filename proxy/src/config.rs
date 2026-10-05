@@ -89,6 +89,10 @@ impl Default for PlumbConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Set only by the fresh TOML loader. Compiled JSON remains internal to
+    /// existing launchers until their native command owners replace them.
+    #[serde(default)]
+    pub native_product: bool,
     pub listeners: Vec<AgentListener>,
     /// Operator-supplied discovery metadata; listener configuration owns identity.
     #[serde(default)]
@@ -238,6 +242,9 @@ impl Config {
     /// credential-specific environment setting takes precedence over the
     /// serialized producer value when present.
     pub(crate) fn credential_guard_block(&self) -> bool {
+        if self.native_product {
+            return self.credential_guard_block;
+        }
         let safe =
             std::env::var_os("SAFEYOLO_BLOCK").and_then(|value| value.to_str().map(str::to_owned));
         let credential =

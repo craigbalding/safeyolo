@@ -152,6 +152,50 @@ fn raw_list_max_rereads_all_strings_and_ignores_merged_addon_lists() {
 }
 
 #[test]
+fn native_restoration_observes_saved_lists_without_hiding_later_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("policy.toml");
+    let active_list = directory.path().join("active.list");
+    let saved_list = directory.path().join("saved.list");
+    put(&active_list, "chosen.example", 20_000_000_000);
+    put(
+        &path,
+        "[lists]\nactive='active.list'\n[hosts.'$active']\negress='allow'\n",
+        30_000_000_000,
+    );
+    let mut live = Policy::from_native_path(&path).unwrap();
+    live.observe_baseline_files(None).unwrap();
+    let active = live.native_view(&path).unwrap();
+    let previous = live.clone();
+
+    // The inactive saved policy refers to another file. Its restoration must
+    // acknowledge that file rather than the list compiled into the live scope.
+    put(&saved_list, "saved.example", 40_000_000_000);
+    let saved = "[lists]\nsaved='saved.list'\n[hosts.'$saved']\negress='allow'\n";
+    put(&path, saved, 30_000_000_000);
+    let list_mtime = Policy::saved_lists_mtime(&path, saved).unwrap();
+    // The on-disk candidate has no list; observations use saved bytes.
+    put(&path, "[hosts.'*']\negress='deny'\n", 50_000_000_000);
+    put(&path, saved, 60_000_000_000);
+    live.observe_restored_native_file(list_mtime).unwrap();
+    assert_eq!(times(&live), (60.0, 0.0, 40.0));
+    assert!(!live.baseline_files_changed().unwrap());
+    assert_eq!(live.native_view(&path).unwrap(), active);
+    assert!(Arc::ptr_eq(&live.budgets, &previous.budgets));
+    assert!(Arc::ptr_eq(&live.evaluations, &previous.evaluations));
+
+    // A new edit between observation and restoration/publication is still an
+    // external change. Do not absorb it by re-observing lists after the write.
+    let list_mtime = Policy::saved_lists_mtime(&path, saved).unwrap();
+    put(&saved_list, "replacement.example", 41_000_000_000);
+    put(&path, saved, 61_000_000_000);
+    live.observe_restored_native_file(list_mtime).unwrap();
+    assert_eq!(times(&live), (61.0, 0.0, 40.0));
+    assert!(live.baseline_files_changed().unwrap());
+    assert_eq!(live.native_view(&path).unwrap(), active);
+}
+
+#[test]
 fn raw_list_decode_truthiness_temporal_and_path_errors_keep_reached_boundaries() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("policy.json");

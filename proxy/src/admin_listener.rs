@@ -529,7 +529,9 @@ async fn serve_connection(
                             "client_ip":client_ip, "resource":reset.resource()}),
                     ]
                 }
-                admin_api::Audit::PolicyMutation(_) | admin_api::Audit::ModeChanged { .. } => {
+                admin_api::Audit::PolicyMutation(_)
+                | admin_api::Audit::PolicyActivated
+                | admin_api::Audit::ModeChanged { .. } => {
                     vec![]
                 }
                 admin_api::Audit::PlumbMutation(_)

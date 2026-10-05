@@ -9,7 +9,7 @@ use super::{Result, invalid};
 
 /// Runtime calls this for a TOML baseline after pruning, before addon merge or
 /// compilation. Persistence does not activate policy or roll back later errors.
-pub(super) fn persist_expired_hosts(
+pub(crate) fn persist_expired_hosts(
     path: &Path,
     expired: &[(Option<String>, String)],
     loaded_source: Option<&str>,
@@ -23,6 +23,15 @@ pub(super) fn persist_expired_hosts(
             return Ok(None);
         }
     };
+    persist_expired_hosts_locked(path, expired, loaded_source)
+}
+
+/// The caller retains the same policy lock through runtime publication.
+pub(crate) fn persist_expired_hosts_locked(
+    path: &Path,
+    expired: &[(Option<String>, String)],
+    loaded_source: Option<&str>,
+) -> Result<Option<f64>> {
     let source = match fs::read(path) {
         Ok(source) => Zeroizing::new(source),
         Err(error) => {

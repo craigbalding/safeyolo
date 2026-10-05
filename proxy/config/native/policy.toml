@@ -1,0 +1,5 @@
+version = "2.0"
+budget = 12000
+
+[hosts]
+"*" = { egress = "allow", unknown_creds = "prompt", rate = 600 }
