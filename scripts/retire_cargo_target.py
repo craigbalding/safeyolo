@@ -279,18 +279,18 @@ def darwin_active_owner(target: Path) -> int | None:
             raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
         if path_is_within(cwd, target) or any(path_is_within(path, target) for path in files):
             return pid
-        if pid == os.getpid():
-            continue
-        try:
-            argv, environment = darwin_process_arguments(pid)
-        except OSError as exc:
-            if exc.errno in (errno.ESRCH, errno.EINVAL, errno.EPERM, errno.EACCES):
-                continue  # The process vanished or its arguments are inaccessible.
-            raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
-        if argv_references_target(argv, cwd, target) or environment_references_target(
-            environment, cwd, target
-        ):
-            return pid
+        # Our CLI names the target in argv; real self image references still count.
+        if pid != os.getpid():
+            try:
+                argv, environment = darwin_process_arguments(pid)
+            except OSError as exc:
+                if exc.errno in (errno.ESRCH, errno.EINVAL, errno.EPERM, errno.EACCES):
+                    continue  # The process vanished or its arguments are inaccessible.
+                raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
+            if argv_references_target(argv, cwd, target) or environment_references_target(
+                environment, cwd, target
+            ):
+                return pid
         try:
             if any(path_is_within(path, target) for path in darwin_process_images(pid, libproc)):
                 return pid

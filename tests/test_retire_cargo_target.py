@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -325,3 +326,36 @@ def test_mac_native_image_inspection_failure_retains_target(
     with pytest.raises(SystemExit, match="target retained"):
         namespace["main"]()
     assert target.is_dir() and not record.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Mac native image inspection")
+def test_mac_retirement_refuses_its_own_closed_descriptor_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, receipt, record, commit = _fixture(tmp_path)
+    mapped = target / "mapped-data"
+    mapped.write_bytes(b"retained mapping\n")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                          ctypes.c_int, ctypes.c_int, ctypes.c_longlong]
+    libc.mmap.restype = ctypes.c_void_p
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    fd = os.open(mapped, os.O_RDONLY)
+    try:
+        address = libc.mmap(None, 4096, 1, 2, fd, 0)  # PROT_READ, MAP_PRIVATE
+    finally:
+        os.close(fd)
+    assert address != ctypes.c_void_p(-1).value
+    namespace = runpy.run_path(str(SCRIPT))
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--target", str(target),
+                                     "--receipt", str(receipt), "--commit", commit,
+                                     "--record", str(record)])
+    try:
+        with pytest.raises(SystemExit, match=f"target is still referenced by live process {os.getpid()}"):
+            namespace["main"]()
+        assert target.is_dir() and not record.exists()
+        assert ctypes.string_at(address, 17) == b"retained mapping\n"
+    finally:
+        assert libc.munmap(address, 4096) == 0
+    assert namespace["main"]() == 0
+    assert not target.exists() and record.is_file()
