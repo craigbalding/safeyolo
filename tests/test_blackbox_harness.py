@@ -1146,6 +1146,66 @@ def installed_section_commands(tmp_path, monkeypatch):
     return repository
 
 
+@pytest.mark.parametrize("explicit_cli", [False, True], ids=["prepared-default", "explicit-input"])
+def test_installed_package_wrapper_binds_prepared_native_cli(
+    tmp_path, installed_section_commands, native_credential_cli, explicit_cli
+):
+    """Reach real continuity selection from the parent; earlier package steps are staged."""
+    repository = installed_section_commands
+    scripts = repository / "tests/blackbox"
+    wrapper = scripts / "run-installed-package.sh"
+    shutil.copy2(ROOT / "tests/blackbox/run-installed-package.sh", wrapper)
+    release_cli = repository / "proxy/target/release/safeyolo"
+    prepare = scripts / "run-lane.sh"
+    with prepare.open("a") as output:
+        output.write(
+            f"native = pathlib.Path({str(release_cli)!r})\n"
+            "native.parent.mkdir(parents=True)\n"
+            f"native.write_bytes(pathlib.Path({str(native_credential_cli)!r}).read_bytes())\n"
+            "native.chmod(0o755)\n"
+            "(binary_dir / 'safeyolo').write_text('#!/bin/sh\\nmkdir -p \"$SAFEYOLO_CONFIG_DIR\"\\n')\n"
+        )
+    proxy = tmp_path / "package/bin/safeyolo-proxy"
+    proxy.parent.mkdir(parents=True)
+    proxy.write_text(f"#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 commit={SELECTED_REVISION} profile=debug\\n'\n")
+    proxy.chmod(0o755)
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    for name, script in (("runsc", "exit 0"), ("git", f"echo {SELECTED_REVISION}")):
+        command = commands / name
+        command.write_text(f"#!/bin/sh\n{script}\n")
+        command.chmod(0o755)
+    selected = native_credential_cli if explicit_cli else release_cli
+    python = commands / "python3"
+    python.write_text(
+        f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\n"
+        "if sys.argv[1] == '-c': os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+        "if sys.argv[1].endswith('/installed_state_transition.py'):\n"
+        f"    sys.path.insert(0, {str(ROOT)!r})\n"
+        "    from tests.blackbox import installed_state_transition as continuity\n"
+        f"    continuity.installed_identity = lambda *_: {{'package':{str(proxy.parent.parent)!r}}}\n"
+        "    original = continuity.native_cli\n"
+        "    def check_selected(*args, **kwargs):\n"
+        "        actual = original(*args, **kwargs)\n"
+        f"        assert actual == Path({str(selected)!r}).resolve()\n"
+        "        print('matching native continuity input selected')\n"
+        "        raise SystemExit(0)\n"
+        "    continuity.native_cli = check_selected\n"
+        "    sys.argv = sys.argv[1:]\n"
+        "    continuity.main()\n"
+        f"if sys.argv[1:3] == ['-', {str(scripts)!r}]: print({str(proxy)!r})\n"
+    )
+    python.chmod(0o755)
+    env = {**os.environ, "PATH": f"{commands}:{os.environ['PATH']}", "HOME": str(tmp_path),
+           "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(tmp_path / "artifacts")}
+    env.pop("SAFEYOLO_NATIVE_CLI", None)
+    if explicit_cli:
+        env["SAFEYOLO_NATIVE_CLI"] = str(native_credential_cli)
+    result = subprocess.run([str(wrapper)], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "matching native continuity input selected" in result.stdout
+
+
 @pytest.mark.parametrize("failure,expected", [(0, 0), (1, 1), (2, 2)])
 def test_installed_sections_reuse_preparation_and_separate_live_state(
     tmp_path, monkeypatch, installed_section_commands, failure, expected
