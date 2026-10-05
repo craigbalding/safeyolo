@@ -241,6 +241,18 @@ then exits 75 so callers do not dispatch another batch. Set
 Cargo process group. Set `SAFEYOLO_CARGO_RESERVE_GIB` and
 `SAFEYOLO_CARGO_SPACE_POLL_SECONDS` for a measured concurrent workload.
 
+Reuse still-valid acceptance evidence for unchanged behavior. Check the changed
+code and assumptions before selecting additional tests; retain independent
+review of the exact candidate and any necessary correctness or security checks.
+This reduces total delivery effort, including review and CI, rather than merely
+reducing patch size.
+
+Hosted native, retained CLI and installed blackbox jobs restore Rust dependency
+caches after selecting the pinned toolchain. Default-branch runs save these
+caches, including when later checks fail. Workspace product binaries still
+build from the checked-out candidate. The full native lane uses the same explicit
+host target for Clippy, tests and builds, retaining its Coord test runner.
+
 Normal and isolated candidates use the same wrapper:
 
 ```sh
@@ -274,9 +286,11 @@ disposable target after acceptance; keep the commands, patches, hashes, and
 required executables as evidence.
 
 Reuse one target directory per active candidate through coding and reviewer
-correction rounds. Give concurrent candidates distinct target directories.
-After the independent reviewer has accepted the exact candidate, retire its
-target with a receipt naming that exact commit:
+correction rounds. Keep the source location, toolchain, profile and target mode
+consistent so Cargo can reuse valid build files. Give concurrent candidates
+distinct target directories. Keep a warm target needed by the next approved work;
+acceptance alone is not a reason to discard reusable compilation. Retire an
+accepted target when it is no longer needed, with a receipt naming that exact commit:
 
 ```sh
 scripts/retire_cargo_target.py \

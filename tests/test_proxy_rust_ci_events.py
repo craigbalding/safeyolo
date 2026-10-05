@@ -78,7 +78,9 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     native = steps["Test focused native boundaries"]
     assert native["if"] == "steps.changes.outputs.rust == 'true'"
     assert steps["Check Rust formatting and lint"]["if"] == native["if"]
-    assert steps["Install the pinned Rust toolchain"]["if"] == native["if"]
+    assert steps["Install the pinned Rust toolchain"]["if"] == (
+        "steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'"
+    )
     assert "--ignored" not in native["run"]
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (

@@ -121,6 +121,24 @@ jobs:
           uv run --frozen pytest -q cli/tests/test_config.py cli/tests/test_api.py \
             cli/tests/test_sockets.py cli/tests/test_rust_proxy.py cli/tests/test_policy_cli.py
 
+      - name: Install the pinned Rust toolchain
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Restore Rust dependency cache
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          cache-bin: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
       - name: Build native guest and recovery test inputs
         if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
