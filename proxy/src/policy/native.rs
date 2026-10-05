@@ -199,10 +199,10 @@ impl Default for TestContext {
 pub struct Circuits {
     #[serde(default = "enabled")]
     pub enabled: bool,
-    pub failure_threshold: u64,
-    pub success_threshold: u64,
+    pub failure_threshold: i64,
+    pub success_threshold: i64,
     pub timeout_seconds: f64,
-    pub half_open_max_requests: u64,
+    pub half_open_max_requests: i64,
     pub use_exponential_backoff: bool,
     pub max_timeout_seconds: f64,
     pub backoff_multiplier: f64,
@@ -675,6 +675,77 @@ fn compile_exceptions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nondefault_control_flags_reach_existing_runtime_consumers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.toml");
+        let config_path = directory.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let source = r#"
+[controls.network]
+enabled=false
+action="warn"
+homoglyph=false
+[controls.credentials]
+enabled=false
+action="warn"
+[controls.patterns]
+enabled=false
+request="warn"
+response="warn"
+websocket_request="warn"
+websocket_response="warn"
+[controls.circuits]
+enabled=false
+failure_threshold=-1
+success_threshold=-2
+half_open_max_requests=-3
+[controls.test_context]
+action="warn"
+"#;
+        let policy = Policy::native_source(source, &path, None, 0.).unwrap();
+        let mut config = crate::native_config::read(&config_path).unwrap();
+        policy.native_controls().unwrap().configure(&mut config);
+        assert!(
+            !config.network_guard_enabled
+                && !config.network_guard_block
+                && !config.network_guard_homoglyph
+        );
+        assert!(
+            !config.credential_guard_block
+                && !config.circuit_breaker_enabled
+                && !config.test_context_block
+        );
+        assert!(config.inspection.is_none());
+        assert!(!policy.is_addon_enabled(
+            super::super::Addon::CredentialGuard,
+            Some("owned.invalid"),
+            Some("alice")
+        ));
+        let sensor = policy.sensor_config().unwrap();
+        assert_eq!(sensor["addons"]["circuit_breaker"]["failure_threshold"], -1);
+        assert_eq!(sensor["addons"]["circuit_breaker"]["success_threshold"], -2);
+        assert_eq!(
+            sensor["addons"]["circuit_breaker"]["half_open_max_requests"],
+            -3
+        );
+        let enabled = Policy::native_source(
+            &source.replace("enabled=false", "enabled=true"),
+            &path,
+            None,
+            0.,
+        )
+        .unwrap();
+        enabled.native_controls().unwrap().configure(&mut config);
+        let inspection = config.inspection.unwrap();
+        assert!(
+            !inspection.block_request
+                && !inspection.block_response
+                && !inspection.block_websocket_request
+                && !inspection.block_websocket_response
+        );
+    }
 
     #[test]
     fn named_controls_feed_existing_detectors_and_report_nested_sources() {
