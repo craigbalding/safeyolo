@@ -17,12 +17,31 @@ pub(crate) struct PolicyFileTimes {
 }
 
 impl PolicyFileTimes {
-    pub(super) fn record_own_expiry_write(&mut self, baseline: f64) {
+    pub(crate) fn record_own_expiry_write(&mut self, baseline: f64) {
         self.baseline = baseline;
     }
 }
 
 impl Policy {
+    /// Observe the lists named by saved bytes before an owned restoration.
+    /// These observations do not compile or activate that saved policy.
+    pub(crate) fn saved_lists_mtime(path: &Path, source: &str) -> Result<f64> {
+        source_lists_max_mtime(path, source)
+    }
+
+    /// A rejected native apply restored only saved bytes. Acknowledge that
+    /// owned write without replacing the live source, list inputs or controls.
+    pub(crate) fn observe_restored_native_file(&mut self, list_mtime: f64) -> Result<()> {
+        if let (Some(path), Some(times)) = (&self.baseline_path, &mut self.file_times) {
+            let baseline = modified(path)?;
+            times.baseline = baseline;
+            // Use the pre-restoration observation, so a later list edit stays
+            // visible even if it precedes this runtime publication.
+            times.lists = list_mtime;
+        }
+        Ok(())
+    }
+
     /// A watcher performs all three observations before deciding to reload.
     /// A later observation error can preempt an earlier changed flag.
     pub(crate) fn baseline_files_changed(&self) -> Result<bool> {
@@ -33,9 +52,11 @@ impl Policy {
         if exists(path)? && modified(path)? > previous.baseline {
             changed = true;
         }
-        let addons = path.with_file_name("addons.yaml");
-        if exists(&addons)? && modified(&addons)? > previous.addons {
-            changed = true;
+        if self.native_controls().is_none() {
+            let addons = path.with_file_name("addons.yaml");
+            if exists(&addons)? && modified(&addons)? > previous.addons {
+                changed = true;
+            }
         }
         let lists = lists_max_mtime(path)?;
         Ok(changed || lists > previous.lists)
@@ -47,6 +68,21 @@ impl Policy {
         path: &Path,
         previous: Option<&Policy>,
     ) -> Result<PolicyFileTimes> {
+        Self::capture_baseline_files_for(path, previous, false)
+    }
+
+    pub(crate) fn capture_native_baseline_files(
+        path: &Path,
+        previous: Option<&Policy>,
+    ) -> Result<PolicyFileTimes> {
+        Self::capture_baseline_files_for(path, previous, true)
+    }
+
+    fn capture_baseline_files_for(
+        path: &Path,
+        previous: Option<&Policy>,
+        native: bool,
+    ) -> Result<PolicyFileTimes> {
         let prior = previous
             .filter(|previous| previous.baseline_path.as_deref() == Some(path))
             .and_then(|previous| previous.file_times)
@@ -54,7 +90,7 @@ impl Policy {
         let baseline = modified(path)?;
         let addons_path = path.with_file_name("addons.yaml");
         // Source retains an earlier addon watermark if the sibling is absent.
-        let addons = if exists(&addons_path)? {
+        let addons = if !native && exists(&addons_path)? {
             modified(&addons_path)?
         } else {
             prior.addons
@@ -77,7 +113,11 @@ impl Policy {
         let Some(path) = &self.baseline_path else {
             return Ok(());
         };
-        self.file_times = Some(Self::capture_baseline_files(path, previous)?);
+        self.file_times = Some(Self::capture_baseline_files_for(
+            path,
+            previous,
+            self.native_controls().is_some(),
+        )?);
         Ok(())
     }
 }
@@ -128,12 +168,16 @@ fn lists_max_mtime(path: &Path) -> Result<f64> {
     let Ok(source) = fs::read_to_string(path).map(Zeroizing::new) else {
         return Ok(0.0);
     };
+    source_lists_max_mtime(path, &source)
+}
+
+fn source_lists_max_mtime(path: &Path, source: &str) -> Result<f64> {
     let format = match path.extension().and_then(|value| value.to_str()) {
         Some("toml") => Format::Toml,
         Some("yaml" | "yml") => Format::Yaml,
         _ => Format::Json,
     };
-    let Ok((mut raw, mut timestamps)) = decode_policy_value(&source, format) else {
+    let Ok((mut raw, mut timestamps)) = decode_policy_value(source, format) else {
         // The existing native decoder has documented representation gaps; this
         // preserves the file-decode failure boundary without another parser.
         return Ok(0.0);

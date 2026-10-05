@@ -36,12 +36,19 @@ async fn main() -> Result<(), Error> {
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut reload = signal(SignalKind::hangup())?;
-    let mut proxy = Proxy::start(Config::read(&config_path)?).await?;
+    let read_config = || {
+        if config_path.extension().and_then(|value| value.to_str()) == Some("toml") {
+            safeyolo_proxy::native_config::read(&config_path)
+        } else {
+            Config::read(&config_path)
+        }
+    };
+    let mut proxy = Proxy::start(read_config()?).await?;
     loop {
         tokio::select! {
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
-            _ = reload.recv() => match Config::read(&config_path) {
+            _ = reload.recv() => match read_config() {
                 Ok(config) => if let Err(error) = proxy.reload(config).await { eprintln!("configuration reload failed: {error}"); },
                 Err(error) => eprintln!("configuration reload failed: {error}"),
             },

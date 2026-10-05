@@ -137,6 +137,7 @@ pub enum Audit {
         task_id: String,
     },
     PolicyMutation(PolicyMutationAudit),
+    PolicyActivated,
     PlumbMutation(PlumbMutationAudit),
     DesktopPresented(DesktopPresentationAudit),
     DesktopPresentationFailed(DesktopPresentationFailureAudit),
@@ -1291,6 +1292,16 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         outcome.audit = Some(Audit::AuthenticationFailed);
         return Ok(outcome);
     }
+    if policy.and_then(Policy::native_controls).is_some()
+        && (path == "/modes"
+            || path.starts_with("/plugins/")
+            || path == "/admin/policy/host/bypass")
+    {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"endpoint not found; use policy apply for named controls and exceptions"}),
+        ));
+    }
     if method == Method::GET && path == "/admin/runtime-identity" {
         let Some(instance_id) = instance_id else {
             return Ok(response(
@@ -1875,9 +1886,62 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         return Ok(outcome);
     }
     if method == Method::GET && path == "/admin/policy/baseline" {
+        if policy.and_then(Policy::native_controls).is_some() {
+            let Some(state) = task_state else {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"native runtime is unavailable"}),
+                ));
+            };
+            let state = state.clone();
+            let result = tokio::task::spawn_blocking(move || crate::native_policy_status(&state))
+                .await
+                .map_err(|_| Error::ServiceMutation)?;
+            return Ok(match result {
+                Ok(status) => response(StatusCode::OK, status),
+                Err(error) => response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":error.to_string()}),
+                ),
+            });
+        }
         return Ok(get_baseline(policy, policy_path).await);
     }
     if method == Method::POST && path == "/admin/policy/validate" {
+        if policy.and_then(Policy::native_controls).is_some() {
+            let data = match read_json(request).await? {
+                ParsedBody::Value(data) => data,
+                ParsedBody::Terminal(outcome) => return Ok(outcome),
+                ParsedBody::Absent => Json(Value::Null),
+            };
+            let Some(source) = data.0.get("source").and_then(Value::as_str) else {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"validation requires TOML 'source'"}),
+                ));
+            };
+            let path = match require_policy_path(policy_path) {
+                Ok(path) => path,
+                Err(outcome) => return Ok(*outcome),
+            };
+            let registry = policy
+                .and_then(Policy::gateway)
+                .and_then(|gateway| gateway.registry());
+            return Ok(
+                match Policy::native_source(
+                    source,
+                    path,
+                    registry,
+                    crate::policy::current_time_ms(),
+                ) {
+                    Ok(_) => response(StatusCode::OK, json!({"valid":true})),
+                    Err(error) => response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"valid":false,"error":error.to_string()}),
+                    ),
+                },
+            );
+        }
         let mut data = match read_json(request).await? {
             ParsedBody::Terminal(outcome) => return Ok(outcome),
             ParsedBody::Absent => Json(Value::Null),
@@ -2049,6 +2113,40 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             ParsedBody::Absent => Json(Value::Null),
             ParsedBody::Value(data) => data,
         };
+        if policy.and_then(Policy::native_controls).is_some() {
+            let Some(source) = data.0.get("source").and_then(Value::as_str) else {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"policy apply requires TOML 'source'"}),
+                ));
+            };
+            let (Some(state), Some(audit)) = (task_state, service_audit) else {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"native runtime is unavailable"}),
+                ));
+            };
+            let state = state.clone();
+            let source = zeroize::Zeroizing::new(source.to_owned());
+            let writer = audit.writer.clone();
+            let client_ip = zeroize::Zeroizing::new(audit.client_ip.to_owned());
+            let target = zeroize::Zeroizing::new(audit.target.to_owned());
+            return audit.mutation_owner.spawn_blocking(move || {
+                let mut outcome = match crate::apply_native_policy(&state, &source) {
+                    Ok(result) => {
+                        let mut outcome = response(StatusCode::OK, result);
+                        outcome.audit = Some(Audit::PolicyActivated);
+                        outcome
+                    }
+                    Err(error) => response(StatusCode::BAD_REQUEST, json!({
+                        "error":error.to_string(), "status":"rejected",
+                        "repair":"Run policy show to inspect saved and active state, then correct the cause and apply a valid file."
+                    })),
+                }.submit_audit(&writer, &client_ip, &target)?;
+                outcome.audit = None;
+                Ok(outcome)
+            }).await?.await.map_err(|_| Error::ServiceMutation)?;
+        }
         let Some(policy_data) = data
             .0
             .as_object_mut()

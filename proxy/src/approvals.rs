@@ -667,6 +667,42 @@ pub(crate) fn update_policy<T>(
     mutate: impl FnOnce(&mut DocumentMut, &mut LargeIntegerContext) -> Result<T>,
     mut activate: impl FnMut(&str) -> std::result::Result<(), String>,
 ) -> Result<T> {
+    policy_transaction(
+        path,
+        skip_unchanged,
+        |original| {
+            let (mut document, mut context) = crate::policy::parse_toml_for_edit(original)
+                .map_err(|error| invalid(error.to_string()))?;
+            let result = mutate(&mut document, &mut context)?;
+            let changed = restore_large_toml_integers(&document.to_string(), &context);
+            Ok((result, changed))
+        },
+        |source, _| activate(source),
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PolicyActivation {
+    Candidate,
+    Rollback { list_mtime: f64 },
+}
+
+/// A whole replacement does not need to parse the rejected saved candidate.
+/// Keep its bytes for rollback, and use the same durable transaction as edits.
+pub(crate) fn replace_policy(
+    path: &Path,
+    source: &str,
+    activate: impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
+) -> Result<()> {
+    policy_transaction(path, false, |_| Ok(((), source.to_owned())), activate)
+}
+
+fn policy_transaction<T>(
+    path: &Path,
+    skip_unchanged: bool,
+    prepare: impl FnOnce(&str) -> Result<(T, String)>,
+    mut activate: impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
+) -> Result<T> {
     if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
         return Err(ApprovalError {
             kind: ErrorKind::Unsupported,
@@ -680,10 +716,7 @@ pub(crate) fn update_policy<T>(
     std::fs::create_dir_all(parent)?;
     let lock = lock_policy(path)?;
     let original = std::fs::read_to_string(path)?;
-    let (mut document, mut context) = crate::policy::parse_toml_for_edit(&original)
-        .map_err(|error| invalid(error.to_string()))?;
-    let result = mutate(&mut document, &mut context)?;
-    let changed = restore_large_toml_integers(&document.to_string(), &context);
+    let (result, changed) = prepare(&original)?;
     if skip_unchanged && changed == original {
         return Ok(result);
     }
@@ -693,7 +726,7 @@ pub(crate) fn update_policy<T>(
         }
         return Err(error.error.into());
     }
-    if let Err(error) = activate(&changed) {
+    if let Err(error) = activate(&changed, PolicyActivation::Candidate) {
         restore_policy(path, &original, &mut activate)?;
         return Err(ApprovalError {
             kind: ErrorKind::Activation,
@@ -708,13 +741,18 @@ pub(crate) fn update_policy<T>(
 fn restore_policy(
     path: &Path,
     original: &str,
-    activate: &mut impl FnMut(&str) -> std::result::Result<(), String>,
+    activate: &mut impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
 ) -> Result<()> {
+    // Capture inputs referenced by the original SAVED bytes before restoring
+    // them. Reading the candidate file here would observe the wrong lists.
+    // Invalid saved inputs must still be restored; the watcher retains its
+    // existing validation/error behavior if it later reaches those inputs.
+    let list_mtime = crate::policy::Policy::saved_lists_mtime(path, original).unwrap_or_default();
     save_policy(path, original).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to restore original policy: {}", error.error),
     })?;
-    activate(original).map_err(|error| ApprovalError {
+    activate(original, PolicyActivation::Rollback { list_mtime }).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to reactivate restored policy: {error}"),
     })
