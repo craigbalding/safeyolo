@@ -125,6 +125,7 @@ fn record_builder_matches_fourteen_actual_source_projections() {
             true,
             &directory.path().join("flows"),
             None,
+            None,
         ));
         let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
         let path = if name.starts_with("ipv6_") {
@@ -542,6 +543,7 @@ fn gateway_injected_header_is_redacted_in_stored_flow() {
         true,
         &directory.path().join("flows.sqlite3"),
         None,
+        None,
     ));
     let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
     let request = Request::builder()
@@ -768,6 +770,7 @@ fn scalar_encoding_failure_stays_a_writer_error_after_both_body_decodes() {
         let recorder = Arc::new(FlowRecorder::start(
             true,
             &directory.path().join("flows"),
+            None,
             None,
         ));
         let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
@@ -1090,6 +1093,7 @@ fn probe_reached_terminals_skip_once_without_capturing_evidence() {
             true,
             &directory.path().join("flows.sqlite3"),
             None,
+            None,
         ));
         let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
         recording.mark_probe();
@@ -1144,6 +1148,7 @@ fn probe_build_exclusion_precedes_poison_and_unreached_response_stays_uncounted(
         true,
         &directory.path().join("flows.sqlite3"),
         None,
+        None,
     ));
     for poison in ["decode", "stored_failure", "capture_failure"] {
         let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
@@ -1192,6 +1197,7 @@ fn probe_marker_keeps_connect_inactive_and_ordinary_context_recording_active() {
     let recorder = Arc::new(FlowRecorder::start(
         true,
         &directory.path().join("flows.sqlite3"),
+        None,
         None,
     ));
     let connect = Recording::new(recorder.clone(), identity("alice"), ID.into(), false);

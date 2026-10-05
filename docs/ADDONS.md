@@ -729,10 +729,11 @@ are required. The canonical optional dimensions, in formatter order, are
 `role`, `suite`, `subject`, `step`, `test`, `intent`, and `expect`. Additional
 safe fields may follow them. Keys and values must match `[A-Za-z0-9_.:-]+`.
 
-Use the first-party helper instead of assembling the value in scripts:
+Use the installed native helper described in [native policy commands](native-policy.md).
+The example below assumes that installation at `$HOME/.safeyolo-native`:
 
 ```bash
-safeyolo test-context \
+"$HOME/.safeyolo-native/bin/safeyolo" test-context \
   --run sec3 \
   --agent logic \
   --role guest \

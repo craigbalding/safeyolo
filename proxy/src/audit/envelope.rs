@@ -380,6 +380,17 @@ fn timestamp(now: OffsetDateTime, model: bool) -> String {
 
 pub(super) struct Record(CircuitValue);
 impl Record {
+    pub(super) fn name_control(&mut self) {
+        if let CircuitValue::Object(fields) = &mut self.0
+            && let Some(value) = fields.shift_remove("addon")
+        {
+            let mut value = value;
+            if let CircuitValue::Other(Value::String(name)) = &mut value {
+                *name = crate::policy::native::control_label(name).to_owned();
+            }
+            fields.insert("control".into(), value);
+        }
+    }
     pub(super) fn encode(&self) -> Result<Zeroizing<String>> {
         let mut pending = vec![&self.0];
         while let Some(value) = pending.pop() {

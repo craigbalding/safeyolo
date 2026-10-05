@@ -89,6 +89,9 @@ impl Default for PlumbConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Parsed only from config.toml; never an operator-editable compiled field.
+    #[serde(skip)]
+    pub native_settings: Option<crate::native_config::Settings>,
     /// Set only by the fresh TOML loader. Compiled JSON remains internal to
     /// existing launchers until their native command owners replace them.
     #[serde(default)]

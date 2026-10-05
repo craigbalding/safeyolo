@@ -24,7 +24,6 @@ from .commands.policy import policy_app
 from .commands.proxy import proxy_app
 from .commands.services import services_app
 from .commands.setup import setup_app
-from .commands.test_context import test_context
 from .commands.tmux import tmux_app
 from .commands.traffic import traffic
 from .commands.vault import vault_app
@@ -95,7 +94,6 @@ app.command()(lab)
 app.command()(check)
 app.command()(mode)
 app.command()(policies)
-app.command(name="test-context")(test_context)
 app.command()(traffic)
 
 # Register subcommand groups

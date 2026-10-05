@@ -47,6 +47,45 @@ fn env_path(name: &str) -> Result<PathBuf, Error> {
 }
 
 impl Host {
+    pub(crate) fn from_config(config: &crate::Config) -> Result<Option<Self>, Error> {
+        let Some(settings) = &config.native_settings else {
+            return Self::from_env();
+        };
+        let centre = &settings.command_centre;
+        if !centre.enabled {
+            return Ok(None);
+        }
+        if centre.events_port == 0 {
+            return Err("command_centre.events_port must be nonzero".into());
+        }
+        let tailnet = match centre.share.as_str() {
+            "local" => None,
+            "tailnet" => {
+                if centre.tailnet_admin_port == 0
+                    || centre.tailnet_events_port == 0
+                    || centre.tailnet_admin_port == centre.tailnet_events_port
+                {
+                    return Err("command_centre Tailnet ports must be nonzero and distinct".into());
+                }
+                Some(Tailnet {
+                    admin_port: centre.tailnet_admin_port,
+                    events_port: centre.tailnet_events_port,
+                    state_file: config.data_dir().join("command-centre-tailnet-status.json"),
+                })
+            }
+            _ => return Err("command_centre.share must be local or tailnet".into()),
+        };
+        let host = Self {
+            cli_python: None,
+            user: std::env::var("USER").ok(),
+            instance_file: config.data_dir().join("instance_id"),
+            events_port: Some(centre.events_port),
+            tailnet,
+        };
+        host.instance_id()?;
+        Ok(Some(host))
+    }
+
     pub(crate) fn from_env() -> Result<Option<Self>, Error> {
         let Some(_) = std::env::var_os("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE") else {
             if std::env::var_os("SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT").is_some()

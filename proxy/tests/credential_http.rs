@@ -91,6 +91,7 @@ fn config(
     std::fs::write(token, b"credential-http-admin").unwrap();
     Config {
         native_product: false,
+        native_settings: None,
         listeners: vec![
             AgentListener {
                 agent_id: "alice".into(),

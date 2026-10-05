@@ -113,7 +113,7 @@ impl StatsTasks {
 
 impl Prepared {
     pub(crate) async fn bind(config: &Config) -> Result<Option<Self>, Error> {
-        let command_centre = command_centre::Host::from_env()?;
+        let command_centre = command_centre::Host::from_config(config)?;
         let Some(port) = config.admin_port else {
             if command_centre
                 .as_ref()

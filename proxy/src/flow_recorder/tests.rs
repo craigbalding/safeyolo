@@ -20,7 +20,7 @@ fn direct_startup_settings_keep_lazy_limits_and_real_body_size() {
         0.,
     )
     .unwrap();
-    let recorder = FlowRecorder::start(true, &unused, Some(&policy));
+    let recorder = FlowRecorder::start(true, &unused, Some(&policy), None);
     assert!(selected.exists());
     assert!(!unused.exists());
     let store = recorder.store().unwrap();
@@ -63,7 +63,7 @@ fn direct_startup_settings_keep_lazy_limits_and_real_body_size() {
 #[test]
 fn eligibility_build_errors_and_writer_errors_have_distinct_counts() {
     let directory = tempfile::tempdir().unwrap();
-    let recorder = FlowRecorder::start(true, &directory.path().join("flows"), None);
+    let recorder = FlowRecorder::start(true, &directory.path().join("flows"), None, None);
     recorder.record(|_| Ok(None));
     recorder.record(|_| Err(ContentError::Value));
     let metadata = json!({"request_id":"same","ts_start":1,"engagement_id":"alice","host":"owned.invalid","flow_state":"completed"}).as_object().unwrap().clone();
@@ -99,7 +99,7 @@ fn eligibility_build_errors_and_writer_errors_have_distinct_counts() {
 #[test]
 fn unencodable_metadata_fails_in_writer_after_recording_and_allows_next_row() {
     let directory = tempfile::tempdir().unwrap();
-    let recorder = FlowRecorder::start(true, &directory.path().join("flows"), None);
+    let recorder = FlowRecorder::start(true, &directory.path().join("flows"), None, None);
     for (id, metadata_encoding_error) in [("unencodable", true), ("valid", false)] {
         recorder.record(|_| Ok(Some(QueuedRecord {
             metadata: json!({"request_id":id,"ts_start":1,"engagement_id":"alice","host":"owned.invalid","flow_state":"completed"}).as_object().unwrap().clone(),
@@ -122,7 +122,7 @@ fn unencodable_metadata_fails_in_writer_after_recording_and_allows_next_row() {
 fn disabled_startup_stays_without_store_after_enable() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("not-created");
-    let recorder = FlowRecorder::start(false, &path, None);
+    let recorder = FlowRecorder::start(false, &path, None, None);
     recorder.set_enabled(true);
     recorder.record(|_| panic!("no store means no build"));
     assert!(recorder.store().is_none());

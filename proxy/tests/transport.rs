@@ -34,6 +34,7 @@ fn config(directory: &TempDir) -> Config {
     }).to_string()).unwrap();
     Config {
         native_product: false,
+        native_settings: None,
         agent_map_file: String::new(),
         data_dir: Some(directory.path().join("data")),
         listeners: ["alice", "bob"]

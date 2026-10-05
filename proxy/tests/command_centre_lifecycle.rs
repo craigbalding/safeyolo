@@ -295,8 +295,8 @@ async fn admin_lists_starts_observes_and_stops_without_python() {
         fs::remove_file(&launch_path).unwrap();
         let session = format!("safeyolo-894-{}", std::process::id());
         fs::write(
-            root.join("config.yaml"),
-            format!("agent_launcher:\n  tmux_session: {session}\n"),
+            root.join("config.toml"),
+            format!("[agent_launcher]\ntmux_session = \"{session}\"\n"),
         )
         .unwrap();
         let tmux_dir = root.join("tmux");

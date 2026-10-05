@@ -438,14 +438,20 @@ impl Runtime {
             });
         let audit = match previous {
             Some(runtime) => runtime.audit.clone(),
-            None => Arc::new(audit::Writer::new(
-                config.audit_log_path.clone().unwrap_or_else(|| {
-                    std::env::var_os("SAFEYOLO_LOG_PATH")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("/app/logs/safeyolo.jsonl"))
-                }),
-                audit::Settings::from_env()?,
-            )),
+            None => Arc::new(
+                audit::Writer::new(
+                    config.audit_log_path.clone().unwrap_or_else(|| {
+                        std::env::var_os("SAFEYOLO_LOG_PATH")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("/app/logs/safeyolo.jsonl"))
+                    }),
+                    match &config.native_settings {
+                        Some(settings) => settings.audit.writer_settings(),
+                        None => audit::Settings::from_env()?,
+                    },
+                )
+                .with_named_controls(config.native_product),
+            ),
         };
         let result = (|| {
             let registry = load_service_catalog(&config, &audit, service_files)?;
@@ -610,7 +616,15 @@ impl Runtime {
                 .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
             let traces = previous
                 .map(|runtime| runtime.traces.clone())
-                .unwrap_or_else(|| Arc::new(trace::TraceStore::new(trace::Settings::from_env())));
+                .unwrap_or_else(|| {
+                    Arc::new(trace::TraceStore::new(
+                        config
+                            .native_settings
+                            .as_ref()
+                            .map(|settings| settings.trace.store_settings())
+                            .unwrap_or_else(trace::Settings::from_env),
+                    ))
+                });
             let memory_monitor = previous
                 .map(|runtime| runtime.memory_monitor.clone())
                 .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
@@ -630,6 +644,10 @@ impl Runtime {
                     config.flow_store_enabled,
                     &config.flow_store_db_path,
                     policy.as_ref(),
+                    config
+                        .native_settings
+                        .as_ref()
+                        .map(|settings| &settings.capture),
                 )),
             };
             let traffic_view = previous
@@ -641,7 +659,15 @@ impl Runtime {
                     ))
                 });
             let scanner = inspection::Scanner::default();
-            if let Some(inspection) = &config.inspection {
+            if config.native_product {
+                if let Some(policy) = &policy {
+                    scanner.load_policy_config(
+                        &policy
+                            .sensor_config()
+                            .map_err(|_| "inspection policy contains non-JSON values")?,
+                    )?;
+                }
+            } else if let Some(inspection) = &config.inspection {
                 let source = std::fs::read_to_string(&inspection.policy_file)?;
                 let format = match inspection
                     .policy_file
@@ -779,7 +805,10 @@ impl Runtime {
         Ok(())
     }
 
-    fn record(&self, event: Value) -> Result<(), Error> {
+    fn record(&self, mut event: Value) -> Result<(), Error> {
+        if self.config.native_product {
+            policy::native::name_control_fields(&mut event);
+        }
         self.record_bytes(serde_json::to_vec(&event)?)
     }
 
@@ -814,12 +843,11 @@ fn prepare_policy_runtime(previous: &Runtime, policy: policy::Policy) -> Result<
         controls.configure(&mut config);
         operator_modes = Arc::new(OperatorModes::from_config(&config));
         scanner = inspection::Scanner::default();
-        let document = policy::parse_toml_document(
-            policy
-                .native_source_text()
-                .ok_or("active policy source is unavailable")?,
+        scanner.load_policy_config(
+            &policy
+                .sensor_config()
+                .map_err(|_| "inspection policy contains non-JSON values")?,
         )?;
-        scanner.load_policy_config(&document)?;
     }
     Ok(Runtime {
         policy: Some(policy),
