@@ -53,15 +53,15 @@ def _fixture(tmp_path: Path, *, darwin: bool, with_setsid: bool) -> tuple[Path, 
     )
     _write_executable(
         bin_dir / "stat",
-        "#!/bin/sh\n"
-        "if [ \"$DF_EXPECT_BSD\" = 1 ]; then\n"
-        "  [ \"$1\" = -f ] || exit 2\n"
-        "  exec /usr/bin/stat -c '%d:%i' \"$3\"\n"
-        "fi\n"
-        "[ \"$1\" = -c ] || exit 2\n"
-        "exec /usr/bin/stat \"$@\"\n",
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "expected = ['-f', '%d:%i'] if os.environ['DF_EXPECT_BSD'] == '1' else ['-c', '%d:%i', '--']\n"
+        "if sys.argv[1:-1] != expected:\n"
+        "    sys.exit(2)\n"
+        "value = os.stat(sys.argv[-1])\n"
+        "print(f'{value.st_dev}:{value.st_ino}')\n",
     )
-    (bin_dir / "sleep").symlink_to("/usr/bin/sleep")
+    (bin_dir / "sleep").symlink_to(shutil.which("sleep"))
     if with_setsid:
         _write_executable(
             bin_dir / "setsid",
@@ -91,7 +91,7 @@ def _run_wrapper(
 ) -> subprocess.CompletedProcess[str]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     bin_dir, log = _fixture(tmp_path, darwin=darwin, with_setsid=with_setsid)
-    (bin_dir / "mkdir").symlink_to("/usr/bin/mkdir")
+    (bin_dir / "mkdir").symlink_to(shutil.which("mkdir"))
     env = {
         "PATH": str(bin_dir),
         "CARGO_FAKE_LOG": str(log),
@@ -372,6 +372,7 @@ def test_macos_hard_stop_interrupts_cargo_but_leaves_child(tmp_path: Path) -> No
         "import signal\n"
         "import subprocess\n"
         "import time\n"
+        "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
         "child = subprocess.Popen(['/bin/sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "with open(os.environ['CARGO_PID_FILE'], 'w') as f:\n"
         "    f.write(f'{os.getpid()}\\n{child.pid}\\n')\n"

@@ -1,6 +1,7 @@
 """Focused controls for the installed Linux UDS and VZ vsock guest routes."""
 
 import socket
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -61,11 +62,14 @@ def test_vz_route_requires_its_forwarder_and_does_not_require_a_linux_socket(tmp
 
 def test_linux_route_still_requires_its_mounted_agent_socket(tmp_path, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", installed_ingress.GUEST_PROXY)
-    path = tmp_path / "proxy.sock"
-    monkeypatch.setattr(installed_ingress, "GUEST_SOCKET", path)
-    _process(tmp_path / "proc", 42, ["socat", LISTENER, f"UNIX-CONNECT:{path},retry=20"])
-    with pytest.raises(AssertionError):
-        installed_ingress.bridge("systrap", tmp_path / "proc")
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(path))
-        assert installed_ingress.bridge("systrap", tmp_path / "proc")["pid"] == 42
+    # Reuse the short socket fixture layout: macOS pytest roots can exceed
+    # sockaddr_un's path limit even though the guest route is Linux-shaped.
+    with tempfile.TemporaryDirectory(prefix="sy-sock-", dir="/tmp") as directory:
+        path = Path(directory) / "proxy.sock"
+        monkeypatch.setattr(installed_ingress, "GUEST_SOCKET", path)
+        _process(tmp_path / "proc", 42, ["socat", LISTENER, f"UNIX-CONNECT:{path},retry=20"])
+        with pytest.raises(AssertionError):
+            installed_ingress.bridge("systrap", tmp_path / "proc")
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path))
+            assert installed_ingress.bridge("systrap", tmp_path / "proc")["pid"] == 42
