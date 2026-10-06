@@ -10,12 +10,12 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 pub(super) fn lock(path: &Path) -> Result<fs::File, Error> {
-    let lock = path.with_file_name(format!(
-        "{}.lock",
-        path.file_name()
-            .ok_or("state has no filename")?
-            .to_string_lossy()
-    ));
+    let mut name = path
+        .file_name()
+        .ok_or("state has no filename")?
+        .to_os_string();
+    name.push(".lock");
+    let lock = path.with_file_name(name);
     fs::create_dir_all(lock.parent().ok_or("state has no parent")?)?;
     let file = OpenOptions::new()
         .create(true)

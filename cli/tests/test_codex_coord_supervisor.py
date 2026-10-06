@@ -5,6 +5,7 @@ not claim a real model login or a deployed G2/G4 result.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import signal
@@ -316,6 +317,35 @@ def test_supervisor_preserves_non_utf8_path_operands_and_harness_arguments(binar
     assert json.loads(new_state.read_text())["in_flight"] == []
     args = json.loads(next(capture.glob("argv-*")).read_text())
     assert os.fsencode(args[0]) == raw_argument
+
+
+@pytest.mark.parametrize("component", [b"ascii", b"\x80", b"\xff"])
+def test_checkpoint_lock_preserves_filename_bytes_and_same_checkpoint_exclusion(binary, fixture, component):
+    coord, env, config, state, harness, capture = fixture
+    state = state.with_name(os.fsdecode(b"checkpoint-" + component + b".json"))
+    fixture = (coord, env, config, state, harness, capture)
+    unrelated = state.with_name("checkpoint-\N{REPLACEMENT CHARACTER}.json.lock")
+    selected_lock = state.with_name(state.name + ".lock")
+    harness_script(harness, binary, capture)
+    with unrelated.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = run(binary, fixture)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(state.read_text())["in_flight"] == []
+        assert coord.sends == 1
+        assert len(list(capture.glob("prompt-*"))) == 1
+        assert selected_lock.is_file()
+        assert selected_lock.stat().st_mode & 0o777 == 0o600
+
+    saved = state.read_bytes()
+    with selected_lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = run(binary, fixture)
+        assert result.returncode != 0
+        assert "another supervisor owns this checkpoint" in result.stderr
+        assert state.read_bytes() == saved
+        assert coord.sends == 1
+        assert len(list(capture.glob("prompt-*"))) == 1
 
 
 def test_terminal_checkpoint_is_not_dispatched_after_restart(binary, fixture):
