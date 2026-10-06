@@ -1,28 +1,51 @@
 //! Harness checks retained from the supervised Codex/Pi launch contract.
 use super::*;
-use std::{os::unix::fs::PermissionsExt, process::Stdio};
+use std::{
+    ffi::OsStr,
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    process::Stdio,
+};
 use toml_edit::{DocumentMut, Item};
 
-fn argument<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().enumerate().find_map(|(index, arg)| {
+fn argument<'a>(args: &'a [OsString], name: &str) -> Result<Option<&'a str>, Error> {
+    let prefix = format!("{name}=");
+    let selected = args.iter().enumerate().find_map(|(index, arg)| {
         if arg == name {
-            args.get(index + 1).map(String::as_str)
+            args.get(index + 1).map(OsString::as_os_str)
         } else {
-            arg.strip_prefix(&format!("{name}="))
+            arg.as_bytes()
+                .strip_prefix(prefix.as_bytes())
+                .map(OsStr::from_bytes)
         }
-    })
+    });
+    selected
+        .map(|value| {
+            value
+                .to_str()
+                .ok_or_else(|| "harness text option must be UTF-8".into())
+        })
+        .transpose()
 }
-fn config_override(args: &[String], key: &str) -> Result<Option<Item>, Error> {
+fn config_override(args: &[OsString], key: &str) -> Result<Option<Item>, Error> {
     let mut selected = None;
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
-        let value = if matches!(arg.as_str(), "-c" | "--config") {
+        let value = if matches!(arg.to_str(), Some("-c" | "--config")) {
             index += 1;
-            args.get(index).map(String::as_str)
+            args.get(index).map(OsString::as_os_str)
         } else {
-            arg.strip_prefix("--config=")
+            arg.as_bytes()
+                .strip_prefix(b"--config=")
+                .map(OsStr::from_bytes)
         };
+        let value = value
+            .map(|value| {
+                value
+                    .to_str()
+                    .ok_or("Codex config override must be UTF-8 text")
+            })
+            .transpose()?;
         if let Some(value) = value
             && let Some((name, text)) = value.split_once('=')
             && name == key
@@ -49,12 +72,16 @@ async fn output(
         .map_err(Into::into)
 }
 
-pub(super) async fn check(config: &Config, args: &[String]) -> Result<(), Error> {
+pub(super) async fn check(config: &Config, args: &[OsString]) -> Result<(), Error> {
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is missing")?);
     if config.harness == "pi" {
         for arg in args {
-            let name = arg.split('=').next().unwrap_or("");
-            if [
+            let name = arg
+                .as_bytes()
+                .split(|byte| *byte == b'=')
+                .next()
+                .unwrap_or_default();
+            if let Some(name) = [
                 "--mode",
                 "--print",
                 "-p",
@@ -72,7 +99,8 @@ pub(super) async fn check(config: &Config, args: &[String]) -> Result<(), Error>
                 "--tools",
                 "--exclude-tools",
             ]
-            .contains(&name)
+            .into_iter()
+            .find(|option| option.as_bytes() == name)
             {
                 return Err(format!("Pi option {name} is owned by the supervisor").into());
             }
@@ -81,8 +109,8 @@ pub(super) async fn check(config: &Config, args: &[String]) -> Result<(), Error>
         if !output(&pi, &["--version"], 20).await?.status.success() {
             return Err("Pi installation is not runnable".into());
         }
-        let provider = argument(args, "--provider");
-        let model = argument(args, "--model");
+        let provider = argument(args, "--provider")?;
+        let model = argument(args, "--model")?;
         if provider.is_some() && model.is_none() {
             return Err("Pi --provider requires --model".into());
         }
@@ -141,7 +169,7 @@ pub(super) async fn check(config: &Config, args: &[String]) -> Result<(), Error>
         }
     }
     if document.get("forced_chatgpt_auth").and_then(Item::as_bool) == Some(false) {
-        let profile = if let Some(name) = argument(args, "--profile") {
+        let profile = if let Some(name) = argument(args, "--profile")? {
             if !simple_name(name) {
                 return Err("invalid Codex provider profile".into());
             }
@@ -159,8 +187,9 @@ pub(super) async fn check(config: &Config, args: &[String]) -> Result<(), Error>
                 .or_else(|| document.get("model_provider"))
                 .cloned()
         });
+        let model_argument = argument(args, "--model")?;
         let model = config_override(args, "model")?
-            .or_else(|| argument(args, "--model").map(toml_edit::value))
+            .or_else(|| model_argument.map(toml_edit::value))
             .or_else(|| {
                 profile
                     .get("model")

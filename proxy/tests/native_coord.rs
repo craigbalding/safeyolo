@@ -187,6 +187,14 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     assert_eq!(history["messages"][0]["body"], "alice-marker");
     assert_eq!(history["messages"][1]["body"], "bob-marker");
     assert_eq!(history["messages"][1]["sender_agent_name"], "bob");
+    assert_eq!(
+        history["messages"][0]["attention_intent"],
+        json!({"mode":"targeted","agent_ids":["ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]})
+    );
+    assert_eq!(
+        history["messages"][1]["attention_intent"],
+        json!({"mode":"none","agent_ids":[]})
+    );
     assert!(
         bob.call("join_room", &json!({"room_name":"private"}))
             .await

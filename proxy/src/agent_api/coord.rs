@@ -1071,6 +1071,29 @@ fn message_wakes_waiter(
     }
 }
 
+fn message_attention_intent(
+    headers: Option<&async_nats::HeaderMap>,
+    value: &Value,
+) -> Result<Value, CoordError> {
+    let header = headers
+        .and_then(|headers| headers.get_last("SafeYolo-Coord-Attention"))
+        .map(|value| value.as_str());
+    let Some(header) = header else {
+        return Ok(Value::Null);
+    };
+    let msg_id = value["msg_id"].as_str().ok_or(CoordError::Data)?;
+    let manifest = parse_attention_manifest(Some(header), msg_id)?.ok_or(CoordError::Data)?;
+    let mode = match manifest.mode.as_str() {
+        "agents" => "targeted",
+        "room" | "legacy_room" => "room",
+        _ => "none",
+    };
+    Ok(json!({
+        "mode": mode,
+        "agent_ids": manifest.recipients.iter().map(|recipient| &recipient.agent_id).collect::<Vec<_>>(),
+    }))
+}
+
 impl AttentionEdge {
     fn public_json(&self) -> Value {
         json!({
@@ -3222,8 +3245,12 @@ async fn read_messages_with_timeout(
                 };
                 let mut return_after_ack = false;
                 if qualifies {
+                    // Recover notification routing from the accepted NATS
+                    // manifest, never from message text or caller assertions.
+                    let intent = message_attention_intent(message.headers.as_ref(), &value)?;
                     let object = value.as_object_mut().ok_or(CoordError::Data)?;
                     object.insert("sequence".to_owned(), Value::from(sequence));
+                    object.insert("attention_intent".to_owned(), intent);
                     page.push(WaitCandidate {
                         value,
                         headers: message.headers.clone(),
@@ -3439,6 +3466,36 @@ mod tests {
         assert!(!valid_agent_id("ag-"));
         assert!(valid_agent_id("ag-Alice_1"));
         assert!(!valid_agent_id("ag-Alice!"));
+    }
+
+    #[test]
+    fn history_notification_intent_comes_from_the_accepted_manifest() {
+        let value = json!({
+            "msg_id":"msg-1",
+            "attention_intent":{"mode":"targeted","agent_ids":["ag-forged"]},
+        });
+        let mut headers = async_nats::HeaderMap::new();
+        for (mode, expected) in [
+            ("agents", "targeted"),
+            ("room", "room"),
+            ("legacy_room", "room"),
+        ] {
+            let manifest = json!({
+                "version":1, "msg_id":"msg-1", "mode":mode,
+                "recipients":[{"attention_id":"attn-0123456789abcdef0123456789abcdef","agent_id":"ag-relay","membership_granted_at":7}],
+            });
+            headers.insert("SafeYolo-Coord-Attention", manifest.to_string());
+            assert_eq!(
+                message_attention_intent(Some(&headers), &value).unwrap(),
+                json!({"mode":expected,"agent_ids":["ag-relay"]})
+            );
+        }
+        assert!(message_attention_intent(None, &value).unwrap().is_null());
+        headers.insert("SafeYolo-Coord-Attention", "malformed");
+        assert!(matches!(
+            message_attention_intent(Some(&headers), &value),
+            Err(CoordError::Data)
+        ));
     }
 
     #[test]

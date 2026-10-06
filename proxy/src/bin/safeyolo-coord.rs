@@ -1,7 +1,7 @@
 //! Native agent Coord tools and model-turn supervisor; no operator credentials.
 use safeyolo_proxy::{Error, coord_tools::Client};
 use serde_json::Value;
-use std::{io::Read, path::PathBuf};
+use std::{ffi::OsString, io::Read, path::PathBuf};
 
 fn input() -> Result<Value, Error> {
     let mut source = String::new();
@@ -15,7 +15,7 @@ fn input() -> Result<Value, Error> {
 }
 
 async fn run() -> Result<(), Error> {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
         [kind] if kind == "--version" => println!(
             "safeyolo-coord {} commit={} profile={}",
@@ -28,7 +28,12 @@ async fn run() -> Result<(), Error> {
         }
         [kind, name] if kind == "call" => {
             let args = input()?;
-            println!("{}", Client::default().call(name, &args).await?);
+            println!(
+                "{}",
+                Client::default()
+                    .call(name.to_str().ok_or("tool name must be UTF-8 text")?, &args)
+                    .await?
+            );
         }
         [kind, path] if kind == "inspect-state" => println!(
             "{}",
@@ -48,8 +53,14 @@ async fn run() -> Result<(), Error> {
             "{}",
             serde_json::to_string(&safeyolo_proxy::coord_supervisor::release_preview(
                 input()?,
-                room,
-                targets
+                room.to_str().ok_or("room name must be UTF-8 text")?,
+                &targets
+                    .iter()
+                    .map(|target| target
+                        .to_str()
+                        .map(str::to_owned)
+                        .ok_or("target must be UTF-8 text"))
+                    .collect::<Result<Vec<_>, _>>()?
             )?)?
         ),
         [kind, rest @ ..] if kind == "supervise" => {
@@ -59,7 +70,10 @@ async fn run() -> Result<(), Error> {
             let mut once = false;
             let mut position = 0;
             while position < rest.len() {
-                match rest[position].as_str() {
+                match rest[position]
+                    .to_str()
+                    .ok_or("supervisor option must be UTF-8 text")?
+                {
                     "--" => {
                         position += 1;
                         break;
@@ -87,7 +101,7 @@ async fn run() -> Result<(), Error> {
             )
             .await;
         }
-        [kind] if ["--help", "help"].contains(&kind.as_str()) => println!(
+        [kind] if kind == "--help" || kind == "help" => println!(
             "safeyolo-coord mcp\nsafeyolo-coord call TOOL < ARGUMENTS_JSON\nsafeyolo-coord supervise [--config FILE] [--state FILE] [--once] [-- HARNESS_ARGS...]\nsafeyolo-coord inspect-state FILE\nsafeyolo-coord stage-runtime HOME LINUX_EXECUTABLE\nsafeyolo-coord stage-mcp HOME codex|claude [--require-agent-local]\nsafeyolo-coord codex-state [--home HOME] [--mcp-launcher COMMAND] [--require-agent-local] [adopt|reset]\nsafeyolo-coord factory-stage CONFIG INSTRUCTIONS AGENT SNAPSHOT ROLE codex|pi\nsafeyolo-coord ordinary-stage CONFIG AGENT ROOMS COORDINATORS\nRuns tools and supervision inside the guest through its proxy and Agent API token. Staging runs on the operator host. Fresh native checkpoints only; uncertain work requires retained-history and working-tree inspection before repeated writes."
         ),
         _ => return safeyolo_proxy::coord_setup::run(&arguments),

@@ -33,7 +33,7 @@ REPO_MAP_COMMAND_TARGET = "/home/agent/.safeyolo/repo-map"
 
 
 @pytest.fixture(autouse=True)
-def native_coord_receipts(monkeypatch):
+def native_coord_receipts(monkeypatch, tmp_path):
     assert COORD_NATIVE_BINARY.is_file(), "Build safeyolo-coord before native staging tests"
     identity = subprocess.check_output([str(COORD_NATIVE_BINARY), "--version"], text=True)
     COORD_NATIVE_BINARY.with_suffix(".version").write_text(identity)
@@ -42,10 +42,43 @@ def native_coord_receipts(monkeypatch):
     COORD_NATIVE_BINARY.with_suffix(".sha256").write_text(checksum + "\n")
     monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(COORD_NATIVE_BINARY))
     monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(COORD_NATIVE_BINARY))
+    try:
+        yield
+    finally:
+        # Every setup/launcher command is synchronous. Keep its small inputs
+        # and diagnostics, but release per-case copies of the native runtime.
+        for artifact in tmp_path.glob("**/.safeyolo/safeyolo-coord"):
+            if artifact.is_file() or artifact.is_symlink():
+                artifact.unlink(missing_ok=True)
 
 
 def _codex_state(home, *args, check=True):
     return subprocess.run([str(COORD_NATIVE_BINARY), "codex-state", "--home", str(home), *args], capture_output=True, text=True, check=check)
+
+
+@pytest.mark.parametrize("component", [b"ascii", "caf\u00e9".encode(), b"\x80", b"\xff", b"part-\x80\xff"])
+def test_native_staging_preserves_unix_pathname_bytes(tmp_path, component):
+    home = tmp_path / os.fsdecode(component)
+    home.mkdir(mode=0o700)
+    result = _codex_state(home, check=False)
+    assert result.returncode == 0, result.stderr
+    codex = home / ".codex"
+    assert codex.stat().st_mode & 0o777 == 0o700
+    provenance = codex / ".safeyolo-provenance.json"
+    assert provenance.stat().st_mode & 0o777 == 0o600
+    assert json.loads(provenance.read_text())["state"] == "fresh"
+    assert not (codex / "auth.json").exists()
+    config = home / os.fsdecode(b"supervisor-\x80.json")
+    result = subprocess.run([str(COORD_NATIVE_BINARY), "ordinary-stage", str(config), "forge", "backlog", "relay"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(config.read_text())["agent_name"] == "forge"
+    launcher = home / os.fsdecode(b"launcher-\xff")
+    launcher.write_text('exec codex "${args[@]}" "$@"\n')
+    launcher.chmod(0o700)
+    result = subprocess.run([str(COORD_NATIVE_BINARY), "supervised-launcher", str(launcher), "codex"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'safeyolo-coord" supervise --' in launcher.read_text()
+    assert launcher.stat().st_mode & 0o777 == 0o700
 
 
 def _setup_env(operator_home: Path, agent_home: Path, folder: Path) -> dict[str, str]:

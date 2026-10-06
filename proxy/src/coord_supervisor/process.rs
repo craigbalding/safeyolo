@@ -73,7 +73,7 @@ fn signal(fd: &OwnedFd, number: i32) {
 #[cfg(not(target_os = "linux"))]
 fn signal(_fd: &OwnedFd, _number: i32) {}
 
-fn snapshot(leader: i32) -> Result<BTreeMap<i32, String>, Error> {
+fn snapshot(leader: i32, include_group: bool) -> Result<BTreeMap<i32, String>, Error> {
     let mut processes = Vec::new();
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
@@ -105,7 +105,7 @@ fn snapshot(leader: i32) -> Result<BTreeMap<i32, String>, Error> {
     loop {
         let before = descendants.len();
         for (pid, parent, group, _) in &processes {
-            if descendants.contains(parent) || *group == leader {
+            if descendants.contains(parent) || (include_group && *group == leader) {
                 descendants.insert(*pid);
             }
         }
@@ -122,6 +122,22 @@ fn snapshot(leader: i32) -> Result<BTreeMap<i32, String>, Error> {
         return Err("owned invocation exceeds the existing 64-descendant checkpoint bound".into());
     }
     Ok(found)
+}
+
+fn capture_descendants(owned: &mut Owned) -> Result<(), Error> {
+    if token(owned.pid).as_deref() == Some(&owned.token) {
+        owned.descendants.extend(snapshot(owned.pid, true)?);
+    }
+    // A setsid child becomes our child when its leader exits: this process
+    // is the invocation's subreaper. Use kernel parentage, without including
+    // other processes that merely share the supervisor's process group.
+    let mut adopted = snapshot(std::process::id() as i32, false)?;
+    adopted.remove(&owned.pid);
+    owned.descendants.extend(adopted);
+    if owned.descendants.len() > 64 {
+        return Err("owned descendants exceed checkpoint capacity".into());
+    }
+    Ok(())
 }
 
 fn alive(pid: i32, expected: &str) -> Result<bool, Error> {
@@ -142,15 +158,14 @@ fn alive(pid: i32, expected: &str) -> Result<bool, Error> {
     }
 }
 
-async fn cleanup(owned: &Owned, grace: u64) -> Result<(), Error> {
-    let mut descendants = owned.descendants.clone();
+async fn cleanup(owned: &mut Owned, grace: u64) -> Result<(), Error> {
+    capture_descendants(owned)?;
     if alive(owned.pid, &owned.token)? && pid_handle(owned.pid, &owned.token).is_none() {
         return Err("cannot open the owned invocation PID handle; checkpoint retained".into());
     }
     if let Some(leader) = pid_handle(owned.pid, &owned.token)
         && unsafe { libc::getpgid(owned.pid) } == owned.pid
     {
-        descendants.extend(snapshot(owned.pid)?);
         // The live leader's PID handle and fingerprint bind the group. Once
         // that leader exits, only individual verified PID handles are used.
         if token(owned.pid).as_deref() == Some(&owned.token) {
@@ -160,7 +175,7 @@ async fn cleanup(owned: &Owned, grace: u64) -> Result<(), Error> {
         }
         signal(&leader, libc::SIGTERM);
     }
-    for (pid, expected) in &descendants {
+    for (pid, expected) in &owned.descendants {
         if alive(*pid, expected)? && pid_handle(*pid, expected).is_none() {
             return Err("cannot open owned descendant PID handle; checkpoint retained".into());
         }
@@ -171,8 +186,17 @@ async fn cleanup(owned: &Owned, grace: u64) -> Result<(), Error> {
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(grace);
     let mut killed = false;
     loop {
+        let before = owned.descendants.clone();
+        capture_descendants(owned)?;
+        for (pid, expected) in &owned.descendants {
+            if before.get(pid) != Some(expected) && alive(*pid, expected)? {
+                let fd = pid_handle(*pid, expected)
+                    .ok_or("cannot open owned descendant PID handle; checkpoint retained")?;
+                signal(&fd, if killed { libc::SIGKILL } else { libc::SIGTERM });
+            }
+        }
         let identities = std::iter::once((owned.pid, &owned.token))
-            .chain(descendants.iter().map(|(pid, t)| (*pid, t)));
+            .chain(owned.descendants.iter().map(|(pid, t)| (*pid, t)));
         let living = identities
             .map(|(pid, t)| alive(pid, t))
             .collect::<Result<Vec<_>, _>>()?
@@ -188,7 +212,7 @@ async fn cleanup(owned: &Owned, grace: u64) -> Result<(), Error> {
             if let Some(fd) = pid_handle(owned.pid, &owned.token) {
                 signal(&fd, libc::SIGKILL);
             }
-            for (pid, expected) in &descendants {
+            for (pid, expected) in &owned.descendants {
                 if let Some(fd) = pid_handle(*pid, expected) {
                     signal(&fd, libc::SIGKILL);
                 }
@@ -219,8 +243,10 @@ fn require_pid_handles() -> Result<(), Error> {
 
 pub(super) async fn recover(state: &mut State, path: &Path, grace: u64) -> Result<(), Error> {
     require_pid_handles()?;
-    if let Some(owned) = &state.owned_process {
-        cleanup(owned, grace).await?;
+    if let Some(owned) = &mut state.owned_process {
+        let result = cleanup(owned, grace).await;
+        state.save(path)?;
+        result?;
         state.owned_process = None;
         state.phase = "uncertain".into();
         state.thread_id = None;
@@ -414,7 +440,7 @@ pub(super) async fn notice(supervisor: &Supervisor, event: &str, detail: &str) {
     .await;
 }
 
-fn arguments(supervisor: &Supervisor) -> Vec<String> {
+fn arguments(supervisor: &Supervisor) -> Vec<OsString> {
     let mut args = supervisor.harness_args.clone();
     if supervisor.state.repair_selection.is_some()
         && let Some(repair) = supervisor.config.repair_policy()
@@ -423,7 +449,7 @@ fn arguments(supervisor: &Supervisor) -> Vec<String> {
             if pair.len() == 2 && pair[0].starts_with('-') {
                 let mut position = 0;
                 while position < args.len() {
-                    if args[position] == pair[0] {
+                    if args[position] == std::ffi::OsStr::new(&pair[0]) {
                         args.remove(position);
                         if position < args.len() {
                             args.remove(position);
@@ -434,7 +460,7 @@ fn arguments(supervisor: &Supervisor) -> Vec<String> {
                 }
             }
         }
-        args.extend(repair.args.iter().cloned());
+        args.extend(repair.args.iter().map(OsString::from));
     }
     args
 }
@@ -527,13 +553,9 @@ pub(super) async fn invoke(
             tokio::select! {
                 _=tokio::time::sleep_until(deadline)=>{events.failed=true;break;}
                 _=tick.tick()=>{
-                    if token(pid).as_deref()==Some(&expected) {
-                        let descendants=snapshot(pid)?;
-                        let owned=supervisor.state.owned_process.as_mut().ok_or("lost invocation identity")?;
-                        owned.descendants.extend(descendants);
-                        if owned.descendants.len()>64{return Err("owned descendants exceed checkpoint capacity".into());}
-                        supervisor.state.save(&supervisor.state_path)?;
-                    }
+                    let owned=supervisor.state.owned_process.as_mut().ok_or("lost invocation identity")?;
+                    capture_descendants(owned)?;
+                    supervisor.state.save(&supervisor.state_path)?;
                 }
                 count=stdout.read_until(b'\n',&mut line),if out_open=>{
                     let count=count?;if count==0{out_open=false;continue;}
@@ -558,12 +580,18 @@ pub(super) async fn invoke(
         }
         Ok::<_,Error>(events)
     }.await;
-    let owned = supervisor
+    let mut owned = supervisor
         .state
         .owned_process
         .clone()
         .ok_or("lost owned process checkpoint")?;
-    cleanup(&owned, supervisor.config.terminate_grace_seconds).await?;
+    capture_descendants(&mut owned)?;
+    supervisor.state.owned_process = Some(owned.clone());
+    supervisor.state.save(&supervisor.state_path)?;
+    let cleanup_result = cleanup(&mut owned, supervisor.config.terminate_grace_seconds).await;
+    supervisor.state.owned_process = Some(owned);
+    supervisor.state.save(&supervisor.state_path)?;
+    cleanup_result?;
     let exit_success = child.wait().await?.success();
     notice(
         supervisor,

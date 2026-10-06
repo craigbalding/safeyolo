@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     fs,
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -500,7 +501,13 @@ pub fn supervised_launcher(path: &Path, harness: &str) -> Result<(), Error> {
     )
 }
 
-pub fn run(arguments: &[String]) -> Result<(), Error> {
+fn argument_text(argument: &std::ffi::OsStr) -> Result<&str, Error> {
+    argument
+        .to_str()
+        .ok_or_else(|| "command names and text options must be UTF-8".into())
+}
+
+pub fn run(arguments: &[OsString]) -> Result<(), Error> {
     match arguments {
         [kind, rest @ ..] if kind == "codex-state" => {
             let mut home = std::env::var_os("HOME")
@@ -511,14 +518,14 @@ pub fn run(arguments: &[String]) -> Result<(), Error> {
             let mut recovery = None;
             let mut args = rest.iter();
             while let Some(arg) = args.next() {
-                match arg.as_str() {
+                match argument_text(arg)? {
                     "--home" => home = args.next().ok_or("--home requires a path")?.into(),
                     "--mcp-launcher" => {
-                        launcher = Some(args.next().ok_or("--mcp-launcher requires a path")?.as_str());
+                        launcher = Some(argument_text(args.next().ok_or("--mcp-launcher requires a path")?)?);
                     }
                     "--require-agent-local" => local = true,
                     "adopt" | "reset" => {
-                        if recovery.replace(arg.as_str()).is_some() {
+                        if recovery.replace(argument_text(arg)?).is_some() {
                             return Err("choose one Codex authentication action: adopt or reset".into());
                         }
                     }
@@ -530,11 +537,11 @@ pub fn run(arguments: &[String]) -> Result<(), Error> {
         [kind,home,source] if kind=="stage-runtime"=>stage_runtime(Path::new(home),Path::new(source)),
         [kind,home,harness,rest @ ..] if kind=="stage-mcp"=>{
             if !rest.is_empty() && rest!=["--require-agent-local"] { return Err("unknown stage-mcp argument".into()); }
-            stage_mcp(Path::new(home),harness,!rest.is_empty())
+            stage_mcp(Path::new(home),argument_text(harness)?,!rest.is_empty())
         },
-        [kind,config,instructions,agent,snapshot,role,harness] if kind=="factory-stage"=>factory_stage(Path::new(config),Path::new(instructions),agent,Path::new(snapshot),role,harness),
-        [kind,path,agent,rooms,coordinators] if kind=="ordinary-stage"=>ordinary_stage(Path::new(path),agent,rooms,coordinators),
-        [kind,path,harness] if kind=="supervised-launcher"=>supervised_launcher(Path::new(path),harness),
+        [kind,config,instructions,agent,snapshot,role,harness] if kind=="factory-stage"=>factory_stage(Path::new(config),Path::new(instructions),argument_text(agent)?,Path::new(snapshot),argument_text(role)?,argument_text(harness)?),
+        [kind,path,agent,rooms,coordinators] if kind=="ordinary-stage"=>ordinary_stage(Path::new(path),argument_text(agent)?,argument_text(rooms)?,argument_text(coordinators)?),
+        [kind,path,harness] if kind=="supervised-launcher"=>supervised_launcher(Path::new(path),argument_text(harness)?),
         _=>Err("usage: safeyolo-coord codex-state|stage-mcp|factory-stage|ordinary-stage|supervised-launcher --help".into()),
     }
 }

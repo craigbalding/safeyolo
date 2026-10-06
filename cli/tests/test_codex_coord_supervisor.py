@@ -60,6 +60,8 @@ class CoordFixture:
                     result = owner.objects[path.split("/")[-2]]
                 elif path.endswith("/messages"):
                     result = {"messages": owner.messages, "next_cursor": 50, "has_more": False}
+                elif path.endswith("/state"):
+                    result = {"members": [{"agent_id": "ag-" + name, "display_name": name} for name in ("relay", "forge", "lens")]}
                 else:
                     return self.reply(404, {"error": "missing fixture route"})
                 self.reply(200, result)
@@ -72,10 +74,17 @@ class CoordFixture:
                 if path.endswith("/send"):
                     owner.sends += 1
                     envelope = {"body": args["body"], "msg_id": f"msg-{owner.sends}", "sender_kind": "agent", "sender_agent_name": owner.agent_name, "sender_agent_id": "ag-" + owner.agent_name, "sequence": 43 + owner.sends}
-                    owner.messages.append(envelope)
+                    notify = args["notify"]
+                    if isinstance(notify, list) and notify:
+                        intent = {"mode": "targeted", "agent_ids": ["ag-" + name for name in dict.fromkeys(notify)]}
+                    elif notify == "room":
+                        intent = {"mode": "room", "agent_ids": ["ag-relay", "ag-lens"]}
+                    else:
+                        intent = {"mode": "none", "agent_ids": []}
+                    owner.messages.append({**envelope, "attention_intent": intent})
                     if owner.unknown_send:
                         return self.reply(503, {"error": "receipt unavailable", "send_outcome": "unknown"})
-                    return self.reply(200, {"envelope": envelope, "sequence": envelope["sequence"], "attention_intent": {"mode": "targeted"}, "attention_status": "ready"})
+                    return self.reply(200, {"envelope": envelope, "sequence": envelope["sequence"], "attention_intent": {"mode": intent["mode"]}, "attention_status": "ready"})
                 self.reply(404, {"error": "missing fixture route"})
 
             def reply(self, status, value):
@@ -239,6 +248,76 @@ def test_interrupted_turn_recovers_uncertain_checkpoint(binary, fixture):
                 os.kill(owned["pid"], signal.SIGKILL)
 
 
+def live_process_token(pid):
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except FileNotFoundError:
+        return None
+    if fields[0] == "Z":
+        return None
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    return f"linux:{boot}:{pid}:{fields[19]}"
+
+
+@pytest.mark.parametrize("close_stdio", [False, True])
+def test_fast_leader_exit_cleans_an_escaped_child_and_preserves_an_unrelated_process(binary, fixture, close_stdio):
+    _coord, _env, _config, state, harness, capture = fixture
+    harness_script(harness, binary, capture, terminal=False)
+    marker = capture / "escaped-child.json"
+    child = f'''
+if os.fork() == 0:
+    os.setsid()
+    pid = os.getpid()
+    fields = Path(f"/proc/{{pid}}/stat").read_text().rsplit(")", 1)[1].split()
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    Path({str(marker)!r}).write_text(json.dumps({{"pid":pid,"token":f"linux:{{boot}}:{{pid}}:{{fields[19]}}"}}))
+    if {close_stdio!r}:
+        os.close(1)
+        os.close(2)
+    time.sleep(60)
+    os._exit(0)
+while not Path({str(marker)!r}).exists():
+    time.sleep(.001)
+'''
+    completed = 'print(json.dumps({"type": \'turn.completed\''
+    harness.write_text(harness.read_text().replace(completed, child + "\n" + completed))
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        result = run(binary, fixture)
+        assert result.returncode != 0, result.stderr  # The task has no terminal response.
+        assert marker.is_file(), result.stderr
+        escaped = json.loads(marker.read_text())
+        assert live_process_token(escaped["pid"]) != escaped["token"]
+        assert unrelated.poll() is None
+        saved = json.loads(state.read_text())
+        assert saved["owned_process"] is None
+        assert saved["phase"] == "uncertain"
+        assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    finally:
+        if marker.is_file():
+            escaped = json.loads(marker.read_text())
+            if live_process_token(escaped["pid"]) == escaped["token"]:
+                os.kill(escaped["pid"], signal.SIGKILL)
+                until(lambda: live_process_token(escaped["pid"]) != escaped["token"])
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+
+
+def test_supervisor_preserves_non_utf8_path_operands_and_harness_arguments(binary, fixture):
+    coord, _env, config, state, harness, capture = fixture
+    new_config = config.with_name(os.fsdecode(b"config-\x80.json"))
+    new_state = state.with_name(os.fsdecode(b"state-\xff.json"))
+    config.rename(new_config)
+    fixture = (coord, _env, new_config, new_state, harness, capture)
+    harness_script(harness, binary, capture)
+    raw_argument = b"path-\x80\xff"
+    result = run(binary, fixture, raw_argument)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(new_state.read_text())["in_flight"] == []
+    args = json.loads(next(capture.glob("argv-*")).read_text())
+    assert os.fsencode(args[0]) == raw_argument
+
+
 def test_terminal_checkpoint_is_not_dispatched_after_restart(binary, fixture):
     coord, _env, _config, state, harness, capture = fixture
     harness_script(harness, binary, capture)
@@ -259,10 +338,27 @@ def test_model_narration_and_process_success_do_not_complete_work(binary, fixtur
     assert saved["in_flight"][0]["attention_id"] == ATTENTION
 
 
-def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture):
-    coord, _env, _config, state, harness, capture = fixture
+@pytest.mark.parametrize("role", ["owner", "reviewer"])
+def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, role):
+    coord, _env, config, state, harness, capture = fixture
+    factory_configuration(config)
+    if role == "reviewer":
+        settings = json.loads(config.read_text())
+        settings["agent_name"] = "lens"
+        settings["factory"]["role"] = role
+        config.write_text(json.dumps(settings))
+        coord.agent_name = "lens"
+        coord.objects[ATTENTION]["object"] = {
+            **OBJECT, "sender_agent_name": "forge", "sender_agent_id": "ag-forge",
+            "body": awaiting_review()["body"],
+        }
     coord.unknown_send = True
     harness_script(harness, binary, capture)
+    if role == "reviewer":
+        target = awaiting_review()["correlation"]["target"]
+        harness.write_text(harness.read_text()
+                           .replace(f"DONE target={TARGET} attention_id={ATTENTION}", f"READY target={target} attention_id={ATTENTION}")
+                           .replace('"notify":["relay"]', '"notify":["relay","forge"]'))
     result = run(binary, fixture)
     assert result.returncode == 0, result.stderr
     assert "send outcome unknown" in result.stderr
@@ -270,6 +366,30 @@ def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture):
     assert json.loads(state.read_text())["in_flight"] == []
     assert run(binary, fixture).returncode == 0
     assert coord.sends == 1
+
+
+@pytest.mark.parametrize("unknown_send", [False, True])
+@pytest.mark.parametrize("notify", [["lens"], "none", "room", [], ["relay", "lens"]])
+def test_factory_history_does_not_complete_a_terminal_on_the_wrong_route(binary, fixture, notify, unknown_send):
+    coord, _env, config, state, harness, capture = fixture
+    factory_configuration(config)
+    coord.unknown_send = unknown_send
+    harness_script(harness, binary, capture)
+    harness.write_text(harness.read_text().replace('"notify":["relay"]', f'"notify":{notify!r}'))
+    result = run(binary, fixture)
+    assert result.returncode != 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["phase"] == "uncertain"
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert ATTENTION not in saved["recent_attention_ids"]
+    assert coord.sends == 1
+    assert len(list(capture.glob("prompt-*"))) == 1
+    coord.page = {"edges": [], "next_cursor": 7}
+    harness_script(harness, binary, capture, terminal=False)
+    assert run(binary, fixture).returncode != 0
+    assert coord.sends == 1  # Recovery does not replay the uncertain send.
+    assert json.loads(state.read_text())["in_flight"][0]["attention_id"] == ATTENTION
+    assert len(list(capture.glob("prompt-*"))) == 2
 
 
 def test_pi_events_use_the_same_terminal_checkpoint_contract(binary, fixture):

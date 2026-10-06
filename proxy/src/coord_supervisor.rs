@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs,
     io::Write,
     os::unix::fs::PermissionsExt,
@@ -669,7 +670,7 @@ pub struct Supervisor {
     pub state: State,
     pub state_path: PathBuf,
     pub client: Client,
-    pub harness_args: Vec<String>,
+    pub harness_args: Vec<OsString>,
     pub initial_preflight_complete: bool,
 }
 impl Supervisor {
@@ -1069,6 +1070,7 @@ impl Supervisor {
         let pending = self.state.in_flight.clone();
         for p in pending.iter().filter(|p| p.requires_terminal) {
             let mut cursor = p.sequence.saturating_sub(1);
+            let mut room_state = None;
             loop {
                 let page = self
                     .client
@@ -1084,20 +1086,38 @@ impl Supervisor {
                     if message["sequence"].as_u64().is_none_or(|n| n <= p.sequence) {
                         continue;
                     }
-                    let notify = if let Some(f) = &self.config.factory {
-                        self.config
-                            .incoming(&p.sender_agent_name, &p.body)
-                            .map(|h| {
-                                json!(if h.response_to.is_empty() {
-                                    vec![f.roles[&h.source].clone()]
-                                } else {
-                                    h.response_to.iter().map(|r| f.roles[r].clone()).collect()
+                    let mut notify = Value::Null;
+                    if self.config.factory.is_some()
+                        && message["sender_kind"] == "agent"
+                        && message["sender_agent_name"] == self.config.agent_name
+                        && message["body"]
+                            .as_str()
+                            .is_some_and(|body| response_matches(&self.config, p, body))
+                        && message["attention_intent"]["mode"] == "targeted"
+                    {
+                        let members = match &room_state {
+                            Some(state) => state,
+                            None => room_state.insert(
+                                self.client
+                                    .call("get_room_state", &json!({"room_name":p.room_name}))
+                                    .await?,
+                            ),
+                        };
+                        if let (Some(ids), Some(members)) = (
+                            message["attention_intent"]["agent_ids"].as_array(),
+                            members["members"].as_array(),
+                        ) {
+                            let names = ids
+                                .iter()
+                                .map(|id| {
+                                    id.as_str()?;
+                                    members.iter().find(|member| member["agent_id"] == *id)?
+                                    ["display_name"].as_str()
                                 })
-                            })
-                            .unwrap_or(Value::Null)
-                    } else {
-                        Value::Null
-                    };
+                                .collect::<Option<Vec<_>>>();
+                            notify = names.map_or(Value::Null, |names| json!(names));
+                        }
+                    }
                     self.outbound(
                         message,
                         &json!({"room_name":p.room_name,"notify":notify}),
@@ -1225,7 +1245,7 @@ fn narrow_brief(value: &Value) -> Result<Value, Error> {
 pub async fn run(
     config_path: &Path,
     state_path: &Path,
-    args: Vec<String>,
+    args: Vec<OsString>,
     once: bool,
 ) -> Result<(), Error> {
     let config = Config::load(config_path)?;

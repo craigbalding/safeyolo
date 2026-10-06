@@ -43,10 +43,18 @@ BOOT_ID = "fixture-boot"
 
 
 @pytest.fixture(autouse=True)
-def native_coord_environment(monkeypatch):
+def native_coord_environment(monkeypatch, tmp_path):
     assert NATIVE.is_file(), "Build safeyolo-coord before the staging/doctor checks"
     monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(NATIVE))
     monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(NATIVE))
+    try:
+        yield
+    finally:
+        # Doctor commands finish synchronously, including fixture setup.
+        # Keep diagnostics and release copies in every reached staged home.
+        for artifact in tmp_path.glob("**/.safeyolo/safeyolo-coord"):
+            if artifact.is_file() or artifact.is_symlink():
+                artifact.unlink(missing_ok=True)
 
 
 def _factory_file(
