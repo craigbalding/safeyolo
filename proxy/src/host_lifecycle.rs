@@ -1223,21 +1223,22 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
         }
         return Ok(json!({"agents":observed}));
     }
-    let Some(agent) = agent_id
+    let selected = agent_id
         .map(|id| crate::host_agents::by_id(&agents, id))
-        .transpose()?
-        .flatten()
-    else {
-        return Ok(json!({"error":"Agent not found","status_code":404}));
-    };
-    let result = match operation {
-        "start" | "start-interactive" | "start-foreground" | "sandbox-start" => {
-            start(agent, operation, None, None, false).await
-        }
-        "status" => runtime(agent).await,
-        "stop" => stop(agent, None).await,
-        "cleanup" => cleanup(agent).await,
-        _ => Ok(json!({"error":"invalid host operation","status_code":400})),
+        .transpose()
+        .map(Option::flatten);
+    let result = match selected {
+        Ok(Some(agent)) => match operation {
+            "start" | "start-interactive" | "start-foreground" | "sandbox-start" => {
+                start(agent, operation, None, None, false).await
+            }
+            "status" => runtime(agent).await,
+            "stop" => stop(agent, None).await,
+            "cleanup" => cleanup(agent).await,
+            _ => Ok(json!({"error":"invalid host operation","status_code":400})),
+        },
+        Ok(None) => Ok(json!({"error":"Agent not found","status_code":404})),
+        Err(error) => Err(error),
     };
     match result {
         Ok(value) => Ok(value),
