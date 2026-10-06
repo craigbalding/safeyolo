@@ -50,9 +50,26 @@ fn backend_path_present(path: &std::path::Path) -> Result<bool, Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn runsc_state_present(root: &std::path::Path, id: &str) -> Result<bool, Error> {
+fn runsc_metadata_present(root: &std::path::Path, id: &str) -> Result<bool, Error> {
     // runsc combines the root container and sandbox IDs in its state filename.
-    backend_path_present(&root.join(format!("{id}_sandbox:{id}.state")))
+    for extension in ["state", "lock"] {
+        if backend_path_present(&root.join(format!("{id}_sandbox:{id}.{extension}")))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn remove_runsc_state(root: &std::path::Path, id: &str) -> Result<(), Error> {
+    for extension in ["state", "lock"] {
+        match std::fs::remove_file(root.join(format!("{id}_sandbox:{id}.{extension}"))) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn remember_process(name: &str, key: &str, pid: u32) -> Result<(), Error> {
@@ -84,10 +101,44 @@ fn saved_backend_is_dead(run: &Value) -> bool {
         .as_i64()
         .and_then(|pid| i32::try_from(pid).ok())
         .filter(|pid| *pid > 0)
-        .filter(|_| run["backend_token"].as_str().is_some())
     else {
         return false;
     };
+    let Some(token) = run["backend_token"].as_str() else {
+        return false;
+    };
+    let mut fields = token.split(':');
+    let (Some(platform), Some(first), Some(second), Some(third), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    if platform != "linux"
+        || !uuid::Uuid::parse_str(first).is_ok_and(|boot| boot.hyphenated().to_string() == first)
+        || second != pid.to_string()
+        || !third
+            .parse::<u64>()
+            .is_ok_and(|ticks| ticks.to_string() == third)
+    {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    if platform != "darwin"
+        || first != pid.to_string()
+        || !second
+            .parse::<u64>()
+            .is_ok_and(|seconds| seconds > 0 && seconds.to_string() == second)
+        || !third
+            .parse::<u64>()
+            .is_ok_and(|micros| micros < 1_000_000 && micros.to_string() == third)
+    {
+        return false;
+    }
     // Failed identity lookup can mean denied inspection. Require observed
     // death; a live unrelated PID or an inspection error stays unknown.
     if (unsafe { libc::kill(pid, 0) }) != 0
@@ -97,11 +148,15 @@ fn saved_backend_is_dead(run: &Value) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        // An unreaped sentry cannot run guest work. Keep the same kernel-state
-        // distinction as process_token rather than accepting a missing token.
+        // An unreaped sentry cannot run guest work. Its birth must still match;
+        // a different zombie at a reused PID is conflicting evidence.
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(')').is_some_and(|(_, fields)| {
-                matches!(fields.split_whitespace().next(), Some("Z" | "X"))
+            stat.rsplit_once(')').is_some_and(|(_, suffix)| {
+                let fields = suffix.split_whitespace().collect::<Vec<_>>();
+                matches!(fields.first(), Some(&"Z" | &"X"))
+                    && fields.get(19) == Some(&third)
+                    && std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                        .is_ok_and(|boot| boot.trim() == first)
             })
         })
     }
@@ -217,57 +272,97 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
         let control = crate::host_platform::control_pid(name).is_some();
         let id = current_id(name)?;
         let root = crate::host_platform::runsc_root();
+        let mut state_error = None;
         if control && let Some(id) = &id {
-            let output = tokio::time::timeout(
-                Duration::from_secs(3),
-                crate::host_platform::runsc_command(name)?
-                    .args(["state", id])
-                    .output(),
-            )
-            .await??;
-            if output.status.success() {
-                let state: Value = serde_json::from_slice(&output.stdout)?;
-                if state["id"] != id.as_str() {
-                    return Err("runsc returned a different sandbox identity".into());
+            let output = tokio::time::timeout(Duration::from_secs(3), async {
+                Ok::<_, Error>(
+                    crate::host_platform::runsc_command(name)?
+                        .args(["state", id])
+                        .output()
+                        .await?,
+                )
+            })
+            .await;
+            let output = match output {
+                Ok(Ok(output)) => Some(output),
+                Ok(Err(error)) => {
+                    state_error = Some(format!("runsc state failed: {error}"));
+                    None
                 }
-                if state["status"] == "running" || state["status"] == "created" {
-                    let run_id = id.trim_start_matches("safeyolo-");
-                    let recorded = run.is_some_and(|run| run["run_id"] == run_id);
-                    let ready = state["status"] == "running";
-                    return Ok(
-                        json!({"runtime_state":if !recorded || !holder {"degraded"} else if ready {"running"} else {"starting"},"control_state":if holder {"ready"} else {"recovered"},
+                Err(_) => {
+                    state_error = Some("runsc state deadline expired".to_owned());
+                    None
+                }
+            };
+            if let Some(output) = output {
+                if output.status.success() {
+                    let state: Value = serde_json::from_slice(&output.stdout)?;
+                    if state["id"] != id.as_str() {
+                        return Err("runsc returned a different sandbox identity".into());
+                    }
+                    if state["status"] == "running" || state["status"] == "created" {
+                        let run_id = id.trim_start_matches("safeyolo-");
+                        let recorded = run.is_some_and(|run| run["run_id"] == run_id);
+                        let ready = state["status"] == "running";
+                        return Ok(
+                            json!({"runtime_state":if !recorded || !holder {"degraded"} else if ready {"running"} else {"starting"},"control_state":if holder {"ready"} else {"recovered"},
                         "run_id":run_id,"exec":ready,"port_forward":ready,"backend":state,
                         "next_action":if !recorded {json!(format!("run agent diagnostics {name} to inspect the live backend; agent stop {name} remains available"))} else if !holder {json!(format!("run agent diagnostics {name} to inspect recovered namespace control; agent stop {name} remains available"))} else {Value::Null},
                         "error":if !recorded {json!("current-run record is missing or corrupt; backend remains live")} else if !holder {json!("namespace holder is missing; control uses the verified surviving backend namespaces")} else {Value::Null}}),
-                    );
-                }
-                if state["status"] == "stopped" {
-                    return Ok(json!({"runtime_state":"stopped","control_state":"ready",
+                        );
+                    }
+                    if state["status"] == "stopped" {
+                        return Ok(json!({"runtime_state":"stopped","control_state":"ready",
                         "run_id":id.trim_start_matches("safeyolo-"),"exec":false,"port_forward":false,
                         "backend":state}));
+                    }
+                    state_error = Some(format!(
+                        "runsc returned an unrecognized sandbox state: {}",
+                        state["status"]
+                    ));
+                } else {
+                    state_error = Some(format!("runsc state failed ({})", output.status));
                 }
             }
-            if runsc_state_present(&root, id)? {
-                return Err("runsc backend state is present but could not be reconciled".into());
-            }
+            // A failed state command does not erase the independently checked
+            // sentry below. Its lifetime and control availability are separate.
         }
         if let Some(run) = run
             && crate::host_platform::backend_pid(name).is_some()
         {
             return Ok(
                 json!({"runtime_state":"degraded","control_state":"unavailable","run_id":run["run_id"],
-                "exec":false,"port_forward":false,"error":"namespace holder is unavailable; workload remains live",
-                "next_action":"agent stop uses the verified backend process; exec and port forwarding require the original namespaces"}),
+                "exec":false,"port_forward":false,"error":format!("{}; verified backend remains live", state_error.as_deref().unwrap_or("runsc control is unavailable")),
+                "next_action":"agent stop uses the verified backend process; exec and port forwarding require verified runsc state and namespaces"}),
             );
         }
         if control
             || id
                 .as_ref()
-                .map(|id| runsc_state_present(&root, id))
+                .map(|id| runsc_metadata_present(&root, id))
                 .transpose()?
                 .unwrap_or(false)
         {
-            return Err("sandbox backend or namespace exists without verified runtime evidence; start is held".into());
+            if !control
+                && let (Some(id), Some(run)) = (&id, run)
+                && run["run_id"].as_str() == Some(id.trim_start_matches("safeyolo-"))
+                && saved_backend_is_dead(run)
+            {
+                // Observation is read-only. The backend object makes the
+                // existing locked stop/start callers retire stale metadata.
+                return Ok(json!({"runtime_state":"stopped","control_state":"stopped",
+                    "run_id":run["run_id"],"exec":false,"port_forward":false,
+                    "backend":{"id":id,"status":"stopped","pid":0}}));
+            }
+            return Err(state_error.unwrap_or_else(|| "sandbox backend or namespace exists without verified runtime evidence; start is held".to_owned()).into());
+        }
+        if let (Some(id), Some(run)) = (&id, run)
+            && run["run_id"].as_str() != Some(id.trim_start_matches("safeyolo-"))
+        {
+            return Err(
+                "current-run record conflicts with the sandbox generation; state was preserved"
+                    .into(),
+            );
         }
         if let Some(run) = run
             && run["backend_pid"].as_i64().is_some_and(|pid| {
@@ -372,10 +467,19 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
 pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-    let pid = crate::host_platform::backend_pid(name)
+    let run = read(name)?
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
     let id = id(name)?;
     let root = crate::host_platform::runsc_root();
+    if run["run_id"].as_str() == Some(id.trim_start_matches("safeyolo-"))
+        && saved_backend_is_dead(&run)
+    {
+        // The owner may have exited before stop acquired its lock. Only
+        // matching dead metadata is retired; no process needs signalling.
+        return remove_runsc_state(&root, &id);
+    }
+    let pid = crate::host_platform::backend_pid(name)
+        .ok_or("backend process identity is stale or unverified; no process was signalled")?;
     // Bind the signal and exit observation to this process, not a PID that
     // can be reused between validation and termination.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -418,14 +522,7 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
             // The verified sentry has exited. Without its namespaces runsc
             // cannot delete its stale metadata; retire only this incarnation's
             // state/lock files before reporting the owned stop complete.
-            for extension in ["state", "lock"] {
-                match std::fs::remove_file(root.join(format!("{id}_sandbox:{id}.{extension}"))) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            return Ok(());
+            return remove_runsc_state(&root, &id);
         }
         if ready < 0 {
             return Err(std::io::Error::last_os_error().into());
