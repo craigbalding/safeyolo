@@ -496,7 +496,7 @@ case-insensitive backreferences and advanced patterns containing non-ASCII byte
 literals. This interface does not establish complete mitmproxy filter parity.
 
 The live view is separate from the durable TestContext evidence store.
-Native JSON settings `flow_pruner_max` (default 5000 flows) and
+Native configuration settings `flow_pruner_max` (default 5000 flows) and
 `flow_pruner_max_body_bytes` (default 1 GiB) set positive retention targets.
 The proxy evicts the oldest finished flows across all scopes. Open WebSockets
 and active HTTP exchanges remain retained even above these targets. If retained
