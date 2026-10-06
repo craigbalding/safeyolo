@@ -53,6 +53,24 @@ async fn success(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+async fn read_http_head(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    timeout(LIMIT, async {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+            assert!(
+                head.len() <= 4096,
+                "controlled fixture header exceeded its bound"
+            );
+        }
+        head
+    })
+    .await
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_config_keeps_operator_reads_on_the_selected_instance() {
     let fixture = Fixture::new().await;
@@ -296,8 +314,7 @@ async fn native_helper_reads_prepares_and_human_resolves_without_evidence_copyin
     let origin = fixture.origin.clone();
     let served = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
-        let mut request = [0; 4096];
-        stream.read(&mut request).await.unwrap();
+        assert!(read_http_head(&mut stream).await.starts_with(b"GET "));
         stream
             .write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n821-marker",
@@ -324,8 +341,7 @@ async fn selected_native_traffic_ignores_other_viewers_and_consumes_all_seven_ex
     let origin = fixture.origin.clone();
     let served = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
-        let mut request = [0; 4096];
-        stream.read(&mut request).await.unwrap();
+        assert!(read_http_head(&mut stream).await.starts_with(b"GET "));
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\n821-marker").await.unwrap();
     });
     assert_eq!(fixture.network("worker", fixture.address).await.status, 200);
@@ -515,15 +531,7 @@ async fn lost_resolution_reply_reads_canonical_outcome_without_reposting() {
         let mut posts = 0;
         for _ in 0..3 {
             let (mut stream, _) = bridge.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            loop {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).await.unwrap();
-                bytes.push(byte[0]);
-                if bytes.ends_with(b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let bytes = read_http_head(&mut stream).await;
             let header = String::from_utf8(bytes).unwrap();
             assert!(header.contains(&format!("/admin/approvals/{target}")));
             if header.starts_with("POST ") {
