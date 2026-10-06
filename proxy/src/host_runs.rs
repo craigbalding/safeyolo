@@ -15,20 +15,44 @@ pub(crate) fn save(name: &str, value: &Value) -> Result<(), Error> {
     crate::guest_commands::write_json(&path(name), value)
 }
 pub(crate) fn id(name: &str) -> Result<String, Error> {
-    let record = crate::guest_commands::read_state(
+    current_id(name)?.ok_or_else(|| {
+        "current sandbox identity is missing; run agent status to inspect control health".into()
+    })
+}
+
+fn current_id(name: &str) -> Result<Option<String>, Error> {
+    let Some(record) = crate::guest_commands::read_state(
         &config_dir()
             .join("agents")
             .join(name)
             .join("config-share/host-launch-context.json"),
     )?
-    .ok_or("current sandbox identity is missing; run agent status to inspect control health")?;
+    else {
+        return Ok(None);
+    };
     let id = record["generation"]
         .as_str()
         .ok_or("current sandbox generation is missing")?;
     if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("invalid sandbox generation".into());
     }
-    Ok(format!("safeyolo-{id}"))
+    Ok(Some(format!("safeyolo-{id}")))
+}
+
+// A denied lookup or a dangling link is evidence of uncertainty, not absence.
+// Presence alone never authorizes namespace entry or signalling.
+fn backend_path_present(path: &std::path::Path) -> Result<bool, Error> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn runsc_state_present(root: &std::path::Path, id: &str) -> Result<bool, Error> {
+    // runsc combines the root container and sandbox IDs in its state filename.
+    backend_path_present(&root.join(format!("{id}_sandbox:{id}.state")))
 }
 
 pub(crate) fn remember_process(name: &str, key: &str, pid: u32) -> Result<(), Error> {
@@ -54,8 +78,8 @@ fn process_matches(name: &str, run: &Value, key: &str) -> bool {
         })
 }
 
-#[cfg(target_os = "macos")]
-fn saved_vz_helper_is_dead(run: &Value) -> bool {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn saved_backend_is_dead(run: &Value) -> bool {
     let Some(pid) = run["backend_pid"]
         .as_i64()
         .and_then(|pid| i32::try_from(pid).ok())
@@ -64,10 +88,27 @@ fn saved_vz_helper_is_dead(run: &Value) -> bool {
     else {
         return false;
     };
-    // A failed identity lookup can mean denied inspection. Only ESRCH proves
-    // absence; a live unrelated PID or an inspection error stays unknown.
-    (unsafe { libc::kill(pid, 0) }) != 0
+    // Failed identity lookup can mean denied inspection. Require observed
+    // death; a live unrelated PID or an inspection error stays unknown.
+    if (unsafe { libc::kill(pid, 0) }) != 0
         && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // An unreaped sentry cannot run guest work. Keep the same kernel-state
+        // distinction as process_token rather than accepting a missing token.
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')').is_some_and(|(_, fields)| {
+                matches!(fields.split_whitespace().next(), Some("Z" | "X"))
+            })
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        false
+    }
 }
 
 pub(crate) async fn control(name: &str, mut request: Value) -> Result<Value, Error> {
@@ -174,7 +215,7 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
     {
         let holder = crate::host_platform::userns_pid(name).is_some();
         let control = crate::host_platform::control_pid(name).is_some();
-        let id = id(name).ok();
+        let id = current_id(name)?;
         let root = crate::host_platform::runsc_root();
         if control && let Some(id) = &id {
             let output = tokio::time::timeout(
@@ -206,7 +247,7 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                         "backend":state}));
                 }
             }
-            if root.join(id).exists() {
+            if runsc_state_present(&root, id)? {
                 return Err("runsc backend state is present but could not be reconciled".into());
             }
         }
@@ -219,7 +260,13 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                 "next_action":"agent stop uses the verified backend process; exec and port forwarding require the original namespaces"}),
             );
         }
-        if id.as_ref().is_some_and(|id| root.join(id).exists()) || control {
+        if control
+            || id
+                .as_ref()
+                .map(|id| runsc_state_present(&root, id))
+                .transpose()?
+                .unwrap_or(false)
+        {
             return Err("sandbox backend or namespace exists without verified runtime evidence; start is held".into());
         }
         if let Some(run) = run
@@ -270,7 +317,7 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                 Err(error)
                     if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
                         error.kind() == std::io::ErrorKind::ConnectionRefused
-                    }) && run.is_some_and(saved_vz_helper_is_dead) => {}
+                    }) && run.is_some_and(saved_backend_is_dead) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -279,7 +326,7 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                 "VZ helper remains live but its private control path is unavailable".into(),
             );
         }
-        if run.is_some_and(|run| !saved_vz_helper_is_dead(run)) {
+        if run.is_some_and(|run| !saved_backend_is_dead(run)) {
             return Err(
                 "VZ backend absence is unverified; the saved handle is incomplete or identifies a live unrelated process"
                     .into(),
@@ -288,6 +335,31 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
     }
     if saved.is_err() {
         return Err("current-run record is corrupt; backend absence is unverified".into());
+    }
+    if let Some(run) = run {
+        let generation = run["run_id"]
+            .as_str()
+            .ok_or("current-run record has no sandbox generation; backend absence is unverified")?;
+        if generation.len() != 32 || !generation.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("current-run record has an invalid sandbox generation; backend absence is unverified".into());
+        }
+        #[cfg(target_os = "linux")]
+        if !saved_backend_is_dead(run) {
+            return Err("runsc backend absence is unverified; the saved handle is incomplete or identifies a live unrelated process".into());
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if run.is_none() {
+        #[cfg(target_os = "linux")]
+        let handles = ["userns.pid", "container.pid"];
+        #[cfg(target_os = "macos")]
+        let handles = ["vm.pid", "vm.token"];
+        let directory = config_dir().join("agents").join(name);
+        for handle in handles {
+            if backend_path_present(&directory.join(handle))? {
+                return Err("current-run record is missing; saved backend handles cannot prove the sandbox stopped; no process was accepted or signalled".into());
+            }
+        }
     }
     // A dead identified backend is stopped. Diagnostic observation is read-only;
     // explicit stop/recovery cleans stale handles under the lifecycle lock.
@@ -302,6 +374,8 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
 
     let pid = crate::host_platform::backend_pid(name)
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
+    let id = id(name)?;
+    let root = crate::host_platform::runsc_root();
     // Bind the signal and exit observation to this process, not a PID that
     // can be reused between validation and termination.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -341,6 +415,16 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
         };
         let ready = unsafe { libc::poll(&mut exit, 1, 0) };
         if ready > 0 && exit.revents & libc::POLLIN != 0 {
+            // The verified sentry has exited. Without its namespaces runsc
+            // cannot delete its stale metadata; retire only this incarnation's
+            // state/lock files before reporting the owned stop complete.
+            for extension in ["state", "lock"] {
+                match std::fs::remove_file(root.join(format!("{id}_sandbox:{id}.{extension}"))) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
             return Ok(());
         }
         if ready < 0 {

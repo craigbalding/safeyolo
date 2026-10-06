@@ -620,6 +620,231 @@ fn incomplete_launcher_stop_can_be_repeated_and_cleaned_without_a_new_launch() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn runsc_state_without_a_runtime_record_holds_native_and_admin_start() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+            "--launcher",
+            "supervisor",
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    let share = directory.join("config-share");
+    fs::create_dir_all(&share).unwrap();
+    let generation = "0123456789abcdef0123456789abcdef";
+    let context = serde_json::to_vec(&serde_json::json!({"generation":generation})).unwrap();
+    fs::write(share.join("host-launch-context.json"), &context).unwrap();
+    let runsc = root.join("run");
+    fs::create_dir(&runsc).unwrap();
+    let state = runsc.join(format!(
+        "safeyolo-{generation}_sandbox:safeyolo-{generation}.state"
+    ));
+    fs::write(&state, b"unreconciled backend state").unwrap();
+
+    let config = root.join("config.toml");
+    let document = fs::read_to_string(&config)
+        .unwrap()
+        .replace("admin_port = 9090", "admin_port = 0");
+    fs::write(&config, document).unwrap();
+    let _stop = StopOnDrop(&config);
+    value(cli(&root, &["start"]));
+    for args in [
+        ["agent", "status", "marker"],
+        ["agent", "diagnostics", "marker"],
+    ] {
+        let observed = value(cli(&root, &args));
+        assert_eq!(observed["runtime_state"], "unknown");
+        assert_eq!(observed["sandbox_state"], "unknown");
+        assert_eq!(observed["exec"], false);
+        assert_eq!(observed["port_forward"], false);
+    }
+    assert_eq!(
+        value(cli(&root, &["doctor"]))["agents"][0]["runtime_state"],
+        "unknown"
+    );
+    // Ordinary start goes through the authenticated Admin caller. The explicit
+    // sandbox-only mode reaches the same owner through the native CLI.
+    let admin = cli(&root, &["agent", "start", "marker"]);
+    assert!(!admin.status.success());
+    assert!(String::from_utf8_lossy(&admin.stderr).contains("API 409"));
+    assert!(
+        !cli(&root, &["agent", "start", "marker", "--sandbox-only"])
+            .status
+            .success()
+    );
+    for operation in ["stop", "cleanup"] {
+        assert!(!cli(&root, &["agent", operation, "marker"]).status.success());
+    }
+    assert!(!directory.join("runtime.json").exists());
+    assert!(!directory.join("current-launch.json").exists());
+    assert_eq!(fs::read(&state).unwrap(), b"unreconciled backend state");
+    assert_eq!(
+        fs::read(share.join("host-launch-context.json")).unwrap(),
+        context
+    );
+
+    // A dangling or inaccessible backend path cannot establish absence.
+    fs::remove_file(&state).unwrap();
+    symlink(runsc.join("absent"), &state).unwrap();
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "unknown"
+    );
+    fs::remove_file(&state).unwrap();
+    let blocked_parent = root.join("blocked");
+    fs::create_dir(&blocked_parent).unwrap();
+    fs::set_permissions(&blocked_parent, fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(&root)
+        .args(["agent", "status", "marker"])
+        .env("SAFEYOLO_RUNSC_ROOT", blocked_parent.join("run"))
+        .output()
+        .unwrap();
+    fs::set_permissions(&blocked_parent, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(value(denied)["runtime_state"], "unknown");
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+
+    // Corrupt launch context must not disappear into an absent identity.
+    fs::write(share.join("host-launch-context.json"), b"corrupt").unwrap();
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "unknown"
+    );
+    assert_eq!(
+        fs::read(share.join("host-launch-context.json")).unwrap(),
+        b"corrupt"
+    );
+}
+
+#[test]
+fn missing_runtime_record_does_not_make_unverified_pid_files_stopped() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    let share = directory.join("config-share");
+    fs::create_dir_all(&share).unwrap();
+    fs::write(
+        share.join("host-launch-context.json"),
+        b"{\"generation\":\"0123456789abcdef0123456789abcdef\"}",
+    )
+    .unwrap();
+    #[cfg(target_os = "linux")]
+    let handles = ["userns.pid", "container.pid"];
+    #[cfg(target_os = "macos")]
+    let handles = ["vm.pid", "vm.token"];
+    for handle in handles {
+        let path = directory.join(handle);
+        fs::write(&path, b"unverified handle").unwrap();
+        let observed = value(cli(&root, &["agent", "status", "marker"]));
+        assert_eq!(observed["runtime_state"], "unknown", "{handle}: {observed}");
+        assert_eq!(observed["exec"], false);
+        assert!(!cli(&root, &["agent", "stop", "marker"]).status.success());
+        assert!(!cli(&root, &["agent", "cleanup", "marker"]).status.success());
+        assert_eq!(fs::read(&path).unwrap(), b"unverified handle");
+        assert!(!directory.join("runtime.json").exists());
+        fs::remove_file(path).unwrap();
+    }
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_exited_backend_without_runsc_state_stays_stopped_and_can_be_cleaned() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    fs::create_dir_all(directory.join("config-share")).unwrap();
+    let generation = "0123456789abcdef0123456789abcdef";
+    fs::write(
+        directory.join("config-share/host-launch-context.json"),
+        serde_json::to_vec(&serde_json::json!({"generation":generation})).unwrap(),
+    )
+    .unwrap();
+    let mut backend = Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = backend.id();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let started = stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap();
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    let saved = serde_json::to_vec(&serde_json::json!({"run_id":generation,"backend_pid":pid,"backend_token":format!("linux:{}:{pid}:{started}",boot.trim())})).unwrap();
+    backend.kill().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while fs::read_to_string(format!("/proc/{pid}/stat"))
+        .unwrap()
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .next()
+        != Some("Z")
+    {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fs::write(directory.join("runtime.json"), &saved).unwrap();
+    let zombie = cli(&root, &["agent", "status", "marker"]);
+    backend.wait().unwrap();
+    assert_eq!(value(zombie)["runtime_state"], "stopped");
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+    assert_eq!(fs::read(directory.join("runtime.json")).unwrap(), saved);
+    assert_eq!(
+        value(cli(&root, &["agent", "cleanup", "marker"]))["runtime_state"],
+        "stopped"
+    );
+    assert!(!directory.join("runtime.json").exists());
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");
@@ -653,23 +878,38 @@ fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
         .nth(19)
         .unwrap();
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
-    fs::write(directory.join("runtime.json"), serde_json::to_vec(&serde_json::json!({
-        "run_id":run_id,"backend_pid":pid,"backend_token":format!("linux:{}:{pid}:{started}",boot.trim())
-    })).unwrap()).unwrap();
-    let status = cli(&root, &["agent", "status", "marker"]);
-    let stop = cli(&root, &["agent", "stop", "marker"]);
+    let token = format!("linux:{}:{pid}:{started}", boot.trim());
+    let mut results = Vec::new();
+    for record in [
+        serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token}),
+        serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":"different-birth"}),
+        serde_json::json!({"run_id":run_id,"backend_pid":pid}),
+        serde_json::json!({"run_id":run_id,"backend_pid":"bad","backend_token":token}),
+        serde_json::json!({"run_id":run_id}),
+    ] {
+        let saved = serde_json::to_vec(&record).unwrap();
+        fs::write(directory.join("runtime.json"), &saved).unwrap();
+        results.push((
+            cli(&root, &["agent", "status", "marker"]),
+            cli(&root, &["agent", "stop", "marker"]),
+            fs::read(directory.join("runtime.json")).unwrap() == saved,
+        ));
+    }
     let survived = unrelated.try_wait().unwrap().is_none();
     unrelated.kill().unwrap();
     unrelated.wait().unwrap();
-    let observed = value(status);
-    assert_eq!(observed["runtime_state"], "unknown");
-    assert!(
-        observed["runtime_error"]
-            .as_str()
-            .unwrap()
-            .contains("unrelated process")
-    );
-    assert!(!stop.status.success());
+    for (status, stop, state_preserved) in results {
+        let observed = value(status);
+        assert_eq!(observed["runtime_state"], "unknown");
+        assert!(
+            observed["runtime_error"]
+                .as_str()
+                .unwrap()
+                .contains("unrelated process")
+        );
+        assert!(!stop.status.success());
+        assert!(state_preserved);
+    }
     assert!(survived, "the unrelated process was signalled");
 }
 
@@ -717,7 +957,12 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
         .unwrap();
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
     let token = format!("linux:{}:{pid}:{started}", boot.trim());
-    fs::create_dir_all(root.join("run").join(&id)).unwrap();
+    fs::create_dir_all(root.join("run")).unwrap();
+    fs::write(
+        root.join("run").join(format!("{id}_sandbox:{id}.state")),
+        b"unreconciled backend state",
+    )
+    .unwrap();
     let saved = serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token});
     let mut results = Vec::new();
     for (field, replacement, generation, expected_state) in [
@@ -968,12 +1213,24 @@ fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
     let b_instance = fs::read(b.join("data/instance_id")).unwrap();
     let dir = a.join("agents/marker");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("runtime.json"), b"corrupt").unwrap();
-    let observed = value(cli(&a, &["agent", "status", "marker"]));
-    assert_eq!(observed["runtime_state"], "unknown");
-    let doctor = value(cli(&a, &["doctor"]));
-    assert_eq!(doctor["agents"][0]["runtime_state"], "unknown");
-    assert_eq!(fs::read(dir.join("runtime.json")).unwrap(), b"corrupt");
+    for record in [
+        "corrupt",
+        "null",
+        "[]",
+        "{}",
+        "{\"run_id\":42}",
+        "{\"run_id\":\"bad\"}",
+    ] {
+        fs::write(dir.join("runtime.json"), record).unwrap();
+        let observed = value(cli(&a, &["agent", "status", "marker"]));
+        assert_eq!(observed["runtime_state"], "unknown", "{record}: {observed}");
+        let doctor = value(cli(&a, &["doctor"]));
+        assert_eq!(doctor["agents"][0]["runtime_state"], "unknown");
+        assert_eq!(
+            fs::read(dir.join("runtime.json")).unwrap(),
+            record.as_bytes()
+        );
+    }
     assert_eq!(fs::read(b.join("policy.toml")).unwrap(), b_policy);
     assert_eq!(fs::read(b.join("data/instance_id")).unwrap(), b_instance);
     assert_eq!(
