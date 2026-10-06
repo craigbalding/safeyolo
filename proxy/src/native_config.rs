@@ -185,7 +185,10 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     if path.extension().and_then(|value| value.to_str()) != Some("toml") {
         return Err("native configuration requires config.toml".into());
     }
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut value = crate::policy::parse_toml_document(&std::fs::read_to_string(path)?)?;
     let fields = value
         .as_object_mut()
@@ -275,6 +278,8 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     let mut config: Config = serde_json::from_value(value)?;
     config.native_product = true;
     config.native_settings = Some(settings);
+    config.native_config_dir = Some(root.canonicalize()?);
+    config.native_config_path = Some(path.canonicalize()?);
     config.validate()?;
     Ok(config)
 }
@@ -296,13 +301,7 @@ fn resolve_path(value: &mut Value, root: &Path, field: &str) -> Result<(), Error
 /// Missing configuration uses built-in launcher defaults; malformed input is
 /// an error. No config.yaml or generated document is a fallback source.
 pub(crate) fn host_settings() -> Result<Settings, Error> {
-    let path = std::env::var_os("SAFEYOLO_NATIVE_CONFIG_PATH")
-        .map(PathBuf::from)
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "toml")
-        })
-        .unwrap_or_else(|| crate::host_platform::config_dir().join("config.toml"));
+    let path = crate::host_platform::config_path();
     match std::fs::metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(error) => Err(error.into()),
@@ -315,6 +314,81 @@ pub(crate) fn host_settings() -> Result<Settings, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn host_consumers_keep_the_exact_toml_source_and_distinct_instance_roots() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        for (root, selected) in [(a.path(), "tmux-pane"), (b.path(), "supervisor")] {
+            std::fs::write(
+                root.join("config.toml"),
+                "[agent_launcher]\ndefault='tmux-window'\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("selected.toml"),
+                format!("[agent_launcher]\ndefault='{selected}'\n"),
+            )
+            .unwrap();
+        }
+        let check = |root: PathBuf, expected: &'static str| async move {
+            let path = read(&root.join("selected.toml"))
+                .unwrap()
+                .native_config_path
+                .unwrap();
+            crate::host_platform::in_config(path.clone(), async {
+                tokio::task::yield_now().await;
+                assert_eq!(
+                    crate::host_platform::config_dir(),
+                    root.canonicalize().unwrap()
+                );
+                assert_eq!(crate::host_platform::config_path(), path);
+                assert_eq!(
+                    host_settings().unwrap().agent_launcher.default.as_deref(),
+                    Some(expected)
+                );
+            })
+            .await;
+        };
+        tokio::join!(
+            check(a.path().to_owned(), "tmux-pane"),
+            check(b.path().to_owned(), "supervisor")
+        );
+        std::fs::write(
+            a.path().join("selected.toml"),
+            "[agent_launcher]\ndefault=17\n",
+        )
+        .unwrap();
+        crate::host_platform::in_config(a.path().join("selected.toml"), async {
+            assert!(host_settings().is_err());
+        })
+        .await;
+    }
+
+    #[test]
+    fn native_installation_root_comes_only_from_the_configuration_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "admin_port=0\n").unwrap();
+        let config = read(&path).unwrap();
+        assert_eq!(
+            config.native_config_dir,
+            Some(directory.path().canonicalize().unwrap())
+        );
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("native_config_dir")
+                .is_none()
+        );
+        std::fs::write(&path, "native_config_dir='/another/instance'\n").unwrap();
+        assert!(
+            read(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("native_config_dir")
+        );
+    }
 
     #[test]
     fn fresh_loader_keeps_nondefault_settings_and_resolves_runtime_paths() {

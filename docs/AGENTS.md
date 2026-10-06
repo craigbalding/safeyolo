@@ -29,6 +29,11 @@ Key paths:
 | `/usr/local/share/ca-certificates/safeyolo.crt` | Trusted SafeYolo CA |
 | `/safeyolo` | Read-only per-run configuration share |
 
+If an operator shell connection fails, the host's `safeyolo agent diagnostics
+NAME` reports runtime, control, coding-agent and terminal state separately.
+A failed shell does not prove the sandbox stopped. The host's `safeyolo agent
+recover NAME` checks the independent shared-home recovery path without SSH.
+
 ## First health check
 
 Use this exact form:

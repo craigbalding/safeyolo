@@ -20,7 +20,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-CLI = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", ROOT / "proxy/target/debug")) / "safeyolo"
 GUEST = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", ROOT / "guest/command/target/debug/safeyolo-guest"))
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Selected native guest probe requires Linux")
 
@@ -33,20 +32,20 @@ def write_json(path, value):
 
 
 @pytest.fixture
-def staged_guest(tmp_path):
-    directory = tmp_path / "agents/demo"
+def staged_guest(native_agent):
+    directory = native_agent["root"] / "agents/demo"
     home, share = directory / "home", directory / "config-share"
     home.mkdir(parents=True)
     share.mkdir()
     (share / "safeyolo-guest").write_bytes(GUEST.read_bytes())
     (share / "host-launch-context.json").write_text(json.dumps({"generation": "recovery-run"}))
-    return {"root": tmp_path, "directory": directory, "home": home, "share": share,
+    return {**native_agent, "directory": directory, "home": home, "share": share,
             "state": home / ".safeyolo-command-supervisor.json",
             "stop": home / ".safeyolo-command-supervisor.stop"}
 
 
 def recover(guest, timeout=2):
-    return subprocess.run([str(CLI), "--root", str(guest["root"]), "agent", "recover", "demo",
+    return subprocess.run([str(guest["cli"]), "--root", str(guest["root"]), "agent", "recover", "demo",
                            "--timeout", str(timeout)], capture_output=True, text=True, timeout=timeout + 3)
 
 
@@ -86,7 +85,7 @@ def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_gu
         write_json(staged_guest["state"], state)
         response = future.result(timeout=3)
     assert response.returncode == 0, response.stderr
-    observed = json.loads(response.stdout)
+    observed = json.loads(response.stdout)["guest_probe"]
     assert observed["generation"] == "recovery-run"
     assert observed["result"] == result
     assert staged_guest["state"].stat().st_mode & 0o777 == 0o600
@@ -154,7 +153,7 @@ def test_recipe_timeout_fences_its_command_without_claiming_termination(staged_g
     assert not (staged_guest["share"] / "command-supervisor-enabled").exists()
 
 
-@pytest.mark.parametrize("lock", ["home/.safeyolo/host-setup.lock", "current-launch.lock"])
+@pytest.mark.parametrize("lock", ["host-setup.lock", "current-launch.lock"])
 def test_recipe_lock_wait_has_same_deadline(staged_guest, lock):
     path = staged_guest["directory"] / lock
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -193,10 +192,16 @@ def test_terminal_label_does_not_hide_a_remaining_command(staged_guest):
     assert staged_guest["stop"].exists()
 
 
-def test_recipe_rejects_absent_guest_without_creating_supervisor(tmp_path):
-    response = recover({"root": tmp_path})
+def test_recipe_rejects_absent_guest_without_creating_supervisor(native_agent):
+    directory = native_agent["root"] / "agents/demo"
+    original_files = set(directory.iterdir())
+    configuration = native_agent["root"] / "config.toml"
+    original_configuration = configuration.read_bytes()
+    assert not (directory / "home").exists()
+    response = recover(native_agent)
     assert response.returncode != 0 and "boot this agent first" in response.stderr
-    assert not (tmp_path / "agents").exists()
+    assert set(directory.iterdir()) == original_files
+    assert configuration.read_bytes() == original_configuration
 
 
 def test_probe_output_block_retains_its_hard_deadline(tmp_path):

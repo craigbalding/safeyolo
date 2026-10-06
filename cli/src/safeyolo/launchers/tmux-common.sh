@@ -11,35 +11,12 @@ esac
 command -v tmux >/dev/null || { echo "tmux is not installed on this SafeYolo host" >&2; exit 1; }
 
 session=$SAFEYOLO_TMUX_SESSION
+tmux_target=(tmux -S "$SAFEYOLO_TMUX_SOCKET")
 pane=${SAFEYOLO_LAUNCH_PANE:-}
 case "${1:-}" in
     launch)
-        target=
-        format=$'#{socket_path}\n#{pane_id}'
-        # tmux inherits the existing server's environment, which may predate
-        # this installation. Pass this launch's fixed context explicitly.
-        command=(env "SAFEYOLO_CONFIG_DIR=$SAFEYOLO_CONFIG_DIR"
-            "SAFEYOLO_LOGS_DIR=$SAFEYOLO_LOGS_DIR"
-            "$SAFEYOLO_PYTHON" -m safeyolo.cli agent shell "$SAFEYOLO_AGENT_NAME"
-            --agent-command --launch-id "$SAFEYOLO_LAUNCH_ID")
-        if ! tmux has-session -t "=$session" 2>/dev/null; then
-            # Another agent may create the shared session concurrently.
-            target=$(tmux new-session -d -P -F "$format" -s "$session" \
-                -n "$SAFEYOLO_AGENT_NAME" "${command[@]}") || target=
-        fi
-        if [ -z "$target" ]; then
-            if [ "${SAFEYOLO_TMUX_LAYOUT:-window}" = pane ]; then
-                target=$(tmux split-window -d -P -F "$format" -t "=$session:" "${command[@]}")
-            else
-                target=$(tmux new-window -d -P -F "$format" -t "=$session:" \
-                    -n "$SAFEYOLO_AGENT_NAME" "${command[@]}")
-            fi
-        fi
-        # Record both handles from creation, not by querying the pane later.
-        # A very short command can already have exited by this point.
-        "$SAFEYOLO_PYTHON" -c 'import json, sys
-socket, pane = sys.argv[1].rsplit("\n", 1)
-print(json.dumps({"tmux_socket": socket, "pane_id": pane}))' "$target"
+        exec "$SAFEYOLO_EXECUTABLE" --config "$SAFEYOLO_NATIVE_CONFIG_PATH" \
+            agent launcher-session "$SAFEYOLO_AGENT_NAME" "$SAFEYOLO_LAUNCH_ID"
         ;;
     attach|status)
         [ -n "$pane" ] || { echo "No recorded agent pane" >&2; exit 1; }

@@ -103,7 +103,7 @@ struct LocalCredentialLoader {
 
     func load() throws -> LoadedCredential {
         let instanceID = try readValue(
-            at: configDirectory.appendingPathComponent("data/coord/instance_id"),
+            at: configDirectory.appendingPathComponent("data/instance_id"),
             label: "SafeYolo instance ID"
         )
         var warning: String?

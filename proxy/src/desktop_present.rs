@@ -5,7 +5,6 @@ use std::{collections::BTreeMap, io::Write, os::unix::fs::PermissionsExt, sync::
 use regex::Regex;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
-use yaml_rust2::YamlLoader;
 
 use crate::{desktop_preview::Preview, host_agents, host_platform};
 
@@ -36,23 +35,10 @@ pub(crate) fn available() -> bool {
 }
 
 fn settings() -> Result<(String, u16), Error> {
-    let path = host_platform::config_dir().join("config.yaml");
-    let source = match std::fs::read_to_string(path) {
-        Ok(source) => source,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => return Err(Error::Failed),
-    };
-    let documents = YamlLoader::load_from_str(&source).map_err(|_| Error::Failed)?;
-    let desktop = documents.first().map(|document| &document["desktop"]);
-    let size = desktop
-        .and_then(|desktop| desktop["size"].as_str())
-        .unwrap_or("auto")
-        .to_owned();
-    let port = desktop
-        .and_then(|desktop| desktop["present_host_port"].as_i64())
-        .unwrap_or(0);
-    let port = u16::try_from(port).map_err(|_| Error::Failed)?;
-    Ok((size, port))
+    let desktop = crate::native_config::host_settings()
+        .map_err(|_| Error::Failed)?
+        .desktop;
+    Ok((desktop.size, desktop.present_host_port))
 }
 
 fn parse_geometry(value: &str) -> Result<(u32, u32), Error> {
@@ -203,10 +189,7 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     if !available() {
         return Err(Error::Unavailable);
     }
-    let agents = tokio::task::spawn_blocking(host_agents::list)
-        .await
-        .map_err(|_| Error::Failed)?
-        .map_err(|_| Error::Failed)?;
+    let agents = host_agents::list().map_err(|_| Error::Failed)?;
     let agent = agents
         .iter()
         .find(|agent| agent.id == agent_id)
@@ -229,19 +212,27 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     if let Some(mut presentation) = presentations.remove(&id) {
         presentation.preview.close().await;
     }
-    if !host_platform::is_sandbox_running(&name).await {
+    if !host_platform::guest_exec_available(&name).await {
         return Err(Error::Failed);
     }
     let (preferred_size, host_port) = settings()?;
     let geometry = geometry(&preferred_size).await?;
     stage_guest_desktop(&name, &preferred_size)?;
-    let tailnet = if std::env::var("SAFEYOLO_COMMAND_CENTRE_SHARE").as_deref() == Ok("tailnet") {
+    let tailnet = if crate::native_config::host_settings()
+        .map_err(|_| Error::Failed)?
+        .command_centre
+        .share
+        == "tailnet"
+    {
         let name = name.clone();
+        let config = host_platform::config_path();
         Some(
-            tokio::task::spawn_blocking(move || host_agents::reserve_tailnet_port(&name))
-                .await
-                .map_err(|_| Error::Failed)?
-                .map_err(|_| Error::Failed)?,
+            tokio::task::spawn_blocking(move || {
+                host_platform::with_config(config, || host_agents::reserve_tailnet_port(&name))
+            })
+            .await
+            .map_err(|_| Error::Failed)?
+            .map_err(|_| Error::Failed)?,
         )
     } else {
         None
@@ -279,8 +270,11 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
                 && previous != Some(port)
             {
                 let name = name.clone();
+                let config = host_platform::config_path();
                 let _ = tokio::task::spawn_blocking(move || {
-                    host_agents::restore_tailnet_port(&name, port, previous)
+                    host_platform::with_config(config, || {
+                        host_agents::restore_tailnet_port(&name, port, previous)
+                    })
                 })
                 .await;
             }

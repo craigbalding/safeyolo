@@ -130,14 +130,27 @@ enum AgentTerminalAction: String {
 
 func agentTerminalCommand(
     name: String, remote: Bool, terminalTarget: String?,
-    adminURL: String? = nil, hostUser: String? = nil, hostPython: String? = nil,
+    adminURL: String? = nil, hostUser: String? = nil,
+    hostExecutable: String? = nil, hostRoot: String? = nil, hostConfigPath: String? = nil,
     transport: RemoteTransport = .tailnet, action: AgentTerminalAction = .attach
 ) throws -> String {
     func quoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
     let actionArguments = action == .shell ? "shell --persistent" : "attach"
-    guard remote else { return "safeyolo agent \(actionArguments) -- " + quoted(name) }
+    // Both local and SSH terminals use the connected instance's installation.
+    // An Admin API credential never supplies SSH authority or a PATH fallback.
+    guard let executable = hostExecutable, executable.hasPrefix("/"),
+          let root = hostRoot, root.hasPrefix("/") else {
+        throw ConnectionError.missingNativeInstallation
+    }
+    let selection: String
+    if let config = hostConfigPath {
+        guard config.hasPrefix("/") else { throw ConnectionError.missingNativeInstallation }
+        selection = " --config " + quoted(config)
+    } else { selection = " --root " + quoted(root) }
+    let command = quoted(executable) + selection + " agent \(actionArguments) -- " + quoted(name)
+    guard remote else { return command }
     let target: String
     if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
         target = override
@@ -148,12 +161,6 @@ func agentTerminalCommand(
     } else {
         throw ConnectionError.missingTerminalTarget
     }
-    guard let python = hostPython, !python.isEmpty else {
-        throw ConnectionError.missingRemoteInstallation
-    }
-    // Keep the interpreter's venv path intact: resolving its symlink would
-    // select the base Python and lose the installed SafeYolo package.
-    let command = quoted(python) + " -m safeyolo.cli agent \(actionArguments) -- " + quoted(name)
     // Both sessions survive viewer disconnection. The persistent shell is independent
     // of the coding-agent terminal; neither action starts the coding agent.
     // SSH credentials are separate from the Admin API credential.
@@ -184,7 +191,7 @@ enum ConnectionError: LocalizedError {
     case missingCredential(String)
     case requestFailed(Int)
     case missingTerminalTarget
-    case missingRemoteInstallation
+    case missingNativeInstallation
 
     var errorDescription: String? {
         switch self {
@@ -194,8 +201,8 @@ enum ConnectionError: LocalizedError {
             return "Enter the remote Admin API credential"
         case .missingTerminalTarget:
             return "The remote terminal target is unavailable. Tailscale uses the connected host and its reported username. For an SSH tunnel or a different login, set user@host or an SSH alias in Connection Settings. Run Agent does not need SSH."
-        case .missingRemoteInstallation:
-            return "The connected SafeYolo server did not report its Python executable. Update and restart that server, then reconnect Command Centre. Terminal attachment uses the server's installation without relying on the SSH shell's PATH."
+        case .missingNativeInstallation:
+            return "The connected SafeYolo server did not report an installed native executable and instance root. Install the native CLI for that instance, then retry. Terminal attachment uses that installation. Run Agent does not need SSH."
         case .missingCredential(let instanceID):
             return "No Keychain credential is stored for \(instanceID)"
         case .requestFailed(let status):

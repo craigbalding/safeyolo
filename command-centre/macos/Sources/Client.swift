@@ -30,7 +30,9 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var pendingTerminalIDs = Set<String>()
     @Published private(set) var instanceID = ""
     @Published private(set) var hostUser: String?
-    @Published private(set) var hostPython: String?
+    @Published private(set) var hostExecutable: String?
+    @Published private(set) var hostConfigPath: String?
+    @Published private(set) var hostRoot: String?
     @Published private(set) var webmitmURL: URL?
     @Published private(set) var webMITMKeyCopied = false
     @Published private(set) var requestErrors: [String: String] = [:]
@@ -51,21 +53,19 @@ final class SafeYoloClient: ObservableObject {
         if eventEndpoint?.enabled == false {
             return """
             Admin API connected. Live events are disabled in the running SafeYolo host.
-            On \(host), run:
-            safeyolo command-centre enable
+            On \(host), set enabled = true in the [command_centre] table of the connected instance's TOML configuration, then run its installed CLI:
             safeyolo stop
             safeyolo start
 
             If you already enabled live events, restart SafeYolo to apply the change.
-            Restarting briefly interrupts agent networking and Coord. Agents stay running; do not add --all.
+            Restarting briefly interrupts agent networking and Coord. Agents stay running.
             """
         }
         if requestErrors["Live events"] != nil {
             return """
             Admin API connected, but the live-event connection failed.
-            On \(host), check: safeyolo command-centre status
-            If disabled, run safeyolo command-centre enable and restart SafeYolo.
-            If enabled, check the event port and any SSH tunnel or Tailnet forwarding.
+            On \(host), run the connected instance's installed CLI: safeyolo doctor.
+            Check [command_centre] in its TOML configuration, the event port, and any SSH tunnel or Tailnet forwarding.
             Copy Diagnostics includes the connection failure and retry history.
             """
         }
@@ -367,7 +367,9 @@ final class SafeYoloClient: ObservableObject {
             )
             if instanceID != validatedID { instanceID = validatedID }
             if hostUser != instance.hostUser { hostUser = instance.hostUser }
-            if hostPython != instance.hostPython { hostPython = instance.hostPython }
+            if hostExecutable != instance.hostExecutable { hostExecutable = instance.hostExecutable }
+            if hostRoot != instance.hostRoot { hostRoot = instance.hostRoot }
+            if hostConfigPath != instance.hostConfigPath { hostConfigPath = instance.hostConfigPath }
             let freshWebURL = instance.webmitmURL.flatMap { URL(string: $0) }
             if webmitmURL != freshWebURL { webmitmURL = freshWebURL }
             if eventEndpoint != instance.commandCentreEvents { eventEndpoint = instance.commandCentreEvents }
@@ -531,6 +533,9 @@ final class SafeYoloClient: ObservableObject {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if method == "POST" && path.hasPrefix("/admin/agents/") {
+            request.timeoutInterval = 130
+        }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let json {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

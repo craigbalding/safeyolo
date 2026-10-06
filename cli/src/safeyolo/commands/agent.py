@@ -25,7 +25,7 @@ from ..agent_lifecycle import (
     _agent_host_setup_lock,
     _check_project_ownership,
     _load_agent_metadata,
-    _run_agent,
+    start_native_agent,
     write_event,
 )
 from ..agents_store import (
@@ -347,11 +347,6 @@ def add(  # DOC: README.md, docs/AGENTS.md
         "--dangerously-allow-unowned",
         help="Allow mounting directories you don't own",
     ),
-    no_rename_window: bool = typer.Option(
-        False,
-        "--no-rename-window",
-        help="Don't rename the invoking tmux window to the agent name (auto-run only).",
-    ),
 ) -> None:
     """Add an AI agent sandbox and run it.
 
@@ -457,11 +452,9 @@ def add(  # DOC: README.md, docs/AGENTS.md
                 console.print(f"Agent '{name}' already configured.")
                 if not no_run:
                     associate_agent_pane(name)
-                    exit_code = _run_agent(
+                    exit_code = start_native_agent(
                         name,
                         dangerously_allow_unowned=dangerously_allow_unowned,
-                        no_snapshot=True,
-                        rename_tmux_window=not no_rename_window,
                     )
                     raise typer.Exit(exit_code)
                 return
@@ -480,7 +473,7 @@ def add(  # DOC: README.md, docs/AGENTS.md
                         f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
                         f"  Current:  {_fmt(existing_host, existing_rootfs, existing_rootfs_from, existing_folder)}\n"
                         f"  Requested: {_fmt(requested_host, requested_rootfs, requested_rootfs_from, folder_str)}\n"
-                        "Use --force to overwrite, or 'safeyolo agent run' to run existing."
+                        "Use --force to overwrite, or 'safeyolo agent start' to run existing."
                     )
                     raise typer.Exit(1)
                 # With --force, continue to overwrite below
@@ -627,11 +620,9 @@ def add(  # DOC: README.md, docs/AGENTS.md
     if not no_run:
         console.print()
         associate_agent_pane(name)
-        exit_code = _run_agent(
+        exit_code = start_native_agent(
             name,
             dangerously_allow_unowned=dangerously_allow_unowned,
-            no_snapshot=True,
-            rename_tmux_window=not no_rename_window,
         )
         raise typer.Exit(exit_code)
 
@@ -662,17 +653,17 @@ def list_agents() -> None:
             table.add_column("Launcher")
             from ..agent_lifecycle import list_agent_runtimes
 
-            runtimes = {runtime.name: runtime for runtime in list_agent_runtimes()}
+            runtimes = {runtime["name"]: runtime for runtime in list_agent_runtimes()}
             for inst_dir in sorted(instances, key=lambda d: d.name):
                 metadata = all_agents.get(inst_dir.name, {})
                 folder = metadata.get("folder", "?")
                 host_script = metadata.get("host_script", "")
                 runtime = runtimes.get(inst_dir.name)
-                launcher = runtime.launcher if runtime else None
+                launcher = runtime.get("launcher") if runtime else None
                 label = f"{launcher.get('script') or launcher['kind']} ({launcher['source']})" if launcher else "unknown"
                 table.add_row(inst_dir.name, folder, host_script,
-                              runtime.sandbox_state if runtime else "unknown",
-                              runtime.agent_state if runtime else "unknown", label)
+                              runtime.get("sandbox_state", "unknown") if runtime else "unknown",
+                              runtime.get("agent_state", "unknown") if runtime else "unknown", label)
             console.print(table)
         else:
             console.print("[dim]No agents configured.[/dim]")
@@ -767,182 +758,27 @@ def remove(
     console.print(f"[green]Removed agent: {name}[/green]")
 
 
-@agent_app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-@profiled_command("agent run")
-def run(  # DOC: README.md, docs/AGENTS.md
-    ctx: typer.Context,
-    name: str = typer.Argument(..., help="Agent instance name to run"),
-    folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
-    host_script: str = typer.Option(
-        None,
-        "--host-script",
-        help="Run/reapply a host setup script before booting this existing agent",
-    ),
-    yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
-    fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
-    detach: bool = typer.Option(
-        False,
-        "--detach",
-        "-d",
-        help="Run the agent in a persistent host session or its configured manager",
-    ),
-    sandbox_only: bool = typer.Option(False, "--sandbox-only", help="Boot only the sandbox; do not launch an agent or hooks"),
-    interactive: bool = typer.Option(False, "--interactive", help="Temporarily run a stopped managed agent's interactive harness"),
-    mount: list[str] = typer.Option(
-        [],
-        "--mount",
-        "-m",
-        help="Extra folder to mount (/local/path:/container/path[:ro], repeatable, one-off)",
-    ),
-    port: list[str] = typer.Option(
-        [],
-        "--port",
-        help="Expose container port to host (host_port:container_port, repeatable, one-off)",
-    ),
-    dangerously_allow_unowned: bool = typer.Option(
-        False,
-        "--dangerously-allow-unowned",
-        help="Allow mounting directories you don't own",
-    ),
-    snapshot: bool = typer.Option(
-        False,
-        "--snapshot",
-        help="Enable warm-boot snapshot capture/restore (currently disabled by "
-             "default while we investigate a VZ save incompatibility with the "
-             "new vsock proxy relay).",
-    ),
-    profile: bool = typer.Option(
-        False,
-        "--profile",
-        help="Profile lifecycle phases and write a JSONL timing artifact",
-    ),
-    no_rename_window: bool = typer.Option(
-        False,
-        "--no-rename-window",
-        help="Don't rename the invoking tmux window to the agent name.",
-    ),
+@agent_app.command()
+@profiled_command("agent start")
+def start(
+    name: str = typer.Argument(..., help="Agent instance name"),
+    arguments: list[str] = typer.Argument(None, help="One-launch arguments after --"),
+    foreground: bool = typer.Option(False, "--foreground", help="Use the caller's terminal"),
+    sandbox_only: bool = typer.Option(False, "--sandbox-only", help="Start only the sandbox"),
+    dangerously_allow_unowned: bool = typer.Option(False, "--dangerously-allow-unowned"),
+    profile: bool = typer.Option(False, "--profile", help="Profile the native lifecycle call"),
 ) -> None:
-    """Run the coding agent in an existing or newly started sandbox.
+    """Start the configured agent through the installed native CLI.
 
-    Starts SafeYolo if not running, then launches the agent container.
-    Yolo mode is on by default (auto-accepts permission prompts).
-    Use --no-yolo to require manual approval.
-
-    Pass agent-specific flags after '--':
-
-        safeyolo agent run boris -- --continue
-        safeyolo agent run boris -- --resume my-session
-
-    Detach mode starts a persistent host session (or the configured manager):
-
-        safeyolo agent run myproject --detach
-        safeyolo agent attach myproject # reconnect to the same agent
-        safeyolo agent stop myproject   # stop when done
-
-    Use --sandbox-only to boot without running an agent. 'agent shell' opens
-    an independent guest shell and never launches the configured harness.
-
-    If user_default_args is configured (via 'agent config'), those args
-    are used by default. Use --fresh to ignore them.
-
-    Persistent mounts (from 'agent add --mount' or 'agent config --add-mount')
-    are always included. Use --mount/-m here for additional one-off mounts.
-    Use --host-script to apply or refresh a host setup script on an existing
-    agent before boot; the script can update /home/agent and
-    .safeyolo-command.
-
-    Examples:
-
-        safeyolo agent run myproject
-        safeyolo agent run myproject -f ~/other/folder
-        safeyolo agent run myproject --no-yolo
-        safeyolo agent run myproject --detach
-        safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
-        safeyolo agent run myproject --mount ~/data:/data:ro
-        safeyolo agent run myproject --port 6080:6080
-        safeyolo agent run myproject -- --continue
-        safeyolo agent run myproject --fresh
+    Use native agent configure for workspace, memory, mounts and launchers.
+    Native agent start accepts --foreground, --sandbox-only and -- ARGUMENTS.
     """
-    _t("agent command validation and host setup")
-    if sandbox_only and interactive:
-        raise typer.BadParameter("--sandbox-only does not launch an interactive agent")
-    # ctx.args contains everything after '--'
-    agent_args = ctx.args if ctx.args else None
-
-    # Validate transient mount specs
-    parsed_mounts = [_parse_mount(m) for m in mount]
-
-    # Validate transient port specs
-    parsed_ports = [_parse_port(p) for p in port]
-
-    host_script_path = _resolve_host_script_path(host_script)
-    if host_script_path is not None:
-        metadata = _load_agent_metadata(name)
-        if not metadata:
-            console.print(f"[red]Agent '{name}' is not configured.[/red]")
-            console.print("Create it first with: [bold]safeyolo agent add[/bold]")
-            raise typer.Exit(1)
-        folder_for_script = folder or metadata.get("folder")
-        if not folder_for_script:
-            console.print(f"[red]Agent '{name}' has no configured folder.[/red]")
-            raise typer.Exit(1)
-        folder_path = Path(folder_for_script).expanduser().resolve()
-        if not folder_path.is_dir():
-            console.print(f"[red]Folder not found: {folder_path}[/red]")
-            raise typer.Exit(1)
-        _check_project_ownership(folder_path, dangerously_allow_unowned)
-        _run_host_script_for_agent(
-            name=name,
-            host_script_path=host_script_path,
-            folder_str=str(folder_path),
-        )
-
-        # The setup script can take arbitrarily long. Persist only its selected
-        # path against the latest authoritative record so a concurrent config,
-        # reservation, grant, or identity update cannot be overwritten by the
-        # metadata snapshot loaded before the script ran.
-        def persist_host_script(current):
-            current["host_script"] = str(host_script_path)
-            if host_script in {"@codex-coord", "@pi-coord"}:
-                current["launcher"] = "supervisor"
-
-        try:
-            mutate_agent(name, persist_host_script)
-        except KeyError:
-            console.print(
-                f"[red]Agent '{name}' was removed while its host script was running.[/red]"
-            )
-            console.print(
-                "The setup script completed, but SafeYolo did not recreate the "
-                "deleted configuration."
-            )
-            raise typer.Exit(1)
-
-    associate_agent_pane(name)
-    # A terminal reached over SSH is a viewer, not a durable process owner.
-    # Host tmux already provides ownership when invoked inside that session.
-    remote_viewer = bool(os.environ.get("SSH_CONNECTION") and not os.environ.get("TMUX"))
-    exit_code = _run_agent(
-        name,
-        folder_override=folder,
-        yolo=yolo,
-        dangerously_allow_unowned=dangerously_allow_unowned,
-        agent_args=agent_args,
-        skip_default_args=fresh,
-        extra_mounts=parsed_mounts if parsed_mounts else None,
-        extra_ports=parsed_ports if parsed_ports else None,
-        launch_mode="sandbox" if sandbox_only else "background" if detach or remote_viewer else "foreground",
-        interactive=interactive,
-        no_snapshot=not snapshot,
-        rename_tmux_window=not detach and not no_rename_window,
-    )
-    if remote_viewer and not detach and not sandbox_only and exit_code == 0:
-        from ..agent_launchers import attach_agent, read_launch
-
-        current = read_launch(name)
-        if current and current["launcher"]["kind"] != "supervisor":
-            exit_code = attach_agent(name)
-    raise typer.Exit(exit_code)
+    if foreground and sandbox_only:
+        raise typer.BadParameter("--foreground and --sandbox-only select different launch modes")
+    raise typer.Exit(start_native_agent(
+        name, launch_mode="sandbox" if sandbox_only else "foreground" if foreground else "background",
+        dangerously_allow_unowned=dangerously_allow_unowned, agent_args=arguments or None,
+    ))
 
 
 @agent_app.command()
@@ -989,7 +825,7 @@ def shell(  # DOC: docs/agent-debugging.md
 
     if not plat.is_sandbox_running(name):
         console.print(f"[red]Agent '{name}' is not running.[/red]")
-        console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
+        console.print(f"Start it with: [bold]safeyolo agent start {name}[/bold]")
         raise typer.Exit(1)
 
     if persistent:
@@ -1095,7 +931,7 @@ def preview(  # DOC: README.md
     plat = get_platform()
     if not plat.is_sandbox_running(name):
         console.print(f"[red]Agent '{name}' is not running.[/red]")
-        console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
+        console.print(f"Start it with: [bold]safeyolo agent start {name}[/bold]")
         raise typer.Exit(1)
 
     try:
@@ -1263,7 +1099,7 @@ def desktop(
     platform = get_platform()
     if not platform.is_sandbox_running(name):
         console.print(f"[red]Agent '{escape(name)}' is not running.[/red]")
-        console.print(f"Start it with: [bold]safeyolo agent run {escape(name)}[/bold]")
+        console.print(f"Start it with: [bold]safeyolo agent start {escape(name)}[/bold]")
         raise typer.Exit(1)
 
     if status or stop:
@@ -1400,22 +1236,13 @@ def stop(
     _validate_instance_name(name)
 
     from ..agent_lifecycle import AgentLifecycleError, stop_agent_by_name
-    from ..platform import get_platform
-
-    was_running = get_platform().is_sandbox_running(name)
-    if was_running:
-        console.print(f"Stopping {name}...")
     try:
-        stop_agent_by_name(name, on_phase=_t)
+        observed = stop_agent_by_name(name, on_phase=_t)
     except AgentLifecycleError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
-        if "command supervisor" in str(exc):
-            console.print(f"Run `safeyolo agent diag {name}` and retry.")
+        console.print(f"Run `safeyolo agent diagnostics {name}` and retry.")
         raise typer.Exit(1)
-    if was_running:
-        console.print(f"[green]Stopped {name}.[/green]")
-    else:
-        console.print(f"Agent '{name}' sandbox is not running; command supervisor stopped.")
+    console.print_json(data=observed)
 
 
 @agent_app.command(name="rebuild-snapshot")

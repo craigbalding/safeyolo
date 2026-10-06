@@ -111,10 +111,5 @@ app.add_typer(vault_app, name="vault")
 app.add_typer(services_app, name="services")
 
 
-# Convenience aliases share the lifecycle commands and their Typer options.
-app.command(name="up")(start)
-app.command(name="down")(stop)
-
-
 if __name__ == "__main__":
     app()

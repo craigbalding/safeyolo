@@ -1,161 +1,102 @@
-"""Tests for the typed agent lifecycle used by operator clients."""
+"""Retained workflow callers delegate to the installed native lifecycle."""
 
-from unittest.mock import create_autospec, patch
+import fcntl
+import json
+import subprocess
+import sys
 
 import pytest
+from typer.testing import CliRunner
 
-from safeyolo.agent_lifecycle import AgentLifecycleError, list_agent_runtimes, start_agent, stop_agent
-from safeyolo.platform import AgentPlatform
-
-
-@pytest.mark.parametrize(("script", "expected"), [
-    ("codex-host-setup.sh", "codex"),
-    ("codex-coord-host-setup.sh", "codex"),
-    ("pi-host-setup.sh", "pi"),
-    ("pi-coord-host-setup.sh", "pi"),
-    ("claude-host-setup.sh", "claude"),
-    ("mise-shell-host-setup.sh", "shell"),
-    ("custom-codex-wrapper.sh", None),
-    (None, None),
-])
-def test_inventory_reports_configured_harness_without_probing_guest(script, expected):
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = False
-    metadata = {"agent_id": "ag-probe"}
-    if script:
-        metadata["host_script"] = f"/installed/contrib/{script}"
-    with (
-        patch("safeyolo.agent_lifecycle.load_all_agents", return_value={"probe": metadata}, autospec=True),
-        patch("safeyolo.agent_lifecycle.load_agent", autospec=True) as reload_metadata,
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch", return_value={"agent_state": "stopped"}, autospec=True),
-    ):
-        runtime, = list_agent_runtimes()
-    assert runtime.to_dict()["harness"] == expected
-    assert runtime.agent_state == "stopped"
-    reload_metadata.assert_not_called()
-    platform.exec_in_sandbox.assert_not_called()
+from safeyolo import agent_lifecycle as lifecycle
+from safeyolo.cli import app
 
 
-def test_start_agent_uses_only_fixed_configured_options():
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = True
-    with (
-        patch(
-            "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe", {"agent_id": "ag-probe"}),
-            autospec=True,
-        ),
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch",
-              return_value={"agent_state": "stopped"}, autospec=True),
-        patch(
-            "safeyolo.agent_lifecycle._run_agent",
-            return_value=0,
-            autospec=True,
-        ) as run,
-    ):
-        result = start_agent("ag-probe")
+def test_native_inventory_preserves_degraded_runtime_and_terminal_dimensions(monkeypatch):
+    observed = {"agent_id": "ag-marker", "name": "marker", "runtime_state": "degraded",
+                "control_state": "unavailable", "agent_state": "unknown", "terminal_state": "running"}
+    monkeypatch.setattr(lifecycle, "_native_result", lambda _args: {"agents": [observed]})
+    assert lifecycle.list_agent_runtimes() == [observed]
 
-    assert result.agent_id == "ag-probe"
-    assert result.name == "probe"
-    assert result.sandbox_state == "ready"
-    # A successful launch request is not proof of a live coding-agent session.
-    assert result.agent_state == "stopped"
-    run.assert_called_once_with(
-        name="probe",
-        yolo=True,
-        launch_mode="background",
-        interactive=False,
-        no_snapshot=True,
-        rename_tmux_window=False,
+
+def test_missing_native_owner_cannot_start_a_python_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(lifecycle.AgentLifecycleError, match="Native CLI is missing"):
+        lifecycle.start_native_agent("marker")
+
+
+def test_workflow_child_uses_the_selected_lock_and_leaves_all_parent_locks_held(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    executable = tmp_path / "bin/safeyolo"
+    executable.parent.mkdir()
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import fcntl,json,os,sys\n"
+        "from pathlib import Path\n"
+        "root=Path(sys.argv[2]); name=sys.argv[5]\n"
+        "fd=int(os.environ['SAFEYOLO_HOST_SETUP_LOCK_FD'])\n"
+        "assert os.fstat(fd).st_ino==(root/'agents'/name/'host-setup.lock').stat().st_ino\n"
+        "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+        "(root/'arguments.json').write_text(json.dumps(sys.argv[3:]))\n"
     )
+    executable.chmod(0o755)
+    with lifecycle._agent_host_setup_lock("marker"), lifecycle._agent_host_setup_lock("other"):
+        assert lifecycle.start_native_agent(
+            "marker", launch_mode="background", agent_args=["--model", "fixture model", "--literal", "$(marker)"],
+        ) == 0
+        for name in ("marker", "other"):
+            with (tmp_path / "agents" / name / "host-setup.lock").open("r+") as contender:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert json.loads((tmp_path / "arguments.json").read_text()) == [
+        "agent", "start", "marker", "--", "--model", "fixture model", "--literal", "$(marker)",
+    ]
+    assert lifecycle._held_setup_locks() == {}
+    for name in ("marker", "other"):
+        with (tmp_path / "agents" / name / "host-setup.lock").open("r+") as contender:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def test_start_agent_rejects_unknown_identity():
-    with patch(
-        "safeyolo.agent_lifecycle.get_agent_by_id",
-        return_value=None,
-        autospec=True,
-    ):
-        with pytest.raises(AgentLifecycleError, match="Agent not found") as caught:
-            start_agent("ag-missing")
-    assert caught.value.status_code == 404
+@pytest.mark.parametrize(("options", "expected"), [
+    ({}, ["--foreground"]),
+    ({"launch_mode": "sandbox", "dangerously_allow_unowned": True},
+     ["--sandbox-only", "--dangerously-allow-unowned"]),
+    ({"launch_mode": "background", "agent_args": []}, ["--"]),
+])
+def test_native_start_preserves_local_launch_selection_and_empty_argument_override(monkeypatch, options, expected):
+    calls = []
+    def invoke(arguments, **kwargs):
+        calls.append((arguments, kwargs))
+        return subprocess.CompletedProcess(arguments, 19)
+    monkeypatch.setattr(lifecycle, "_native_cli", invoke)
+    assert lifecycle.start_native_agent("marker", **options) == 19
+    assert calls == [(["agent", "start", "marker", *expected], {"setup_name": "marker"})]
 
 
-@pytest.mark.parametrize("state", ["starting", "running", "stopping", "unknown"])
-def test_start_agent_rejects_state_the_operator_client_cannot_start(state):
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = True
-    with (
-        patch("safeyolo.agent_lifecycle.get_agent_by_id",
-              return_value=("probe", {"agent_id": "ag-probe"}), autospec=True),
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch",
-              return_value={"agent_state": state}, autospec=True),
-        patch("safeyolo.commands.agent._run_agent", autospec=True) as run,
-        pytest.raises(AgentLifecycleError, match=f"Agent cannot start while {state}") as caught,
-    ):
-        start_agent("ag-probe")
-    assert caught.value.status_code == 409
-    run.assert_not_called()
+def test_native_failure_does_not_become_stopped_or_trigger_python_cleanup(monkeypatch):
+    monkeypatch.setattr(lifecycle, "_native_cli", lambda *_args, **_kwargs:
+                        subprocess.CompletedProcess([], 1, "", "runtime identity is unknown"))
+    with pytest.raises(lifecycle.AgentLifecycleError, match="runtime identity is unknown"):
+        lifecycle.stop_agent_by_name("marker")
 
 
-def test_start_agent_preserves_failure_detail_for_operator(caplog):
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = False
-    with (
-        patch(
-            "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe\r\n\x1b[31m\u202e", {"agent_id": "ag-probe"}),
-            autospec=True,
-        ),
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch",
-              return_value={"agent_state": "stopped"}, autospec=True),
-        patch(
-            "safeyolo.agent_lifecycle._run_agent",
-            side_effect=RuntimeError("configured workspace is unavailable"),
-            autospec=True,
-        ),
-        pytest.raises(
-            AgentLifecycleError,
-            match=(
-                "Agent start failed: RuntimeError: "
-                "configured workspace is unavailable"
-            ),
-        ),
-    ):
-        start_agent("ag-probe")
-
-    record = caplog.records[-1]
-    assert record.getMessage() == "Agent probe? failed to start"
-    assert record.exc_info is not None
-    assert str(record.exc_info[1]) == "configured workspace is unavailable"
+@pytest.mark.parametrize("output", ["{", "[]", "{}", '{"agents":false}', '{"agents":[false]}'])
+def test_incomplete_native_inventory_is_an_error(monkeypatch, output):
+    monkeypatch.setattr(lifecycle, "_native_cli", lambda *_args, **_kwargs:
+                        subprocess.CompletedProcess([], 0, output, ""))
+    with pytest.raises(lifecycle.AgentLifecycleError):
+        lifecycle.list_agent_runtimes()
 
 
-def test_stop_agent_stops_supervisor_and_running_sandbox():
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.side_effect = [True, False]
-    with (
-        patch(
-            "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe", {"agent_id": "ag-probe"}),
-            autospec=True,
-        ),
-        patch(
-            "safeyolo.agent_command_supervisor.request_command_supervisor_stop",
-            return_value=True,
-            autospec=True,
-        ) as stop_supervisor,
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True),
-        patch("safeyolo.events.write_event", autospec=True) as write_event,
-    ):
-        result = stop_agent("ag-probe")
-
-    stop_supervisor.assert_called_once_with("probe")
-    platform.stop_sandbox.assert_called_once_with("probe")
-    assert result.sandbox_state == "stopped"
-    assert result.agent_state == "stopped"
-    assert write_event.call_args.args[0] == "agent.stopped"
+def test_retained_command_forwards_native_start_arguments_and_uses_start_verb(monkeypatch):
+    calls = []
+    def invoke(arguments, **kwargs):
+        calls.append((arguments, kwargs))
+        return subprocess.CompletedProcess(arguments, 9)
+    monkeypatch.setattr(lifecycle, "_native_cli", invoke)
+    result = CliRunner().invoke(app, ["agent", "start", "marker", "--foreground", "--", "argument with spaces"])
+    assert result.exit_code == 9, result.output
+    assert calls == [(["agent", "start", "marker", "--foreground", "--", "argument with spaces"], {"setup_name": "marker"})]
+    absent = CliRunner().invoke(app, ["agent", "run", "marker"])
+    assert absent.exit_code != 0
+    assert len(calls) == 1

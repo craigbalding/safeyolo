@@ -59,16 +59,13 @@ def start_command(guest):
 
 
 @pytest.mark.parametrize("signal_name", ["terminate", "kill"])
-def test_manual_command_runs_without_host_session_and_cannot_launch_twice(guest, signal_name):
-    from safeyolo.commands.agent import _run_agent
-
+def test_manual_command_runs_without_host_session_and_observation_ends_on_exit(guest, signal_name):
     assert launchers.observe_launch("probe", sandbox_ready=True)["agent_state"] == "stopped"
     process = start_command(guest)
     try:
         observed = launchers.observe_launch("probe", sandbox_ready=True)
         assert observed == {"agent_state": "running", "launcher": {"kind": "manual", "source": "guest"},
                             "attachable": False}
-        assert _run_agent("probe", launch_mode="background") == 0
         guest[3].exec_in_sandbox.assert_not_called()
         with pytest.raises(RuntimeError, match="original terminal"):
             launchers.attach_agent("probe")
@@ -132,8 +129,7 @@ def test_custom_script_without_shebang_preserves_arguments_and_exit_code(guest, 
 
 
 @pytest.mark.parametrize("failure", ["missing-socket", "missing-executable", "unexpected-error"])
-def test_transport_start_failure_is_unknown_and_prevents_duplicate_launch(guest, failure):
-    from safeyolo.commands.agent import _run_agent
+def test_transport_start_failure_reports_unknown(guest, failure):
     from safeyolo.platform.darwin import DarwinPlatform
 
     (guest[1] / "stale.json").write_text("{}")
@@ -154,7 +150,6 @@ def test_transport_start_failure_is_unknown_and_prevents_duplicate_launch(guest,
     assert observed["launcher"] == {"kind": "manual", "source": "guest"}
     assert observed["attachable"] is False
     assert expected_error in observed["error"]
-    assert _run_agent("probe", launch_mode="background") == 0
     platform.exec_in_sandbox.assert_not_called()
 
 

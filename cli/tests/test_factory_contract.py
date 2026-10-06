@@ -7,7 +7,7 @@ import os
 import runpy
 import shlex
 import signal
-import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -505,10 +505,14 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
         )
         (auth.parent / ".safeyolo-provenance.json").chmod(0o600)
 
-    monkeypatch.setattr("safeyolo.commands.factory._run_agent", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("safeyolo.commands.factory.start_native_agent", lambda *args, **kwargs: 0)
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.return_value = False
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.native_agent_status",
+        lambda name: {"runtime_state": "running" if platform.is_sandbox_running(name) else "stopped"},
+    )
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
     monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
     monkeypatch.setattr(
@@ -536,18 +540,15 @@ def test_factory_run_executes_staged_worker_commands(
     tmp_config_dir,
     monkeypatch,
 ):
-    """Exercise real factory and agent launch logic with small shell workers."""
+    """Exercise staged Factory workers through the controlled native CLI boundary."""
     from safeyolo.agents_store import save_agent
-    from safeyolo.vm import get_agent_home_dir, get_agent_status_dir
+    from safeyolo.vm import get_agent_home_dir
 
     names = ("relay", "forge", "lens")
-    running: set[str] = set()
     coord_ready = False
     homes: dict[str, Path] = {}
     markers: dict[str, Path] = {}
-    rootfs: dict[str, Path] = {}
     staged_harnesses: dict[str, str] = {}
-    worker_commands: dict[str, str] = {}
 
     for index, name in enumerate(names, start=1):
         workspace = tmp_path / f"{name}-workspace"
@@ -556,31 +557,6 @@ def test_factory_run_executes_staged_worker_commands(
         homes[name] = get_agent_home_dir(name)
         homes[name].mkdir(parents=True)
         markers[name] = tmp_path / f"{name}.pid"
-        rootfs[name] = tmp_path / f"{name}-rootfs"
-        rootfs[name].mkdir()
-
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.agent_rootfs_path.side_effect = lambda name: rootfs[name]
-    platform.is_sandbox_running.side_effect = lambda name: name in running
-    platform.setup_networking.side_effect = lambda index: {
-        "host_ip": "127.0.0.1",
-        "guest_ip": f"10.200.0.{index + 1}",
-        "attribution_ip": f"10.200.0.{index + 1}",
-        "subnet": None,
-        "needs_bridge_socket": False,
-    }
-
-    def start_sandbox(**kwargs):
-        assert coord_ready
-        name = kwargs["name"]
-        running.add(name)
-        status = get_agent_status_dir(name)
-        status.mkdir(parents=True, exist_ok=True)
-        (status / "per-run-started").write_text("")
-        return os.getpid()
-
-    def stop_sandbox(name):
-        running.discard(name)
 
     def stage_worker(*, name, host_script_path, **_kwargs):
         staged_harnesses[name] = host_script_path.name
@@ -588,67 +564,40 @@ def test_factory_run_executes_staged_worker_commands(
         command.write_text(
             "#!/bin/sh\n"
             f"printf '%s\\n' \"$$\" > {shlex.quote(str(markers[name]))}\n"
+            f"printf '%s\n' \"$@\" > {shlex.quote(str(markers[name].with_suffix('.args')))}\n"
             "trap 'exit 0' TERM INT\n"
             "while :; do sleep 1; done\n"
         )
         command.chmod(0o755)
 
-    def exec_in_sandbox(name, command, user="agent", interactive=True):
-        assert user == "agent"
-        assert interactive is False
-        local_command = command.replace(
-            "/home/agent/.safeyolo-command",
-            shlex.quote(str(homes[name] / ".safeyolo-command")),
-        )
-        env = {**os.environ, "HOME": str(homes[name])}
-        return subprocess.run(
-            ["bash", "-c", local_command],
-            env=env,
-            timeout=5,
-            check=False,
-        ).returncode
-
-    def start_command_supervisor(name, command):
-        # The factory test uses a fake platform, so exercise the new
-        # host-supervisor boundary with a local equivalent of its sandbox
-        # command rather than invoking the real runsc platform.
-        local_command = command.replace(
-            "/home/agent/.safeyolo-command",
-            shlex.quote(str(homes[name] / ".safeyolo-command")),
-        )
-        env = {**os.environ, "HOME": str(homes[name])}
-        worker_commands[name] = command
-        worker = subprocess.Popen(
-            ["bash", "-c", local_command],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        pids.append(worker.pid)
-
-    platform.start_sandbox.side_effect = start_sandbox
-    platform.stop_sandbox.side_effect = stop_sandbox
-    platform.exec_in_sandbox.side_effect = exec_in_sandbox
-
-    monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
-    monkeypatch.setattr("safeyolo.proxy.is_proxy_running", lambda: True)
-    monkeypatch.setattr(
-        "safeyolo.agents_store.reserve_agent_network_slot",
-        lambda name: names.index(name),
+    # This executable is a controlled native-CLI stand-in. The native lock
+    # adoption and lifecycle behavior have their own real CLI/Rust probes.
+    executable = tmp_config_dir / "bin/safeyolo"
+    executable.parent.mkdir(exist_ok=True)
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import fcntl,json,os,subprocess,sys\n"
+        "from pathlib import Path\n"
+        "root=Path(sys.argv[2]); operation,name=sys.argv[4:6]\n"
+        "if operation=='status': print(json.dumps({'runtime_state':'stopped'})); sys.exit(0)\n"
+        "fd=int(os.environ['SAFEYOLO_HOST_SETUP_LOCK_FD'])\n"
+        "assert os.fstat(fd).st_ino==(root/'agents'/name/'host-setup.lock').stat().st_ino\n"
+        "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+        "for role in ('relay','forge','lens'):\n"
+        " assert (root/'agents'/role/'home/.safeyolo-command').is_file()\n"
+        " with (root/'agents'/role/'host-setup.lock').open('r+') as contender:\n"
+        "  try: fcntl.flock(contender,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+        "  except BlockingIOError: pass\n"
+        "  else: raise AssertionError('Factory setup barrier was released')\n"
+        "args=sys.argv[sys.argv.index('--')+1:] if '--' in sys.argv else []\n"
+        "worker=subprocess.Popen([str(root/'agents'/name/'home/.safeyolo-command'),*args], "
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
+        "start_new_session=True)\n"
+        "(root/f'{name}.child').write_text(str(worker.pid))\n"
     )
-    monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda *args, **kwargs: None)
-    monkeypatch.setattr("safeyolo.agent_lifecycle.write_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr("safeyolo.vm.prepare_config_share", lambda **kwargs: None)
-    monkeypatch.setattr(
-        "safeyolo.sockets.path_for",
-        lambda name, _ip: tmp_path / f"{name}.sock",
-    )
+    executable.chmod(0o755)
+
     monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", stage_worker)
-    monkeypatch.setattr(
-        "safeyolo.agent_command_supervisor.start_command_supervisor",
-        start_command_supervisor,
-    )
 
     def start_coord(*, ready_timeout):
         nonlocal coord_ready
@@ -700,13 +649,16 @@ def test_factory_run_executes_staged_worker_commands(
             "forge": "pi-coord-host-setup.sh",
             "lens": "codex-coord-host-setup.sh",
         }
-        assert "--provider openai-codex --model gpt-5.6-luna --thinking xhigh" in worker_commands["forge"]
-        assert "--provider" not in worker_commands["relay"]
-        assert "--provider" not in worker_commands["lens"]
+        assert markers["forge"].with_suffix(".args").read_text().splitlines() == [
+            "--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "xhigh",
+        ]
+        assert markers["relay"].with_suffix(".args").read_text().strip() == ""
+        assert markers["lens"].with_suffix(".args").read_text().strip() == ""
         pids = [int(marker.read_text()) for marker in markers.values()]
         for pid in pids:
             os.kill(pid, 0)
     finally:
+        pids = [int(path.read_text()) for path in tmp_config_dir.glob("*.child")]
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -734,6 +686,10 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, tmp_config_di
     )
     monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.native_agent_status",
+        lambda name: {"runtime_state": "running" if platform.is_sandbox_running(name) else "stopped"},
+    )
     monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", lambda **_kwargs: None)
     monkeypatch.setattr("safeyolo.commands.factory.mutate_agent", lambda *_args: None)
     monkeypatch.setattr(
@@ -741,7 +697,7 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, tmp_config_di
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("nats unavailable")),
     )
     monkeypatch.setattr(
-        "safeyolo.commands.factory._run_agent",
+        "safeyolo.commands.factory.start_native_agent",
         lambda name, **_kwargs: launched.append(name) or 0,
     )
 
@@ -778,6 +734,10 @@ def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
     )
     monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.native_agent_status",
+        lambda name: {"runtime_state": "running" if platform.is_sandbox_running(name) else "stopped"},
+    )
     monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", lambda **_kwargs: None)
     monkeypatch.setattr("safeyolo.commands.factory.mutate_agent", lambda *_args: None)
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
@@ -787,7 +747,7 @@ def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
         lambda _room, _names: (_ for _ in ()).throw(RuntimeError("grant failed")),
     )
     monkeypatch.setattr(
-        "safeyolo.commands.factory._run_agent",
+        "safeyolo.commands.factory.start_native_agent",
         lambda name, **_kwargs: launched.append(name) or 0,
     )
 
@@ -821,13 +781,17 @@ def test_factory_preflights_all_roles_before_staging(tmp_path, tmp_config_dir, m
     monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr(
+        "safeyolo.commands.factory.native_agent_status",
+        lambda name: {"runtime_state": "running" if platform.is_sandbox_running(name) else "stopped"},
+    )
+    monkeypatch.setattr(
         "safeyolo.commands.factory._run_host_script_for_agent",
         lambda **kwargs: staged.append(kwargs["name"]),
     )
 
     from safeyolo.commands.factory import _run_snapshot
 
-    with pytest.raises(FactoryContractError, match="agent 'lens' is already running"):
+    with pytest.raises(FactoryContractError, match="agent 'lens' runtime is running"):
         _run_snapshot(tmp_path / "snapshot.json", payload)
 
     assert staged == []

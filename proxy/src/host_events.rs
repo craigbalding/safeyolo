@@ -7,6 +7,11 @@ use serde_json::{Value, json};
 use crate::Error;
 
 fn log_path() -> PathBuf {
+    if let Ok(config) = crate::native_config::read(&crate::host_platform::config_path())
+        && let Some(path) = config.audit_log_path
+    {
+        return path;
+    }
     std::env::var_os("SAFEYOLO_LOG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| {

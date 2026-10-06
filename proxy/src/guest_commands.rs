@@ -32,6 +32,7 @@ pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), Error> {
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 

@@ -76,6 +76,13 @@ for asset in guest-init guest-init-static guest-init-per-run guest-proxy-forward
   cp -- "$repository/cli/src/safeyolo/$asset.sh" "$root/assets/guest/$asset"
   chmod 0755 "$root/assets/guest/$asset"
 done
+cp -- "$repository/guest/rootfs/safeyolo-sudo" "$root/assets/guest/guest-sudo"
+chmod 0755 "$root/assets/guest/guest-sudo"
+mkdir -p -- "$root/assets/launchers"
+for launcher in tmux-window tmux-pane tmux-common; do
+  cp -- "$repository/cli/src/safeyolo/launchers/$launcher.sh" "$root/assets/launchers/$launcher.sh"
+  chmod 0755 "$root/assets/launchers/$launcher.sh"
+done
 "$root/bin/safeyolo" --root "$root" init
 echo "$cli_identity"
 echo "Installed: $root/bin/safeyolo"

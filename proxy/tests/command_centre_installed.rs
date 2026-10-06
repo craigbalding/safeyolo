@@ -32,6 +32,11 @@ async fn installed_command_centre_keeps_host_identity_and_serves_client_shapes()
     )
     .unwrap();
     std::fs::write(
+        root.join("config.toml"),
+        "policy_file = \"policy.toml\"\nlisteners = []\n",
+    )
+    .unwrap();
+    std::fs::write(
         root.join("native-policy.toml"),
         "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"allow\"\n",
     )
@@ -124,7 +129,9 @@ fi
     let identity = identity.1;
     assert_eq!(identity["safeyolo_instance_id"], HOST_ID);
     assert_eq!(identity["host_user"], "operator");
-    assert_eq!(identity["host_python"], "/no/python/interpreter");
+    assert!(identity.get("host_python").is_none());
+    assert!(identity["host_executable"].is_null());
+    assert_eq!(identity["host_root"], root.to_str().unwrap());
     assert_eq!(
         identity["command_centre_events"],
         json!({"enabled":true,"port":events_port})
@@ -182,18 +189,28 @@ fi
         .0,
         404
     );
-    assert_eq!(
-        admin(
-            port,
-            TOKEN,
-            "POST",
-            &format!("/admin/agents/{AGENT_ID}/stop"),
-            br#"{"command":"arbitrary"}"#
-        )
-        .await
-        .0,
-        400
-    );
+    for body in [
+        br#"{"command":"arbitrary"}"#.as_slice(),
+        br#"{"executable":"/bin/sh","argv":["-c","touch marker"]}"#,
+        br#"{"launcher":"/operator/hook"}"#,
+        br#"{"workspace":"/operator/work"}"#,
+        b"[]",
+        b"true",
+        b"42",
+    ] {
+        assert_eq!(
+            admin(
+                port,
+                TOKEN,
+                "POST",
+                &format!("/admin/agents/{AGENT_ID}/stop"),
+                body,
+            )
+            .await
+            .0,
+            400,
+        );
+    }
     assert_eq!(
         admin(port, TOKEN, "POST", "/admin/agents/%2e%2e/stop", b"")
             .await

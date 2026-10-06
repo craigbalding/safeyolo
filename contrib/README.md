@@ -42,10 +42,15 @@ The normal `@codex` and `@pi` setups stay interactive. Factory snapshots select
 the matching `@codex-coord` or `@pi-coord` setup per role. The standalone Codex
 form is also available:
 
+Run from a trusted SafeYolo checkout outside the worker's writable shares.
+Stop the existing worker before applying the host setup:
+
 ```bash
+safeyolo agent stop worker
 SAFEYOLO_CODEX_COORD_ROOMS=backlog \
 SAFEYOLO_CODEX_COORDINATORS=relay \
-  safeyolo agent run worker --host-script @codex-coord
+  safeyolo agent configure worker --host-script "$PWD/contrib/codex-coord-host-setup.sh"
+safeyolo agent start worker
 ```
 
 See [the supervised worker contract](../docs/codex-coord-supervisor.md) before
@@ -53,7 +58,7 @@ you enable this mode.
 
 ## Agent launchers and explicit supervision
 
-Ordinary `safeyolo agent run NAME --detach` starts the interactive coding agent
+Ordinary `safeyolo agent start NAME` starts the interactive coding agent
 in a persistent host tmux session. `--sandbox-only` boots without a harness.
 Factories and `@codex-coord` / `@pi-coord` explicitly select the existing
 guest-PID-1-owned supervisor; an executable guest entrypoint no longer implies

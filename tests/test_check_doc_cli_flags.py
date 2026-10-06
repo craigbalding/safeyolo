@@ -23,6 +23,22 @@ def _load_module():
 mod = _load_module()
 
 
+def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
+    surface = mod._native_cli_surface()
+    for invocation in (
+        "safeyolo agent create marker --workspace PATH --memory 640",
+        "safeyolo agent start marker --foreground",
+        "safeyolo agent shell --persistent marker -c bash",
+        "safeyolo agent diagnostics marker",
+        "safeyolo agent recover marker --timeout 15",
+    ):
+        assert mod._validate_line(invocation, surface) is None
+    assert "--root" in surface[""]
+    assert mod._validate_line("safeyolo agent start marker --invented", surface)
+    assert mod._validate_line("safeyolo agent up marker", surface)
+    assert "agent run" not in surface
+
+
 # ---------------------------------------------------------------------------
 # _extract_safeyolo_invocations
 # ---------------------------------------------------------------------------

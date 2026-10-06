@@ -1,10 +1,8 @@
 //! Configured agents in the host-owned policy.toml.
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
-    os::fd::AsRawFd,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -13,7 +11,7 @@ use toml_edit::{DocumentMut, Item, value};
 
 use crate::Error;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 pub(crate) struct Agent {
     pub(crate) name: String,
     pub(crate) id: String,
@@ -24,6 +22,7 @@ pub(crate) struct Agent {
     pub(crate) rootfs_overlay: Option<String>,
     pub(crate) user_default_args: Vec<String>,
     pub(crate) mounts: Vec<String>,
+    pub(crate) dangerously_allow_unowned: bool,
 }
 
 impl Agent {
@@ -31,6 +30,29 @@ impl Agent {
         let table = item
             .as_table_like()
             .ok_or("agent metadata must be a TOML table")?;
+        for key in [
+            "agent_id",
+            "folder",
+            "launcher",
+            "host_script",
+            "rootfs_overlay",
+        ] {
+            if table.get(key).is_some_and(|item| item.as_str().is_none()) {
+                return Err(format!("agent {key} must be a string").into());
+            }
+        }
+        if table
+            .get("memory_mb")
+            .is_some_and(|item| item.as_integer().is_none_or(|value| value <= 0))
+        {
+            return Err("agent memory_mb must be a positive integer".into());
+        }
+        if table
+            .get("dangerously_allow_unowned")
+            .is_some_and(|item| item.as_bool().is_none())
+        {
+            return Err("dangerously_allow_unowned must be a Boolean".into());
+        }
         let string = |key| table.get(key).and_then(Item::as_str).map(str::to_owned);
         let integer = |key| table.get(key).and_then(Item::as_integer);
         let strings = |key| -> Result<Vec<String>, Error> {
@@ -60,38 +82,22 @@ impl Agent {
             rootfs_overlay: string("rootfs_overlay"),
             user_default_args: strings("user_default_args")?,
             mounts: strings("mounts")?,
+            dangerously_allow_unowned: table
+                .get("dangerously_allow_unowned")
+                .and_then(Item::as_bool)
+                .unwrap_or(false),
         })
     }
 }
 
-fn policy_path() -> PathBuf {
-    crate::host_platform::config_dir().join("policy.toml")
-}
-
-struct PolicyLock(File);
-
-impl PolicyLock {
-    fn exclusive() -> Result<Self, Error> {
-        let path = crate::host_platform::config_dir().join(".policy.toml.lock");
-        std::fs::create_dir_all(path.parent().ok_or("policy lock has no parent")?)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(path)?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(Self(file))
+fn policy_path() -> Result<PathBuf, Error> {
+    let path = crate::host_platform::config_path();
+    if path.is_file() {
+        return crate::native_config::read(&path)?
+            .policy_file
+            .ok_or_else(|| "native policy_file is missing".into());
     }
-}
-
-impl Drop for PolicyLock {
-    fn drop(&mut self) {
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
+    Ok(crate::host_platform::config_dir().join("policy.toml"))
 }
 
 fn read_document(path: &Path) -> Result<DocumentMut, Error> {
@@ -115,48 +121,159 @@ fn save_document(path: &Path, document: &DocumentMut) -> Result<(), Error> {
     Ok(())
 }
 
-/// Mint missing IDs with the same policy lock as the Python CLI, then return
-/// the configured agents in stable name order.
-pub(crate) fn list() -> Result<Vec<Agent>, Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+/// Local operator configuration only. Executables and arguments are never
+/// accepted by the remote lifecycle API.
+pub(crate) async fn configure(
+    name: &str,
+    options: &[(String, String)],
+    create: bool,
+) -> Result<Agent, Error> {
+    if !crate::host_platform::valid_agent_name(name) {
+        return Err("invalid agent name".into());
+    }
+    let directory = crate::host_platform::config_dir().join("agents").join(name);
+    let _setup = tokio::task::spawn_blocking(move || {
+        crate::host_lifecycle::SetupLock::acquire_in(&directory, None)
+    })
+    .await??;
+    let path = policy_path()?;
+    let lock_path = path.clone();
+    let _lock =
+        tokio::task::spawn_blocking(move || crate::approvals::lock_policy(&lock_path)).await??;
     let mut document = read_document(&path)?;
-    let names: Vec<String> = document
+    let exists = document
         .get("agents")
         .and_then(Item::as_table_like)
-        .map(|agents| agents.iter().map(|(name, _)| name.to_owned()).collect())
-        .unwrap_or_default();
-    let mut changed = false;
-    for name in &names {
-        let item = &mut document["agents"][name.as_str()];
-        if item.as_table_like().is_none() {
-            return Err(format!("agent {name} metadata must be a TOML table").into());
+        .is_some_and(|agents| agents.contains_key(name));
+    if create == exists {
+        return Err(if create {
+            "agent already exists"
+        } else {
+            "agent not found"
         }
-        if item
-            .get("agent_id")
-            .and_then(Item::as_str)
-            .is_none_or(str::is_empty)
-        {
-            item["agent_id"] = value(format!("ag-{}", uuid::Uuid::new_v4().simple()));
-            changed = true;
+        .into());
+    }
+    if !exists {
+        document["agents"][name]["agent_id"] =
+            value(format!("ag-{}", uuid::Uuid::new_v4().simple()));
+    }
+    for (key, text) in options {
+        document["agents"][name][key.as_str()] = match key.as_str() {
+            "folder" => value(
+                crate::host_boot::workspace(
+                    Path::new(text),
+                    options
+                        .iter()
+                        .any(|(key, value)| key == "dangerously_allow_unowned" && value == "true")
+                        || document["agents"][name]
+                            .get("dangerously_allow_unowned")
+                            .and_then(Item::as_bool)
+                            == Some(true),
+                )?
+                .to_string_lossy()
+                .as_ref(),
+            ),
+            "memory_mb" => {
+                let memory: i64 = text.parse()?;
+                if memory <= 0 {
+                    return Err("agent memory_mb must be positive".into());
+                }
+                value(memory)
+            }
+            "dangerously_allow_unowned" => value(text.parse::<bool>()?),
+            "mounts" => {
+                crate::host_boot::mount(text)?;
+                let mut array = document["agents"][name]
+                    .get("mounts")
+                    .and_then(Item::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                array.push(text.as_str());
+                value(array)
+            }
+            "user_default_args" => {
+                let args: Vec<String> = serde_json::from_str(text)?;
+                let mut array = toml_edit::Array::new();
+                for arg in args {
+                    array.push(arg);
+                }
+                value(array)
+            }
+            "launcher" | "host_script" | "rootfs_overlay" => value(text.as_str()),
+            _ => return Err(format!("unsupported agent setting: {key}").into()),
+        };
+    }
+    let agent = Agent::from_item(name.into(), &document["agents"][name])?;
+    crate::host_boot::validate(&agent)?;
+    // Validate the complete policy before atomic publication, so rejected
+    // configuration leaves the saved document and running policy intact.
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("policy has no parent")?)?;
+    temporary.write_all(document.to_string().as_bytes())?;
+    crate::policy::Policy::from_native_path(temporary.path())?;
+    if options.iter().any(|(key, _)| key == "host_script") {
+        if crate::host_runs::observe(name).await["runtime_state"] != "stopped" {
+            return Err("stop the agent before applying a host setup script; saved configuration is unchanged".into());
+        }
+        crate::host_boot::setup(&agent).await?;
+    }
+    save_document(&path, &document)?;
+    Ok(agent)
+}
+
+/// Read configured host agents from the atomic native policy snapshot.
+/// Policy-only overrides do not create host agents. Fresh creation owns ID
+/// assignment; status does not migrate or rewrite configuration.
+pub(crate) fn list() -> Result<Vec<Agent>, Error> {
+    let document = read_document(&policy_path()?)?;
+    let mut agents = Vec::new();
+    if let Some(table) = document.get("agents").and_then(Item::as_table_like) {
+        for (name, item) in table.iter() {
+            let fields = item
+                .as_table_like()
+                .ok_or_else(|| format!("agent {name}: metadata must be a TOML table"))?;
+            let host_settings = [
+                "agent_id",
+                "folder",
+                "launcher",
+                "host_script",
+                "memory_mb",
+                "rootfs_overlay",
+                "user_default_args",
+                "mounts",
+                "dangerously_allow_unowned",
+                "network_slot",
+                "tailnet_port",
+            ]
+            .iter()
+            .any(|key| fields.contains_key(key));
+            // Retained incarnation evidence also identifies a host record if
+            // its configuration was damaged. Do not hide it as a policy entry.
+            if !host_settings
+                && !crate::host_runs::path(name).try_exists()?
+                && !crate::host_platform::config_dir()
+                    .join("agents")
+                    .join(name)
+                    .join("config-share/host-launch-context.json")
+                    .try_exists()?
+            {
+                continue;
+            }
+            agents.push(
+                Agent::from_item(name.into(), item)
+                    .map_err(|error| format!("agent {name}: {error}"))?,
+            );
         }
     }
-    if changed {
-        save_document(&path, &document)?;
-    }
-    let mut agents = names
-        .into_iter()
-        .map(|name| Agent::from_item(name.clone(), &document["agents"][name.as_str()]))
-        .collect::<Result<Vec<_>, _>>()?;
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(agents)
 }
 
 /// Preserve the assigned 10.200/16 identity and avoid addresses already in
-/// the live agent map, including legacy agents with no saved slot.
+/// the derived live attachment projection.
 pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let path = policy_path()?;
+    let _lock = crate::approvals::lock_policy(&path)?;
     let mut document = read_document(&path)?;
     let agents = document
         .get("agents")
@@ -189,7 +306,7 @@ pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
         }
     }
     let mut active = std::collections::HashMap::new();
-    let map_path = crate::host_platform::config_dir().join("data/agent_map.json");
+    let map_path = crate::host_platform::agent_map_path()?;
     if let Ok(source) = std::fs::read(&map_path)
         && let Ok(map) =
             serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&source)
@@ -244,8 +361,8 @@ pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
 /// Reserve a unique Tailnet HTTPS port, returning its previous value so a
 /// failed presentation can restore the host-owned policy.
 pub(crate) fn reserve_tailnet_port(name: &str) -> Result<(u16, Option<u16>), Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let path = policy_path()?;
+    let _lock = crate::approvals::lock_policy(&path)?;
     let mut document = read_document(&path)?;
     let agents = document
         .get("agents")
@@ -289,8 +406,8 @@ pub(crate) fn restore_tailnet_port(
     expected: u16,
     previous: Option<u16>,
 ) -> Result<bool, Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let path = policy_path()?;
+    let _lock = crate::approvals::lock_policy(&path)?;
     let mut document = read_document(&path)?;
     let Some(agents) = document.get("agents").and_then(Item::as_table_like) else {
         return Ok(false);
@@ -312,4 +429,65 @@ pub(crate) fn restore_tailnet_port(
     }
     save_document(&path, &document)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_overrides_are_read_only_and_separate_from_host_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy.toml");
+        let source = "[agents]\nbob={egress='deny'}\n[agents.alice.hosts]\n'*'={egress='allow'}\n[agents.configured]\nagent_id='ag-original'\nmemory_mb=512\n";
+        std::fs::write(&policy, source).unwrap();
+        crate::host_platform::with_config(root.path().join("config.toml"), || {
+            let agents = list().unwrap();
+            assert_eq!(agents.len(), 1);
+            assert_eq!(agents[0].name, "configured");
+            assert_eq!(agents[0].id, "ag-original");
+            assert_eq!(agents[0].memory_mb, Some(512));
+        });
+        assert_eq!(std::fs::read_to_string(policy).unwrap(), source);
+    }
+
+    #[test]
+    fn damaged_host_identity_is_not_hidden_by_policy_only_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy.toml");
+        crate::host_platform::with_config(root.path().join("config.toml"), || {
+            for source in [
+                "[agents.alice]\negress='allow'\nmemory_mb=512\n",
+                "[agents.alice]\negress='allow'\nagent_id=7\n",
+            ] {
+                std::fs::write(&policy, source).unwrap();
+                let error = list().err().unwrap().to_string();
+                assert!(error.contains("agent alice:"), "{error}");
+                assert!(
+                    error.contains("identity") || error.contains("agent_id"),
+                    "{error}"
+                );
+                assert_eq!(std::fs::read_to_string(&policy).unwrap(), source);
+            }
+            let source = "[agents.alice]\negress='allow'\n";
+            std::fs::write(&policy, source).unwrap();
+            for record in [
+                crate::host_runs::path("alice"),
+                root.path()
+                    .join("agents/alice/config-share/host-launch-context.json"),
+            ] {
+                std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+                std::fs::write(&record, "corrupt").unwrap();
+                let error = list().err().unwrap().to_string();
+                assert!(
+                    error.contains("agent alice: agent identity is missing"),
+                    "{error}"
+                );
+                assert_eq!(std::fs::read_to_string(&policy).unwrap(), source);
+                assert_eq!(std::fs::read_to_string(&record).unwrap(), "corrupt");
+                std::fs::remove_file(record).unwrap();
+            }
+            assert!(list().unwrap().is_empty());
+        });
+    }
 }

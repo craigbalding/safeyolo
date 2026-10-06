@@ -28,6 +28,21 @@ pub struct CertificateAuthority {
 }
 
 impl CertificateAuthority {
+    /// Create signing material only during explicit fresh-instance initialization.
+    pub fn create() -> Result<(zeroize::Zeroizing<String>, String), Error> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::new(Vec::<String>::new())?;
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "SafeYolo CA");
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let cert = params.self_signed(&key)?.pem();
+        Ok((
+            zeroize::Zeroizing::new(format!("{}{}", key.serialize_pem(), cert)),
+            cert,
+        ))
+    }
     /// Read the existing combined `mitmproxy-ca.pem` file. Missing or invalid
     /// material is an error; creating a different trust root is never a fallback.
     pub fn load(path: &Path) -> Result<Self, Error> {
