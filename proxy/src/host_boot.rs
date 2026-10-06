@@ -52,6 +52,19 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
 }
 
 pub(crate) fn validate(agent: &Agent) -> Result<(), Error> {
+    validate_sandbox(agent)?;
+    if agent.launcher.is_some() {
+        let launcher = crate::host_lifecycle::selected_launcher(agent)?;
+        if matches!(launcher["kind"].as_str(), Some("script" | "manager"))
+            && let Some(script) = launcher.get("script").and_then(Value::as_str)
+        {
+            validate_script_for_agent(agent, script)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_sandbox(agent: &Agent) -> Result<(), Error> {
     workspace(
         Path::new(
             agent
@@ -70,17 +83,10 @@ pub(crate) fn validate(agent: &Agent) -> Result<(), Error> {
     if let Some(script) = &agent.host_script {
         validate_script_for_agent(agent, script)?;
     }
-    if let Some(script) = agent
-        .launcher
-        .as_deref()
-        .filter(|value| value.starts_with('/'))
-    {
-        validate_script_for_agent(agent, script)?;
-    }
     Ok(())
 }
 
-fn validate_script_for_agent(agent: &Agent, script: &str) -> Result<(), Error> {
+pub(crate) fn validate_script_for_agent(agent: &Agent, script: &str) -> Result<(), Error> {
     let path = Path::new(script).canonicalize()?;
     crate::host_lifecycle::validate_host_script(&path)?;
     let mut writable = vec![workspace(
@@ -142,7 +148,7 @@ pub(crate) async fn setup(agent: &Agent) -> Result<(), Error> {
 }
 
 pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value, Error> {
-    validate(agent)?;
+    validate_sandbox(agent)?;
     let root = config_dir();
     let directory = root.join("agents").join(&agent.name);
     let home = directory.join("home");

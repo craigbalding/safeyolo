@@ -3,9 +3,12 @@
 use serde_json::Value;
 use std::{
     fs,
+    io::{Read, Write},
+    net::TcpStream,
     os::unix::fs::{PermissionsExt, symlink},
     path::Path,
     process::{Command, Output},
+    time::Duration,
 };
 
 fn cli(root: &Path, args: &[&str]) -> Output {
@@ -38,6 +41,355 @@ fn initialize(root: &Path) {
         root.join("bin/safeyolo-proxy"),
     )
     .unwrap();
+}
+
+struct StopOnDrop<'a>(&'a Path);
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--config")
+            .arg(self.0)
+            .arg("stop")
+            .output();
+    }
+}
+
+#[test]
+fn conflicting_ids_are_reported_by_admin_without_changing_agents() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let hook = temp.path().join("launcher.sh");
+    let markers = temp.path().join("markers");
+    fs::write(&markers, b"").unwrap();
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nprintf '%s:%s\\n' \"$SAFEYOLO_AGENT_NAME\" \"$1\" >> '{}'\n",
+            markers.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut ids = Vec::new();
+    for name in ["alpha", "beta", "gamma"] {
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                name,
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--launcher",
+                "supervisor",
+            ],
+        ));
+        ids.push(created["configuration"]["id"].as_str().unwrap().to_owned());
+        let directory = root.join("agents").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("current-launch.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name":name,"agent_id":ids.last().unwrap(),"launch_id":format!("launch-{name}"),
+                "state":"unknown","launcher":{"kind":"script","script":hook}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    assert_ne!(ids[0], ids[1]);
+    assert_ne!(ids[0], ids[2]);
+    assert_ne!(ids[1], ids[2]);
+    let config = root.join("config.toml");
+    let mut document: toml_edit::DocumentMut =
+        fs::read_to_string(&config).unwrap().parse().unwrap();
+    document["admin_port"] = toml_edit::value(0);
+    fs::write(&config, document.to_string()).unwrap();
+    let _stop = StopOnDrop(&config);
+    value(cli(&root, &["start"]));
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.join("data/ready.json")).unwrap()).unwrap();
+    let address = (
+        std::net::Ipv4Addr::LOCALHOST,
+        ready["admin_port"].as_u64().unwrap() as u16,
+    );
+    let token = fs::read_to_string(root.join("data/admin_token")).unwrap();
+    let post = |id: &str, operation: &str| -> (u16, Value) {
+        let mut stream =
+            TcpStream::connect_timeout(&address.into(), Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "POST /admin/agents/{id}/{operation} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull",
+            token.trim()
+        ).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let header_end = response
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        let status = std::str::from_utf8(&response[..header_end])
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&response[header_end..]).unwrap(),
+        )
+    };
+    let policy = root.join("policy.toml");
+    let mut document: toml_edit::DocumentMut =
+        fs::read_to_string(&policy).unwrap().parse().unwrap();
+    document["agents"]["beta"]["agent_id"] = toml_edit::value(&ids[0]);
+    fs::write(&policy, document.to_string()).unwrap();
+    let paths = [
+        config.clone(),
+        policy,
+        root.join("agents/alpha/current-launch.json"),
+        root.join("agents/beta/current-launch.json"),
+        root.join("agents/gamma/current-launch.json"),
+        markers.clone(),
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    let missing = post("ag-00000000000000000000000000000000", "stop");
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(missing.1["error"], "Agent not found");
+    for operation in ["start", "start-interactive", "stop"] {
+        let (status, refused) = post(&ids[0], operation);
+        let error = refused["error"].as_str().unwrap();
+        assert_eq!(status, 500, "{operation}: {refused}");
+        assert!(
+            error.contains("alpha") && error.contains("beta") && error.contains(&ids[0]),
+            "{error}"
+        );
+        assert_eq!(
+            paths
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+    let (status, stopped) = post(&ids[2], "stop");
+    assert_eq!(status, 200, "{stopped}");
+    assert_eq!(stopped["name"], "gamma");
+    assert_eq!(fs::read_to_string(&markers).unwrap(), "gamma:stop\n");
+    for index in [1, 2, 3] {
+        assert_eq!(fs::read(&paths[index]).unwrap(), before[index]);
+    }
+    value(cli(&root, &["stop"]));
+    assert!(!root.join("data/ready.json").exists());
+}
+
+#[test]
+fn conflicting_ids_reject_named_operations_without_touching_either_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let hook = temp.path().join("launcher.sh");
+    let markers = temp.path().join("markers");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nprintf '%s:%s\\n' \"$SAFEYOLO_AGENT_NAME\" \"$1\" >> '{}'\n",
+            markers.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut ids = Vec::new();
+    for name in ["alpha", "beta"] {
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                name,
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--launcher",
+                "supervisor",
+            ],
+        ));
+        ids.push(created["configuration"]["id"].as_str().unwrap().to_owned());
+        let directory = root.join("agents").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("current-launch.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name":name,"agent_id":ids.last().unwrap(),"launch_id":format!("launch-{name}"),
+                "state":"unknown","launcher":{"kind":"script","script":hook}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value(cli(&root, &["agent", "stop", name]))["name"], name);
+    }
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(
+        fs::read_to_string(&markers).unwrap(),
+        "alpha:stop\nbeta:stop\n"
+    );
+    let policy = root.join("policy.toml");
+    let mut document: toml_edit::DocumentMut =
+        fs::read_to_string(&policy).unwrap().parse().unwrap();
+    document["agents"]["beta"]["agent_id"] = toml_edit::value(&ids[0]);
+    document["agents"]["policy-only"]["hosts"]["example.com"]["egress"] = toml_edit::value("allow");
+    fs::write(&policy, document.to_string()).unwrap();
+    assert!(
+        cli(&root, &["policy", "check", policy.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let paths = [
+        policy,
+        root.join("config.toml"),
+        root.join("agents/alpha/current-launch.json"),
+        root.join("agents/beta/current-launch.json"),
+        markers,
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    for name in ["alpha", "beta"] {
+        for operation in [
+            "stop", "start", "cleanup", "status", "attach", "shell", "present",
+        ] {
+            let rejected = cli(&root, &["agent", operation, name]);
+            assert!(!rejected.status.success(), "{operation} {name}");
+            let error = String::from_utf8_lossy(&rejected.stderr);
+            assert!(
+                error.contains("alpha")
+                    && error.contains("beta")
+                    && error.contains("durable identity"),
+                "{error}"
+            );
+            assert_eq!(
+                paths
+                    .iter()
+                    .map(|path| fs::read(path).unwrap())
+                    .collect::<Vec<_>>(),
+                before
+            );
+            assert!(!root.join("data/proxy-process.json").exists());
+        }
+    }
+}
+
+#[test]
+fn rejected_launcher_selection_precedes_config_setup_and_proxy_or_backend_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let unsafe_script = workspace.join("unsafe.sh");
+    fs::write(&unsafe_script, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&unsafe_script, fs::Permissions::from_mode(0o755)).unwrap();
+    let setup = temp.path().join("setup.sh");
+    let setup_marker = temp.path().join("setup-ran");
+    fs::write(
+        &setup,
+        format!("#!/bin/sh\ntouch '{}'\n", setup_marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&setup, fs::Permissions::from_mode(0o755)).unwrap();
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            workspace.to_str().unwrap(),
+        ],
+    ));
+    let policy = fs::read(root.join("policy.toml")).unwrap();
+    let original_config = fs::read_to_string(root.join("config.toml")).unwrap();
+    let invalid = [
+        "unsupported-review-launcher".to_owned(),
+        "manager:/missing-817-manager".to_owned(),
+        "manager:relative-script.sh".to_owned(),
+        format!("manager:{}", unsafe_script.display()),
+        "/missing-817-script".to_owned(),
+    ];
+    for launcher in invalid {
+        for (operation, name) in [("create", "new"), ("configure", "marker")] {
+            assert!(
+                !cli(
+                    &root,
+                    &[
+                        "agent",
+                        operation,
+                        name,
+                        "--workspace",
+                        workspace.to_str().unwrap(),
+                        "--host-script",
+                        setup.to_str().unwrap(),
+                        "--launcher",
+                        &launcher
+                    ]
+                )
+                .status
+                .success()
+            );
+            assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+            assert!(!setup_marker.exists());
+        }
+        let config = format!(
+            "{original_config}\n[agent_launcher]\ndefault = {}\n",
+            toml_edit::Value::from(launcher)
+        );
+        fs::write(root.join("config.toml"), &config).unwrap();
+        let rejected = cli(&root, &["agent", "start", "marker"]);
+        assert!(!rejected.status.success());
+        assert_eq!(
+            fs::read(root.join("config.toml")).unwrap(),
+            config.as_bytes()
+        );
+        assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+        for path in [
+            "logs/proxy.log",
+            "data/proxy-process.json",
+            "data/agent-map.json",
+            "agents/marker/runtime.json",
+            "agents/marker/config-share",
+        ] {
+            assert!(
+                !root.join(path).exists(),
+                "rejected launcher created {path}"
+            );
+        }
+        fs::write(root.join("config.toml"), &original_config).unwrap();
+    }
+    let valid_script = temp.path().join("launcher.sh");
+    fs::write(&valid_script, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&valid_script, fs::Permissions::from_mode(0o755)).unwrap();
+    for launcher in [
+        "tmux-window".to_owned(),
+        "tmux-pane".to_owned(),
+        "supervisor".to_owned(),
+        valid_script.to_str().unwrap().to_owned(),
+        format!("manager:{}", valid_script.display()),
+    ] {
+        value(cli(
+            &root,
+            &["agent", "configure", "marker", "--launcher", &launcher],
+        ));
+    }
 }
 
 #[test]
@@ -682,16 +1034,6 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
             .output()
             .unwrap()
     };
-    struct StopOnDrop<'a>(&'a Path);
-    impl Drop for StopOnDrop<'_> {
-        fn drop(&mut self) {
-            let _ = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-                .arg("--config")
-                .arg(self.0)
-                .arg("stop")
-                .output();
-        }
-    }
     let _stop = StopOnDrop(&selected);
     value(selected_cli(&["start"]));
     assert!(a.join("data/ready.json").is_file());

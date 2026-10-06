@@ -76,6 +76,17 @@ def _native_cli(arguments: list[str], *, setup_name: str | None = None,
     from .config import get_config_dir
 
     root = get_config_dir().resolve()
+    selection = ["--root", str(root)]
+    selected = os.environ.get("SAFEYOLO_NATIVE_CONFIG_PATH")
+    if selected and Path(selected).suffix == ".toml":
+        selected_path = Path(selected)
+        selected_path = selected_path.parent.resolve() / selected_path.name
+        if selected_path.parent != root:
+            raise AgentLifecycleError(
+                f"Selected native config {selected_path} does not belong to instance {root}; "
+                "set SAFEYOLO_CONFIG_DIR to its directory before using workflow setup locks"
+            )
+        selection = ["--config", str(selected_path)]
     executable = root / "bin" / "safeyolo"
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise AgentLifecycleError(f"Native CLI is missing: {executable}; install the native host artifacts")
@@ -87,7 +98,7 @@ def _native_cli(arguments: list[str], *, setup_name: str | None = None,
         environment["SAFEYOLO_HOST_SETUP_LOCK_FD"] = str(descriptor)
     try:
         return subprocess.run(
-            [str(executable), "--root", str(root), *arguments],
+            [str(executable), *selection, *arguments],
             env=environment, pass_fds=descriptors, text=True,
             capture_output=capture_output, check=False,
         )
