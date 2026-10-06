@@ -211,10 +211,14 @@ separate operator choice.
 
 The Lab is an optional experiment workflow, independent of `safeyolo demo`.
 The bundled Codex setup also provides `safeyolo-lab` inside an existing running
-agent. From a host terminal, replace `AGENT` with its name and open a shell:
+agent. To open a shell from the host, that agent's instance must have the
+[native host commands installed](../docs/native-policy.md#install-and-start).
+Replace both `ROOT` placeholders with that instance's absolute directory.
+Replace `AGENT` with its name. Invoke the installed executable directly; the installer does not change
+`PATH`:
 
 ```sh
-safeyolo agent shell AGENT
+"ROOT/bin/safeyolo" --root "ROOT" agent shell AGENT
 ```
 
 Inside that guest shell, run:
