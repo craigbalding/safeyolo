@@ -2979,10 +2979,11 @@ configuration and policy before implementation.
 The native [live view](../proxy/src/traffic_view.rs) retains ordinary HTTP
 observations independently of the durable TestContext store. The authenticated
 operator API exposes scope, flow lists, details, body snapshots and facets.
-The existing `safeyolo traffic` command opens the native terminal inspector when
-its admin client selects a verified Rust process. See the
-[development workflow](DEVELOPERS.md#rust-proxy-development-backend) for controls and
-the remaining scope/header projection differences.
+The native host executable provides direct `traffic` reads and an `inspect`
+session that retains the selected agent across state, evidence and approvals.
+The Python traffic inspector and its optional tmux adapter are retired. See the
+[native operator instructions](native-operator.md) for selection, exports and
+unavailable evidence.
 
 A validated WebSocket upgrade promotes its HTTP row into an open session.
 The [relay](../proxy/src/websocket_relay.rs) appends complete decoded data
@@ -3006,9 +3007,11 @@ cases. Native eager pruning still differs from the source hook/interval cadence.
 The [owned duplex tests](../proxy/src/websocket_relay/tests/live_view.rs) verify
 forwarding, dropped/spooled transcript content, open retention, close facts,
 diagnostic failure and cancellation. Private API tests verify authentication,
-paging and missing/trimmed results. Headless terminal tests cover selection,
-page navigation, safe rendering and detach. These are implementation-team
-checks; they do not establish independent acceptance or full M6 completion.
+paging and missing/trimmed results. Earlier headless terminal tests covered
+selection, page navigation, safe rendering and detach in the retired Python
+inspector. Native operator tests now cover selected HTTP/WebSocket reads, page
+navigation and retained target controls. These are implementation-team checks;
+they do not establish independent acceptance or full M6 completion.
 
 If native validation rejects a completed upstream 101, the view preserves the
 observed status, headers, body and HTTP end time while displaying the reached
@@ -3017,9 +3020,10 @@ cover the actual handshake validator and retained model; they do not establish
 an end-to-end rejected-upgrade exchange or Python invalid-handshake equivalence.
 The [shared user filter](../proxy/src/traffic_view/filter.rs) is separate from
 the six pinned scope fields. The authenticated `PUT /admin/traffic/filter`
-accepts only `{"user_filter": expression}`; the terminal inspector's `f` prompt
-uses that route. Compilation precedes publication, and failed edits preserve
-the previous filter and pins. Retained-row snapshots share immutable HTTP and
+accepts only `{"user_filter": expression}`. Native direct reads carry their own
+filter and selection without changing this shared state. Compilation precedes
+publication, and failed edits preserve the previous filter and pins.
+Retained-row snapshots share immutable HTTP and
 WebSocket bodies. Regex execution, content decoding and spool reads occur
 outside the observation lock on an API blocking worker. Direct authenticated
 reads, facets and retention remain independent of this display filter.
