@@ -519,15 +519,34 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     let socket = root.join("data/vm-control/marker.sock");
     drop(UnixListener::bind(&socket).unwrap());
     let mut child = Command::new("sleep").arg("30").spawn().unwrap();
-    fs::write(
-        directory.join("runtime.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "run_id":"0123456789abcdef0123456789abcdef",
-            "backend_pid":child.id(), "backend_token":"unrelated-fixture"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    let pid = i32::try_from(child.id()).unwrap();
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    assert_eq!(
+        unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        },
+        size
+    );
+    let info = unsafe { info.assume_init() };
+    assert_eq!(info.pbi_pid, child.id());
+    assert!(info.pbi_start_tvsec > 0 && info.pbi_start_tvusec < 1_000_000);
+    let backend_token = format!(
+        "darwin:{pid}:{}:{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    );
+    let record = directory.join("runtime.json");
+    let mut run = serde_json::json!({
+        "run_id":"0123456789abcdef0123456789abcdef",
+        "backend_pid":child.id(), "backend_token":backend_token
+    });
+    fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     let live = value(cli(&root, &["agent", "status", "marker"]));
     let stop = cli(&root, &["agent", "stop", "marker"]);
     let survived = child.try_wait().unwrap().is_none();
@@ -544,6 +563,18 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     let without_control = value(without_control);
     assert_eq!(without_control["runtime_state"], "unknown");
     assert!(without_control["next_action"].as_str().is_some());
+    run["backend_token"] = "unrelated-fixture".into();
+    let malformed_record = serde_json::to_vec(&run).unwrap();
+    fs::write(&record, &malformed_record).unwrap();
+    let unidentified_dead = value(cli(&root, &["agent", "status", "marker"]));
+    assert_eq!(unidentified_dead["runtime_state"], "unknown");
+    for operation in ["stop", "cleanup"] {
+        assert!(!cli(&root, &["agent", operation, "marker"]).status.success());
+        assert_eq!(fs::read(&record).unwrap(), malformed_record);
+        assert!(socket.exists());
+    }
+    run["backend_token"] = backend_token.into();
+    fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     let dead = value(cli(&root, &["agent", "status", "marker"]));
     assert_eq!(dead["runtime_state"], "stopped");
     fs::create_dir_all(root.join("data/shell-sockets")).unwrap();
