@@ -1014,7 +1014,7 @@ def test_desktop_command_requires_running_agent():
 
     assert result.exit_code == 1
     assert "Agent 'codey' is not running" in result.output
-    assert "safeyolo agent run codey" in result.output
+    assert "safeyolo agent start codey" in result.output
 
 
 def test_desktop_status_uses_core_launcher_without_preview():
