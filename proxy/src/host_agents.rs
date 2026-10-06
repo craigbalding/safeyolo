@@ -221,21 +221,50 @@ pub(crate) async fn configure(
     Ok(agent)
 }
 
-/// Read the atomic native policy snapshot. Fresh agent creation owns ID
+/// Read configured host agents from the atomic native policy snapshot.
+/// Policy-only overrides do not create host agents. Fresh creation owns ID
 /// assignment; status does not migrate or rewrite configuration.
 pub(crate) fn list() -> Result<Vec<Agent>, Error> {
     let document = read_document(&policy_path()?)?;
-    let mut agents = document
-        .get("agents")
-        .and_then(Item::as_table_like)
-        .map(|table| {
-            table
-                .iter()
-                .map(|(name, item)| Agent::from_item(name.into(), item))
-                .collect::<Result<Vec<_>, Error>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let mut agents = Vec::new();
+    if let Some(table) = document.get("agents").and_then(Item::as_table_like) {
+        for (name, item) in table.iter() {
+            let fields = item
+                .as_table_like()
+                .ok_or_else(|| format!("agent {name}: metadata must be a TOML table"))?;
+            let host_settings = [
+                "agent_id",
+                "folder",
+                "launcher",
+                "host_script",
+                "memory_mb",
+                "rootfs_overlay",
+                "user_default_args",
+                "mounts",
+                "dangerously_allow_unowned",
+                "network_slot",
+                "tailnet_port",
+            ]
+            .iter()
+            .any(|key| fields.contains_key(key));
+            // Retained incarnation evidence also identifies a host record if
+            // its configuration was damaged. Do not hide it as a policy entry.
+            if !host_settings
+                && !crate::host_runs::path(name).try_exists()?
+                && !crate::host_platform::config_dir()
+                    .join("agents")
+                    .join(name)
+                    .join("config-share/host-launch-context.json")
+                    .try_exists()?
+            {
+                continue;
+            }
+            agents.push(
+                Agent::from_item(name.into(), item)
+                    .map_err(|error| format!("agent {name}: {error}"))?,
+            );
+        }
+    }
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(agents)
 }
@@ -400,4 +429,65 @@ pub(crate) fn restore_tailnet_port(
     }
     save_document(&path, &document)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_overrides_are_read_only_and_separate_from_host_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy.toml");
+        let source = "[agents]\nbob={egress='deny'}\n[agents.alice.hosts]\n'*'={egress='allow'}\n[agents.configured]\nagent_id='ag-original'\nmemory_mb=512\n";
+        std::fs::write(&policy, source).unwrap();
+        crate::host_platform::with_config(root.path().join("config.toml"), || {
+            let agents = list().unwrap();
+            assert_eq!(agents.len(), 1);
+            assert_eq!(agents[0].name, "configured");
+            assert_eq!(agents[0].id, "ag-original");
+            assert_eq!(agents[0].memory_mb, Some(512));
+        });
+        assert_eq!(std::fs::read_to_string(policy).unwrap(), source);
+    }
+
+    #[test]
+    fn damaged_host_identity_is_not_hidden_by_policy_only_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = root.path().join("policy.toml");
+        crate::host_platform::with_config(root.path().join("config.toml"), || {
+            for source in [
+                "[agents.alice]\negress='allow'\nmemory_mb=512\n",
+                "[agents.alice]\negress='allow'\nagent_id=7\n",
+            ] {
+                std::fs::write(&policy, source).unwrap();
+                let error = list().err().unwrap().to_string();
+                assert!(error.contains("agent alice:"), "{error}");
+                assert!(
+                    error.contains("identity") || error.contains("agent_id"),
+                    "{error}"
+                );
+                assert_eq!(std::fs::read_to_string(&policy).unwrap(), source);
+            }
+            let source = "[agents.alice]\negress='allow'\n";
+            std::fs::write(&policy, source).unwrap();
+            for record in [
+                crate::host_runs::path("alice"),
+                root.path()
+                    .join("agents/alice/config-share/host-launch-context.json"),
+            ] {
+                std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+                std::fs::write(&record, "corrupt").unwrap();
+                let error = list().err().unwrap().to_string();
+                assert!(
+                    error.contains("agent alice: agent identity is missing"),
+                    "{error}"
+                );
+                assert_eq!(std::fs::read_to_string(&policy).unwrap(), source);
+                assert_eq!(std::fs::read_to_string(&record).unwrap(), "corrupt");
+                std::fs::remove_file(record).unwrap();
+            }
+            assert!(list().unwrap().is_empty());
+        });
+    }
 }
