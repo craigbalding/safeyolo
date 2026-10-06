@@ -16,6 +16,7 @@ import subprocess
 import time
 
 import pytest
+from guest_exec import guest_command_args
 
 
 class TestAgentHomePersistence:
@@ -43,14 +44,16 @@ class TestAgentHomePersistence:
             "SAFEYOLO_SUBNET_BASE": os.environ.get("SAFEYOLO_SUBNET_BASE", "75"),
             "SAFEYOLO_LOGS_DIR": os.environ.get("SAFEYOLO_LOGS_DIR", ""),
         }
+        command = (guest_command_args("safeyolo", args[2], args[4])
+                   if args[:2] == ("agent", "shell") else ["safeyolo", *args])
         return subprocess.run(
-            ["safeyolo", *args],
+            command,
             capture_output=True, text=True, env=env,
             timeout=timeout,
         )
 
     def _wait_for_shell(self, agent_name: str, timeout: int = 60) -> bool:
-        """Poll `safeyolo agent shell -c true` until it succeeds."""
+        """Poll the selected native guest shell until it succeeds."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             result = self._safeyolo(

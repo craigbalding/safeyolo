@@ -32,11 +32,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 if __package__:
+    from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
+    from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _sha256
     from installed_ingress import installed_identity, runsc_identity
@@ -163,7 +165,7 @@ def guest_args(cli: str, agent: str, marker: str, phase: str, *extra: str) -> li
         "python3", "-m", "tests.blackbox.isolation.installed_workloads",
         "--phase", phase, "--agent", agent, "--marker", marker, *extra,
     ])
-    return [cli, "agent", "shell", agent, "--root", "-c", f"cd /workspace && {command}"]
+    return guest_command_args(cli, agent, f"cd /workspace && {command}", guest_root=True)
 
 
 def observation(output: str, phase: str, marker: str) -> dict:

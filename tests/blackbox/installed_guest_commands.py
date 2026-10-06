@@ -18,10 +18,12 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .guest_exec import guest_command_args
     from .installed_host_smoke import _agent_map, _sha256
     from .installed_ingress import runsc_identity
     from .installed_lifecycle import stop_guest
 else:
+    from guest_exec import guest_command_args
     from installed_host_smoke import _agent_map, _sha256
     from installed_ingress import runsc_identity
     from installed_lifecycle import stop_guest
@@ -52,7 +54,7 @@ def run(args):
         assert previous["state"] in {"stopped", "failed", "exited"} and previous.get("command_pid") is None, "supervisor is occupied; existing work was left intact"
 
     def shell(command, *, valid=True):
-        result = subprocess.run([args.transport_cli, "agent", "shell", args.agent, "-c", command],
+        result = subprocess.run(guest_command_args(args.transport_cli, args.agent, command),
                                 capture_output=True, text=True, timeout=8)
         if valid:
             assert result.returncode == 0, result.stderr[-1000:]
