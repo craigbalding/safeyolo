@@ -19,7 +19,7 @@ from pathlib import Path
 
 SCHEMA = 1
 CHECKER_VERSION = "2"
-SEMGREP_VERSION = "1.176.0"
+SEMGREP_VERSION = "1.179.0"
 ROOT = Path(__file__).resolve().parents[2]
 FUNCTION_RULES = {"rust-function", "python-function"}
 NAME_RE = re.compile(r"\b(?:async\s+)?(?:fn|def)\s+([A-Za-z_][A-Za-z_0-9]*)\b")

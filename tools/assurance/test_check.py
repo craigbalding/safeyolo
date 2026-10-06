@@ -6,12 +6,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from check import AnalysisError, analyze, changed_controls, compare
+from check import AnalysisError, analyze
 
 ROOT = Path(__file__).resolve().parents[2]
 SEMGREP = ROOT / "tools/acceptance/.venv/bin/semgrep"
@@ -46,7 +47,9 @@ class DriftControls(unittest.TestCase):
         self.write(self.trusted, "cli/src/safeyolo/launcher.py", "def launch():\n    return True\n")
         self.write(self.trusted, "proxy/Cargo.toml", "[package]\nname = 'example'\n")
         self.write(self.trusted, "docs/assurance-map.toml", MAP)
-        self.write(self.trusted, "tools/assurance/check.py", "trusted checker\n")
+        checker = self.trusted / "tools/assurance/check.py"
+        checker.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "tools/assurance/check.py", checker)
         self.write(self.trusted, ".github/workflows/proxy-assurance.yml", "trusted workflow\n")
         self.write(self.trusted, ".github/CODEOWNERS", "trusted owners\n")
         self.write(self.trusted, "tools/acceptance/uv.lock", "trusted tool lock\n")
@@ -67,9 +70,18 @@ class DriftControls(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value, encoding="utf-8")
 
+    def run_check(self) -> tuple[subprocess.CompletedProcess[str], dict]:
+        result = Path(self.temp.name) / "report.json"
+        command = [sys.executable, "-I", str(self.trusted / "tools/assurance/check.py"), "check",
+                   "--trusted-root", str(self.trusted), "--candidate", str(self.candidate),
+                   "--json", str(result)]
+        run = subprocess.run(command, capture_output=True, text=True, check=False)
+        return run, json.loads(result.read_text(encoding="utf-8"))
+
     def report(self) -> dict:
-        current = analyze(self.trusted, self.candidate)
-        return compare(self.accepted, current, changed_controls(self.trusted, self.candidate))
+        run, report = self.run_check()
+        self.assertIn(run.returncode, (0, 1), run.stderr)
+        return report
 
     def test_clean_and_benign_code(self) -> None:
         self.assertEqual(self.report()["status"], "clean")
@@ -107,7 +119,7 @@ class DriftControls(unittest.TestCase):
         helpers = "\n".join(f"fn {name}() {{ {call}; }}" for name, (_, call) in calls.items())
         self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST + "\n" + helpers + "\n")
         result = Path(self.temp.name) / "qualified.json"
-        command = ["python3", "-I", str(ROOT / "tools/assurance/check.py"), "check",
+        command = [sys.executable, "-I", str(self.trusted / "tools/assurance/check.py"), "check",
                    "--trusted-root", str(self.trusted), "--candidate", str(self.candidate),
                    "--json", str(result)]
         run = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -148,7 +160,7 @@ class DriftControls(unittest.TestCase):
             self.write(self.candidate, path, imports + "\n" + helpers + "\n")
             expected.update((rule, path, symbol) for symbol, (rule, _) in operations.items())
         result = Path(self.temp.name) / "shorthand.json"
-        command = ["python3", "-I", str(ROOT / "tools/assurance/check.py"), "check",
+        command = [sys.executable, "-I", str(self.trusted / "tools/assurance/check.py"), "check",
                    "--trusted-root", str(self.trusted), "--candidate", str(self.candidate),
                    "--json", str(result)]
         run = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -262,12 +274,38 @@ impl View {
         self.accepted = approved
         self.assertEqual(self.report()["status"], "clean")
 
+    def test_wrong_tool_version_fails_before_scan(self) -> None:
+        executable = Path(self.temp.name) / "wrong-semgrep"
+        executable.write_text(
+            f"#!{sys.executable}\nimport sys\n"
+            "assert sys.argv[1:] == ['--version'], 'unapproved scan started'\n"
+            "print('1.176.0')\n", encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        with patch.dict(os.environ, {"SAFEYOLO_ASSURANCE_SEMGREP": str(executable)}):
+            run, report = self.run_check()
+        self.assertEqual(run.returncode, 2)
+        self.assertEqual(report["status"], "error")
+        self.assertIn("Semgrep 1.179.0 required; got '1.176.0'", report["errors"][0])
+
+    def test_unapproved_tool_binding_fails_comparison(self) -> None:
+        for key in ("semgrep_version", "checker_sha256", "tool_lock_sha256"):
+            with self.subTest(binding=key):
+                accepted = {**self.accepted, key: "unapproved"}
+                for root in (self.trusted, self.candidate):
+                    self.write(root, "tools/assurance/accepted.json", json.dumps(accepted))
+                run, report = self.run_check()
+                self.assertEqual(run.returncode, 1)
+                self.assertEqual(report["status"], "error")
+                self.assertEqual(report["errors"], [f"accepted {key} does not match the trusted checker"])
+                self.assertEqual(report["control_changes"], [])
+
     def test_missing_analysis_fails_visibly(self) -> None:
         with patch.dict(os.environ, {"SAFEYOLO_ASSURANCE_SEMGREP": "/absent/semgrep"}):
             with self.assertRaisesRegex(AnalysisError, "missing Semgrep executable"):
                 analyze(self.trusted, self.candidate)
             result = Path(self.temp.name) / "missing.json"
-            command = ["python3", "-I", str(ROOT / "tools/assurance/check.py"), "check",
+            command = [sys.executable, "-I", str(self.trusted / "tools/assurance/check.py"), "check",
                        "--trusted-root", str(self.trusted), "--candidate", str(self.candidate),
                        "--json", str(result)]
             run = subprocess.run(command, capture_output=True, text=True, check=False)
