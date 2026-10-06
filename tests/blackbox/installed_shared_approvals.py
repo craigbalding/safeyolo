@@ -110,8 +110,9 @@ def run(args: argparse.Namespace) -> None:
     listeners = {entry["agent_id"]: entry for entry in _agent_map(root)}
     assert set(listeners) == set(names), "use a fixture containing only the two owned guests"
     # The maintained lifecycle helper reads these bindings when it stops a
-    # guest. Keep its transport on the same owned instance as the probe.
+    # guest. Bind the exact TOML too: native transport prefers it over the root.
     os.environ["SAFEYOLO_CONFIG_DIR"] = str(root)
+    os.environ["SAFEYOLO_NATIVE_CONFIG_PATH"] = str(root / "config.toml")
     os.environ["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     cli, binary = args.native_cli.resolve(strict=True), args.native_proxy.resolve(strict=True)
     cli_version, proxy_version = (checked([str(path), "--version"]) for path in (cli, binary))
