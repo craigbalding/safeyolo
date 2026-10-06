@@ -351,7 +351,7 @@ def test_factory_rejects_an_unknown_role_harness(tmp_path):
 def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, tmp_path):
     path = _factory_file(tmp_path)
 
-    result = cli_runner.invoke(app, ["factory", "check", str(path)])
+    result = cli_runner.invoke(app, ["factory", "check", str(path)], env={"COLUMNS": "512"})
     explanation = " ".join(result.output.split())
 
     assert result.exit_code == 0, result.output

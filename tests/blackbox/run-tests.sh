@@ -411,6 +411,16 @@ fi
 # Initialize test config dir on first run
 if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
+    if [ -n "${SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR:-}" ]; then
+        # Give each section fresh native identity/configuration. Only the
+        # immutable executables and boot assets come from preparation.
+        python3 - "$SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR" "$SAFEYOLO_CONFIG_DIR" <<'PY'
+import sys
+from pathlib import Path
+from installed_sections import prepare_native_instance
+prepare_native_instance(Path(sys.argv[1]), Path(sys.argv[2]))
+PY
+    fi
     safeyolo init --no-interactive
     echo ""
 fi

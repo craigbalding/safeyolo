@@ -154,6 +154,12 @@ class CustomBuildHook(BuildHookInterface):
             raise ValueError(f"SAFEYOLO_NATIVE_BINARY is not a file: {native_binary}")
         if native_binary.is_file():
             build_data["force_include"][str(native_binary)] = "safeyolo/bin/safeyolo-proxy"
+            # Python workflow callers now delegate lifecycle operations to
+            # the installed native CLI; Coord staging uses its sibling.
+            for name in ("safeyolo", "safeyolo-coord"):
+                sibling = native_binary.with_name(name)
+                if sibling.is_file():
+                    build_data["force_include"][str(sibling)] = f"safeyolo/bin/{name}"
             platform_tag = os.environ.get("SAFEYOLO_NATIVE_PLATFORM_TAG") or sysconfig.get_platform().replace("-", "_").replace(".", "_")
             if not re.fullmatch(r"[a-zA-Z0-9_]+", platform_tag):
                 raise ValueError("SAFEYOLO_NATIVE_PLATFORM_TAG must be a wheel platform tag")

@@ -42,8 +42,8 @@ def marker(environment, reload_id=OLD_RELOAD, **changes):
 @pytest.fixture
 def environment(monkeypatch):
     # Keep real conventional socket paths within the existing sun_path limit.
-    with tempfile.TemporaryDirectory(prefix="sy-sync-") as directory:
-        root = Path(directory)
+    with tempfile.TemporaryDirectory(prefix="sy-sync-", dir="/tmp") as directory:
+        root = Path(directory).resolve()
         config_dir = root / "cli"
         config_dir.mkdir()
         working = root / "launch"

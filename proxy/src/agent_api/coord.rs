@@ -188,13 +188,17 @@ impl CoordClient {
         if let Some(url) = std::env::var_os("SAFEYOLO_COORD_NATS_URL") {
             return url.to_string_lossy().into_owned();
         }
-        let endpoint = self.owner.data_dir.join("nats/test-endpoints.json");
-        if let Ok(bytes) = std::fs::read(endpoint)
-            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-            && let Some(port) = value.get("client_port").and_then(Value::as_u64)
-            && port <= u16::MAX as u64
-        {
-            return format!("nats://127.0.0.1:{port}");
+        // Native startup records observed endpoints here. The test endpoint
+        // remains a fallback for the existing Python-owned integration fixture.
+        for name in ["process.json", "test-endpoints.json"] {
+            let endpoint = self.owner.data_dir.join("nats").join(name);
+            if let Ok(bytes) = std::fs::read(endpoint)
+                && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                && let Some(port) = value.get("client_port").and_then(Value::as_u64)
+                && (1..=u16::MAX as u64).contains(&port)
+            {
+                return format!("nats://127.0.0.1:{port}");
+            }
         }
         "nats://127.0.0.1:4222".to_owned()
     }

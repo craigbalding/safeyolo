@@ -36,6 +36,17 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
     shutil.copytree(source / "data/coord/nats/bin", root / "data/coord/nats/bin")
 
 
+def prepare_native_instance(source: Path, root: Path) -> None:
+    """Create fresh native state and reuse the prepared immutable inputs."""
+    subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
+                   check=True, timeout=10)
+    for name in ("bin", "assets"):
+        target = root / name
+        if target.exists():
+            target.rmdir()  # Only an empty initialization directory may be replaced.
+        target.symlink_to(source / name, target_is_directory=True)
+
+
 def owned_processes(root: Path) -> list[dict]:
     """Remember live processes named by this instance before invoking stop."""
     if __package__:

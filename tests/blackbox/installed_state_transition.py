@@ -48,7 +48,7 @@ if __package__:
         _process_start_token,
         _runtime_observation,
     )
-    from .installed_sections import copy_prepared_nats, owned_processes, surviving_processes
+    from .installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance, surviving_processes
 else:
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
@@ -58,7 +58,7 @@ else:
         _process_start_token,
         _runtime_observation,
     )
-    from installed_sections import copy_prepared_nats, owned_processes, surviving_processes
+    from installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance, surviving_processes
 
 BODY = b"owned-r638-response-needle\n"
 PASS = "synthetic-r638-vault-passphrase"
@@ -494,6 +494,8 @@ def main() -> None:
     for thread in threads:
         thread.start()
     try:
+        if args.prepared_config is not None:
+            prepare_native_instance(args.prepared_config, root)
         run([str(args.cli), "init", "--no-interactive"], env)
         (root / ".safeyolo-platform-smoke").touch()
         config = yaml.safe_load((root / "config.yaml").read_text())

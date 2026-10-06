@@ -519,15 +519,34 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     let socket = root.join("data/vm-control/marker.sock");
     drop(UnixListener::bind(&socket).unwrap());
     let mut child = Command::new("sleep").arg("30").spawn().unwrap();
-    fs::write(
-        directory.join("runtime.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "run_id":"0123456789abcdef0123456789abcdef",
-            "backend_pid":child.id(), "backend_token":"unrelated-fixture"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    let pid = i32::try_from(child.id()).unwrap();
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    assert_eq!(
+        unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        },
+        size
+    );
+    let info = unsafe { info.assume_init() };
+    assert_eq!(info.pbi_pid, child.id());
+    assert!(info.pbi_start_tvsec > 0 && info.pbi_start_tvusec < 1_000_000);
+    let backend_token = format!(
+        "darwin:{pid}:{}:{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    );
+    let record = directory.join("runtime.json");
+    let mut run = serde_json::json!({
+        "run_id":"0123456789abcdef0123456789abcdef",
+        "backend_pid":child.id(), "backend_token":backend_token
+    });
+    fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     let live = value(cli(&root, &["agent", "status", "marker"]));
     let stop = cli(&root, &["agent", "stop", "marker"]);
     let survived = child.try_wait().unwrap().is_none();
@@ -544,6 +563,18 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     let without_control = value(without_control);
     assert_eq!(without_control["runtime_state"], "unknown");
     assert!(without_control["next_action"].as_str().is_some());
+    run["backend_token"] = "unrelated-fixture".into();
+    let malformed_record = serde_json::to_vec(&run).unwrap();
+    fs::write(&record, &malformed_record).unwrap();
+    let unidentified_dead = value(cli(&root, &["agent", "status", "marker"]));
+    assert_eq!(unidentified_dead["runtime_state"], "unknown");
+    for operation in ["stop", "cleanup"] {
+        assert!(!cli(&root, &["agent", operation, "marker"]).status.success());
+        assert_eq!(fs::read(&record).unwrap(), malformed_record);
+        assert!(socket.exists());
+    }
+    run["backend_token"] = backend_token.into();
+    fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     let dead = value(cli(&root, &["agent", "status", "marker"]));
     assert_eq!(dead["runtime_state"], "stopped");
     fs::create_dir_all(root.join("data/shell-sockets")).unwrap();
@@ -620,6 +651,396 @@ fn incomplete_launcher_stop_can_be_repeated_and_cleaned_without_a_new_launch() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn runsc_state_without_a_runtime_record_holds_native_and_admin_start() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+            "--launcher",
+            "supervisor",
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    let share = directory.join("config-share");
+    fs::create_dir_all(&share).unwrap();
+    let generation = "0123456789abcdef0123456789abcdef";
+    let context = serde_json::to_vec(&serde_json::json!({"generation":generation})).unwrap();
+    fs::write(share.join("host-launch-context.json"), &context).unwrap();
+    let runsc = root.join("run");
+    fs::create_dir(&runsc).unwrap();
+    let state = runsc.join(format!(
+        "safeyolo-{generation}_sandbox:safeyolo-{generation}.state"
+    ));
+    fs::write(&state, b"unreconciled backend state").unwrap();
+
+    let config = root.join("config.toml");
+    let document = fs::read_to_string(&config)
+        .unwrap()
+        .replace("admin_port = 9090", "admin_port = 0");
+    fs::write(&config, document).unwrap();
+    let _stop = StopOnDrop(&config);
+    value(cli(&root, &["start"]));
+    for args in [
+        ["agent", "status", "marker"],
+        ["agent", "diagnostics", "marker"],
+    ] {
+        let observed = value(cli(&root, &args));
+        assert_eq!(observed["runtime_state"], "unknown");
+        assert_eq!(observed["sandbox_state"], "unknown");
+        assert_eq!(observed["exec"], false);
+        assert_eq!(observed["port_forward"], false);
+    }
+    assert_eq!(
+        value(cli(&root, &["doctor"]))["agents"][0]["runtime_state"],
+        "unknown"
+    );
+    // Ordinary start goes through the authenticated Admin caller. The explicit
+    // sandbox-only mode reaches the same owner through the native CLI.
+    let admin = cli(&root, &["agent", "start", "marker"]);
+    assert!(!admin.status.success());
+    assert!(String::from_utf8_lossy(&admin.stderr).contains("API 409"));
+    assert!(
+        !cli(&root, &["agent", "start", "marker", "--sandbox-only"])
+            .status
+            .success()
+    );
+    for operation in ["stop", "cleanup"] {
+        assert!(!cli(&root, &["agent", operation, "marker"]).status.success());
+    }
+    assert!(!directory.join("runtime.json").exists());
+    assert!(!directory.join("current-launch.json").exists());
+    assert_eq!(fs::read(&state).unwrap(), b"unreconciled backend state");
+    assert_eq!(
+        fs::read(share.join("host-launch-context.json")).unwrap(),
+        context
+    );
+
+    // A dangling or inaccessible backend path cannot establish absence.
+    fs::remove_file(&state).unwrap();
+    symlink(runsc.join("absent"), &state).unwrap();
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "unknown"
+    );
+    fs::remove_file(&state).unwrap();
+    let blocked_parent = root.join("blocked");
+    fs::create_dir(&blocked_parent).unwrap();
+    fs::set_permissions(&blocked_parent, fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(&root)
+        .args(["agent", "status", "marker"])
+        .env("SAFEYOLO_RUNSC_ROOT", blocked_parent.join("run"))
+        .output()
+        .unwrap();
+    fs::set_permissions(&blocked_parent, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(value(denied)["runtime_state"], "unknown");
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+
+    // Corrupt launch context must not disappear into an absent identity.
+    fs::write(share.join("host-launch-context.json"), b"corrupt").unwrap();
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "unknown"
+    );
+    assert_eq!(
+        fs::read(share.join("host-launch-context.json")).unwrap(),
+        b"corrupt"
+    );
+}
+
+#[test]
+fn missing_runtime_record_does_not_make_unverified_pid_files_stopped() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    let share = directory.join("config-share");
+    fs::create_dir_all(&share).unwrap();
+    fs::write(
+        share.join("host-launch-context.json"),
+        b"{\"generation\":\"0123456789abcdef0123456789abcdef\"}",
+    )
+    .unwrap();
+    #[cfg(target_os = "linux")]
+    let handles = ["userns.pid", "container.pid"];
+    #[cfg(target_os = "macos")]
+    let handles = ["vm.pid", "vm.token"];
+    for handle in handles {
+        let path = directory.join(handle);
+        fs::write(&path, b"unverified handle").unwrap();
+        let observed = value(cli(&root, &["agent", "status", "marker"]));
+        assert_eq!(observed["runtime_state"], "unknown", "{handle}: {observed}");
+        assert_eq!(observed["exec"], false);
+        assert!(!cli(&root, &["agent", "stop", "marker"]).status.success());
+        assert!(!cli(&root, &["agent", "cleanup", "marker"]).status.success());
+        assert_eq!(fs::read(&path).unwrap(), b"unverified handle");
+        assert!(!directory.join("runtime.json").exists());
+        fs::remove_file(path).unwrap();
+    }
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_exited_backend_with_or_without_runsc_state_can_be_cleaned() {
+    use std::os::unix::process::CommandExt;
+
+    for retain_state in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "marker",
+                "--workspace",
+                temp.path().to_str().unwrap(),
+            ],
+        ));
+        let directory = root.join("agents/marker");
+        fs::create_dir_all(directory.join("config-share")).unwrap();
+        let generation = "0123456789abcdef0123456789abcdef";
+        let id = format!("safeyolo-{generation}");
+        fs::write(
+            directory.join("config-share/host-launch-context.json"),
+            serde_json::to_vec(&serde_json::json!({"generation":generation})).unwrap(),
+        )
+        .unwrap();
+        // Reach the native backend identity path without giving this harmless
+        // fixture the operator's namespace or any product signal authority.
+        let mut backend = Command::new("/bin/sh")
+            .arg0("runsc-sandbox")
+            .args(["-c", "read line"])
+            .arg(format!("--root={}", root.join("run").display()))
+            .args(["boot", &id])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = backend.id();
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let started = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap();
+        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+        let saved = serde_json::to_vec(&serde_json::json!({"run_id":generation,"backend_pid":pid,"backend_token":format!("linux:{}:{pid}:{started}",boot.trim())})).unwrap();
+        fs::write(directory.join("runtime.json"), &saved).unwrap();
+        let state = root.join("run").join(format!("{id}_sandbox:{id}.state"));
+        let lock = state.with_extension("lock");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "id":id,"sandbox":{"id":id,"pid":pid}
+        }))
+        .unwrap();
+        let other_state = root.join("run/safeyolo-fedcba9876543210fedcba9876543210_sandbox:safeyolo-fedcba9876543210fedcba9876543210.state");
+        if retain_state {
+            fs::create_dir_all(root.join("run")).unwrap();
+            fs::write(&state, &metadata).unwrap();
+            fs::write(&lock, b"").unwrap();
+            fs::write(&other_state, b"another retained incarnation").unwrap();
+            fs::write(other_state.with_extension("lock"), b"").unwrap();
+        }
+        let live = cli(&root, &["agent", "status", "marker"]);
+        let live_stop = cli(&root, &["agent", "stop", "marker"]);
+        let live_record_unchanged = fs::read(directory.join("runtime.json")).unwrap() == saved;
+        backend.kill().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap()
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .next()
+            != Some("Z")
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let zombie = cli(&root, &["agent", "status", "marker"]);
+        let mut wrong_birth: Value = serde_json::from_slice(&saved).unwrap();
+        wrong_birth["backend_token"] = format!(
+            "linux:{}:{pid}:{}",
+            boot.trim(),
+            started.parse::<u64>().unwrap() + 1
+        )
+        .into();
+        let wrong_birth = serde_json::to_vec(&wrong_birth).unwrap();
+        fs::write(directory.join("runtime.json"), &wrong_birth).unwrap();
+        let other_zombie = cli(&root, &["agent", "status", "marker"]);
+        let zombie_stop = cli(&root, &["agent", "stop", "marker"]);
+        let zombie_preserved = fs::read(directory.join("runtime.json")).unwrap() == wrong_birth;
+        fs::write(directory.join("runtime.json"), &saved).unwrap();
+        backend.wait().unwrap();
+        let live = value(live);
+        assert_eq!(live["runtime_state"], "degraded");
+        assert_eq!(live["run_id"], generation);
+        assert_eq!(live["exec"], false);
+        assert_eq!(live["port_forward"], false);
+        assert!(!live_stop.status.success());
+        assert!(live_record_unchanged);
+        assert_eq!(value(zombie)["runtime_state"], "stopped");
+        assert_eq!(value(other_zombie)["runtime_state"], "unknown");
+        assert!(!zombie_stop.status.success());
+        assert!(zombie_preserved);
+        assert_eq!(
+            value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+            "stopped"
+        );
+        assert_eq!(fs::read(directory.join("runtime.json")).unwrap(), saved);
+        // A dead numeric PID with an empty, malformed or conflicting birth
+        // token cannot authorize reconciliation or deletion through any caller.
+        let mut unrelated = Command::new("sleep").arg("120").spawn().unwrap();
+        let other_pid = unrelated.id();
+        let other_stat = fs::read_to_string(format!("/proc/{other_pid}/stat")).unwrap();
+        let other_started = other_stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap();
+        let context_path = directory.join("config-share/host-launch-context.json");
+        let context = fs::read(&context_path).unwrap();
+        let mut results = Vec::new();
+        for token in [
+            Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(format!("linux:{}:{other_pid}:{other_started}", boot.trim())),
+            serde_json::json!(format!("linux::{pid}:{started}")),
+            serde_json::json!(format!("linux:not-a-boot-id:{pid}:{started}")),
+            serde_json::json!(format!("linux:{}:{pid}", boot.trim())),
+            serde_json::json!(format!("linux:{}:{pid}:bad", boot.trim())),
+            serde_json::json!(format!("linux:{}:{pid}:{started}:extra", boot.trim())),
+            serde_json::json!(format!("darwin:{pid}:1:0")),
+        ] {
+            let mut record: Value = serde_json::from_slice(&saved).unwrap();
+            record["backend_token"] = token;
+            let bytes = serde_json::to_vec(&record).unwrap();
+            fs::write(directory.join("runtime.json"), &bytes).unwrap();
+            results.push((
+                cli(&root, &["agent", "status", "marker"]),
+                cli(&root, &["doctor"]),
+                cli(&root, &["agent", "stop", "marker"]),
+                cli(&root, &["agent", "cleanup", "marker"]),
+                fs::read(directory.join("runtime.json")).unwrap() == bytes
+                    && fs::read(&context_path).unwrap() == context
+                    && (!retain_state || (fs::read(&state).unwrap() == metadata && lock.exists())),
+            ));
+        }
+        let other_survived = unrelated.try_wait().unwrap().is_none()
+            && fs::read_to_string(format!("/proc/{other_pid}/stat"))
+                .unwrap()
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .nth(19)
+                == Some(other_started);
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
+        assert!(other_survived, "unrelated process birth was not preserved");
+        for (status, doctor, stop, cleanup, preserved) in results {
+            assert_eq!(value(status)["runtime_state"], "unknown");
+            assert_eq!(value(doctor)["agents"][0]["runtime_state"], "unknown");
+            assert!(!stop.status.success());
+            assert!(!cleanup.status.success());
+            assert!(preserved);
+        }
+        fs::write(directory.join("runtime.json"), &saved).unwrap();
+        let mut wrong_run: Value = serde_json::from_slice(&saved).unwrap();
+        wrong_run["run_id"] = "fedcba9876543210fedcba9876543210".into();
+        let wrong_run = serde_json::to_vec(&wrong_run).unwrap();
+        fs::write(directory.join("runtime.json"), &wrong_run).unwrap();
+        assert_eq!(
+            value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+            "unknown"
+        );
+        assert!(!cli(&root, &["agent", "stop", "marker"]).status.success());
+        assert!(!cli(&root, &["agent", "cleanup", "marker"]).status.success());
+        assert_eq!(fs::read(directory.join("runtime.json")).unwrap(), wrong_run);
+        fs::write(directory.join("runtime.json"), &saved).unwrap();
+        if retain_state {
+            assert_eq!(fs::read(&state).unwrap(), metadata);
+            assert!(lock.exists());
+            // Production runsc writes mode 0640 as subordinate UID/GID 100000.
+            // Matching dead metadata must not require host-readable contents.
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o0)).unwrap();
+            if unsafe { libc::geteuid() } != 0 {
+                assert_eq!(
+                    fs::read(&state).unwrap_err().kind(),
+                    std::io::ErrorKind::PermissionDenied
+                );
+            }
+            assert_eq!(
+                value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+                "stopped"
+            );
+        }
+        assert_eq!(
+            value(cli(&root, &["agent", "stop", "marker"]))["runtime_state"],
+            "stopped"
+        );
+        assert!(!state.exists());
+        assert!(!lock.exists());
+        if retain_state {
+            // Retry must also retire a lock left after the state file was
+            // removed; its saved birth/generation still identifies the owner.
+            fs::write(&lock, b"").unwrap();
+        }
+        for operation in ["stop", "cleanup", "cleanup", "stop"] {
+            assert_eq!(
+                value(cli(&root, &["agent", operation, "marker"]))["runtime_state"],
+                "stopped"
+            );
+            assert!(!state.exists());
+            assert!(!lock.exists());
+            if retain_state {
+                assert_eq!(
+                    fs::read(&other_state).unwrap(),
+                    b"another retained incarnation"
+                );
+                assert!(other_state.with_extension("lock").exists());
+            }
+        }
+        assert!(!directory.join("runtime.json").exists());
+        assert_eq!(
+            value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+            "stopped"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");
@@ -653,23 +1074,38 @@ fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
         .nth(19)
         .unwrap();
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
-    fs::write(directory.join("runtime.json"), serde_json::to_vec(&serde_json::json!({
-        "run_id":run_id,"backend_pid":pid,"backend_token":format!("linux:{}:{pid}:{started}",boot.trim())
-    })).unwrap()).unwrap();
-    let status = cli(&root, &["agent", "status", "marker"]);
-    let stop = cli(&root, &["agent", "stop", "marker"]);
+    let token = format!("linux:{}:{pid}:{started}", boot.trim());
+    let mut results = Vec::new();
+    for record in [
+        serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token}),
+        serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":"different-birth"}),
+        serde_json::json!({"run_id":run_id,"backend_pid":pid}),
+        serde_json::json!({"run_id":run_id,"backend_pid":"bad","backend_token":token}),
+        serde_json::json!({"run_id":run_id}),
+    ] {
+        let saved = serde_json::to_vec(&record).unwrap();
+        fs::write(directory.join("runtime.json"), &saved).unwrap();
+        results.push((
+            cli(&root, &["agent", "status", "marker"]),
+            cli(&root, &["agent", "stop", "marker"]),
+            fs::read(directory.join("runtime.json")).unwrap() == saved,
+        ));
+    }
     let survived = unrelated.try_wait().unwrap().is_none();
     unrelated.kill().unwrap();
     unrelated.wait().unwrap();
-    let observed = value(status);
-    assert_eq!(observed["runtime_state"], "unknown");
-    assert!(
-        observed["runtime_error"]
-            .as_str()
-            .unwrap()
-            .contains("unrelated process")
-    );
-    assert!(!stop.status.success());
+    for (status, stop, state_preserved) in results {
+        let observed = value(status);
+        assert_eq!(observed["runtime_state"], "unknown");
+        assert!(
+            observed["runtime_error"]
+                .as_str()
+                .unwrap()
+                .contains("unrelated process")
+        );
+        assert!(!stop.status.success());
+        assert!(state_preserved);
+    }
     assert!(survived, "the unrelated process was signalled");
 }
 
@@ -717,7 +1153,12 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
         .unwrap();
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
     let token = format!("linux:{}:{pid}:{started}", boot.trim());
-    fs::create_dir_all(root.join("run").join(&id)).unwrap();
+    fs::create_dir_all(root.join("run")).unwrap();
+    fs::write(
+        root.join("run").join(format!("{id}_sandbox:{id}.state")),
+        b"unreconciled backend state",
+    )
+    .unwrap();
     let saved = serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token});
     let mut results = Vec::new();
     for (field, replacement, generation, expected_state) in [
@@ -968,12 +1409,24 @@ fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
     let b_instance = fs::read(b.join("data/instance_id")).unwrap();
     let dir = a.join("agents/marker");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("runtime.json"), b"corrupt").unwrap();
-    let observed = value(cli(&a, &["agent", "status", "marker"]));
-    assert_eq!(observed["runtime_state"], "unknown");
-    let doctor = value(cli(&a, &["doctor"]));
-    assert_eq!(doctor["agents"][0]["runtime_state"], "unknown");
-    assert_eq!(fs::read(dir.join("runtime.json")).unwrap(), b"corrupt");
+    for record in [
+        "corrupt",
+        "null",
+        "[]",
+        "{}",
+        "{\"run_id\":42}",
+        "{\"run_id\":\"bad\"}",
+    ] {
+        fs::write(dir.join("runtime.json"), record).unwrap();
+        let observed = value(cli(&a, &["agent", "status", "marker"]));
+        assert_eq!(observed["runtime_state"], "unknown", "{record}: {observed}");
+        let doctor = value(cli(&a, &["doctor"]));
+        assert_eq!(doctor["agents"][0]["runtime_state"], "unknown");
+        assert_eq!(
+            fs::read(dir.join("runtime.json")).unwrap(),
+            record.as_bytes()
+        );
+    }
     assert_eq!(fs::read(b.join("policy.toml")).unwrap(), b_policy);
     assert_eq!(fs::read(b.join("data/instance_id")).unwrap(), b_instance);
     assert_eq!(

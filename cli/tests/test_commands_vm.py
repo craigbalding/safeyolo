@@ -464,7 +464,7 @@ class TestLifecycleBuild:
 
     def test_missing_selected_checkout_exits_one(self, runner, config_dir, tmp_path):
         """An explicit missing source cannot fall back to another checkout."""
-        result = runner.invoke(app, ["build", "--source-checkout", str(tmp_path)])
+        result = runner.invoke(app, ["build", "--source-checkout", str(tmp_path)], env={"COLUMNS": "512"})
         assert result.exit_code == 1
         assert "Cannot find guest/build-all.sh in" in result.output
         assert str(tmp_path) in result.output

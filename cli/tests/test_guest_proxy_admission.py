@@ -19,8 +19,8 @@ import pytest
 
 @pytest.mark.skipif(shutil.which("socat") is None, reason="real socat is required")
 @pytest.mark.parametrize("transport", ["vsock", "uds"])
-def test_forwarder_admission_and_slot_reuse(tmp_path, transport):
-    upstream_path = tmp_path / "upstream.sock"
+def test_forwarder_admission_and_slot_reuse(tmp_path, socket_dir, transport):
+    upstream_path = socket_dir / "upstream.sock"
     upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     upstream.bind(str(upstream_path))
     upstream.listen(256)

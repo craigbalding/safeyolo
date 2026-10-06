@@ -1,6 +1,7 @@
 """Tests for safeyolo doctor command."""
 
 import json
+import shutil
 import ssl
 import subprocess
 from types import SimpleNamespace
@@ -622,6 +623,14 @@ def _write_agent_token(tmp_config_dir, value: str = "tok-abc"):
 
 class TestCheckPipelineProbe:
     """Tests for _check_pipeline_probe()."""
+
+    @pytest.fixture
+    def tmp_config_dir(self, tmp_config_dir, socket_dir, monkeypatch):
+        """Keep the conventional registered socket path valid on Darwin."""
+        config_dir = socket_dir / "config"
+        shutil.copytree(tmp_config_dir, config_dir)
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+        return config_dir
 
     def test_no_sockets_dir_skips(self, tmp_config_dir):
         # tmp_config_dir creates data/ but not data/sockets/

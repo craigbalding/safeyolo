@@ -1,0 +1,58 @@
+name: Linux guest test inputs
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+      profile:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
+      SAFEYOLO_BUILD_PROFILE: ${{ inputs.profile }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          cache-bin: false
+      - name: Build Linux guest executables and receipts
+        run: scripts/build_guest_command.sh
+      - name: Build Linux recovery CLI
+        if: inputs.profile == 'debug'
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+      - name: Upload Linux host test inputs
+        if: inputs.profile == 'debug'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-host-debug
+          path: |
+            proxy/target/debug/safeyolo
+            proxy/target/debug/safeyolo-coord
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-guest-${{ inputs.profile }}
+          path: |
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest*
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord*
+          if-no-files-found: error
