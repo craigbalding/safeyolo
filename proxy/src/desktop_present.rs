@@ -190,9 +190,8 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
         return Err(Error::Unavailable);
     }
     let agents = host_agents::list().map_err(|_| Error::Failed)?;
-    let agent = agents
-        .iter()
-        .find(|agent| agent.id == agent_id)
+    let agent = host_agents::by_id(&agents, &agent_id)
+        .map_err(|_| Error::Failed)?
         .or_else(|| {
             allow_listener_name
                 .then(|| agents.iter().find(|agent| agent.name == agent_id))
@@ -200,6 +199,7 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
         })
         .cloned()
         .ok_or(Error::NotFound)?;
+    host_agents::by_id(&agents, &agent.id).map_err(|_| Error::Failed)?;
     let id = agent.id;
     let name = agent.name;
     let mut presentations = PRESENTATIONS.lock().await;

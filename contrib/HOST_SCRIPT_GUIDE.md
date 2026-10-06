@@ -5,19 +5,24 @@ SafeYolo agent boots. SafeYolo runs them with the operator's user permissions.
 A host script can install an agent harness, copy authentication or settings,
 and define the command that the sandbox executes.
 
-SafeYolo invokes them via:
+For the native host path, first complete the [native installation and guest prerequisites](../docs/native-policy.md#install-and-start)
+in a fresh `$HOME/.safeyolo-native` instance. Run as your ordinary host account
+from the trusted SafeYolo checkout. In these examples, `~/code` is an existing
+workspace that you own. Replace `/absolute/path/to/my-host-setup.sh` with your
+executable script outside all agent-writable shares. Native creation runs setup
+without starting the sandbox:
 
 ```sh
-safeyolo agent add <name> <folder> --host-script path/to/my-host-setup.sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create work --workspace ~/code --host-script /absolute/path/to/my-host-setup.sh
 ```
 
 For an existing agent, stop it before reapplying or changing host setup.
 Select an executable host script outside every agent-writable share:
 
 ```sh
-safeyolo agent stop <name>
-safeyolo agent configure <name> --host-script /absolute/path/to/my-host-setup.sh
-safeyolo agent start <name>
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent stop work
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent configure work --host-script /absolute/path/to/my-host-setup.sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent start work
 ```
 
 SafeYolo does not interpret a template, domain-specific language (DSL), or
@@ -26,7 +31,10 @@ you run it.
 
 ## Bundled setups
 
-The bundled aliases work without a checkout-relative script path:
+The retained Python CLI accepts bundled aliases without a checkout-relative
+script path. From its source installation, use `uv run --frozen safeyolo agent add`
+in the separate Python instance. For native commands, select the corresponding
+executable file in the trusted checkout's `contrib/` directory:
 
 | Alias | Setup |
 | --- | --- |
@@ -150,7 +158,7 @@ Sketch:
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_HOME:?run this via safeyolo agent add/run --host-script}"
+: "${SAFEYOLO_AGENT_HOME:?run this via native agent create/configure --host-script}"
 
 # Stage from host (best-effort)
 mkdir -p "$SAFEYOLO_AGENT_HOME/.myagent"
@@ -210,9 +218,10 @@ operator to run `safeyolo agent shell --root` for routine installs.
 
 ## Idempotency
 
-Host scripts run on `safeyolo agent add` and when an existing stopped agent is
-configured with `safeyolo agent configure <name> --host-script PATH`. Re-running
-`agent add --force` also reruns the script. Make yours re-runnable: check before
+Native host scripts run on `agent create --host-script` and when an existing
+stopped agent is configured with `agent configure --host-script`. In the
+retained Python CLI, `agent add` and `agent add --force` also run setup.
+Make yours re-runnable: check before
 creating, overwrite only what you own, and don't assume a blank slate.
 
 ### Pi authentication and trust
@@ -251,7 +260,8 @@ Ask the agent things like:
 > run, and execs it in `--yes` mode.
 
 Review the resulting script, save it to `contrib/<tool>-host-setup.sh`,
-and use it via `safeyolo agent add`.
+and select its path with native `agent create --host-script` or retained Python
+`agent add --host-script`.
 
 ## Security note
 

@@ -60,10 +60,13 @@ fn print(value: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn agent(name: &str) -> Result<host_agents::Agent, Error> {
-    host_agents::list()?
-        .into_iter()
+    let agents = host_agents::list()?;
+    let selected = agents
+        .iter()
         .find(|agent| agent.name == name)
-        .ok_or_else(|| format!("agent not found: {name}").into())
+        .ok_or_else(|| format!("agent not found: {name}"))?;
+    host_agents::by_id(&agents, &selected.id)?;
+    Ok(selected.clone())
 }
 fn process_path() -> PathBuf {
     host_platform::config_dir().join("data/proxy-process.json")
@@ -430,7 +433,15 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                     let setup_lock = if matches!(operation, "start"|"start-foreground"|"sandbox-start"|"stop") {
                         inherited_setup_lock(&agent)?
                     } else { None };
-                    if operation.starts_with("start") || operation=="sandbox-start" {start_proxy().await?;}
+                    if operation.starts_with("start") || operation=="sandbox-start" {
+                        let mut proposed = agent.clone();
+                        proposed.dangerously_allow_unowned |= allow_unowned;
+                        let observed = host_lifecycle::runtime(&agent).await?;
+                        if !host_lifecycle::reuses_current_launch(&observed) {
+                            host_lifecycle::validate_start_launcher(&proposed,operation)?;
+                        }
+                        start_proxy().await?;
+                    }
                     // Ordinary named runtime operations use the same authenticated
                     // Admin path as Commander. Foreground terminals stay local;
                     // independent stop remains available when the proxy is down.

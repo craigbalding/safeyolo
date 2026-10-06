@@ -2,10 +2,14 @@
 
 import fcntl
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+import tomlkit
+from typer import Exit
 from typer.testing import CliRunner
 
 from safeyolo import agent_lifecycle as lifecycle
@@ -25,8 +29,12 @@ def test_missing_native_owner_cannot_start_a_python_backend(tmp_path, monkeypatc
         lifecycle.start_native_agent("marker")
 
 
-def test_workflow_child_uses_the_selected_lock_and_leaves_all_parent_locks_held(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selected_config", [False, True])
+def test_workflow_child_uses_the_selected_lock_and_leaves_all_parent_locks_held(tmp_path, monkeypatch, selected_config):
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
+    if selected_config:
+        monkeypatch.setenv("SAFEYOLO_NATIVE_CONFIG_PATH", str(tmp_path / "selected.toml"))
     executable = tmp_path / "bin/safeyolo"
     executable.parent.mkdir()
     executable.write_text(
@@ -34,6 +42,10 @@ def test_workflow_child_uses_the_selected_lock_and_leaves_all_parent_locks_held(
         "import fcntl,json,os,sys\n"
         "from pathlib import Path\n"
         "root=Path(sys.argv[2]); name=sys.argv[5]\n"
+        "assert sys.argv[1]==('--config' if os.environ.get('SAFEYOLO_NATIVE_CONFIG_PATH') else '--root')\n"
+        "if sys.argv[1]=='--config':\n"
+        "    assert str(root)==os.environ['SAFEYOLO_NATIVE_CONFIG_PATH']\n"
+        "    root=root.parent\n"
         "fd=int(os.environ['SAFEYOLO_HOST_SETUP_LOCK_FD'])\n"
         "assert os.fstat(fd).st_ino==(root/'agents'/name/'host-setup.lock').stat().st_ino\n"
         "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
@@ -55,6 +67,88 @@ def test_workflow_child_uses_the_selected_lock_and_leaves_all_parent_locks_held(
     for name in ("marker", "other"):
         with (tmp_path / "agents" / name / "host-setup.lock").open("r+") as contender:
             fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_selected_config_cannot_cross_the_workflows_instance_root(tmp_path, monkeypatch):
+    root = tmp_path / "original"
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_NATIVE_CONFIG_PATH", str(tmp_path / "other/selected.toml"))
+    with lifecycle._agent_host_setup_lock("marker"):
+        with pytest.raises(lifecycle.AgentLifecycleError, match="does not belong to instance"):
+            lifecycle.stop_agent_by_name("marker")
+        with (root / "agents/marker/host-setup.lock").open("r+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_real_native_workflow_reads_and_stops_the_selected_same_named_agent(tmp_path, monkeypatch, capfd):
+    """Set SAFEYOLO_TEST_NATIVE_CLI to a built native CLI for this boundary probe."""
+    binary = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
+    if not binary:
+        pytest.skip("requires the built native CLI (SAFEYOLO_TEST_NATIVE_CLI)")
+    root = tmp_path / "instance"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    def native(*arguments, config=None):
+        selection = ["--config", str(config)] if config else ["--root", str(root)]
+        result = subprocess.run([binary, *selection, *arguments], text=True, capture_output=True, check=True)
+        return json.loads(result.stdout) if result.stdout.startswith("{") else None
+    native("init")
+    (root / "bin").mkdir()
+    (root / "bin/safeyolo").symlink_to(Path(binary).resolve())
+    default = native("agent", "create", "marker", "--workspace", str(workspace), "--launcher", "supervisor")
+    selected = root / "selected.toml"
+    document = tomlkit.parse((root / "config.toml").read_text())
+    document["policy_file"] = "selected-policy.toml"
+    selected.write_text(tomlkit.dumps(document))
+    created = native("agent", "create", "marker", "--workspace", str(workspace), "--launcher", "supervisor", config=selected)
+    selected_id = created["configuration"]["id"]
+    assert selected_id != default["configuration"]["id"]
+    before = {path: path.read_bytes() for path in [root / "config.toml", root / "policy.toml", selected, root / "selected-policy.toml"]}
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_NATIVE_CONFIG_PATH", str(selected))
+    assert lifecycle.native_agent_status("marker")["agent_id"] == selected_id
+    assert lifecycle.list_agent_runtimes()[0]["agent_id"] == selected_id
+    with lifecycle._agent_host_setup_lock("marker"):
+        assert lifecycle.stop_agent_by_name("marker")["agent_id"] == selected_id
+        with (root / "agents/marker/host-setup.lock").open("r+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert {path: path.read_bytes() for path in before if path != selected} == {path: contents for path, contents in before.items() if path != selected}
+    assert lifecycle.native_agent_status("marker")["agent_id"] == selected_id
+    from safeyolo.commands import factory, lab
+    observed_ids = []
+    def inspect_role(name):
+        observed = lifecycle.native_agent_status(name)
+        observed_ids.append(observed["agent_id"])
+        return observed
+    def end_preparation(**_kwargs):
+        raise factory.FactoryContractError("reached selected native status before host preparation")
+    monkeypatch.setattr(factory, "native_agent_status", inspect_role)
+    monkeypatch.setattr(factory, "_run_host_script_for_agent", end_preparation)
+    with pytest.raises(factory.FactoryContractError, match="reached selected native status"):
+        factory._run_snapshot(tmp_path / "snapshot.json", {"roles": {"owner": {"agent": "marker"}}})
+    assert observed_ids == [selected_id]
+
+    document = tomlkit.parse(selected.read_text())
+    document["agent_launcher"] = {"default": "selected-invalid-launcher"}
+    # Remove the per-agent override so Lab reaches this selected host default.
+    policy = root / "selected-policy.toml"
+    selected_policy = tomlkit.parse(policy.read_text())
+    del selected_policy["agents"]["marker"]["launcher"]
+    policy.write_text(tomlkit.dumps(selected_policy))
+    selected.write_text(tomlkit.dumps(document))
+    # Lab selects sandbox-only, so its unused default launcher does not block it.
+    # A missing workspace fails in the selected policy before any proxy/backend effect.
+    selected_policy["agents"]["marker"]["folder"] = str(tmp_path / "selected-missing-workspace")
+    policy.write_text(tomlkit.dumps(selected_policy))
+    with pytest.raises(Exit) as rejected:
+        lab._start_agent("marker")
+    assert rejected.value.exit_code == 1
+    assert "No such file or directory" in capfd.readouterr().err
+    assert not (root / "logs/proxy.log").exists()
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH")
+    assert lifecycle.native_agent_status("marker")["agent_id"] == default["configuration"]["id"]
 
 
 @pytest.mark.parametrize(("options", "expected"), [

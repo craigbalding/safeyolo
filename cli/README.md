@@ -304,67 +304,79 @@ Runs AI agents in isolated sandboxes. macOS uses Apple Virtualization framework
 (VZ) microVMs. Linux uses rootless gVisor. Both platforms route external
 traffic through SafeYolo.
 
+First complete the [native host installation and guest prerequisites](../docs/native-policy.md#install-and-start)
+for a fresh `$HOME/.safeyolo-native` instance. The table uses subcommands of
+`$HOME/.safeyolo-native/bin/safeyolo --root $HOME/.safeyolo-native`.
+The native installer does not change `PATH` or convert a Python instance.
+
 | Command | Description |
 |---------|-------------|
-| `safeyolo agent add <name> <folder> [--host-script PATH] [--rootfs-script PATH\|--rootfs-from AGENT]` | Add an agent and run it |
-| `safeyolo agent start <name> [--foreground\|--sandbox-only] [-- ARGUMENTS...]` | Start an existing agent; arguments affect only this launch |
-| `safeyolo agent stop <name>` | Stop a running agent |
-| `safeyolo agent list` | List configured agents |
-| `safeyolo agent shell <name>` | Open shell in running agent |
-| `safeyolo agent desktop <name> [--open]` | Start and securely preview an optional graphical desktop |
-| `safeyolo agent configure <name> [--workspace PATH] [--memory MB] [--host-script PATH]` | Update the next start's configuration; host setup requires a stopped agent |
-| `safeyolo agent remove <name>` | Remove an agent |
+| `agent create NAME --workspace PATH [--host-script PATH]` | Create native agent configuration |
+| `agent configure NAME [--workspace PATH] [--memory MB] [--host-script PATH]` | Update the next start's configuration; host setup requires a stopped agent |
+| `agent start NAME [--foreground\|--sandbox-only] [-- ARGUMENTS...]` | Start an existing agent; arguments affect only this launch |
+| `agent stop NAME` | Stop the selected agent |
+| `status` | Inspect configured agents and proxy state |
+| `agent attach NAME` | Reopen the recorded terminal without launching an absent agent |
+| `agent shell NAME` | Open an independent shell in a running agent |
+| `agent diagnostics NAME` | Inspect runtime and control failures |
 
 **Quick start:** run from a trusted SafeYolo checkout outside the agent's writable
 shares. Host setup scripts run with your host permissions. Stop an existing
 agent before applying a host script; configure workspace changes for its next
 stop/start.
 
-Use the [native host installation](../docs/native-policy.md) for `configure`,
-`start`, `attach` and diagnostics. Harness approval behavior comes from the
+In the example below, `~/code` and `~/other-project` are existing owned workspaces.
+Harness approval behavior comes from the
 selected host setup and harness arguments. Arguments after `start NAME --`
 apply to one launch and do not change saved defaults.
 
 ```bash
-# Initialize
-safeyolo init
-
-# Add and run a Claude Code agent using the bundled host script
-safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
-
-# Reuse another agent's custom rootfs with fresh home, overlay, and credentials
-safeyolo agent add second-project ~/code-2 --rootfs-from myproject
+# Create a Claude Code agent using the trusted checkout's host script
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create myproject --workspace ~/code --host-script "$PWD/contrib/claude-host-setup.sh"
 
 # Later, start in the background and open its terminal
-safeyolo agent start myproject
-safeyolo agent attach myproject
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent start myproject
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent attach myproject
 
 # Stop before reapplying or switching host setup
-safeyolo agent stop myproject
-safeyolo agent configure myproject --host-script "$PWD/contrib/codex-host-setup.sh"
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent stop myproject
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent configure myproject --host-script "$PWD/contrib/codex-host-setup.sh"
 
 # Opt into a supervised, coord-driven Codex factory worker
 SAFEYOLO_CODEX_COORD_ROOMS=backlog SAFEYOLO_CODEX_COORDINATORS=relay \
-  safeyolo agent configure myproject --host-script "$PWD/contrib/codex-coord-host-setup.sh"
-safeyolo agent start myproject
+  "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent configure myproject --host-script "$PWD/contrib/codex-coord-host-setup.sh"
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent start myproject
 
 # Persist a new /workspace folder for ordinary future runs
-safeyolo agent configure myproject --workspace ~/other-project
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent configure myproject --workspace ~/other-project
+```
+
+The remaining examples use the retained Python CLI installed by `uv sync`,
+with its separate default `$HOME/.safeyolo` instance. Run them from the checkout.
+They prepare custom images and provide the existing desktop controls; they do
+not operate on `myproject` in the native instance. Here `~/code-2` is an existing
+owned workspace and `legacy-project` is an already-running Python agent with a
+custom rootfs and a desktop stack. The copy prepares `second-project` without
+starting it. Desktop commands target the existing `legacy-project`.
+
+```bash
+# Reuse the Python agent's custom rootfs with fresh home, overlay, and credentials
+uv run --frozen safeyolo agent add second-project ~/code-2 --rootfs-from legacy-project --no-run
 
 # If the running rootfs supplies a desktop stack, start and open it directly
-safeyolo agent desktop myproject --open
+uv run --frozen safeyolo agent desktop legacy-project --open
 
 # Override the persistent desktop.size preference for one invocation
-safeyolo agent desktop myproject --size 1600x900 --open
+uv run --frozen safeyolo agent desktop legacy-project --size 1600x900 --open
 
 # Set this host's default once, then use ordinary desktop commands thereafter
-safeyolo agent desktop myproject --size 1280x1246 --remember-size --open
+uv run --frozen safeyolo agent desktop legacy-project --size 1280x1246 --remember-size --open
 
 # Optionally launch a guest browser and expire the host preview automatically
-safeyolo agent desktop myproject --browser https://example.com --open --ttl 15m
+uv run --frozen safeyolo agent desktop legacy-project --browser https://example.com --open --ttl 15m
 
 # On a remote Tailscale host, publish the same gated preview to the tailnet
-safeyolo agent desktop myproject --share tailnet --ttl 15m
+uv run --frozen safeyolo agent desktop legacy-project --share tailnet --ttl 15m
 
 ```
 
@@ -383,8 +395,8 @@ not apply to these deliberately staged coding-harness credentials.
 
 **Notes:**
 - Agent names must be lowercase alphanumeric with hyphens (hostname rules)
-- `add` is idempotent: running it twice with the same folder + script just runs the existing agent
-- Use `--no-run` with `add` to create config without running
+- The retained Python `add` command is idempotent: running it twice with the same folder + script just runs the existing agent
+- Use `--no-run` with Python `add` to create config without running
 - Without `--host-script`, the sandbox boots to a plain bash shell
 - Inside an agent, use ordinary `sudo apt install ...` (or the distro
   equivalent) for ephemeral guest packages. This grants root only inside the
