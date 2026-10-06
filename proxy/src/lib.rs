@@ -55,11 +55,13 @@ pub mod inspection;
 pub mod memory_monitor;
 mod memory_runtime;
 pub mod metrics;
+pub mod native_client;
 pub mod native_config;
 #[cfg(test)]
 mod native_config_tests;
 pub mod network_guard;
 pub mod oauth;
+pub mod operator_commands;
 mod operator_stats;
 pub mod policy;
 mod policy_runtime;

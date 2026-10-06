@@ -405,129 +405,50 @@ response does not promise immediate service access.
 
 ### Live traffic inspection
 
-For a running Rust development proxy with its admin listener enabled, run
-`safeyolo traffic` on the host to open the terminal inspector. The inspector
-reads the proxy's shared live HTTP and WebSocket view. It includes ordinary
-requests without TestContext, pending requests, and terminal responses or errors.
-The first Rust release provides read-only inspection and the flow exports
-described below. It does not provide traffic editing, replay or
-interactive interception. See the
-[first-release traffic scope](proxy-parity.md#first-release-traffic-scope).
-The existing scope options, such as `--agent alice --test CASE-1`, update the
-shared view before attaching. `--no-attach` changes only the scope.
-Scope and user-filter changes affect all inspectors and do not change forwarding
-policy.
-Detaching leaves the proxy and its retained view running.
-Use Up/Down to select a flow, Tab to change panes, and Page Up/Page Down to
-scroll. The selected exchange shows separate HTTP request, HTTP response, and
-SafeYolo metadata sections. The inspector fetches both retained body previews
-when a flow is selected. It fetches a side again when its body facts change.
-Pending, unavailable, empty, truncated, and failed previews have distinct
-messages. Press `r` or `s` to retry the request or response preview.
+Use the native host executable to inspect an already prepared instance. Open
+`inspect --factory NAME`, select Worker once, then read its state, traffic,
+approvals and logs without selecting it again. `attach` delegates to the existing
+native host terminal owner and returns to that workflow. See
+[native operator and Helper commands](native-operator.md) for the prerequisites,
+direct commands and selected Helper preparation.
 
-Press `l` to switch between the flow list and live tail. The tail shows up to
-40 matching exchanges in chronological order as request and response cards.
-It follows the newest card while new requests arrive and updates a pending
-card when its response arrives. In the card pane, Up/Down or Page Up/Page Down
-pauses follow and selects an older card. Press End to resume at the newest
-card. Tab opens the selected card's full HTTP detail; press Tab again to return
-to the cards. Opening detail pauses follow.
+The native client reads the proxy's shared live HTTP and WebSocket view. It
+includes ordinary requests without TestContext, pending requests, and terminal
+responses or errors. Direct commands carry their own `--agent`, TestContext
+selection and `--filter`. They do not change the shared viewer's scope or filter.
+The operator API still supports its shared scope and filter endpoints for
+callers that choose those operations. Neither selection changes forwarding
+policy. Closing inspect leaves the proxy and retained view running.
 
-In live tail, press `R` for a request JSON pin or `S` for a response JSON pin.
-Use Up/Down to choose a path, Right to open a subtree, Left to return to its
-parent, and Enter to pin the selected field or subtree. Select `[last]` inside
-an array to follow its final item as the array grows. Backspace clears the pin
-for that side; Escape leaves the pin unchanged. Each side keeps one independent
-pin for this terminal session. A missing field shows a marker. For consecutive
-requests to the same method and endpoint, changed characters in the pinned
-request value receive colour and a `Δ` marker. The marker remains visible in a
-monochrome terminal. A different endpoint starts a new comparison. Other body
-fields remain available in the selected exchange's full detail and exports.
+Use `traffic show FLOW_ID`, `traffic body FLOW_ID request` or `response`,
+`traffic websocket FLOW_ID`, and `traffic message FLOW_ID MESSAGE_INDEX` to
+read the selected exchange. Body projections retain exact base64 bytes and add
+UTF-8 text when available. JSON escapes terminal controls. Unavailable, empty,
+truncated and failed reads retain their distinct metadata. The native client
+does not format or decompress body previews; the existing exporter supplies
+its supported text representations.
 
-The tail bounds body previews and work per poll. A loading marker remains until
-a card's preview is fetched. It shows when older cards fall outside its window,
-when previously visible flows leave the current retained or filtered snapshot,
-and when polling fails. Polling cannot count exchanges that appear and disappear
-between successful snapshots. A pin requires a complete JSON preview; export
-the body if a preview is truncated or unavailable.
+The authenticated HTTP body route accepts `preview_bytes=0..65536` for a bounded
+response with `preview_size` and `truncated` fields. Omitting that parameter keeps
+the full-body response. WebSocket message reads use 64 KiB pages; pass `--offset`
+to reach subsequent retained bytes. Transcript rows show direction, type, size,
+time and the reached inspection drop decision. That decision does not establish
+delivery to the peer.
 
-Each preview fetch transfers at most 64 KiB of retained bytes. The inspector
-also limits rendered body text to 32,768 characters per side. These limits
-do not change retained bytes or exports. The authenticated body route accepts
-`preview_bytes=0..65536` for a bounded response with `preview_size` and
-`truncated` fields; omitting that parameter keeps the full-body response.
-
-Formatted mode is on when the inspector opens. Press `p` to switch between
-formatted and source modes. The setting persists across selections and
-refreshes. Both modes decode supported content encodings and use the declared
-charset for readable media types. Source mode keeps spaces and line breaks;
-formatted mode indents JSON and newline-delimited JSON and separates URL form
-fields. Already-indented source JSON may look indented in both modes. HTML,
-XML, JavaScript, CSS, event streams, and other text stay readable without
-pressing `p`. The selected body uses syntax colours for common structured
-content. The text remains legible in a monochrome terminal. Colour does not
-change the detail text or exports.
-
-The inspector decodes `identity`, `gzip`, `deflate`, `br`, and `zstd`, including
-stacked `Content-Encoding` values in reverse order. A preview may stop after
-64 KiB of decoded data, 16 encoding stages, or a 32 MiB Zstandard window.
-The view identifies unsupported encodings, malformed streams, and incomplete
-retained previews. It shows readable text recovered before a stream ends or
-fails. Binary and unknown content get a compact media type, retained size,
-safe byte sample, and the `x` export choice for the selected side. Preview
-decoding and formatting do not change retained bytes or existing export output.
-The inspector escapes terminal controls, including tabs and carriage returns,
-in displayed traffic.
-
-All headers are shown when the inspector opens. Press `h` to hide or show only
-`Accept`, `Accept-Encoding`, `Accept-Language`, and `User-Agent`. The setting
-persists across selections and refreshes. Each HTTP side lists the hidden
-header names and field counts without hidden values. Showing headers again
-restores their original order, spelling, and duplicates. Content, connection,
-framing, cache, security, and tracing headers remain visible for diagnosis.
-
-`a` and `t`
-change the shared agent and test scope; `c` clears only that scope. `f` edits
-the shared user filter. Enter applies the expression, Escape cancels, and an
-empty expression clears only the user filter. `q` detaches.
-For an upgraded WebSocket, `w` opens its retained message transcript and returns
-to HTTP. Up/Down selects a message; `[` and `]` navigate its 64 KiB body pages.
-Every retained byte is reachable through these pages. The inspector fetches a
-page when selected or requested, rather than fetching the payload on every poll.
-Message rows show direction, type, size, time and the reached inspection drop
-decision. That decision does not establish delivery to the peer.
-
-The focused flow has a `>` marker. Press `m` to add or remove a `*` marker on a
-visible flow. The marks are local to the inspector. A scope, filter, list, or
-retention refresh removes marks for flows that are no longer visible.
-
-When no flow is marked, press `x` to export the focused flow. When one flow is
-marked, press `x` to export that marked flow. Enter `raw`, `raw_request`,
-`raw_response`, `curl`, `httpie`, `har` or `zhar`, then enter a local file path.
-Escape cancels either prompt. The focused flow or marked selection is fixed when
-the format prompt opens.
-Export also works while viewing that flow's WebSocket transcript.
-
-When two or more flows are marked, press `x`, select a format, and enter an
-existing local directory. The inspector exports each marked flow through the
-same scoped operator API. Each bulk filename is deterministic from the flow ID
-and format. Bulk export does not replace an existing output path. The terminal
-shows one result for each flow and an aggregate result. A failed flow does not
-hide authorized exports for other marked flows.
-
-The destination belongs to the host running the inspector. The proxy receives
-only the flow ID and format. The inspector saves a completed download before it
-replaces a single-flow destination. A failed or canceled download leaves an
-existing single-flow destination unchanged. Replacement preserves an existing
-destination's permissions and follows a final symbolic link to its target. It
-creates a new file inode, so other hard links to the previous file keep their
-previous content.
+Select one retained flow and run `traffic export FLOW_ID FORMAT FILE --agent
+NAME`. All seven formats remain available: `raw`, `raw_request`, `raw_response`,
+`curl`, `httpie`, `har` and `zhar`. The destination belongs to the host running
+the client. The proxy receives the flow ID, format and explicit selection. A
+completed download replaces a single-flow destination. A failed download leaves
+its previous contents unchanged. Replacement preserves an existing destination's
+permissions and follows a final symbolic link to its target. It creates a new
+file inode, so other hard links keep their previous content.
 
 Raw export reconstructs HTTP messages from retained observations and available
 body content. It does not reproduce original wire bytes. Combined `raw` output can
 append retained WebSocket payloads with direction prefixes, including dropped
 messages. That format does not record message type or drop status. Use the
-inspector for those facts. `curl` and `httpie` produce command text; export does
+WebSocket transcript for those facts. `curl` and `httpie` produce command text; export does
 not execute it. If a format requires unavailable content or protocol facts,
 the export reports a failure.
 HAR writes a JSON archive for the selected flow. ZHAR compresses that archive
@@ -541,16 +462,16 @@ the first Rust release.
 HTTP decoding and command formatting materialize complete decoded HTTP bodies
 in memory. WebSocket export reads retained payloads in bounded chunks.
 
-For example, enter `~m GET`, `~u example.com`, or `~b base_instruction` in the
-filter prompt. Combine predicates with explicit `&`, `|`, `!` and parentheses,
-such as `~m POST & ~b base_instruction`. A bare regular expression searches the
-URL. The filter combines with the pinned scope; changing either preserves the
-other. Invalid expressions and unsupported predicates leave the previous filter
-active. If an accepted filter fails during evaluation, the inspector reports
-the failure and retains its previous rows. Use `f` to edit or clear the active
-expression and recover.
+For example, select `--filter '~m GET'`, `--filter '~u example.com'`, or
+`--filter '~b base_instruction'`. Combine predicates with explicit `&`, `|`, `!`
+and parentheses, such as `~m POST & ~b base_instruction`. A bare regular
+expression searches the URL. An explicit filter combines with that command's
+selection. Invalid or unavailable filters report an error rather than empty
+success. In an inspect session, a failed filter keeps the selected agent for
+the next command. Existing shared-filter API callers
+retain their previous filter on compilation failure.
 
-The shared editor preserves the source parser's spacing rules. For a standalone
+The filter preserves the source parser's spacing rules. For a standalone
 predicate without an operand, use a spaced group such as `(~q )` for flows
 without a response or `(~websocket )` for WebSockets. The source wrapper rejects
 bare `~q` and `~websocket`. An explicit combination such as `~q & ~m GET` works.
@@ -581,8 +502,8 @@ The proxy evicts the oldest finished flows across all scopes. Open WebSockets
 and active HTTP exchanges remain retained even above these targets. If retained
 bodies still exceed the byte target, the proxy removes older nonempty messages
 from open WebSockets in global timestamp order. It preserves each session's
-latest message, even when that message alone exceeds the target. The inspector
-shows how many messages have been trimmed from each session. Closed sessions
+latest message, even when that message alone exceeds the target. The transcript
+reports how many messages have been trimmed from each session. Closed sessions
 keep their remaining transcript until the whole flow is evicted. These targets
 do not limit forwarded message size. Large messages share the relay's anonymous
 file storage; inspecting a page does not load the whole message into memory.

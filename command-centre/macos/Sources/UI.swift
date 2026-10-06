@@ -514,6 +514,18 @@ struct CommandCentreMenu: View {
                     }
                 }
             }
+            ForEach(client.networkOutcomes.keys.sorted(), id: \.self) { id in
+                if let outcome = client.networkOutcomes[id] {
+                    if client.unavailableNetworkOutcomes.contains(id) {
+                        Text("Approval outcome unavailable: \(id)")
+                    } else if outcome.terminal {
+                        Text(outcome.display).textSelection(.enabled)
+                    }
+                }
+            }
+            ForEach(client.unavailableNetworkOutcomes.subtracting(client.networkOutcomes.keys).sorted(), id: \.self) { id in
+                Text("Approval evidence unavailable: \(id). Direct policy controls remain available.")
+            }
             Divider()
             if client.agents.isEmpty {
                 Text("No configured agents")

@@ -57,11 +57,26 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         "/admin/traffic/scope" => Some(view.scope()),
         "/admin/traffic/flows" => {
             let view = view.clone();
+            let selected = request.uri().query().map(selected_scope).transpose();
+            let selected = match selected {
+                Ok(selected) => selected,
+                Err(()) => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"invalid explicit traffic selection"}),
+                    ));
+                }
+            };
             // Decoding and regex searches can read anonymous message files.
             // The model snapshots first, then evaluates outside its view lock.
-            return tokio::task::spawn_blocking(move || match view.flows() {
-                Ok(flows) => response(StatusCode::OK, flows),
-                Err(error) => filter_error(error),
+            return tokio::task::spawn_blocking(move || {
+                match selected.map_or_else(
+                    || view.flows(),
+                    |(scope, filter)| view.selected_flows(&scope, &filter),
+                ) {
+                    Ok(flows) => response(StatusCode::OK, flows),
+                    Err(error) => filter_error(error),
+                }
             })
             .await
             .map_err(|_| Error::TrafficReporting);
@@ -94,10 +109,22 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                         json!({"error":"format must be raw, raw_request, raw_response, curl, httpie, har, or zhar"}),
                     ));
                 };
+                let selected = match export_selection(request.uri().query()) {
+                    Ok(selected) => selected,
+                    Err(()) => {
+                        return Ok(response(
+                            StatusCode::BAD_REQUEST,
+                            json!({"error":"invalid explicit export selection"}),
+                        ));
+                    }
+                };
                 let view = view.clone();
-                let plan = tokio::task::spawn_blocking(move || view.export(&id, format))
-                    .await
-                    .map_err(|_| Error::TrafficReporting)?;
+                let plan = tokio::task::spawn_blocking(move || match selected {
+                    None => view.export(&id, format),
+                    Some(agent) => view.selected_export(&id, format, agent.as_deref()),
+                })
+                .await
+                .map_err(|_| Error::TrafficReporting)?;
                 return Ok(match plan {
                     Ok(plan) => super::export_response(plan),
                     Err(error) => export_error(error),
@@ -144,6 +171,31 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     Ok(optional_response(value))
 }
 
+fn selected_scope(query: &str) -> Result<(Value, String), ()> {
+    let mut scope = serde_json::Map::new();
+    let mut filter = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').ok_or(())?;
+        let value = percent_decode_str(value)
+            .decode_utf8()
+            .map_err(|_| ())?
+            .into_owned();
+        match key {
+            "filter" if filter.is_none() => filter = Some(value),
+            "unattributed"
+                if !scope.contains_key(key) && matches!(value.as_str(), "true" | "false") =>
+            {
+                scope.insert(key.into(), json!(value == "true"));
+            }
+            "agent" | "test_id" | "intent" | "role" | "expect" if !scope.contains_key(key) => {
+                scope.insert(key.into(), json!(value));
+            }
+            _ => return Err(()),
+        }
+    }
+    Ok((Value::Object(scope), filter.unwrap_or_default()))
+}
+
 fn body_preview_bytes(query: Option<&str>) -> Result<Option<usize>, ()> {
     let mut limit = None;
     for value in query
@@ -177,6 +229,28 @@ fn export_format(query: Option<&str>) -> Option<ExportFormat> {
         found = Some(ExportFormat::parse(&value)?);
     }
     found
+}
+
+fn export_selection(query: Option<&str>) -> Result<Option<Option<String>>, ()> {
+    let mut selected = None;
+    for pair in query.unwrap_or("").split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if !matches!(key, "agent" | "selection") {
+            continue;
+        }
+        if selected.is_some() {
+            return Err(());
+        }
+        let value = percent_decode_str(value).decode_utf8().map_err(|_| ())?;
+        selected = Some(match key {
+            "agent" if !value.is_empty() => Some(value.into_owned()),
+            "selection" if value == "all" => None,
+            _ => return Err(()),
+        });
+    }
+    Ok(selected)
 }
 
 fn export_error(error: ExportError) -> Outcome {

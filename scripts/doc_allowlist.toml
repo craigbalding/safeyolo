@@ -39,6 +39,7 @@ user_facing_docs = [
     "docs/CONFIGURATION.md",
     "docs/native-policy.md",
     "docs/native-settings.md",
+    "docs/native-operator.md",
     "docs/DEVELOPERS.md",
     "docs/SERVICE_DISCOVERY.md",
     "docs/TLS_CERTIFICATE.md",

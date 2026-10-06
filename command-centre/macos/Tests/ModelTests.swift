@@ -24,6 +24,7 @@ final class StubURLProtocol: URLProtocol {
     static var failuresRemaining = 0
     static var requestCount = 0
     static var responsesByPath: [String: (Int, Data)] = [:]
+    static var requestHandler: ((URLRequest) throws -> (Int, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -41,7 +42,15 @@ final class StubURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
             return
         }
-        let (status, data) = Self.responsesByPath[request.url!.path] ?? (Self.responseStatus, Self.responseData)
+        let status: Int
+        let data: Data
+        do {
+            (status, data) = try Self.requestHandler?(request)
+                ?? Self.responsesByPath[request.url!.path] ?? (Self.responseStatus, Self.responseData)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: status,

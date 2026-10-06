@@ -13,6 +13,30 @@ settings, and native host readers. It records remaining consumers owned by
 #817/#818. The inventory does not claim those separate host/helper outcomes.
 See [native policy commands](native-policy.md) for installation and use.
 
+## Operator entry responsibilities
+
+[Native operator commands](native-operator.md) use one selected instance and
+session-local target. This map covers the reached entries for #821. It does not
+claim #817 terminal proof, #820 workflow launch or the #822 package-wide audit.
+
+| Entry | Native owner and retained boundary |
+| --- | --- |
+| Direct `traffic`, `approvals`, `logs`, `diagnose` | `proxy/src/bin/safeyolo.rs` dispatches to `operator_commands.rs`. `native_client.rs` shares the existing policy transport. Direct traffic reads carry explicit selection; they do not inherit or change a viewer's scope. Logs/diagnosis retain local access when the API is unavailable. |
+| `inspect` | The same native dispatch reads configured identities and existing approved Factory role mappings. State/evidence/decisions use the current Admin owners. Selection belongs only to this terminal session. #820 owns provisioning and workflow launch. |
+| Inspect `attach` | Fixed delegation to the same installed native CLI's `agent attach`, with the selected instance/name. #817 owns that command, terminal transport and actual effects. It is a missing prerequisite until that component is supplied; this change does not add a lifecycle implementation. |
+| `helper show`, `diagnostic`, `prepare` | Native Agent API client, using Helper's existing proxy/token or its granted Unix socket. Shared identity, evidence and approval owners enforce selected reads and typed preparation. No operator credential enters Helper. |
+| Commander decision/reconnect | Swift `MutationPlan`, `SafeYoloClient` and the common native resolver. The client's session projection rereads known request IDs after reconnect. An unavailable read stays unavailable; a lost mutation response is not reposted. |
+| HTTP/WebSocket body and exports | Existing process-owned traffic view/exporter; retained `raw`, `raw_request`, `raw_response`, `curl`, `httpie`, `har`, `zhar`. Native selection/body/transcript/file consumers replace the Python presentation. One HTTP exchange and one WebSocket transcript supply the finite consumer checks. |
+| Retired presentation | `commands/traffic.py`, `traffic_inspector.py` and their UI-only tests are removed. Pane navigation, tail/pins, formatting and marked batch exports belonged to that UI. The chosen native path retains selected evidence and all seven exports without maintaining that second interface. Python API/blackbox transport remains test tooling at this boundary. |
+
+The raw formats retain forensic observations, command formats retain displayed
+requests, and HAR/ZHAR retain interoperable archives. The existing native exporter
+already supplies them. Their cost here is native selection and one consumer check
+per format; no exporter redesign is needed. This applies #821's operator-directed
+first-handoff retention decision. The old keyboard UI is retired because the
+chosen continuous path uses the same small native command session for state,
+evidence and approvals. Capture, policy and canonical outcome owners are retained.
+
 ## Runtime settings
 
 All entries below are retained. Configuration values override built-in defaults.

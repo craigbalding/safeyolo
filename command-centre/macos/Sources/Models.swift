@@ -394,8 +394,18 @@ struct MutationPlan: Equatable {
     }
 }
 
-struct NetworkApprovalResolution: Decodable {
+struct NetworkApprovalResolution: Decodable, Equatable {
+    let requestID: String
     let status: String
+    let effect: String
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case status, effect
+    }
+
+    var terminal: Bool { ["approved", "rejected"].contains(status) }
+    var display: String { "\(status.capitalized). \(effect)" }
 }
 
 enum ResolutionResult: Equatable {

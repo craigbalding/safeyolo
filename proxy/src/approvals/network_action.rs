@@ -308,6 +308,112 @@ pub(crate) enum Decision {
     Reject,
 }
 
+/// Select two already supported read projections without copying evidence or
+/// granting network permission. Use the existing policy lock and activation.
+pub(crate) fn share_reads(
+    state: &crate::RuntimeState,
+    writer: &Writer,
+    request_id: &str,
+    helper: &str,
+    helper_id: &str,
+) -> std::result::Result<(u16, Value), crate::Error> {
+    let mut shared = None;
+    let result = crate::edit_native_policy(state, true, |source| {
+        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+        let policy = runtime
+            .policy
+            .as_ref()
+            .ok_or_else(|| invalid("active policy unavailable"))?;
+        let Some(record) = record(writer, policy, request_id)? else {
+            return Ok((
+                (404, json!({"error":"approval unavailable"})),
+                source.to_owned(),
+            ));
+        };
+        let path = runtime
+            .config
+            .policy_file
+            .as_ref()
+            .ok_or_else(|| invalid("policy unavailable"))?;
+        let saved = policy
+            .reload_native_source(source, path)
+            .map_err(|_| invalid("saved policy unavailable"))?;
+        if record.status != "pending"
+            || !record.action.current(policy)
+            || !record.action.current(&saved)
+            || policy.evidence_agent_id(helper) != Some(helper_id)
+            || saved.evidence_agent_id(helper) != Some(helper_id)
+        {
+            return Ok((
+                (
+                    409,
+                    json!({"error":"request or Helper identity changed; select current state"}),
+                ),
+                source.to_owned(),
+            ));
+        }
+        let (mut document, context) = crate::policy::parse_toml_for_edit(source)
+            .map_err(|_| invalid("policy unavailable"))?;
+        let agent = document["agents"][helper]
+            .as_table_like_mut()
+            .ok_or_else(|| invalid("Helper unavailable"))?;
+        let reads = agent
+            .entry("evidence_reads")
+            .or_insert(Item::Value(TomlValue::Array(toml_edit::Array::new())))
+            .as_array_mut()
+            .ok_or_else(|| invalid("evidence_reads must be an array"))?;
+        let mut selected = InlineTable::new();
+        for (key, value) in [
+            ("reader_id", helper_id),
+            ("agent", record.action.agent.as_str()),
+            ("agent_id", record.action.agent_id.as_str()),
+            ("request_id", request_id),
+        ] {
+            selected.insert(key, TomlValue::from(value));
+        }
+        selected.insert(
+            "reads",
+            TomlValue::Array(["diagnostic", "approval"].into_iter().collect()),
+        );
+        let selected = TomlValue::InlineTable(selected);
+        let value = json!({"request_id":request_id,"status":"shared","helper":helper,"helper_id":helper_id,
+            "agent":record.action.agent,"agent_id":record.action.agent_id,"reads":["diagnostic","approval"],
+            "effect":"Selected diagnostic and approval reads only. No network permission or operator authority was granted."});
+        if reads
+            .iter()
+            .any(|entry| entry.to_string() == selected.to_string())
+        {
+            return Ok(((200, value), source.to_owned()));
+        }
+        reads.push(selected);
+        let mut event = Event::new(
+            "admin.evidence_reads_shared",
+            Kind::Admin,
+            Severity::High,
+            "Selected diagnostic and approval reads shared with Helper; no network permission granted.",
+        );
+        event.agent = Some(record.action.agent.clone());
+        event.request_id = Some(request_id.into());
+        event.details =
+            json!({"helper":helper,"helper_id":helper_id,"agent_id":record.action.agent_id,
+            "reads":["diagnostic","approval"]})
+            .into();
+        shared = Some(event);
+        Ok((
+            (200, value),
+            crate::policy::restore_large_toml_integers(&document.to_string(), &context),
+        ))
+    })?;
+    if let Some(event) = shared {
+        tokio::runtime::Handle::current()
+            .block_on(writer.emit_confirmed(event))
+            .map_err(|_| {
+                invalid("read grant saved; audit receipt unavailable; inspect policy show")
+            })?;
+    }
+    Ok(result)
+}
+
 /// Run on the existing process-owned blocking mutation executor. A canceled
 /// HTTP receiver cannot abandon an admitted policy edit or its audit result.
 pub(crate) fn resolve(

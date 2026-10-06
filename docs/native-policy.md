@@ -187,16 +187,33 @@ assigns a durable `agent_id` in each agent's policy metadata. Keep that identity
 when editing its policy; assign a new identity when recreating the agent. Helper
 uses its normal Agent API token. Keep `data/admin_token` on the host.
 
-First, read Worker's pending request from the authenticated operator
-`GET /admin/approvals` endpoint. A native network prompt records `request_id` and
+First, read Worker's pending request with the native operator client:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" approvals list --agent worker
+```
+
+A native network prompt records `request_id` and
 `details.network_action`. The action binds Worker's durable identity, the host,
 the port and the relevant network-policy revision. Historical prompts without
 that binding remain available through their existing operator actions.
 
-In a policy candidate, select Helper's reads for that exact request. This example
-is illustrative: replace both durable identities and `request_id` with the
-host-owned identities and pending request you selected. Retain the rest of your
-current policy.
+Replace `REQUEST_ID` with the selected pending request and grant Helper its
+diagnostic and approval reads:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" approvals share REQUEST_ID --agent worker --helper helper
+```
+
+The existing native policy operation records only those selected reads. It
+retains the rest of the policy and does not grant network permission. See the
+[Helper commands](native-operator.md#helper-preparation) to read the evidence,
+prepare the exact action, and return it to the human decision.
+
+For operators editing policy directly, the saved schema remains available. This
+example is illustrative: replace both durable identities and `request_id` with
+the host-owned identities and pending request you selected. Retain the rest of
+your current policy.
 
 ```toml
 [agents.worker]
@@ -207,8 +224,8 @@ agent_id = "ag-22222222222222222222222222222222"
 evidence_reads = [{reader_id="ag-22222222222222222222222222222222", agent="worker", agent_id="ag-11111111111111111111111111111111", request_id="req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", reads=["diagnostic", "approval"]}]
 ```
 
-On the host, save that candidate as `selected-policy.toml` in your current
-directory. Apply it through the existing native command:
+To use the policy-editing path, save the candidate as `selected-policy.toml` on
+the host and apply it through the existing native command:
 
 ```sh
 "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy apply selected-policy.toml
@@ -230,6 +247,7 @@ through Helper's configured proxy; operator routes use the host Admin API.
 | Helper | `GET /approvals/ID` | Canonical action and disposition. |
 | Helper | `POST /approvals/ID/prepare` with `{"action":ACTION,"reason":"literal explanation"}` | Pending preparation of the exact action returned by the read; no policy change. |
 | Operator | `GET /admin/approvals/ID` | Canonical action, actual reusable effect and separately labelled `untrusted_reason_text`, when retained. |
+| Operator | `POST /admin/approvals/ID/readers` with `{"helper":"helper","helper_id":"CURRENT_DURABLE_ID"}` | Idempotent selected diagnostic and approval reads; no network grant. |
 | Operator | `POST /admin/approvals/ID` with `{"decision":"approve"}` or `{"decision":"reject"}` | Canonical terminal disposition and exact action; the resolver does not accept caller-supplied scope. |
 
 CLI and Commander network decisions use this common resolver for bound native
