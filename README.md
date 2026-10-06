@@ -177,21 +177,32 @@ for binding credentials to specific capabilities.
 
 ## Everyday commands
 
-Run these on the host; `work` is the agent created above.
+The examples above use the retained Python CLI. For the native host path,
+complete the [native installation and guest prerequisites](docs/native-policy.md#install-and-start)
+in a fresh `$HOME/.safeyolo-native` instance. The installer does not change
+`PATH` or convert the earlier Python agent. From a trusted checkout outside
+agent-writable shares, create a native `work` agent in an existing owned `~/code`
+workspace. The host script runs with your host permissions:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create work --workspace ~/code --host-script "$PWD/contrib/claude-host-setup.sh"
+```
+
+Run these commands as the same host account against that native instance.
 
 | Task | Command |
 | --- | --- |
-| List agents and their state | `safeyolo agent list` |
-| Start a persistent agent run | `safeyolo agent start work` |
-| Reconnect to its terminal | `safeyolo agent attach work` |
-| Open a separate shell in a running sandbox | `safeyolo agent shell work` |
-| Stop an agent | `safeyolo agent stop work` |
-| Diagnose a setup or runtime problem | `safeyolo doctor` |
+| List agents and their state | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native status` |
+| Start a persistent agent run | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent start work` |
+| Reconnect to its terminal | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent attach work` |
+| Open a separate shell in a running sandbox | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent shell work` |
+| Stop an agent | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent stop work` |
+| Diagnose a setup or runtime problem | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native doctor` |
 
 To add another agent, choose a different name and an existing workspace:
 
 ```sh
-safeyolo agent add side-project ~/side-project --host-script @claude
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create side-project --workspace ~/side-project --host-script "$PWD/contrib/claude-host-setup.sh"
 ```
 
 For persistent background runs and reconnecting, see [agent launchers](docs/agent-launchers.md).

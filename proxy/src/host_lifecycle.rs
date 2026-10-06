@@ -904,7 +904,7 @@ fn read_json(path: &std::path::Path) -> Result<Option<Value>, Error> {
     crate::guest_commands::read_state(path)
 }
 
-fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
+pub(crate) fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
     let configured = match &agent.launcher {
         Some(launcher) => Some(launcher.clone()),
         None => {
@@ -933,9 +933,18 @@ fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
                 .to_string_lossy()
                 .into_owned(),
         ),
-        "manager" => Some(value.trim_start_matches("manager:").to_owned()),
+        "manager" => {
+            let path = value
+                .strip_prefix("manager:")
+                .ok_or("manager path is missing")?;
+            if !std::path::Path::new(path).is_absolute() {
+                return Err("host manager requires an absolute script path".into());
+            }
+            Some(path.to_owned())
+        }
         "script" => Some(value.clone()),
-        _ => None,
+        "supervisor" => None,
+        _ => return Err(format!("unsupported agent launcher: {kind}").into()),
     };
     let mut result = json!({"kind":kind,"source":source});
     if let Some(script) = script {
@@ -996,7 +1005,7 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
     Ok(Some(state))
 }
 
-async fn runtime(agent: &Agent) -> Result<Value, Error> {
+pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
     let sandbox = crate::host_runs::observe(&agent.name).await;
     let proxy_attachment = match crate::native_config::read(&crate::host_platform::config_path()) {
         Ok(config) => match config
@@ -1214,20 +1223,22 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
         }
         return Ok(json!({"agents":observed}));
     }
-    let Some(agent) = agents
-        .into_iter()
-        .find(|agent| Some(agent.id.as_str()) == agent_id)
-    else {
-        return Ok(json!({"error":"Agent not found","status_code":404}));
-    };
-    let result = match operation {
-        "start" | "start-interactive" | "start-foreground" | "sandbox-start" => {
-            start(&agent, operation, None, None, false).await
-        }
-        "status" => runtime(&agent).await,
-        "stop" => stop(&agent, None).await,
-        "cleanup" => cleanup(&agent).await,
-        _ => Ok(json!({"error":"invalid host operation","status_code":400})),
+    let selected = agent_id
+        .map(|id| crate::host_agents::by_id(&agents, id))
+        .transpose()
+        .map(Option::flatten);
+    let result = match selected {
+        Ok(Some(agent)) => match operation {
+            "start" | "start-interactive" | "start-foreground" | "sandbox-start" => {
+                start(agent, operation, None, None, false).await
+            }
+            "status" => runtime(agent).await,
+            "stop" => stop(agent, None).await,
+            "cleanup" => cleanup(agent).await,
+            _ => Ok(json!({"error":"invalid host operation","status_code":400})),
+        },
+        Ok(None) => Ok(json!({"error":"Agent not found","status_code":404})),
+        Err(error) => Err(error),
     };
     match result {
         Ok(value) => Ok(value),
@@ -1246,6 +1257,7 @@ pub(crate) async fn start(
 ) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
+    crate::host_agents::refresh(agent)?;
     let lock_root = agent_dir(&agent.name);
     let _lock = match setup_lock {
         Some(lock) => lock,
@@ -1253,10 +1265,7 @@ pub(crate) async fn start(
             tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_root, None)).await??
         }
     };
-    let mut current = crate::host_agents::list()?
-        .into_iter()
-        .find(|current| current.id == agent.id)
-        .ok_or("agent configuration was removed while start was waiting")?;
+    let mut current = crate::host_agents::refresh(agent)?;
     // Only the local CLI can supply these one-run values. Admin accepts
     // named lifecycle actions against host-owned configuration.
     if let Some(arguments) = arguments {
@@ -1269,10 +1278,7 @@ pub(crate) async fn start(
         .get("agent_state")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    if matches!(
-        state,
-        "starting" | "launching" | "running" | "managed" | "manual" | "observed"
-    ) {
+    if reuses_current_launch(&observed) {
         return Ok(observed);
     }
     if !matches!(state, "stopped" | "exited" | "failed") {
@@ -1287,7 +1293,7 @@ pub(crate) async fn start(
                 .into(),
         );
     }
-    crate::host_boot::validate(agent)?;
+    let launcher = validate_start_launcher(agent, operation)?;
     let workspace = crate::host_boot::workspace(
         std::path::Path::new(agent.folder.as_deref().ok_or("missing workspace")?),
         agent.dangerously_allow_unowned,
@@ -1333,18 +1339,6 @@ pub(crate) async fn start(
         return runtime(agent).await;
     }
     stop_supervisor(&agent.name).await?;
-    let mut launcher = selected_launcher(agent)?;
-    if foreground {
-        launcher = json!({"kind":"foreground","source":"caller terminal"});
-    }
-    if interactive {
-        launcher = json!({"kind":"tmux-window","source":"requested"});
-        launcher["script"] = crate::host_platform::config_dir()
-            .join("assets/launchers/tmux-window.sh")
-            .to_string_lossy()
-            .into_owned()
-            .into();
-    }
     let debug_command = interactive && agent.launcher.as_deref() == Some("supervisor");
     let command = configured_guest_command(agent, debug_command)?;
     let launch_id = format!("launch-{}", uuid::Uuid::new_v4().simple());
@@ -1386,6 +1380,31 @@ pub(crate) async fn start(
         json!({}),
     );
     runtime(agent).await
+}
+
+/// Reuse a live launch without selecting another launcher.
+pub(crate) fn reuses_current_launch(observed: &Value) -> bool {
+    matches!(
+        observed["agent_state"].as_str(),
+        Some("starting" | "launching" | "running" | "managed" | "manual" | "observed")
+    )
+}
+
+/// Resolve and protect the effective launcher before proxy or backend effects.
+pub(crate) fn validate_start_launcher(agent: &Agent, operation: &str) -> Result<Value, Error> {
+    crate::host_boot::validate_sandbox(agent)?;
+    let launcher = match operation {
+        "sandbox-start" => json!({"kind":"sandbox-only","source":"requested"}),
+        "start-foreground" => json!({"kind":"foreground","source":"caller terminal"}),
+        "start-interactive" => {
+            json!({"kind":"tmux-window","source":"requested","script":crate::host_platform::config_dir().join("assets/launchers/tmux-window.sh")})
+        }
+        _ => selected_launcher(agent)?,
+    };
+    if let Some(script) = launcher.get("script").and_then(Value::as_str) {
+        crate::host_boot::validate_script_for_agent(agent, script)?;
+    }
+    Ok(launcher)
 }
 
 fn configured_guest_command(agent: &Agent, interactive: bool) -> Result<String, Error> {
@@ -1795,6 +1814,7 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
 }
 
 pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result<Value, Error> {
+    crate::host_agents::refresh(agent)?;
     let directory = agent_dir(&agent.name);
     let _lock = match setup_lock {
         Some(lock) => lock,
@@ -1802,6 +1822,8 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
             tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??
         }
     };
+    let current = crate::host_agents::refresh(agent)?;
+    let agent = &current;
     let command_warning = stop_supervisor(&agent.name)
         .await
         .err()
@@ -1856,6 +1878,8 @@ async fn cleanup(agent: &Agent) -> Result<Value, Error> {
     let lock_directory = directory.clone();
     let _lock =
         tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_directory, None)).await??;
+    let current = crate::host_agents::refresh(agent)?;
+    let agent = &current;
     if crate::host_runs::observe(&agent.name).await["runtime_state"] != "stopped" {
         return Err("backend is not proven stopped; its state was preserved".into());
     }
@@ -1984,6 +2008,79 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn locked_start_keeps_the_selected_name_and_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        std::fs::create_dir(&root).unwrap();
+        crate::host_platform::in_instance(root.clone(), async {
+            let selected = crate::host_agents::configure(
+                "beta",
+                &[("folder".into(), temp.path().to_string_lossy().into_owned())],
+                true,
+            )
+            .await
+            .unwrap();
+            let lock = SetupLock::acquire_in(&root.join("agents/beta"), None).unwrap();
+            let start = start(&selected, "start-foreground", None, None, false);
+            tokio::pin!(start);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), &mut start)
+                    .await
+                    .is_err()
+            );
+            let policy = root.join("policy.toml");
+            let mut document: toml_edit::DocumentMut =
+                std::fs::read_to_string(&policy).unwrap().parse().unwrap();
+            let old = document["agents"]
+                .as_table_like_mut()
+                .unwrap()
+                .remove("beta")
+                .unwrap();
+            document["agents"]["alpha"] = old;
+            let changed = document.to_string();
+            std::fs::write(&policy, &changed).unwrap();
+            drop(lock);
+            let error = start.await.unwrap_err().to_string();
+            assert!(
+                error.contains("beta") && error.contains("identity changed"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read_to_string(policy).unwrap(), changed);
+            assert!(!root.join("agents/alpha").exists());
+            assert!(!root.join("agents/beta/config-share").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn explicit_start_modes_do_not_require_an_unused_launcher() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let mut agent = crate::host_agents::configure(
+                "marker",
+                &[
+                    ("folder".into(), temp.path().to_string_lossy().into_owned()),
+                    ("launcher".into(), "supervisor".into()),
+                ],
+                true,
+            )
+            .await
+            .unwrap();
+            agent.launcher = Some("manager:/missing-817-manager".into());
+            assert!(validate_start_launcher(&agent, "start").is_err());
+            assert_eq!(
+                validate_start_launcher(&agent, "start-foreground").unwrap()["kind"],
+                "foreground"
+            );
+            assert_eq!(
+                validate_start_launcher(&agent, "sandbox-start").unwrap()["kind"],
+                "sandbox-only"
+            );
+        })
+        .await;
+    }
 
     #[test]
     fn guest_home_changes_cannot_replace_the_active_host_setup_lock() {

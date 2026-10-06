@@ -269,6 +269,35 @@ pub(crate) fn list() -> Result<Vec<Agent>, Error> {
     Ok(agents)
 }
 
+/// An operation must not choose between names sharing a durable identity.
+pub(crate) fn by_id<'a>(agents: &'a [Agent], id: &str) -> Result<Option<&'a Agent>, Error> {
+    let mut matching = agents.iter().filter(|agent| agent.id == id);
+    let selected = matching.next();
+    if let (Some(selected), Some(other)) = (selected, matching.next()) {
+        return Err(format!(
+            "agent {}: durable identity {id} is also configured for agent {}",
+            selected.name, other.name
+        )
+        .into());
+    }
+    Ok(selected)
+}
+
+/// Reread configuration without replacing a previously selected name or ID.
+pub(crate) fn refresh(selected: &Agent) -> Result<Agent, Error> {
+    let agents = list()?;
+    by_id(&agents, &selected.id)?
+        .filter(|current| current.name == selected.name)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "agent {}: configuration identity changed or was removed",
+                selected.name
+            )
+            .into()
+        })
+}
+
 /// Preserve the assigned 10.200/16 identity and avoid addresses already in
 /// the derived live attachment projection.
 pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
