@@ -21,6 +21,401 @@ impl Drop for NatsCleanup {
             .status();
     }
 }
+
+async fn coord_cli(root: &Path, arguments: &[&str]) -> std::process::Output {
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(root)
+            .arg("coord")
+            .args(arguments)
+            .env_remove("SAFEYOLO_NATS_TEST_INSTANCE")
+            .env_remove("SAFEYOLO_NATS_TEST_PORTS")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+async fn coord_json(root: &Path, arguments: &[&str]) -> Value {
+    let output = coord_cli(root, arguments).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+struct RestoreNatsRecord(PathBuf, Vec<u8>);
+impl Drop for RestoreNatsRecord {
+    fn drop(&mut self) {
+        fs::write(&self.0, &self.1).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn malformed_listener_options_fail_before_creating_coord_state() {
+    let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let root = parent.path().join("absent");
+    for arguments in [
+        vec!["start", "--client-port"],
+        vec!["start", "--monitor-port", "0"],
+        vec!["start", "--client-port", "-1"],
+        vec!["start", "--client-port", "65536"],
+        vec!["start", "--monitor-port", "text"],
+        vec!["start", "--monitor-port", "1.5"],
+        vec!["start", "--client-port", "4222", "--client-port", "4223"],
+        vec!["start", "--client-port", "65535", "--monitor-port", "65535"],
+        vec!["start", "--binary"],
+        vec!["start", "--unknown", "4222"],
+    ] {
+        let output = coord_cli(&root, &arguments).await;
+        assert!(!output.status.success(), "accepted {arguments:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("port") || error.contains("--binary") || error.contains("--unknown"),
+            "{error}"
+        );
+        assert!(
+            !root.exists(),
+            "invalid input created state for {arguments:?}"
+        );
+    }
+    let help = coord_cli(&root, &["--help"]).await;
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    for token in [
+        "--client-port",
+        "--monitor-port",
+        "4222/8222",
+        "SAFEYOLO_NATS_TEST_INSTANCE",
+    ] {
+        assert!(help.contains(token), "{help}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
+    let binary = PathBuf::from(
+        std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary"),
+    );
+    let binary = binary.to_str().unwrap();
+    let parent = tempfile::Builder::new()
+        .prefix("coord817-ports-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let make_root = |name: &str, agent_id: &str| {
+        let root = parent.path().join(name);
+        fs::create_dir_all(root.join("data")).unwrap();
+        fs::write(root.join("data/instance_id"), format!("si-817-{name}")).unwrap();
+        fs::write(root.join("data/admin_token"), "fixture-operator-token").unwrap();
+        fs::write(root.join("data/agent_token"), "fixture-agent-token").unwrap();
+        fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
+        fs::write(
+            root.join("policy.toml"),
+            format!("[controls.network]\nenabled=false\n[agents.alice]\nagent_id='{agent_id}'\n"),
+        )
+        .unwrap();
+        fs::create_dir(root.join("workspace")).unwrap();
+        fs::write(root.join("workspace/marker"), name).unwrap();
+        root
+    };
+    let a = make_root("a", "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let b = make_root("b", "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let c = make_root("c", "ag-cccccccccccccccccccccccccccccccc");
+    let default_root = make_root("defaults", "ag-dddddddddddddddddddddddddddddddd");
+    let reservations: Vec<_> = (0..6)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let ports: Vec<_> = reservations
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port().to_string())
+        .collect();
+    drop(reservations);
+    let _a_cleanup = NatsCleanup(a.clone());
+    let _b_cleanup = NatsCleanup(b.clone());
+    let _c_cleanup = NatsCleanup(c.clone());
+    let _default_cleanup = NatsCleanup(default_root.clone());
+    let start_a = [
+        "start",
+        "--binary",
+        binary,
+        "--client-port",
+        &ports[0],
+        "--monitor-port",
+        &ports[1],
+    ];
+    let start_b = [
+        "start",
+        "--monitor-port",
+        &ports[3],
+        "--client-port",
+        &ports[2],
+        "--binary",
+        binary,
+    ];
+    let a_process = coord_json(&a, &start_a).await;
+    let b_process = coord_json(&b, &start_b).await;
+    assert_eq!(
+        a_process["client_port"].as_u64().unwrap().to_string(),
+        ports[0]
+    );
+    assert_eq!(
+        a_process["monitor_port"].as_u64().unwrap().to_string(),
+        ports[1]
+    );
+    assert_eq!(
+        b_process["client_port"].as_u64().unwrap().to_string(),
+        ports[2]
+    );
+    assert_eq!(
+        b_process["monitor_port"].as_u64().unwrap().to_string(),
+        ports[3]
+    );
+    assert_ne!(a_process["pid"], b_process["pid"]);
+    assert_ne!(a_process["server_name"], b_process["server_name"]);
+    assert!(!a.join("data/coord/nats/test-endpoints.json").exists());
+    assert!(!b.join("data/coord/nats/test-endpoints.json").exists());
+    let a_record_path = a.join("data/coord/nats/process.json");
+    let a_record = fs::read(&a_record_path).unwrap();
+    let a_config = fs::read(a.join("data/coord/nats/server.conf")).unwrap();
+    let a_credential = fs::read(a.join("data/coord/nats/creds")).unwrap();
+    let b_files = [
+        "config.toml",
+        "policy.toml",
+        "workspace/marker",
+        "data/coord/nats/process.json",
+        "data/coord/nats/server.conf",
+        "data/coord/nats/creds",
+    ];
+    let b_before: Vec<_> = b_files
+        .iter()
+        .map(|path| fs::read(b.join(path)).unwrap())
+        .collect();
+    let a_room = coord_json(&a, &["room", "create", "shared"]).await;
+    let b_room = coord_json(&b, &["room", "create", "shared"]).await;
+    assert_ne!(a_room["room_id"], b_room["room_id"]);
+    coord_json(&a, &["grant", "shared", "alice"]).await;
+    coord_json(&b, &["grant", "shared", "alice"]).await;
+    let a_proxy = Proxy::start(native_config::read(&a.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    let b_proxy = Proxy::start(native_config::read(&b.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    let client = |root: &Path| Client {
+        socket: Some(root.join("alice.sock")),
+        token_file: root.join("data/agent_token"),
+    };
+    let a_client = client(&a);
+    let b_client = client(&b);
+    let a_sent = a_client
+        .call("send", &json!({"room_name":"shared","body":"a-marker"}))
+        .await
+        .unwrap();
+    let b_sent = b_client
+        .call("send", &json!({"room_name":"shared","body":"b-marker"}))
+        .await
+        .unwrap();
+    assert_eq!(a_sent["envelope"]["origin_instance_id"], "si-817-a");
+    assert_eq!(b_sent["envelope"]["origin_instance_id"], "si-817-b");
+    assert_eq!(coord_json(&a, &start_a).await, a_process);
+    assert_eq!(coord_json(&a, &["start"]).await, a_process);
+    assert_eq!(
+        coord_json(&a, &["start", "--monitor-port", &ports[1]]).await,
+        a_process
+    );
+    for arguments in [
+        vec!["start", "--client-port", &ports[2]],
+        vec!["start", "--monitor-port", &ports[3]],
+        vec![
+            "start",
+            "--client-port",
+            &ports[2],
+            "--monitor-port",
+            &ports[3],
+        ],
+    ] {
+        let refused = coord_cli(&a, &arguments).await;
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("already running"));
+        assert_eq!(fs::read(&a_record_path).unwrap(), a_record);
+        assert!(fs::read(a.join("data/coord/nats/server.conf")).unwrap() == a_config);
+        assert!(fs::read(a.join("data/coord/nats/creds")).unwrap() == a_credential);
+    }
+    {
+        let _restore = RestoreNatsRecord(a_record_path.clone(), a_record.clone());
+        let mut crossed = a_process.clone();
+        for key in ["server_name", "client_port", "monitor_port"] {
+            crossed[key] = b_process[key].clone();
+        }
+        fs::write(&a_record_path, serde_json::to_vec(&crossed).unwrap()).unwrap();
+        assert_eq!(coord_json(&a, &["status"]).await["state"], "unknown");
+        assert!(!coord_cli(&a, &["stop"]).await.status.success());
+        assert!(!coord_cli(&a, &start_a).await.status.success());
+        assert_eq!(
+            fs::read(&a_record_path).unwrap(),
+            serde_json::to_vec(&crossed).unwrap()
+        );
+        let mut wrong_owner = a_process.clone();
+        wrong_owner["pid"] = b_process["pid"].clone();
+        wrong_owner["token"] = b_process["token"].clone();
+        fs::write(&a_record_path, serde_json::to_vec(&wrong_owner).unwrap()).unwrap();
+        assert!(!coord_cli(&a, &["stop"]).await.status.success());
+        assert!(!coord_cli(&a, &start_a).await.status.success());
+        assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
+    }
+    assert_eq!(coord_json(&a, &["status"]).await["state"], "running");
+    assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
+    {
+        let ports_path = a.join(format!(
+            "data/coord/nats/nats-server_{}.ports",
+            a_process["pid"]
+        ));
+        let _restore = RestoreNatsRecord(ports_path.clone(), fs::read(&ports_path).unwrap());
+        fs::remove_file(&ports_path).unwrap();
+        assert_eq!(coord_json(&a, &["status"]).await["state"], "unknown");
+        assert!(!coord_cli(&a, &["stop"]).await.status.success());
+        assert!(!coord_cli(&a, &start_a).await.status.success());
+        assert_eq!(fs::read(&a_record_path).unwrap(), a_record);
+    }
+    for arguments in [
+        vec!["start", "--client-port", "8222"],
+        vec!["start", "--monitor-port", "4222"],
+    ] {
+        let refused = coord_cli(&c, &arguments).await;
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("ports must differ"));
+        assert!(!c.join("data/coord/nats/server.conf").exists());
+    }
+    for arguments in [
+        vec![
+            "start",
+            "--binary",
+            binary,
+            "--client-port",
+            &ports[2],
+            "--monitor-port",
+            &ports[5],
+        ],
+        vec![
+            "start",
+            "--binary",
+            binary,
+            "--client-port",
+            &ports[4],
+            "--monitor-port",
+            &ports[3],
+        ],
+    ] {
+        let refused = coord_cli(&c, &arguments).await;
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("NATS exited"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert!(!c.join("data/coord/nats/process.json").exists());
+        assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
+    }
+    // Stopping/restarting A must not redirect a cached B client or B's store.
+    coord_json(&a, &["stop"]).await;
+    for key in ["client_port", "monitor_port"] {
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", a_process[key].as_u64().unwrap() as u16))
+                .await
+                .is_err()
+        );
+    }
+    let b_history = b_client
+        .call("read_room", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    assert_eq!(b_history["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(b_history["messages"][0]["body"], "b-marker");
+    b_client
+        .call("send", &json!({"room_name":"shared","body":"b-fresh"}))
+        .await
+        .unwrap();
+    let restarted_a = coord_json(&a, &start_a).await;
+    assert_ne!(restarted_a["server_name"], a_process["server_name"]);
+    assert_eq!(restarted_a["client_port"], a_process["client_port"]);
+    assert_eq!(restarted_a["monitor_port"], a_process["monitor_port"]);
+    let a_history = a_client
+        .call("read_room", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    assert_eq!(a_history["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(a_history["messages"][0]["body"], "a-marker");
+    a_client
+        .call("send", &json!({"room_name":"shared","body":"a-restarted"}))
+        .await
+        .unwrap();
+    assert!(fs::read(a.join("data/coord/nats/creds")).unwrap() == a_credential);
+    for (path, before) in b_files.iter().zip(&b_before) {
+        assert!(
+            fs::read(b.join(path)).unwrap() == *before,
+            "B file changed: {path}"
+        );
+    }
+    assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
+    a_proxy.shutdown().await;
+    b_proxy.shutdown().await;
+    coord_json(&a, &["stop"]).await;
+    coord_json(&b, &["stop"]).await;
+    for process in [&restarted_a, &b_process] {
+        for key in ["client_port", "monitor_port"] {
+            assert!(
+                tokio::net::TcpStream::connect((
+                    "127.0.0.1",
+                    process[key].as_u64().unwrap() as u16
+                ))
+                .await
+                .is_err()
+            );
+        }
+    }
+    // Exercise actual ordinary defaults and per-option defaults as well.
+    let defaults = coord_json(&default_root, &["start", "--binary", binary]).await;
+    assert_eq!(defaults["client_port"], 4222);
+    assert_eq!(defaults["monitor_port"], 8222);
+    coord_json(&default_root, &["stop"]).await;
+    let partial = coord_json(
+        &default_root,
+        &["start", "--binary", binary, "--client-port", &ports[4]],
+    )
+    .await;
+    assert_eq!(
+        partial["client_port"].as_u64().unwrap().to_string(),
+        ports[4]
+    );
+    assert_eq!(partial["monitor_port"], 8222);
+    coord_json(&default_root, &["stop"]).await;
+    let swapped = coord_json(
+        &default_root,
+        &[
+            "start",
+            "--client-port",
+            "8222",
+            "--monitor-port",
+            &ports[5],
+        ],
+    )
+    .await;
+    assert_eq!(
+        coord_json(&default_root, &["start", "--client-port", "8222"]).await,
+        swapped
+    );
+    coord_json(&default_root, &["stop"]).await;
+    println!(
+        "native Coord explicit ports: isolated A/B endpoints and messages, compatible reuse, conflicting/occupied listeners and unrelated-owner refusals, A restart with unchanged live B, and ordinary/partial defaults observed"
+    );
+}
 async fn mcp(root: &Path, socket: &Path, requests: &str) -> Value {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo-coord"))
         .arg("mcp")
@@ -117,8 +512,27 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     fs::write(root.join("config.toml"),"admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n").unwrap();
     fs::write(root.join("policy.toml"),"[controls.network]\nenabled=false\n[agents.alice]\nagent_id='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n[agents.bob]\nagent_id='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'\n[[permissions]]\naction='network:request'\nresource='*'\neffect='allow'\n").unwrap();
     let config_path = root.join("config.toml");
-    let first_nats = coord_rooms::start(root, Some(&binary)).await.unwrap();
+    let dynamic = coord_rooms::start(root, Some(&binary), None, None)
+        .await
+        .unwrap();
     let _cleanup = NatsCleanup(root.into());
+    coord_rooms::stop(root).await.unwrap();
+    // Explicit ports also override the dynamic selection in a test instance.
+    let first_nats = coord_rooms::start(
+        root,
+        Some(&binary),
+        Some(dynamic["client_port"].as_u64().unwrap() as u16),
+        Some(dynamic["monitor_port"].as_u64().unwrap() as u16),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_nats["client_port"], dynamic["client_port"]);
+    assert_eq!(first_nats["monitor_port"], dynamic["monitor_port"]);
+    let test_endpoints: Value = serde_json::from_slice(
+        &fs::read(root.join("data/coord/nats/test-endpoints.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(test_endpoints, first_nats);
     let room = coord_rooms::create_room(root, "shared").await.unwrap();
     coord_rooms::create_room(root, "private").await.unwrap();
     for agent in ["alice", "bob"] {
@@ -243,7 +657,9 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
                 .is_err()
         );
     }
-    coord_rooms::start(root, Some(&binary)).await.unwrap();
+    coord_rooms::start(root, Some(&binary), None, None)
+        .await
+        .unwrap();
     let proxy = Proxy::start(native_config::read(&config_path).unwrap())
         .await
         .unwrap();
