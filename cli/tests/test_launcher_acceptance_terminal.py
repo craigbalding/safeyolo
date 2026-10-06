@@ -60,3 +60,20 @@ def test_wait_does_not_mistake_output_for_exit():
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=5)
+
+
+def test_probe_rejects_the_wrong_native_source_before_configuration_changes(native_agent):
+    """A retained executable cannot be reported as a new journey candidate."""
+    root = native_agent["root"]
+    (root / "bin").mkdir()
+    (root / "bin/safeyolo").symlink_to(native_agent["cli"].resolve())
+    before = {path: path.read_bytes() for path in (root / "config.toml", root / "policy.toml")}
+    result = subprocess.run(
+        [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root),
+         "--commit", "0" * 40],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode != 0 and "wrong installed source: bin/safeyolo" in result.stderr
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(root.glob("native-terminal-*"))
+    assert not (root / "data/proxy-process.json").exists()
