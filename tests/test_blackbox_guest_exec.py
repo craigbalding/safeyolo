@@ -6,11 +6,37 @@ import os
 import shlex
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import pytest
 
 from tests.blackbox import guest_exec, installed_access, installed_lifecycle, installed_workloads
+
+
+def test_cli_bootstrap_works_without_an_ambient_safeyolo_package(tmp_path):
+    """The full --cli path selects the installed interpreter before package imports."""
+    ambient = tmp_path / "ambient"
+    venv.EnvBuilder(with_pip=False).create(ambient)
+    python = ambient / "bin/python"
+    root = tmp_path / "selected instance"
+    (root / "bin").mkdir(parents=True)
+    native = root / "bin/safeyolo"
+    native.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n")
+    native.chmod(0o755)
+    environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=str(root))
+    environment.pop("PYTHONPATH", None)
+    environment.pop("SAFEYOLO_NATIVE_CONFIG_PATH", None)
+    subprocess.run([str(python), "-c", "import importlib.util; assert importlib.util.find_spec('safeyolo') is None"],
+                   env=environment, cwd=tmp_path, check=True, timeout=10)
+    command = "printf '%s' 'literal $(must not execute)'"
+    result = subprocess.run([
+        str(python), str(Path(guest_exec.__file__).resolve()), "--cli",
+        str(Path(sys.executable).with_name("safeyolo")), "marker", "-c", command,
+    ], env=environment, cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 7, result.stderr
+    assert result.stdout.splitlines() == ["--root", str(root), "agent", "shell", "marker", "-c", command]
+    assert not (root / "agents").exists()
 
 
 def test_installed_interpreter_and_native_root_win_over_path_and_pythonpath(tmp_path, monkeypatch):

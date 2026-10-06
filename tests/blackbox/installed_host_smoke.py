@@ -40,8 +40,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from safeyolo.runtime_identity import process_start_token as _process_start_token
-
 SCHEMA = 1
 COMMAND_TIMEOUT = 20.0
 OUTPUT_LIMIT = 4_096
@@ -340,6 +338,13 @@ def _proxy_status(socket_path: str, url: str) -> int:
         return int(first_line[1])
     except ValueError as exc:
         raise SmokeError(f"installed HTTP probe returned an invalid status for {url}") from exc
+
+
+def _process_start_token(process_id: int) -> str | None:
+    """Load the installed identity helper only when inspecting a process."""
+    from safeyolo.runtime_identity import process_start_token
+
+    return process_start_token(process_id)
 
 
 def _pid_alive(pid: int) -> bool:
