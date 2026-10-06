@@ -1,5 +1,5 @@
 {
-  "checker_sha256": "0e29b2012d85109ecd724fdcdacd1863c5b205ec11fab41b5312cffc828aca8d",
+  "checker_sha256": "a834d2e2c90e038d6a0014022e1c42deba5200a5261e1e5b17deae9a3262b276",
   "checker_version": "2",
   "codeowners_sha256": "d4556e315e24af963f42be2fa808382cc5910f9d15375fe14cc184d7f99aa6dd",
   "function_count": 4523,
@@ -7332,7 +7332,7 @@
   ],
   "rules_sha256": "f2358a7f4b3330487e002da9fa386ae562785bb47d2f69f5dee1639afc9122ba",
   "schema": 1,
-  "semgrep_version": "1.176.0",
+  "semgrep_version": "1.179.0",
   "source_files": [
     "cli/src/safeyolo/__init__.py",
     "cli/src/safeyolo/_tactics.py",
@@ -7568,6 +7568,6 @@
   ],
   "source_revision": "8ba22365616d83b8b8b18b87781f0e9b9ad1e439",
   "stale_symbols": [],
-  "tool_lock_sha256": "d5e5be721172aad87c4d98b065f7ed3009ec086989fa64dd7b9b5b3fde764a20",
+  "tool_lock_sha256": "20e1378bdd1b877ea129e5967309ff04f658aaf958d35ebad38fd4363703495c",
   "workflow_sha256": "c02870a9036657ba654d49f596aa89a184a33543b180994b72f3f03fcc24f39a"
 }

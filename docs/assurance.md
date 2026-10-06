@@ -47,9 +47,9 @@ At that master commit, the installed snapshot still records source revision
 `ee045a54387a26c6cfe27c60422f2e56a64b73001f41d108e90f01e90415299f`,
 but the trusted checkout contains lock
 `d5e5be721172aad87c4d98b065f7ed3009ec086989fa64dd7b9b5b3fde764a20`.
-The lock delta updates AnyIO from 4.12.1 to 4.14.2. The checker, rules and
-Semgrep 1.176.0 selection are unchanged. This promotion retains the current
-master lock and proposes a snapshot that binds it.
+The original promotion's lock delta updated AnyIO from 4.12.1 to 4.14.2.
+That promotion kept the checker, rules and Semgrep 1.176.0 selection unchanged.
+It retained the then-current master lock and proposed a snapshot that bound it.
 
 | Detected source delta | From the recorded `2ca598ce` source | From the previous `05e5e243` proposal |
 | --- | --- | --- |
@@ -78,6 +78,19 @@ snapshot review after their product review. Drift counts require source review;
 they do not establish that changed behavior is safe.
 
 ## What the drift check does
+
+The bounded startup repair selects the locked Semgrep 1.179.0 and updates the
+snapshot's tool version, checker digest and acceptance-tool lock digest.
+Re-extraction of the retained `8ba22365616d83b8b8b18b87781f0e9b9ad1e439`
+source with its retained map produces the same mapped bodies, operations,
+function count, source scope and dependency/build inputs. The accepted source
+revision and those extraction results remain unchanged.
+
+The current map differs from the snapshot's retained map binding. The checker
+continues to report that mismatch and subsequent source drift. The startup
+repair does not promote a newer production baseline or accept the current map.
+Craig must approve the exact independently reviewed control revision and delta
+before integration. Protected acceptance and Maintained operation remain open.
 
 [The rule set](../tools/assurance/rules.yml) uses Semgrep's Rust and Python
 syntax parsers to extract function spans, Rust implementation spans and selected
@@ -145,12 +158,15 @@ Exit 0 means no detected drift against that checkout's accepted snapshot.
 Exit 1 means detected drift or an invalid trusted snapshot binding; the JSON
 `status` and `errors` fields distinguish those results. Exit 2 means analysis
 failed before comparison.
-The proposed snapshot is for master `8ba22365616d83b8b8b18b87781f0e9b9ad1e439`.
-That base still has an older snapshot and map. Until Craig approves and merges
-this promotion, its PR check uses the older trusted snapshot and reports an
-analysis error for the changed acceptance-tool lock. A candidate must include
-approved control changes before its check can return clean. A local run with
-both arguments pointing at one candidate is only a smoke check.
+The retained snapshot is for master `8ba22365616d83b8b8b18b87781f0e9b9ad1e439`.
+The bounded startup repair leaves that source baseline in place. With the
+repair, a check of current source completes analysis and returns exit 1 with
+`status: error` for the current map's changed binding. The report also lists
+source drift. A clean result requires matching trusted control bindings and
+no detected drift. Until Craig approves and integrates the startup repair,
+the PR job still uses the base checker and fails before analysis because of
+the Semgrep version mismatch. A local run with both arguments pointing at
+one candidate is only a smoke check.
 
 After reviewing a legitimate change, an operator can generate a proposed
 snapshot from a trusted checker checkout without accepting it:
