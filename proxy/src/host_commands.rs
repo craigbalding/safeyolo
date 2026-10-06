@@ -101,7 +101,7 @@ async fn start_proxy() -> Result<(), Error> {
     }
     let config_path = host_platform::config_path();
     let config = crate::native_config::read(&config_path)?;
-    if let Err(error) = crate::coord_rooms::start(&root, None).await {
+    if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
         eprintln!(
             "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
         );

@@ -45,6 +45,35 @@ first-handoff retention decision. The old keyboard UI is retired because the
 chosen continuous path uses the same small native command session for state,
 evidence and approvals. Capture, policy and canonical outcome owners are retained.
 
+## Coord listener ports
+
+The native `coord start` command accepts `--client-port PORT` and
+`--monitor-port PORT` for the selected instance. Both listeners bind to
+`127.0.0.1`. Explicit ports must be distinct integers from 1 through 65535.
+Each omitted port uses its ordinary default: client 4222 or monitor 8222.
+With `SAFEYOLO_NATS_TEST_INSTANCE` set, each omitted port is assigned dynamically.
+
+On the host, use the account that owns the two initialized native roots. The
+following example uses the executable installed by the
+[native installation](native-policy.md#install-and-start) at
+`$HOME/.safeyolo-native/bin/safeyolo`. Roots `$HOME/sy-a` and `$HOME/sy-b` must
+already exist. The four example ports must be free and permitted by the host
+policy. Start Coord before starting each proxy:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/sy-a" coord start --client-port 14222 --monitor-port 18222
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/sy-b" coord start --client-port 24222 --monitor-port 28222
+```
+
+Each command returns its owned process identity and observed client/monitor
+ports. Native room commands, Agent API clients, status and stop use that
+instance's endpoints. A compatible live server is reused. A conflicting
+explicit port is refused without changing or stopping the live server.
+Use `safeyolo --root ROOT coord stop` before changing its listener ports.
+Repeat explicit ports on each new start; these options do not change
+`config.toml` defaults. `coord status` reports the selected instance's current
+process and ports. `--binary PATH` retains its reviewed NATS binary pin.
+
 ## Runtime settings
 
 All entries below are retained. Configuration values override built-in defaults.

@@ -270,19 +270,74 @@ async fn monitor(port: u16) -> Result<Value, Error> {
     )
     .await
 }
-async fn verified(value: &Value) -> Result<bool, Error> {
+fn observed_ports(nats: &Path, pid: u32) -> Result<(u16, u16), Error> {
+    let ports: Value =
+        serde_json::from_slice(&fs::read(nats.join(format!("nats-server_{pid}.ports")))?)?;
+    let port = |name: &str| -> Result<u16, Error> {
+        ports[name]
+            .as_array()
+            .and_then(|ports| ports.first())
+            .and_then(Value::as_str)
+            .and_then(|endpoint| endpoint.parse::<hyper::Uri>().ok())
+            .and_then(|endpoint| endpoint.port_u16())
+            .filter(|port| *port > 0)
+            .ok_or_else(|| format!("NATS did not report a valid {name} listener port").into())
+    };
+    Ok((port("nats")?, port("monitoring")?))
+}
+
+async fn verified(root: &Path, value: &Value) -> Result<bool, Error> {
     if !same_process(value)? {
         return Ok(false);
     }
-    let port = value["monitor_port"]
-        .as_u64()
-        .and_then(|p| u16::try_from(p).ok())
-        .ok_or("NATS monitor port is missing")?;
-    let current = monitor(port).await?;
-    Ok(current["server_name"] == value["server_name"] && current["server_name"].is_string())
+    let (pid, _) = identity(value)?;
+    let nats = directory(root)?.join("nats");
+    if !crate::host_platform::process_has_config_path(
+        i64::from(pid),
+        &nats.join(format!("bin/{NATS_VERSION}/nats-server")),
+        &nats.join("server.conf"),
+    ) {
+        return Ok(false);
+    }
+    // NATS /varz has no PID and reports -1 for a dynamic monitor port.
+    // Bind both observed endpoints to this process's owned ports file instead.
+    let (client, monitor_port) = observed_ports(&nats, pid as u32)?;
+    if value["client_port"] != client || value["monitor_port"] != monitor_port {
+        return Ok(false);
+    }
+    let current = monitor(monitor_port).await?;
+    Ok(current["server_name"] == value["server_name"]
+        && current["server_name"].is_string()
+        && current["port"] == value["client_port"])
 }
 
-pub async fn start(root: &Path, supplied: Option<&Path>) -> Result<Value, Error> {
+fn listener_ports(
+    client: Option<u16>,
+    monitor: Option<u16>,
+    dynamic: bool,
+) -> Result<(i32, i32), Error> {
+    if client == Some(0) || monitor == Some(0) {
+        return Err("Coord listener ports must be between 1 and 65535".into());
+    }
+    if client
+        .zip(monitor)
+        .is_some_and(|(client, monitor)| client == monitor)
+    {
+        return Err("Coord client and monitor ports must differ".into());
+    }
+    let client = client.map_or(if dynamic { -1 } else { 4222 }, i32::from);
+    let monitor = monitor.map_or(if dynamic { -1 } else { 8222 }, i32::from);
+    Ok((client, monitor))
+}
+
+pub async fn start(
+    root: &Path,
+    supplied: Option<&Path>,
+    client_port: Option<u16>,
+    monitor_port: Option<u16>,
+) -> Result<Value, Error> {
+    let dynamic = std::env::var_os("SAFEYOLO_NATS_TEST_INSTANCE").is_some();
+    let (selected_client, selected_monitor) = listener_ports(client_port, monitor_port, dynamic)?;
     bootstrap(root)?;
     let data = directory(root)?;
     let nats = data.join("nats");
@@ -295,10 +350,22 @@ pub async fn start(root: &Path, supplied: Option<&Path>) -> Result<Value, Error>
     if let Some(saved) = record(root)?
         && same_process(&saved)?
     {
-        if verified(&saved).await? {
+        if verified(root, &saved).await? {
+            if client_port.is_some_and(|p| saved["client_port"] != p)
+                || monitor_port.is_some_and(|p| saved["monitor_port"] != p)
+            {
+                return Err(format!(
+                    "Coord is already running on client port {} and monitor port {}; stop this instance's Coord before changing listener ports",
+                    saved["client_port"], saved["monitor_port"]
+                )
+                .into());
+            }
             return Ok(saved);
         }
         return Err("a recorded NATS process is live but ownership is unverified; preserve it and inspect coord status before restarting".into());
+    }
+    if selected_client > 0 && selected_client == selected_monitor {
+        return Err("Coord client and monitor ports must differ".into());
     }
     let executable = binary(root, supplied).await?;
     let credentials = nats.join("creds");
@@ -319,12 +386,10 @@ pub async fn start(root: &Path, supplied: Option<&Path>) -> Result<Value, Error>
         return Err("NATS credential file is empty".into());
     }
     let server_name = format!("safeyolo-{}", uuid::Uuid::new_v4().simple());
-    let dynamic = std::env::var_os("SAFEYOLO_NATS_TEST_INSTANCE").is_some();
-    let (client_port, monitor_port) = if dynamic { (-1, -1) } else { (4222, 8222) };
     let jetstream = nats.join("jetstream");
     fs::create_dir_all(&jetstream)?;
     let config = nats.join("server.conf");
-    atomic_write(&config,format!("host: 127.0.0.1\nport: {client_port}\nhttp: 127.0.0.1:{monitor_port}\nserver_name: {server_name}\nmax_payload: 2097152\nports_file_dir: {}\nauthorization {{ user: safeyolo, password: {} }}\njetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(password.trim())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
+    atomic_write(&config,format!("host: 127.0.0.1\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: 2097152\nports_file_dir: {}\nauthorization {{ user: safeyolo, password: {} }}\njetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(password.trim())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -348,17 +413,27 @@ pub async fn start(root: &Path, supplied: Option<&Path>) -> Result<Value, Error>
     let mut child = command.spawn()?;
     let pid = child.id().ok_or("NATS has no PID")?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-    let result=async {
-        while tokio::time::Instant::now()<deadline {
-            if child.try_wait()?.is_some(){return Err("NATS exited during startup; inspect its owned log".into());}
-            let endpoints=nats.join(format!("nats-server_{pid}.ports"));
-            if let Ok(bytes)=fs::read(&endpoints)&&let Ok(ports)=serde_json::from_slice::<Value>(&bytes){
-                let parse=|name:&str|->Option<u16>{ports[name].as_array()?.first()?.as_str()?.parse::<hyper::Uri>().ok()?.port_u16()};
-                if let (Some(client),Some(monitor_port))=(parse("nats"),parse("monitoring"))&&let Ok(observed)=monitor(monitor_port).await&&observed["server_name"]==server_name {
-                    let token=crate::host_lifecycle::process_token(i64::from(pid)).ok_or("NATS process identity is unavailable")?;
-                    let saved=json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port});
-                    atomic_write(&nats.join("process.json"),&serde_json::to_vec(&saved)?,0o600)?;
-                    if dynamic{atomic_write(&nats.join("test-endpoints.json"),&serde_json::to_vec(&saved)?,0o600)?;}
+    let result = async {
+        while tokio::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                return Err("NATS exited during startup; inspect its owned log".into());
+            }
+            if let Ok((client, monitor_port)) = observed_ports(&nats, pid) {
+                let token = crate::host_lifecycle::process_token(i64::from(pid))
+                    .ok_or("NATS process identity is unavailable")?;
+                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port});
+                // Use the same process/server/endpoint check as reuse,
+                // status, room clients and stop before publishing endpoints.
+                if verified(root, &saved).await.unwrap_or(false) {
+                    if (selected_client > 0 && selected_client != i32::from(client))
+                        || (selected_monitor > 0 && selected_monitor != i32::from(monitor_port))
+                    {
+                        return Err("NATS reported listener ports different from the selected ports".into());
+                    }
+                    atomic_write(&nats.join("process.json"), &serde_json::to_vec(&saved)?, 0o600)?;
+                    if dynamic {
+                        atomic_write(&nats.join("test-endpoints.json"), &serde_json::to_vec(&saved)?, 0o600)?;
+                    }
                     return Ok(saved);
                 }
             }
@@ -381,7 +456,7 @@ pub async fn stop(root: &Path) -> Result<Value, Error> {
         return Ok(json!({"state":"stopped"}));
     };
     if same_process(&saved)? {
-        if !verified(&saved).await? {
+        if !verified(root, &saved).await? {
             return Err("NATS ownership is unverified; no process was signalled".into());
         }
         let (pid, token) = identity(&saved)?;
@@ -411,7 +486,7 @@ pub async fn status(root: &Path) -> Result<Value, Error> {
         Some(saved) => {
             let state = match same_process(&saved) {
                 Ok(false) => "stopped",
-                Ok(true) if verified(&saved).await.unwrap_or(false) => "running",
+                Ok(true) if verified(root, &saved).await.unwrap_or(false) => "running",
                 _ => "unknown",
             };
             Ok(
@@ -423,7 +498,7 @@ pub async fn status(root: &Path) -> Result<Value, Error> {
 
 async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error> {
     let saved = record(root)?.ok_or("NATS is not running; run coord start")?;
-    if !verified(&saved).await? {
+    if !verified(root, &saved).await? {
         return Err("NATS ownership or readiness is unverified".into());
     }
     let port = saved["client_port"]
@@ -541,9 +616,40 @@ pub fn grant(
 pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     let root = config.parent().ok_or("native root is missing")?;
     let result = match arguments {
-        [kind] if kind == "start" => start(root, None).await?,
-        [kind, flag, binary] if kind == "start" && flag == "--binary" => {
-            start(root, Some(Path::new(binary))).await?
+        [kind, options @ ..] if kind == "start" => {
+            let mut binary = None;
+            let mut client = None;
+            let mut monitor = None;
+            let mut options = options.iter();
+            while let Some(option) = options.next() {
+                match option.as_str() {
+                    "--binary" => {
+                        let value = options.next().ok_or("--binary requires a path")?;
+                        if binary.replace(Path::new(value)).is_some() {
+                            return Err("duplicate --binary option".into());
+                        }
+                    }
+                    "--client-port" | "--monitor-port" => {
+                        let port = options
+                            .next()
+                            .and_then(|value| value.parse::<u16>().ok())
+                            .filter(|p| *p > 0)
+                            .ok_or_else(|| {
+                                format!("{option} requires a port between 1 and 65535")
+                            })?;
+                        let selected = if option == "--client-port" {
+                            &mut client
+                        } else {
+                            &mut monitor
+                        };
+                        if selected.replace(port).is_some() {
+                            return Err(format!("duplicate {option} option").into());
+                        }
+                    }
+                    _ => return Err(format!("unknown coord start option: {option}").into()),
+                }
+            }
+            start(root, binary, client, monitor).await?
         }
         [kind] if kind == "stop" => stop(root).await?,
         [kind] if kind == "status" => status(root).await?,
@@ -566,7 +672,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         [kind, room, agent] if kind == "revoke" => grant(config, room, agent, &[], true)?,
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nNative instance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nNative instance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             return Ok(());
         }
