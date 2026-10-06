@@ -409,7 +409,7 @@ pub(crate) fn userns_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn checked_namespace(pid: u32) -> Option<u32> {
+pub(crate) fn checked_namespace(pid: u32) -> Option<u32> {
     // A stale PID can point at another process. Verify the namespace and
     // subordinate mappings established by SafeYolo before nsenter or signal.
     let own_userns = std::fs::metadata("/proc/self/ns/user").ok()?.ino();
@@ -1064,6 +1064,14 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         ));
     }
     let id = crate::host_runs::id(name).map_err(io::Error::other)?;
+    // A surviving sentry can be identified without providing usable network
+    // namespace control. Stop it through the verified process handle when
+    // the original holder is gone; never run runsc outside its namespaces.
+    if userns_pid(name).is_none() {
+        return crate::host_runs::stop_without_holder(name)
+            .await
+            .map_err(io::Error::other);
+    }
     if guest_exec_available(name).await {
         let _ = runsc_command(name)?
             .args(["kill", &id, "SIGTERM"])
@@ -1082,7 +1090,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
                 .await;
         }
     }
-    if control_pid(name).is_none() {
+    if userns_pid(name).is_none() {
         crate::host_runs::stop_without_holder(name)
             .await
             .map_err(io::Error::other)?;

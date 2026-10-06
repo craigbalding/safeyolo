@@ -323,7 +323,7 @@ fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn sentry_arguments_do_not_replace_birth_and_current_run_validation() {
+fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
     use std::os::unix::process::CommandExt;
 
     let temp = tempfile::tempdir().unwrap();
@@ -344,7 +344,8 @@ fn sentry_arguments_do_not_replace_birth_and_current_run_validation() {
     let run_id = "0123456789abcdef0123456789abcdef";
     let id = format!("safeyolo-{run_id}");
     // An ordinary host process can carry the sentry's argument form.
-    // It must not gain signal authority from that form when birth/run disagree.
+    // Its argv must not grant signal authority when birth/run disagree or
+    // when it shares the operator's namespaces instead of the sandbox's.
     let mut unrelated = Command::new("/bin/sh")
         .arg0("runsc-sandbox")
         .args(["-c", "read line"])
@@ -367,10 +368,26 @@ fn sentry_arguments_do_not_replace_birth_and_current_run_validation() {
     fs::create_dir_all(root.join("run").join(&id)).unwrap();
     let saved = serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token});
     let mut results = Vec::new();
-    for (field, replacement, generation) in [
-        ("backend_token", "different-process-birth", run_id),
-        ("run_id", "fedcba9876543210fedcba9876543210", run_id),
-        ("run_id", run_id, "fedcba9876543210fedcba9876543210"),
+    for (field, replacement, generation, expected_state) in [
+        (
+            "backend_token",
+            "different-process-birth",
+            run_id,
+            "unknown",
+        ),
+        (
+            "run_id",
+            "fedcba9876543210fedcba9876543210",
+            run_id,
+            "unknown",
+        ),
+        (
+            "run_id",
+            run_id,
+            "fedcba9876543210fedcba9876543210",
+            "unknown",
+        ),
+        ("backend_token", token.as_str(), run_id, "degraded"),
     ] {
         let mut run = saved.clone();
         run[field] = replacement.into();
@@ -388,18 +405,24 @@ fn sentry_arguments_do_not_replace_birth_and_current_run_validation() {
             cli(&root, &["agent", "status", "marker"]),
             cli(&root, &["agent", "stop", "marker"]),
             unrelated.try_wait().unwrap().is_none(),
+            fs::read(directory.join("runtime.json")).unwrap() == serde_json::to_vec(&run).unwrap(),
+            expected_state,
         ));
     }
     if unrelated.try_wait().unwrap().is_none() {
         unrelated.kill().unwrap();
     }
     unrelated.wait().unwrap();
-    for (status, stop, survived) in results {
-        assert_eq!(value(status)["runtime_state"], "unknown");
+    for (status, stop, survived, state_preserved, expected_state) in results {
+        assert_eq!(value(status)["runtime_state"], expected_state);
         assert!(!stop.status.success());
         assert!(
+            state_preserved,
+            "unverified stop changed the runtime record"
+        );
+        assert!(
             survived,
-            "a process with mismatched birth/run evidence was signalled"
+            "a process with mismatched birth/run/namespace evidence was signalled"
         );
     }
 }

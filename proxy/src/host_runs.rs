@@ -298,19 +298,57 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
     let pid = crate::host_platform::backend_pid(name)
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
-    let token =
-        crate::host_lifecycle::process_token(i64::from(pid)).ok_or("backend exited before stop")?;
-    if unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
+    // Bind the signal and exit observation to this process, not a PID that
+    // can be reused between validation and termination.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(format!(
+            "could not open the verified runsc backend: {}; no process was signalled; run agent diagnostics {name}",
+            std::io::Error::last_os_error()
+        ).into());
+    }
+    let backend = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    if crate::host_platform::backend_pid(name) != Some(pid)
+        || crate::host_platform::checked_namespace(pid) != Some(pid)
+    {
+        return Err("backend birth, run or namespaces are unverified; no process was signalled; backend state was preserved".into());
+    }
+    if unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            backend.as_raw_fd(),
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    } != 0
+    {
+        return Err(format!(
+            "could not stop the verified runsc backend: {}; backend state was preserved; run agent diagnostics {name}",
+            std::io::Error::last_os_error()
+        ).into());
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while crate::host_lifecycle::process_token(i64::from(pid)).as_deref() == Some(&token) {
+    loop {
+        let mut exit = libc::pollfd {
+            fd: backend.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut exit, 1, 0) };
+        if ready > 0 && exit.revents & libc::POLLIN != 0 {
+            return Ok(());
+        }
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
         if tokio::time::Instant::now() >= deadline {
-            return Err("owned runsc workload did not stop".into());
+            return Err("owned runsc workload did not stop; backend state was preserved; run agent diagnostics".into());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Ok(())
 }
