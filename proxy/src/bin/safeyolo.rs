@@ -241,6 +241,9 @@ async fn run() -> Result<(), Error> {
     } else {
         root.join("config.toml")
     };
+    if arguments.first().is_some_and(|argument| argument == "demo") {
+        return safeyolo_proxy::demo::run(&config, &arguments[1..]).await;
+    }
     if safeyolo_proxy::operator_commands::handles(&arguments) {
         return safeyolo_proxy::operator_commands::run(&config, &arguments).await;
     }
@@ -255,6 +258,7 @@ async fn run() -> Result<(), Error> {
         [command] if command == "init" => initialize(&root, &config),
         [help] if matches!(help.as_str(), "--help" | "help") => {
             println!("{}", safeyolo_proxy::operator_commands::HELP);
+            println!("{}", safeyolo_proxy::demo::HELP);
             println!(
                 "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
             );

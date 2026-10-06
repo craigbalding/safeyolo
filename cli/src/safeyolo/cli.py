@@ -12,7 +12,6 @@ from .commands.bootstrap import bootstrap
 from .commands.cert import cert_app
 from .commands.command_centre import command_centre_app
 from .commands.coord import coord_app
-from .commands.demo import demo
 from .commands.doctor import doctor
 from .commands.factory import factory_app
 from .commands.init import init
@@ -88,7 +87,6 @@ app.command()(status)
 app.command()(build)
 app.command()(logs)
 app.command()(watch)
-app.command()(demo)
 app.command()(lab)
 app.command()(check)
 app.command()(mode)

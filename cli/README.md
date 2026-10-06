@@ -191,8 +191,46 @@ safeyolo doctor
 | `safeyolo build` | Build platform-specific guest artifacts from source |
 | `safeyolo check` | Verify setup is working correctly |
 | `safeyolo doctor` | Run diagnostic cascade (config, proxy, addons, sandbox runtime) |
-| `safeyolo demo` | Guided tour of SafeYolo security features |
+| Native `safeyolo demo` | Build a tiny web app in a disposable guest and decide its owned JSON request |
 | `safeyolo lab` | Create, attach, recover, inspect, or tear down a SafeYolo experimentation workbench |
+
+#### Demo
+
+On a host with the [native installation and guest runtime](../docs/native-policy.md)
+prepared, run its native executable. Demo asks for the tiny web-app task and
+creates an empty disposable workspace and guest. Codex runs inside that guest.
+The guest needs normal model access and its own authentication. If authentication
+is absent, Demo offers the guest's normal device login. It does not copy another
+guest's login or ask for a new API key. Model requests use the configured policy
+and proxy route.
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" demo
+```
+
+The agent writes and runs `app.py`. Its request for the owned JSON input needs
+approval. Demo shows the canonical request, selected guest identity, host, port,
+and permission effect. Type `evidence` to open native traffic evidence. Type
+`approve` or `reject` to use the normal operator resolver. After approval, Demo
+independently reads the running app and fixture request record. The expected app
+response contains `title="Demo tasks"`, `count=3`, `total_minutes=20`, and the
+fixture's run marker. Agent narration alone is not success.
+
+To reuse a stopped Demo guest that already has its own configured Codex login,
+replace `DEMO_GUEST` with its configured name:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" demo --agent DEMO_GUEST
+```
+
+Demo uses an empty workspace even when it reuses a guest. `--workspace PATH`
+selects an empty directory. Default cleanup stops the selected runtime, removes
+its fixture permission and disposable files, and restores a reused guest's prior
+workspace setting. Its existing home and authentication remain. `--keep` retains
+the workspace and a newly created guest home after stopping. The displayed cleanup
+choice also applies to cancellation and startup failure. Use `cancel` at a prompt
+or Ctrl-C to stop. Fixture request records and proxy audit remain in the instance
+logs. Demo requires no Lab, tmux, password manager, or public preview setup.
 
 #### Lab
 

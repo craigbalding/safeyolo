@@ -215,7 +215,7 @@ other commands. `safeyolo doctor` checks reported prerequisites and runtime stat
 
 | Need | Documentation |
 | --- | --- |
-| Guided tour | Run `safeyolo demo` on the host, with `safeyolo watch` in a second host terminal. |
+| Build a tiny app and see a real approval | [Native Demo](cli/README.md#demo) starts a disposable guest, shows the owned JSON request, and reads the app after approval. |
 | Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging tools](docs/agent-debugging.md) |
 | Coordinating several agents | [Supervised factories](docs/factories.md), [coord operations](docs/coord-operations.md), and the [Mattermost adapter](docs/coord-mattermost.md) |
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md), including `@codex-coord` |

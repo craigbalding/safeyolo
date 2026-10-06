@@ -91,7 +91,7 @@ pub(crate) fn proxy_live() -> bool {
         })
 }
 
-async fn start_proxy() -> Result<(), Error> {
+pub(crate) async fn start_proxy() -> Result<(), Error> {
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
     let _lock =
@@ -144,7 +144,7 @@ async fn start_proxy() -> Result<(), Error> {
     Err("proxy did not publish readiness within five seconds; inspect logs/proxy.log".into())
 }
 
-async fn stop_proxy() -> Result<(), Error> {
+pub(crate) async fn stop_proxy() -> Result<(), Error> {
     if !proxy_live() {
         return Ok(());
     }

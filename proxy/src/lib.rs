@@ -20,6 +20,7 @@ mod credential_hmac;
 pub mod credential_injection;
 mod credential_text;
 pub mod credentials;
+pub mod demo;
 pub(crate) mod desktop_present;
 mod desktop_preview;
 mod flow_recorder;

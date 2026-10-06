@@ -985,6 +985,71 @@ fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
 }
 
 #[test]
+fn native_demo_is_discoverable_and_early_cancellation_preserves_workspace() {
+    let root = tempfile::tempdir().unwrap();
+    initialize(root.path());
+    let help = cli(root.path(), &["demo", "--help"]);
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    for required in [
+        "tiny-web-app",
+        "--workspace",
+        "--agent",
+        "--keep",
+        "device login",
+    ] {
+        assert!(help.contains(required));
+    }
+    assert!(
+        String::from_utf8(cli(root.path(), &["--help"]).stdout)
+            .unwrap()
+            .contains("demo")
+    );
+    let original = fs::read(root.path().join("policy.toml")).unwrap();
+    let mut cancel = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(root.path())
+        .arg("demo")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cancel.stdin.take().unwrap().write_all(b"cancel\n").unwrap();
+    let cancelled = cancel.wait_with_output().unwrap();
+    assert!(!cancelled.status.success());
+    assert!(
+        String::from_utf8(cancelled.stderr)
+            .unwrap()
+            .contains("cancelled before setup")
+    );
+    let workspace = root.path().join("existing-work");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(workspace.join("marker"), "operator files").unwrap();
+    let refused = cli(
+        root.path(),
+        &[
+            "demo",
+            "--task",
+            "tiny-web-app",
+            "--workspace",
+            workspace.to_str().unwrap(),
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8(refused.stderr)
+            .unwrap()
+            .contains("empty workspace")
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("marker")).unwrap(),
+        "operator files"
+    );
+    assert_eq!(fs::read(root.path().join("policy.toml")).unwrap(), original);
+}
+
+#[test]
 fn help_uses_native_lifecycle_and_has_no_old_aliases() {
     let root = tempfile::tempdir().unwrap();
     initialize(root.path());
