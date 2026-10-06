@@ -1235,7 +1235,8 @@ async fn decide(
             },
             crate::policy::current_time_ms(),
             |intent| {
-                let event = intent.event(identity.audit_attribution());
+                let mut event = intent.event(identity.audit_attribution());
+                crate::approvals::network_action::bind(&mut event, policy);
                 if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
                     // The synchronous guard callback cannot await the writer.
                     // Hold only approval evidence until the guard has returned.

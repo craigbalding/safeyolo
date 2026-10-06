@@ -271,10 +271,17 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     }
 
     struct Details: Decodable, Hashable {
+        struct NetworkAction: Decodable, Hashable { let kind: String }
         let service: String?
         let method: String?
         let path: String?
         let reason: String?
+        let networkAction: NetworkAction?
+
+        enum CodingKeys: String, CodingKey {
+            case service, method, path, reason
+            case networkAction = "network_action"
+        }
     }
 
     let eventID: String?
@@ -342,6 +349,13 @@ struct MutationPlan: Equatable {
 
     static func forApproval(_ event: ApprovalEvent, allow: Bool) throws -> MutationPlan {
         if event.approval.approvalType == "network_egress" {
+            if event.details?.networkAction?.kind == "network_allow" {
+                guard let requestID = event.requestID, let encodedID = encodePathComponent(requestID) else {
+                    throw ClientError.invalidApproval("Network approval is missing its canonical request ID")
+                }
+                return MutationPlan(path: "/admin/approvals/\(encodedID)",
+                    body: ["decision": allow ? "approve" : "reject"], expectsDesktop: false)
+            }
             guard let host = event.host, !host.isEmpty,
                   let port = event.approval.scopeHint?.port, (1...65535).contains(port)
             else {
@@ -395,6 +409,10 @@ struct MutationPlan: Equatable {
             expectsDesktop: false
         )
     }
+}
+
+struct NetworkApprovalResolution: Decodable {
+    let status: String
 }
 
 enum ResolutionResult: Equatable {

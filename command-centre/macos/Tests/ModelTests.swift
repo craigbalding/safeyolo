@@ -558,6 +558,19 @@ struct ModelTests {
         precondition(networkDeny.port == 22 && networkDeny.body["agent"] == "alice")
         precondition(networkDeny.body["expires"] != nil)
 
+        let canonicalNetwork = try JSONDecoder().decode(ApprovalEvent.self, from: Data("""
+        {"request_id":"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"security.network_guard",
+         "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
+         "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
+         "details":{"network_action":{"kind":"network_allow","port":443}}}
+        """.utf8))
+        for allow in [true, false] {
+            let plan = try MutationPlan.forApproval(canonicalNetwork, allow: allow)
+            precondition(plan.path == "/admin/approvals/req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            precondition(plan.body == ["decision": allow ? "approve" : "reject"])
+            precondition(plan.port == nil && plan.rate == nil)
+        }
+
         let desktop = try JSONDecoder().decode(
             ApprovalEvent.self,
             from: Data("""

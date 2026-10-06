@@ -57,6 +57,22 @@ def test_pending_scan_skips_non_object_json(tmp_path):
     assert scan_pending_approvals(log) == ([], set())
 
 
+def test_native_network_rejection_closes_one_request_without_hiding_a_retry(tmp_path):
+    log = tmp_path / "safeyolo.jsonl"
+    first = {**_event("evt-first"), "request_id": "req-first", "agent": "worker", "host": "owned.example",
+             "approval": {"required": True, "approval_type": "network_egress",
+                          "key": '["worker","owned.example",443]', "target": "owned.example:443"},
+             "details": {"network_action": {"kind": "network_allow"}}}
+    rejection = {**_event("evt-reject"), "event": "admin.network_action_rejected",
+                 "details": {"approval_request_id": "req-first", "agent": "worker", "host": "owned.example", "port": 443,
+                             "network_action": {"kind": "network_allow"}}}
+    retry = {**first, "event_id": "evt-retry", "request_id": "req-retry"}
+    log.write_text("\n".join(json.dumps(event) for event in (first, rejection)) + "\n")
+    assert scan_pending_approvals(log)[0] == []
+    log.write_text("\n".join(json.dumps(event) for event in (first, rejection, retry)) + "\n")
+    assert scan_pending_approvals(log)[0] == [retry]
+
+
 def test_non_following_reader_reads_existing_file(tmp_path):
     log = tmp_path / "safeyolo.jsonl"
     events = [_event("evt-one"), _event("evt-two")]
