@@ -597,6 +597,7 @@ SCRIPT_DIR="$(dirname "$0")"
 RUN_PROXY=true
 RUN_ISOLATION=true
 AGENT_NAME=bbtest
+INSTALLED_CLI=fixture-package-cli
 VERBOSE=
 PYTEST_FORWARD_ARGS=()
 PYTEST_FORWARD_SHELL=
@@ -617,9 +618,13 @@ pytest() {
     esac
 }
 
-safeyolo() {
+python3() {
+    if [[ "$1" != */guest_exec.py ]]; then
+        command python3 "$@"
+        return
+    fi
     case "$*" in
-        *--root*) fixture_suite_exit ROOT_ISOLATION ;;
+        *"--user root"*) fixture_suite_exit ROOT_ISOLATION ;;
         *) fixture_suite_exit ISOLATION ;;
     esac
 }

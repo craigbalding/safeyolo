@@ -144,17 +144,6 @@ def test_failed_health_stops_native_process(command):
     assert "native launch diagnostics" in result.output
 
 
-def test_status_identifies_owned_native_executable(command, monkeypatch):
-    command.mocks["is_proxy_running"].return_value = True
-    monkeypatch.setattr(lifecycle, "coord_nats", SimpleNamespace(status=lambda: {"state": "not-running"}))
-    result = command.runner.invoke(app, ["status"])
-    assert result.exit_code == 0, result.output
-    assert "Rust" in result.output and "/installed/safeyolo-proxy" in result.output
-    assert "/owned/ready.json" in result.output and "9191" in result.output
-    command.read_process.assert_called_once_with()
-    command.readiness.assert_called_once_with(command.process)
-
-
 def test_stop_uses_native_process_owner(command):
     command.mocks["is_proxy_running"].return_value = True
     result = command.runner.invoke(app, ["stop"])
@@ -173,24 +162,9 @@ def test_stop_profile_uses_stop_lifecycle(command, tmp_path):
     assert '"operation":"proxy stop"' in profiles[0].read_text(encoding="utf-8")
 
 
-def test_stop_all_uses_native_owner_even_with_shared_pid_marker(command, monkeypatch):
-    from safeyolo import platform
-
-    command.mocks["is_proxy_running"].return_value = True
+def test_prior_python_process_requires_prior_package_for_proxy_stop(command):
     command.mocks["prior_python_proxy_running"].return_value = True
-    host = SimpleNamespace(cleanup_all=lambda _agents: None, unload_firewall_rules=lambda: None)
-    monkeypatch.setattr(platform, "get_platform", lambda: host)
-
-    result = command.runner.invoke(app, ["stop", "--all"])
-
-    assert result.exit_code == 0, result.output
-    command.mocks["prior_python_proxy_running"].assert_not_called()
-    command.mocks["stop_proxy"].assert_called_once_with()
-
-
-def test_prior_python_process_requires_prior_package_for_status_and_stop(command):
-    command.mocks["prior_python_proxy_running"].return_value = True
-    for arguments in (["status"], ["stop"], ["stop", "--all"]):
+    for arguments in (["stop"], ["stop", "--all"]):
         result = command.runner.invoke(app, arguments)
         assert result.exit_code == 1, result.output
         assert "pinned prior package" in result.output

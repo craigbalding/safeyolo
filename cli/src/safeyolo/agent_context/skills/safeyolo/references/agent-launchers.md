@@ -1,29 +1,25 @@
 # Agent launch and terminal troubleshooting
 
 Sandbox readiness and coding-agent activity are separate. Ask for host
-`safeyolo agent list` or `safeyolo agent diag NAME` when the operator says an
+`safeyolo status` or `safeyolo agent diagnostics NAME` when the operator says an
 agent is running but doing nothing. Do not infer a live harness from sandbox
 existence or a successful start request.
 
-- `agent run NAME` uses the current terminal unless a launcher/manager is configured.
-- `agent run NAME --detach` starts a persistent host session or selected manager.
-- `agent run NAME --sandbox-only` starts no harness, launcher, or launch hooks.
+- `agent start NAME` starts a persistent host session or selected manager.
+- `agent start NAME --foreground` uses the caller's terminal without host tmux.
+- `agent start NAME --sandbox-only` starts no harness, launcher, or launch hooks.
 - `agent attach NAME` connects to the existing agent session, without starting one.
 - `agent shell NAME` opens a separate guest shell. It does not attach to the agent.
 - `agent stop NAME` stops that agent and sandbox, not unrelated terminal sessions.
 
-For ordinary agents, `agent config --default-launcher tmux-window
---tmux-session agents` sets one shared host default. `agent config NAME
---launcher tmux-pane` overrides it for one agent; `--launcher interactive`
-overrides an inherited script. An empty per-agent launcher restores inheritance.
-The running session retains its original launcher when defaults change.
-`safeyolo agent config` without a name shows the shared defaults and installed
-template/prompt paths, including on a wheel-only installation.
+For ordinary agents, set shared defaults in the native instance's `config.toml`
+under `[agent_launcher]`. `agent configure NAME --launcher tmux-pane` sets a
+per-agent override. Remove that agent's `launcher` entry from `policy.toml` to
+restore inheritance. The running session retains its original launcher when
+defaults change. See `docs/agent-launchers.md` for the defaults and script contract.
 
 Factories explicitly select the SafeYolo supervisor. Do not replace it with
-an ordinary tmux launcher. For a stopped managed agent, `agent run NAME
---interactive --detach` temporarily uses its separately staged interactive
-entrypoint. Stop that debug run before resuming normal managed operation.
+an ordinary tmux launcher. Use `agent shell NAME` to inspect its guest independently.
 Headless supervisor runs have no terminal to attach; use their Coord output
 or diagnostics.
 

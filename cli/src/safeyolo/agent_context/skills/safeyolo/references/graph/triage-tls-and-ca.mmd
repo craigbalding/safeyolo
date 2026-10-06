@@ -31,7 +31,7 @@ flowchart TD
     con.tls_do_not_disable_verify(["Do NOT use '--insecure', 'verify=False', 'rejectUnauthorized: false', or install an untrusted CA as a workaround"])
     con.tls_use_full_bundle(["Point runtime CA env var at the aggregated bundle (e.g. /etc/ssl/certs/ca-certificates.crt), not at safeyolo.crt alone"])
     ask.tls_update_ca_certificates[["Ask operator to run 'update-ca-certificates' on the host image (or the equivalent on Alpine / RHEL)"]]
-    ask.tls_agent_diag[["Ask operator to run 'safeyolo agent diag <name>' -- Agent API being unreachable points at the socket/attribution path"]]
+    ask.tls_agent_diag[["Ask operator to run 'safeyolo agent diagnostics <name>' -- inspect runtime and proxy attachment separately"]]
     ask.tls_doctor[["Ask operator to run 'safeyolo doctor' -- CA installation, addons, and image are inspected"]]
     ask.suggest_client_upgrade[["Determine how the client library / runtime was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"]]
     ask.report_client_bug[["Report a client library / runtime bug upstream (include version, exact failure signature, minimal repro); apply the runtime-specific workaround if available"]]

@@ -25,11 +25,13 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _agent_map, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
+    from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _agent_map, _sha256
     from installed_ingress import installed_identity, runsc_identity
@@ -71,7 +73,7 @@ def guest_command(cli: str, agent: str, platform: str, marker: str, phase: str, 
     ]
     for key, value in options.items():
         request.extend(["--" + key.replace("_", "-"), str(value)])
-    return [cli, "agent", "shell", agent, "-c", "cd /workspace && " + shlex.join(request)]
+    return guest_command_args(cli, agent, "cd /workspace && " + shlex.join(request))
 
 
 def observation(output: str, phase: str, agent: str) -> dict:

@@ -26,15 +26,20 @@ collaboration.
 
 ## Prerequisites
 
+Use the retained Python package CLI for the setup and Coord administration
+commands below. The lifecycle start in **Run** uses the installed native CLI;
+replace `ROOT` with the same instance's absolute directory.
+
 - SafeYolo running (`safeyolo start`).
 - One agent registered with the bundled harness setup, for example:
-  `safeyolo agent add wake-test-bob <folder> --host-script @claude`.
+  `safeyolo agent add wake-test-bob <folder> --host-script @claude --no-run`.
 - Coord initialized: `safeyolo coord init`.
 - A room with wake-test-bob granted:
   `safeyolo coord room create wake-loop --member wake-test-bob`.
 - For an existing bundled agent, reapply its normal setup with
-  `safeyolo agent run wake-test-bob --host-script @claude`. The setup stages
-  and registers `safeyolo-coord`; no manual MCP config edit is needed.
+  `safeyolo agent add wake-test-bob <folder> --host-script @claude --no-run`,
+  using the same registered folder and script. The setup stages and registers
+  `safeyolo-coord`; no manual MCP config edit is needed.
 
 ## Setup — Claude's system prompt
 
@@ -57,7 +62,7 @@ Give wake-test-bob a short, explicit system prompt (via Claude Code's
 In one terminal:
 
 ```sh
-safeyolo agent run wake-test-bob
+ROOT/bin/safeyolo --root ROOT agent start wake-test-bob
 # Claude Code should start, load the system prompt, and call wait_for_coord
 ```
 

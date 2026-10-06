@@ -63,19 +63,23 @@ a warning and leaves that configuration for the next reload or start. There is n
 
 ## Diagnose a broken path
 
-On the host, with the proxy and named agent running, start with:
+On the host, use the installed native CLI for the selected instance and named
+agent. These observations remain available when the proxy or listener is absent:
 
 ```sh
-safeyolo agent diag syone
-safeyolo doctor
+safeyolo agent diagnostics syone
 ```
 
-The agent diagnostic checks the map, socket, native process, sandbox,
-host-side UDS HTTP response, and authenticated Agent API separately.
-On macOS, it also checks the helper, shell bridge, SSH banner, and relay
-health. A complete HTTP response proves the UDS transport; the Agent API
-check separately requires its handler marker and source-attributed identity.
-A failed check gives a remediation and the command exits nonzero.
+The native diagnostic reports runtime, control, coding-agent, terminal, and
+proxy attachment state separately. On macOS, it also queries private helper
+control and tests the shell bridge for an SSH banner. On Linux, shell readiness
+uses exec control in the recorded namespaces. Inspect the failed dimension and
+its next action; a missing proxy attachment does not mean that the runtime stopped.
+
+The retained Python package's `safeyolo doctor` sends an authenticated Agent API
+health request over UDS and requires the handler marker. A generic HTTP response
+does not prove API health. See [agent debugging](agent-debugging.md)
+for the native failed-shell workflow.
 
 For decision and audit events on the host, run:
 
@@ -94,10 +98,10 @@ it does not enable tracing across every proxy stage.
 
 | Symptom | First check |
 | --- | --- |
-| Agent cannot connect to the proxy | Run `safeyolo agent diag <name>`; check the named socket and the native process. |
-| Proxy transport passes but Agent API fails | Read the separate Agent API diagnostic and `safeyolo doctor` result. A generic HTTP response does not prove API health. |
+| Agent cannot connect to the proxy | Run `safeyolo agent diagnostics <name>`; inspect proxy state and the agent's proxy attachment separately from runtime state. |
+| Proxy transport passes but Agent API fails | Inspect the retained package's `safeyolo doctor` pipeline probe. A generic HTTP response does not prove API health. |
 | Agent request is attributed to the wrong identity | Compare the host `agent_map.json` entry with the native listener and the named socket. Do not rely on a guest-supplied header. |
-| macOS shell hangs | Check the shell UDS, helper relay health, SSH banner, and guest `sshd` with `safeyolo agent diag <name>`. |
+| macOS shell hangs | Run `safeyolo agent diagnostics <name>`; inspect private control and the shell SSH-banner result before choosing recovery. |
 
 ## Platform and configuration notes
 

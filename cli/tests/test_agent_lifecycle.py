@@ -194,3 +194,83 @@ def test_retained_command_forwards_native_start_arguments_and_uses_start_verb(mo
     absent = CliRunner().invoke(app, ["agent", "run", "marker"])
     assert absent.exit_code != 0
     assert len(calls) == 1
+
+
+def test_package_status_keeps_native_unknown_runtime_without_proxy(tmp_path, monkeypatch, capfd):
+    """Exercise the native owner with missing proxy/listener and damaged runtime evidence."""
+    binary = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
+    if not binary:
+        pytest.skip("requires the built native CLI (SAFEYOLO_TEST_NATIVE_CLI)")
+    root = tmp_path / "instance"
+    root.mkdir()
+    command = [str(Path(binary).resolve()), "--root", str(root)]
+    subprocess.run([*command, "init"], check=True, capture_output=True)
+    (root / "bin").mkdir()
+    (root / "bin/safeyolo").symlink_to(Path(binary).resolve())
+    subprocess.run([*command, "agent", "create", "marker", "--workspace", str(tmp_path)],
+                   check=True, capture_output=True)
+    evidence = root / "agents/marker/runtime.json"
+    evidence.parent.mkdir(exist_ok=True)
+    evidence.write_text("{}")
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
+
+    from safeyolo.commands.doctor import _check_running_agents
+    from safeyolo.commands.lifecycle import status
+
+    with pytest.raises(Exit) as exited:
+        status()
+    assert exited.value.exit_code == 0
+    observed = json.loads(capfd.readouterr().out)
+    assert observed["proxy_state"] == "unavailable"
+    assert observed["agents"][0]["runtime_state"] == "unknown"
+    assert observed["agents"][0]["control_state"] == "unknown"
+    assert observed["agents"][0]["proxy_attachment"]["state"] == "absent"
+    diagnosed = json.loads(subprocess.check_output([*command, "agent", "diagnostics", "marker"], text=True))
+    assert diagnosed["runtime_state"] == "unknown"
+    assert diagnosed["proxy_state"] == "unavailable"
+    assert diagnosed["exec"] is False
+    check = _check_running_agents()
+    assert check.status == "warn"
+    assert "runtime=unknown, control=unknown" in check.message
+    assert "diagnostics" in check.remediation
+    assert evidence.read_text() == "{}"
+
+
+def test_package_bulk_stop_uses_native_degraded_inventory_and_preserves_refusal(tmp_config_dir, monkeypatch):
+    from safeyolo.commands import lifecycle as commands
+
+    observed = [{"name": "degraded", "runtime_state": "degraded"},
+                {"name": "unknown", "runtime_state": "unknown"},
+                {"name": "stopped", "runtime_state": "stopped"}]
+    monkeypatch.setattr(lifecycle, "list_agent_runtimes", lambda: observed)
+    stopped, proxy_stops = [], []
+    monkeypatch.setattr(lifecycle, "stop_agent_by_name", stopped.append)
+    monkeypatch.setattr(commands, "_stop_coord_best_effort", lambda: None)
+    monkeypatch.setattr(commands, "is_proxy_running", lambda: True)
+    monkeypatch.setattr(commands, "stop_proxy", lambda: proxy_stops.append(True))
+    commands.stop_all()
+    assert stopped == ["degraded", "unknown"]
+    assert proxy_stops == [True]
+
+    def refused(name):
+        raise lifecycle.AgentLifecycleError(f"unverified backend identity for {name}")
+
+    proxy_stops.clear()
+    monkeypatch.setattr(lifecycle, "stop_agent_by_name", refused)
+    with pytest.raises(Exit) as exited:
+        commands.stop_all()
+    assert exited.value.exit_code == 1
+    assert proxy_stops == []
+
+
+@pytest.mark.parametrize("alias", ["run", "diag", "vm", "config", "shell", "attach", "remove"])
+def test_replaced_python_commands_cannot_invoke_a_lifecycle_owner(monkeypatch, alias):
+    from safeyolo.cli import app
+
+    invoked = []
+    monkeypatch.setattr(lifecycle, "_native_cli", lambda *args, **kwargs: invoked.append(args))
+    result = CliRunner().invoke(app, ["agent", alias, "marker"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+    assert invoked == []

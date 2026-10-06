@@ -2026,7 +2026,9 @@ def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
         "sudo -n apk add PACKAGE",
         "setpriv --reuid=0 --regid=0 --clear-groups COMMAND",
         "root only inside the isolated guest",
-        "safeyolo agent shell --root",
+        "Native `agent shell` has no guest-root flag",
+        "rebuild the image with the current",
+        "cannot perform privileged repair",
         "Linux gVisor discards installed OS-package files",
     ):
         assert expected in content

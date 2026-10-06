@@ -217,7 +217,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: dc985028ee5fa36171edb408df7fb56d6df5e14abf1fca7e52e0e4bfc571821f
         - path: tests/blackbox/run-tests.sh
-          sha256: da3b9365714a9a5d443427c81639c396080ba4b29eaae91bd110bddc98b84bfb
+          sha256: b1c8a39b28496b9b82bc8989efd26dee3cc5839116531dd04477a09b8024f937
         - path: uv.lock
           sha256: 9778ce791a57621768bac679e9f81dde36b22effcb885dd33a91681142991490
       setup: "Use an approved host; the lane owns a separate .safeyolo-test instance, ports, certificates, and sinkhole."
@@ -249,7 +249,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: dc985028ee5fa36171edb408df7fb56d6df5e14abf1fca7e52e0e4bfc571821f
         - path: tests/blackbox/run-tests.sh
-          sha256: da3b9365714a9a5d443427c81639c396080ba4b29eaae91bd110bddc98b84bfb
+          sha256: b1c8a39b28496b9b82bc8989efd26dee3cc5839116531dd04477a09b8024f937
         - path: cli/src/safeyolo/commands/setup.py
           sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
         - path: cli/src/safeyolo/platform/linux.py
@@ -334,7 +334,7 @@ nodes:
         - path: cli/tests/test_codex_coord_supervisor.py
           sha256: b82a483c756acf4eb1fa7fea325fa7b528d0789d6c3d326abd791e588271d46d
         - path: cli/tests/test_agent_command_supervisor.py
-          sha256: 4e8dae6ac8734366cfb67c96dabce3dce8854081f109253f196dd055cb34296b
+          sha256: 23177de06bd48ab1893d19e3ede820e59fd61dfee242fe2b4dfe0f8f48e2ddaf
         - path: cli/tests/test_factory_doctor.py
           sha256: 7dbcde088f528eeaec8f03dd02d63e0165959bbd0bdd594eecdce658e29d430b
       setup: "Use the trusted base's locked Python environment."
@@ -443,7 +443,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and focused pytest sources; Python tools hash-locked in uv.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: da3b9365714a9a5d443427c81639c396080ba4b29eaae91bd110bddc98b84bfb
+          sha256: b1c8a39b28496b9b82bc8989efd26dee3cc5839116531dd04477a09b8024f937
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: cli/tests/test_sockets.py

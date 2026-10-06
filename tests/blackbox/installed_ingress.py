@@ -19,10 +19,12 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _sha256
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
+    from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _sha256
     from isolation.installed_ingress import is_mounted_forwarder
@@ -106,7 +108,7 @@ def guest_observation(cli: str, agent: str, marker: str) -> dict:
         f"--agent {shlex.quote(agent)} --marker {shlex.quote(marker)}"
     )
     result = subprocess.run(
-        [cli, "agent", "shell", agent, "-c", command],
+        guest_command_args(cli, agent, command),
         capture_output=True,
         text=True,
         check=False,

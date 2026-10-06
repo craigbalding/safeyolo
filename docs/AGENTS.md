@@ -71,7 +71,7 @@ Triggers include, non-exhaustively:
 - Debugger / profiler attach failures inside the guest: `ptrace: Operation
   not permitted`, `py-spy` / `rbspy` / `strace` / `gdb` denied against a
   same-uid process.
-- `safeyolo agent shell --root` or operator-recovery-shell paths.
+- Broken guest sudo helpers or operator recovery paths.
 - Agent API queries (`/lookup`, `/budgets`, `/policy`, `/flows`, `/plumb`),
   flow inspection, budget or circuit-breaker state.
 - Approved agent-to-agent plumb collaboration.
@@ -188,9 +188,10 @@ namespace capabilities through `/usr/bin/setpriv`; guest uid 0 maps to an
 unprivileged subordinate host uid. The underlying Linux-only diagnostic form
 is `setpriv --reuid=0 --regid=0 --clear-groups COMMAND`, but prefer `sudo` for
 normal work because it is portable to hardware microVMs and preserves the
-configured proxy and CA environment. Do not ask the operator for
-`safeyolo agent shell --root` for routine installs; that is a recovery path
-when guest sudo itself is broken.
+configured proxy and CA environment. If guest sudo itself is broken, report
+the exact error and ask the operator to rebuild the image with the current
+SafeYolo guest helper. Native `agent shell` has no guest-root flag. PID-1 health
+diagnosis through `agent recover` cannot perform privileged repair.
 
 Only `/home/agent` and `/workspace` are guaranteed persistent. In particular,
 Linux gVisor discards installed OS-package files when the agent stops, although

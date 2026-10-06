@@ -1,9 +1,24 @@
 """Persistent agent API token shared by the Python and Rust proxy launchers."""
 
+import os
 import secrets
+import uuid
 from pathlib import Path
 
-from .agent_command_supervisor import _write_text
+
+def _write_text(path: Path, value: str, *, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            if mode is not None:
+                os.fchmod(handle.fileno(), mode)
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def ensure_agent_token(data_dir: Path) -> str:

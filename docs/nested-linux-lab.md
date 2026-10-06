@@ -99,13 +99,14 @@ are unavailable. The outer SafeYolo sandbox still bounds the complete lab.
 The normal `systemd-run --user --scope` path remains active on hosts with a
 usable user manager.
 
-Use `agent add --no-run` followed by `agent run --sandbox-only` for a boot-only
-sandbox. Ordinary `--detach` now launches the agent persistently; it is not the
-boot-only operation. If the lab needs the staged coding harness and bundled
-Coord dependencies, invoke a bounded command explicitly:
+Use `agent add --no-run` followed by `agent start --sandbox-only` for a boot-only
+sandbox. Ordinary `agent start` launches the agent persistently; it is not the
+boot-only operation. Install the [native host commands](native-policy.md) in the
+selected `SAFEYOLO_CONFIG_DIR`. If the lab needs the staged coding harness and
+bundled Coord dependencies, invoke a bounded command through that native CLI:
 
 ```bash
-uv run safeyolo agent shell nested-worker \
+"$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --root "$SAFEYOLO_CONFIG_DIR" agent shell nested-worker \
   -c '/home/agent/.safeyolo-command --version'
 ```
 

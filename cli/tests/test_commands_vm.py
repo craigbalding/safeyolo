@@ -22,7 +22,6 @@ from typer.testing import CliRunner
 from safeyolo import rust_proxy
 from safeyolo.api import AdminAPI
 from safeyolo.cli import app
-from safeyolo.commands.agent import _store_remove_agent
 from safeyolo.platform import AgentPlatform
 from safeyolo.proxy import start_proxy, wait_for_healthy
 
@@ -355,104 +354,15 @@ class TestLifecycleStop:
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
             patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
+            patch("safeyolo.agent_lifecycle.list_agent_runtimes", return_value=[{
+                "name": "test-agent", "runtime_state": "running", "control_state": "ready",
+            }], autospec=True),
         ):
             result = runner.invoke(app, ["stop"])
 
         assert result.exit_code == 0
         mock_platform.stop_sandbox.assert_not_called()
-        assert "still running" in result.output.lower()
-
-    def test_stop_all_stops_agent_vms(self, runner, config_dir):
-        """stop --all iterates agent dirs and stops running agents."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir(parents=True)
-
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
-        with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
-            patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", ""), autospec=True,),
-        ):
-            result = runner.invoke(app, ["stop", "--all"])
-
-        assert result.exit_code == 0
-        mock_platform.stop_sandbox.assert_called_once_with("test-agent")
-
-    def test_stop_all_unloads_firewall_rules(self, runner, config_dir):
-        """stop --all preserves the platform egress-control lifecycle hook.
-
-        Current platforms use structural isolation, so the hook is a no-op.
-        """
-        mock_platform = _platform()
-        with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
-        ):
-            result = runner.invoke(app, ["stop", "--all"])
-
-        assert result.exit_code == 0
-        mock_platform.unload_firewall_rules.assert_called_once()
-
-    def test_stop_all_firewall_unload_failure_is_nonfatal(self, runner, config_dir):
-        """Firewall unload failure doesn't prevent stop --all from completing."""
-        mock_platform = _platform()
-        mock_platform.unload_firewall_rules.side_effect = RuntimeError("iptables error")
-        with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
-        ):
-            result = runner.invoke(app, ["stop", "--all"])
-
-        assert result.exit_code == 0
-        assert "stopped" in result.output.lower()
-
-
-# ---------------------------------------------------------------------------
-# lifecycle.py: status
-# ---------------------------------------------------------------------------
-
-
-class TestLifecycleStatus:
-
-    def test_no_config_exits_one(self, runner, tmp_path, monkeypatch):
-        """No config directory produces warning and exit 1."""
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path / "nonexistent"))
-        result = runner.invoke(app, ["status"])
-        assert result.exit_code == 1
-
-    def test_proxy_not_running_exits_zero(self, runner, config_dir):
-        """Proxy not running shows panel and exits 0."""
-        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,):
-            result = runner.invoke(app, ["status"])
-        assert result.exit_code == 0
-        assert "not running" in result.output.lower()
-
-    def test_proxy_running_shows_table(self, runner, config_dir):
-        """A verified native lifetime record supplies status identity."""
-        process = _native_process(config_dir)
-        with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.rust_proxy.read_process", return_value=process, autospec=True),
-            patch("safeyolo.rust_proxy.readiness", return_value={"ready": True, "admin_port": 9090}, autospec=True),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
-            patch("safeyolo.commands.lifecycle.get_api", autospec=True,) as mock_api_factory,
-            patch("safeyolo.vm.is_vm_running", return_value=False, autospec=True,),
-        ):
-            mock_api = _api()
-            mock_api.stats.return_value = {}
-            mock_api.pending_approvals.return_value = []
-            mock_api.get_modes.return_value = {"modes": {}}
-            mock_api_factory.return_value = mock_api
-
-            result = runner.invoke(app, ["status"])
-
-        assert result.exit_code == 0
-        assert "running" in result.output.lower()
-        assert "/installed/safeyolo-proxy" in result.output
+        assert "test-agent (running, ready)" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1145,110 +1055,6 @@ class TestAgentList:
 
 
 # ---------------------------------------------------------------------------
-# agent.py: remove
-# ---------------------------------------------------------------------------
-
-
-class TestAgentRemove:
-
-    def test_agent_not_found_exits_one(self, runner, config_dir):
-        """Removing non-existent agent exits 1."""
-        result = runner.invoke(app, ["agent", "remove", "nonexistent"])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower()
-
-    def test_stops_running_vm_before_remove(self, runner, config_dir):
-        """Stops sandbox if running before removing."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir()
-        (agent_dir / "rootfs.ext4").touch()
-
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
-        # Dir deletion is now platform-dispatched; have the mock actually
-        # delete so other asserts behave naturally.
-        import shutil as _sh
-        mock_platform.remove_agent_dir.side_effect = lambda n: _sh.rmtree(
-            config_dir / "agents" / n, ignore_errors=True)
-        with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.commands.agent._store_remove_agent", autospec=True,),
-            patch("safeyolo.commands.agent.write_event", autospec=True,),
-        ):
-            result = runner.invoke(app, ["agent", "remove", "test-agent"])
-
-        assert result.exit_code == 0
-        mock_platform.stop_sandbox.assert_called_once_with("test-agent")
-        mock_platform.remove_agent_dir.assert_called_once_with("test-agent")
-        assert not agent_dir.exists()
-
-    def test_removes_dir_and_metadata(self, runner, config_dir):
-        """remove deletes agent dir and metadata entry."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir()
-        (agent_dir / "rootfs.ext4").touch()
-
-        mock_store_remove = create_autospec(_store_remove_agent, spec_set=True)
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = False
-        import shutil as _sh
-        mock_platform.remove_agent_dir.side_effect = lambda n: _sh.rmtree(
-            config_dir / "agents" / n, ignore_errors=True)
-        with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.commands.agent._store_remove_agent", mock_store_remove),
-            patch("safeyolo.commands.agent.write_event", autospec=True,),
-        ):
-            result = runner.invoke(app, ["agent", "remove", "test-agent"])
-
-        assert result.exit_code == 0
-        assert not agent_dir.exists()
-        mock_platform.remove_agent_dir.assert_called_once_with("test-agent")
-        mock_store_remove.assert_called_once_with("test-agent")
-        assert "removed" in result.output.lower()
-
-
-# ---------------------------------------------------------------------------
-# agent.py: shell
-# ---------------------------------------------------------------------------
-
-
-class TestAgentShell:
-
-    def test_not_running_exits_one(self, runner, config_dir):
-        """Shell into non-running agent exits 1."""
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = False
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
-            result = runner.invoke(app, ["agent", "shell", "test-agent"])
-        assert result.exit_code == 1
-        assert "not running" in result.output.lower()
-
-    def test_running_calls_exec_in_sandbox(self, runner, config_dir):
-        """Running agent: shell invokes plat.exec_in_sandbox."""
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
-        mock_platform.exec_in_sandbox.return_value = 0
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
-            result = runner.invoke(app, ["agent", "shell", "test-agent"])
-        assert result.exit_code == 0
-        mock_platform.exec_in_sandbox.assert_called_once()
-        _, kwargs = mock_platform.exec_in_sandbox.call_args
-        assert kwargs["user"] == "agent"
-
-    def test_root_flag_passes_root_user(self, runner, config_dir):
-        """--root flag passes user='root' to exec_in_sandbox."""
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
-        mock_platform.exec_in_sandbox.return_value = 0
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
-            result = runner.invoke(app, ["agent", "shell", "test-agent", "--root"])
-        assert result.exit_code == 0
-        _, kwargs = mock_platform.exec_in_sandbox.call_args
-        assert kwargs["user"] == "root"
-
-
-# ---------------------------------------------------------------------------
 # agent.py: stop
 # ---------------------------------------------------------------------------
 
@@ -1554,7 +1360,6 @@ class TestWorkflowSetupLock:
             (42, agent_module.fcntl.LOCK_EX),
             (42, agent_module.fcntl.LOCK_UN),
         ]
-
 
 
 class TestInit:

@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 if __package__:
+    from .guest_exec import guest_command_args
     from .installed_host_smoke import (
         _agent_map,
         _pid_alive,
@@ -38,6 +39,7 @@ if __package__:
     from .installed_ingress import runsc_identity
     from .installed_lifecycle import stop_guest
 else:
+    from guest_exec import guest_command_args
     from installed_host_smoke import (
         _agent_map,
         _pid_alive,
@@ -150,7 +152,7 @@ def run(args: argparse.Namespace) -> None:
 
     def guest(name: str, method: str, url: str, body: dict | None = None) -> dict:
         command = shlex.join(["python3", "-c", GUEST_REQUEST, json.dumps([method, url, body])])
-        return json.loads(checked([args.transport_cli, "agent", "shell", name, "-c", command]))
+        return json.loads(checked(guest_command_args(args.transport_cli, name, command)))
 
     def native(*arguments: str) -> dict:
         return json.loads(checked([str(cli), "--root", str(root), *arguments, "--json"]))
@@ -159,7 +161,7 @@ def run(args: argparse.Namespace) -> None:
         command = [guest_cli, "helper", operation, identifier]
         if reason is not None:
             command.extend(["--reason", reason])
-        return json.loads(checked([args.transport_cli, "agent", "shell", args.helper, "-c", shlex.join(command)]))
+        return json.loads(checked(guest_command_args(args.transport_cli, args.helper, shlex.join(command))))
 
     marker = "821-" + uuid.uuid4().hex
     hits: list[tuple[int, str]] = []
@@ -191,13 +193,13 @@ def run(args: argparse.Namespace) -> None:
                 shutil.copyfileobj(source, output)
             staged_cli.chmod(0o755)
             guest_cli = "/safeyolo/" + staged_cli.name
-            helper_identity = checked([args.transport_cli, "agent", "shell", args.helper, "-c", shlex.join([guest_cli, "--version"])])
+            helper_identity = checked(guest_command_args(args.transport_cli, args.helper, shlex.join([guest_cli, "--version"])))
             assert helper_identity == cli_version, "Helper did not execute the selected native client"
             if args.real_helper:
                 # Authentication is already present in Helper. Do not read or
                 # stage a host key, change its model, or create another guest.
-                checked([args.transport_cli, "agent", "shell", args.helper, "-c",
-                         "test -x /home/agent/.safeyolo-interactive-command && codex --version"])
+                checked(guest_command_args(args.transport_cli, args.helper,
+                                          "test -x /home/agent/.safeyolo-interactive-command && codex --version"))
         for _ in range(2):
             origin = HTTPServer(("127.0.0.2", 0), Origin)
             origins.append(origin)
@@ -252,7 +254,7 @@ def run(args: argparse.Namespace) -> None:
                 "Stop after preparing; the human operator decides."
             )
             command = shlex.join(["/home/agent/.safeyolo-interactive-command", "exec", "--json", "--ephemeral", "--skip-git-repo-check", prompt])
-            output = checked([args.transport_cli, "agent", "shell", args.helper, "-c", command], timeout=300)
+            output = checked(guest_command_args(args.transport_cli, args.helper, command), timeout=300)
             model_events = [json.loads(line) for line in output.splitlines()]
             commands = [event["item"] for event in model_events if event.get("type") == "item.completed"
                         and event.get("item", {}).get("type") == "command_execution" and event["item"].get("exit_code") == 0]

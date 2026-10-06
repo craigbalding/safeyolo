@@ -1,9 +1,9 @@
 """Guest-root capability and containment tests.
 
-These tests are invoked through ``safeyolo agent shell --root``. Guest root is
-an intentional SafeYolo feature for package installation and repair; the
-security property is that this privilege stops at the gVisor or microVM
-boundary.
+The blackbox driver uses native shell plus guest sudo on Linux and direct
+platform root SSH on macOS. Guest root is an intentional SafeYolo feature for
+package installation and repair; the security property is that this privilege
+stops at the gVisor or microVM boundary.
 """
 
 import os
@@ -51,8 +51,8 @@ class TestGuestRootCapability:
         """The operator-selected root shell really runs as guest UID 0.
 
         What: Read the effective and real process UIDs and require both to be
-        zero when the suite is launched with ``agent shell --root``.
-        Why: Merely accepting the CLI flag is not useful acceptance evidence;
+        zero when the suite uses the selected guest-root test transport.
+        Why: Merely accepting a root selection is not useful acceptance evidence;
         package installation and guest repair require actual guest-root
         privileges.
         """
@@ -60,13 +60,13 @@ class TestGuestRootCapability:
         assert os.geteuid() == 0, f"Expected guest EUID 0, got {os.geteuid()}"
 
     def test_root_shell_and_pid1_have_nofile_limit(self):
-        """The root SSH login and its PID 1 view have the required limit.
+        """The selected root process and its PID 1 view have the required limit.
 
-        What: Inspect this process through the dedicated ``agent shell --root``
+        What: Inspect this process through the selected guest-root test transport
         lane and read the open-file limit for PID 1 from proc.
-        Why: SSH can produce identity-specific limits. A sudo transition
-        inside the normal agent session does not exercise the root login path
-        that the CLI creates.
+        Why: SSH can produce identity-specific limits, so macOS uses the direct
+        root login rather than an agent-session sudo transition. Linux enters
+        guest root through sudo after native shell validates its current run.
         """
         assert resource.getrlimit(resource.RLIMIT_NOFILE) == (
             NOFILE_LIMIT,

@@ -246,7 +246,7 @@ nodes:
   # ---- Operator asks ---------------------------------------------------
   - id: ask.tools_repair_sudo
     kind: operator_ask
-    label: "Ask operator to run `safeyolo agent shell <name> --root` and repair the guest sudo helper. Use this ONLY when guest sudo itself is broken, never for a policy or approval block."
+    label: "Report the missing or broken guest sudo helper and ask the operator to rebuild the image with the current helper. Native shell has no guest-root flag; PID-1 health diagnosis cannot repair sudo. Never use this for a policy or approval block."
     source: authored
 
   - id: ask.tools_policy_add_package_host

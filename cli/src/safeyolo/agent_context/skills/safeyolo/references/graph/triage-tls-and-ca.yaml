@@ -162,7 +162,7 @@ nodes:
 
   - id: ask.tls_agent_diag
     kind: operator_ask
-    label: "Ask operator to run `safeyolo agent diag <name>` -- Agent API being unreachable points at the socket/attribution path"
+    label: "Ask operator to run `safeyolo agent diagnostics <name>` -- inspect runtime and proxy attachment separately"
     source: authored
 
   - id: ask.tls_doctor

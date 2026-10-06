@@ -211,10 +211,14 @@ separate operator choice.
 
 The Lab is an optional experiment workflow, independent of `safeyolo demo`.
 The bundled Codex setup also provides `safeyolo-lab` inside an existing running
-agent. From a host terminal, replace `AGENT` with its name and open a shell:
+agent. To open a shell from the host, that agent's instance must have the
+[native host commands installed](../docs/native-policy.md#install-and-start).
+Replace both `ROOT` placeholders with that instance's absolute directory.
+Replace `AGENT` with its name. Invoke the installed executable directly; the installer does not change
+`PATH`:
 
 ```sh
-safeyolo agent shell AGENT
+"ROOT/bin/safeyolo" --root "ROOT" agent shell AGENT
 ```
 
 Inside that guest shell, run:
@@ -401,8 +405,10 @@ not apply to these deliberately staged coding-harness credentials.
 - Without `--host-script`, the sandbox boots to a plain bash shell
 - Inside an agent, use ordinary `sudo apt install ...` (or the distro
   equivalent) for ephemeral guest packages. This grants root only inside the
-  VM or gVisor sandbox; it does not invoke host sudo. `agent shell --root` is
-  the operator-mediated recovery path when the guest helper itself is broken.
+  VM or gVisor sandbox; it does not invoke host sudo. The native shell command
+  has no guest-root flag. If the guest sudo helper is missing or broken, report
+  that prerequisite for operator repair; `agent recover` diagnoses guest health
+  through the separate shared-home/PID-1 path, without SSH.
 - `agent desktop` requires an already-running agent and never installs missing
   guest packages; use `--status` or `--stop` for desktop lifecycle checks
 - Set `desktop.size` in `~/.safeyolo/config.yaml` to `auto` or a persistent

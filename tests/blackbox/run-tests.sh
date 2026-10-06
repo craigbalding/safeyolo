@@ -1052,7 +1052,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "  Waiting for VM..."
     VM_READY=false
     for i in $(seq 1 60); do
-        if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
+        if python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" -c true >/dev/null 2>&1; then
             echo "  VM ready"
             VM_READY=true
             break
@@ -1161,7 +1161,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
     set +e
-    safeyolo agent shell "$AGENT_NAME" -c \
+    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" -c \
         "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
     set -e
@@ -1170,7 +1170,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "=== Guest-Root Capability and Containment Tests (in-VM) ==="
     echo ""
     set +e
-    safeyolo agent shell "$AGENT_NAME" --root -c \
+    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" --user root -c \
         "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
     ROOT_ISOLATION_RESULT=$?
     set -e

@@ -369,16 +369,16 @@ broken sudo/root path even though that path is a supported feature.
 
 - **`test_root_shell_has_uid_zero`** — The operator-selected root shell really runs as guest UID 0.
   - *Probe:* Read the effective and real process UIDs and require both to be
-zero when the suite is launched with ``agent shell --root``.
-  - *Consequence if unasserted:* Merely accepting the CLI flag is not useful acceptance evidence;
+zero when the suite uses the selected guest-root test transport.
+  - *Consequence if unasserted:* Merely accepting a root selection is not useful acceptance evidence;
 package installation and guest repair require actual guest-root
 privileges.
-- **`test_root_shell_and_pid1_have_nofile_limit`** — The root SSH login and its PID 1 view have the required limit.
-  - *Probe:* Inspect this process through the dedicated ``agent shell --root``
+- **`test_root_shell_and_pid1_have_nofile_limit`** — The selected root process and its PID 1 view have the required limit.
+  - *Probe:* Inspect this process through the selected guest-root test transport
 lane and read the open-file limit for PID 1 from proc.
-  - *Consequence if unasserted:* SSH can produce identity-specific limits. A sudo transition
-inside the normal agent session does not exercise the root login path
-that the CLI creates.
+  - *Consequence if unasserted:* SSH can produce identity-specific limits, so macOS uses the direct
+root login rather than an agent-session sudo transition. Linux enters
+guest root through sudo after native shell validates its current run.
 - **`test_root_can_install_local_apt_package`** — Guest root can install and remove a local package with apt/dpkg.
   - *Probe:* Build a minimal local Debian package, install it through apt,
 verify its payload under /usr/local, then purge it without network

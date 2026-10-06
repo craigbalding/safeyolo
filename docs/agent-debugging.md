@@ -15,6 +15,31 @@ the same independent shell through host tmux. You can still run guest tmux
 inside that shell and start the coding agent manually for guest-side lab work.
 The plain `agent shell NAME` command keeps its direct-shell behavior.
 
+If opening a shell fails, inspect the agent from the host operator's terminal.
+Use the installed native CLI for that instance. Replace `ROOT` with the instance
+directory and `NAME` with the configured agent name:
+
+```sh
+safeyolo --root ROOT status
+safeyolo --root ROOT agent diagnostics NAME
+```
+
+These commands inspect runtime, control, coding-agent, terminal and proxy
+attachment state separately. They still inspect runtime evidence when the proxy
+is unavailable or the listener is missing. A live runtime with unavailable exec
+control needs the reported control repair; starting another sandbox does not
+repair that run. Follow the diagnostic's `next_action` and the applicable shell
+hop below. On Linux, shell execution needs the recorded runsc namespaces. On
+macOS, the shell probe checks the host Unix socket and guest SSH banner.
+
+For a running guest with idle command supervision, use
+`safeyolo --root ROOT agent recover NAME` to check guest health without SSH.
+The [shared-home recovery procedure](#probe-the-guest-through-pid-1-when-ssh-is-unavailable)
+explains its prerequisites and occupied-command refusal. When diagnostics prove
+the runtime stopped, `agent start NAME --sandbox-only` starts a sandbox for
+inspection. A missing proxy attachment alone does not prove the runtime stopped;
+see [proxy restart](agent-launchers.md#proxy-restart-and-connection-failures).
+
 ## Philosophy
 
 The sandbox is the security boundary. Processes *inside* one agent's

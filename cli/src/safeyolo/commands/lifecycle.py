@@ -14,7 +14,6 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
-from rich.table import Table
 
 from ..config import (
     DEFAULT_CONFIG,
@@ -38,13 +37,6 @@ from ..timing import profiled_command
 from ..vm import check_guest_images, missing_guest_images
 
 console = Console()
-
-
-def get_api():
-    """Load the admin API client only when lifecycle status needs it."""
-    from ..api import get_api as _get_api
-
-    return _get_api()
 
 
 class _LazyCoordNats:
@@ -81,37 +73,6 @@ def write_event(
         addon=addon,
         details=details,
     )
-
-
-def _attribution_ip_conflicts(
-    running: list[tuple[str, str]],
-) -> dict[str, list[str]]:
-    """Return attribution IPs held by more than one running agent."""
-    by_ip: dict[str, list[str]] = {}
-    for name, ip in running:
-        if ip != "?":
-            by_ip.setdefault(ip, []).append(name)
-    return {ip: names for ip, names in by_ip.items() if len(names) > 1}
-
-
-def _command_supervisor_status(name: str) -> str:
-    """Return a compact, read-only command-supervisor status for status."""
-    from ..agent_command_supervisor import (
-        SupervisorStateError,
-        read_command_supervisor_state,
-        supervisor_process_is_live,
-    )
-
-    try:
-        state = read_command_supervisor_state(name)
-    except SupervisorStateError:
-        return "invalid state"
-    if state is None:
-        return "no command"
-    lifecycle = state.get("state", "unknown")
-    if lifecycle == "running" and not supervisor_process_is_live(state):
-        return "failed (supervisor absent)"
-    return str(lifecycle)
 
 
 # Path to bundled templates in package
@@ -404,20 +365,19 @@ def stop(  # DOC: cli/README.md
     _profile_enter("render stop result")
     console.print("[green]Stopped.[/green]")
 
-    # Hint if agents are still running
-    from ..config import get_agents_dir
-    from ..platform import get_platform
-    plat = get_platform()
-    agents_dir = get_agents_dir()
-    running = []
-    if agents_dir.exists():
-        for agent_dir in agents_dir.iterdir():
-            if agent_dir.is_dir() and plat.is_sandbox_running(agent_dir.name):
-                running.append(agent_dir.name)
-    if running:
-        names = ", ".join(running)
-        console.print(f"  Agents still running: [bold]{names}[/bold]")
-        console.print("  [dim]Stop all: safeyolo stop --all[/dim]")
+    # Proxy lifetime is independent of the reconciled agent runtimes.
+    from ..agent_lifecycle import AgentLifecycleError, list_agent_runtimes
+
+    try:
+        agents = [agent for agent in list_agent_runtimes() if agent["runtime_state"] != "stopped"]
+    except AgentLifecycleError as exc:
+        console.print(f"[yellow]Agent status unavailable: {escape(str(exc))}[/yellow]")
+        console.print("  Inspect with the installed native CLI's status command.")
+    else:
+        if agents:
+            states = ", ".join(f"{agent['name']} ({agent['runtime_state']}, {agent['control_state']})" for agent in agents)
+            console.print(f"  Agent runtimes: {escape(states)}")
+            console.print("  [dim]Stop all: safeyolo stop --all[/dim]")
 
 
 def stop_all() -> None:
@@ -432,52 +392,17 @@ def stop_all() -> None:
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
-    from ..agent_command_supervisor import request_command_supervisor_stop
-    from ..config import get_agents_dir
-    from ..platform import get_platform
-
-    plat = get_platform()
-    agents_dir = get_agents_dir()
-
-    # Stop all running agents
-    if agents_dir.exists():
-        for agent_dir in agents_dir.iterdir():
-            if agent_dir.is_dir():
-                name = agent_dir.name
-                if not request_command_supervisor_stop(name):
-                    console.print(
-                        f"  [yellow]Could not stop command supervisor for {name}; "
-                        "leaving its sandbox running.[/yellow]"
-                    )
-                    continue
-                from ..agent_launchers import stop_launcher
-
-                try:
-                    stop_launcher(name)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    console.print(f"  [red]Could not stop launcher for {escape(name)}: {escape(str(exc))}[/red]")
-                    raise typer.Exit(1) from exc
-                if plat.is_sandbox_running(name):
-                    console.print(f"  Stopping {name}...")
-                    plat.stop_sandbox(name)
-
-    # Clean up all networking for this instance
+    from ..agent_lifecycle import AgentLifecycleError, list_agent_runtimes, stop_agent_by_name
+    # Native reconciliation retains live runtimes with degraded control.
     try:
-        plat.cleanup_all(agents_dir)
-    except Exception as error:
-        # Best-effort teardown -- partial state is better than aborting stop.
-        console.print(
-            f"  [yellow]Platform cleanup incomplete ({type(error).__name__})[/yellow]"
-        )
-
-    # Remove platform egress controls if the platform created any. Current
-    # platforms use structural isolation, so this call is a no-op.
-    try:
-        plat.unload_firewall_rules()
-    except Exception as error:
-        console.print(
-            f"  [yellow]Firewall cleanup incomplete ({type(error).__name__})[/yellow]"
-        )
+        for observed in list_agent_runtimes():
+            if observed["runtime_state"] != "stopped":
+                name = observed["name"]
+                console.print(f"  Stopping {name}...")
+                stop_agent_by_name(name)
+    except AgentLifecycleError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
 
     # Coord plane before proxy (same reasoning as `stop`: coord is
     # optional infra on top of the proxy, so tear it down first).
@@ -491,167 +416,15 @@ def stop_all() -> None:
 
 
 def status() -> None:
-    """Show SafeYolo status and statistics."""
-    config_dir = find_config_dir()
-    if not config_dir:
-        console.print(
-            "[yellow]No SafeYolo configuration found.[/yellow]\nRun [bold]safeyolo init[/bold] to get started."
-        )
-        raise typer.Exit(1)
+    """Read the same native lifecycle observations as status and doctor."""
+    from ..agent_lifecycle import AgentLifecycleError, _native_cli
 
-    if not is_proxy_running():
-        if prior_python_proxy_running():
-            console.print(Panel(
-                "[yellow]A prior Python proxy is running.[/yellow]\n\n"
-                "Use the pinned prior package to inspect or stop it before starting Rust.",
-                title="Status",
-            ))
-            raise typer.Exit(1)
-        console.print(
-            Panel(
-                "[yellow]SafeYolo is not running[/yellow]\n\nRun [bold]safeyolo start[/bold] to start the proxy.",
-                title="Status",
-            )
-        )
-        raise typer.Exit(0)
-
-    # Build status table
-    table = Table(title="SafeYolo Status", show_header=False)
-    table.add_column("Key", style="bold")
-    table.add_column("Value")
-
-    table.add_row("Proxy", "[green]running[/green]")
-
-    from .. import rust_proxy
-
-    native = rust_proxy.read_process()
-    if native is None:
-        raise RuntimeError("Native proxy is running without a lifetime record")
-    ready = rust_proxy.readiness(native)
-    table.add_row("Backend", "Rust")
-    table.add_row("Executable", escape(native.binary_path or "unknown"))
-    table.add_row("PID", str(native.pid))
-    table.add_row("Readiness", "[green]ready[/green]" if ready else "[yellow]not ready[/yellow]")
-    table.add_row("Readiness File", escape(native.readiness_file))
-    if ready and ready.get("admin_port") is not None:
-        table.add_row("Admin Port", str(ready["admin_port"]))
-    elif native.admin_port is None:
-        table.add_row("Admin Port", "not configured")
-    else:
-        table.add_row("Admin Port", f"{native.admin_port} (configured; not ready)")
-
-    # Coord message plane. Degraded / not-started here means the coord
-    # API will 503; the proxy stays fine. See `safeyolo doctor` for
-    # detail on WHY it's degraded.
     try:
-        coord_status = coord_nats.status()
-    except Exception as err:  # noqa: BLE001
-        table.add_row(
-            "Coord (nats-server)",
-            f"[yellow]unknown ({type(err).__name__})[/yellow]",
-        )
-    else:
-        state = coord_status.get("state", "not-running")
-        if state == "healthy":
-            table.add_row(
-                "Coord (nats-server)",
-                f"[green]healthy[/green]  ({coord_status['listen']} · "
-                f"pid {coord_status['pid']})",
-            )
-        elif state == "wedged":
-            table.add_row(
-                "Coord (nats-server)",
-                f"[red]wedged[/red]  (pid {coord_status['pid']} alive but "
-                f"/varz unverified) [dim]— see `safeyolo doctor`[/dim]",
-            )
-        else:
-            table.add_row(
-                "Coord (nats-server)",
-                "[yellow]not running[/yellow]  "
-                "[dim](coord API will 503; run `safeyolo doctor`)[/dim]",
-            )
-
-    console.print(table)
-
-    # Running agents. The displayed IP is the agent's attribution address --
-    # what the native listener uses as the trusted request source and what service_discovery
-    # maps back to the name for audit/policy. agent_map.json is the source
-    # of truth on both UDS/vsock platforms.
-    import json as _json
-
-    from ..config import get_agent_map_path, get_agents_dir
-    from ..platform import get_platform
-    plat = get_platform()
-    agents_dir = get_agents_dir()
-
-    agent_map = {}
-    map_path = get_agent_map_path()
-    if map_path.exists():
-        try:
-            agent_map = _json.loads(map_path.read_text())
-        except (_json.JSONDecodeError, OSError):
-            agent_map = {}
-
-    if agents_dir.exists():
-        running = []
-        for agent_dir in agents_dir.iterdir():
-            if agent_dir.is_dir() and plat.is_sandbox_running(agent_dir.name):
-                entry = agent_map.get(agent_dir.name, {})
-                ip = entry.get("ip", "?")
-                running.append((agent_dir.name, ip))
-
-        if running:
-            conflicts = _attribution_ip_conflicts(running)
-            agent_table = Table(title="Ready Sandboxes", show_header=True)
-            agent_table.add_column("Name", style="bold")
-            agent_table.add_column("IP")
-            agent_table.add_column("Command")
-            agent_table.add_column("Agent")
-            agent_table.add_column("Launcher")
-
-            for name, ip in sorted(running):
-                rendered_ip = (
-                    f"[red]{ip} · CONFLICT[/red]" if ip in conflicts else ip
-                )
-                command_state = _command_supervisor_status(name)
-                command_style = (
-                    "red"
-                    if command_state.startswith("failed") or command_state == "invalid state"
-                    else "yellow"
-                    if command_state in {"restarting", "starting"}
-                    else "green"
-                    if command_state in {"running", "exited", "stopped"}
-                    else ""
-                )
-                rendered_command = (
-                    f"[{command_style}]{command_state}[/{command_style}]"
-                    if command_style
-                    else command_state
-                )
-                from ..agent_launchers import observe_launch
-
-                try:
-                    observed = observe_launch(name, sandbox_ready=True)
-                    selected = observed["launcher"]
-                    launcher_label = f"{selected.get('script') or selected['kind']} ({selected['source']})"
-                    agent_state = observed["agent_state"]
-                except (OSError, ValueError, RuntimeError) as exc:
-                    agent_state, launcher_label = "unknown", str(exc)
-                agent_table.add_row(name, rendered_ip, rendered_command, escape(agent_state), escape(launcher_label))
-
-            console.print()
-            console.print(agent_table)
-            if conflicts:
-                names = sorted({
-                    name
-                    for conflict in conflicts.values()
-                    for name in conflict
-                })
-                console.print(
-                    "[red]Agent attribution conflict:[/red] stop and rerun "
-                    f"{', '.join(names)} before trusting agent-scoped policy "
-                    "or audit attribution."
-                )
+        result = _native_cli(["status"])
+    except AgentLifecycleError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    raise typer.Exit(result.returncode)
 
 
 def _build_output_dir(build_script: Path) -> Path:
