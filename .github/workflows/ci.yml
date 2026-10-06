@@ -19,6 +19,13 @@ permissions:
   contents: read
 
 jobs:
+  guest-inputs:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/guest-test-inputs.yml
+    with:
+      revision: ${{ github.event.pull_request.head.sha || github.sha }}
+      profile: debug
+
   test-addons:
     name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     runs-on: ${{ matrix.os }}
@@ -69,6 +76,8 @@ jobs:
 
   test-cli:
     name: Test CLI${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
+    needs: guest-inputs
+    if: ${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -130,33 +139,53 @@ jobs:
             cli/tests/test_sockets.py cli/tests/test_rust_proxy.py cli/tests/test_policy_cli.py
 
       - name: Install the pinned Rust toolchain
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         working-directory: proxy
         run: |
           rustup show active-toolchain
           printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
 
       - name: Restore Rust dependency cache
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             proxy -> target
-            guest/command -> target
           cache-bin: false
           cache-on-failure: true
 
-      - name: Build native guest and recovery test inputs
+      - name: Download Linux guest test inputs
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-debug
+          path: guest/command/target/debug
+
+      - name: Download Linux host test inputs
         if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-host-debug
+          path: proxy/target/debug
+
+      - name: Restore native executable permissions
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          chmod +x guest/command/target/debug/safeyolo-guest guest/command/target/debug/safeyolo-coord
+          if [ "$RUNNER_OS" = Linux ]; then chmod +x proxy/target/debug/safeyolo proxy/target/debug/safeyolo-coord; fi
+
+      - name: Build Mac host recovery and Coord test inputs
+        if: runner.os == 'macOS' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
-          SAFEYOLO_BUILD_PROFILE: debug
+          SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
           CARGO_BUILD_JOBS: "1"
         run: |
-          scripts/build_guest_command.sh
-          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord
 
       - name: All retained CLI tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/debug/safeyolo-guest
         run: uv run --frozen pytest cli/tests/ -v --tb=short
 
   lint:

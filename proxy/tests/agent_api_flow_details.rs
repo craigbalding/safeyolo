@@ -178,11 +178,14 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                     row["status"].as_u64().unwrap(),
                     "{name}"
                 );
-                assert_eq!(
-                    actual.render_json(false).unwrap(),
-                    row["text"].as_str().unwrap(),
-                    "{name}"
+                // The pinned Python oracle predates native shared approvals.
+                // Adjust only that historical 404 inventory for the current
+                // Agent API; retain every other body, type and ordering check.
+                let expected = row["text"].as_str().unwrap().replace(
+                    "\"/explain\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
+                assert_eq!(actual.render_json(false).unwrap(), expected, "{name}");
             }
         }
         let mut tags = CircuitValue::from(fixture.store.get_flow_tags(1).unwrap());

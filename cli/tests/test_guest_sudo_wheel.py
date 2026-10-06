@@ -10,10 +10,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_wheel_prepares_guest_share_without_checkout(tmp_path):
+    helper = Path(os.environ.get(
+        "SAFEYOLO_GUEST_HELPER",
+        str(REPO_ROOT / "guest/command/target/debug/safeyolo-guest"),
+    ))
+    assert helper.is_file(), "Build or supply the Linux guest helper before the wheel staging test"
     wheel_dir = tmp_path / "dist"
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
         cwd=REPO_ROOT,
+        env={**os.environ, "SAFEYOLO_GUEST_HELPER": str(helper)},
         check=True,
         capture_output=True,
         text=True,
@@ -52,3 +58,6 @@ assert (share / "guest-sudo").is_file()
     staged = config / "agents" / "wheel-agent" / "config-share" / "guest-sudo"
     assert staged.read_bytes() == (REPO_ROOT / "guest" / "rootfs" / "safeyolo-sudo").read_bytes()
     assert staged.stat().st_mode & 0o777 == 0o755
+    native = config / "agents" / "wheel-agent" / "config-share" / "safeyolo-guest"
+    assert native.read_bytes() == helper.read_bytes()
+    assert native.stat().st_mode & 0o777 == 0o755

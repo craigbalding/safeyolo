@@ -21,6 +21,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  guest-inputs:
+    uses: ./.github/workflows/guest-test-inputs.yml
+    with:
+      revision: ${{ github.sha }}
+      profile: production
+
   systrap:
     name: Installed guest sections and host continuity — Linux systrap
     runs-on: ubuntu-24.04
@@ -103,6 +109,7 @@ jobs:
   macos-package:
     name: Installed host package — GitHub macOS
     runs-on: macos-latest
+    needs: guest-inputs
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -141,7 +148,15 @@ jobs:
           brew install tmux
           tmux -V
 
+      - name: Download Linux guest package inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-production
+          path: guest/command/target/release
+
       - name: Install and test the native proxy
+        env:
+          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           ./tests/blackbox/run-installed-package.sh

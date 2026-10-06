@@ -24,7 +24,8 @@ TOKEN = "owned-process-generation"
 
 
 @pytest.fixture
-def launch(tmp_path, monkeypatch):
+def launch(socket_dir, monkeypatch):
+    tmp_path = socket_dir
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "data" / "coord"))
@@ -684,7 +685,10 @@ def test_process_liveness_reads_mocked_linux_state_after_final_command_parenthes
     read.assert_called_once_with(Path(f"/proc/{PID}/stat"))
 
 
-def test_process_liveness_does_not_turn_permission_failure_into_exit(launch):
+def test_process_liveness_does_not_turn_permission_failure_into_exit(launch, monkeypatch):
+    # This control injects Linux's kill(0) boundary. Darwin's libproc access
+    # failure has its own native-platform control below.
+    monkeypatch.setattr(runtime_identity.sys, "platform", "linux")
     launch.kill.side_effect = PermissionError("owned fixture denial")
     with pytest.raises(PermissionError, match="owned fixture denial"):
         runtime_identity.process_is_alive(PID)

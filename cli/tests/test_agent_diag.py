@@ -15,6 +15,12 @@ from safeyolo import agent_diag
 from safeyolo.agent_diag import Check, _check_agent_api, _check_proxy_transport
 
 
+@pytest.fixture
+def tmp_path(socket_dir):
+    """These small diagnostic fixtures bind real macOS Unix sockets."""
+    return socket_dir
+
+
 def test_proxy_process_reports_the_native_runtime(monkeypatch):
     monkeypatch.setattr(agent_diag, "is_proxy_running", lambda: True)
     assert agent_diag._check_proxy_process() == Check(

@@ -87,6 +87,7 @@ class TestAgentAddGate:
         result = cli_runner.invoke(
             agent_app,
             ["add", "test", str(folder), "--dangerously-allow-unowned"],
+            env={"COLUMNS": "512"},
         )
 
         assert result.exit_code == 1, result.output

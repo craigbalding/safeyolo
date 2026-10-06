@@ -10,6 +10,7 @@ import pty
 import select
 import subprocess
 import sys
+import time
 
 import pytest
 from rich.console import Console
@@ -624,21 +625,30 @@ def test_chat_rejects_piped_stdin_with_terminal_stdout():
     assert process.stdin is not None
     process.stdin.write(b"operator direction\n")
     process.stdin.close()
-    process.wait(timeout=10)
-
+    # Darwin can discard unread PTY output when the final slave closes.
+    # Drain while the child still owns the slave, then reap it.
     output = bytearray()
-    while True:
-        readable, _, _ = select.select([master_fd], [], [], 1.0)
-        if not readable:
-            break
-        try:
-            chunk = os.read(master_fd, 65536)
-        except OSError:
-            break
-        if not chunk:
-            break
-        output.extend(chunk)
-    os.close(master_fd)
+    deadline = time.monotonic() + 10
+    try:
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([master_fd], [], [], 0.1)
+            if not readable:
+                if process.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(master_fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+        process.wait(timeout=max(0.1, deadline - time.monotonic()))
+    finally:
+        os.close(master_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
 
     rendered = bytes(output).decode("utf-8", errors="replace")
     assert process.returncode == 2, rendered
