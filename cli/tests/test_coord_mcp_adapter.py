@@ -1,375 +1,146 @@
-"""Compatibility contracts for the standalone coord MCP adapter."""
-
+"""Native MCP stdio boundary: canonical results, validation and uncertain writes."""
 from __future__ import annotations
 
-import asyncio
-import importlib.util
-import sys
-import types
+import json
+import os
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+ROOT = Path(__file__).resolve().parents[2]
+IDS = ["attn-" + digit * 32 for digit in "ab"]
 
 
-class _MCPServer:
-    def __init__(self, _name):
-        pass
-
-    def tool(self):
-        return lambda function: function
-
-    def run(self):
-        pass
-
-
-class _ToolError(Exception):
-    pass
-
-
-def _load_adapter(monkeypatch):
-    mcp_package = types.ModuleType("mcp")
-    server_package = types.ModuleType("mcp.server")
-    server_module = types.ModuleType("mcp.server.mcpserver")
-    exceptions_module = types.ModuleType("mcp.server.mcpserver.exceptions")
-    server_module.MCPServer = _MCPServer
-    exceptions_module.ToolError = _ToolError
-    monkeypatch.setitem(sys.modules, "mcp", mcp_package)
-    monkeypatch.setitem(sys.modules, "mcp.server", server_package)
-    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", server_module)
-    monkeypatch.setitem(
-        sys.modules, "mcp.server.mcpserver.exceptions", exceptions_module
-    )
-
-    path = Path(__file__).resolve().parents[2] / "contrib/safeyolo-coord-mcp.py"
-    spec = importlib.util.spec_from_file_location("coord_mcp_adapter_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_http_rejection_is_an_anticipated_tool_error_with_bounded_detail(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    response = module.httpx.Response(
-        422,
-        json={"error": "invalid content type " + "x" * 4096},
-        request=module.httpx.Request("POST", "http://coord.test/send"),
-    )
-
-    with pytest.raises(module.ToolError) as caught:
-        module._raise_for_status(response)
-
-    message = str(caught.value)
-    assert message.startswith("coord API 422: invalid content type ")
-    assert message.endswith("...")
-    assert len(message.removeprefix("coord API 422: ")) == 2048
-
-
-def test_send_explicitly_defaults_to_no_attention(monkeypatch):
-    module = _load_adapter(monkeypatch)
+@pytest.fixture
+def adapter(tmp_path):
+    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", ROOT / "proxy/target/debug/safeyolo-coord"))
+    assert binary.is_file(), "Build safeyolo-coord first"
+    token = tmp_path / "token"
+    token.write_text("fixture-token")
     calls = []
+    replies = {}
 
-    async def post(path, body):
-        calls.append((path, body))
-        return {"ok": True}
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
 
-    monkeypatch.setattr(module, "_post", post)
-    asyncio.run(module.send("room", "body"))
-    assert calls == [
-        (
-            "/api/coord/rooms/room/send",
-            {
-                "body": "body",
-                "declared_content_type": "text/markdown",
-                "notify": "none",
-            },
-        )
-    ]
+        def do_GET(self):
+            self.reply(None)
+
+        def do_POST(self):
+            self.reply(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+
+        def reply(self, payload):
+            path = urlsplit(self.path).path
+            calls.append((self.command, self.path, payload, self.headers.get("Authorization")))
+            status, value = replies.get(path, (200, {"envelope": {"msg_id": "msg-fixture"}, "sequence": 41}))
+            body = json.dumps(value).encode()
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = {**os.environ, "HTTP_PROXY": f"http://127.0.0.1:{server.server_port}", "SAFEYOLO_COORD_TOKEN_PATH": str(token)}
+    env.pop("SAFEYOLO_COORD_SOCKET", None)
+
+    def rpc(requests):
+        result = subprocess.run([str(binary), "mcp"], input="".join(json.dumps(item) + "\n" for item in requests), capture_output=True, text=True, env=env, timeout=8)
+        assert result.returncode == 0, result.stderr
+        return {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
+
+    def call(name, args):
+        return rpc([{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}])[1]["result"]
+
+    yield call, rpc, calls, replies, token
+    server.shutdown()
+    server.server_close()
+    thread.join()
 
 
-def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    calls = []
+def test_discovery_and_rpc_errors(adapter):
+    _, rpc, calls, _, _ = adapter
+    results = rpc([
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        [], {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 3, "method": "missing"},
+    ])
+    assert results[1]["result"]["protocolVersion"] == "2025-03-26"
+    tools = results[2]["result"]["tools"]
+    assert len(tools) == 11
+    assert {tool["name"] for tool in tools} >= {"send", "send_task", "read_room", "read_brief", "wait_for_coord"}
+    assert results[None]["error"]["code"] == -32600
+    assert results[3]["error"]["code"] == -32601
+    assert calls == []
 
-    async def post(path, body):
-        calls.append((path, body))
-        return {
-            "envelope": {"msg_id": "msg-" + "a" * 32},
-            "sequence": 41,
-        }
 
-    monkeypatch.setattr(module, "_post", post)
-    result = asyncio.run(
-        module.send_task(
-            "backlog",
-            "forge",
-            "https://github.com/craigbalding/safeyolo/issues/469?view=full",
-            "Preserve this paragraph.\n\n- and this list",
-        )
-    )
+def test_native_send_defaults_and_exact_task_producer(adapter):
+    call, _, calls, _, token = adapter
+    result = call("send", {"room_name": "backlog", "body": "marker"})
+    assert result["structuredContent"]["sequence"] == 41
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    assert calls[-1][2] == {"body": "marker", "declared_content_type": "text/markdown", "notify": "none"}
+    token.write_text("rotated-fixture-token")
+    result = call("send_task", {"room_name": "backlog", "assignee": "forge", "target": "https://example.test/818", "body": "Keep assignee=forge in explanatory text."})
+    assert result["isError"] is False
+    assert calls[-1][2]["body"] == "TASK target=https://example.test/818 assignee=forge\n\nKeep assignee=forge in explanatory text."
+    assert calls[-1][2]["notify"] == ["forge"]
+    assert calls[-1][3] == "Bearer rotated-fixture-token"
 
-    assert result == {
-        "envelope": {"msg_id": "msg-" + "a" * 32},
-        "sequence": 41,
-    }
+
+@pytest.mark.parametrize("change", [{"target": "https://[bad"}, {"target": "issue-818"}, {"assignee": "forge extra"}, {"room_name": ""}, {"body": "TASK target=https://example.test/other assignee=forge"}])
+def test_malformed_task_never_sends(adapter, change):
+    call, _, calls, _, _ = adapter
+    result = call("send_task", {"room_name": "backlog", "assignee": "forge", "target": "https://example.test/818", "body": "work", **change})
+    assert result["isError"] is True
+    assert calls == []
+
+
+@given(st.one_of(st.none(), st.booleans(), st.integers(), st.lists(st.integers()), st.dictionaries(st.text(max_size=10), st.integers(), max_size=3)))
+@settings(max_examples=30, deadline=None)
+def test_untrusted_field_types_do_not_reach_transport(value):
+    binary = ROOT / "proxy/target/debug/safeyolo-coord"
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "send", "arguments": {"room_name": "backlog", "body": value}}}
+    result = subprocess.run([str(binary), "mcp"], input=json.dumps(request) + "\n", capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["result"]["isError"] is True
+    assert "invalid type for body" in response["result"]["content"][0]["text"]
+
+
+def test_whole_page_resolution_and_failure_hide_cursor(adapter):
+    call, _, calls, replies, _ = adapter
+    edges = [{"attention_id": id, "object_id": f"msg-{i}"} for i, id in enumerate(IDS)]
+    replies["/api/coord/attention/wait"] = (200, {"edges": edges, "next_cursor": 9})
+    for edge in edges:
+        replies[f'/api/coord/attention/{edge["attention_id"]}/object'] = (200, {"edge": edge, "object": {"msg_id": edge["object_id"]}})
+    result = call("wait_for_coord", {"since_sequence": 7, "limit": 2, "timeout_seconds": 0})
+    assert result["structuredContent"]["next_cursor"] == 9
+    assert len(result["structuredContent"]["objects"]) == 2
+    assert len(calls) == 3
+    replies[f"/api/coord/attention/{IDS[1]}/object"] = (403, {"error": "membership revoked"})
+    result = call("wait_for_coord", {"since_sequence": 7, "limit": 2, "timeout_seconds": 0})
+    assert result["isError"] is True
+    assert "structuredContent" not in result
+    assert "next_cursor" not in result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("status,value", [(403, {"error": "unauthorized room"}), (503, {"error": "NATS unavailable"}), (503, {"error": "receipt unavailable", "send_outcome": "unknown"})])
+def test_refused_unavailable_and_uncertain_sends_are_not_retried(adapter, status, value):
+    call, _, calls, replies, _ = adapter
+    replies["/api/coord/rooms/backlog/send"] = status, value
+    result = call("send", {"room_name": "backlog", "body": "marker"})
+    assert result["isError"] is True
+    assert "structuredContent" not in result
     assert len(calls) == 1
-    assert calls == [
-        (
-            "/api/coord/rooms/backlog/send",
-            {
-                "body": (
-                    "TASK target=https://github.com/craigbalding/safeyolo/issues/469?view=full "
-                    "assignee=forge\n\n"
-                    "Preserve this paragraph.\n\n- and this list"
-                ),
-                "declared_content_type": "text/markdown",
-                "notify": ["forge"],
-            },
-        )
-    ]
-
-
-@pytest.mark.parametrize(
-    ("room", "assignee", "target", "body", "message"),
-    [
-        ("", "forge", "https://example.test/work/469", "work", "room_name"),
-        ("backlog", "", "https://example.test/work/469", "work", "assignee"),
-        ("backlog", "forge extra", "https://example.test/work/469", "work", "assignee"),
-        ("backlog", "forge", "issue-469", "work", "target"),
-        ("backlog", "forge", "https://example.test/work 469", "work", "target"),
-        ("backlog", "forge", "https://[bad", "work", "target"),
-        ("backlog", "forge", "https://example.test/work/469", " \n", "body is missing"),
-        (
-            "backlog",
-            "forge",
-            "https://example.test/work/469",
-            "TASK target=https://example.test/work/other assignee=forge\n\nduplicate",
-            "duplicate TASK header",
-        ),
-    ],
-)
-def test_send_task_rejects_missing_malformed_or_duplicate_fields(
-    monkeypatch, room, assignee, target, body, message
-):
-    module = _load_adapter(monkeypatch)
-
-    async def unexpected_post(*_args, **_kwargs):
-        raise AssertionError("invalid task must not be sent")
-
-    monkeypatch.setattr(module, "_post", unexpected_post)
-    with pytest.raises(ValueError, match=message):
-        asyncio.run(module.send_task(room, assignee, target, body))
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "Return DONE target=https://example.test/work/469 after validation.",
-        "Explain why assignee=forge is the configured owner.",
-        "A malformed example such as assignee = is ordinary explanatory text.",
-    ],
-)
-def test_send_task_allows_field_like_text_below_the_canonical_header(monkeypatch, body):
-    module = _load_adapter(monkeypatch)
-    calls = []
-
-    async def post(path, payload):
-        calls.append((path, payload))
-        return {"envelope": {"msg_id": "msg-" + "a" * 32}, "sequence": 41}
-
-    monkeypatch.setattr(module, "_post", post)
-    target = "https://example.test/work/469?kind=issue&id=469"
-    asyncio.run(module.send_task("backlog", "forge", target, body))
-
-    assert calls[0][1]["body"] == f"TASK target={target} assignee=forge\n\n{body}"
-
-
-def test_send_task_requires_canonical_sequence(monkeypatch):
-    module = _load_adapter(monkeypatch)
-
-    async def post(_path, _body):
-        return {
-            "envelope": {"msg_id": "msg-" + "a" * 32, "sequence": 41},
-        }
-
-    monkeypatch.setattr(module, "_post", post)
-    with pytest.raises(RuntimeError, match="canonical room sequence"):
-        asyncio.run(
-            module.send_task(
-                "backlog",
-                "forge",
-                "https://example.test/work/469",
-                "work",
-            )
-        )
-
-
-def test_attention_tools_use_identity_derived_routes(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    calls = []
-
-    async def get(path, params=None, *, timeout=60.0):
-        calls.append((path, params, timeout))
-        return {"ok": True}
-
-    monkeypatch.setattr(module, "_get", get)
-    asyncio.run(
-        module.wait_for_attention(
-            since_sequence=7, timeout_seconds=12.0, limit=3
-        )
-    )
-    asyncio.run(module.read_attention("attn-" + "a" * 32))
-    assert calls == [
-        (
-            "/api/coord/attention/wait",
-            {"since": 7, "timeout": 12.0, "limit": 3},
-            22.0,
-        ),
-        ("/api/coord/attention/attn-" + "a" * 32 + "/object", None, 60.0),
-    ]
-
-
-def test_read_brief_uses_authorized_canonical_route(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    calls = []
-
-    async def get(path, params=None, *, timeout=60.0):
-        calls.append((path, params, timeout))
-        return {"revision": 5, "markdown": "# trusted"}
-
-    monkeypatch.setattr(module, "_get", get)
-    result = asyncio.run(module.read_brief("huddle"))
-
-    assert result == {"revision": 5, "markdown": "# trusted"}
-    assert calls == [
-        ("/api/coord/rooms/huddle/brief", None, 60.0),
-    ]
-
-
-def test_inventory_tools_use_authorized_identity_derived_routes(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    calls = []
-
-    async def get(path, params=None, *, timeout=60.0):
-        calls.append(("GET", path, params, timeout))
-        return {"members": []}
-
-    async def post(path, body):
-        calls.append(("POST", path, body, 60.0))
-        return {"count": len(body["capabilities"])}
-
-    monkeypatch.setattr(module, "_get", get)
-    monkeypatch.setattr(module, "_post", post)
-
-    assert asyncio.run(module.get_room_state("huddle")) == {"members": []}
-    assert asyncio.run(
-        module.declare_capabilities("huddle", ["skill:python"], 120)
-    ) == {"count": 1}
-    assert calls == [
-        ("GET", "/api/coord/rooms/huddle/state", None, 60.0),
-        (
-            "POST",
-            "/api/coord/rooms/huddle/declarations",
-            {"capabilities": ["skill:python"], "ttl_seconds": 120},
-            60.0,
-        ),
-    ]
-
-
-def test_wait_for_coord_resolves_the_whole_page_before_returning_cursor(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    calls = []
-    attention_ids = ["attn-" + "a" * 32, "attn-" + "b" * 32]
-
-    async def get(path, params=None, *, timeout=60.0):
-        calls.append((path, params, timeout))
-        if path == "/api/coord/attention/wait":
-            return {
-                "edges": [
-                    {"attention_id": attention_ids[0]},
-                    {"attention_id": attention_ids[1]},
-                ],
-                "next_cursor": 9,
-            }
-        return {"object": {"attention_id": path.split("/")[-2]}}
-
-    monkeypatch.setattr(module, "_get", get)
-    result = asyncio.run(
-        module.wait_for_coord(since_sequence=7, timeout_seconds=12.0, limit=2)
-    )
-
-    assert result == {
-        "objects": [
-            {"object": {"attention_id": attention_ids[0]}},
-            {"object": {"attention_id": attention_ids[1]}},
-        ],
-        "next_cursor": 9,
-    }
-    assert calls == [
-        (
-            "/api/coord/attention/wait",
-            {"since": 7, "timeout": 12.0, "limit": 2},
-            22.0,
-        ),
-        (f"/api/coord/attention/{attention_ids[0]}/object", None, 60.0),
-        (f"/api/coord/attention/{attention_ids[1]}/object", None, 60.0),
-    ]
-
-
-def test_wait_for_coord_does_not_return_cursor_after_partial_resolution(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    attention_ids = ["attn-" + "a" * 32, "attn-" + "b" * 32]
-    resolved = []
-
-    async def get(path, params=None, *, timeout=60.0):
-        if path == "/api/coord/attention/wait":
-            return {
-                "edges": [{"attention_id": item} for item in attention_ids],
-                "next_cursor": 9,
-            }
-        if attention_ids[1] in path:
-            raise RuntimeError("canonical object unavailable")
-        resolved.append(path)
-        return {"object": {"ok": True}}
-
-    monkeypatch.setattr(module, "_get", get)
-
-    with pytest.raises(RuntimeError, match="canonical object unavailable"):
-        asyncio.run(module.wait_for_coord(since_sequence=7, limit=2))
-
-    assert resolved == [f"/api/coord/attention/{attention_ids[0]}/object"]
-
-
-def test_tool_descriptions_guide_the_targeted_multi_room_workflow(monkeypatch):
-    module = _load_adapter(monkeypatch)
-    wait_for_message_doc = " ".join((module.wait_for_message.__doc__ or "").split())
-
-    assert "Lower-level identity-derived multiplexed attention wait" in (
-        module.wait_for_attention.__doc__ or ""
-    )
-    assert "Primary foreground idle wait" in (module.wait_for_coord.__doc__ or "")
-    assert "trusted canonical operator state" in (
-        module.wait_for_coord.__doc__ or ""
-    )
-    assert "canonical trusted operator brief" in (
-        module.read_brief.__doc__ or ""
-    )
-    assert "current authoritative room identity" in (
-        module.get_room_state.__doc__ or ""
-    )
-    assert "attributed but untrusted" in (
-        module.declare_capabilities.__doc__ or ""
-    )
-    assert "resolution failure fails" in (module.wait_for_coord.__doc__ or "")
-    assert "Lower-level resolution operation" in (
-        module.read_attention.__doc__ or ""
-    )
-    assert "Explicit retained room history, context, and catch-up" in (
-        module.read_room.__doc__ or ""
-    )
-    assert "Legacy per-room compatibility" in (
-        module.wait_for_message.__doc__ or ""
-    )
-    assert "not the normal targeted multi-room coordination workflow" in (
-        wait_for_message_doc
-    )
+    if value.get("send_outcome") == "unknown":
+        assert "outcome unknown" in result["content"][0]["text"]

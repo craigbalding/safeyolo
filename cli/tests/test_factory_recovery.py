@@ -43,6 +43,14 @@ def _awaiting(target=TARGET, room="backlog", recipient="forge", request="TASK"):
     }
 
 
+@pytest.fixture(autouse=True)
+def native_coord(monkeypatch):
+    from pathlib import Path
+    binary = Path(__file__).resolve().parents[2] / "proxy/target/debug/safeyolo-coord"
+    assert binary.is_file(), "Build safeyolo-coord before these native checkpoint tests"
+    monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(binary))
+
+
 @pytest.fixture
 def stopped_factory(tmp_config_dir, tmp_path, nats_env, monkeypatch):
     nats_runtime.start_server(ready_timeout=8)
@@ -50,8 +58,7 @@ def stopped_factory(tmp_config_dir, tmp_path, nats_env, monkeypatch):
     api.bootstrap()
     asyncio.run(api.create_room("backlog"))
     api.grant("backlog", "operator", "operator", operation_id=new_operation_id())
-    supervisor = recovery._supervisor()
-    monkeypatch.setattr(recovery, "_supervisor", lambda: supervisor)
+    supervisor = recovery._native_coord_executable()
     platform = SimpleNamespace(is_sandbox_running=lambda _name: False)
     monkeypatch.setattr(recovery, "get_platform", lambda: platform)
     payload = {"name": "sample", "room": "backlog", "roles": {}}
@@ -62,16 +69,16 @@ def stopped_factory(tmp_config_dir, tmp_path, nats_env, monkeypatch):
         (workspace / "keep.txt").write_text("unfinished work\n")
         save_agent(agent, {"folder": str(workspace)})
         payload["roles"][role] = {"agent": agent}
-        path = get_agent_home_dir(agent) / ".safeyolo/codex-coord-supervisor-state.json"
+        path = get_agent_home_dir(agent) / ".safeyolo/coord-supervisor-state.json"
         path.parent.mkdir(parents=True, mode=0o700)
-        state = supervisor.empty_state()
+        state = recovery._load_state(supervisor, tmp_path / "missing-state.json")
         state.update(thread_id=f"{agent}-thread", safe_cursor=50, consecutive_failures=2)
         states[agent], paths[agent] = state, path
     states["relay"]["awaiting_handoffs"] = [_awaiting(), _awaiting(OTHER)]
     states["forge"]["in_flight"] = [_pending(), _pending(OTHER, digit="b"), _pending(room="old", digit="c")]
     states["forge"]["awaiting_handoffs"] = [_awaiting(REVIEW, recipient="lens", request="REVIEW_READY")]
     for agent, path in paths.items():
-        supervisor.save_state(path, states[agent])
+        recovery._save_state(supervisor, path, states[agent])
     return SimpleNamespace(payload=payload, supervisor=supervisor, states=states, paths=paths, platform=platform)
 
 
@@ -79,9 +86,9 @@ def _messages():
     return asyncio.run(api.read_room("backlog", "operator", "operator"))["messages"]
 
 
-def test_release_clears_only_the_released_tasks_repair_selection():
-    supervisor = recovery._supervisor()
-    state = supervisor.empty_state()
+def test_release_clears_only_the_released_tasks_repair_selection(tmp_path):
+    supervisor = recovery._native_coord_executable()
+    state = recovery._load_state(supervisor, tmp_path / "missing-state.json")
     state["in_flight"] = [_pending(), _pending(OTHER, digit="b")]
     state["repair_selection"] = {
         "attention_id": state["in_flight"][0]["attention_id"], "snapshot_id": "a" * 64,
@@ -104,8 +111,8 @@ def test_release_preserves_unrelated_work_and_records_operator_action(stopped_fa
     result = recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda plan: plans.append(plan) or True)
     assert "relay" in result and "forge" in result
     assert "target=" + TARGET in plans[0]
-    relay = env.supervisor.load_state(env.paths["relay"])
-    forge = env.supervisor.load_state(env.paths["forge"])
+    relay = recovery._load_state(env.supervisor, env.paths["relay"])
+    forge = recovery._load_state(env.supervisor, env.paths["forge"])
     assert relay["awaiting_handoffs"] == [_awaiting(OTHER)]
     assert forge["in_flight"] == env.states["forge"]["in_flight"][1:]
     assert forge["awaiting_handoffs"] == env.states["forge"]["awaiting_handoffs"]
@@ -132,7 +139,7 @@ def test_release_can_select_old_room_without_touching_current_assignment(stopped
     asyncio.run(api.create_room("old"))
     api.grant("old", "operator", "operator", operation_id=new_operation_id())
     recovery.release_stopped_work(env.payload, "old", {TARGET}, lambda _: True)
-    assert env.supervisor.load_state(env.paths["forge"])["in_flight"] == env.states["forge"]["in_flight"][:2]
+    assert recovery._load_state(env.supervisor, env.paths["forge"])["in_flight"] == env.states["forge"]["in_flight"][:2]
     assert _messages() == []
 
 
@@ -189,7 +196,7 @@ def test_release_preconditions_do_not_partially_clear_work(stopped_factory, fail
     if failure == "running":
         env.platform.is_sandbox_running = lambda name: name == "forge"
     elif failure == "state-lock":
-        lock = env.supervisor._lock_state(env.paths["relay"])
+        lock = recovery._lock_state(env.paths["relay"])
     elif failure == "invalid-state":
         env.paths["relay"].write_text("not json")
     before = {name: path.read_bytes() for name, path in env.paths.items()}
@@ -197,7 +204,7 @@ def test_release_preconditions_do_not_partially_clear_work(stopped_factory, fail
         if failure == "declined":
             assert "cancelled" in recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: False)
         else:
-            with pytest.raises((FactoryContractError, env.supervisor.SupervisorError)):
+            with pytest.raises((FactoryContractError, OSError)):
                 recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: True)
     finally:
         if lock:
@@ -221,22 +228,22 @@ def test_unavailable_coord_does_not_release_work(stopped_factory, monkeypatch):
 
 def test_partial_write_failure_can_resume_without_touching_other_work(stopped_factory, monkeypatch):
     env = stopped_factory
-    save = env.supervisor.save_state
+    save = recovery._save_state
 
-    def fail_second(path, state):
+    def fail_second(executable, path, state):
         if path == env.paths["relay"]:
             raise OSError("disk error")
-        save(path, state)
+        save(executable, path, state)
 
-    monkeypatch.setattr(env.supervisor, "save_state", fail_second)
+    monkeypatch.setattr(recovery, "_save_state", fail_second)
     with pytest.raises(FactoryContractError, match="changed agents=forge"):
         recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: True)
     assert len(_messages()) == 1  # Request recorded; completion was not claimed.
     forge_after = env.paths["forge"].read_bytes()
-    monkeypatch.setattr(env.supervisor, "save_state", save)
+    monkeypatch.setattr(recovery, "_save_state", save)
     recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: True)
     assert env.paths["forge"].read_bytes() == forge_after
-    assert env.supervisor.load_state(env.paths["relay"])["awaiting_handoffs"] == [_awaiting(OTHER)]
+    assert recovery._load_state(env.supervisor, env.paths["relay"])["awaiting_handoffs"] == [_awaiting(OTHER)]
 
 
 def test_multiple_exact_targets_and_decoder_roundtrip(stopped_factory):
@@ -246,12 +253,12 @@ def test_multiple_exact_targets_and_decoder_roundtrip(stopped_factory):
     request = _pending(REVIEW, digit="d")
     request.update(body=f"REVIEW_READY target={REVIEW}", sender_agent_name="forge")
     lens["in_flight"] = [request]
-    env.supervisor.save_state(env.paths["lens"], lens)
+    recovery._save_state(env.supervisor, env.paths["lens"], lens)
     recovery.release_stopped_work(env.payload, "backlog", {TARGET, REVIEW}, lambda _: True)
-    updated = env.supervisor.load_state(env.paths["forge"])
+    updated = recovery._load_state(env.supervisor, env.paths["forge"])
     assert updated["awaiting_handoffs"] == []
     assert updated["in_flight"] == original["in_flight"][1:]
-    assert env.supervisor.load_state(env.paths["lens"])["in_flight"] == []
+    assert recovery._load_state(env.supervisor, env.paths["lens"])["in_flight"] == []
 
 
 def test_release_cli_uses_exact_targets_and_old_room_option(stopped_factory, cli_runner, monkeypatch):
@@ -264,7 +271,7 @@ def test_release_cli_uses_exact_targets_and_old_room_option(stopped_factory, cli
     )
     assert result.exit_code == 0, result.output
     assert "Released checkpointed work" in result.output
-    assert env.supervisor.load_state(env.paths["forge"])["awaiting_handoffs"] == []
+    assert recovery._load_state(env.supervisor, env.paths["forge"])["awaiting_handoffs"] == []
 
 
 def test_release_cli_rejects_relative_target_without_changes(stopped_factory, cli_runner, monkeypatch):
@@ -285,13 +292,13 @@ def test_checkpoint_changed_during_confirmation_is_not_overwritten(stopped_facto
     changed["safe_cursor"] += 1
 
     def confirm(_description):
-        env.supervisor.save_state(env.paths["relay"], changed)
+        recovery._save_state(env.supervisor, env.paths["relay"], changed)
         return True
 
     with pytest.raises(FactoryContractError, match="checkpoint changed"):
         recovery.release_stopped_work(env.payload, "backlog", {TARGET}, confirm)
-    assert env.supervisor.load_state(env.paths["relay"]) == changed
-    assert env.supervisor.load_state(env.paths["forge"]) == env.states["forge"]
+    assert recovery._load_state(env.supervisor, env.paths["relay"]) == changed
+    assert recovery._load_state(env.supervisor, env.paths["forge"]) == env.states["forge"]
     assert _messages() == []
 
 
@@ -311,4 +318,4 @@ def test_failed_completion_record_reports_released_state_without_false_success(s
     with pytest.raises(FactoryContractError, match="changed agents=forge,relay"):
         recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: True)
     assert len(_messages()) == 1
-    assert env.supervisor.load_state(env.paths["relay"])["awaiting_handoffs"] == [_awaiting(OTHER)]
+    assert recovery._load_state(env.supervisor, env.paths["relay"])["awaiting_handoffs"] == [_awaiting(OTHER)]

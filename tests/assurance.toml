@@ -30,7 +30,7 @@ sha256 = "ebb582a7c0e6f8788f2f2f31732e2e7062c36f1b13ba961743b05cced508935c"
 id = "FACTORY-OPERATOR-CONVERSATION"
 description = "Plain operator text reaches the coordinator and its answer wakes no agent."
 node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
-sha256 = "9c7bd81e46077cdda2adef96d3ddabfe72e6f7bdc8f60a78e0ddf80ca1687b2d"
+sha256 = "ef4b0726ced66e41fd4ebf3a9c7e0ec9dd034aea62c84114759a79e9cd7f7913"
 
 [[factory_acceptance]]
 id = "FACTORY-STATUS-LOW-NOISE"
@@ -41,14 +41,14 @@ sha256 = "1fcac6221c87c0a27c9dd288fda60111225aea3b65d0d22a8b56ad8ca023a3ce"
 [[factory_acceptance]]
 id = "FACTORY-CONCURRENT-FORGE-LENS"
 description = "The coordinator can hold one Forge task and one independent Lens task concurrently."
-node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
-sha256 = "9c7bd81e46077cdda2adef96d3ddabfe72e6f7bdc8f60a78e0ddf80ca1687b2d"
+node = "cli/tests/test_codex_coord_supervisor.py::test_factory_concurrent_handoffs_are_checkpointed_together"
+sha256 = "85e777937878bce2a074e70de87c10ef142c3a081387414fdfe25cdd5ede590c"
 
 [[factory_acceptance]]
 id = "FACTORY-RESTART-NO-REPLAY"
 description = "Restart preserves outstanding handoffs and does not recreate completed work."
-node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
-sha256 = "9c7bd81e46077cdda2adef96d3ddabfe72e6f7bdc8f60a78e0ddf80ca1687b2d"
+node = "cli/tests/test_codex_coord_supervisor.py::test_factory_handoff_survives_restart_then_terminal_is_deduplicated"
+sha256 = "ecbc86ab542f9995bb526022c1c70d7913537504332e53b4202ade1a8c196b6d"
 
 [[factory_acceptance]]
 id = "FACTORY-AGENT-ROOM-BOUNDARY"
@@ -60,25 +60,25 @@ sha256 = "862c639338caf9ba7345c803096396247496e42175d976babf9c504f5a9557fe"
 id = "FACTORY-HANDOFF-AUTHORITY"
 description = "The supervisor rejects unauthorized or malformed work transitions while retaining agent text with a protocol warning."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_unauthorized_or_malformed_objects"
-sha256 = "d11469430f2717b11014d5d7ec9409033e436f3e79948ddec5b96ba81247df83"
+sha256 = "130f9a140bae1605422d8e3b3a83c5fbd9eaf8d131e58406c2b94bc5d36545e8"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-ROOM"
 description = "The supervisor rejects an exact handoff from the wrong room."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_an_other_room_even_for_an_exact_handoff"
-sha256 = "cae62cd486096c4be3ee2090bd665742a4d100020e83cb559fdce63626082e23"
+sha256 = "5770da6ab22a0c74f891c6169627a1d2366acebea1d1118b7866096d59c79ddc"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-CORRELATION"
 description = "A response cannot complete a different review object."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_a_response_for_a_different_review_object"
-sha256 = "977a60336c9c3793a87bf2fd6bc50b023a864a360ca69ad5d48ebbc0e1d17eff"
+sha256 = "df5fc8b79f2abcc934e04f4e2d95fc5837a411746e64b28342de9957695dc368"
 
 [[factory_acceptance]]
 id = "FACTORY-REVIEW-CHANGE-RESUMES-OWNER"
 description = "A Lens disposition resumes Forge's existing task without another ACCEPTED."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_admits_every_reviewer_to_owner_response"
-sha256 = "80fc82e716550170afd1b45ec9543acfdf6ec95c7e2bd86e9780b0f79eaa4f71"
+sha256 = "de44741fea4cfe3b5ac8d8d2e11e269ea8c019feaaa03cd4b81c476380c7658d"
 
 [[factory_acceptance]]
 id = "FACTORY-CHAT-AFTER-SEND"

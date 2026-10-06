@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 
@@ -30,8 +28,6 @@ AGENTS = {
     "dana": "ag-dddddddddddddddddddddddddddddddd",
     "mallory": "ag-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 }
-
-SUPERVISOR_PATH = Path(__file__).resolve().parents[2] / "contrib/codex-coord-supervisor.py"
 
 
 @pytest.fixture
@@ -82,122 +78,14 @@ def _edge_for(page: dict, object_id: str) -> dict | None:
 
 
 def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_path):
-    """Exercise the factory adapter over real retained Coord and attention."""
+    """Retain targeted concurrent tasks and replies over a real NATS restart.
+
+    Native checkpoint dispatch is covered by test_codex_coord_supervisor.
+    """
 
     async def scenario() -> None:
-        room_id = await _room("nested-factory", operator=True)
-        spec = importlib.util.spec_from_file_location(
-            "nested_factory_supervisor",
-            SUPERVISOR_PATH,
-        )
-        assert spec is not None and spec.loader is not None
-        supervisor = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = supervisor
-        spec.loader.exec_module(supervisor)
-
-        roles = {
-            "coordinator": "alice",
-            "owner": "bob",
-            "reviewer": "codey",
-        }
-        handoffs = (
-            supervisor.Handoff(
-                "TASK",
-                "coordinator",
-                "owner",
-                ("DONE", "BLOCKED", "FAILED"),
-                ("coordinator",),
-            ),
-            supervisor.Handoff(
-                "TASK",
-                "coordinator",
-                "reviewer",
-                ("DONE", "BLOCKED", "FAILED"),
-                ("coordinator",),
-            ),
-            supervisor.Handoff(
-                "REVIEW_READY",
-                "owner",
-                "reviewer",
-                ("READY", "CHANGES_REQUIRED", "BLOCKED"),
-                ("owner", "coordinator"),
-            ),
-        )
-
-        def config(role: str):
-            return supervisor.Config(
-                agent_name=roles[role],
-                rooms=("nested-factory",),
-                coordinators=frozenset({"alice"}),
-                factory_name="nested-factory",
-                factory_role=role,
-                factory_roles=tuple(roles.items()),
-                factory_handoffs=handoffs,
-                factory_operator_role="coordinator",
-                factory_operator_types=("ACTIVATE", "DIRECTION"),
-                contract_sha256="a" * 64,
-                workspace=str(tmp_path),
-                wait_seconds=5,
-                page_limit=16,
-                startup_timeout_seconds=30,
-                work_timeout_seconds=30,
-                completion_grace_seconds=5,
-                terminate_grace_seconds=1,
-                backoff_initial_seconds=2,
-                backoff_max_seconds=10,
-            )
-
-        def wait_event(state, objects, next_cursor):
-            return {
-                "type": "item.completed",
-                "item": {
-                    "type": "mcp_tool_call",
-                    "server": "safeyolo-coord",
-                    "tool": "wait_for_coord",
-                    "arguments": {
-                        "since_sequence": state["safe_cursor"],
-                        "timeout_seconds": 5,
-                        "limit": 16,
-                    },
-                    "result": {
-                        "structured_content": {
-                            "objects": objects,
-                            "next_cursor": next_cursor,
-                        }
-                    },
-                    "error": None,
-                    "status": "completed",
-                },
-            }
-
-        def send_event(result, *, room_name, body, notify):
-            return {
-                "type": "item.completed",
-                "item": {
-                    "type": "mcp_tool_call",
-                    "server": "safeyolo-coord",
-                    "tool": "send",
-                    "arguments": {
-                        "room_name": room_name,
-                        "body": body,
-                        "notify": notify,
-                    },
-                    "result": {"structured_content": result},
-                    "error": None,
-                    "status": "completed",
-                },
-            }
-
-        room_ids = {room_id: "nested-factory"}
-        coordinator_path = tmp_path / "coordinator-state.json"
-        coordinator_state = supervisor.empty_state()
-        coordinator = supervisor.EventConsumer(
-            config("coordinator"),
-            coordinator_state,
-            coordinator_path,
-            room_ids,
-        )
-
+        await _room("nested-factory", operator=True)
+        roles = {"coordinator": "alice", "owner": "bob", "reviewer": "codey"}
         question = await api.send(
             "nested-factory",
             "operator",
@@ -216,10 +104,8 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
         question_object = await api.read_attention(
             AGENTS["alice"], question_edge["attention_id"]
         )
-        coordinator.consume(
-            wait_event(coordinator_state, [question_object], alice_page["next_cursor"])
-        )
-        assert coordinator_state["in_flight"][0]["requires_terminal"] is False
+        assert question_object["object"]["sender_kind"] == "operator"
+        assert question_object["object"]["body"] == question["envelope"]["body"]
 
         answer = await api.send(
             "nested-factory",
@@ -230,17 +116,6 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
             notify="none",
         )
         assert answer["attention_intent"] == {"mode": "none"}
-        coordinator.consume(
-            send_event(
-                answer,
-                room_name="nested-factory",
-                body=answer["envelope"]["body"],
-                notify="none",
-            )
-        )
-        coordinator.consume({"type": "turn.completed"})
-        assert coordinator_state["in_flight"] == []
-
         forge_target = "https://example.test/checks/forge"
         forge_body = f"TASK target={forge_target} assignee=bob"
         forge_send = await api.send(
@@ -261,27 +136,6 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
             sender_agent_name="alice",
             notify=["codey"],
         )
-        coordinator.consume(
-            send_event(
-                forge_send,
-                room_name="nested-factory",
-                body=forge_body,
-                notify=["bob"],
-            )
-        )
-        coordinator.consume(
-            send_event(
-                lens_send,
-                room_name="nested-factory",
-                body=lens_body,
-                notify=["codey"],
-            )
-        )
-        assert {item["recipient_agent"] for item in coordinator_state["awaiting_handoffs"]} == {
-            "bob",
-            "codey",
-        }
-
         worker_objects = {}
         for role, sent in (("owner", forge_send), ("reviewer", lens_send)):
             agent_name = roles[role]
@@ -299,14 +153,6 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
         nr.stop_server()
         nats_client.reset_for_tests()
         nr.start_server(ready_timeout=8.0)
-        coordinator_state = supervisor.load_state(coordinator_path)
-        coordinator = supervisor.EventConsumer(
-            config("coordinator"),
-            coordinator_state,
-            coordinator_path,
-            room_ids,
-        )
-
         responses = []
         for role, target in (("owner", forge_target), ("reviewer", lens_target)):
             request_attention = worker_objects[role]["edge"]["attention_id"]
@@ -323,7 +169,7 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
 
         response_page = await api.wait_for_attention(
             AGENTS["alice"],
-            since_sequence=coordinator_state["safe_cursor"],
+            since_sequence=alice_page["next_cursor"],
             timeout_seconds=0.1,
             limit=16,
         )
@@ -334,30 +180,9 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
             response_objects.append(
                 await api.read_attention(AGENTS["alice"], edge["attention_id"])
             )
-        coordinator.consume(
-            wait_event(
-                coordinator_state,
-                response_objects,
-                response_page["next_cursor"],
-            )
-        )
-        assert coordinator_state["awaiting_handoffs"] == []
-        coordinator.consume({"type": "turn.completed"})
-        assert coordinator_state["in_flight"] == []
-
-        restarted = supervisor.load_state(coordinator_path)
-        replay = supervisor.EventConsumer(
-            config("coordinator"),
-            restarted,
-            coordinator_path,
-            room_ids,
-        )
-        replay.consume(
-            wait_event(restarted, response_objects, restarted["safe_cursor"])
-        )
-        assert restarted["in_flight"] == []
-        assert restarted["awaiting_handoffs"] == []
-
+        assert {obj["object"]["body"] for obj in response_objects} == {
+            response["envelope"]["body"] for response in responses
+        }
         retained = await api.read_room(
             "nested-factory", "operator", "operator", limit=20
         )

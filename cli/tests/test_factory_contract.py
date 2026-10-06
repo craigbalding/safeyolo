@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import runpy
 import shlex
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,17 @@ from safeyolo.factory_contract import (
 )
 from safeyolo.factory_doctor import FactoryDoctorCheck, FactoryDoctorReport
 from safeyolo.platform import AgentPlatform
+
+
+@pytest.fixture(autouse=True)
+def native_coord_runtime(monkeypatch):
+    binary = Path(__file__).parents[2] / "proxy/target/debug/safeyolo-coord"
+    assert binary.is_file(), "Build safeyolo-coord first"
+    monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(binary))
+    monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(binary))
+    binary.with_suffix(".version").write_bytes(subprocess.check_output([str(binary), "--version"]))
+    binary.with_suffix(".sha256").write_text(hashlib.sha256(binary.read_bytes()).hexdigest() + "\n")
+
 
 BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
 BACKLOG_REVIEWER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/independent-reviewer.md"
@@ -277,11 +289,18 @@ def test_protocol_extensions_survive_approval_staging_and_doctor(tmp_path, tmp_c
     _, _, snapshot = load_approved_snapshot("backlog")
     assert snapshot["updates"] == list(contract.updates)
     assert snapshot["roles"]["owner"]["repair"]["max_rounds"] == 3
-    staging = runpy.run_path(str(Path(__file__).parents[2] / "contrib/lib/stage-factory-supervisor.py"))
+    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", Path(__file__).parents[2] / "proxy/target/debug/safeyolo-coord"))
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot))
     for role, binding in snapshot["roles"].items():
-        staged, text = staging["runtime_factory"](snapshot, binding["agent"], role, binding["harness"])
+        config_path, instructions = tmp_path / f"{role}.json", tmp_path / f"{role}.md"
+        result = subprocess.run([str(binary), "factory-stage", str(config_path), str(instructions), binding["agent"], str(snapshot_path), role, binding["harness"]], capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0, result.stderr
+        staged = json.loads(config_path.read_text())
+        text = instructions.read_text().split("\n\n---\n\n", 1)[1]
         expected = _expected_supervisor_config(binding["agent"], role, snapshot)
-        assert staged == expected
+        assert {key: staged[key] for key in expected} == expected
+        assert staged["page_limit"] == 16
         _validate_supervisor_config(staged, expected)
         assert text == binding["contract_text"]
         assert staged["factory"]["repairs"]["owner"]["after_rounds"] == 5
@@ -814,7 +833,7 @@ def test_factory_run_missing_agent_prints_ordered_executable_recovery(
     assert 'safeyolo agent add relay "$PWD" --host-script @codex --no-run' in output
     assert "SafeYolo-owned Codex settings only" in output
     assert "codex login --device-auth" in output
-    assert "/home/agent/.safeyolo/codex-auth-recovery.py reset" in output
+    assert "/home/agent/.safeyolo/safeyolo-coord codex-state reset" in output
     assert output.index("agent add relay") < output.index("factory check")
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run backlog")
 

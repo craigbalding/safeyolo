@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
 import os
@@ -231,113 +230,6 @@ def test_stderr_capture_is_bounded_and_sanitized(tmp_config_dir):
     assert "\x1b" not in state["last_stderr"]
     assert "\\x01" in state["last_stderr"]
     assert state["last_stderr_sha256"]
-
-
-def test_restart_reconciles_checkpointed_terminal_without_duplicate_response(
-    tmp_config_dir, tmp_path, monkeypatch
-):
-    """The outer runtime restart leaves Coord reconciliation exactly once."""
-    coord_path = Path(__file__).resolve().parents[2] / "contrib/codex-coord-supervisor.py"
-    spec = importlib.util.spec_from_file_location("coord_supervisor_for_runtime_test", coord_path)
-    assert spec is not None and spec.loader is not None
-    coord = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = coord
-    spec.loader.exec_module(coord)
-
-    target = "https://example.test/runtime/544"
-    attention_id = "attn-" + "c" * 32
-    coord_state = coord.empty_state()
-    coord_state_path = tmp_path / "coord-checkpoint.json"
-    factory_config = coord.Config(
-        agent_name="forge",
-        rooms=("backlog",),
-        coordinators=frozenset({"relay"}),
-        agent_room="forge-agent",
-        factory_name="backlog",
-        factory_role="owner",
-        factory_roles=(("coordinator", "relay"), ("owner", "forge")),
-        factory_handoffs=(
-            coord.Handoff("TASK", "coordinator", "owner", ("DONE",), ("coordinator",)),
-        ),
-        factory_operator_role="coordinator",
-        factory_operator_types=("DIRECTION",),
-        contract_sha256="a" * 64,
-    )
-    task = {
-        "edge": {
-            "attention_id": attention_id,
-            "room_id": "room-1",
-            "kind": "message",
-            "object_id": "message-1",
-            "revision_or_sequence": 1,
-        },
-        "object": {
-            "msg_id": "message-1",
-            "sender_kind": "agent",
-            "sender_agent_id": "agent-relay",
-            "sender_agent_name": "relay",
-            "content_type": "text/plain",
-            "body": f"TASK target={target} assignee=forge",
-            "sequence": 1,
-        },
-    }
-    consumer = coord.EventConsumer(
-        factory_config, coord_state, coord_state_path, {"room-1": "backlog"}
-    )
-    consumer.accept_attention_page([task], 1)
-    coord.save_state(coord_state_path, coord_state)
-    response = f"DONE target={target} attention_id={attention_id}"
-    sent: list[str] = []
-
-    def first_attempt():
-        # The canonical send reached Coord, but the runtime died before its
-        # local checkpoint cleanup. Reconciliation below is the recovery path.
-        sent.append(response)
-
-    def second_attempt():
-        assert coord.load_state(coord_state_path)["in_flight"] == []
-        supervisor._write_json(
-            get_agent_command_supervisor_state_path("demo").with_name(
-                ".safeyolo-command-supervisor.stop"
-            ),
-            {"name": "demo", "requested_at": "test"},
-        )
-
-    platform = _Platform([
-        _CallbackProcess(137, first_attempt),
-        _CallbackProcess(0, second_attempt),
-    ])
-
-    def reconcile_before_restart(delay: float) -> None:
-        assert delay == supervisor.INITIAL_BACKOFF_SECONDS
-        monkeypatch.setattr(
-            coord,
-            "_history_page",
-            lambda _room, _cursor: {
-                "messages": [{
-                    "sender_kind": "agent",
-                    "sender_agent_id": "agent-forge",
-                    "sender_agent_name": "forge",
-                    "body": response,
-                }],
-                "has_more": False,
-                "next_cursor": 2,
-            },
-        )
-        assert coord.reconcile_terminals(factory_config, coord_state) is True
-        coord.save_state(coord_state_path, coord_state)
-
-    _seed_state(tmp_config_dir, "demo", "exec codex --resume checkpoint")
-    result = supervisor.CommandSupervisor(
-        "demo",
-        "exec codex --resume checkpoint",
-        platform=platform,
-        sleep=reconcile_before_restart,
-    ).run()
-
-    assert result == 0
-    assert sent == [response]
-    assert coord.load_state(coord_state_path)["in_flight"] == []
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Native guest processes use Linux /proc")

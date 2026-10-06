@@ -11,7 +11,7 @@ terminals. Final release packages remain separate work.
 On supported Ubuntu, run the following command as your ordinary host account
 from the repository checkout. The source installation requires Bash and Rust
 1.94. The directory `$HOME/.safeyolo-native` must have no existing instance
-configuration or tokens. Installation builds the production CLI, proxy and
+configuration or tokens. Installation builds the production CLI, proxy, native Coord executable and
 Linux guest command helper. It installs the host executables in `bin`, stages
 the guest helper and boot scripts in `assets/guest`, and creates `config.toml`, `policy.toml`, a private
 operator token, a separate private Agent API token, a durable instance identity,

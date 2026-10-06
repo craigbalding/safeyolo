@@ -1,24 +1,30 @@
 /** Direct Coord messaging and history tools for Pi factory workers. */
 
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const AGENT_API = "http://_safeyolo.proxy.internal";
-
-async function coordRequest(path: string, init: RequestInit, signal?: AbortSignal) {
-	const token = (await readFile("/app/agent_token", "utf8")).trim();
-	const timeout = AbortSignal.timeout(30_000);
-	const response = await fetch(`${AGENT_API}${path}`, {
-		...init,
-		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-		signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-	});
-	if (!response.ok) {
-		throw new Error(`Coord ${init.method ?? "GET"} failed with HTTP ${response.status}`);
-	}
-	return response.json();
+function coordRequest(tool: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
+    return new Promise((resolve, reject) => {
+        // One native command owns proxy routing and reads the current token.
+        // Pi's extension retains its existing tool/event protocol only.
+        const child = spawn("/home/agent/.safeyolo/safeyolo-coord", ["call", tool], {
+            stdio: ["pipe", "pipe", "pipe"], signal,
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+        child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+        child.on("error", reject);
+        child.on("close", (code) => {
+            if (code !== 0) { reject(new Error(stderr.trim() || `Native Coord ${tool} failed; inspect history before repeating an uncertain send`)); return; }
+            try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+        });
+        child.stdin.on("error", reject);
+        child.stdin.end(JSON.stringify(args));
+    });
 }
 
 const sendTool = defineTool({
@@ -47,18 +53,7 @@ const sendTool = defineTool({
 	}),
 
 	async execute(_toolCallId, params, signal) {
-		const result = await coordRequest(
-			`/api/coord/rooms/${encodeURIComponent(params.room_name)}/send`,
-			{
-				method: "POST",
-				body: JSON.stringify({
-					body: params.body,
-					declared_content_type: params.declared_content_type ?? "text/markdown",
-					notify: params.notify ?? "none",
-				}),
-			},
-			signal,
-		);
+        const result = await coordRequest("send", params, signal);
 		return {
 			content: [{ type: "text", text: "Coord message sent." }],
 			details: result,
@@ -89,15 +84,7 @@ const readRoomTool = defineTool({
 		})),
 	}),
 	async execute(_toolCallId, params, signal) {
-		const query = new URLSearchParams({
-			since: String(params.since_sequence ?? 0),
-			limit: String(params.limit ?? 50),
-		});
-		const result = await coordRequest(
-			`/api/coord/rooms/${encodeURIComponent(params.room_name)}/messages?${query}`,
-			{ method: "GET" },
-			signal,
-		);
+        const result = await coordRequest("read_room", params, signal);
 		return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 	},
 });

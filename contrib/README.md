@@ -19,14 +19,13 @@ Example integrations. Copy and adapt for your own use.
 | `pi-coord-host-setup.sh` | `@pi-coord` factory setup; stages Pi's native Coord `send` tool and runs bounded JSON turns under the common supervisor |
 | `pi-coord-extension.ts` | Minimal native Pi adapter for canonical Coord sends using the agent's transport identity |
 | `codex-coord-host-setup.sh` | `@codex-coord` setup for a long-lived factory worker; uses the normal Codex setup and runs bounded non-interactive turns under the common supervisor |
-| `codex-coord-supervisor.py` | Event-driven supervisor shared by Codex and Pi, with one harness session and bounded atomic Coord recovery state |
+| `../proxy/src/bin/safeyolo-coord.rs` | Native Coord client, Model Context Protocol (MCP) adapter, bounded Codex/Pi supervision and checkpoint recovery |
 | `codex-coord-supervisor-fake-codex.sh` | Observable no-model Codex substitute for nested supervisor labs |
 | `coord-mcp-bootstrap.sh` | Shared idempotent coord MCP staging/registration helper used by the bundled Claude and Codex setup scripts |
 | `safeyolo-coord-mcp-launcher.sh` | SafeYolo-owned launcher that restores the current proxy/TLS environment before starting the coord adapter |
-| `safeyolo-coord-mcp.py` | Standalone coord MCP adapter staged into first-party agent homes by the shared bootstrap |
 | `mise-shell-host-setup.sh` | Minimal BYOA -- drops into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 | `lib/stage-safeyolo-context.sh` | Shared idempotent baseline/skill staging used by the bundled host scripts |
-| `lib/stage-factory-supervisor.py` | Shared snapshot/role verifier and supervisor-config stager for both factory harnesses |
+| `lib/stage-coord-native.sh` | Stages the checked Linux native Coord executable and invokes native role/context setup |
 | `alpine-minimal/build-alpine-rootfs.sh` | Minimal custom rootfs example -- Alpine Linux via skopeo+umoci+apk |
 | `kali-pentest/build-kali-rootfs.sh` | Kali Linux pentest toolkit rootfs (nuclei, httpx, ffuf, sqlmap, ...) |
 | `kali-pentest/pentest-tools.md` | Tool reference for the Kali rootfs -- usage, proxy integration notes |
@@ -42,8 +41,11 @@ The normal `@codex` and `@pi` setups stay interactive. Factory snapshots select
 the matching `@codex-coord` or `@pi-coord` setup per role. The standalone Codex
 form is also available:
 
-Run from a trusted SafeYolo checkout outside the worker's writable shares.
-Stop the existing worker before applying the host setup:
+Use an installed native product with its matching Linux guest assets. The worker
+must have its own adopted Codex login, or explicit external-provider settings.
+See [login and role setup](../docs/factories.md#fresh-setup-check-approve-and-run).
+Run from a trusted checkout outside the worker's writable shares. Stop the
+existing worker before applying the host setup:
 
 ```bash
 safeyolo agent stop worker

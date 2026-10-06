@@ -29,6 +29,14 @@ claim #817 terminal proof, #820 workflow launch or the #822 package-wide audit.
 | HTTP/WebSocket body and exports | Existing process-owned traffic view/exporter; retained `raw`, `raw_request`, `raw_response`, `curl`, `httpie`, `har`, `zhar`. Native selection/body/transcript/file consumers replace the Python presentation. One HTTP exchange and one WebSocket transcript supply the finite consumer checks. |
 | Retired presentation | `commands/traffic.py`, `traffic_inspector.py`, the hidden `tmux traffic` / `return-to-agent` adapters and their UI-only tests are removed. Generated tmux configuration retains the status/watch integration. Pane navigation, tail/pins, formatting and marked batch exports belonged to that UI. The chosen native path retains selected evidence and all seven exports. Python API/blackbox transport remains test tooling at this boundary. |
 
+The reached #818 helper replacements use the same entry map:
+
+| Entry | Native owner, removed caller and remaining work |
+| --- | --- |
+| Coord room/client, MCP stdio and supervised Codex/Pi turns | `coord_rooms.rs` provisions the existing SQLite/JetStream schema and pinned NATS lifecycle. `coord_tools.rs` uses the existing Agent API identity/authorization. `coord_supervisor.rs` owns the bounded checkpoint and invocation. No second server, task store or transcript is introduced. |
+| Codex state and role staging | `coord_setup.rs` validates native host/guest source identity and stages command, context, permissions and approved role bindings. It replaces `contrib/codex-coord-supervisor.py`, `contrib/safeyolo-coord-mcp.py`, `contrib/lib/stage-codex-state.py` and `contrib/lib/stage-factory-supervisor.py`; their package entries and reached shell/recovery/guidance callers are removed or redirected. Existing agent-local credential provenance and guest shell rules remain. |
+| Remaining #818 outcomes | G5 operator chat and G6 optional adapters remain #818-owned. The existing Python operator chat, watcher and optional adapters are retained until those separate outcomes receive their stated benefit/cost disposition. G2 deployed restart and G4 real Codex MCP observation still require independent proof. Full G7 Agent API/VZ and #822 R5 package/dependency audit remain open. #820 owns the remaining host Factory workflow entries; its Python doctor/recovery callers now use the native checkpoint decoder. |
+
 The raw formats retain forensic observations, command formats retain displayed
 requests, and HAR/ZHAR retain interoperable archives. The existing native exporter
 already supplies them. Their cost here is native selection and one consumer check

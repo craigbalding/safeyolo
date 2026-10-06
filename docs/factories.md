@@ -160,7 +160,7 @@ safeyolo agent start relay --sandbox-only
 safeyolo agent shell relay
 # In the relay agent shell:
 #   codex login --device-auth
-safeyolo agent shell relay -c "/home/agent/.safeyolo/codex-auth-recovery.py adopt"
+safeyolo agent shell relay -c "/home/agent/.safeyolo/safeyolo-coord codex-state adopt"
 safeyolo agent stop relay
 # Repeat the Codex login sequence for other Codex roles.
 # For a Pi role, run it once with @pi, use Pi's /login flow, then stop it.
@@ -169,7 +169,7 @@ safeyolo factory approve docs/factories/backlog.toml --yes
 safeyolo factory run backlog
 ```
 
-For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`
+For reset recovery, run `/home/agent/.safeyolo/safeyolo-coord codex-state reset`
 inside the agent, then `codex login --device-auth`, then run the adopt command
 before reapplying the host setup.
 
@@ -279,7 +279,7 @@ start fresh on their next invocation, using the remaining checkpointed work.
 The command neither reports `DONE` nor starts an agent.
 
 Each changed checkpoint has a byte-for-byte backup beside it, named
-`codex-coord-supervisor-state.before-release-OPERATION_ID.json`. Coord records
+`coord-supervisor-state.before-release-OPERATION_ID.json`. Coord records
 the operator's request before checkpoint changes and completion afterward,
 with no agent notification. If the request cannot be recorded, no work is
 released. If a later write or completion message fails, the command reports

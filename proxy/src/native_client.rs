@@ -51,8 +51,13 @@ async fn json(response: Response<Incoming>) -> Result<Value, Error> {
     let bytes = response.into_body().collect().await?.to_bytes();
     let value: Value = serde_json::from_slice(&bytes)?;
     if !status.is_success() {
+        let outcome = if value.get("send_outcome").and_then(Value::as_str) == Some("unknown") {
+            "; send outcome unknown; inspect retained history before repeating"
+        } else {
+            ""
+        };
         return Err(format!(
-            "API {status}: {}",
+            "API {status}: {}{outcome}",
             value
                 .get("error")
                 .and_then(Value::as_str)
@@ -179,6 +184,19 @@ pub async fn helper(
     method: Method,
     body: Value,
 ) -> Result<Value, Error> {
+    helper_timeout(socket, token_file, path, method, body, TIMEOUT).await
+}
+
+/// Coord long polls use the same authenticated guest transport with their
+/// explicit deadline. A failed write is never retried by this client.
+pub async fn helper_timeout(
+    socket: Option<&Path>,
+    token_file: &Path,
+    path: &str,
+    method: Method,
+    body: Value,
+    timeout: Duration,
+) -> Result<Value, Error> {
     let token = Zeroizing::new(std::fs::read_to_string(token_file)?);
     if token.trim().is_empty() {
         return Err("Agent API token is empty".into());
@@ -187,7 +205,7 @@ pub async fn helper(
     if let Some(socket) = socket {
         let stream =
             tokio::time::timeout(TIMEOUT, tokio::net::UnixStream::connect(socket)).await??;
-        return send_json(stream, host, path, token.trim(), method, body, TIMEOUT).await;
+        return send_json(stream, host, path, token.trim(), method, body, timeout).await;
     }
     let proxy: hyper::Uri = std::env::var("HTTP_PROXY")
         .or_else(|_| std::env::var("http_proxy"))
@@ -215,7 +233,7 @@ pub async fn helper(
         token.trim(),
         method,
         body,
-        TIMEOUT,
+        timeout,
     )
     .await
 }

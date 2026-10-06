@@ -34,6 +34,13 @@ Existing agents receive it by reapplying their normal `@claude` or `@codex`
 host setup on a subsequent run. The harness must start after that config is
 staged; no coord server, proxy, or addon restart is required.
 
+The native product stages the matching Linux `safeyolo-coord` executable and
+runs its `mcp` command for this adapter. It uses the existing Agent API and
+reads the caller's agent token for each request; no Python MCP package or raw
+NATS credential is needed. Supervised Codex/Pi roles use its `supervise`
+command. During their coding turns, use the supplied canonical checkpoint and
+leave attention waiting to the supervisor outside the turn.
+
 | Operation | Purpose |
 |---|---|
 | `join_room` | Attach to an existing membership and read room metadata. |

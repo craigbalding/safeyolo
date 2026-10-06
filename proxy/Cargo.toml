@@ -39,7 +39,7 @@ subtle = "2.6.1"
 tempfile = "3"
 toml_edit = "0.25"
 time = { version = "0.3", features = ["parsing", "formatting"] }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 futures-util = "0.3"
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
@@ -61,6 +61,10 @@ path = "src/main.rs"
 [[bin]]
 name = "safeyolo"
 path = "src/bin/safeyolo.rs"
+
+[[bin]]
+name = "safeyolo-coord"
+path = "src/bin/safeyolo-coord.rs"
 
 [patch.crates-io]
 fancy-regex = { path = "vendor/fancy-regex" }

@@ -91,10 +91,10 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
         "@codex stages SafeYolo-owned Codex settings only; @pi likewise keeps Pi authentication agent-local.",
         (
             "For Codex, run `codex login --device-auth`, then explicitly run "
-            "`/home/agent/.safeyolo/codex-auth-recovery.py adopt` inside the agent."
+            "`/home/agent/.safeyolo/safeyolo-coord codex-state adopt` inside the agent."
         ),
         (
-            "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, "
+            "For reset recovery, run `/home/agent/.safeyolo/safeyolo-coord codex-state reset`, "
             "then repeat the Codex login and adopt commands."
         ),
     ]
@@ -287,7 +287,7 @@ def run_factory(
     keeps Pi authentication agent-local.
 
     For Codex, run ``codex login --device-auth`` inside the agent, then
-    explicitly run ``/home/agent/.safeyolo/codex-auth-recovery.py adopt``.
+    explicitly run ``/home/agent/.safeyolo/safeyolo-coord codex-state adopt``.
 
     ``factory run`` provisions the declared Coord rooms and grants before it
     starts any role, then waits for every role supervisor to pass the same

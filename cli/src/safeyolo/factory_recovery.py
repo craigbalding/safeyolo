@@ -3,58 +3,64 @@
 from __future__ import annotations
 
 import asyncio
-import copy
+import fcntl
+import json
 import os
-import runpy
+import re
 import stat
+import subprocess
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from .agents_store import load_agent
 from .coord import api as coord_api
 from .coord.identity import new_operation_id
 from .factory_contract import FactoryContractError
-from .factory_doctor import _bundled_contrib_path
+from .factory_doctor import _native_coord_executable
 from .platform import get_platform
 from .vm import get_agent_home_dir
 
 
-def _supervisor() -> SimpleNamespace:
-    # Use the shipped decoder, atomic writer and correlation parser. Never
-    # execute a script from the agent's writable home to interpret its state.
-    return SimpleNamespace(**runpy.run_path(str(_bundled_contrib_path("codex-coord-supervisor.py"))))
+def _state_command(executable: Path, arguments: list[str], value: dict[str, Any] | None = None) -> Any:
+    result = subprocess.run(
+        [str(executable), *arguments], input=json.dumps(value) if value is not None else None,
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    if result.returncode:
+        raise FactoryContractError(result.stderr.strip() or "native supervisor rejected checkpoint operation")
+    return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def _release_state(supervisor, state: dict[str, Any], room: str, targets: set[str]) -> dict[str, Any]:
-    updated = copy.deepcopy(state)
-    for item in list(updated["in_flight"]):
-        fields = supervisor._message_fields(item["body"]) or {}
-        if item["room_name"] == room and fields.get("target") in targets:
-            supervisor._complete_attention(updated, item["attention_id"])
-    updated["awaiting_handoffs"] = [
-        item for item in updated["awaiting_handoffs"]
-        if not (item["room_name"] == room and item["correlation"].get("target") in targets)
-    ]
-    selection = updated["repair_selection"]
-    if selection is not None and not any(
-        item["attention_id"] == selection["attention_id"] for item in updated["in_flight"]
-    ):
-        updated["repair_selection"] = None
-    if updated != state:
-        # A fresh turn must not resume instructions for the released work.
-        # Unrelated pending work remains in the canonical checkpoint.
-        updated["thread_id"] = None
-        updated["owned_process"] = None
-    return updated
+def _load_state(executable: Path, path: Path) -> dict[str, Any]:
+    return _state_command(executable, ["read-state", str(path)])
+
+
+def _save_state(executable: Path, path: Path, state: dict[str, Any]) -> None:
+    _state_command(executable, ["write-state", str(path)], state)
+
+
+def _release_state(executable: Path, state: dict[str, Any], room: str, targets: set[str]) -> dict[str, Any]:
+    return _state_command(executable, ["release-preview", room, *sorted(targets)], state)
+
+
+def _lock_state(path: Path):
+    lock = path.with_name(path.name + ".lock")
+    descriptor = os.open(lock, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    handle = os.fdopen(descriptor, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise
+    return handle
 
 
 def _checkpoint_path(agent: str) -> Path:
     """Validate guest-owned paths before using them from host recovery code."""
     home = get_agent_home_dir(agent)
-    path = home / ".safeyolo/codex-coord-supervisor-state.json"
+    path = home / ".safeyolo/coord-supervisor-state.json"
     for directory in (home, path.parent):
         try:
             info = directory.lstat()
@@ -79,14 +85,14 @@ def _collect_releases(supervisor, agents, room, targets, locks):
         path = _checkpoint_path(agent)
         if not path.exists():
             continue
-        state = supervisor.load_state(path)
+        state = _load_state(supervisor, path)
         updated = _release_state(supervisor, state, room, targets)
         if updated == state:
             continue
         if platform.is_sandbox_running(agent):
             raise FactoryContractError(f"agent {agent!r} has selected work and is running; stop it before release")
-        locks.enter_context(supervisor._lock_state(path))
-        if supervisor.load_state(path) != state:
+        locks.enter_context(_lock_state(path))
+        if _load_state(supervisor, path) != state:
             raise FactoryContractError(f"checkpoint changed for {agent!r}; inspect and retry")
         plans.append((agent, path, path.read_bytes(), state, updated))
     return plans
@@ -120,7 +126,7 @@ def _apply_releases(supervisor, plans, room: str, description: str) -> str:
     try:
         asyncio.run(record("requested"))
         for agent, path, _original, _before, updated in plans:
-            supervisor.save_state(path, updated)
+            _save_state(supervisor, path, updated)
             changed.append(agent)
         asyncio.run(record("completed"))
     except Exception as exc:
@@ -152,8 +158,8 @@ def release_stopped_work(
     """
     from .agent_lifecycle import _agent_host_setup_lock
 
-    supervisor = _supervisor()
-    if not targets or any(not supervisor._valid_target_url(target) for target in targets):
+    supervisor = _native_coord_executable()
+    if not targets or any(re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*:\S+", target) is None for target in targets):
         raise FactoryContractError("release requires exact absolute target URLs")
     agents = sorted({role["agent"] for role in payload["roles"].values()})
     with ExitStack() as locks:
