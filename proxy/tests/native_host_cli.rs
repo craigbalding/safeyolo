@@ -985,6 +985,34 @@ fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
 }
 
 #[test]
+fn native_demo_preserves_a_shared_proxy_when_guest_prerequisites_fail() {
+    let root = tempfile::tempdir().unwrap();
+    initialize(root.path());
+    let config = root.path().join("config.toml");
+    let mut document: toml_edit::DocumentMut =
+        fs::read_to_string(&config).unwrap().parse().unwrap();
+    document["admin_port"] = toml_edit::value(0);
+    fs::write(&config, document.to_string()).unwrap();
+    let _stop = StopOnDrop(&config);
+    value(cli(root.path(), &["start"]));
+    let process = root.path().join("data/proxy-process.json");
+    let record = fs::read(&process).unwrap();
+    // This native instance has no guest artifacts. Setup must fail normally
+    // and clean its new Demo state while leaving the pre-existing proxy alive.
+    let failed = cli(root.path(), &["demo", "--task", "tiny-web-app"]);
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8(failed.stdout)
+            .unwrap()
+            .contains("Demo cleanup: guest stopped")
+    );
+    assert_eq!(fs::read(&process).unwrap(), record);
+    let status = value(cli(root.path(), &["status"]));
+    assert_eq!(status["proxy_state"], "running");
+    assert!(status["agents"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn native_demo_is_discoverable_and_early_cancellation_preserves_workspace() {
     let root = tempfile::tempdir().unwrap();
     initialize(root.path());

@@ -91,13 +91,15 @@ pub(crate) fn proxy_live() -> bool {
         })
 }
 
-pub(crate) async fn start_proxy() -> Result<(), Error> {
+/// Return the process record only when this call started the proxy. Reuse and
+/// ownership are decided under the same startup lock.
+pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
     let _lock =
         tokio::task::spawn_blocking(move || host_platform::lock_host_state(&lock_path)).await??;
     if proxy_live() {
-        return Ok(());
+        return Ok(None);
     }
     let config_path = host_platform::config_path();
     let config = crate::native_config::read(&config_path)?;
@@ -136,7 +138,14 @@ pub(crate) async fn start_proxy() -> Result<(), Error> {
             return Err("proxy exited during startup; inspect logs/proxy.log".into());
         }
         if Path::new(readiness).is_file() && proxy_live() {
-            return Ok(());
+            let record = crate::guest_commands::read_state(&process_path())?
+                .ok_or("started proxy process record is missing")?;
+            if record["pid"].as_u64() != child.id().map(u64::from) {
+                return Err(
+                    "proxy startup ownership changed; the current process was preserved".into(),
+                );
+            }
+            return Ok(Some(record));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -356,7 +365,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             return host_lifecycle::run_entrypoint(name, id).await;
         }
         [command] if command == "start" => {
-            start_proxy().await?;
+            let _ = start_proxy().await?;
             print(&json!({"proxy_state":"running","root":root}))?;
         }
         [command] if command == "stop" => {
@@ -440,7 +449,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                         if !host_lifecycle::reuses_current_launch(&observed) {
                             host_lifecycle::validate_start_launcher(&proposed,operation)?;
                         }
-                        start_proxy().await?;
+                        let _ = start_proxy().await?;
                     }
                     // Ordinary named runtime operations use the same authenticated
                     // Admin path as Commander. Foreground terminals stay local;

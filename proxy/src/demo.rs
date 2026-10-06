@@ -343,13 +343,7 @@ impl Demo {
         })
     }
     async fn boot(&mut self) -> Result<(), Error> {
-        let was_running = host_commands::proxy_live();
-        host_commands::start_proxy().await?;
-        if !was_running {
-            self.proxy_record = crate::guest_commands::read_state(
-                &host_platform::config_dir().join("data/proxy-process.json"),
-            )?;
-        }
+        self.proxy_record = host_commands::start_proxy().await?;
         let directory = host_platform::config_dir()
             .join("agents")
             .join(&self.agent.name);
