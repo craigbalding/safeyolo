@@ -23,9 +23,18 @@ impl Drop for NatsCleanup {
 }
 
 async fn coord_cli(root: &Path, arguments: &[&str]) -> std::process::Output {
+    coord_cli_from(root, arguments, &std::env::current_dir().unwrap()).await
+}
+
+async fn coord_cli_from(
+    root: &Path,
+    arguments: &[&str],
+    working_directory: &Path,
+) -> std::process::Output {
     tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .current_dir(working_directory)
             .arg("--root")
             .arg(root)
             .arg("coord")
@@ -127,6 +136,15 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     };
     let a = make_root("a", "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let b = make_root("b", "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let a_link = parent.path().join("a-link");
+    std::os::unix::fs::symlink(&a, &a_link).unwrap();
+    let a_aliases = [
+        a.strip_prefix(std::env::current_dir().unwrap())
+            .unwrap()
+            .to_owned(),
+        a.join("../a"),
+        a_link,
+    ];
     let c = make_root("c", "ag-cccccccccccccccccccccccccccccccc");
     let default_root = make_root("defaults", "ag-dddddddddddddddddddddddddddddddd");
     let reservations: Vec<_> = (0..6)
@@ -181,6 +199,10 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     assert_ne!(a_process["server_name"], b_process["server_name"]);
     assert!(!a.join("data/coord/nats/test-endpoints.json").exists());
     assert!(!b.join("data/coord/nats/test-endpoints.json").exists());
+    for alias in &a_aliases {
+        assert_eq!(coord_json(alias, &["status"]).await["state"], "running");
+        assert_eq!(coord_json(alias, &start_a).await, a_process);
+    }
     let a_record_path = a.join("data/coord/nats/process.json");
     let a_record = fs::read(&a_record_path).unwrap();
     let a_config = fs::read(a.join("data/coord/nats/server.conf")).unwrap();
@@ -255,9 +277,11 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
             crossed[key] = b_process[key].clone();
         }
         fs::write(&a_record_path, serde_json::to_vec(&crossed).unwrap()).unwrap();
-        assert_eq!(coord_json(&a, &["status"]).await["state"], "unknown");
-        assert!(!coord_cli(&a, &["stop"]).await.status.success());
-        assert!(!coord_cli(&a, &start_a).await.status.success());
+        for root in std::iter::once(&a).chain(&a_aliases) {
+            assert_eq!(coord_json(root, &["status"]).await["state"], "unknown");
+            assert!(!coord_cli(root, &["stop"]).await.status.success());
+            assert!(!coord_cli(root, &start_a).await.status.success());
+        }
         assert_eq!(
             fs::read(&a_record_path).unwrap(),
             serde_json::to_vec(&crossed).unwrap()
@@ -266,8 +290,10 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
         wrong_owner["pid"] = b_process["pid"].clone();
         wrong_owner["token"] = b_process["token"].clone();
         fs::write(&a_record_path, serde_json::to_vec(&wrong_owner).unwrap()).unwrap();
-        assert!(!coord_cli(&a, &["stop"]).await.status.success());
-        assert!(!coord_cli(&a, &start_a).await.status.success());
+        for root in std::iter::once(&a).chain(&a_aliases) {
+            assert!(!coord_cli(root, &["stop"]).await.status.success());
+            assert!(!coord_cli(root, &start_a).await.status.success());
+        }
         assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
     }
     assert_eq!(coord_json(&a, &["status"]).await["state"], "running");
@@ -324,7 +350,7 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
         assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
     }
     // Stopping/restarting A must not redirect a cached B client or B's store.
-    coord_json(&a, &["stop"]).await;
+    coord_json(&a_aliases[0], &["stop"]).await;
     for key in ["client_port", "monitor_port"] {
         assert!(
             tokio::net::TcpStream::connect(("127.0.0.1", a_process[key].as_u64().unwrap() as u16))
@@ -342,10 +368,28 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
         .call("send", &json!({"room_name":"shared","body":"b-fresh"}))
         .await
         .unwrap();
-    let restarted_a = coord_json(&a, &start_a).await;
+    // Resolve a live relative config argument against NATS's launch directory,
+    // even when the next CLI caller is in a different directory.
+    let output = coord_cli_from(Path::new("a"), &start_a, parent.path()).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut restarted_a: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_ne!(restarted_a["server_name"], a_process["server_name"]);
     assert_eq!(restarted_a["client_port"], a_process["client_port"]);
     assert_eq!(restarted_a["monitor_port"], a_process["monitor_port"]);
+    for alias in &a_aliases[1..] {
+        assert_eq!(coord_json(alias, &["status"]).await["state"], "running");
+        assert_eq!(coord_json(alias, &start_a).await, restarted_a);
+        coord_json(alias, &["stop"]).await;
+        assert_eq!(coord_json(&b, &["status"]).await["process"], b_process);
+        let next = coord_json(alias, &start_a).await;
+        assert_ne!(next["server_name"], restarted_a["server_name"]);
+        assert_eq!(coord_json(&a, &start_a).await, next);
+        restarted_a = next;
+    }
     let a_history = a_client
         .call("read_room", &json!({"room_name":"shared"}))
         .await
@@ -413,7 +457,7 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     );
     coord_json(&default_root, &["stop"]).await;
     println!(
-        "native Coord explicit ports: isolated A/B endpoints and messages, compatible reuse, conflicting/occupied listeners and unrelated-owner refusals, A restart with unchanged live B, and ordinary/partial defaults observed"
+        "native Coord explicit ports: isolated A/B endpoints and messages, root-alias startup/reuse/stop across working directories, conflicting/occupied listeners and unrelated-owner refusals, A restart with unchanged live B, and ordinary/partial defaults observed"
     );
 }
 async fn mcp(root: &Path, socket: &Path, requests: &str) -> Value {

@@ -292,10 +292,9 @@ async fn verified(root: &Path, value: &Value) -> Result<bool, Error> {
     }
     let (pid, _) = identity(value)?;
     let nats = directory(root)?.join("nats");
-    if !crate::host_platform::process_has_path_argument(
+    if !crate::host_platform::process_has_config_path(
         i64::from(pid),
         &nats.join(format!("bin/{NATS_VERSION}/nats-server")),
-        b"--config",
         &nats.join("server.conf"),
     ) {
         return Ok(false);
