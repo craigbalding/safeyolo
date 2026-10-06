@@ -59,6 +59,7 @@ pub mod native_config;
 mod native_config_tests;
 pub mod network_guard;
 pub mod oauth;
+pub mod operator_commands;
 mod operator_stats;
 pub mod policy;
 mod policy_runtime;

@@ -309,13 +309,35 @@ impl TrafficView {
     }
 
     pub fn flows(&self) -> Result<Value, FilterError> {
+        self.filtered_flows(None)
+    }
+
+    /// Explicit reads do not inherit or change another viewer's selection.
+    pub fn selected_flows(&self, scope: &Value, expression: &str) -> Result<Value, FilterError> {
+        let scope = Scope::parse(scope).map_err(|_| FilterError::Invalid)?;
+        let compiled = Arc::new(filter::UserFilter::compile(
+            expression,
+            self.case_sensitive,
+        )?);
+        self.filtered_flows(Some((scope, compiled)))
+    }
+
+    fn filtered_flows(
+        &self,
+        selection: Option<(Scope, Arc<filter::UserFilter>)>,
+    ) -> Result<Value, FilterError> {
         let (compiled, mut result, snapshots) = {
             let state = self.lock();
-            let compiled = Arc::clone(&state.user_filter);
+            let (scope, compiled) = selection
+                .as_ref()
+                .map_or((&state.scope, &state.user_filter), |(scope, filter)| {
+                    (scope, filter)
+                });
+            let compiled = Arc::clone(compiled);
             let mut rows: Vec<_> = state
                 .rows
                 .values()
-                .filter(|row| state.scope.matches(row))
+                .filter(|row| scope.matches(row))
                 .collect();
             rows.sort_by(|a, b| {
                 b.request
@@ -327,9 +349,10 @@ impl TrafficView {
                 .into_iter()
                 .map(|row| compiled.snapshot(row))
                 .collect::<Result<Vec<_>, _>>()?;
+            let scope = scope.with_filter(&compiled);
             (
                 compiled,
-                filter::WipingValue(json!({"flows":[],"scope":state.scope_snapshot()})),
+                filter::WipingValue(json!({"flows":[],"scope":scope})),
                 snapshots,
             )
         };
@@ -376,13 +399,32 @@ impl TrafficView {
     /// Snapshot all selected-flow owners while the row is coherent, then do
     /// decoding and retained-message reads after releasing the view lock.
     pub(crate) fn export(&self, id: &str, format: ExportFormat) -> Result<ExportPlan, ExportError> {
+        self.export_in_scope(id, format, None)
+    }
+
+    pub(crate) fn selected_export(
+        &self,
+        id: &str,
+        format: ExportFormat,
+        agent: Option<&str>,
+    ) -> Result<ExportPlan, ExportError> {
+        let fields = agent.map_or_else(|| json!({}), |agent| json!({"agent":agent}));
+        let scope = Scope::parse(&fields).map_err(|_| ExportError::MissingFlow)?;
+        self.export_in_scope(id, format, Some(&scope))
+    }
+
+    fn export_in_scope(
+        &self,
+        id: &str,
+        format: ExportFormat,
+        selected: Option<&Scope>,
+    ) -> Result<ExportPlan, ExportError> {
         let snapshot = {
             let state = self.lock();
             let row = state.rows.get(id).ok_or(ExportError::MissingFlow)?;
-            // A queued terminal selection must not export a row hidden by a
-            // later pinned-scope change. Treat hidden rows like pruned rows so
-            // the operator route does not disclose why the ID is unavailable.
-            if !state.scope.matches(row) {
+            // Legacy viewer exports use its pinned scope. Explicit native
+            // callers carry their own selection without changing that scope.
+            if !selected.unwrap_or(&state.scope).matches(row) {
                 return Err(ExportError::MissingFlow);
             }
             row.export_snapshot()
@@ -694,22 +736,7 @@ impl Drop for Row {
 
 impl State {
     fn scope_snapshot(&self) -> Value {
-        let mut snapshot = self.scope.snapshot();
-        snapshot["user_filter"] = Value::String(self.user_filter.raw().into());
-        let expression = self.user_filter.trimmed();
-        if !expression.is_empty() {
-            let prefix = self.scope.effective.as_str();
-            snapshot["effective_filter"] = Value::String(if prefix.is_empty() {
-                format!("({expression})")
-            } else if let Some(user) = self.user_filter.pinned_display() {
-                // Raw parentheses may close the source-generated user wrapper.
-                // Pins still AND the actual tree, and this display must say so.
-                format!("{prefix} & {user}")
-            } else {
-                format!("{prefix} & ({expression})")
-            });
-        }
-        snapshot
+        self.scope.with_filter(&self.user_filter)
     }
 
     fn prune(&mut self) {
@@ -847,6 +874,25 @@ impl Scope {
             Value::String(self.effective.to_string()),
         );
         fields
+    }
+
+    fn with_filter(&self, user_filter: &filter::UserFilter) -> Value {
+        let mut snapshot = self.snapshot();
+        snapshot["user_filter"] = Value::String(user_filter.raw().into());
+        let expression = user_filter.trimmed();
+        if !expression.is_empty() {
+            let prefix = self.effective.as_str();
+            snapshot["effective_filter"] = Value::String(if prefix.is_empty() {
+                format!("({expression})")
+            } else if let Some(user) = user_filter.pinned_display() {
+                // Raw parentheses may close the source-generated user wrapper.
+                // Pins still AND the actual tree, and this display must say so.
+                format!("{prefix} & {user}")
+            } else {
+                format!("{prefix} & ({expression})")
+            });
+        }
+        snapshot
     }
 
     fn matches(&self, row: &Row) -> bool {

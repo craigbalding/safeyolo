@@ -24,6 +24,10 @@ final class SafeYoloClient: ObservableObject {
 
     @Published private(set) var connectionState = ConnectionState.connecting
     @Published private(set) var approvals: [ApprovalEvent] = []
+    // Session projections of canonical records. Reconnect reads the host;
+    // disappearance from the pending list alone never means approval.
+    @Published private(set) var networkOutcomes: [String: NetworkApprovalResolution] = [:]
+    @Published private(set) var unavailableNetworkOutcomes = Set<String>()
     @Published private(set) var agents: [AgentInfo] = []
     @Published private(set) var securityEvents: [SecurityObservation] = []
     @Published private(set) var busyAgentIDs = Set<String>()
@@ -214,16 +218,20 @@ final class SafeYoloClient: ObservableObject {
         completion: @escaping (Result<ResolutionResult, Error>) -> Void
     ) {
         Task {
+            var networkPath: String?
             do {
                 let plan = try MutationPlan.forApproval(event, allow: allow)
+                if plan.path.hasPrefix("/admin/approvals/") { networkPath = plan.path }
                 let data = try await request(path: plan.path, method: "POST", json: plan.payload)
                 let result: ResolutionResult
                 if plan.expectsDesktop {
                     result = .desktop(try JSONDecoder().decode(DesktopPresentation.self, from: data))
                 } else if plan.path.hasPrefix("/admin/approvals/") {
                     let resolution = try JSONDecoder().decode(NetworkApprovalResolution.self, from: data)
-                    guard ["approved", "rejected"].contains(resolution.status) else { throw ClientError.invalidResponse }
-                    result = .decided(resolution.status == "approved" ? "Approved" : "Rejected")
+                    guard resolution.requestID == event.requestID, resolution.terminal else { throw ClientError.invalidResponse }
+                    networkOutcomes[resolution.requestID] = resolution
+                    unavailableNetworkOutcomes.remove(resolution.requestID)
+                    result = .decided(resolution.display)
                 } else {
                     result = .decided(allow ? "Allowed" : "Denied")
                 }
@@ -231,6 +239,18 @@ final class SafeYoloClient: ObservableObject {
                 setRequestError("Approval decision", nil)
                 completion(.success(result))
             } catch {
+                // The host may have committed before the connection failed.
+                // Read once, and report its actual decision without replay.
+                if let path = networkPath,
+                   let outcome = try? await readNetworkOutcome(path),
+                   outcome.requestID == event.requestID, outcome.terminal {
+                    networkOutcomes[outcome.requestID] = outcome
+                    unavailableNetworkOutcomes.remove(outcome.requestID)
+                    _ = await refreshApprovals()
+                    setRequestError("Approval decision", nil)
+                    completion(.success(.decided(outcome.display)))
+                    return
+                }
                 setRequestError("Approval decision", error)
                 completion(.failure(error))
             }
@@ -390,6 +410,21 @@ final class SafeYoloClient: ObservableObject {
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
+            var ids = Set(networkOutcomes.keys).union(unavailableNetworkOutcomes)
+            for item in fresh where item.details?.networkAction?.kind == "network_allow" {
+                if let id = item.requestID { ids.insert(id) }
+            }
+            for id in ids.sorted() {
+                guard let encoded = encodePathComponent(id) else { continue }
+                do {
+                    let outcome = try await readNetworkOutcome("/admin/approvals/\(encoded)")
+                    guard outcome.requestID == id else { throw ClientError.invalidResponse }
+                    networkOutcomes[id] = outcome
+                    unavailableNetworkOutcomes.remove(id)
+                } catch {
+                    unavailableNetworkOutcomes.insert(id)
+                }
+            }
             if approvals != fresh { approvals = fresh }
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
@@ -403,6 +438,11 @@ final class SafeYoloClient: ObservableObject {
             setRequestError("Pending approvals", error)
             return false
         }
+    }
+
+    private func readNetworkOutcome(_ path: String) async throws -> NetworkApprovalResolution {
+        let data = try await request(path: path)
+        return try JSONDecoder().decode(NetworkApprovalResolution.self, from: data)
     }
 
     @discardableResult

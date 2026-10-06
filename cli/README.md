@@ -266,12 +266,13 @@ safeyolo doctor             # Report host prerequisites, runtime, agents
 
 ### Traffic inspection
 
-The first Rust proxy release provides the read-only terminal inspector and
-selected exports. WebMITM and its tailnet sharing commands remain registered
-but are unavailable with the native proxy. Run `safeyolo traffic --help` for
-the supported inspection and export commands. The view contains retained
-observations, so streamed or pruned bodies may be unavailable. See
-[inspection, export, and retention limits](../docs/DEVELOPERS.md#live-traffic-inspection).
+For an already prepared native instance, use its installed native client. The
+[operator instructions](../docs/native-operator.md) cover direct selection,
+one `inspect` session, retained exports and scoped Helper preparation. The Python
+traffic presentation entry has been retired. Streamed or pruned bodies remain
+unavailable. WebMITM and its tailnet sharing commands remain registered in the
+retained host CLI but are unavailable with the native proxy. See
+[capture and export limits](../docs/DEVELOPERS.md#live-traffic-inspection).
 
 ### Approval Workflow
 

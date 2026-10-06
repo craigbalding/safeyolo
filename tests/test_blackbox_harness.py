@@ -14,13 +14,14 @@ import threading
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
 import yaml
 
 from tests.blackbox import installed_lifecycle as lifecycle
-from tests.blackbox import installed_sections
+from tests.blackbox import installed_sections, installed_shared_approvals
 from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.installed_ingress import installed_identity
@@ -38,6 +39,46 @@ def native_binary(tmp_path):
     binary.write_text("#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 (fixture)\\n'\n")
     binary.chmod(0o755)
     return binary
+
+
+def test_shared_approval_transport_keeps_owned_selection_when_preparation_fails(tmp_path_factory, monkeypatch):
+    """An inherited TOML cannot redirect the actual native status/stop transport."""
+    binary = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
+    if not binary:
+        pytest.skip("requires the built native CLI (SAFEYOLO_TEST_NATIVE_CLI)")
+    # Native stop derives a Unix socket path; keep the owned fixture short.
+    tmp_path = tmp_path_factory.mktemp("s821")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    owned, unrelated = tmp_path / "owned", tmp_path / "unrelated"
+    identities = {}
+    for root in (owned, unrelated):
+        installed_shared_approvals.checked([binary, "--root", str(root), "init"])
+        for name in ("worker", "helper"):
+            created = installed_shared_approvals.checked([
+                binary, "--root", str(root), "agent", "create", name,
+                "--workspace", str(workspace), "--launcher", "supervisor",
+            ])
+            identities[root, name] = json.loads(created)["configuration"]["id"]
+    (owned / ".safeyolo-platform-smoke").touch()
+    (owned / "data/agent_map.json").write_text(json.dumps({
+        "worker": {"ip": "127.0.0.2"}, "helper": {"ip": "127.0.0.3"},
+    }))
+    untouched = {path: path.read_bytes() for path in (unrelated / "config.toml", unrelated / "policy.toml")}
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(unrelated))
+    monkeypatch.setenv("SAFEYOLO_NATIVE_CONFIG_PATH", str(unrelated / "config.toml"))
+    # Restore the process environment after the driver selects its own root.
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(unrelated / "logs"))
+    with pytest.raises(FileNotFoundError):
+        installed_shared_approvals.run(SimpleNamespace(
+            config_dir=owned, worker="worker", helper="helper",
+            native_cli=Path(binary), native_proxy=tmp_path / "missing-proxy",
+        ))
+    for operation in ("status", "stop"):
+        observed = json.loads(installed_shared_approvals.checked([binary, "agent", operation, "worker"]))
+        assert observed["agent_id"] == identities[owned, "worker"]
+        assert observed["agent_id"] != identities[unrelated, "worker"]
+    assert {path: path.read_bytes() for path in untouched} == untouched
 
 
 def test_harness_assigns_distinct_proxy_admin_and_web_ports():

@@ -51,6 +51,7 @@ extension ModelTests {
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
+        try await testNetworkResolutionLostReplyAndReconnect()
         try await testDisabledEventsAndRecovery()
         try await testSocketFailurePacingAndRecovery()
         try await testRealSocketRefusalPacing()
@@ -66,6 +67,7 @@ extension ModelTests {
     }
 
     private static func snapshot(events: String = "") {
+        StubURLProtocol.requestHandler = nil
         StubURLProtocol.failuresRemaining = 0
         StubURLProtocol.requestCount = 0
         StubURLProtocol.responsesByPath = [
@@ -108,10 +110,11 @@ extension ModelTests {
     @MainActor
     private static func testCanonicalNetworkResolution() async throws {
         let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(#"{"event":"proxy.network_guard","request_id":"req-canonical","agent":"worker","summary":"Reusable network access","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#.utf8))
+        let effect = "Allow reusable network access for worker (ag-worker) to origin port 443 until explicitly removed."
         for (status, message) in [("approved", "Approved"), ("rejected", "Rejected")] {
             snapshot()
             defer { StubURLProtocol.responsesByPath = [:] }
-            StubURLProtocol.responsesByPath["/admin/approvals/req-canonical"] = (200, Data("{\"status\":\"\(status)\"}".utf8))
+            StubURLProtocol.responsesByPath["/admin/approvals/req-canonical"] = (200, Data("{\"request_id\":\"req-canonical\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8))
             let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
                 eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
                 expectedInstanceID: "sy-connection-test", session: stubSession())
@@ -120,8 +123,67 @@ extension ModelTests {
             client.resolve(event, allow: status == "rejected") { result = $0 }
             try await until { result != nil }
             let observed = try result!.get()
-            precondition(observed == .decided(message), "Use the canonical outcome even when the other decision won")
+            precondition(observed == .decided("\(message). \(effect)"), "Use the canonical outcome and scope even when the other decision won")
         }
+    }
+
+    @MainActor
+    private static func testNetworkResolutionLostReplyAndReconnect() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:]; StubURLProtocol.requestHandler = nil }
+        let path = "/admin/approvals/req-reconcile"
+        let effect = "Allow reusable network access for worker (ag-worker) to origin port 443 until explicitly removed."
+        let pending = #"{"event":"proxy.network_guard","request_id":"req-reconcile","agent":"worker","summary":"Reusable worker/origin/443 authority","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#
+        let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(pending.utf8))
+        func record(_ status: String) -> Data {
+            Data("{\"request_id\":\"req-reconcile\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8)
+        }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, Data("{\"approvals\":[\(pending)]}".utf8))
+        StubURLProtocol.responsesByPath[path] = (200, record("pending"))
+        let gate = RetryGate()
+        let first = StubEventSocket()
+        let second = StubEventSocket()
+        var sockets = 0
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+            eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+            expectedInstanceID: "sy-connection-test", session: stubSession(),
+            makeEventSocket: { _ in sockets += 1; return sockets == 1 ? first : second },
+            retryPause: { try await gate.pause() })
+        defer { client.stop(); gate.release() }
+        client.start()
+        try await until { first.receiving && client.networkOutcomes["req-reconcile"]?.status == "pending" }
+
+        // The other client resolves while Commander is disconnected. Its next
+        // canonical read must retain the terminal scope after pending vanishes.
+        first.receiveError = URLError(.networkConnectionLost)
+        try await until { gate.waits == 1 }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, Data(#"{"approvals":[]}"#.utf8))
+        StubURLProtocol.responsesByPath[path] = (200, record("approved"))
+        gate.release()
+        try await until { second.receiving && client.networkOutcomes["req-reconcile"]?.status == "approved" }
+        precondition(client.approvals.isEmpty)
+        precondition(client.networkOutcomes["req-reconcile"]?.display == "Approved. \(effect)")
+        StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
+        second.messages.append(approvalEvent)
+        try await until { client.unavailableNetworkOutcomes.contains("req-reconcile") }
+
+        var posts = 0
+        StubURLProtocol.responsesByPath[path] = (200, record("pending"))
+        StubURLProtocol.requestHandler = { request in
+            if request.url?.path == path, request.httpMethod == "POST" {
+                posts += 1
+                StubURLProtocol.responsesByPath[path] = (200, record("approved"))
+                throw URLError(.networkConnectionLost)
+            }
+            return StubURLProtocol.responsesByPath[request.url!.path]!
+        }
+        var result: Result<ResolutionResult, Error>?
+        client.resolve(event, allow: true) { result = $0 }
+        try await until { result != nil }
+        let observed = try result!.get()
+        precondition(observed == .decided("Approved. \(effect)"))
+        precondition(posts == 1, "A lost committed response must be read, never reposted")
+        precondition(!client.unavailableNetworkOutcomes.contains("req-reconcile"))
     }
 
     @MainActor

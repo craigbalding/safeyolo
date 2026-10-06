@@ -44,7 +44,6 @@ from safeyolo.coord import api as coord_api
 from safeyolo.coord.identity import new_operation_id
 from safeyolo.coord.nats_runtime import is_healthy
 from safeyolo.operator_approvals import approve
-from safeyolo.traffic_inspector import TrafficInspector
 
 ROOM = "p3-owned-room"
 PEER = "bbpeer"
@@ -217,36 +216,26 @@ def run_plumb_and_event(
 
 
 def inspect_traffic(api: AdminAPI, output: Path, primary: str, marker: str) -> dict:
-    inspector = TrafficInspector(api)
-    inspector.set_scope("agent", primary)
-    inspector.set_filter("~u p3")
-    asyncio.run(inspector.refresh())
-    assert "unavailable" not in inspector.notice.lower(), inspector.notice
-    assert inspector.scope.get("agent") == primary
-    assert all(row.get("agent") == primary and "p3" in row.get("url", "") for row in inspector.flows)
-    rows = [row for row in inspector.flows if "/p3/read" in row.get("url", "")]
-    assert rows, inspector.rows_text()
+    """Consume native evidence; this test harness has no presentation client."""
+    api.set_traffic_scope(agent=primary)
+    api.set_traffic_filter("~u p3")
+    flows = api.traffic_flows()["flows"]
+    assert all(row.get("agent") == primary and "p3" in row.get("url", "") for row in flows)
+    rows = [row for row in flows if "/p3/read" in row.get("url", "")]
+    assert rows, flows
     selected = rows[0]
-    index = next(i for i, row in enumerate(inspector.flows) if row["id"] == selected["id"])
-    inspector.select(index)
-    asyncio.run(inspector.refresh())
-    assert inspector.detail and inspector.detail["id"] == selected["id"]
+    detail = api.traffic_flow(selected["id"])
+    assert detail["id"] == selected["id"]
     exported = output.parent / f"access-selected-{marker}.raw_request"
-    inspector.queue_export(selected["id"], "raw_request", str(exported))
-    asyncio.run(inspector.refresh())
-    assert exported.is_file() and b"/p3/read" in exported.read_bytes(), inspector.export_report
-
-    inspector.set_filter("~u p2/ws")
-    asyncio.run(inspector.refresh())
-    assert all(row.get("agent") == primary and "/p2/ws" in row.get("url", "") for row in inspector.flows)
-    ws_rows = [row for row in inspector.flows if "/p2/ws/" in row.get("url", "")]
-    assert ws_rows, inspector.rows_text()
-    index = next(i for i, row in enumerate(inspector.flows) if row["id"] == ws_rows[0]["id"])
-    inspector.select(index)
-    asyncio.run(inspector.refresh())
-    inspector.toggle_websocket()
-    asyncio.run(inspector.refresh())
-    assert inspector.websocket_mode and len(inspector.transcript.messages) >= 2, inspector.detail_text()
+    api.traffic_export(selected["id"], "raw_request", exported)
+    assert exported.is_file() and b"/p3/read" in exported.read_bytes()
+    api.set_traffic_filter("~u p2/ws")
+    flows = api.traffic_flows()["flows"]
+    assert all(row.get("agent") == primary and "/p2/ws" in row.get("url", "") for row in flows)
+    ws_rows = [row for row in flows if "/p2/ws/" in row.get("url", "")]
+    assert ws_rows, flows
+    messages = api.traffic_websocket_messages(ws_rows[0]["id"])["messages"]
+    assert len(messages) >= 2, messages
     api.set_traffic_filter("")
     return {
         "http_flows_visible": len(rows),
@@ -254,7 +243,7 @@ def inspect_traffic(api: AdminAPI, output: Path, primary: str, marker: str) -> d
         "selected_export": str(exported),
         "selected_export_bytes": exported.stat().st_size,
         "websocket_flow_id": ws_rows[0]["id"],
-        "transcript_messages": len(inspector.transcript.messages),
+        "transcript_messages": len(messages),
     }
 
 
