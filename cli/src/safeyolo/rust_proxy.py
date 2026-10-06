@@ -18,8 +18,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .agent_command_supervisor import _write_json, _write_text
-from .agent_token import ensure_agent_token
+from .agent_token import _write_text, ensure_agent_token
 from .config import (
     DEFAULT_NATIVE_CONFIG,
     command_centre_tailnet_status_file,
@@ -45,6 +44,10 @@ from .traffic_session import (
 log = logging.getLogger("safeyolo.proxy")
 STARTUP_TIMEOUT = 10.0
 TAILNET_STARTUP_TIMEOUT = 75.0
+
+
+def _write_json(path: Path, value: dict | int) -> None:
+    _write_text(path, json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 @contextmanager

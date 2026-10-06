@@ -12,9 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from safeyolo import agent_launchers as launchers
-from safeyolo.agents_store import save_agent
-
 probe_path = Path(__file__).resolve().parents[2] / "tests/nested-linux/launcher_acceptance.py"
 spec = importlib.util.spec_from_file_location("launcher_acceptance", probe_path)
 probe = importlib.util.module_from_spec(spec)
@@ -32,8 +29,8 @@ def servers(tmp_path, monkeypatch):
         pytest.skip("real tmux routing requires tmux")
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
-    save_agent("probe", {"agent_id": "ag-probe", "folder": str(tmp_path)})
-    record = launchers.prepare_launch("probe", launchers.resolve_launcher({}, {}, "background"), "background", "unused")
+    record = {"launch_id": "launch-preset-fixture", "pane_id": "%0",
+              "launcher": {"script": str(Path(__file__).resolve().parents[1] / "src/safeyolo/launchers/tmux-window.sh")}}
     # Short, private socket paths also fit macOS's Unix socket path limit.
     with tempfile.TemporaryDirectory(prefix="sy-tmux-") as directory:
         sockets = [Path(directory) / "agent's server", Path(directory) / "viewer"]
@@ -46,7 +43,7 @@ def servers(tmp_path, monkeypatch):
                 assert created.stdout.strip() == "%0", "both servers must have the same pane ID"
                 identity = record["launch_id"] if index == 0 else "different-launch"
                 tmux(socket, "set-option", "-p", "-t", "%0", "@safeyolo_launch_id", identity)
-            record = launchers.update_launch("probe", record["launch_id"], pane_id="%0", tmux_socket=str(sockets[0]))
+            record["tmux_socket"] = str(sockets[0])
             yield record, sockets
         finally:
             for socket in sockets:
@@ -55,7 +52,9 @@ def servers(tmp_path, monkeypatch):
 
 
 def viewer_environment(record, sockets, *, other_server):
-    env = launchers.launch_environment(record)
+    env = {**os.environ, "SAFEYOLO_AGENT_NAME": "probe", "SAFEYOLO_LAUNCH_ID": record["launch_id"],
+           "SAFEYOLO_TMUX_SESSION": "agent", "SAFEYOLO_LAUNCH_PANE": record["pane_id"],
+           "SAFEYOLO_TMUX_SOCKET": record["tmux_socket"]}
     env.update(TERM="xterm-256color")
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)

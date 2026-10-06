@@ -401,8 +401,10 @@ not apply to these deliberately staged coding-harness credentials.
 - Without `--host-script`, the sandbox boots to a plain bash shell
 - Inside an agent, use ordinary `sudo apt install ...` (or the distro
   equivalent) for ephemeral guest packages. This grants root only inside the
-  VM or gVisor sandbox; it does not invoke host sudo. `agent shell --root` is
-  the operator-mediated recovery path when the guest helper itself is broken.
+  VM or gVisor sandbox; it does not invoke host sudo. The native shell command
+  has no guest-root flag. If the guest sudo helper is missing or broken, report
+  that prerequisite for operator repair; `agent recover` diagnoses guest health
+  through the separate shared-home/PID-1 path, without SSH.
 - `agent desktop` requires an already-running agent and never installs missing
   guest packages; use `--status` or `--stop` for desktop lifecycle checks
 - Set `desktop.size` in `~/.safeyolo/config.yaml` to `auto` or a persistent

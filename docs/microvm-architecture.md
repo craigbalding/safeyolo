@@ -79,7 +79,7 @@ The VM terminal uses vsock (virtio socket) with a proper PTY:
 
 **Host side (`VSockTerminal.swift`)**: Connects to vsock after VM boots. Full `cfmakeraw` terminal mode. `write_all()` with retry to prevent split ANSI sequences. SIGWINCH → 4-byte resize message on control channel. Drains PTY output before closing.
 
-For background agents (`safeyolo agent run --detach`), a configured host launcher owns the agent terminal, or an explicit supervisor owns headless harness turns. `--sandbox-only` boots without a coding agent. The separate `safeyolo agent shell` route uses SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd; see [agent launchers](agent-launchers.md).
+For persistent agents (`safeyolo agent start NAME`), a configured host launcher owns the agent terminal, or an explicit supervisor owns headless harness turns. `--sandbox-only` boots without a coding agent. The separate `safeyolo agent shell` route uses SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd; see [agent launchers](agent-launchers.md).
 
 ## Config Share Architecture
 
@@ -161,5 +161,5 @@ intact. The current package has no `PUT /admin/proxy/mode` route.
 
 1. **macOS only** (Apple Silicon) for the microVM path. Linux runs gVisor containers via `runsc`; see `docs/linux-port-design.md`.
 2. **No general raw TCP/UDP egress path.** There is no external interface for those connections; the proxy forwarder and operator shell use their explicit bridges.
-3. **No guest snapshots by default** (though `--snapshot` is a beta flag on `agent run`). Corrupted rootfs → re-create agent.
+3. **No guest snapshots by default.** The native start command has no snapshot flag. Corrupted rootfs → re-create agent.
 4. **Guest image build requires Lima on macOS** (for cross-compilation). Runtime itself has no Lima dependency.

@@ -6,10 +6,8 @@ import threading
 from contextlib import contextmanager
 
 import pytest
-from typer.testing import CliRunner
 
-from safeyolo import agent_diag, vm_control
-from safeyolo.commands.agent import agent_app
+from safeyolo import vm_control
 
 
 def _reply(**fields):
@@ -97,25 +95,6 @@ def test_control_path_rejects_invalid_names(name):
         vm_control.socket_path(name)
 
 
-def test_runtime_status_and_diagnostic_use_same_control_response(socket_dir, monkeypatch):
-    with _server(socket_dir, monkeypatch, lambda request: _status()) as requests:
-        value = vm_control.read_status("demo")
-        checks = agent_diag._check_vm_runtime("demo")
-    assert value["pid"] == 123
-    assert all(check.status == "PASS" for check in checks)
-    assert "a" * 40 in checks[0].message
-    assert [request["operation"] for request in requests] == ["status", "status"]
-
-
-def test_stale_executor_and_vm_queue_are_not_green(socket_dir, monkeypatch):
-    response = _status(health="relay_executor_not_progressing", unresponsive_loops=["proxy"],
-                       accepted_shell_pending=3, monotonic_now=20)
-    with _server(socket_dir, monkeypatch, lambda request: response):
-        checks = agent_diag._check_vm_runtime("demo")
-    assert checks[1].status == "WARN" and "3 shell accepts pending" in checks[1].message
-    assert checks[2].status == "WARN" and "cached" in checks[2].message
-
-
 @pytest.mark.parametrize("response", [
     b"not json\n", b"[]\n", _reply(schema_version=True), _reply(instance="bad\nname"),
     _reply(ok=False, error="stale instance"), b"x" * (2 * 1024 * 1024 + 1) + b"\n",
@@ -190,16 +169,3 @@ def test_private_dump_replaces_link_without_writing_its_target(socket_dir, monke
     assert target.read_text() == "preserve me" and not output.is_symlink()
     assert output.stat().st_mode & 0o777 == 0o600
     assert json.loads(output.read_text())["pid"] == 123
-
-
-def test_bulk_dry_run_only_reads_matching_snapshot(socket_dir, monkeypatch):
-    with _server(socket_dir, monkeypatch, lambda request: _reply(relays=[_relay(1), _relay(2, "shell")], next_after=None)) as requests:
-        result = CliRunner().invoke(agent_app, ["vm", "cancel", "demo", "--all", "--kind", "proxy", "--dry-run", "--json"])
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["selected_ids"] == [1]
-    assert [request["operation"] for request in requests] == ["relays"]
-
-
-def test_cli_refuses_unscoped_bulk_cancel():
-    result = CliRunner().invoke(agent_app, ["vm", "cancel", "demo", "--all"])
-    assert result.exit_code != 0 and "requires" in result.output

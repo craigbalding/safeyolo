@@ -256,21 +256,25 @@ ellipsis; opening the event retains the complete summary and details.
 The macOS app uses SwiftUI and native Keychain support. SafeYolo no longer
 installs the earlier Qt/PySide frontend or a Python Keychain wrapper. Build
 the app with `bash command-centre/macos/build-app.sh` on the Mac, install the
-resulting app in Applications, then open its icon or use
-`safeyolo command-centre run`. Linux hosts provide the Admin API and event
-stream; the graphical app runs on the operator's Mac.
+resulting app in Applications, then open its icon. Linux hosts provide the
+Admin API and event stream; the graphical app runs on the operator's Mac.
+
+### Proxy restart and connection failures
 
 Installing the app does not enable the host's live-event listener. For a local
-connection, enable the listener on the Mac that runs SafeYolo:
+connection, set `enabled = true` under `[command_centre]` in that native instance's
+`config.toml`. Its default loopback event port is 9091. From the host operator's
+terminal, restart the installed native proxy. Replace `ROOT` with the instance
+directory:
 
 ```sh
-safeyolo command-centre enable
-safeyolo stop
-safeyolo start
+safeyolo --root ROOT stop
+safeyolo --root ROOT start
 ```
 
-The restart briefly interrupts agent networking and Coord. Agents stay running
-unless you add `--all` to the stop command. Local mode loads the existing local
+The restart briefly interrupts agent networking and Coord. Native startup
+rebuilds proxy attachments and listeners from current runtime evidence. Agents
+stay running. Local mode loads the existing local
 Admin API credential automatically; it does not require pasting a key.
 
 If the running host reports live events disabled, the app shows **Live events

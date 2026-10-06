@@ -57,7 +57,7 @@ flowchart TD
     con.upstream_auth_issue(["Upstream rejected the credential; not a SafeYolo action"])
     con.timeout_was_transient(["The exact URL now responds through the proxy; classify the earlier timeout as transient and retry the original operation once"])
     ask.watch_for_approval[["Ask operator to run 'safeyolo watch' and approve the specific host/capability/binding"]]
-    ask.diag_agent[["Ask operator to run 'safeyolo agent diag <name>' (attribution / bridge / end-to-end route)"]]
+    ask.diag_agent[["Ask operator to run 'safeyolo agent diagnostics <name>' (runtime / control / shell / proxy attachment)"]]
     ask.policy_add_host[["Ask operator: 'safeyolo policy host add HOST --agent AGENT'"]]
     ask.logs_request_id[["Ask operator for the request_id via 'safeyolo logs --request-id req-... --raw'"]]
     ask.report_client_bug[["Report a client bug upstream (include version + exact malformed value); use '--with-token' as a workaround"]]

@@ -58,7 +58,7 @@ test -r /usr/local/share/ca-certificates/safeyolo.crt
 
 - If the Agent API works but one external host fails, inspect policy, budgets,
   circuits, and the external response.
-- If the Agent API itself fails, ask for `safeyolo agent diag <name>` and
+- If the Agent API itself fails, ask for `safeyolo agent diagnostics <name>` and
   `safeyolo doctor` on the host.
 - For Python TLS failures, preserve `SSL_CERT_FILE` and
   `REQUESTS_CA_BUNDLE`.
@@ -96,16 +96,18 @@ Request the narrowest relevant host-side action and explain the evidence:
 | Command | Ask for it when |
 |---|---|
 | `safeyolo watch` | A 428, gateway request, contract binding, risky route, credential, or plumb chat awaits approval |
-| `safeyolo agent diag <name>` | The agent-to-proxy socket, attribution, bridge, or end-to-end route may be broken |
+| `safeyolo agent diagnostics <name>` | Runtime control, the shell bridge, or proxy attachment may be unavailable |
 | `safeyolo doctor` | Proxy dependencies, native runtime, image, CA, or isolation may be unhealthy |
-| `safeyolo check` | A quick host proxy/config/CA sanity check is sufficient |
-| `safeyolo status` | You need proxy and running-agent state |
+| `safeyolo status` | You need the reconciled runtime, control, coding-agent and terminal observations |
 | `safeyolo logs --event security --tail 20` | You need recent security decisions |
 | `safeyolo mode` | You need to view enforcement modes; never ask the agent to change them |
 | `safeyolo policy show` | You need the operator to inspect compiled policy |
 | `safeyolo policy host add HOST --agent AGENT` | `/lookup` confirms a specific expected host is missing |
 | `safeyolo services show SERVICE` | You need capability, route, auth-header, or risk details |
-| `safeyolo agent shell AGENT --root` | The guest sudo helper is missing or broken and needs narrow operator repair; never use this for a policy or approval block |
+
+If the guest sudo helper is missing or broken, report that specific prerequisite
+for operator repair. The native shell command has no guest-root flag. Do not use
+a recovery request to bypass a policy or approval block.
 
 Do not tell the operator merely to "disable SafeYolo" or switch a guard to
 warn mode. State the exact host, capability, approval, or failing hop needed.

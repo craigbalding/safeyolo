@@ -5,7 +5,6 @@ import sys
 
 import pytest
 
-from safeyolo.agent_diag import _check_vm_helper_identity as agent_identity
 from safeyolo.commands.doctor import _check_vm_helper_identity as doctor_identity
 from safeyolo.vm import VMError
 from safeyolo.vm_identity import read_vm_helper_identity
@@ -30,7 +29,7 @@ def _helper(tmp_path, raw):
     return path
 
 
-def test_production_identity_and_both_diagnostic_renderings(tmp_path, monkeypatch):
+def test_production_identity_and_setup_diagnostic(tmp_path, monkeypatch):
     binary = _helper(tmp_path, json.dumps(_identity()))
     monkeypatch.setenv("SAFEYOLO_VM_HELPER", str(binary))
     identity = read_vm_helper_identity()
@@ -38,19 +37,15 @@ def test_production_identity_and_both_diagnostic_renderings(tmp_path, monkeypatc
     assert "debuggable=no" in identity.summary
     assert "a" * 40 in identity.summary
     assert doctor_identity().status == "pass"
-    assert agent_identity().status == "PASS"
 
 
 def test_debuggable_helper_explains_actual_authority(tmp_path, monkeypatch):
     binary = _helper(tmp_path, json.dumps(_identity(build_profile="development", get_task_allow=True)))
     monkeypatch.setenv("SAFEYOLO_VM_HELPER", str(binary))
     doctor = doctor_identity()
-    agent = agent_identity()
     assert doctor.status == "warn"
-    assert agent.status == "WARN"
     assert "debuggable=yes" in doctor.message
     assert "inspect or modify" in doctor.detail
-    assert "get-task-allow" in agent.message
 
 
 def test_unknown_signing_state_cannot_be_reported_as_production_safe(tmp_path):
@@ -77,7 +72,6 @@ def test_old_or_invalid_helper_is_reported_as_unknown(tmp_path, monkeypatch, raw
     binary = _helper(tmp_path, raw)
     monkeypatch.setenv("SAFEYOLO_VM_HELPER", str(binary))
     assert doctor_identity().status == "warn"
-    assert agent_identity().status == "WARN"
 
 
 def test_identity_timeout_is_bounded(tmp_path):

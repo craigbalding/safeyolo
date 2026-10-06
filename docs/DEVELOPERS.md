@@ -755,19 +755,21 @@ debuggers can inspect or modify the helper's memory and execution. Hardened
 runtime remains enabled; no library-injection or executable-memory exceptions
 are added. Use this profile only where that local debugger authority is acceptable.
 
-`doctor` and `agent diag` report the installed helper's build identity and warn
-when debugger access is enabled. The helper's `version` and `--version` commands
-accept `--json`. Output includes the SafeYolo and helper versions, Git revision
+The retained package `doctor` reports the installed helper's build identity and
+warns when debugger access is enabled. Native `agent diagnostics` reports the
+running helper's private-control status. The helper's `version` and `--version`
+commands accept `--json`. Output includes the SafeYolo and helper versions, Git revision
 and dirty state, profile, architecture, compiler, optimisation, symbol profile
 and running debug/hardened-runtime flags. Each VM startup also logs its identity.
 An older or unmanaged helper produces an explicit identity warning.
 
-On macOS, `safeyolo agent diag AGENT` also checks the shell UDS and reads an
+On macOS, `safeyolo agent diagnostics AGENT` also checks the shell UDS and reads an
 SSH identification within one three-second deadline. A successful UDS connect
 alone does not prove shell health. The banner check traverses the helper, vsock
 and guest shell bridge to sshd, then disconnects without authentication. Failure
-leaves those downstream hops unproven and does not skip the separate egress
-checks. Slow or excessive pre-banner data remains bounded within the diagnostic.
+leaves those downstream hops unproven; runtime/control and proxy attachment
+observations remain separate. Slow or excessive pre-banner data remains bounded
+within the diagnostic.
 
 Start a disposable agent after installing the development helper. Replace
 `AGENT` below with that agent's name. From the Mac operator account, attach LLDB:

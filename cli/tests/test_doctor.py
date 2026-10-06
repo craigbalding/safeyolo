@@ -784,6 +784,27 @@ class TestCheckPipelineProbe:
         assert result.status == "fail"
         assert "malformed" in result.message.lower()
 
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            (b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n", "incomplete"),
+            (b"HTTP/1.1 200 OK\r\nBad-Header\r\n\r\n", "malformed HTTP header"),
+            (b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", "partial HTTP body"),
+        ],
+    )
+    def test_moved_parser_preserves_incomplete_and_malformed_refusal(
+        self, tmp_config_dir, monkeypatch, response, expected
+    ):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+
+        result = _check_pipeline_probe()
+
+        assert result.status == "fail"
+        assert expected in result.message
+        assert "tok-abc" not in repr(result)
+
 
 class TestCheckAdminApi:
     """Tests for _check_admin_api()."""

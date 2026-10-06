@@ -334,7 +334,7 @@ nodes:
         - path: cli/tests/test_codex_coord_supervisor.py
           sha256: b82a483c756acf4eb1fa7fea325fa7b528d0789d6c3d326abd791e588271d46d
         - path: cli/tests/test_agent_command_supervisor.py
-          sha256: 4e8dae6ac8734366cfb67c96dabce3dce8854081f109253f196dd055cb34296b
+          sha256: 23177de06bd48ab1893d19e3ede820e59fd61dfee242fe2b4dfe0f8f48e2ddaf
         - path: cli/tests/test_factory_doctor.py
           sha256: 7dbcde088f528eeaec8f03dd02d63e0165959bbd0bdd594eecdce658e29d430b
       setup: "Use the trusted base's locked Python environment."

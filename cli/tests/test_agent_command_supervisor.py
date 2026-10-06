@@ -1,8 +1,8 @@
-"""Acceptance boundaries for host-side detached-command supervision."""
+"""Native guest supervisor and intentional-stop boundaries."""
 
 from __future__ import annotations
 
-import io
+import hashlib
 import json
 import os
 import shlex
@@ -10,80 +10,46 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from safeyolo import agent_command_supervisor as supervisor
-from safeyolo.config import get_agent_command_supervisor_state_path
+from safeyolo.agent_token import _write_text
 
 
-@pytest.fixture(autouse=True)
-def current_run_context(tmp_config_dir):
-    from safeyolo.vm import get_agent_config_share_dir
-
-    share = get_agent_config_share_dir("demo")
-    share.mkdir(parents=True, exist_ok=True)
-    (share / "host-launch-context.json").write_text(json.dumps({"generation": "test-generation"}))
+def _write_json(path: Path, value: dict) -> None:
+    _write_text(path, json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
 
 
-class _Process:
-    def __init__(self, returncode: int, stderr: str | bytes = "") -> None:
-        self.returncode = returncode
-        self.stdin = io.StringIO()
-        self.stdout = io.StringIO("ordinary output\n")
-        self.stderr = io.BytesIO(stderr) if isinstance(stderr, bytes) else io.StringIO(stderr)
-        self.terminated = False
-
-    def poll(self):
-        return self.returncode
-
-    def wait(self):
-        return self.returncode
-
-    def terminate(self):
-        self.terminated = True
-
-
-class _TimedProcess(_Process):
-    def __init__(self, returncode: int, clock: list[float], duration: float) -> None:
-        super().__init__(returncode)
-        self.clock = clock
-        self.duration = duration
-
-    def wait(self):
-        self.clock[0] += self.duration
-        return super().wait()
-
-
-class _CallbackProcess(_Process):
-    def __init__(self, returncode: int, callback) -> None:
-        super().__init__(returncode)
-        self.callback = callback
-
-    def wait(self):
-        self.callback()
-        return super().wait()
-
-
-class _Platform:
-    def __init__(self, processes: list[_Process]) -> None:
-        self.processes = processes
-        self.commands: list[tuple[str, str, str]] = []
-
-    def popen_in_sandbox(self, name, command, user="agent"):
-        self.commands.append((name, command, user))
-        return self.processes.pop(0)
-
-
-def _seed_state(tmp_config_dir, name: str, command: str) -> None:
-    path = get_agent_command_supervisor_state_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    supervisor._write_json(path, supervisor._base_state(name, command))
-
-
-def _state(tmp_config_dir, name: str) -> dict:
-    return json.loads(get_agent_command_supervisor_state_path(name).read_text())
+def _guest_state(name: str, command: str) -> dict:
+    return {
+        "schema_version": 1,
+        "name": name,
+        "command": command,
+        "state": "starting",
+        "supervisor_pid": None,
+        "supervisor_start_token": None,
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "restart_count": 0,
+        "consecutive_failures": 0,
+        "last_exit_code": None,
+        "last_exit_signal": None,
+        "last_exit_reason": None,
+        "last_stderr": "",
+        "last_stderr_bytes": 0,
+        "last_stderr_truncated": False,
+        "last_stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        "last_uptime_seconds": None,
+        "attempt_started_at": None,
+        "failure_window_started_at": None,
+        "heartbeat_at": None,
+        "runtime_owner": "guest-pid1",
+        "command_pid": None,
+        "command_start_token": None,
+        "next_restart_at": None,
+    }
 
 
 def _stage_guest_supervisor_artifact(tmp_path: Path) -> tuple[Path, Path]:
@@ -99,137 +65,6 @@ def _stage_guest_supervisor_artifact(tmp_path: Path) -> tuple[Path, Path]:
     artifact.write_text(f"#!/bin/sh\nexec {shlex.quote(str(binary))} --context {shlex.quote(str(context))} --workspace {shlex.quote(str(workspace))} \"$@\"\n")
     artifact.chmod(artifact.stat().st_mode | 0o111)
     return artifact, workspace
-
-
-def test_unexpected_exit_restarts_same_command_without_restarting_sandbox(tmp_config_dir):
-    _seed_state(tmp_config_dir, "demo", "exec codex --resume checkpoint")
-    platform = _Platform([_Process(137, "killed while processing\n"), _Process(0)])
-    sleeps: list[float] = []
-
-    def sleep(delay: float) -> None:
-        sleeps.append(delay)
-        if len(sleeps) == 2:
-            # A clean exit is still unexpected and schedules another attempt;
-            # the operator stop arrives before that attempt is launched.
-            supervisor._write_json(
-                get_agent_command_supervisor_state_path("demo").with_name(
-                    ".safeyolo-command-supervisor.stop"
-                ),
-                {"name": "demo", "requested_at": "test"},
-            )
-
-    result = supervisor.CommandSupervisor(
-        "demo",
-        "exec codex --resume checkpoint",
-        platform=platform,
-        sleep=sleep,
-    ).run()
-
-    assert result == 0
-    assert platform.commands == [
-        ("demo", "exec codex --resume checkpoint", "agent"),
-        ("demo", "exec codex --resume checkpoint", "agent"),
-    ]
-    assert sleeps == [supervisor.INITIAL_BACKOFF_SECONDS, 0.5]
-    state = _state(tmp_config_dir, "demo")
-    assert state["state"] == "stopped"
-    assert state["last_exit_code"] == 0
-    assert state["last_exit_reason"] == "command-exit-clean"
-    assert state["restart_count"] == 2
-
-
-def test_crash_loop_is_terminal_and_retains_exit_stderr(tmp_config_dir):
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-    platform = _Platform([_Process(2, "configuration is invalid") for _ in range(3)])
-
-    result = supervisor.CommandSupervisor(
-        "demo",
-        "exec worker",
-        platform=platform,
-        sleep=lambda _delay: None,
-        max_failures=3,
-    ).run()
-
-    assert result == 2
-    state = _state(tmp_config_dir, "demo")
-    assert state["state"] == "failed"
-    assert state["consecutive_failures"] == 3
-    assert state["last_exit_code"] == 2
-    assert state["last_stderr"] == "configuration is invalid"
-    assert state["next_restart_at"] is None
-
-
-def test_stable_uptime_resets_persisted_failure_window(tmp_config_dir):
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-    state = _state(tmp_config_dir, "demo")
-    state.update(consecutive_failures=2, restart_count=7, failure_window_started_at=0.0)
-    supervisor._write_json(get_agent_command_supervisor_state_path("demo"), state)
-    clock = [0.0]
-    platform = _Platform([
-        _TimedProcess(2, clock, 61.0),
-        _TimedProcess(2, clock, 0.0),
-        _TimedProcess(2, clock, 0.0),
-    ])
-
-    result = supervisor.CommandSupervisor(
-        "demo",
-        "exec worker",
-        platform=platform,
-        now=lambda: clock[0],
-        sleep=lambda _delay: None,
-        max_failures=3,
-    ).run()
-
-    assert result == 2
-    state = _state(tmp_config_dir, "demo")
-    assert len(platform.commands) == 3
-    assert state["state"] == "failed"
-    assert state["consecutive_failures"] == 3
-    assert state["restart_count"] == 10
-    assert state["last_uptime_seconds"] == 0.0
-
-
-def test_restart_restores_failure_budget_from_checkpoint(tmp_config_dir):
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-    state = _state(tmp_config_dir, "demo")
-    state.update(consecutive_failures=4, restart_count=12)
-    supervisor._write_json(get_agent_command_supervisor_state_path("demo"), state)
-
-    result = supervisor.CommandSupervisor(
-        "demo",
-        "exec worker",
-        platform=_Platform([_Process(9, "still failing")]),
-        sleep=lambda _delay: None,
-        max_failures=5,
-    ).run()
-
-    assert result == 9
-    state = _state(tmp_config_dir, "demo")
-    assert state["state"] == "failed"
-    assert state["consecutive_failures"] == 5
-    assert state["restart_count"] == 13
-
-
-def test_stderr_capture_is_bounded_and_sanitized(tmp_config_dir):
-    payload = b"A" * (supervisor.MAX_STDERR_BYTES + 4096) + b"\x1b[31msecret\x1b[0m\x01"
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-
-    result = supervisor.CommandSupervisor(
-        "demo",
-        "exec worker",
-        platform=_Platform([_Process(9, payload)]),
-        sleep=lambda _delay: None,
-        max_failures=1,
-    ).run()
-
-    assert result == 9
-    state = _state(tmp_config_dir, "demo")
-    assert state["last_stderr_bytes"] == len(payload)
-    assert state["last_stderr_truncated"] is True
-    assert len(state["last_stderr"].encode()) <= supervisor.MAX_STDERR_BYTES
-    assert "\x1b" not in state["last_stderr"]
-    assert "\\x01" in state["last_stderr"]
-    assert state["last_stderr_sha256"]
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Native guest processes use Linux /proc")
@@ -248,10 +83,10 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
         "fi; "
         f"touch {shlex.quote(str(stop_path))}; exit 0"
     )
-    supervisor._write_json(
+    _write_json(
         state_path,
         {
-            **supervisor._base_state("demo", command),
+            **_guest_state("demo", command),
             "runtime_owner": "guest-pid1",
             "generation": "test-generation",
             "supervision_id": "guest-fixture",
@@ -284,10 +119,10 @@ def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
     stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
     artifact, _ = _stage_guest_supervisor_artifact(tmp_path)
-    supervisor._write_json(
+    _write_json(
         state_path,
         {
-            **supervisor._base_state("demo", "exec sleep 60"),
+            **_guest_state("demo", "exec sleep 60"),
             "runtime_owner": "guest-pid1",
             "generation": "test-generation",
             "supervision_id": "guest-fixture",
@@ -378,10 +213,10 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
 """.lstrip()
     )
     artifact, _ = _stage_guest_supervisor_artifact(tmp_path)
-    supervisor._write_json(
+    _write_json(
         state_path,
         {
-            **supervisor._base_state("demo", f"exec python3 {worker_path} {attempts_path} {started_path} {output_path} {checkpoint_path} {stop_path}"),
+            **_guest_state("demo", f"exec python3 {worker_path} {attempts_path} {started_path} {output_path} {checkpoint_path} {stop_path}"),
             "runtime_owner": "guest-pid1",
             "generation": "test-generation",
             "supervision_id": "guest-fixture",
@@ -506,60 +341,6 @@ def test_guest_supervisor_retains_root_transition_caps_only_on_gvisor():
     assert "setpriv" not in hardware
 
 
-def test_stop_intent_prevents_restart_after_command_crash(tmp_config_dir):
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-    platform = _Platform([_Process(143, "terminated")])
-
-    def request_stop(_delay: float) -> None:
-        supervisor._write_json(
-            get_agent_command_supervisor_state_path("demo").with_name(
-                ".safeyolo-command-supervisor.stop"
-            ),
-            {"name": "demo", "requested_at": "test"},
-        )
-
-    supervisor.CommandSupervisor(
-        "demo",
-        "exec worker",
-        platform=platform,
-        sleep=request_stop,
-    ).run()
-
-    assert len(platform.commands) == 1
-    assert _state(tmp_config_dir, "demo")["state"] == "stopped"
-
-
-def test_start_publishes_command_for_guest_pid1_owner(tmp_config_dir):
-    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True, exist_ok=True)
-    supervisor.start_command_supervisor("demo", "exec worker")
-
-    assert _state(tmp_config_dir, "demo")["command"] == "exec worker"
-    assert _state(tmp_config_dir, "demo")["runtime_owner"] == "guest-pid1"
-    assert (tmp_config_dir / "agents/demo/config-share/command-supervisor-enabled").is_file()
-
-
-def test_start_replaces_a_fenced_guest_owned_run(tmp_config_dir):
-    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True, exist_ok=True)
-    _seed_state(tmp_config_dir, "demo", "exec old-worker")
-    state_path = get_agent_command_supervisor_state_path("demo")
-    state = _state(tmp_config_dir, "demo")
-    state.update(
-        state="running",
-        runtime_owner="guest-pid1",
-        supervisor_pid=999999,
-        heartbeat_at=time.time(),
-    )
-    supervisor._write_json(state_path, state)
-    stop_path = state_path.with_name(".safeyolo-command-supervisor.stop")
-    supervisor._write_json(stop_path, {"name": "demo", "requested_at": "test"})
-
-    supervisor.start_command_supervisor("demo", "exec new-worker")
-
-    assert _state(tmp_config_dir, "demo")["command"] == "exec new-worker"
-    assert _state(tmp_config_dir, "demo")["state"] == "starting"
-    assert not stop_path.exists()
-
-
 def test_agent_stop_records_intent_even_when_sandbox_is_already_gone(
     native_agent,
 ):
@@ -588,43 +369,3 @@ def test_agent_stop_records_intent_even_when_sandbox_is_already_gone(
     }
     assert not enabled.exists()
     assert state_path.read_bytes() == original_state
-
-
-def test_guest_owned_stop_fence_does_not_block_sandbox_cleanup(tmp_config_dir):
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-    state = _state(tmp_config_dir, "demo")
-    state.update(
-        state="running",
-        runtime_owner="guest-pid1",
-        supervisor_pid=999999,
-        heartbeat_at=time.time(),
-    )
-    supervisor._write_json(get_agent_command_supervisor_state_path("demo"), state)
-
-    assert supervisor.request_command_supervisor_stop("demo") is True
-    assert get_agent_command_supervisor_state_path("demo").with_name(
-        ".safeyolo-command-supervisor.stop"
-    ).exists()
-
-
-def test_agent_diag_exposes_crash_loop_exit_and_stderr(tmp_config_dir):
-    from safeyolo.agent_diag import _check_command_supervisor
-
-    _seed_state(tmp_config_dir, "demo", "exec worker")
-    state_path = get_agent_command_supervisor_state_path("demo")
-    state = _state(tmp_config_dir, "demo")
-    state.update(
-        state="failed",
-        last_exit_code=17,
-        last_stderr="worker configuration failed",
-        consecutive_failures=5,
-    )
-    supervisor._write_json(state_path, state)
-
-    result = _check_command_supervisor("demo")
-
-    assert result.status == "FAIL"
-    assert "crash loop" in result.message
-    assert "exit=17" in result.message
-    assert "worker configuration failed" in result.message
-    assert "safeyolo agent run demo --detach" in result.remediation

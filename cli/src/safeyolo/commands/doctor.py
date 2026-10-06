@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -47,6 +48,63 @@ def _registered_agent_sockets() -> list[Path]:
         except (KeyError, TypeError, ValueError):
             continue
     return sorted(paths)
+
+
+_HTTP_STATUS_RE = re.compile(
+    rb"^HTTP/\d(?:\.\d)?[ \t]+([0-9]{3})(?:[ \t]+.*)?$"
+)
+
+
+class _HTTPResponseError(ValueError):
+    """A bounded UDS response is not a complete HTTP response."""
+
+
+@dataclass(frozen=True)
+class _HTTPResponse:
+    status_code: int
+    headers: dict[str, str]
+    body: bytes
+
+
+def _parse_http_response(raw: bytes) -> _HTTPResponse:
+    """Parse the status and headers needed by host-side UDS diagnostics."""
+    if not raw:
+        raise _HTTPResponseError("no response")
+    head, separator, body = raw.partition(b"\r\n\r\n")
+    if not separator:
+        raise _HTTPResponseError("incomplete HTTP headers")
+    lines = head.split(b"\r\n")
+    match = _HTTP_STATUS_RE.fullmatch(lines[0])
+    if match is None:
+        raise _HTTPResponseError("malformed HTTP status line")
+
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        name, colon, value = line.partition(b":")
+        if not colon or not name.strip():
+            raise _HTTPResponseError("malformed HTTP header")
+        try:
+            header_name = name.decode("ascii").strip().casefold()
+            header_value = value.decode("iso-8859-1").strip()
+        except UnicodeError as exc:
+            raise _HTTPResponseError("malformed HTTP header") from exc
+        headers[header_name] = header_value
+
+    content_length = headers.get("content-length")
+    if content_length is not None:
+        try:
+            expected = int(content_length)
+        except ValueError as exc:
+            raise _HTTPResponseError("invalid Content-Length") from exc
+        if expected < 0 or len(body) < expected:
+            raise _HTTPResponseError("partial HTTP body")
+        body = body[:expected]
+
+    return _HTTPResponse(
+        status_code=int(match.group(1)),
+        headers=headers,
+        body=body,
+    )
 
 
 @dataclass
@@ -313,7 +371,7 @@ def _check_pipeline_probe() -> DiagResult:
             name="Pipeline probe",
             status="fail",
             message=f"UDS probe failed via {sock_path.name}: {type(exc).__name__}: {exc}",
-            remediation="safeyolo agent diag <name> for hop-by-hop detail",
+            remediation="safeyolo agent diagnostics <name> for runtime and control observations",
         )
 
     if not response:
@@ -323,8 +381,6 @@ def _check_pipeline_probe() -> DiagResult:
             message=f"No response from {sock_path.name}",
             remediation="safeyolo logs --tail 50",
         )
-
-    from ..agent_diag import _HTTPResponseError, _parse_http_response
 
     try:
         parsed_response = _parse_http_response(response)
@@ -1054,34 +1110,27 @@ def _check_guest_images() -> DiagResult:
 
 
 def _check_running_agents() -> DiagResult:
-    """List running agent sandboxes."""
-    from ..config import get_agents_dir
-    from ..platform import get_platform
+    """Read native runtime and control dimensions, including degraded agents."""
+    from ..agent_lifecycle import AgentLifecycleError, list_agent_runtimes
 
-    agents_dir = get_agents_dir()
-    if not agents_dir.exists():
+    try:
+        agents = list_agent_runtimes()
+    except AgentLifecycleError as exc:
         return DiagResult(
-            name="Running agents",
-            status="pass",
-            message=f"No agents configured ({agents_dir})",
+            name="Agent runtimes", status="fail", message=str(exc),
+            remediation="use the installed native CLI's status and agent diagnostics",
         )
-
-    plat = get_platform()
-    running = []
-    for d in sorted(agents_dir.iterdir()):
-        if d.is_dir() and plat.is_sandbox_running(d.name):
-            running.append(d.name)
-
-    if running:
-        return DiagResult(
-            name="Running agents",
-            status="pass",
-            message=f"{len(running)} running in {agents_dir}: {', '.join(running)}",
-        )
+    if not agents:
+        return DiagResult(name="Agent runtimes", status="pass", message="No agents configured")
+    degraded = any(agent["runtime_state"] in {"unknown", "degraded"}
+                   or agent["control_state"] in {"unknown", "degraded"} for agent in agents)
     return DiagResult(
-        name="Running agents",
-        status="pass",
-        message=f"None running ({agents_dir})",
+        name="Agent runtimes", status="warn" if degraded else "pass",
+        message="; ".join(
+            f"{agent['name']}: runtime={agent['runtime_state']}, control={agent['control_state']}, "
+            f"agent={agent['agent_state']}, terminal={agent['terminal_state']}" for agent in agents
+        ),
+        remediation="safeyolo agent diagnostics NAME" if degraded else "",
     )
 
 
@@ -1199,7 +1248,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Log health", _check_log_health),
             ("Pending approvals", _check_pending_approvals),
             ("Flow store", _check_flow_store),
-            ("Running agents", _check_running_agents),
+            ("Agent runtimes", _check_running_agents),
         ]
     )
 

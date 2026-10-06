@@ -360,7 +360,7 @@ nodes:
 
   - id: ask.diag_agent
     kind: operator_ask
-    label: "Ask operator to run `safeyolo agent diag <name>` (attribution / bridge / end-to-end route)"
+    label: "Ask operator to run `safeyolo agent diagnostics <name>` (runtime / control / shell / proxy attachment)"
     source: authored
 
   - id: ask.policy_add_host

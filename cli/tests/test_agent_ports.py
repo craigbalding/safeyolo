@@ -4,8 +4,6 @@
 import pytest
 import typer
 
-from safeyolo.agents_store import load_agent, save_agent
-from safeyolo.cli import app
 from safeyolo.commands.agent import _parse_port, _parse_user_default_args
 
 
@@ -73,97 +71,6 @@ class TestParsePort:
         """Reserved ports are fine as host port (only container is checked)."""
         assert _parse_port("8080:3000") == "127.0.0.1:8080:3000"
         assert _parse_port("9090:3000") == "127.0.0.1:9090:3000"
-
-
-def _setup_agent(config_dir, name="test-agent", ports=None):
-    """Helper to create a minimal agent directory with metadata in policy.toml."""
-    agent_dir = config_dir / "agents" / name
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    # A stub file so the directory looks like a real agent home; the port
-    # commands don't read it, they only care about the on-disk agent entry.
-    (agent_dir / ".stub").write_text("")
-    metadata = {"folder": "/tmp/project"}
-    if ports:
-        metadata["ports"] = ports
-    save_agent(name, metadata)
-    return agent_dir
-
-
-class TestAgentConfigPorts:
-    """CLI integration tests for port config operations."""
-
-    def test_add_port_stores_in_metadata(self, cli_runner, tmp_config_dir):
-        """--add-port stores normalized port in policy.toml."""
-        _setup_agent(tmp_config_dir, "test-agent")
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--add-port", "6080:6080"])
-        assert result.exit_code == 0
-        assert "Added port" in result.output
-
-        metadata = load_agent("test-agent")
-        assert metadata["ports"] == ["127.0.0.1:6080:6080"]
-
-    def test_add_port_deduplicates_by_container_port(self, cli_runner, tmp_config_dir):
-        """Adding a port with same container port replaces existing."""
-        _setup_agent(tmp_config_dir, "test-agent", ports=["127.0.0.1:6080:6080"])
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--add-port", "7070:6080"])
-        assert result.exit_code == 0
-
-        metadata = load_agent("test-agent")
-        assert metadata["ports"] == ["127.0.0.1:7070:6080"]
-
-    def test_remove_port_by_container_port(self, cli_runner, tmp_config_dir):
-        """--remove-port removes matching container port."""
-        _setup_agent(tmp_config_dir, "test-agent", ports=["127.0.0.1:6080:6080"])
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--remove-port", "6080"])
-        assert result.exit_code == 0
-        assert "Removed port" in result.output
-
-        metadata = load_agent("test-agent")
-        assert "ports" not in metadata
-
-    def test_remove_port_warns_if_not_found(self, cli_runner, tmp_config_dir):
-        """--remove-port warns when no match."""
-        _setup_agent(tmp_config_dir, "test-agent")
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--remove-port", "9999"])
-        assert result.exit_code == 0
-        assert "No port mapping found" in result.output
-
-    def test_clear_ports(self, cli_runner, tmp_config_dir):
-        """--clear-ports removes all port mappings."""
-        _setup_agent(tmp_config_dir, "test-agent", ports=["127.0.0.1:6080:6080", "127.0.0.1:8888:3000"])
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--clear-ports"])
-        assert result.exit_code == 0
-        assert "Cleared all ports" in result.output
-
-        metadata = load_agent("test-agent")
-        assert "ports" not in metadata
-
-    def test_show_displays_ports(self, cli_runner, tmp_config_dir):
-        """--show includes ports in table."""
-        _setup_agent(tmp_config_dir, "test-agent", ports=["127.0.0.1:6080:6080"])
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--show"])
-        assert result.exit_code == 0
-        assert "6080" in result.output
-
-    def test_show_displays_none_when_no_ports(self, cli_runner, tmp_config_dir):
-        """--show shows 'none' when no ports configured."""
-        _setup_agent(tmp_config_dir, "test-agent")
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--show"])
-        assert result.exit_code == 0
-        assert "none" in result.output
-
-    def test_show_displays_reserved_tailnet_port(self, cli_runner, tmp_config_dir):
-        """--show includes the stable per-agent Tailnet HTTPS reservation."""
-        _setup_agent(tmp_config_dir, "test-agent")
-        metadata = load_agent("test-agent")
-        metadata["tailnet_port"] = 8443
-        save_agent("test-agent", metadata)
-
-        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--show"])
-
-        assert result.exit_code == 0
-        assert "Tailnet HTTPS" in result.output
-        assert "8443" in result.output
 
 
 # ---------------------------------------------------------------------------

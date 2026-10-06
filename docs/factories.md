@@ -189,7 +189,8 @@ safeyolo factory doctor backlog
 Correct the specific component named by `factory doctor`, then rerun
 `safeyolo factory run backlog`. A missing agent is recovered with
 `safeyolo agent add NAME "$PWD" --host-script @HARNESS --no-run`; a missing workspace is recovered
-with `safeyolo agent config NAME --folder "$PWD"`. Room and grant recovery is
+with the installed native CLI, `ROOT/bin/safeyolo --root ROOT agent configure NAME --workspace "$PWD"`,
+where `ROOT` is that factory instance's absolute directory. Room and grant recovery is
 the idempotent `safeyolo factory run backlog` command itself. Factory run does
 not claim success until every role supervisor passes the doctor checks for the
 approved snapshot, agent identity/storage/workspace, rooms and grants, proxy,
