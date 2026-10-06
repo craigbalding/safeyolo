@@ -873,6 +873,56 @@ fn prepare_policy_runtime(previous: &Runtime, policy: policy::Policy) -> Result<
 /// Reuse the durable transaction and its rollback callback. The file lock is
 /// acquired before the runtime lock, as in expiry and service mutations.
 pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<Value, Error> {
+    edit_native_policy(state, false, |_| {
+        let current = state.read().map_err(|_| approvals::ApprovalError {
+            kind: approvals::ErrorKind::Activation,
+            message: "runtime unavailable".into(),
+        })?;
+        let path = current
+            .config
+            .policy_file
+            .as_ref()
+            .ok_or_else(|| approvals::ApprovalError {
+                kind: approvals::ErrorKind::Activation,
+                message: "policy unavailable".into(),
+            })?;
+        current
+            .policy
+            .as_ref()
+            .ok_or_else(|| approvals::ApprovalError {
+                kind: approvals::ErrorKind::Activation,
+                message: "active policy unavailable".into(),
+            })?
+            .reload_native_source(source, path)
+            .map_err(|error| approvals::ApprovalError {
+                kind: approvals::ErrorKind::Invalid,
+                message: error.to_string(),
+            })?;
+        Ok(((), source.to_owned()))
+    })?;
+    let current = state.read().map_err(|_| "runtime lock is unavailable")?;
+    let path = current
+        .config
+        .policy_file
+        .as_ref()
+        .ok_or("policy path is unavailable")?;
+    let mut result = current
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.native_view(path))
+        .ok_or("active native policy is unavailable")?;
+    result["status"] = json!("active");
+    Ok(result)
+}
+
+/// An approval edits the latest locked source through the same activation and
+/// rollback transaction as policy apply. Gateway/store, file and runtime locks
+/// retain their existing order. A repeated decision does not publish a policy.
+pub(crate) fn edit_native_policy<T>(
+    state: &RuntimeState,
+    skip_unchanged: bool,
+    prepare: impl FnOnce(&str) -> std::result::Result<(T, String), approvals::ApprovalError>,
+) -> Result<T, Error> {
     let path = state
         .read()
         .map_err(|_| "runtime lock is unavailable")?
@@ -880,13 +930,6 @@ pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<
         .policy_file
         .clone()
         .ok_or("policy path is unavailable")?;
-    let policy = state
-        .read()
-        .map_err(|_| "runtime lock is unavailable")?
-        .policy
-        .clone()
-        .ok_or("active policy is unavailable")?;
-    policy.reload_native_source(source, &path)?;
     let activate = {
         let path = path.clone();
         let mut locked_runtime = None;
@@ -947,18 +990,15 @@ pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<
         .gateway_grants
         .clone();
     if let Some(store) = store {
-        store.replace_native_policy(source, activate)?;
+        Ok(store.edit_native_policy(skip_unchanged, prepare, activate)?)
     } else {
-        approvals::replace_policy(&path, source, activate)?;
+        Ok(approvals::policy_transaction(
+            &path,
+            skip_unchanged,
+            prepare,
+            activate,
+        )?)
     }
-    let current = state.read().map_err(|_| "runtime lock is unavailable")?;
-    let mut result = current
-        .policy
-        .as_ref()
-        .and_then(|policy| policy.native_view(&path))
-        .ok_or("active native policy is unavailable")?;
-    result["status"] = json!("active");
-    Ok(result)
 }
 
 /// A baseline or catalog change uses the same preparation and publication

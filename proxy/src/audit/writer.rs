@@ -159,6 +159,12 @@ pub struct Writer {
     worker: Mutex<Worker>,
 }
 impl Writer {
+    pub(crate) fn approval_events(
+        &self,
+        request_id: &str,
+    ) -> std::result::Result<CircuitValue, super::ExplainError> {
+        super::explain::approval(self, &self.path, &self.settings.backups, request_id)
+    }
     /// The durable path is an operator configuration identity, not event
     /// content. It is borrowed so callers cannot retain a second owner.
     pub(crate) fn path(&self) -> &Path {

@@ -205,7 +205,7 @@ def resolved_approval_key(event: AuditEvent) -> str | None:
             return f"{agent}:{service}:{capability}:{service}"
         return None
 
-    if event_type in ("admin.host_allowed", "admin.host_denied"):
+    if event_type in ("admin.host_allowed", "admin.host_denied", "admin.network_action_rejected"):
         host = details.get("host", "")
         port = details.get("port")
         if host and port is not None:
@@ -227,10 +227,14 @@ def resolved_approval_key(event: AuditEvent) -> str | None:
     return None
 
 
-def _desktop_resolution_key(event: AuditEvent) -> str | None:
-    """Return the stable pending group closed by a desktop decision."""
+def _request_resolution_key(event: AuditEvent) -> str | None:
+    """Return a pending group whose decision closes only one request ID."""
     event_type = event.get("event", "")
     details = event.get("details", {})
+    if event_type == "admin.network_action_rejected" or (
+        event_type == "admin.host_allowed" and details.get("network_action")
+    ):
+        return resolved_approval_key(event)
     if event_type == "admin.desktop_presented":
         agent_id = details.get("agent_id", "")
         return f"desktop.present:desktop:{agent_id}" if agent_id else None
@@ -279,48 +283,49 @@ def scan_pending_approvals(
 
     # Most resolutions represent durable policy (for example, approving or
     # denying a credential), so a retry with the same key must stay resolved.
-    # Desktop presentation is a repeatable action. Its stable key coalesces an
-    # agent's repeated requests into one operator prompt, while request_id lets
-    # a decision close exactly the request the operator saw.
+    # Desktop presentation and native network decisions close one request ID.
+    # Their stable keys coalesce retries without denying a later request.
     resolved_keys = {
         key
         for event in parsed_events
-        if (key := resolved_approval_key(event)) and _desktop_resolution_key(event) is None
+        if (key := resolved_approval_key(event)) and _request_resolution_key(event) is None
     }
     pending_by_key: dict[str, AuditEvent] = {}
     for event in reversed(parsed_events):
         approval = event.get("approval", {})
-        if approval and approval.get("required") and approval.get("approval_type") != "desktop_present":
+        if (approval and approval.get("required") and approval.get("approval_type") != "desktop_present"
+                and not event.get("details", {}).get("network_action")):
             key = approval_dedup_key(event)
             if key not in pending_by_key and key not in resolved_keys:
                 pending_by_key[key] = event
 
-    desktop_pending: dict[str, AuditEvent] = {}
-    desktop_resolved: set[str] = set()
+    request_pending: dict[str, AuditEvent] = {}
+    request_resolved: set[str] = set()
     for event in parsed_events:
         approval = event.get("approval", {})
-        if approval and approval.get("required") and approval.get("approval_type") == "desktop_present":
+        if (approval and approval.get("required") and (approval.get("approval_type") == "desktop_present"
+                or event.get("details", {}).get("network_action"))):
             key = approval_dedup_key(event)
             # Replacement, not accumulation: repeated requests from one agent
             # remain one pending operator item.
-            desktop_pending[key] = event
-            desktop_resolved.discard(key)
+            request_pending[key] = event
+            request_resolved.discard(key)
             continue
 
-        key = _desktop_resolution_key(event)
+        key = _request_resolution_key(event)
         if key is None:
             continue
-        current = desktop_pending.get(key)
+        current = request_pending.get(key)
         resolved_request_id = str(event.get("details", {}).get("approval_request_id", ""))
         if current is not None and resolved_request_id and _approval_request_id(current) != resolved_request_id:
             # The agent made a newer request while the operator was deciding
             # an older one. Leave that newer request pending.
             continue
-        desktop_pending.pop(key, None)
-        desktop_resolved.add(key)
+        request_pending.pop(key, None)
+        request_resolved.add(key)
 
-    pending_by_key.update(desktop_pending)
-    resolved_keys.update(desktop_resolved)
+    pending_by_key.update(request_pending)
+    resolved_keys.update(request_resolved)
 
     if activity_out is not None:
         # Count only requests still pending. The timestamp is the first one

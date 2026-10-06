@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 mod baseline;
 mod budgets;
 pub(crate) mod circuit_settings;
+pub(crate) mod evidence;
 pub(crate) mod expiry;
 mod model_json;
 pub mod native;

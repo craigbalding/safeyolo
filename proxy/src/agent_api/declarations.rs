@@ -147,7 +147,29 @@ where
         return Ok(memory::respond(request, controls.memory).await);
     }
     if route(request) == "/explain" {
+        if let PolicyState::Ready(policy) = &policy
+            && let Some(Decoded::Scalar(id)) = super::query(request).get("request_id")
+            && let Some(caller) = agent(request.identity)
+            && policy
+                .evidence_reader(caller, id, crate::policy::evidence::Read::Diagnostic)
+                .is_some()
+        {
+            return Ok(approvals::read(
+                request,
+                controls.audit,
+                policy,
+                id,
+                crate::policy::evidence::Read::Diagnostic,
+            )
+            .await);
+        }
         return Ok(explain::respond(request, controls.audit).await);
+    }
+    if route(request).starts_with("/approvals/") {
+        let PolicyState::Ready(policy) = &policy else {
+            return Ok(response(503, json!({"error":"policy unavailable"})));
+        };
+        return approvals::respond(request, controls.audit, policy, body).await;
     }
     if route(request) == "/trace" {
         return Ok(trace::respond(request, controls.traces));

@@ -50,6 +50,7 @@ extension ModelTests {
         try await testApprovalInSubscriptionGapAndReconnect()
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
+        try await testCanonicalNetworkResolution()
         try await testDisabledEventsAndRecovery()
         try await testSocketFailurePacingAndRecovery()
         try await testRealSocketRefusalPacing()
@@ -102,6 +103,25 @@ extension ModelTests {
 
     private static var agentEvent: URLSessionWebSocketTask.Message {
         .string(#"{"event":"agent.started","kind":"admin","severity":"info","summary":"Agent started"}"#)
+    }
+
+    @MainActor
+    private static func testCanonicalNetworkResolution() async throws {
+        let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(#"{"event":"proxy.network_guard","request_id":"req-canonical","agent":"worker","summary":"Reusable network access","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#.utf8))
+        for (status, message) in [("approved", "Approved"), ("rejected", "Rejected")] {
+            snapshot()
+            defer { StubURLProtocol.responsesByPath = [:] }
+            StubURLProtocol.responsesByPath["/admin/approvals/req-canonical"] = (200, Data("{\"status\":\"\(status)\"}".utf8))
+            let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+                eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+                expectedInstanceID: "sy-connection-test", session: stubSession())
+            defer { client.stop() }
+            var result: Result<ResolutionResult, Error>?
+            client.resolve(event, allow: status == "rejected") { result = $0 }
+            try await until { result != nil }
+            let observed = try result!.get()
+            precondition(observed == .decided(message), "Use the canonical outcome even when the other decision won")
+        }
     }
 
     @MainActor
