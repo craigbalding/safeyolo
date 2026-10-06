@@ -53,6 +53,7 @@ ignore local allow rules can still reject commands.
 
 ### First Codex login
 
+Use the installed native product and its matching Linux guest Coord assets.
 For a fresh `@codex` agent, authentication happens inside that agent's persistent
 home. After its first run installs Codex, leave it running and open a guest shell
 from a second host terminal. Replace `work` with the agent name:
@@ -65,7 +66,7 @@ Inside the guest, log in and record that this login belongs to this agent:
 
 ```sh
 codex login --device-auth
-/home/agent/.safeyolo/codex-auth-recovery.py adopt
+/home/agent/.safeyolo/safeyolo-coord codex-state adopt
 ```
 
 Then return to the Codex terminal. Repeat the login and adoption commands after

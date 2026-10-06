@@ -79,19 +79,15 @@ pi_validate_launcher_destination ||
 if [ "${SAFEYOLO_PI_COORD_SUPERVISOR:-0}" = "1" ]; then
     : "${SAFEYOLO_FACTORY_SNAPSHOT:?set the approved factory snapshot}"
     : "${SAFEYOLO_FACTORY_ROLE:?set the role bound by the factory snapshot}"
-    supervisor_src="$SCRIPT_DIR/codex-coord-supervisor.py"
+    # shellcheck source=lib/stage-coord-native.sh
+    . "$SCRIPT_DIR/lib/stage-coord-native.sh"
+    stage_coord_native "$AGENT_HOME"
     extension_src="$SCRIPT_DIR/pi-coord-extension.ts"
-    [ -f "$supervisor_src" ] || pi_fail "factory supervisor source is missing"
     [ -f "$extension_src" ] || pi_fail "Pi Coord extension source is missing"
-    install -m 0755 "$supervisor_src" \
-        "$AGENT_HOME/.safeyolo/codex-coord-supervisor.py"
-    python3 "$SCRIPT_DIR/lib/stage-factory-supervisor.py" \
-        "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
+    "$coord_host" factory-stage \
+        "$AGENT_HOME/.safeyolo/coord-supervisor.json" \
         "$AGENT_HOME/.safeyolo/AGENTS.md" \
-        "$SAFEYOLO_AGENT_NAME" \
-        "$SAFEYOLO_FACTORY_SNAPSHOT" \
-        "$SAFEYOLO_FACTORY_ROLE" \
-        pi
+        "$SAFEYOLO_AGENT_NAME" "$SAFEYOLO_FACTORY_SNAPSHOT" "$SAFEYOLO_FACTORY_ROLE" pi
     install -d -m 0700 "$AGENT_HOME/.pi/agent/extensions"
     _stage_validate_dir_metadata "$AGENT_HOME/.pi/agent/extensions"
     install -m 0600 "$extension_src" \
@@ -351,23 +347,7 @@ exec "$pi_bin" "${args[@]}" "$@"
 EOF
 install -m 0755 "$pi_launcher_tmp" "$AGENT_HOME/.safeyolo-interactive-command"
 if [ "${SAFEYOLO_PI_COORD_SUPERVISOR:-0}" = "1" ]; then
-    python3 - "$pi_launcher_tmp" <<'PY'
-import sys
-
-path = sys.argv[1]
-with open(path) as handle:
-    body = handle.read()
-interactive = 'exec "$pi_bin" "${args[@]}" "$@"\n'
-supervised = (
-    'export SAFEYOLO_PI_BIN="$pi_bin"\n'
-    'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py" '
-    '-- "${args[@]}" "$@"\n'
-)
-if body.count(interactive) != 1:
-    raise SystemExit("pi-host-setup: cannot install the supervised foreground command")
-with open(path, "w") as handle:
-    handle.write(body.replace(interactive, supervised))
-PY
+    "$coord_host" supervised-launcher "$pi_launcher_tmp" pi
 fi
 chmod 700 "$pi_launcher_tmp"
 pi_validate_launcher_destination ||

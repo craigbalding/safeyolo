@@ -48,7 +48,9 @@ advice = "Treat the factory TOML, role contracts, staged contract identity, supe
 paths = [
   "cli/src/safeyolo/factory_contract.py",
   "cli/src/safeyolo/commands/factory.py",
-  "contrib/codex-coord-supervisor.py",
+  "proxy/src/coord_supervisor.rs",
+  "proxy/src/coord_setup.rs",
+  "proxy/src/coord_tools.rs",
   "contrib/lib/stage-safeyolo-context.sh",
   "docs/factories.md",
   "docs/codex-coord-supervisor.md",

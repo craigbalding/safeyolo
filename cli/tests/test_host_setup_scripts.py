@@ -1,7 +1,6 @@
 """Executable regression tests for first-party agent host setup scripts."""
 
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -19,13 +18,11 @@ LAB_CONTROLLER_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safey
 FACTORY_SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
-COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
-CODEX_STATE_SOURCE = REPO_ROOT / "contrib/lib/stage-codex-state.py"
-CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
+COORD_NATIVE_BINARY = REPO_ROOT / "proxy/target/debug/safeyolo-coord"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 PI_COORD_SETUP_SOURCE = REPO_ROOT / "contrib/pi-coord-host-setup.sh"
 PI_COORD_EXTENSION_SOURCE = REPO_ROOT / "contrib/pi-coord-extension.ts"
-FACTORY_STAGE_SOURCE = REPO_ROOT / "contrib/lib/stage-factory-supervisor.py"
+FACTORY_STAGE_SOURCE = REPO_ROOT / "contrib/lib/stage-coord-native.sh"
 REPO_MAP_SOURCE = REPO_ROOT / "cli/src/safeyolo/repo_map.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
@@ -35,12 +32,53 @@ LAB_COMMAND_TARGET = "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-
 REPO_MAP_COMMAND_TARGET = "/home/agent/.safeyolo/repo-map"
 
 
-def _load_codex_state_module():
-    spec = importlib.util.spec_from_file_location("stage_codex_state", CODEX_STATE_SOURCE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+@pytest.fixture(autouse=True)
+def native_coord_receipts(monkeypatch, tmp_path):
+    assert COORD_NATIVE_BINARY.is_file(), "Build safeyolo-coord before native staging tests"
+    identity = subprocess.check_output([str(COORD_NATIVE_BINARY), "--version"], text=True)
+    COORD_NATIVE_BINARY.with_suffix(".version").write_text(identity)
+    with COORD_NATIVE_BINARY.open("rb") as handle:
+        checksum = hashlib.file_digest(handle, "sha256").hexdigest()
+    COORD_NATIVE_BINARY.with_suffix(".sha256").write_text(checksum + "\n")
+    monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(COORD_NATIVE_BINARY))
+    monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(COORD_NATIVE_BINARY))
+    try:
+        yield
+    finally:
+        # Every setup/launcher command is synchronous. Keep its small inputs
+        # and diagnostics, but release per-case copies of the native runtime.
+        for artifact in tmp_path.glob("**/.safeyolo/safeyolo-coord"):
+            if artifact.is_file() or artifact.is_symlink():
+                artifact.unlink(missing_ok=True)
+
+
+def _codex_state(home, *args, check=True):
+    return subprocess.run([str(COORD_NATIVE_BINARY), "codex-state", "--home", str(home), *args], capture_output=True, text=True, check=check)
+
+
+@pytest.mark.parametrize("component", [b"ascii", "caf\u00e9".encode(), b"\x80", b"\xff", b"part-\x80\xff"])
+def test_native_staging_preserves_unix_pathname_bytes(tmp_path, component):
+    home = tmp_path / os.fsdecode(component)
+    home.mkdir(mode=0o700)
+    result = _codex_state(home, check=False)
+    assert result.returncode == 0, result.stderr
+    codex = home / ".codex"
+    assert codex.stat().st_mode & 0o777 == 0o700
+    provenance = codex / ".safeyolo-provenance.json"
+    assert provenance.stat().st_mode & 0o777 == 0o600
+    assert json.loads(provenance.read_text())["state"] == "fresh"
+    assert not (codex / "auth.json").exists()
+    config = home / os.fsdecode(b"supervisor-\x80.json")
+    result = subprocess.run([str(COORD_NATIVE_BINARY), "ordinary-stage", str(config), "forge", "backlog", "relay"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(config.read_text())["agent_name"] == "forge"
+    launcher = home / os.fsdecode(b"launcher-\xff")
+    launcher.write_text('exec codex "${args[@]}" "$@"\n')
+    launcher.chmod(0o700)
+    result = subprocess.run([str(COORD_NATIVE_BINARY), "supervised-launcher", str(launcher), "codex"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'safeyolo-coord" supervise --' in launcher.read_text()
+    assert launcher.stat().st_mode & 0o777 == 0o700
 
 
 def _setup_env(operator_home: Path, agent_home: Path, folder: Path) -> dict[str, str]:
@@ -75,19 +113,6 @@ def _run_setup(
         capture_output=True,
         text=True,
     )
-    # Executing the generated harness command is outside host setup itself.
-    # Most tests provide fake harnesses and need a matching already-installed
-    # coord runtime so they do not install packages over the network. Dedicated
-    # bootstrap-failure coverage opts out below.
-    if (
-        result.returncode == 0
-        and stage_coord_runtime
-        and script_name in {"claude-host-setup.sh", "codex-host-setup.sh", "codex-coord-host-setup.sh"}
-    ):
-        coord_python = agent_home / ".safeyolo/venv/bin/python"
-        coord_python.parent.mkdir(parents=True, exist_ok=True)
-        coord_python.write_text("#!/bin/sh\nexit 0\n")
-        coord_python.chmod(0o755)
     return result
 
 
@@ -99,7 +124,7 @@ def _seed_adopted_codex_auth(agent_home: Path) -> None:
     auth_path = codex_home / "auth.json"
     auth_path.write_bytes(b"synthetic-agent-local-auth")
     auth_path.chmod(0o600)
-    _load_codex_state_module()._recover(agent_home, "adopt")
+    _codex_state(agent_home, "adopt")
 
 
 def test_codex_stages_guest_rules_without_importing_host_rules(tmp_path: Path) -> None:
@@ -393,14 +418,14 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     _run_setup(script_name, operator_home, agent_home, tmp_path)
     _run_setup(script_name, operator_home, agent_home, tmp_path)
 
-    staged_shim = agent_home / ".safeyolo/safeyolo-coord-mcp.py"
+    staged_shim = agent_home / ".safeyolo/safeyolo-coord"
     staged_launcher = agent_home / ".safeyolo/safeyolo-coord-mcp-launcher"
-    assert staged_shim.read_bytes() == COORD_SHIM_SOURCE.read_bytes()
+    assert staged_shim.read_bytes() == COORD_NATIVE_BINARY.read_bytes()
     assert staged_shim.stat().st_mode & 0o111
     assert staged_launcher.read_bytes() == COORD_LAUNCHER_SOURCE.read_bytes()
     assert staged_launcher.stat().st_mode & 0o111
     command = (agent_home / ".safeyolo-command").read_text()
-    assert command.count("# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----") == 1
+    assert "mcp+httpx" not in command
 
     if script_name == "claude-host-setup.sh":
         data = json.loads(config_path.read_text())
@@ -417,6 +442,8 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
         "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
         "args": [],
     }
+    if script_name == "claude-host-setup.sh":
+        expected["type"] = "stdio"
     if script_name == "codex-host-setup.sh":
         expected["tool_timeout_sec"] = 330
         assert expected["tool_timeout_sec"] > 300
@@ -546,7 +573,7 @@ def test_registered_coord_launcher_restores_safeyolo_environment(
         "".join(f"export {key}={value!r}\n" for key, value in proxy_values.items()) + "export HOME='/home/agent'\n"
     )
 
-    fake_python = agent_home / ".safeyolo/venv/bin/python"
+    fake_python = agent_home / ".safeyolo/safeyolo-coord"
     fake_python.write_text("#!/bin/sh\nprintf 'adapter=%s\\n' \"$1\"\nenv\n")
     fake_python.chmod(0o755)
 
@@ -565,7 +592,7 @@ def test_registered_coord_launcher_restores_safeyolo_environment(
 
     output_env = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     assert {key: output_env[key] for key in proxy_values} == proxy_values
-    assert output_env["adapter"] == str(agent_home / ".safeyolo/safeyolo-coord-mcp.py")
+    assert output_env["adapter"] == "mcp"
 
 
 def test_coord_launcher_reports_missing_authoritative_environment(
@@ -592,48 +619,14 @@ def test_coord_launcher_reports_missing_authoritative_environment(
     assert "missing-proxy.env" in result.stderr
 
 
-def test_coord_dependency_failure_stops_harness_with_diagnostic(tmp_path: Path) -> None:
-    operator_home = tmp_path / "operator"
-    agent_home = tmp_path / "agent"
-    fake_bin = tmp_path / "bin"
-    operator_home.mkdir()
-    fake_bin.mkdir()
-    _run_setup(
-        "codex-host-setup.sh",
-        operator_home,
-        agent_home,
-        tmp_path,
-        stage_coord_runtime=False,
-    )
-
-    (fake_bin / "mise").write_text("#!/bin/sh\nexit 1\n")
-    (fake_bin / "python3").write_text("#!/bin/sh\nexit 1\n")
-    (fake_bin / "codex").write_text(
-        '#!/bin/sh\nif [ "$1" = --version ]; then exit 0; fi\ntouch "$TEST_HARNESS_STARTED"\n'
-    )
-    for executable in fake_bin.iterdir():
-        executable.chmod(0o755)
-
-    started = tmp_path / "harness-started"
-    command_env = os.environ.copy()
-    for key in list(command_env):
-        if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
-            command_env.pop(key)
-    result = subprocess.run(
-        [str(agent_home / ".safeyolo-command")],
-        env={
-            **command_env,
-            "HOME": str(agent_home),
-            "PATH": f"{fake_bin}:/usr/bin:/bin",
-            "TEST_HARNESS_STARTED": str(started),
-        },
-        capture_output=True,
-        text=True,
-    )
-
+def test_coord_bootstrap_reports_missing_native_artifact(tmp_path):
+    home = tmp_path / "agent"
+    home.mkdir()
+    (home / ".safeyolo-command").write_text("#!/bin/sh\nexit 0\n")
+    result = subprocess.run([str(COORD_BOOTSTRAP_SOURCE), "--home", str(home), "--harness", "codex"], env={**os.environ, "SAFEYOLO_COORD_GUEST_BINARY": str(tmp_path / "missing-native-binary")}, capture_output=True, text=True)
     assert result.returncode != 0
-    assert "refusing to start the harness without safeyolo-coord" in result.stderr
-    assert not started.exists()
+    assert "No such file" in result.stderr
+    assert not (home / ".codex/config.toml").exists()
 
 
 @pytest.mark.parametrize(
@@ -685,24 +678,20 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert force_include["contrib/safeyolo-coord-mcp-launcher.sh"] == (
         "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"
     )
-    assert force_include["contrib/safeyolo-coord-mcp.py"] == ("safeyolo/contrib/safeyolo-coord-mcp.py")
-    assert force_include["contrib/lib/stage-codex-state.py"] == ("safeyolo/contrib/lib/stage-codex-state.py")
+    assert "contrib/safeyolo-coord-mcp.py" not in force_include
+    assert "contrib/lib/stage-codex-state.py" not in force_include
     assert force_include["contrib/codex-coord-host-setup.sh"] == ("safeyolo/contrib/codex-coord-host-setup.sh")
     assert force_include["contrib/pi-host-setup.sh"] == ("safeyolo/contrib/pi-host-setup.sh")
     assert force_include["contrib/pi-coord-host-setup.sh"] == ("safeyolo/contrib/pi-coord-host-setup.sh")
     assert force_include["contrib/pi-coord-extension.ts"] == ("safeyolo/contrib/pi-coord-extension.ts")
-    assert force_include["contrib/lib/stage-factory-supervisor.py"] == (
-        "safeyolo/contrib/lib/stage-factory-supervisor.py"
-    )
-    assert force_include["contrib/codex-coord-supervisor.py"] == ("safeyolo/contrib/codex-coord-supervisor.py")
+    assert "contrib/lib/stage-factory-supervisor.py" not in force_include
+    assert "contrib/codex-coord-supervisor.py" not in force_include
     assert force_include["contrib/codex-coord-supervisor-fake-codex.sh"] == (
         "safeyolo/contrib/codex-coord-supervisor-fake-codex.sh"
     )
     assert force_include["docs/AGENTS.md"] == "safeyolo/docs/AGENTS.md"
     assert COORD_BOOTSTRAP_SOURCE.stat().st_mode & 0o111
     assert COORD_LAUNCHER_SOURCE.stat().st_mode & 0o111
-    assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
-    assert CODEX_COORD_SUPERVISOR_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_FAKE_SOURCE.stat().st_mode & 0o111
     assert PI_COORD_SETUP_SOURCE.stat().st_mode & 0o111
     assert FACTORY_STAGE_SOURCE.stat().st_mode & 0o111
@@ -853,12 +842,12 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    config = json.loads((agent_home / ".safeyolo/codex-coord-supervisor.json").read_text())
+    config = json.loads((agent_home / ".safeyolo/coord-supervisor.json").read_text())
     assert config["harness"] == "pi"
     interactive_command = agent_home / ".safeyolo-interactive-command"
     assert interactive_command.stat().st_mode & 0o111
     assert interactive_command.read_bytes() != (agent_home / ".safeyolo-command").read_bytes()
-    assert "codex-coord-supervisor.py" not in interactive_command.read_text()
+    assert "safeyolo-coord" not in interactive_command.read_text()
     assert config["agent_name"] == "test-agent"
     assert config["rooms"] == ["pi-backlog"]
     assert config["factory"]["role"] == "owner"
@@ -868,7 +857,7 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
     ).read_bytes() == PI_COORD_EXTENSION_SOURCE.read_bytes()
     command = (agent_home / ".safeyolo-command").read_text()
     assert 'export SAFEYOLO_PI_BIN="$pi_bin"' in command
-    assert '"$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert '"$HOME/.safeyolo/safeyolo-coord"' in command
     assert "--mode json" not in command
     assert not (agent_home / ".codex/config.toml").exists()
 
@@ -1193,7 +1182,7 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     )
     first_command = (agent_home / ".safeyolo-command").read_bytes()
     first_interactive_command = (agent_home / ".safeyolo-interactive-command").read_bytes()
-    first_config = (agent_home / ".safeyolo/codex-coord-supervisor.json").read_bytes()
+    first_config = (agent_home / ".safeyolo/coord-supervisor.json").read_bytes()
     _run_setup(
         "codex-coord-host-setup.sh",
         operator_home,
@@ -1203,24 +1192,26 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     )
 
     command = (agent_home / ".safeyolo-command").read_text()
-    config_path = agent_home / ".safeyolo/codex-coord-supervisor.json"
+    config_path = agent_home / ".safeyolo/coord-supervisor.json"
     config = json.loads(config_path.read_text())
     assert first_command == (agent_home / ".safeyolo-command").read_bytes()
     assert first_interactive_command == (agent_home / ".safeyolo-interactive-command").read_bytes()
     assert first_interactive_command != first_command
-    assert b"codex-coord-supervisor.py" not in first_interactive_command
+    assert b"safeyolo-coord" not in first_interactive_command
     assert first_config == config_path.read_bytes()
-    assert config == {
-        "agent_name": "test-agent",
-        "coordinators": ["relay"],
-        "rooms": ["backlog", "releases"],
-        "workspace": "/workspace",
+    assert {key: config[key] for key in ("agent_name", "coordinators", "rooms", "workspace")} == {
+        "agent_name": "test-agent", "coordinators": ["relay"],
+        "rooms": ["backlog", "releases"], "workspace": "/workspace",
     }
+    assert config["harness"] == "codex"
+    assert config["page_limit"] == 16
+    assert config["work_timeout_seconds"] == 3600
+
     assert config_path.stat().st_mode & 0o777 == 0o600
-    assert (agent_home / ".safeyolo/codex-coord-supervisor.py").stat().st_mode & 0o111
-    assert 'exec "$HOME/.safeyolo/venv/bin/python" "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert (agent_home / ".safeyolo/safeyolo-coord").stat().st_mode & 0o111
+    assert 'exec "$HOME/.safeyolo/safeyolo-coord" supervise' in command
     assert "--dangerously-bypass-approvals-and-sandbox" in command
-    assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
+    assert "mcp+httpx" not in command
 
 
 def test_fresh_codex_coord_setup_requires_normal_login_first(tmp_path: Path) -> None:
@@ -1244,7 +1235,7 @@ def test_fresh_codex_coord_setup_requires_normal_login_first(tmp_path: Path) -> 
     assert result.returncode != 0
     assert "requires an adopted agent-local auth.json" in result.stderr
     assert "codex login --device-auth" in result.stderr
-    assert "/home/agent/.safeyolo/codex-auth-recovery.py adopt" in result.stderr
+    assert "/home/agent/.safeyolo/safeyolo-coord codex-state adopt" in result.stderr
 
 
 def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> None:
@@ -1314,7 +1305,7 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
         },
     )
 
-    config = json.loads((agent_home / ".safeyolo/codex-coord-supervisor.json").read_text())
+    config = json.loads((agent_home / ".safeyolo/coord-supervisor.json").read_text())
     assert config["harness"] == "codex"
     assert config["agent_name"] == "test-agent"
     assert config["rooms"] == ["backlog"]
@@ -1348,8 +1339,8 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
 
     command = (agent_home / ".safeyolo-command").read_text()
     assert 'exec codex "${args[@]}" "$@"' in command
-    assert '"$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
-    assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
+    assert '"$HOME/.safeyolo/safeyolo-coord"' not in command
+    assert not (agent_home / ".safeyolo/coord-supervisor.json").exists()
 
 
 def test_normal_codex_setup_does_not_import_host_subscription_state(
@@ -1379,7 +1370,7 @@ def test_normal_codex_setup_does_not_import_host_subscription_state(
     auth_path.write_bytes(auth_bytes)
     auth_path.chmod(0o600)
     subprocess.run(
-        [str(agent_home / ".safeyolo/codex-auth-recovery.py"), "adopt", "--home", str(agent_home)],
+        [str(agent_home / ".safeyolo/safeyolo-coord"), "codex-state", "adopt", "--home", str(agent_home)],
         check=True,
     )
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
@@ -1393,16 +1384,16 @@ def test_codex_reset_device_login_and_adopt_reapply_successfully(
     agent_home = tmp_path / "agent"
     operator_home.mkdir()
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
-    recovery = agent_home / ".safeyolo/codex-auth-recovery.py"
+    recovery = agent_home / ".safeyolo/safeyolo-coord"
     auth_path = agent_home / ".codex/auth.json"
 
     auth_bytes = b'{"auth": "first-agent-session"}\n'
     auth_path.write_bytes(auth_bytes)
     auth_path.chmod(0o600)
-    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    subprocess.run([str(recovery), "codex-state", "adopt", "--home", str(agent_home)], check=True)
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
 
-    subprocess.run([str(recovery), "reset", "--home", str(agent_home)], check=True)
+    subprocess.run([str(recovery), "codex-state", "reset", "--home", str(agent_home)], check=True)
     assert not auth_path.exists()
     auth_bytes = b'{"auth": "replacement-agent-session"}\n'
     auth_path.write_bytes(auth_bytes)
@@ -1416,9 +1407,9 @@ def test_codex_reset_device_login_and_adopt_reapply_successfully(
     )
     assert blocked.returncode != 0
     assert "codex login --device-auth" in blocked.stderr
-    assert "/home/agent/.safeyolo/codex-auth-recovery.py adopt" in blocked.stderr
+    assert "/home/agent/.safeyolo/safeyolo-coord codex-state adopt" in blocked.stderr
 
-    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    subprocess.run([str(recovery), "codex-state", "adopt", "--home", str(agent_home)], check=True)
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     assert auth_path.read_bytes() == auth_bytes
 
@@ -1446,7 +1437,7 @@ def test_codex_setup_marks_legacy_auth_unknown_without_repairing_it(
     )
 
     assert result.returncode != 0
-    assert "explicit adopt or reset is required" in result.stderr
+    assert "explicit agent-local adopt or reset" in result.stderr
     marker = json.loads((codex_home / ".safeyolo-provenance.json").read_text())
     assert marker["state"] == "legacy-unknown"
     assert auth_path.read_bytes() == auth_bytes
@@ -1491,7 +1482,7 @@ def test_codex_setup_rejects_unsafe_auth_metadata(
     )
 
     assert result.returncode != 0
-    assert "unsafe Codex auth.json" in result.stderr
+    assert "unsafe agent-local path" in result.stderr
     assert b"credential-sentinel" not in result.stderr.encode()
 
 
@@ -1522,9 +1513,9 @@ def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
         auth_path.write_bytes(b"synthetic-credential-sentinel")
         auth_path.chmod(0o644)
 
-    recovery = agent_home / ".safeyolo/codex-auth-recovery.py"
+    recovery = agent_home / ".safeyolo/safeyolo-coord"
     reset = subprocess.run(
-        [str(recovery), "reset", "--home", str(agent_home)],
+        [str(recovery), "codex-state", "reset", "--home", str(agent_home)],
         check=False,
         capture_output=True,
         text=True,
@@ -1533,7 +1524,7 @@ def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
         assert reset.returncode != 0
         assert "rmdir /home/agent/.codex/auth.json" in reset.stderr
         auth_path.rmdir()
-        subprocess.run([str(recovery), "reset", "--home", str(agent_home)], check=True)
+        subprocess.run([str(recovery), "codex-state", "reset", "--home", str(agent_home)], check=True)
     else:
         assert reset.returncode == 0, reset.stderr
         if unsafe_kind in {"symlink", "hardlink"}:
@@ -1542,98 +1533,65 @@ def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
     replacement = b"synthetic-replacement-agent-auth"
     auth_path.write_bytes(replacement)
     auth_path.chmod(0o600)
-    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    subprocess.run([str(recovery), "codex-state", "adopt", "--home", str(agent_home)], check=True)
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     assert auth_path.read_bytes() == replacement
 
 
-def test_codex_state_atomic_update_keeps_original_on_interruption(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _load_codex_state_module()
-    target = tmp_path / "config.toml"
-    target.write_text("model = 'before'\n")
-    target.chmod(0o600)
-
-    def interrupted_replace(_source: Path, _destination: Path) -> None:
-        raise OSError("synthetic interruption")
-
-    monkeypatch.setattr(state.os, "replace", interrupted_replace)
-    with pytest.raises(state.CodexStateError, match="atomically update"):
-        state._atomic_write(target, "model = 'after'\n", 0o600)
-
-    assert target.read_text() == "model = 'before'\n"
-    assert not list(tmp_path.glob(f".{target.name}.*"))
-
-
-def test_codex_state_rejects_wrong_owner_without_reading_auth(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _load_codex_state_module()
+def test_codex_state_atomic_update_keeps_original_on_interruption(tmp_path):
     home = tmp_path / "agent"
-    codex_home = home / ".codex"
-    codex_home.mkdir(parents=True)
-    codex_home.chmod(0o700)
-    auth_path = codex_home / "auth.json"
-    auth_path.write_bytes(b"owner-sentinel")
-    auth_path.chmod(0o600)
-    actual_uid = os.getuid()
-    monkeypatch.setattr(state.os, "getuid", lambda: actual_uid + 1)
-
-    with pytest.raises(state.CodexStateError, match="owner"):
-        state._stage(home, None)
-
-    assert auth_path.read_bytes() == b"owner-sentinel"
+    home.mkdir()
+    _codex_state(home, "--mcp-launcher", "/old-launcher")
+    codex = home / ".codex"
+    before = (codex / "config.toml").read_bytes()
+    codex.chmod(0o500)
+    try:
+        result = _codex_state(home, "--mcp-launcher", "/new-launcher", check=False)
+        assert result.returncode != 0
+        assert (codex / "config.toml").read_bytes() == before
+    finally:
+        codex.chmod(0o700)
 
 
-def test_codex_state_accepts_explicit_external_provider_without_chatgpt_auth(
-    tmp_path: Path,
-) -> None:
-    state = _load_codex_state_module()
+@pytest.mark.parametrize("actions", [("adopt", "reset"), ("reset", "adopt")])
+def test_codex_state_requires_one_authentication_action(tmp_path, actions):
+    codex = tmp_path / ".codex"
+    codex.mkdir()
+    auth = codex / "auth.json"
+    auth.write_bytes(b'{"auth": "agent-local-test-login"}\n')
+    auth.chmod(0o600)
+    result = _codex_state(tmp_path, *actions, check=False)
+    assert result.returncode != 0
+    assert "choose one Codex authentication action" in result.stderr
+    assert auth.read_bytes() == b'{"auth": "agent-local-test-login"}\n'
+    assert not (codex / ".safeyolo-provenance.json").exists()
+
+
+def test_codex_state_accepts_explicit_external_provider_without_chatgpt_auth(tmp_path):
     home = tmp_path / "agent"
-    codex_home = home / ".codex"
-    codex_home.mkdir(parents=True)
-    codex_home.chmod(0o700)
-    config_path = codex_home / "config.toml"
-    config_path.write_text('forced_chatgpt_auth = false\nmodel_provider = "local-review"\n')
-    config_path.chmod(0o600)
-    marker_path = codex_home / state.MARKER_NAME
-    marker_path.write_text(state._marker_value("agent-local"))
-    marker_path.chmod(0o600)
-
-    state._stage(
-        home,
-        "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
-        require_agent_local=True,
-    )
-
-    assert not (codex_home / "auth.json").exists()
-    assert json.loads(marker_path.read_text())["state"] == "external-provider"
-    managed = config_path.read_text()
-    assert "forced_chatgpt_auth = false" in managed
-    assert 'model_provider = "local-review"' in managed
-    assert "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher" in managed
+    (home / ".codex").mkdir(parents=True)
+    config = home / ".codex/config.toml"
+    config.write_text('forced_chatgpt_auth=false\nmodel_provider="local-review"\n')
+    config.chmod(0o600)
+    _codex_state(home, "--require-agent-local", "--mcp-launcher", "/native-launcher")
+    assert not (home / ".codex/auth.json").exists()
+    assert json.loads((home / ".codex/.safeyolo-provenance.json").read_text())["state"] == "external-provider"
+    assert tomllib.loads(config.read_text())["forced_chatgpt_auth"] is False
 
 
-def test_codex_state_rejects_mixed_external_provider_and_chatgpt_auth(
-    tmp_path: Path,
-) -> None:
-    state = _load_codex_state_module()
+def test_codex_state_rejects_mixed_external_provider_and_chatgpt_auth(tmp_path):
     home = tmp_path / "agent"
-    codex_home = home / ".codex"
-    codex_home.mkdir(parents=True)
-    codex_home.chmod(0o700)
-    config_path = codex_home / "config.toml"
-    config_path.write_text("forced_chatgpt_auth = false\n")
-    config_path.chmod(0o600)
-    auth_path = codex_home / "auth.json"
-    auth_path.write_text('{}\n')
-    auth_path.chmod(0o600)
-
-    with pytest.raises(state.CodexStateError, match="external-provider auth"):
-        state._stage(home, None, require_agent_local=True)
+    (home / ".codex").mkdir(parents=True)
+    config = home / ".codex/config.toml"
+    config.write_text('forced_chatgpt_auth=false\n')
+    config.chmod(0o600)
+    auth = home / ".codex/auth.json"
+    auth.write_bytes(b'fixture-agent-login')
+    auth.chmod(0o600)
+    result = _codex_state(home, "--require-agent-local", check=False)
+    assert result.returncode != 0
+    assert "also has auth.json" in result.stderr
+    assert auth.read_bytes() == b'fixture-agent-login'
 
 
 @pytest.mark.parametrize(

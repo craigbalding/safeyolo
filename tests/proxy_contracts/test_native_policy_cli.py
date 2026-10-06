@@ -23,12 +23,14 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tests.proxy_contracts.harness import child_process, read_events, request, wait_ready
+from tests.proxy_contracts.harness import ReadinessError, child_process, read_events, request, wait_ready
 from tests.proxy_contracts.scenarios import origin_server
 
 REPO = Path(__file__).resolve().parents[2]
 DENY = 'budget = 12000\n[hosts]\n"*" = {egress="deny", unknown_creds="prompt"}\n'
 AGENT_TOKEN = "synthetic-native-policy-fixture-agent-token"
+HOST_BINARIES = ("safeyolo", "safeyolo-coord", "safeyolo-proxy")
+GUEST_BINARIES = ("safeyolo-guest", "safeyolo-coord")
 pytestmark = pytest.mark.skipif(
     os.uname().sysname != "Linux", reason="#816 selects Ubuntu; host/platform suites have separate owners",
 )
@@ -96,51 +98,51 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                     capture=False, extra_config=""):
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
     root = directory / "installed"
-    installation = subprocess.run(
-        [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--artifacts", str(artifacts),
-         "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
-         "--profile", "debug"], capture_output=True, text=True, timeout=15,
-    )
-    assert installation.returncode == 0, installation.stderr
-    assert "commit=" in installation.stdout and "profile=" in installation.stdout
-    assert sorted(path.name for path in (root / "bin").iterdir()) == ["safeyolo", "safeyolo-proxy"]
-    assert not list(root.rglob("*.py")) and not (root / ".venv").exists()
-    assert (root / "data/admin_token").stat().st_mode & 0o777 == 0o600
-    assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
-    if source is not None:
-        (root / "policy.toml").write_text(source)
-    socket_parent = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR")
-    with tempfile.TemporaryDirectory(prefix="sy-native-", dir=socket_parent) as sockets:
-        paths = {name: str(Path(sockets) / f"{name}.sock") for name in ("alice", "bob")}
-        configuration = (f'admin_port = 0\nflow_store_enabled = {str(capture).lower()}\n'
-                         f'agent_api_enabled = {str(services or agent_api).lower()}\n')
-        if parent_proxy:
-            configuration += f'parent_proxy = {json.dumps(parent_proxy)}\n'
-        if services:
-            (root / "builtin-services").mkdir()
-            (root / "services").mkdir()
-            configuration += 'gateway_builtin_services_dir = "builtin-services"\ngateway_services_dir = "services"\n'
-        if services or agent_api:
-            agent_token = root / "data/agent_token"
-            agent_token.touch(mode=0o600)
-            agent_token.write_text(AGENT_TOKEN)
-        for index, (name, path) in enumerate(paths.items(), 2):
-            configuration += (f'[[listeners]]\nagent_id = "{name}"\nsocket_path = {json.dumps(path)}\n'
-                              f'source_id = "10.0.0.{index}"\n')
-        configuration += extra_config
-        (root / "config.toml").write_text(configuration)
-        environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
-                           SAFEYOLO_CONFIG_DIR=str(root),
-                           SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"),
-                           SAFEYOLO_NATIVE_WORKING_DIRECTORY=str(root),
-                           SAFEYOLO_DATA_DIR=str(root / "unused-legacy-data"))
-        # Retain proxy and CA variables. This fixture needs no installed host
-        # identity, extra events listener, Python launcher or external parent.
-        for key in ("PYTHONPATH", "SAFEYOLO_CLI_PYTHON", "SAFEYOLO_OPERATOR_INSTANCE_ID_FILE",
-                    "SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT", "SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT",
-                    "SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT", "SAFEYOLO_UPSTREAM_PROXY"):
-            environment.pop(key, None)
-        try:
+    try:
+        installation = subprocess.run(
+            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--artifacts", str(artifacts),
+             "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
+             "--profile", "debug"], capture_output=True, text=True, timeout=15,
+        )
+        assert installation.returncode == 0, installation.stderr
+        assert "commit=" in installation.stdout and "profile=" in installation.stdout
+        assert sorted(path.name for path in (root / "bin").iterdir()) == list(HOST_BINARIES)
+        assert not list(root.rglob("*.py")) and not (root / ".venv").exists()
+        assert (root / "data/admin_token").stat().st_mode & 0o777 == 0o600
+        assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
+        if source is not None:
+            (root / "policy.toml").write_text(source)
+        socket_parent = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR")
+        with tempfile.TemporaryDirectory(prefix="sy-native-", dir=socket_parent) as sockets:
+            paths = {name: str(Path(sockets) / f"{name}.sock") for name in ("alice", "bob")}
+            configuration = (f'admin_port = 0\nflow_store_enabled = {str(capture).lower()}\n'
+                             f'agent_api_enabled = {str(services or agent_api).lower()}\n')
+            if parent_proxy:
+                configuration += f'parent_proxy = {json.dumps(parent_proxy)}\n'
+            if services:
+                (root / "builtin-services").mkdir()
+                (root / "services").mkdir()
+                configuration += 'gateway_builtin_services_dir = "builtin-services"\ngateway_services_dir = "services"\n'
+            if services or agent_api:
+                agent_token = root / "data/agent_token"
+                agent_token.touch(mode=0o600)
+                agent_token.write_text(AGENT_TOKEN)
+            for index, (name, path) in enumerate(paths.items(), 2):
+                configuration += (f'[[listeners]]\nagent_id = "{name}"\nsocket_path = {json.dumps(path)}\n'
+                                  f'source_id = "10.0.0.{index}"\n')
+            configuration += extra_config
+            (root / "config.toml").write_text(configuration)
+            environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
+                               SAFEYOLO_CONFIG_DIR=str(root),
+                               SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"),
+                               SAFEYOLO_NATIVE_WORKING_DIRECTORY=str(root),
+                               SAFEYOLO_DATA_DIR=str(root / "unused-legacy-data"))
+            # Retain proxy and CA variables. This fixture needs no installed host
+            # identity, extra events listener, Python launcher or external parent.
+            for key in ("PYTHONPATH", "SAFEYOLO_CLI_PYTHON", "SAFEYOLO_OPERATOR_INSTANCE_ID_FILE",
+                        "SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT", "SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT",
+                        "SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT", "SAFEYOLO_UPSTREAM_PROXY"):
+                environment.pop(key, None)
             with child_process(
                 [str(root / "bin/safeyolo-proxy"), "--config", str(root / "config.toml")], root, environment,
             ) as process:
@@ -148,11 +150,14 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                 wait_ready(process, [readiness, *map(Path, paths.values())], root / "process.log",
                            readiness_file=readiness, expected_backend="rust-m2")
                 yield NativeInstance(root, process, paths, environment)
-        finally:
-            # The existing process fixture has stopped the proxy. Retain small
-            # diagnostics, but do not accumulate copied debug binaries per case.
-            for binary in ("safeyolo", "safeyolo-proxy"):
-                (root / "bin" / binary).unlink(missing_ok=True)
+    finally:
+        # The process fixture stops the proxy before these owned copies are
+        # removed. Cover installation/startup failures too; retain diagnostics
+        # and artifact identity sidecars, not repeated executable copies.
+        for binary in HOST_BINARIES:
+            (root / "bin" / binary).unlink(missing_ok=True)
+        for binary in GUEST_BINARIES:
+            (root / "assets/guest" / binary).unlink(missing_ok=True)
 
 
 def scoped_policy(port):
@@ -233,6 +238,25 @@ def test_installed_check_show_apply_and_scoped_enforcement(tmp_path):
             # Availability can refill with the real clock; reads must not
             # charge another evaluation or reduce the available quota.
             assert after["budgets"][key]["remaining"] >= before["remaining"]
+
+    assert instance.process.poll() is not None
+    assert not list((instance.root / "bin").iterdir())
+    for binary in GUEST_BINARIES:
+        assert not (instance.root / "assets/guest" / binary).exists()
+
+
+def test_installed_fixture_removes_executables_after_startup_failure(tmp_path):
+    with pytest.raises(ReadinessError, match="Proxy process exited"):
+        with native_instance(tmp_path, extra_config="\n[invalid\n"):
+            pytest.fail("Invalid configuration must not start a proxy")
+    root = tmp_path / "installed"
+    assert not list((root / "bin").iterdir())
+    for binary in GUEST_BINARIES:
+        assert not (root / "assets/guest" / binary).exists()
+        assert (root / "assets/guest" / f"{binary}.version").is_file()
+    assert (root / "process.log").is_file()
+    assert (root / "data/admin_token").stat().st_mode & 0o777 == 0o600
+    assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
 
 
 def test_installed_credential_approval_keeps_destination_scope(tmp_path):

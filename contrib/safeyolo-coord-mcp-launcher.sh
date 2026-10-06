@@ -13,12 +13,8 @@ if [ ! -r "$PROXY_ENV_FILE" ]; then
     echo "safeyolo-coord-mcp-launcher: cannot read $PROXY_ENV_FILE" >&2
     exit 1
 fi
-if [ ! -x "$LAUNCHER_DIR/venv/bin/python" ]; then
-    echo "safeyolo-coord-mcp-launcher: missing executable $LAUNCHER_DIR/venv/bin/python" >&2
-    exit 1
-fi
-if [ ! -r "$LAUNCHER_DIR/safeyolo-coord-mcp.py" ]; then
-    echo "safeyolo-coord-mcp-launcher: cannot read $LAUNCHER_DIR/safeyolo-coord-mcp.py" >&2
+if [ ! -x "$LAUNCHER_DIR/safeyolo-coord" ]; then
+    echo "safeyolo-coord-mcp-launcher: missing native executable $LAUNCHER_DIR/safeyolo-coord" >&2
     exit 1
 fi
 
@@ -27,4 +23,4 @@ set -a
 . "$PROXY_ENV_FILE"  # DOC: contrib/README.md
 set +a
 
-exec "$LAUNCHER_DIR/venv/bin/python" "$LAUNCHER_DIR/safeyolo-coord-mcp.py"
+exec "$LAUNCHER_DIR/safeyolo-coord" mcp

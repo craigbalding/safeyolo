@@ -136,6 +136,11 @@ pub(crate) async fn setup(agent: &Agent) -> Result<(), Error> {
             crate::host_platform::config_path(),
         )
         .env("SAFEYOLO_EXECUTABLE", root.join("bin/safeyolo"))
+        .env("SAFEYOLO_COORD_EXECUTABLE", root.join("bin/safeyolo-coord"))
+        .env(
+            "SAFEYOLO_COORD_GUEST_BINARY",
+            root.join("assets/guest/safeyolo-coord"),
+        )
         .status()
         .await?;
     if !result.success() {

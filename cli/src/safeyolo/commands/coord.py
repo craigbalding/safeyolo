@@ -1516,50 +1516,22 @@ def _interactive_loop(
 
 @coord_app.command("mcp-config")
 def mcp_config() -> None:
-    """Print custom-harness instructions for wiring coord MCP manually.
+    """Print native Coord MCP registration for a custom guest harness."""
+    console.print("""Bundled @claude and @codex setup registers native Coord automatically.
+For a custom harness, stage the installed product's matching Linux
+assets/guest/safeyolo-coord executable inside the sandbox. The executable
+uses the guest's HTTP proxy and fresh /app/agent_token on each call.
+Do not copy an operator token or host login. Preserve the guest's proxy and
+certificate environment when starting the adapter.
 
-    The MCP server is a standalone one-file adapter shipped at
-    `contrib/safeyolo-coord-mcp.py`. It only depends on `mcp` and `httpx` and
-    calls the coord Agent API via `http://_safeyolo.proxy.internal`, so the
-    agent sandbox does not need the SafeYolo package installed.
-
-    Identity is transport-derived: whichever sandbox the MCP server runs in
-    is attributed to that agent by the SafeYolo proxy. Same config works for
-    every agent.
-    """
-    console.print("""Bundled [bold]@claude[/] and [bold]@codex[/] host setup registers this server automatically.
-The manual steps below are for custom harnesses.
-
-[bold]1. Stage the standalone MCP server inside the agent sandbox[/]
-
-Copy `contrib/safeyolo-coord-mcp.py` from this checkout into the sandbox
-(via mount, host-script, or the agent's own tooling). Make it executable.
-
-[bold]2. Install its two dependencies inside the sandbox[/]
-
-  [dim]uv pip install --system 'mcp>=2.0' 'httpx>=0.25'[/]
-    (or your sandbox's usual python package tool)
-
-[bold]3. Add the MCP config to your agent's harness[/]
-
-Below is a minimal `.mcp.json` snippet. Adjust `command` to the path where
-you staged the script inside the sandbox.
-""")
-    config = {
-        "mcpServers": {
-            "safeyolo-coord": {
-                "command": "python3",
-                "args": ["/path/to/safeyolo-coord-mcp.py"],
-            }
-        }
-    }
-    console.print(json.dumps(config, indent=2))
-    console.print("""
-[bold]Notes[/]
-
-- No agent_id env var needed. Identity comes from proxy attribution.
-- Bearer token is read fresh from /app/agent_token per call (rotation-safe).
-- Overrides (rarely needed):
-    SAFEYOLO_COORD_BASE_URL   default http://_safeyolo.proxy.internal
-    SAFEYOLO_COORD_TOKEN_PATH default /app/agent_token
-""")
+Register the guest executable at its actual path. With the bundled staging
+path, a minimal .mcp.json registration is:""")
+    console.print(json.dumps({"mcpServers": {"safeyolo-coord": {
+        "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
+        "args": [],
+    }}}, indent=2))
+    console.print("""The launcher executes safeyolo-coord mcp without Python packages.
+For another staged path, set command to that executable and args to ["mcp"].
+Identity comes from the proxy; room membership is checked on every operation.
+SAFEYOLO_COORD_TOKEN_PATH selects another guest token file when explicitly
+configured. No caller-selected agent_id is accepted.""")

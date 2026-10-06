@@ -1,9 +1,28 @@
 # Supervised factory workers
 
 The `@codex-coord` and `@pi-coord` host setups run factory roles under the same
-event-driven supervisor. The ordinary `@codex` and `@pi` setups stay
+native `safeyolo-coord supervise` command. The ordinary `@codex` and `@pi` setups stay
 interactive and have no supervisor. A role's factory TOML selects its harness;
 that choice does not create another queue or state machine.
+
+Use the installed native product and its matching Linux guest Coord executable.
+Set up the worker's own login before enabling supervision, as described in
+[factory setup](factories.md#fresh-setup-check-approve-and-run).
+
+For a fresh native instance, first configure the agents through the native host
+commands. Then create a room and grant its agents access:
+
+```bash
+safeyolo --root INSTANCE coord start
+safeyolo --root INSTANCE coord room create backlog
+safeyolo --root INSTANCE coord grant backlog relay
+safeyolo --root INSTANCE coord grant backlog worker
+```
+
+Room grants use the configured agent identities. The guest client uses the
+Agent API and its own token; it receives no NATS or operator credentials.
+Old-product rooms and checkpoints are not converted. These commands prepare
+new native state and do not switch an existing running factory.
 
 Configure the rooms that the worker must receive from and the agent names that
 the operator designated as coordinators. Run from a trusted SafeYolo checkout
@@ -155,7 +174,7 @@ prompt. Active work and handoff identifiers remain in the supplied checkpoint.
 ## State and failure bounds
 
 The private state file is
-`~/.safeyolo/codex-coord-supervisor-state.json`. Atomic replacement and a
+`~/.safeyolo/coord-supervisor-state.json`. Atomic replacement and a
 single-owner lock protect it across supervisor restarts. It contains only:
 
 - one harness session ID;
@@ -206,9 +225,8 @@ recorded descendants.
 On Linux, the supervisor also acts as a child subreaper, so repeated recovery
 does not accumulate orphaned code-mode children or zombies. The supervisor
 requires Linux PID handles and fails closed before recovery if the kernel does
-not provide them. It uses the CPython pidfd wrappers when present and the Linux
-syscalls directly when a supported CPython build omits those optional
-wrappers.
+not provide them. The native command uses the Linux PID-handle syscalls. Supervision runs in
+the Linux guest; host staging also runs on macOS.
 
 ### Restart recovery
 
@@ -218,11 +236,14 @@ handle remains open, it snapshots and terminates the live invocation group.
 Recorded descendants that escaped into other groups still use individual PID
 handles and fingerprints.
 
-The upgrade from the model-owned Coord wait to the supervisor-owned wait keeps
-the canonical cursor, pending work, and handoff correlations but starts one
-clean harness session. This avoids replaying an interrupted legacy tool call with a
-missing tool result. Subsequent restarts preserve the healthy external-wait-era
-thread, including across an outbound handoff and its response.
+A restart with accepted attention preserves that attention before launching a
+turn. A restart after an interrupted turn cleans up the owned invocation and
+marks its work uncertain. The recovery prompt requires inspection of retained
+Coord history and the working tree before another write. A saved terminal
+checkpoint deduplicates the completed attention and does not dispatch it again.
+The native product starts with fresh state. It does not convert Python-era
+checkpoints or import old credentials. This replacement does not upgrade or
+restart an already running factory.
 
 ## Configuration
 
@@ -293,13 +314,13 @@ Selection and expiry appear in the agent room.
 The selected turn is instructed to finish after its handoff. The next task uses
 ordinary arguments and a fresh session. This is model selection, not a sandbox
 restriction: the model still has the agent's ordinary tools and workspace.
-Checkpoint version 7 adds the optional selection; version 6 work and cursors
-upgrade without a drain because the target protocol is unchanged.
+Native checkpoints use `safeyolo.coord-supervisor/v1`. Repair selection keeps
+the same declared role routes and exact task correlation.
 
 ### Runtime settings
 
 The host setup writes the private, non-secret configuration file
-`~/.safeyolo/codex-coord-supervisor.json`. In factory mode that configuration
+`~/.safeyolo/coord-supervisor.json`. In factory mode that configuration
 also binds the immutable operator edge and handoff table from the approved
 snapshot. Its `harness` value is exactly the role's approved `codex` or `pi`
 selection. It contains no inferred workflow state. The defaults are:
@@ -310,7 +331,7 @@ selection. It contains no inferred workflow state. The defaults are:
 | `page_limit` | 16 | Maximum returned and in-flight objects. |
 | `startup_timeout_seconds` | 480 | Bound before a launched harness turn starts. |
 | `work_timeout_seconds` | 3600 | Bound after a harness turn starts. |
-| `completion_grace_seconds` | 90 | Compatibility bound for an old thread that returns an empty MCP wait. |
+| `completion_grace_seconds` | 90 | Exit grace after a harness reports its completed turn. |
 | `backoff_initial_seconds` | 5 | First retry delay. |
 | `backoff_max_seconds` | 300 | Crash-loop retry cap. |
 
@@ -320,13 +341,10 @@ supervisor-owned wait. The supervisor rejects invalid or unbounded values.
 
 ## Debugging with a fake Codex harness
 
-`--debug` prints bounded supervisor decisions to stderr without publishing
-idle or debug events to Coord. The same mode can be enabled with
-`SAFEYOLO_COORD_SUPERVISOR_DEBUG=1`. `SAFEYOLO_COORD_SUPERVISOR_ONCE=1` is the
-environment equivalent of `--once`, which is useful when the staged command
-owns the supervisor arguments. Debug output reports cursor movement, page and
-accepted-object counts, re-arming, and harness invocation boundaries; it never
-prints message bodies.
+The native command reports failures on stderr. Use `inspect-state FILE` to
+read the bounded checkpoint summary. This command does not change state or
+release work. `supervise --once` runs one external-wait cycle and at most one
+model invocation. A successful process exit does not establish task completion.
 
 For a nested lab, `contrib/codex-coord-supervisor-fake-codex.sh` can replace
 Codex through `SAFEYOLO_CODEX_BIN`. It satisfies the subscription-login
@@ -335,8 +353,8 @@ valid Codex JSONL without making a model request:
 
 ```bash
 export SAFEYOLO_CODEX_BIN="$PWD/contrib/codex-coord-supervisor-fake-codex.sh"
-export SAFEYOLO_FAKE_CODEX_CAPTURE_DIR=/tmp/safeyolo-fake-codex
-python3 contrib/codex-coord-supervisor.py --once --debug
+export SAFEYOLO_FAKE_CODEX_CAPTURE_DIR="$HOME/safeyolo-fake-codex"
+/home/agent/.safeyolo/safeyolo-coord supervise --once
 ```
 
 Use a disposable nested agent and state file because a real Coord attention
@@ -349,8 +367,42 @@ suite. That proof covers session creation and exact resume, direct `send` tool
 results, the common terminal checkpoint, and agent-room telemetry without a
 model request.
 
-To exercise Pi's extension tool definitions with synthetic HTTP and token reads,
+To exercise Pi's extension tool definitions with deterministic native-command results,
 run `node cli/tests/run_pi_coord_extension.mjs /path/to/pi-coding-agent` using
 an already installed Pi package directory. This checks model-visible history,
 pagination metadata, cancellation, errors, and send results. It does not prove
 that a model chooses to recover history in a live task.
+
+## Native room setup and MCP use
+
+On the operator host, use a fresh native instance with registered agent
+identities. Replace `worker` with that instance's registered worker name. The
+commands below start the instance's owned NATS process, create one room and
+grant that agent send and receive permission:
+
+```sh
+safeyolo coord start
+safeyolo coord room create backlog
+safeyolo coord grant backlog worker
+```
+
+The first start obtains the pinned NATS binary through the configured network
+route. `coord start --binary PATH` uses an existing matching pinned binary.
+`coord status` reports running, stopped or unknown ownership. `coord stop`
+stops only the instance's verified owned NATS process. Restart uses the same
+instance, SQLite membership and JetStream messages. Old waits can fail and
+reconnect; live subscriptions do not survive the process. If NATS is unavailable,
+Coord reports unavailable or an unknown send outcome. Unrelated permitted proxy
+traffic continues. Inspect history before repeating an uncertain send.
+
+Inside a staged guest, `safeyolo-coord mcp` exposes the authorized Coord tools
+over JSON-RPC stdio. `safeyolo-coord call TOOL` reads the tool arguments from
+standard input and prints the canonical Agent API result. Both use the guest's
+proxy and fresh `/app/agent_token` for each call. They do not use an operator
+token or accept a caller-selected agent identity. The bundled launcher restores
+the guest's current proxy and certificate environment before execution.
+
+Local deterministic protocol tests establish transport and checkpoint behavior.
+They do not establish that a real model discovered or chose to use the tools.
+One observed real Codex send/read/wait journey remains required for G4. Full
+Agent API/VZ and Python-unavailable package journeys remain separate proof.

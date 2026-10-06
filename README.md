@@ -152,6 +152,17 @@ your host permissions and can copy files into the agent's readable home.
 | `@codex` | Launches Codex without copying host credentials. Complete the [first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login) after its first run installs the CLI. |
 | `@mise-shell` | Opens a shell with mise for installing your tools. |
 
+Claude and Codex setup now require the native Coord host executable and matching
+Linux guest assets from the [native installation](docs/native-policy.md#install-and-start).
+When using the retained Python CLI below, set
+`SAFEYOLO_COORD_EXECUTABLE="$HOME/.safeyolo-native/bin/safeyolo-coord"` in its
+environment. Native host commands supply this path automatically.
+
+Codex keeps its login inside the agent. After login, run
+`/home/agent/.safeyolo/safeyolo-coord codex-state adopt` inside that agent before
+reapplying its setup. This records credential provenance without copying host
+credentials.
+
 The example uses Claude Code; substitute another alias if needed:
 
 ```sh

@@ -30,83 +30,24 @@ stage_safeyolo_context "$AGENT_HOME" codex
 # The curated @codex-coord wrapper opts into a deterministic guest-side
 # supervisor. Normal @codex runs never enter this branch.
 if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
-    SUPERVISOR_SRC="$SCRIPT_DIR/codex-coord-supervisor.py"
-    if [ ! -f "$SUPERVISOR_SRC" ]; then
-        echo "codex-host-setup: expected supervisor at $SUPERVISOR_SRC" >&2
-        exit 1
-    fi
-    install -m 0755 "$SUPERVISOR_SRC" "$AGENT_HOME/.safeyolo/codex-coord-supervisor.py"
-    if [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ]; then
-        : "${SAFEYOLO_FACTORY_ROLE:?set the factory role}"
-        python3 "$SCRIPT_DIR/lib/stage-factory-supervisor.py" \
-            "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
+    # Native staging uses the host executable and a checked Linux guest artifact.
+    # shellcheck source=lib/stage-coord-native.sh
+    . "$SCRIPT_DIR/lib/stage-coord-native.sh"
+    stage_coord_native "$AGENT_HOME"
+    snapshot=${SAFEYOLO_FACTORY_SNAPSHOT:-${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}}
+    if [ -n "$snapshot" ]; then
+        role=${SAFEYOLO_FACTORY_ROLE:-${SAFEYOLO_CODEX_FACTORY_ROLE:-}}
+        : "${role:?set the factory role}"
+        "$coord_host" factory-stage \
+            "$AGENT_HOME/.safeyolo/coord-supervisor.json" \
             "$AGENT_HOME/.safeyolo/AGENTS.md" \
-            "$SAFEYOLO_AGENT_NAME" \
-            "$SAFEYOLO_FACTORY_SNAPSHOT" \
-            "$SAFEYOLO_FACTORY_ROLE" \
-            codex
-    elif [ -n "${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}" ]; then
-        : "${SAFEYOLO_CODEX_FACTORY_ROLE:?set the factory role}"
-        python3 "$SCRIPT_DIR/lib/stage-factory-supervisor.py" \
-            "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
-            "$AGENT_HOME/.safeyolo/AGENTS.md" \
-            "$SAFEYOLO_AGENT_NAME" \
-            "$SAFEYOLO_CODEX_FACTORY_SNAPSHOT" \
-            "$SAFEYOLO_CODEX_FACTORY_ROLE" \
-            codex
+            "$SAFEYOLO_AGENT_NAME" "$snapshot" "$role" codex
     else
         : "${SAFEYOLO_CODEX_COORD_ROOMS:?set a comma-separated receive room list for @codex-coord}"
         : "${SAFEYOLO_CODEX_COORDINATORS:?set a comma-separated coordinator name list for @codex-coord}"
-        python3 - \
-            "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
-            "$SAFEYOLO_AGENT_NAME" \
-            "$SAFEYOLO_CODEX_COORD_ROOMS" \
-            "$SAFEYOLO_CODEX_COORDINATORS" <<'PY'
-import json
-import os
-import re
-import sys
-import tempfile
-
-path, agent_name, room_text, coordinator_text = sys.argv[1:]
-
-
-def names(label, value):
-    result = []
-    for item in value.split(","):
-        item = item.strip()
-        if not item or re.fullmatch(r"[A-Za-z0-9_.-]+", item) is None:
-            raise SystemExit(f"codex-host-setup: invalid {label} name {item!r}")
-        if item not in result:
-            result.append(item)
-    if not result:
-        raise SystemExit(f"codex-host-setup: {label} list cannot be empty")
-    return result
-
-
-config = {
-    "agent_name": names("agent", agent_name)[0],
-    "rooms": names("room", room_text),
-    "coordinators": names("coordinator", coordinator_text),
-    "workspace": "/workspace",
-}
-directory = os.path.dirname(path)
-fd, temporary = tempfile.mkstemp(prefix=".codex-coord-supervisor.", dir=directory)
-try:
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        json.dump(config, handle, sort_keys=True, separators=(",", ":"))
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-except BaseException:
-    try:
-        os.unlink(temporary)
-    except FileNotFoundError:
-        pass
-    raise
-PY
+        "$coord_host" ordinary-stage \
+            "$AGENT_HOME/.safeyolo/coord-supervisor.json" \
+            "$SAFEYOLO_AGENT_NAME" "$SAFEYOLO_CODEX_COORD_ROOMS" "$SAFEYOLO_CODEX_COORDINATORS"
     fi
 fi
 
@@ -223,28 +164,11 @@ chmod +x "$AGENT_HOME/.safeyolo-command"
 install -m 0755 "$AGENT_HOME/.safeyolo-command" "$AGENT_HOME/.safeyolo-interactive-command"
 
 if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
-    python3 - "$AGENT_HOME/.safeyolo-command" <<'PY'
-import sys
-
-path = sys.argv[1]
-with open(path) as handle:
-    body = handle.read()
-interactive = 'exec codex "${args[@]}" "$@"\n'
-supervised = (
-    'exec "$HOME/.safeyolo/venv/bin/python" '
-    '"$HOME/.safeyolo/codex-coord-supervisor.py" '
-    '-- "${supervised_args[@]}" "$@"\n'
-)
-if body.count(interactive) != 1:
-    raise SystemExit("codex-host-setup: cannot install the supervised foreground command")
-with open(path, "w") as handle:
-    handle.write(body.replace(interactive, supervised))
-PY
+    "$coord_host" supervised-launcher "$AGENT_HOME/.safeyolo-command" codex
 fi
 
 # --- Stage and register the coord MCP server ---------------------------------
-# This runs after the foreground command is written so the shared bootstrap can
-# inject its guarded dependency setup immediately before the harness exec.
+# The shared bootstrap stages the native adapter and preserves harness config.
 if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
     "$SCRIPT_DIR/coord-mcp-bootstrap.sh" \
         --home "$AGENT_HOME" \

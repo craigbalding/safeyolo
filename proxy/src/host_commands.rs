@@ -101,6 +101,11 @@ async fn start_proxy() -> Result<(), Error> {
     }
     let config_path = host_platform::config_path();
     let config = crate::native_config::read(&config_path)?;
+    if let Err(error) = crate::coord_rooms::start(&root, None).await {
+        eprintln!(
+            "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
+        );
+    }
     let readiness = &config.readiness_file;
     match fs::remove_file(readiness) {
         Ok(()) => {}
@@ -145,6 +150,11 @@ async fn start_proxy() -> Result<(), Error> {
 }
 
 async fn stop_proxy() -> Result<(), Error> {
+    // NATS has its own verified process ownership. A stop error preserves its
+    // record and is reported independently of the proxy's lifecycle.
+    if let Err(error) = crate::coord_rooms::stop(&host_platform::config_dir()).await {
+        eprintln!("Coord stop failed: {error}");
+    }
     if !proxy_live() {
         return Ok(());
     }

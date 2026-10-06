@@ -36,42 +36,51 @@ if [[ -z $artifacts ]]; then
   build_options=()
   target_profile=debug
   if [[ $profile == production ]]; then build_options+=(--release); target_profile=release; fi
-  revision=$(git -C "$repository" rev-parse HEAD)
-  (cd "$repository"; SAFEYOLO_BUILD_REVISION=$revision CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1} \
+  revision=${SAFEYOLO_BUILD_REVISION:-}
+  if [[ -z $revision && -z $(git -C "$repository" status --porcelain) ]]; then revision=$(git -C "$repository" rev-parse HEAD); fi
+  revision_env=()
+  if [[ -n $revision ]]; then revision_env=(SAFEYOLO_BUILD_REVISION="$revision"); fi
+  (cd "$repository"; env "${revision_env[@]}" CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1} \
     scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked \
-      --bin safeyolo --bin safeyolo-proxy "${build_options[@]}")
+      --bin safeyolo --bin safeyolo-proxy --bin safeyolo-coord "${build_options[@]}")
   artifacts=${CARGO_TARGET_DIR:-$repository/proxy/target}/$target_profile
   if [[ -z $guest_artifacts ]]; then
-    SAFEYOLO_BUILD_REVISION=$revision SAFEYOLO_BUILD_PROFILE=$profile "$repository/scripts/build_guest_command.sh"
+    env "${revision_env[@]}" SAFEYOLO_BUILD_PROFILE=$profile "$repository/scripts/build_guest_command.sh"
     guest_artifacts=${SAFEYOLO_GUEST_TARGET_DIR:-$repository/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}$target_profile
   fi
 fi
 guest_artifacts=${guest_artifacts:-$artifacts}
-for binary in safeyolo safeyolo-proxy; do
+for binary in safeyolo safeyolo-proxy safeyolo-coord; do
   if [[ ! -x $artifacts/$binary ]]; then echo "Required native artifact is missing: $artifacts/$binary" >&2; exit 1; fi
 done
 cli_identity=$("$artifacts/safeyolo" --version)
 proxy_identity=$("$artifacts/safeyolo-proxy" --version)
-if [[ ${cli_identity#* commit=} != "${proxy_identity#* commit=}" ]]; then
+coord_identity=$("$artifacts/safeyolo-coord" --version)
+if [[ ${cli_identity#* commit=} != "${proxy_identity#* commit=}" || ${cli_identity#* commit=} != "${coord_identity#* commit=}" ]]; then
   echo 'CLI and proxy source/profile identities differ' >&2
   exit 1
 fi
-helper=$guest_artifacts/safeyolo-guest
-for required in "$helper" "$helper.version" "$helper.sha256"; do
-  if [[ ! -f $required ]]; then echo "Required Linux guest artifact is missing: $required; use scripts/build_guest_command.sh and --guest-artifacts" >&2; exit 1; fi
+for guest_binary in safeyolo-guest safeyolo-coord; do
+  helper=$guest_artifacts/$guest_binary
+  for required in "$helper" "$helper.version" "$helper.sha256"; do
+    if [[ ! -f $required ]]; then echo "Required Linux guest artifact is missing: $required; use scripts/build_guest_command.sh and --guest-artifacts" >&2; exit 1; fi
+  done
+  guest_identity=$(cat "$helper.version")
+  if [[ ${guest_identity#* commit=} != "${cli_identity#* commit=}" ]]; then echo 'Guest and host source/profile identities differ' >&2; exit 1; fi
+  if command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$helper"); else digest=$(shasum -a 256 "$helper"); fi
+  if [[ ${digest%% *} != "$(cat "$helper.sha256")" ]]; then echo 'Guest helper bytes differ from the built artifact checksum' >&2; exit 1; fi
+  if [[ $(uname -s) == Linux && $("$helper" --version) != "$guest_identity" ]]; then echo 'Guest helper executable identity differs' >&2; exit 1; fi
 done
-guest_identity=$(cat "$helper.version")
-if [[ ${guest_identity#* commit=} != "${cli_identity#* commit=}" ]]; then echo 'Guest and host source/profile identities differ' >&2; exit 1; fi
-if command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$helper"); else digest=$(shasum -a 256 "$helper"); fi
-if [[ ${digest%% *} != "$(cat "$helper.sha256")" ]]; then echo 'Guest helper bytes differ from the built artifact checksum' >&2; exit 1; fi
-if [[ $(uname -s) == Linux && $("$helper" --version) != "$guest_identity" ]]; then echo 'Guest helper executable identity differs' >&2; exit 1; fi
 mkdir -p -- "$root/bin" "$root/assets/guest"
-for binary in safeyolo safeyolo-proxy; do
+for binary in safeyolo safeyolo-proxy safeyolo-coord; do
   cp -- "$artifacts/$binary" "$root/bin/$binary"
   chmod 0755 "$root/bin/$binary"
 done
-cp -- "$helper" "$helper.version" "$helper.sha256" "$root/assets/guest/"
-chmod 0755 "$root/assets/guest/safeyolo-guest"
+for guest_binary in safeyolo-guest safeyolo-coord; do
+  helper=$guest_artifacts/$guest_binary
+  cp -- "$helper" "$helper.version" "$helper.sha256" "$root/assets/guest/"
+  chmod 0755 "$root/assets/guest/$guest_binary"
+done
 for asset in guest-init guest-init-static guest-init-per-run guest-proxy-forwarder guest-shell-bridge guest-desktop; do
   cp -- "$repository/cli/src/safeyolo/$asset.sh" "$root/assets/guest/$asset"
   chmod 0755 "$root/assets/guest/$asset"

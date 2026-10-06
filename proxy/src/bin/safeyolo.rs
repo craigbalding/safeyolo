@@ -256,7 +256,7 @@ async fn run() -> Result<(), Error> {
         [help] if matches!(help.as_str(), "--help" | "help") => {
             println!("{}", safeyolo_proxy::operator_commands::HELP);
             println!(
-                "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+                "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
             );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
@@ -284,6 +284,9 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [command, rest @ ..] if command == "test-context" => context_command(rest).await,
+        [command, rest @ ..] if command == "coord" => {
+            safeyolo_proxy::coord_rooms::run(&config, rest).await
+        }
         [guest, stage, home, share, assets, context]
             if guest == "guest-command" && stage == "stage" =>
         {

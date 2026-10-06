@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -36,6 +37,24 @@ from safeyolo.factory_doctor import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+NATIVE = REPO_ROOT / "proxy/target/debug/safeyolo-coord"
+COORD_EXECUTABLE = "/home/agent/.safeyolo/safeyolo-coord"
+BOOT_ID = "fixture-boot"
+
+
+@pytest.fixture(autouse=True)
+def native_coord_environment(monkeypatch, tmp_path):
+    assert NATIVE.is_file(), "Build safeyolo-coord before the staging/doctor checks"
+    monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(NATIVE))
+    monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(NATIVE))
+    try:
+        yield
+    finally:
+        # Doctor commands finish synchronously, including fixture setup.
+        # Keep diagnostics and release copies in every reached staged home.
+        for artifact in tmp_path.glob("**/.safeyolo/safeyolo-coord"):
+            if artifact.is_file() or artifact.is_symlink():
+                artifact.unlink(missing_ok=True)
 
 
 def _factory_file(
@@ -93,8 +112,8 @@ def _process_identity_sections(
     return (
         f"\n{_PROCESS_EXECUTABLE_MARKER}\n{executable_lines}\n"
         f"{_PROCESS_EXPECTED_MARKER}\n"
-        "python3=/usr/bin/python3.13\n"
-        "mcp-python=/usr/bin/python3.13\n"
+        f"coord-executable={COORD_EXECUTABLE}\n"
+        f"boot-id={BOOT_ID}\n"
         f"codex-command={codex_command}\n"
         f"codex-executable={codex_executable}\n"
         f"pi-command={pi_command}\n"
@@ -110,8 +129,8 @@ def _healthy_process_output(index: int, *, include_mcp: bool = True, native_code
     codex_command = "/opt/codex/bin/codex" if native_codex else "/home/agent/.local/bin/codex"
     codex_executable = codex_command if native_codex else "/home/agent/.local/lib/codex.js"
     lines = [
-        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
-        "/home/agent/.safeyolo/codex-coord-supervisor.py -- --flag",
+        f"{supervisor} 1 {supervisor} "
+        "/home/agent/.safeyolo/safeyolo-coord supervise -- --flag",
         (
             f"{codex} {supervisor} {codex} {codex_command} exec resume thread"
             if native_codex
@@ -119,14 +138,14 @@ def _healthy_process_output(index: int, *, include_mcp: bool = True, native_code
         ),
     ]
     executables = {
-        supervisor: "/usr/bin/python3.13",
+        supervisor: COORD_EXECUTABLE,
         codex: codex_command if native_codex else "/opt/node/bin/node",
     }
     if include_mcp:
         lines.append(
-            f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python /home/agent/.safeyolo/safeyolo-coord-mcp.py"
+            f"{mcp} {codex} {codex} /home/agent/.safeyolo/safeyolo-coord mcp"
         )
-        executables[mcp] = "/usr/bin/python3.13"
+        executables[mcp] = COORD_EXECUTABLE
     stat_fields = ["S", str(supervisor), str(codex), *("0" for _ in range(16)), "1234", "0"]
     return (
         "\n".join(lines)
@@ -146,14 +165,14 @@ def _healthy_pi_process_output(index: int) -> str:
     pi_command = "/home/agent/.local/bin/pi"
     pi_executable = "/home/agent/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/main.js"
     lines = [
-        f"{supervisor} 1 {supervisor} /usr/bin/python3.13 /home/agent/.safeyolo/codex-coord-supervisor.py -- --approve",
+        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/safeyolo-coord supervise -- --approve",
         f"{pi} {supervisor} {pi} node {pi_executable} --mode json --print",
     ]
     stat_fields = ["S", str(supervisor), str(pi), *("0" for _ in range(16)), "1234", "0"]
     return (
         "\n".join(lines)
         + _process_identity_sections(
-            {supervisor: "/usr/bin/python3.13", pi: "/opt/node/bin/node"},
+            {supervisor: COORD_EXECUTABLE, pi: "/opt/node/bin/node"},
             pi_command=pi_command,
             pi_executable=pi_executable,
         )
@@ -172,7 +191,7 @@ def test_doctor_accepts_the_supervisor_owned_pi_process_tree(tmp_path):
         "forge",
         "pi",
         platform,
-        {"pid": 102, "start_time": "1234", "descendants": []},
+        {"pid": 102, "start_time": "1234", "boot_id": BOOT_ID, "descendants": {}},
     )
 
     assert [(check.status, check.component) for check in checks] == [("PASS", "processes")]
@@ -185,7 +204,7 @@ def test_doctor_does_not_parse_supervisor_prompt_as_shell_syntax(prompt):
     checks = []
     platform = SimpleNamespace(popen_in_sandbox=lambda *_args, **_kwargs: _Process(output))
 
-    _inspect_processes(checks, "forge", "forge", "pi", platform, {"pid": 102, "start_time": "1234"})
+    _inspect_processes(checks, "forge", "forge", "pi", platform, {"pid": 102, "start_time": "1234", "boot_id": BOOT_ID})
 
     assert checks[0].status == "PASS", checks
 
@@ -199,7 +218,7 @@ def test_doctor_checks_executable_when_pi_rewrites_its_process_title(executable,
     checks = []
     platform = SimpleNamespace(popen_in_sandbox=lambda *_args, **_kwargs: _Process(output))
 
-    _inspect_processes(checks, "forge", "forge", "pi", platform, {"pid": 102, "start_time": "1234"})
+    _inspect_processes(checks, "forge", "forge", "pi", platform, {"pid": 102, "start_time": "1234", "boot_id": BOOT_ID})
 
     assert checks[0].status == expected_status, checks
 
@@ -249,7 +268,7 @@ def test_expected_pi_supervised_command_matches_the_staged_launcher():
     command = _expected_supervised_command("pi")
 
     assert 'export SAFEYOLO_PI_BIN="$pi_bin"' in command
-    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert 'exec "$HOME/.safeyolo/safeyolo-coord" supervise' in command
     assert 'exec "$pi_bin" "${args[@]}" "$@"' not in command
 
 
@@ -289,23 +308,23 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
         command.write_text(_expected_supervised_command())
         command.chmod(0o755)
         for filename, source_name in (
-            ("codex-coord-supervisor.py", "codex-coord-supervisor.py"),
-            ("safeyolo-coord-mcp.py", "safeyolo-coord-mcp.py"),
+            ("safeyolo-coord", None),
             ("safeyolo-coord-mcp-launcher", "safeyolo-coord-mcp-launcher.sh"),
         ):
             artifact = staged / filename
-            artifact.write_bytes((REPO_ROOT / "contrib" / source_name).read_bytes())
+            shutil.copyfile(NATIVE if source_name is None else REPO_ROOT / "contrib" / source_name, artifact)
             artifact.chmod(0o755)
         process_output[name] = _healthy_process_output(index)
-        (staged / "codex-coord-supervisor.json").write_text(
+        (staged / "coord-supervisor.json").write_text(
             json.dumps(_expected_supervisor_config(name, role_name, payload)) + "\n"
         )
         baseline = (REPO_ROOT / "docs/AGENTS.md").read_text()
         (staged / "AGENTS.md").write_text(baseline.rstrip() + "\n\n---\n\n" + role["contract_text"].lstrip())
-        (staged / "codex-coord-supervisor-state.json").write_text(
+        (staged / "coord-supervisor-state.json").write_text(
             json.dumps(
                 {
-                    "version": 6,
+                    "schema": "safeyolo.coord-supervisor/v1",
+                    "phase": "running", "harness": "codex", "repair_selection": None,
                     "thread_id": "thread-1",
                     "safe_cursor": 7,
                     "recent_attention_ids": [],
@@ -315,8 +334,8 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
                     "consecutive_failures": 0,
                     "owned_process": {
                         "pid": 100 + index,
-                        "start_time": "1234",
-                        "descendants": [],
+                        "token": f"linux:{BOOT_ID}:{100 + index}:1234",
+                        "descendants": {},
                     },
                 }
             )
@@ -434,7 +453,7 @@ def test_factory_doctor_rejects_an_unresolvable_staged_snapshot(cli_runner, fact
 
 def test_factory_doctor_does_not_hide_invalid_staged_binding_behind_drift_warning(cli_runner, factory_runtime):
     _original_path, _approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
-    config_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor.json"
+    config_path = factory_runtime["homes"]["forge"] / ".safeyolo/coord-supervisor.json"
     config = json.loads(config_path.read_text())
     config["rooms"] = ["wrong-room"]
     config_path.write_text(json.dumps(config) + "\n")
@@ -595,7 +614,7 @@ def test_factory_doctor_accepts_a_native_codex_executable(cli_runner, factory_ru
 
 
 def test_factory_doctor_accepts_a_healthy_between_turn_checkpoint(cli_runner, factory_runtime):
-    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
     state["owned_process"] = None
     state_path.write_text(json.dumps(state) + "\n")
@@ -614,9 +633,9 @@ def test_factory_doctor_treats_a_checkpoint_pid_transition_as_healthy(cli_runner
     # not a reason to stop in-flight work.
     supervisor = 52
     factory_runtime["process_output"]["forge"] = (
-        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
-        "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
-        + _process_identity_sections({supervisor: "/usr/bin/python3.13"})
+        f"{supervisor} 1 {supervisor} "
+        "/home/agent/.safeyolo/safeyolo-coord supervise --\n"
+        + _process_identity_sections({supervisor: COORD_EXECUTABLE})
         + f"\n{_PROCESS_STAT_MARKER}\n"
     )
 
@@ -631,15 +650,15 @@ def test_factory_doctor_treats_a_checkpoint_pid_transition_as_healthy(cli_runner
 def test_factory_doctor_accepts_the_mise_npm_codex_shim_tree(cli_runner, factory_runtime):
     supervisor, codex, mcp = 52, 102, 202
     command = (
-        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
-        "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{supervisor} 1 {supervisor} "
+        "/home/agent/.safeyolo/safeyolo-coord supervise --\n"
         f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js --dangerously-bypass-approvals-and-sandbox -c model=x exec resume thread\n"
-        f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python /home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
+        f"{mcp} {codex} {codex} /home/agent/.safeyolo/safeyolo-coord mcp\n"
     )
     executables = {
-        supervisor: "/usr/bin/python3.13",
+        supervisor: COORD_EXECUTABLE,
         codex: "/home/agent/.mise/installs/node/22.23.2/bin/node",
-        mcp: "/usr/bin/python3.13",
+        mcp: COORD_EXECUTABLE,
     }
     factory_runtime["process_output"]["forge"] = (
         command
@@ -671,19 +690,19 @@ def test_factory_doctor_accepts_native_codex_execed_by_mise_npm_launcher(
         "@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
     )
     command = (
-        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
-        "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{supervisor} 1 {supervisor} "
+        "/home/agent/.safeyolo/safeyolo-coord supervise --\n"
         f"{codex} {supervisor} {codex} {native} exec resume --json thread\n"
-        f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python "
-        "/home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
+        f"{mcp} {codex} {codex} "
+        "/home/agent/.safeyolo/safeyolo-coord mcp\n"
     )
     factory_runtime["process_output"]["forge"] = (
         command
         + _process_identity_sections(
             {
-                supervisor: "/usr/bin/python3.13",
+                supervisor: COORD_EXECUTABLE,
                 codex: native,
-                mcp: "/usr/bin/python3.13",
+                mcp: COORD_EXECUTABLE,
             },
             codex_command="/home/agent/.mise/shims/codex",
             codex_executable="/usr/local/bin/mise",
@@ -712,61 +731,22 @@ def test_factory_doctor_treats_stopped_roles_as_state_not_corruption(cli_runner,
     assert "checkpoint is invalid" not in result.output
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4])
-def test_factory_doctor_accepts_supervisor_compatible_legacy_checkpoints(cli_runner, factory_runtime, version):
-    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6])
+def test_factory_doctor_rejects_old_product_checkpoints_without_conversion(cli_runner, factory_runtime, version):
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
+    state.pop("schema")
     state["version"] = version
-    state["awaiting_handoff"] = None
-    state.pop("awaiting_handoffs")
-    if version == 1:
-        state.pop("awaiting_handoff")
-    if version < 4:
-        state.pop("briefs")
     state_path.write_text(json.dumps(state) + "\n")
     before = state_path.read_bytes()
-
     result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
-
-    assert result.exit_code == 0, result.output
-    assert "PASS component=checkpoint role=owner agent=forge" in result.output
-    assert state_path.read_bytes() == before
-
-
-def test_factory_doctor_reports_version_five_work_that_must_be_drained(
-    cli_runner,
-    factory_runtime,
-):
-    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
-    state = json.loads(state_path.read_text())
-    state["version"] = 5
-    state["in_flight"] = [
-        {
-            "attention_id": "attn-" + "6" * 32,
-            "room_name": "backlog",
-            "sender_agent_name": "relay",
-            "sender_agent_id": "agent-relay",
-            "sequence": 11,
-            "body": "TASK task=one assignee=forge",
-            "requires_terminal": True,
-        }
-    ]
-    state_path.write_text(json.dumps(state) + "\n")
-    before = state_path.read_bytes()
-
-    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
-
     assert result.exit_code == 1, result.output
-    assert "FAIL component=checkpoint role=owner agent=forge" in result.output
-    output = " ".join(result.output.split())
-    assert "drain" in output
-    assert "safeyolo factory check FACTORY.toml" in output
-    assert "safeyolo factory approve FACTORY.toml --yes" in output
+    assert "FAIL component=checkpoint role=owner agent=forge checkpoint is invalid" in result.output
     assert state_path.read_bytes() == before
 
 
 def test_factory_doctor_accepts_current_concurrent_awaiting_handoffs(cli_runner, factory_runtime):
-    state_path = factory_runtime["homes"]["relay"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state_path = factory_runtime["homes"]["relay"] / ".safeyolo/coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
     state["awaiting_handoffs"] = [
         {
@@ -790,7 +770,7 @@ def test_factory_doctor_accepts_current_concurrent_awaiting_handoffs(cli_runner,
 
 
 def test_factory_doctor_rejects_null_current_awaiting_handoff(cli_runner, factory_runtime):
-    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
     state["awaiting_handoffs"] = [None]
     state_path.write_text(json.dumps(state) + "\n")
@@ -804,7 +784,7 @@ def test_factory_doctor_rejects_null_current_awaiting_handoff(cli_runner, factor
 
 
 def test_factory_doctor_rejects_old_in_flight_task_protocol(cli_runner, factory_runtime):
-    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
     state["in_flight"] = [
         {
@@ -904,9 +884,9 @@ def test_factory_doctor_rejects_arbitrary_executables_with_valid_process_relatio
 ):
     stat_fields = ["S", "52", "102", *("0" for _ in range(16)), "1234", "0"]
     factory_runtime["process_output"]["forge"] = (
-        "52 1 52 /tmp/python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        "52 1 52 /tmp/python3 /home/agent/.safeyolo/safeyolo-coord supervise --\n"
         + f"102 52 102 {codex_command}\n"
-        + "202 102 102 /tmp/python /home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
+        + "202 102 102 /tmp/python /home/agent/.safeyolo/safeyolo-coord mcp\n"
         + _process_identity_sections({52: "/tmp/python3", 102: codex_executable, 202: "/tmp/python"})
         + f"\n{_PROCESS_STAT_MARKER}\n"
         "102 (arbitrary) " + " ".join(stat_fields)
@@ -926,8 +906,7 @@ def test_factory_doctor_rejects_noop_staged_command_and_artifacts(cli_runner, fa
         '#!/bin/sh\n# exec "$HOME/.safeyolo/venv/bin/python" "$HOME/.safeyolo/codex-coord-supervisor.py"\nexit 0\n'
     )
     for filename in (
-        "codex-coord-supervisor.py",
-        "safeyolo-coord-mcp.py",
+        "safeyolo-coord",
         "safeyolo-coord-mcp-launcher",
     ):
         (home / ".safeyolo" / filename).write_text("#!/bin/sh\nexit 0\n")
@@ -1014,7 +993,7 @@ def test_factory_doctor_rejects_unowned_observation_payload(cli_runner, factory_
 
 @pytest.mark.parametrize(
     "filename",
-    ["codex-coord-supervisor.py", "safeyolo-coord-mcp.py", "safeyolo-coord-mcp-launcher"],
+    ["safeyolo-coord", "safeyolo-coord-mcp-launcher"],
 )
 def test_factory_doctor_rejects_noop_staged_artifact(cli_runner, factory_runtime, filename):
     artifact = factory_runtime["homes"]["forge"] / ".safeyolo" / filename
@@ -1042,7 +1021,7 @@ def test_factory_doctor_rejects_prepended_staged_instructions(cli_runner, factor
 
 
 def test_factory_doctor_fails_on_corrupt_state_without_changing_it(cli_runner, factory_runtime):
-    state = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state = factory_runtime["homes"]["forge"] / ".safeyolo/coord-supervisor-state.json"
     state.write_text('{"version":4,"safe_cursor":"secret payload"}\n')
     before = state.read_bytes()
     before_stat = state.stat()
