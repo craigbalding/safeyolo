@@ -218,26 +218,37 @@ done
         guest_identity = cli('agent', 'shell', name, '-c', '/safeyolo/safeyolo-guest --version').stdout.strip()
         assert guest_identity == asset_identities['assets/guest/safeyolo-guest'], f'booted guest identity differs: {guest_identity}'
         host_launcher(str(script))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
-            list(workers.map(lambda selected: cli('agent', 'start', selected), (name, peer)))
+        # Challenge creation while the sandbox has no coding command yet.
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
             list(workers.map(lambda _: cli('agent', 'start', name), range(2)))
         original = until(active, 'native coding command')
-        peer_original = until(lambda: active(peer), 'independent peer command')
         assert original['run_id'] == sandbox['run_id']
         assert original['launcher']['source'] == 'host default', original
+        assert original['launch_id'], original
+        record = launch()
+        until(lambda: (workspace / 'starts').exists(), 'guest command startup')
+        assert len((workspace / 'starts').read_text().splitlines()) == 1, 'concurrent start duplicated the command'
+        guest_pid = (workspace / 'starts').read_text().strip()
+        until(lambda: hooks.exists() and len(hooks.read_text().splitlines()) == 2, 'launch hooks')
+        assert hooks.read_text().splitlines() == [
+            f"{original['launch_id']} pre_launch", f"{original['launch_id']} post_launch",
+        ]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+            list(workers.map(lambda selected: cli('agent', 'start', selected), (name, peer)))
+        current = until(active, 'coding command after concurrent peer start')
+        for key in ('agent_id', 'run_id', 'launch_id'):
+            assert current[key] == original[key], (key, original, current)
+        current_launch = launch()
+        for key in ('pid', 'process_token', 'runner_pid', 'runner_token', 'pane_id', 'tmux_socket'):
+            assert current_launch[key] == record[key], (key, record, current_launch)
+        peer_original = until(lambda: active(peer), 'independent peer command')
         assert original['run_id'] != peer_original['run_id']
         assert original['launch_id'] != peer_original['launch_id']
-        record = launch()
         original_runtime = json.loads((root / 'agents' / name / 'runtime.json').read_text())
         peer_runtime = json.loads((root / 'agents' / peer / 'runtime.json').read_text())
         peer_record = json.loads((root / 'agents' / peer / 'current-launch.json').read_text())
         actual_socket = tmux(record, 'display-message', '-p', '-t', record['pane_id'], '#{socket_path}').stdout.strip()
         assert record['tmux_socket'] == actual_socket
-        until(lambda: (workspace / 'starts').exists(), 'guest command startup')
-        assert len((workspace / 'starts').read_text().splitlines()) == 1, 'concurrent start duplicated the command'
-        guest_pid = (workspace / 'starts').read_text().strip()
-        until(lambda: hooks.exists() and len(hooks.read_text().splitlines()) == 2, 'launch hooks')
         next_launcher = 'tmux-pane' if sys.platform == 'linux' else 'tmux-window'
         host_launcher(next_launcher)
         exercise_viewer(original, record, 'detached-viewer', detach=True)
