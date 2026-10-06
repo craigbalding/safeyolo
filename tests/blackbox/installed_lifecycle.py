@@ -197,13 +197,17 @@ def prepare_owner(
     env["SAFEYOLO_SUBNET_BASE"] = "76"
     env["SAFEYOLO_COORD_DATA_DIR"] = str(config_dir / "data/coord")
     env["SAFEYOLO_NATS_TEST_INSTANCE"] = uuid.uuid4().hex
+    if __package__:
+        from .installed_sections import prepare_native_instance
+    else:
+        from installed_sections import prepare_native_instance
+    prepare_native_instance(source_dir, config_dir)
     checked([cli, "init", "--no-interactive"], env=env)
-    for name in ("share", "bin"):
-        source = source_dir / name
-        target = config_dir / name
-        assert source.is_dir(), f"owner instance needs bootstrapped {source}"
-        target.rmdir()
-        target.symlink_to(source, target_is_directory=True)
+    source = source_dir / "share"
+    target = config_dir / "share"
+    assert source.is_dir(), f"owner instance needs bootstrapped {source}"
+    target.rmdir()
+    target.symlink_to(source, target_is_directory=True)
     config_path = config_dir / "config.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["proxy"]["backend"] = "rust"

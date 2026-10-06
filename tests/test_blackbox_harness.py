@@ -10,6 +10,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from contextlib import contextmanager
@@ -39,6 +40,33 @@ def native_binary(tmp_path):
     binary.write_text("#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 (fixture)\\n'\n")
     binary.chmod(0o755)
     return binary
+
+
+def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch):
+    """Prepared executables serve fresh section state through the real caller."""
+    binary = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
+    if not binary:
+        pytest.skip("requires the built native CLI (SAFEYOLO_TEST_NATIVE_CLI)")
+    from safeyolo.agent_lifecycle import list_agent_runtimes
+
+    with tempfile.TemporaryDirectory(prefix="sy908-", dir="/tmp") as directory:
+        parent = Path(directory)
+        source = parent / "prepared"
+        (source / "bin").mkdir(parents=True)
+        (source / "bin/safeyolo").symlink_to(binary)
+        (source / "assets").mkdir()
+        (source / "assets/input").write_bytes(b"immutable prepared input")
+        roots = [parent / name for name in ("subject", "owner")]
+        for root in roots:
+            installed_sections.prepare_native_instance(source, root)
+            monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+            monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
+            assert list_agent_runtimes() == []
+            assert (root / "bin/safeyolo").resolve() == Path(binary).resolve()
+            assert (root / "assets/input").stat().st_ino == (source / "assets/input").stat().st_ino
+        assert (roots[0] / "data/admin_token").read_bytes() != (roots[1] / "data/admin_token").read_bytes()
+        assert (roots[0] / "config.toml").stat().st_ino != (roots[1] / "config.toml").stat().st_ino
+        assert not (source / "config.toml").exists()
 
 
 def test_shared_approval_transport_keeps_owned_selection_when_preparation_fails(tmp_path_factory, monkeypatch):

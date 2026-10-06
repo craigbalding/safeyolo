@@ -15,6 +15,9 @@ def make_install_checkout(tmp_path: Path) -> Path:
     (checkout / "proxy").mkdir(parents=True)
     for relative in ("install.sh", "pyproject.toml", "proxy/Cargo.toml"):
         shutil.copy2(REPO_ROOT / relative, checkout / relative)
+    # Interpreter controls supply the guest artifact, as a macOS source
+    # install must. They do not compile or execute guest code.
+    (checkout / "safeyolo-guest").write_bytes(b"supplied Linux guest fixture\n")
     return checkout
 
 
@@ -112,6 +115,7 @@ def run_installer(
             "BASH_ENV": "/dev/null",
             "FAKE_UV_LOG": str(log),
             "FAKE_UV_STATE": str(state),
+            "SAFEYOLO_GUEST_HELPER": str(checkout / "safeyolo-guest"),
             # The fake cargo executable creates the expected release artifact.
             **settings,
         }
@@ -235,11 +239,7 @@ def test_install_preserves_acquisition_failure_details(
 
 def test_install_derives_changed_python_boundaries_from_pyproject(tmp_path: Path) -> None:
     """Changing project metadata changes the uv request without installer edits."""
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    (checkout / "proxy").mkdir()
-    (checkout / "proxy/Cargo.toml").write_text("[package]\nname = 'fixture'\n")
-    (checkout / "install.sh").write_text((REPO_ROOT / "install.sh").read_text())
+    checkout = make_install_checkout(tmp_path)
     project = (REPO_ROOT / "pyproject.toml").read_text()
     project = project.replace('requires-python = ">=3.12,<3.14"', 'requires-python = ">=3.11,<3.13"')
     (checkout / "pyproject.toml").write_text(project)
@@ -259,6 +259,19 @@ def test_install_derives_changed_python_boundaries_from_pyproject(tmp_path: Path
     assert ">=3.11,<3.13" in lines
     assert ">=3.12,<3.14" not in lines
     assert "[--python] [/fake/python-3.12]" in lines
+
+
+def test_install_missing_guest_artifact_preserves_input_error(tmp_path: Path) -> None:
+    """An absent supplied artifact must fail before creating the tool environment."""
+    checkout = make_install_checkout(tmp_path)
+    fake_bin, log, state = make_fake_uv(tmp_path)
+    result = run_installer(
+        checkout, fake_bin, log, state,
+        SAFEYOLO_GUEST_HELPER=str(tmp_path / "missing-guest"),
+    )
+    assert result.returncode != 0
+    assert "provide SAFEYOLO_GUEST_HELPER with the matching Linux guest artifact" in result.stderr
+    assert not log.exists()
 
 
 def test_install_tool_failure_preserves_uv_diagnostics(tmp_path: Path) -> None:
@@ -292,16 +305,9 @@ def test_install_avoids_empty_nounset_array_expansion() -> None:
 
 def test_install_builds_native_proxy_without_factory_disk_reserve(tmp_path: Path) -> None:
     """A source install can start its native build below the factory's reserve."""
-    checkout = tmp_path / "checkout"
-    (checkout / "proxy").mkdir(parents=True)
+    checkout = make_install_checkout(tmp_path)
     (checkout / "scripts").mkdir()
-    for relative in (
-        "install.sh",
-        "pyproject.toml",
-        "proxy/Cargo.toml",
-        "scripts/cargo_with_space.sh",
-    ):
-        shutil.copy2(REPO_ROOT / relative, checkout / relative)
+    shutil.copy2(REPO_ROOT / "scripts/cargo_with_space.sh", checkout / "scripts/cargo_with_space.sh")
 
     fake_bin, log, state = make_fake_uv(tmp_path)
     cargo_log = tmp_path / "cargo.log"

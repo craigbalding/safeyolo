@@ -132,6 +132,10 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     binary = tmp_path / "selected-proxy"
     binary.write_bytes(b"selected debug runtime, different from checkout release bytes")
     binary.chmod(0o755)
+    host_binaries = {name: tmp_path / name for name in ("safeyolo", "safeyolo-coord")}
+    for name, path in host_binaries.items():
+        path.write_bytes(f"selected host {name} bytes".encode())
+        path.chmod(0o755)
     guest = tmp_path / "selected-guest"
     guest.write_bytes(b"selected Linux guest command bytes")
     guest.chmod(0o755)
@@ -154,6 +158,8 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     assert f".dev0+g{REVISION}.debug-" in wheel.name
     with zipfile.ZipFile(wheel) as archive:
         assert archive.read("safeyolo/bin/safeyolo-proxy") == binary.read_bytes()
+        for name, path in host_binaries.items():
+            assert archive.read(f"safeyolo/bin/{name}") == path.read_bytes()
         assert archive.read("safeyolo/bin/safeyolo-guest") == guest.read_bytes()
         assert json.loads(archive.read("safeyolo/_native_build.json")) == native
         wheel_metadata, = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]

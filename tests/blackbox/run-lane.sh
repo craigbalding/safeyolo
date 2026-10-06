@@ -95,6 +95,22 @@ fi
 uv sync --frozen --group dev
 export PATH="$(uv tool dir --bin):$REPO_ROOT/.venv/bin:$PATH"
 
+if [ "$PREPARE_ONLY" = true ]; then
+    # The installed Python workflow calls the native lifecycle owner in each
+    # instance. Reuse the native installer for its complete host/guest layout.
+    NATIVE_ARTIFACTS="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installed_host_smoke import _installed_rust_binary
+binary, _ = _installed_rust_binary(sys.argv[2])
+print(binary.parent)
+PY
+)"
+    GUEST_HELPER="${SAFEYOLO_GUEST_HELPER:-${SAFEYOLO_GUEST_TARGET_DIR:-$INSTALL_ROOT/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}release/safeyolo-guest}"
+    "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" \
+        --artifacts "$NATIVE_ARTIFACTS" --guest-artifacts "$(dirname "$GUEST_HELPER")"
+fi
+
 if [ "$LANE" != "proxy" ]; then
     if [ "$(uname -s)" = "Linux" ]; then
         # Bootstrap owns the package list.  Read its structured preflight and

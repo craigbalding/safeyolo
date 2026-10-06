@@ -582,7 +582,7 @@ async fn pseudo_terminal_retains_workflow_target_through_navigation_and_unavaila
     let path = root.to_owned();
     let output = tokio::task::spawn_blocking(move || {
         let mut master=-1;let mut slave=-1;
-        assert_eq!(unsafe {libc::openpty(&mut master,&mut slave,std::ptr::null_mut(),std::ptr::null(),std::ptr::null())},0);
+        assert_eq!(unsafe {libc::openpty(&mut master,&mut slave,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut())},0);
         let mut terminal = unsafe {fs::File::from_raw_fd(master)};
         let slave = unsafe {fs::File::from_raw_fd(slave)};
         let mut child=std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))

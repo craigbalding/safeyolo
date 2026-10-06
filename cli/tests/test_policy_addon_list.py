@@ -166,6 +166,7 @@ def test_missing_addons_file_is_rejected(tmp_config_dir):
     result = runner.invoke(
         app,
         ["policy", "addon-list", "add", "test_context", "target_hosts", "target.example.com"],
+        env={"COLUMNS": "512"},
     )
 
     assert result.exit_code == 1

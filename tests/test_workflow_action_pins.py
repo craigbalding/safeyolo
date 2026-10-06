@@ -44,6 +44,10 @@ def test_external_actions_use_documented_full_sha_pins() -> None:
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if "uses:" not in line:
                 continue
+            # Local reusable workflows use this checkout's source, not an
+            # external action ref. GitHub's job-level syntax has no @ref.
+            if re.fullmatch(r"\s+uses: \./\.github/workflows/[\w-]+\.ya?ml\s*", line):
+                continue
             match = ACTION_LINE.fullmatch(line)
             assert match is not None, f"{path}:{line_number}: cannot validate action pin"
 

@@ -26,14 +26,16 @@ export SAFEYOLO_LOGS_DIR="$SAFEYOLO_CONFIG_DIR/logs"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_CONFIG_DIR/data/coord"
 export SAFEYOLO_NATS_TEST_INSTANCE="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 unset SAFEYOLO_RUST_PROXY
-safeyolo init --no-interactive
 python3 - "$PACKAGE_DIR/prepared" "$SAFEYOLO_CONFIG_DIR" "$SCRIPT_DIR" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[3])
-from installed_sections import copy_prepared_nats
-copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
+from installed_sections import copy_prepared_nats, prepare_native_instance
+source, root = Path(sys.argv[1]), Path(sys.argv[2])
+prepare_native_instance(source, root)
+copy_prepared_nats(source, root)
 PY
+safeyolo init --no-interactive
 touch "$SAFEYOLO_CONFIG_DIR/.safeyolo-platform-smoke"
 python3 - "$SAFEYOLO_CONFIG_DIR/config.yaml" <<'PY'
 import sys
