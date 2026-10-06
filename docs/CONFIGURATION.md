@@ -320,27 +320,25 @@ The folder chosen by `agent add` is mounted read-write at `/workspace`.
 To change it, replace `~/new-work` with an existing directory you own:
 
 ```sh
-safeyolo agent config work --folder ~/new-work
+safeyolo agent configure work --workspace ~/new-work
 ```
 
 Relative paths and `~` are normalized before saving. Use
 `--dangerously-allow-unowned` only when the ownership mismatch is intentional.
-The `--folder` option on `agent run` instead overrides the workspace for that
-run without changing the saved folder.
 
 Memory allocation is persistent per agent and defaults to 4096 MiB.
 To change it, supply the desired size in MiB:
 
 ```sh
-safeyolo agent config work --memory 8192
+safeyolo agent configure work --memory 8192
 ```
 
 Workspace and memory changes take effect on the next start. If `work` is
-running, stop and run it to apply them:
+running, stop and start it to apply them:
 
 ```sh
 safeyolo agent stop work
-safeyolo agent run work
+safeyolo agent start work
 ```
 
 These changes do not recreate the agent, rerun its host setup, or remove its

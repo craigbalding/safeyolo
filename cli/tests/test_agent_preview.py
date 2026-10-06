@@ -1014,7 +1014,7 @@ def test_desktop_command_requires_running_agent():
 
     assert result.exit_code == 1
     assert "Agent 'codey' is not running" in result.output
-    assert "safeyolo agent run codey" in result.output
+    assert "safeyolo agent start codey" in result.output
 
 
 def test_desktop_status_uses_core_launcher_without_preview():
@@ -1631,7 +1631,12 @@ def _run_preview_in_subprocess(tmp_path, *, guest_port: int):
     stderr_file = tmp_path / "stderr.log"
     runner = tmp_path / "runner.py"
     runner.write_text(
+        "import faulthandler\n"
+        "import socket\n"
         "import sys\n"
+        "faulthandler.dump_traceback_later(4.0)\n"
+        "# This loopback signal fixture does not use a resolved server name.\n"
+        "socket.getfqdn = lambda host: host\n"
         f"import safeyolo.preview as p\n"
         f"events_path = {str(events_file)!r}\n"
         f"ready_path = {str(ready_file)!r}\n"
@@ -1640,6 +1645,7 @@ def _run_preview_in_subprocess(tmp_path, *, guest_port: int):
         "    with open(events_path, 'a') as f:\n"
         "        f.write(event + '\\n')\n"
         "    if event == 'agent.preview_open':\n"
+        "        faulthandler.cancel_dump_traceback_later()\n"
         "        with open(ready_path, 'w') as f:\n"
         "            f.write('go')\n"
         "p.write_event = _capture\n"

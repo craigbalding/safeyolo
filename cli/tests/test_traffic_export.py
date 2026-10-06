@@ -192,10 +192,6 @@ def test_export_publication_state_rejects_cancel_before_commit(tmp_path):
         state.publish(tmp_path / "staged", tmp_path / "destination")
 
 
-
-
-
-
 def test_export_cleanup_warning_keeps_published_result(tmp_path, monkeypatch):
     destination = tmp_path / "export.bin"
     destination.write_bytes(b"prior")
@@ -215,8 +211,6 @@ def test_export_cleanup_warning_keeps_published_result(tmp_path, monkeypatch):
     assert destination.read_bytes() == b"replacement"
     assert result.cleanup_warning == "staging cleanup warning"
     assert not list(tmp_path.glob(".export-*"))
-
-
 
 
 def test_export_supports_long_valid_destination_basename(tmp_path):

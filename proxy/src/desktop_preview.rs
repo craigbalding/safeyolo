@@ -61,6 +61,7 @@ fn new_unlock_code() -> String {
 
 struct Access {
     agent: String,
+    config: std::path::PathBuf,
     host_port: u16,
     token: String,
     cookie_name: String,
@@ -87,6 +88,7 @@ impl Preview {
         let port = listener.local_addr()?.port();
         let access = Arc::new(Access {
             agent: agent.to_owned(),
+            config: crate::host_platform::config_path(),
             host_port: port,
             token: format!(
                 "{}{}",
@@ -193,7 +195,9 @@ async fn accept(listener: TcpListener, access: Arc<Access>, mut stop: watch::Rec
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let access = access.clone();
-                    connections.spawn(async move { let _ = connection(socket, access).await; });
+                    connections.spawn(async move {
+                        crate::host_platform::in_config(access.config.clone(), async { let _ = connection(socket, access).await; }).await;
+                    });
                 }
                 Err(_) => break,
             },

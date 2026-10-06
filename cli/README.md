@@ -194,8 +194,6 @@ safeyolo doctor
 | `safeyolo demo` | Guided tour of SafeYolo security features |
 | `safeyolo lab` | Create, attach, recover, inspect, or tear down a SafeYolo experimentation workbench |
 
-**Aliases:** `safeyolo up` = `start` (accepts `--wait/--no-wait` and `--profile`), `safeyolo down` = `stop`
-
 #### Lab
 
 ```bash
@@ -310,15 +308,23 @@ traffic through SafeYolo.
 | Command | Description |
 |---------|-------------|
 | `safeyolo agent add <name> <folder> [--host-script PATH] [--rootfs-script PATH\|--rootfs-from AGENT]` | Add an agent and run it |
-| `safeyolo agent run <name> [-f folder] [--host-script PATH] [-- cmd args…]` | Run an existing agent |
+| `safeyolo agent start <name> [--foreground\|--sandbox-only] [-- ARGUMENTS...]` | Start an existing agent; arguments affect only this launch |
 | `safeyolo agent stop <name>` | Stop a running agent |
 | `safeyolo agent list` | List configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
 | `safeyolo agent desktop <name> [--open]` | Start and securely preview an optional graphical desktop |
-| `safeyolo agent config <name> [--folder PATH]` | View or update agent configuration, including the persistent `/workspace` folder |
+| `safeyolo agent configure <name> [--workspace PATH] [--memory MB] [--host-script PATH]` | Update the next start's configuration; host setup requires a stopped agent |
 | `safeyolo agent remove <name>` | Remove an agent |
 
-**Quick start:**
+**Quick start:** run from a trusted SafeYolo checkout outside the agent's writable
+shares. Host setup scripts run with your host permissions. Stop an existing
+agent before applying a host script; configure workspace changes for its next
+stop/start.
+
+Use the [native host installation](../docs/native-policy.md) for `configure`,
+`start`, `attach` and diagnostics. Harness approval behavior comes from the
+selected host setup and harness arguments. Arguments after `start NAME --`
+apply to one launch and do not change saved defaults.
 
 ```bash
 # Initialize
@@ -330,30 +336,21 @@ safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
 # Reuse another agent's custom rootfs with fresh home, overlay, and credentials
 safeyolo agent add second-project ~/code-2 --rootfs-from myproject
 
-# Later, just run by name
-safeyolo agent run myproject
+# Later, start in the background and open its terminal
+safeyolo agent start myproject
+safeyolo agent attach myproject
 
-# Reapply or switch host setup for an existing agent
-safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
+# Stop before reapplying or switching host setup
+safeyolo agent stop myproject
+safeyolo agent configure myproject --host-script "$PWD/contrib/codex-host-setup.sh"
 
 # Opt into a supervised, coord-driven Codex factory worker
 SAFEYOLO_CODEX_COORD_ROOMS=backlog SAFEYOLO_CODEX_COORDINATORS=relay \
-  safeyolo agent run myproject --host-script @codex-coord
-
-# Or run with a different folder
-safeyolo agent run myproject -f ~/other-project
+  safeyolo agent configure myproject --host-script "$PWD/contrib/codex-coord-host-setup.sh"
+safeyolo agent start myproject
 
 # Persist a new /workspace folder for ordinary future runs
-safeyolo agent config myproject --folder ~/other-project
-
-# Override the default command (the host script's .safeyolo-command)
-safeyolo agent run myproject -- bash -l
-
-# Yolo mode is on by default (auto-accepts permission prompts where supported)
-safeyolo agent run myproject
-
-# Disable yolo mode
-safeyolo agent run myproject --no-yolo
+safeyolo agent configure myproject --workspace ~/other-project
 
 # If the running rootfs supplies a desktop stack, start and open it directly
 safeyolo agent desktop myproject --open

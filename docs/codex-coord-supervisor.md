@@ -6,12 +6,15 @@ interactive and have no supervisor. A role's factory TOML selects its harness;
 that choice does not create another queue or state machine.
 
 Configure the rooms that the worker must receive from and the agent names that
-the operator designated as coordinators:
+the operator designated as coordinators. Run from a trusted SafeYolo checkout
+outside the worker's writable shares. Stop the worker before applying setup:
 
 ```bash
+safeyolo agent stop worker
 SAFEYOLO_CODEX_COORD_ROOMS=backlog \
 SAFEYOLO_CODEX_COORDINATORS=relay \
-  safeyolo agent run worker --host-script @codex-coord
+  safeyolo agent configure worker --host-script "$PWD/contrib/codex-coord-host-setup.sh"
+safeyolo agent start worker
 ```
 
 Each supervised setup uses its normal harness setup first and preserves that

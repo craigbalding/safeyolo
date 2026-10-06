@@ -154,7 +154,9 @@ final class CommandCentreController: ObservableObject {
             terminalTarget: savedRemoteProfile?.terminalTarget,
             adminURL: savedRemoteProfile?.adminURL,
             hostUser: client?.hostUser,
-            hostPython: client?.hostPython,
+            hostExecutable: client?.hostExecutable,
+            hostRoot: client?.hostRoot,
+            hostConfigPath: client?.hostConfigPath,
             transport: savedRemoteProfile?.transport ?? .tailnet,
             action: action
         )

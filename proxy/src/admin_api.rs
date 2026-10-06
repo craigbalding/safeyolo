@@ -1423,7 +1423,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 "schema_version":1,
                 "safeyolo_instance_id":stable_id,
                 "host_user":host.user(),
-                "host_python":host.python(),
+                "host_executable":host.executable(),
+                "host_root":host.root(),
+                "host_config_path":host.config_path(),
                 "webmitm_url":Value::Null,
                 "command_centre_events":{"enabled":host.events_port().is_some(),"port":host.events_port()},
                 "capabilities":{
@@ -1725,7 +1727,11 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 ));
             }
         };
-        let result = match crate::desktop_present::present(agent_id.to_owned(), standalone).await {
+        let presentation = crate::desktop_present::present(agent_id.to_owned(), standalone);
+        let result = match match command_centre {
+            Some(host) => host.scope(presentation).await,
+            None => presentation.await,
+        } {
             Ok(value) => value,
             Err(crate::desktop_present::Error::NotFound) => {
                 return Ok(desktop_failure(

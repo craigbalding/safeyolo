@@ -1,7 +1,7 @@
 #!/bin/bash
 # Copy outside every guest-writable share, make executable, then select it:
-# safeyolo agent config --default-launcher /absolute/host/launcher.sh
-# Or: safeyolo agent config NAME --launcher /absolute/host/launcher.sh
+# safeyolo agent configure NAME --launcher /absolute/host/launcher.sh
+# Shared default: set agent_launcher.default in the instance's config.toml.
 set -euo pipefail
 
 pre_launch() {

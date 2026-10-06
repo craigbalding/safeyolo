@@ -48,7 +48,7 @@ does not perform hostname or reverse-DNS resolution. The host-local boundary
 and proxy readiness therefore do not depend on the host resolver. Protected
 Admin API routes require a bearer token and check it with Rust's
 `subtle::ConstantTimeEq`.
-Host processes run as the operator's user ID. On Linux, `safeyolo agent run`
+Host processes run as the operator's user ID. On Linux, `safeyolo agent start`
 does not use host `sudo`.
 
 ### Fail closed

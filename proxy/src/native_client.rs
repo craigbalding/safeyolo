@@ -42,15 +42,13 @@ where
         .header("content-type", "application/json")
         .header("connection", "close")
         .body(Full::new(Bytes::from(serde_json::to_vec(&body)?)))?;
-    let response = tokio::time::timeout(TIMEOUT, client.send_request(request)).await??;
+    let response = client.send_request(request).await?;
     Ok((response, driver))
 }
 
 async fn json(response: Response<Incoming>) -> Result<Value, Error> {
     let status = response.status();
-    let bytes = tokio::time::timeout(TIMEOUT, response.into_body().collect())
-        .await??
-        .to_bytes();
+    let bytes = response.into_body().collect().await?.to_bytes();
     let value: Value = serde_json::from_slice(&bytes)?;
     if !status.is_success() {
         return Err(format!(
@@ -99,20 +97,23 @@ pub async fn admin(
     path: &str,
     method: Method,
     body: Value,
+    timeout: Duration,
 ) -> Result<Value, Error> {
     let (socket, host, token) = operator_socket(config_path).await?;
-    let (response, _connection) = send(socket, &host, path, token.trim(), method, body).await?;
-    json(response).await
+    send_json(socket, &host, path, token.trim(), method, body, timeout).await
 }
 
 /// Stream into a same-directory temporary file. A missing or truncated export
 /// cannot replace a previous file with an empty or partial successful result.
 pub async fn export(config_path: &Path, path: &str, destination: &Path) -> Result<u64, Error> {
     let (socket, host, token) = operator_socket(config_path).await?;
-    let (response, _connection) =
-        send(socket, &host, path, token.trim(), Method::GET, Value::Null).await?;
+    let (response, _connection) = tokio::time::timeout(
+        TIMEOUT,
+        send(socket, &host, path, token.trim(), Method::GET, Value::Null),
+    )
+    .await??;
     if !response.status().is_success() {
-        json(response).await?;
+        tokio::time::timeout(TIMEOUT, json(response)).await??;
         return Err("export unavailable".into());
     }
     let destination = if std::fs::symlink_metadata(destination)
@@ -157,12 +158,16 @@ pub async fn send_json<IO>(
     token: &str,
     method: Method,
     body: Value,
+    timeout: Duration,
 ) -> Result<Value, Error>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (response, _connection) = send(socket, host, path, token, method, body).await?;
-    json(response).await
+    tokio::time::timeout(timeout, async {
+        let (response, _connection) = send(socket, host, path, token, method, body).await?;
+        json(response).await
+    })
+    .await?
 }
 
 /// The guest uses its existing proxy route and Agent API token. It never reads
@@ -182,7 +187,7 @@ pub async fn helper(
     if let Some(socket) = socket {
         let stream =
             tokio::time::timeout(TIMEOUT, tokio::net::UnixStream::connect(socket)).await??;
-        return send_json(stream, host, path, token.trim(), method, body).await;
+        return send_json(stream, host, path, token.trim(), method, body, TIMEOUT).await;
     }
     let proxy: hyper::Uri = std::env::var("HTTP_PROXY")
         .or_else(|_| std::env::var("http_proxy"))
@@ -210,6 +215,7 @@ pub async fn helper(
         token.trim(),
         method,
         body,
+        TIMEOUT,
     )
     .await
 }

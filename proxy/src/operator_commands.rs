@@ -4,6 +4,7 @@ use std::{
     collections::VecDeque,
     io::{BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -11,7 +12,7 @@ use hyper::Method;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Value, json};
 
-use crate::{Error, native_client, native_config, network_guard};
+use crate::{Error, host_platform, native_client, native_config, network_guard};
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
@@ -102,8 +103,9 @@ impl Options {
                 "--unattributed" => {
                     options.scope.insert("unattributed".into(), json!(true));
                 }
-                "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset" | "--socket"
-                | "--token-file" | "--reason" | "--test" | "--intent" | "--role" | "--expect" => {
+                "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
+                | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
+                | "--expect" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -159,19 +161,11 @@ fn validate_name(name: &str) -> Result<(), Error> {
     }
 }
 
-fn configured_agents(root: &Path) -> Result<Vec<Value>, Error> {
-    let config = native_config::read(&root.join("config.toml"))?;
-    let source = std::fs::read_to_string(config.policy_file.ok_or("policy path is missing")?)?;
-    let document = crate::policy::parse_toml_document(&source)?;
-    let agents = document["agents"]
-        .as_object()
-        .ok_or("no agents are configured")?;
-    let mut result = agents
-        .iter()
-        .map(|(name, metadata)| json!({"name":name,"agent_id":metadata["agent_id"]}))
-        .collect::<Vec<_>>();
-    result.sort_by(|a, b| text(&a["name"]).cmp(text(&b["name"])));
-    Ok(result)
+fn configured_agents() -> Result<Vec<Value>, Error> {
+    Ok(crate::host_agents::list()?
+        .into_iter()
+        .map(|agent| json!({"name":agent.name,"agent_id":agent.id}))
+        .collect())
 }
 
 fn factory_agents(root: &Path, name: &str) -> Result<Vec<String>, Error> {
@@ -206,15 +200,22 @@ fn factory_agents(root: &Path, name: &str) -> Result<Vec<String>, Error> {
         .collect()
 }
 
-fn selected_agent(root: &Path, name: &str) -> Result<Value, Error> {
-    configured_agents(root)?
+fn selected_agent(_root: &Path, name: &str) -> Result<Value, Error> {
+    configured_agents()?
         .into_iter()
         .find(|agent| agent["name"] == name)
         .ok_or_else(|| format!("agent unavailable: {name}").into())
 }
 
-async fn admin(root: &Path, path: &str, method: Method, body: Value) -> Result<Value, Error> {
-    native_client::admin(&root.join("config.toml"), path, method, body).await
+async fn admin(_root: &Path, path: &str, method: Method, body: Value) -> Result<Value, Error> {
+    native_client::admin(
+        &host_platform::config_path(),
+        path,
+        method,
+        body,
+        Duration::from_secs(5),
+    )
+    .await
 }
 
 async fn approval(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
@@ -380,7 +381,7 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
             }
             flow(root, id, options.agent.as_deref()).await?;
             let bytes = native_client::export(
-                &root.join("config.toml"),
+                &host_platform::config_path(),
                 &format!(
                     "/admin/traffic/flows/{}/export?format={format}&{}",
                     encoded(id),
@@ -425,7 +426,8 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
                 root,
                 &format!(
                     "/admin/traffic/flows/{}/websocket/messages/{number}/body?offset={}",
-                    encoded(id), options.offset
+                    encoded(id),
+                    options.offset
                 ),
                 Method::GET,
                 Value::Null,
@@ -438,8 +440,8 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
     }
 }
 
-fn logs(root: &Path, options: &Options) -> Result<Value, Error> {
-    let config = native_config::read(&root.join("config.toml"))?;
+fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
+    let config = native_config::read(&host_platform::config_path())?;
     let path = config
         .audit_log_path
         .ok_or("audit log path is unavailable")?;
@@ -477,7 +479,7 @@ async fn state(root: &Path, agent: &str) -> Result<Value, Error> {
 }
 
 async fn diagnose(root: &Path, options: &Options) -> Result<Value, Error> {
-    let config = native_config::read(&root.join("config.toml"))?;
+    let config = native_config::read(&host_platform::config_path())?;
     let local = config
         .policy_file
         .as_ref()
@@ -576,8 +578,8 @@ async fn attach(root: &Path, agent: &str) -> Result<(), Error> {
     // #817 owns this fixed native transport. Do not derive argv from evidence,
     // implement another terminal owner, or fall back to the Python CLI.
     let status = tokio::process::Command::new(std::env::current_exe()?)
-        .arg("--root")
-        .arg(root)
+        .arg("--config")
+        .arg(host_platform::config_path())
         .args(["agent", "attach", agent])
         .status()
         .await?;
@@ -594,7 +596,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 .into(),
         );
     }
-    let mut agents = configured_agents(root)?;
+    let mut agents = configured_agents()?;
     if let Some(factory) = &options.factory {
         let names = factory_agents(root, factory)?;
         agents.retain(|agent| names.iter().any(|name| agent["name"] == *name));
@@ -603,7 +605,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
         return Err("no configured agents in this workflow".into());
     }
     let instance = std::fs::read_to_string(
-        native_config::read(&root.join("config.toml"))?
+        native_config::read(&host_platform::config_path())?
             .data_dir()
             .join("instance_id"),
     )?;
@@ -727,7 +729,15 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn run(root: &Path, args: &[String]) -> Result<(), Error> {
+pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
+    let root = config
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    host_platform::in_config(config.to_owned(), run_inner(root, args)).await
+}
+
+async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
     if args.iter().any(|arg| arg == "--help") {
         println!("{HELP}");
         return Ok(());

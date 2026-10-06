@@ -338,16 +338,18 @@ pub(crate) fn share_reads(
         let saved = policy
             .reload_native_source(source, path)
             .map_err(|_| invalid("saved policy unavailable"))?;
-        if record.status != "pending"
-            || !record.action.current(policy)
-            || !record.action.current(&saved)
+        // Sharing evidence does not decide the action. Keep the existing read
+        // identity checks; terminal or stale-policy records remain inspectable.
+        if policy.evidence_agent_id(&record.action.agent) != Some(record.action.agent_id.as_str())
+            || saved.evidence_agent_id(&record.action.agent)
+                != Some(record.action.agent_id.as_str())
             || policy.evidence_agent_id(helper) != Some(helper_id)
             || saved.evidence_agent_id(helper) != Some(helper_id)
         {
             return Ok((
                 (
                     409,
-                    json!({"error":"request or Helper identity changed; select current state"}),
+                    json!({"error":"Worker or Helper identity changed; select current state"}),
                 ),
                 source.to_owned(),
             ));
@@ -379,10 +381,10 @@ pub(crate) fn share_reads(
         let value = json!({"request_id":request_id,"status":"shared","helper":helper,"helper_id":helper_id,
             "agent":record.action.agent,"agent_id":record.action.agent_id,"reads":["diagnostic","approval"],
             "effect":"Selected diagnostic and approval reads only. No network permission or operator authority was granted."});
-        if reads
-            .iter()
-            .any(|entry| entry.to_string() == selected.to_string())
-        {
+        if [Read::Diagnostic, Read::Approval].into_iter().all(|read| {
+            saved.evidence_reader(helper, request_id, read).as_deref()
+                == Some(record.action.agent.as_str())
+        }) {
             return Ok(((200, value), source.to_owned()));
         }
         reads.push(selected);

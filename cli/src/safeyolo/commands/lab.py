@@ -328,15 +328,12 @@ def _reap_timed_out_process(process: Any) -> None:
 
 
 def _start_agent(name: str, *, allow_unowned: bool = False) -> None:
-    from ..agent_lifecycle import _run_agent
+    from ..agent_lifecycle import start_native_agent
 
-    result = _run_agent(
+    result = start_native_agent(
         name,
-        yolo=True,
         dangerously_allow_unowned=allow_unowned,
         launch_mode="sandbox",
-        no_snapshot=True,
-        rename_tmux_window=False,
     )
     if result != 0:
         raise typer.Exit(result)
@@ -412,7 +409,6 @@ def _create_agent(name: str, workspace: Path, backend: str) -> None:
         mount=[],
         port=[],
         dangerously_allow_unowned=False,
-        no_rename_window=True,
     )
 
     def mark(metadata: Any) -> None:

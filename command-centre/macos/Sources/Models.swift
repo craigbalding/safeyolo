@@ -8,7 +8,9 @@ struct InstanceInfo: Decodable {
     let schemaVersion: Int
     let safeyoloInstanceID: String
     let hostUser: String?
-    let hostPython: String?
+    let hostExecutable: String?
+    let hostRoot: String?
+    let hostConfigPath: String?
     let webmitmURL: String?
     let commandCentreEvents: EventEndpoint?
 
@@ -16,7 +18,9 @@ struct InstanceInfo: Decodable {
         case schemaVersion = "schema_version"
         case safeyoloInstanceID = "safeyolo_instance_id"
         case hostUser = "host_user"
-        case hostPython = "host_python"
+        case hostExecutable = "host_executable"
+        case hostRoot = "host_root"
+        case hostConfigPath = "host_config_path"
         case webmitmURL = "webmitm_url"
         case commandCentreEvents = "command_centre_events"
     }
@@ -57,6 +61,11 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
     let name: String
     let sandboxState: String
     let agentState: String
+    var controlState: String? = nil
+    var terminalState: String? = nil
+    var runtimeError: String? = nil
+    var nextAction: String? = nil
+    var exec: Bool? = nil
     let launcher: Launcher?
     let attachable: Bool
     let error: String?
@@ -69,14 +78,22 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
         case name
         case sandboxState = "sandbox_state"
         case agentState = "agent_state"
+        case controlState = "control_state"
+        case terminalState = "terminal_state"
+        case runtimeError = "runtime_error"
+        case nextAction = "next_action"
+        case exec
         case launcher, attachable, error, harness
         case hookErrors = "hook_errors"
         case exitCode = "exit_code"
     }
 
     var id: String { agentID }
-    var sandboxReady: Bool { sandboxState == "ready" }
-    var canStart: Bool { ["stopped", "exited", "failed"].contains(agentState) }
+    var sandboxReady: Bool { exec == true }
+    var canStart: Bool {
+        ["running", "stopped"].contains(sandboxState)
+            && ["stopped", "exited", "failed"].contains(agentState)
+    }
     var managed: Bool { ["supervisor", "manager"].contains(launcher?.kind ?? "") }
     var harnessLabel: String {
         switch harness {

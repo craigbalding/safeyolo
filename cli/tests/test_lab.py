@@ -96,15 +96,12 @@ def test_state_is_private_and_records_objective_before_mutation(tmp_path, monkey
 
 
 def test_lab_boot_uses_existing_agent_lifecycle_without_starting_codex_command():
-    with patch("safeyolo.agent_lifecycle._run_agent", return_value=0, autospec=True) as run_agent:
+    with patch("safeyolo.agent_lifecycle.start_native_agent", return_value=0, autospec=True) as run_agent:
         _start_agent("safeyolo-lab")
 
     assert run_agent.call_args.kwargs == {
-        "yolo": True,
         "dangerously_allow_unowned": False,
         "launch_mode": "sandbox",
-        "no_snapshot": True,
-        "rename_tmux_window": False,
     }
 
 

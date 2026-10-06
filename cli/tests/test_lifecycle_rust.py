@@ -61,10 +61,9 @@ def command(tmp_path, monkeypatch):
                            readiness=readiness)
 
 
-@pytest.mark.parametrize("verb", ["start", "up"])
-def test_start_uses_installed_native_executable(command, verb):
+def test_start_uses_installed_native_executable(command):
     before = command.config_path.read_bytes()
-    result = command.runner.invoke(app, [verb])
+    result = command.runner.invoke(app, ["start"])
     assert result.exit_code == 0, result.output
     command.mocks["check_running_backend"].assert_called_once_with()
     command.mocks["start_proxy"].assert_called_once_with()
@@ -75,15 +74,15 @@ def test_start_uses_installed_native_executable(command, verb):
     assert "owned-native.json" in result.output
 
 
-def test_up_no_wait_skips_health_check(command):
-    result = command.runner.invoke(app, ["up", "--no-wait"])
+def test_start_no_wait_skips_health_check(command):
+    result = command.runner.invoke(app, ["start", "--no-wait"])
     assert result.exit_code == 0, result.output
     command.mocks["start_proxy"].assert_called_once_with()
     command.mocks["wait_for_healthy"].assert_not_called()
 
 
-def test_up_profile_uses_start_lifecycle(command, tmp_path):
-    result = command.runner.invoke(app, ["up", "--profile"])
+def test_start_profile_uses_start_lifecycle(command, tmp_path):
+    result = command.runner.invoke(app, ["start", "--profile"])
     assert result.exit_code == 0, result.output
     command.mocks["start_proxy"].assert_called_once_with()
     profiles = list((tmp_path / "logs" / "profiles").glob("*.jsonl"))
@@ -102,9 +101,8 @@ def test_first_run_bootstrap_selects_native_config(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("flag", ["--test", "--dev", "--flow-cache", "--flow-cache-bytes"])
-@pytest.mark.parametrize("verb", ["start", "up"])
-def test_removed_development_flags_cannot_start_proxy(command, flag, verb):
-    result = command.runner.invoke(app, [verb, flag])
+def test_removed_development_flags_cannot_start_proxy(command, flag):
+    result = command.runner.invoke(app, ["start", flag])
     assert result.exit_code != 0
     command.mocks["start_proxy"].assert_not_called()
 
@@ -127,10 +125,9 @@ def test_running_native_process_is_not_relaunched(command):
     command.mocks["_start_coord_best_effort"].assert_called_once_with()
 
 
-@pytest.mark.parametrize("verb", ["start", "up"])
-def test_native_launch_failure_has_no_fallback(command, verb):
+def test_native_launch_failure_has_no_fallback(command):
     command.mocks["start_proxy"].side_effect = RuntimeError("native executable is unavailable")
-    result = command.runner.invoke(app, [verb])
+    result = command.runner.invoke(app, ["start"])
     assert result.exit_code == 1, result.output
     assert "native executable is unavailable" in result.output
     command.mocks["wait_for_healthy"].assert_not_called()
@@ -158,18 +155,17 @@ def test_status_identifies_owned_native_executable(command, monkeypatch):
     command.readiness.assert_called_once_with(command.process)
 
 
-@pytest.mark.parametrize("verb", ["stop", "down"])
-def test_stop_uses_native_process_owner(command, verb):
+def test_stop_uses_native_process_owner(command):
     command.mocks["is_proxy_running"].return_value = True
-    result = command.runner.invoke(app, [verb])
+    result = command.runner.invoke(app, ["stop"])
     assert result.exit_code == 0, result.output
     command.mocks["_stop_coord_best_effort"].assert_called_once_with()
     command.mocks["stop_proxy"].assert_called_once_with()
 
 
-def test_down_profile_uses_stop_lifecycle(command, tmp_path):
+def test_stop_profile_uses_stop_lifecycle(command, tmp_path):
     command.mocks["is_proxy_running"].return_value = True
-    result = command.runner.invoke(app, ["down", "--profile"])
+    result = command.runner.invoke(app, ["stop", "--profile"])
     assert result.exit_code == 0, result.output
     command.mocks["stop_proxy"].assert_called_once_with()
     profiles = list((tmp_path / "logs" / "profiles").glob("*.jsonl"))
@@ -177,8 +173,7 @@ def test_down_profile_uses_stop_lifecycle(command, tmp_path):
     assert '"operation":"proxy stop"' in profiles[0].read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("verb", ["stop", "down"])
-def test_stop_all_uses_native_owner_even_with_shared_pid_marker(command, monkeypatch, verb):
+def test_stop_all_uses_native_owner_even_with_shared_pid_marker(command, monkeypatch):
     from safeyolo import platform
 
     command.mocks["is_proxy_running"].return_value = True
@@ -186,7 +181,7 @@ def test_stop_all_uses_native_owner_even_with_shared_pid_marker(command, monkeyp
     host = SimpleNamespace(cleanup_all=lambda _agents: None, unload_firewall_rules=lambda: None)
     monkeypatch.setattr(platform, "get_platform", lambda: host)
 
-    result = command.runner.invoke(app, [verb, "--all"])
+    result = command.runner.invoke(app, ["stop", "--all"])
 
     assert result.exit_code == 0, result.output
     command.mocks["prior_python_proxy_running"].assert_not_called()
@@ -195,9 +190,17 @@ def test_stop_all_uses_native_owner_even_with_shared_pid_marker(command, monkeyp
 
 def test_prior_python_process_requires_prior_package_for_status_and_stop(command):
     command.mocks["prior_python_proxy_running"].return_value = True
-    for arguments in (["status"], ["stop"], ["stop", "--all"], ["down"], ["down", "--all"]):
+    for arguments in (["status"], ["stop"], ["stop", "--all"]):
         result = command.runner.invoke(app, arguments)
         assert result.exit_code == 1, result.output
         assert "pinned prior package" in result.output
     command.mocks["stop_proxy"].assert_not_called()
     command.mocks["_stop_coord_best_effort"].assert_not_called()
+
+
+@pytest.mark.parametrize("alias", ["up", "down"])
+def test_retired_lifecycle_aliases_do_not_invoke_host_operations(command, alias):
+    result = command.runner.invoke(app, [alias])
+    assert result.exit_code != 0
+    command.mocks["start_proxy"].assert_not_called()
+    command.mocks["stop_proxy"].assert_not_called()

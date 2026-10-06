@@ -9,7 +9,9 @@ use std::{
 
 use hyper::Method;
 use safeyolo_proxy::{
-    Error, native_client, native_config,
+    Error,
+    native_client::{admin, send_json},
+    native_config,
     policy::Policy,
     test_context::{self, Context},
 };
@@ -24,12 +26,19 @@ fn check(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn initialize(root: &Path) -> Result<(), Error> {
-    if root.join("config.toml").exists() || root.join("policy.toml").exists() {
+fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
+    if config
+        .extension()
+        .is_none_or(|extension| extension != "toml")
+    {
+        return Err("native configuration requires a TOML file".into());
+    }
+    if config.exists() || root.join("policy.toml").exists() {
         return Err("instance already has configuration; choose a fresh root".into());
     }
     std::fs::create_dir_all(root.join("data"))?;
     std::fs::create_dir_all(root.join("logs"))?;
+    std::fs::create_dir_all(root.join("certs"))?;
     let write_new = |name: &str, source: &str| -> Result<(), Error> {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
@@ -64,16 +73,21 @@ fn initialize(root: &Path) -> Result<(), Error> {
         "data/instance_id",
         &format!("sy-{}\n", uuid::Uuid::new_v4().simple()),
     )?;
+    let (private, public) = safeyolo_proxy::tls::CertificateAuthority::create()?;
+    write_new("certs/mitmproxy-ca.pem", &private)?;
+    write_new("certs/mitmproxy-ca-cert.pem", &public)?;
     write_new(
-        "config.toml",
-        include_str!("../../config/native/config.toml"),
+        config
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("config has no filename")?,
+        &format!(
+            "{}\ntls_ca_file = \"certs/mitmproxy-ca.pem\"\nagent_map_file = \"data/agent_map.json\"\n",
+            include_str!("../../config/native/config.toml")
+        ),
     )?;
     println!("Initialized native instance: {}", root.display());
     Ok(())
-}
-
-async fn admin(config_path: &Path, method: Method, body: Value) -> Result<Value, Error> {
-    native_client::admin(config_path, "/admin/policy/baseline", method, body).await
 }
 
 async fn context_command(arguments: &[String]) -> Result<(), Error> {
@@ -154,13 +168,14 @@ async fn context_command(arguments: &[String]) -> Result<(), Error> {
             tokio::net::UnixStream::connect(socket),
         )
         .await??;
-        let response = native_client::send_json(
+        let response = send_json(
             socket,
             "_safeyolo.proxy.internal",
             "/api/test-context/current",
             token.trim(),
             method,
             body,
+            Duration::from_secs(5),
         )
         .await?;
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -186,28 +201,63 @@ async fn context_command(arguments: &[String]) -> Result<(), Error> {
 
 async fn run() -> Result<(), Error> {
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
-    let root = if arguments.first().is_some_and(|value| value == "--root") {
+    let explicit_config = arguments.first().is_some_and(|value| value == "--config");
+    let explicit_root = arguments.first().is_some_and(|value| value == "--root");
+    let selected = if explicit_config || explicit_root {
         if arguments.len() < 2 {
-            return Err("--root requires a directory".into());
+            return Err("--root requires a directory; --config requires a TOML file".into());
         }
-        let root = PathBuf::from(arguments.remove(1));
+        let selected = PathBuf::from(arguments.remove(1));
         arguments.remove(0);
-        root
+        Some(selected)
     } else {
-        std::env::var_os("SAFEYOLO_HOME")
+        std::env::var_os("SAFEYOLO_NATIVE_CONFIG_PATH")
+            .map(PathBuf::from)
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "toml")
+            })
+    };
+    let root = if explicit_root {
+        selected.clone().unwrap()
+    } else if selected.is_some() {
+        selected
+            .as_ref()
+            .unwrap()
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_owned()
+    } else {
+        std::env::var_os("SAFEYOLO_CONFIG_DIR")
+            .or_else(|| std::env::var_os("SAFEYOLO_HOME"))
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".safeyolo")
             })
     };
-    let config = root.join("config.toml");
+    let config = if let Some(selected) = selected.filter(|_| !explicit_root) {
+        selected
+    } else {
+        root.join("config.toml")
+    };
     if safeyolo_proxy::operator_commands::handles(&arguments) {
-        return safeyolo_proxy::operator_commands::run(&root, &arguments).await;
+        return safeyolo_proxy::operator_commands::run(&config, &arguments).await;
+    }
+    if safeyolo_proxy::host_commands::handles(&arguments) {
+        let code = safeyolo_proxy::host_commands::run(config, &arguments).await?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
     }
     match arguments.as_slice() {
-        [command] if command == "init" => initialize(&root),
+        [command] if command == "init" => initialize(&root, &config),
         [help] if matches!(help.as_str(), "--help" | "help") => {
             println!("{}", safeyolo_proxy::operator_commands::HELP);
+            println!(
+                "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+            );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
             );
@@ -234,26 +284,6 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [command, rest @ ..] if command == "test-context" => context_command(rest).await,
-        [agent, recover, name] if agent == "agent" && recover == "recover" => {
-            let result = safeyolo_proxy::recover_guest_probe(&root, name, Duration::from_secs(15))?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            Ok(())
-        }
-        [agent, recover, name, option, seconds]
-            if agent == "agent" && recover == "recover" && option == "--timeout" =>
-        {
-            let seconds: f64 = seconds.parse()?;
-            if !seconds.is_finite() || seconds <= 0.0 {
-                return Err("--timeout must be positive seconds".into());
-            }
-            let result = safeyolo_proxy::recover_guest_probe(
-                &root,
-                name,
-                Duration::try_from_secs_f64(seconds)?,
-            )?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            Ok(())
-        }
         [guest, stage, home, share, assets, context]
             if guest == "guest-command" && stage == "stage" =>
         {
@@ -268,14 +298,21 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [policy, command] if policy == "policy" && command == "show" => {
-            let result = admin(&config, Method::GET, Value::Null).await?;
+            let result = admin(
+                &config,
+                "/admin/policy/baseline",
+                Method::GET,
+                Value::Null,
+                Duration::from_secs(5),
+            )
+            .await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
         [policy, command, path] if policy == "policy" && command == "apply" => {
             Policy::from_native_path(Path::new(path))?;
             let source = Policy::read_native_candidate(Path::new(path))?;
-            match admin(&config, Method::PUT, json!({"source":source.as_str()})).await {
+            match admin(&config, "/admin/policy/baseline", Method::PUT, json!({"source":source.as_str()}), Duration::from_secs(5)).await {
                 Ok(result) if result["status"] == "active" => {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                     Ok(())
@@ -283,7 +320,7 @@ async fn run() -> Result<(), Error> {
                 Ok(_) => Err("Admin API did not confirm activation; run policy show to inspect saved and active state".into()),
                 Err(error) => {
                     eprintln!("Policy apply failed: {error}");
-                    match admin(&config, Method::GET, Value::Null).await {
+                    match admin(&config, "/admin/policy/baseline", Method::GET, Value::Null, Duration::from_secs(5)).await {
                         Ok(status) => {
                             eprintln!("Policy status: {}; saved source matches active: {}", status["status"], status["saved_matches_active"]);
                             if let Some(repair) = status.get("repair").and_then(Value::as_str) { eprintln!("{repair}"); }

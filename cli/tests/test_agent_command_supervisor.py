@@ -12,15 +12,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from unittest.mock import create_autospec, patch
 
 import pytest
-from typer.testing import CliRunner
 
 from safeyolo import agent_command_supervisor as supervisor
-from safeyolo.cli import app
 from safeyolo.config import get_agent_command_supervisor_state_path
-from safeyolo.platform import AgentPlatform
 
 
 @pytest.fixture(autouse=True)
@@ -673,23 +669,33 @@ def test_start_replaces_a_fenced_guest_owned_run(tmp_config_dir):
 
 
 def test_agent_stop_records_intent_even_when_sandbox_is_already_gone(
-    tmp_config_dir,
+    native_agent,
 ):
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = False
-    with (
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch(
-            "safeyolo.agent_command_supervisor.request_command_supervisor_stop",
-            return_value=True,
-            autospec=True,
-        ) as request_stop,
-    ):
-        result = CliRunner().invoke(app, ["agent", "stop", "demo"])
+    directory = native_agent["root"] / "agents/demo"
+    home, share = directory / "home", directory / "config-share"
+    home.mkdir(parents=True)
+    share.mkdir()
+    state_path = home / ".safeyolo-command-supervisor.json"
+    state_path.write_text(json.dumps({
+        "schema_version": 1, "name": "demo", "state": "exited",
+        "supervision_id": "previous-command", "command": "exec true",
+        "command_pid": None, "command_start_token": None,
+    }))
+    original_state = state_path.read_bytes()
+    enabled = share / "command-supervisor-enabled"
+    enabled.touch()
+    result = subprocess.run(
+        [str(native_agent["cli"]), "--root", str(native_agent["root"]), "agent", "stop", "demo"],
+        capture_output=True, text=True, timeout=5,
+    )
 
-    assert result.exit_code == 0, result.output
-    request_stop.assert_called_once_with("demo")
-    assert "command supervisor stopped" in result.output
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["runtime_state"] == "stopped"
+    assert json.loads((home / ".safeyolo-command-supervisor.stop").read_text()) == {
+        "supervision_id": "previous-command",
+    }
+    assert not enabled.exists()
+    assert state_path.read_bytes() == original_state
 
 
 def test_guest_owned_stop_fence_does_not_block_sandbox_cleanup(tmp_config_dir):

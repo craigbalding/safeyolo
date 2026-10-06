@@ -104,11 +104,8 @@ def test_agent_runtime_imports_do_not_load_agent_commands(modules: tuple[str, ..
         "    launchers.validate_script(launchers.Launcher('interactive', 'test'))\n"
         "lifecycle = sys.modules.get('safeyolo.agent_lifecycle')\n"
         "if lifecycle is not None:\n"
-        "    lifecycle.load_all_agents = lambda: {}\n"
+        "    lifecycle._native_result = lambda *args, **kwargs: {'agents': []}\n"
         "    assert lifecycle.list_agent_runtimes() == []\n"
-        "    lifecycle._agent_host_setup_lock = lambda name: nullcontext()\n"
-        "    lifecycle._stop_agent_by_name = lambda *args, **kwargs: None\n"
-        "    assert lifecycle.stop_agent_by_name('probe') is None\n"
         "assert 'safeyolo.commands.agent' not in sys.modules\n"
         "assert 'safeyolo.commands.mount' not in sys.modules\n"
     )

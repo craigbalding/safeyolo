@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import tomlkit
 
 from tests.proxy_contracts.harness import child_process, read_events, request, wait_ready
 from tests.proxy_contracts.scenarios import origin_server
@@ -156,6 +157,24 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
 
 def scoped_policy(port):
     return DENY + f'\n[agents.alice.hosts]\n"127.0.0.1:{port}" = {{egress="allow"}}\n'
+
+
+@contextmanager
+def restarted_proxy(instance):
+    original_pid = instance.process.pid
+    stopped = instance.cli("stop")
+    assert stopped.returncode == 0, stopped.stderr
+    instance.process.wait(timeout=10)
+    started = instance.cli("start")
+    assert started.returncode == 0, started.stderr
+    try:
+        ready = json.loads((instance.root / "data/ready.json").read_text())
+        assert ready["ready"] and ready["pid"] != original_pid
+        instance.port = ready["admin_port"]
+        yield instance
+    finally:
+        stopped = instance.cli("stop")
+        assert stopped.returncode == 0, stopped.stderr
 
 
 def controls(instance, origin, other):
@@ -553,8 +572,91 @@ def test_installed_agent_override_precedence(tmp_path, global_effect, agent_effe
     with origin_server() as origin, native_instance(
         tmp_path, source, parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
     ) as instance:
+        saved = instance.policy.read_bytes()
+        checked = instance.cli("policy", "check", str(instance.policy))
+        assert checked.returncode == 0, checked.stderr
+        assert instance.policy.read_bytes() == saved
+        instance.apply(source)
+        saved = instance.policy.read_bytes()
+        assert tomllib.loads(saved.decode())["agents"]["alice"] == {"egress": agent_effect}
         delivered(instance, origin, "override.invalid:8123", status=status)
         delivered(instance, origin, "override.invalid:8123", agent="bob", status=403 if status == 200 else 200)
+        with restarted_proxy(instance):
+            assert instance.policy.read_bytes() == saved
+            assert instance.show()["saved_matches_active"]
+            assert json.loads(instance.cli("doctor").stdout)["agents"] == []
+            delivered(instance, origin, "override.invalid:8123", status=status)
+            delivered(instance, origin, "override.invalid:8123", agent="bob", status=403 if status == 200 else 200)
+            assert instance.policy.read_bytes() == saved
+        assert not any(Path(path).exists() for path in instance.paths.values())
+
+
+def test_installed_policy_overrides_coexist_with_degraded_host_identity_and_attachment():
+    with tempfile.TemporaryDirectory(prefix="sy-host-", dir=Path.home()) as directory, origin_server() as origin, native_instance(
+        Path(directory), parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
+    ) as instance:
+        created = instance.cli("agent", "create", "marker", "--workspace", directory)
+        assert created.returncode == 0, created.stderr
+        agent_id = json.loads(created.stdout)["configuration"]["id"]
+        policy = tomlkit.parse(instance.policy.read_text())
+        policy["agents"]["alice"] = {"egress": "allow"}
+        source = tomlkit.dumps(policy)
+        candidate = Path(directory) / "coexisting-policy.toml"
+        candidate.write_text(source)
+        checked = instance.cli("policy", "check", str(candidate))
+        assert checked.returncode == 0, checked.stderr
+        instance.apply(source)
+        saved = instance.policy.read_bytes()
+        assert tomllib.loads(saved.decode())["agents"]["alice"] == {"egress": "allow"}
+        run_id = "0123456789abcdef0123456789abcdef"
+        # Reuse the sentry-shaped host-process control. Birth/run/argv identify
+        # the retained record; host namespaces must still deny stop authority.
+        backend = subprocess.Popen(
+            ["runsc-sandbox", "-c", "read line", f"--root={instance.root / 'run'}", "boot", f"safeyolo-{run_id}"],
+            executable="/bin/sh", stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            birth = Path(f"/proc/{backend.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            agent = instance.root / "agents/marker"
+            (agent / "config-share").mkdir(parents=True, exist_ok=True)
+            runtime = json.dumps({"agent_id": agent_id, "run_id": run_id, "state": "running", "ip": "10.200.0.8",
+                                  "backend_pid": backend.pid, "backend_token": f"linux:{boot}:{backend.pid}:{birth}"}).encode()
+            context = json.dumps({"agent_id": agent_id, "generation": run_id, "ip": "10.200.0.8"}).encode()
+            (agent / "runtime.json").write_bytes(runtime)
+            (agent / "config-share/host-launch-context.json").write_bytes(context)
+            # Startup must rebuild a corrupt derived map through the same host
+            # enumeration, while keeping Alice/Bob's explicit listeners.
+            (instance.root / "data/agent_map.json").write_text("corrupt")
+            explicit = tomllib.loads((instance.root / "config.toml").read_text())["listeners"]
+            delivered(instance, origin, "override.invalid:8123", status=200)
+            delivered(instance, origin, "override.invalid:8123", agent="bob", status=403)
+            with restarted_proxy(instance):
+                status = instance.cli("agent", "status", "marker")
+                assert status.returncode == 0, status.stderr
+                observed = json.loads(status.stdout)
+                assert (observed["agent_id"], observed["run_id"], observed["runtime_state"]) == (agent_id, run_id, "degraded")
+                assert observed["proxy_attachment"]["state"] == "ready"
+                socket_path = instance.root / "data/sockets/10.200.0.8_marker/proxy.sock"
+                assert socket_path.is_socket()
+                instance.paths["marker"] = str(socket_path)
+                listeners = tomllib.loads((instance.root / "config.toml").read_text())["listeners"]
+                assert all(entry in listeners for entry in explicit)
+                assert {"agent_id": "marker", "source_id": "10.200.0.8", "socket_path": str(socket_path)} in listeners
+                assert json.loads((instance.root / "data/agent_map.json").read_text())["marker"]["ip"] == "10.200.0.8"
+                delivered(instance, origin, "override.invalid:8123", status=200)
+                delivered(instance, origin, "override.invalid:8123", agent="bob", status=403)
+                delivered(instance, origin, "override.invalid:8123", agent="marker", status=403)
+                refused = instance.cli("agent", "stop", "marker")
+                assert refused.returncode != 0
+                assert backend.poll() is None
+                assert (agent / "runtime.json").read_bytes() == runtime
+                assert (agent / "config-share/host-launch-context.json").read_bytes() == context
+                assert instance.policy.read_bytes() == saved
+            assert not socket_path.exists()
+        finally:
+            backend.terminate()
+            backend.communicate(timeout=5)
 
 
 @pytest.mark.parametrize("broad,narrow,status", [("deny", "allow", 200), ("allow", "deny", 403)])

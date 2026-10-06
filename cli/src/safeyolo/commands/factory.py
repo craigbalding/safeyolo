@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 from rich.console import Console
 
-from ..agent_lifecycle import _agent_host_setup_lock, _run_agent
+from ..agent_lifecycle import AgentLifecycleError, _agent_host_setup_lock, native_agent_status, start_native_agent
 from ..agents_store import get_or_mint_agent_id, load_agent, mutate_agent
 from ..config import find_config_dir
 from ..factory_contract import (
@@ -408,13 +408,15 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         for agent_name in sorted({agent_name for _role, agent_name, _meta in configured}):
             setup_locks.enter_context(_agent_host_setup_lock(agent_name))
 
-        from ..platform import get_platform
-
-        platform = get_platform()
         for role_name, agent_name, _metadata in configured:
-            if platform.is_sandbox_running(agent_name):
+            try:
+                observed = native_agent_status(agent_name)
+            except AgentLifecycleError as exc:
+                raise FactoryContractError(f"cannot inspect role {role_name!r} agent {agent_name!r}: {exc}") from exc
+            if observed["runtime_state"] != "stopped":
                 raise FactoryContractError(
-                    f"role {role_name!r} agent {agent_name!r} is already running; stop it before starting the factory"
+                    f"role {role_name!r} agent {agent_name!r} runtime is {observed['runtime_state']}; "
+                    f"use agent diagnostics {agent_name} and stop it before starting the factory"
                 )
 
         # Configure every existing agent from the same immutable snapshot before
@@ -466,14 +468,14 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
 
         for role_name, agent_name, _metadata in configured:
             role_args = roles[role_name].get("args")
-            exit_code = _run_agent(
-                agent_name,
-                yolo=True,
-                agent_args=role_args,
-                skip_default_args=role_args is not None,
-                launch_mode="background",
-                no_snapshot=True,
-            )
+            try:
+                exit_code = start_native_agent(
+                    agent_name,
+                    agent_args=role_args,
+                    launch_mode="background",
+                )
+            except AgentLifecycleError as exc:
+                raise FactoryContractError(f"cannot start role {role_name!r} agent {agent_name!r}: {exc}") from exc
             if exit_code != 0:
                 raise FactoryContractError(
                     f"agent {agent_name!r} failed to start (exit {exit_code});\n"

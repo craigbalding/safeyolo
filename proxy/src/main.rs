@@ -17,15 +17,6 @@ async fn main() -> Result<(), Error> {
             return Ok(());
         }
         Some("--config") => {}
-        Some("--host-agent-entrypoint") => {
-            let name = arguments.next().ok_or("agent name is required")?;
-            let launch_id = arguments.next().ok_or("launch ID is required")?;
-            if arguments.next().is_some() {
-                return Err("unexpected command argument".into());
-            }
-            let code = safeyolo_proxy::run_host_agent_entrypoint(&name, &launch_id).await?;
-            std::process::exit(code);
-        }
         Some("--help") => {
             println!(
                 "safeyolo-proxy --config config.toml\nsafeyolo-proxy --version\n\nconfig.toml owns paths, listeners and runtime settings.\npolicy.toml owns host policy and named controls.\nRelative paths belong to the config.toml directory.\nCtrl-C stops this foreground process; SIGHUP reloads configuration.\nEmbedded development launchers may still pass their internal JSON configuration."
@@ -49,7 +40,13 @@ async fn main() -> Result<(), Error> {
             Config::read(&config_path)
         }
     };
-    let mut proxy = Proxy::start(read_config()?).await?;
+    let mut config = read_config()?;
+    safeyolo_proxy::host_commands::prepare_proxy(&mut config).await?;
+    let native_root = config.native_config_dir.clone();
+    let mut proxy = Proxy::start(config).await?;
+    if let Some(root) = native_root {
+        safeyolo_proxy::host_commands::record_proxy(&root)?;
+    }
     loop {
         tokio::select! {
             _ = terminate.recv() => break,

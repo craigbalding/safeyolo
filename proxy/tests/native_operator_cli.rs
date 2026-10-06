@@ -54,6 +54,38 @@ async fn success(root: &Path, args: &[&str]) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_config_keeps_operator_reads_on_the_selected_instance() {
+    let fixture = Fixture::new().await;
+    configure(&fixture);
+    let blocked = fixture.network("worker", fixture.address).await;
+    let id = blocked.id();
+    let selected = fixture.root.path().join("operator.toml");
+    fs::rename(fixture.root.path().join("config.toml"), &selected).unwrap();
+    fs::write(fixture.root.path().join("config.toml"), "admin_port=1\n").unwrap();
+    let output = timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--config")
+            .arg(&selected)
+            .args(["approvals", "show", &id, "--agent", "worker", "--json"])
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let view: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(view["request_id"], id);
+    assert_eq!(view["action"]["agent_id"], WORKER_ID);
+    assert_eq!(view["status"], "pending");
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_helper_reads_prepares_and_human_resolves_without_evidence_copying() {
     let fixture = Fixture::new().await;
     configure(&fixture);
@@ -231,6 +263,36 @@ async fn native_helper_reads_prepares_and_human_resolves_without_evidence_copyin
             .unwrap()
             .contains("until explicitly removed")
     );
+    let granted_source = fixture.source();
+    let shared_again = success(
+        root,
+        &[
+            "approvals",
+            "share",
+            &id,
+            "--helper",
+            "helper",
+            "--agent",
+            "worker",
+        ],
+    )
+    .await;
+    assert_eq!(shared_again["status"], "shared");
+    assert_eq!(fixture.source(), granted_source);
+    let terminal = success(
+        root,
+        &[
+            "helper",
+            "show",
+            &id,
+            "--socket",
+            socket,
+            "--token-file",
+            token,
+        ],
+    )
+    .await;
+    assert_eq!(terminal["status"], "approved");
     let origin = fixture.origin.clone();
     let served = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
@@ -716,7 +778,13 @@ async fn native_selection_opens_one_existing_websocket_transcript() {
         assert_eq!(body["text"], expected);
         assert_eq!(body["end"], true);
     }
-    let offset = success(root, &["traffic", "message", flow_id, "1", "--agent", "worker", "--offset", "7"]).await;
+    let offset = success(
+        root,
+        &[
+            "traffic", "message", flow_id, "1", "--agent", "worker", "--offset", "7",
+        ],
+    )
+    .await;
     assert_eq!(offset["offset"], 7);
     assert_eq!(offset["text"], "transcript");
     fixture.stop().await;
