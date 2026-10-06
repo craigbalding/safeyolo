@@ -469,21 +469,31 @@ pub(crate) fn backend_pid(name: &str) -> Option<u32> {
         return None;
     }
     let command = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let fields = command.split(|b| *b == 0).collect::<Vec<_>>();
-    if !fields.contains(&id.as_bytes())
-        || !fields.contains(&b"boot".as_slice())
-        || !fields.windows(2).any(|pair| {
-            pair[0] == b"--root" && pair[1] == runsc_root().as_os_str().as_encoded_bytes()
-        })
-        || !fields.first().is_some_and(|arg| {
-            std::path::Path::new(std::ffi::OsStr::from_bytes(arg))
-                .file_name()
-                .is_some_and(|name| name == "runsc")
-        })
-    {
+    if !is_runsc_boot(&command, &id, &runsc_root()) {
         return None;
     }
     Some(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
+    let fields = command.split(|b| *b == 0).collect::<Vec<_>>();
+    let root = root.as_os_str().as_bytes();
+    // gVisor serializes sentry argv as runsc-sandbox and --root=PATH.
+    // Keep the original runsc/--root PATH form and exact root/run checks.
+    fields.contains(&id.as_bytes())
+        && fields.contains(&b"boot".as_slice())
+        && (fields
+            .windows(2)
+            .any(|pair| pair[0] == b"--root" && pair[1] == root)
+            || fields
+                .iter()
+                .any(|field| field.strip_prefix(b"--root=") == Some(root)))
+        && fields.first().is_some_and(|arg| {
+            std::path::Path::new(std::ffi::OsStr::from_bytes(arg))
+                .file_name()
+                .is_some_and(|name| name == "runsc" || name == "runsc-sandbox")
+        })
 }
 
 #[cfg(target_os = "linux")]
@@ -1845,6 +1855,73 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runsc_boot_accepts_sentry_serialization_and_exact_split_arguments() {
+        let id = "safeyolo-f9c7cbfd6d8744b6bd6cbde0d10101f7";
+        let root = std::path::Path::new("/home/agent/f817n/a/run");
+        for program in ["runsc", "/usr/local/bin/runsc", "runsc-sandbox"] {
+            for root_arguments in [
+                "--root\0/home/agent/f817n/a/run",
+                "--root=/home/agent/f817n/a/run",
+            ] {
+                let command =
+                    format!("{program}\0{root_arguments}\0--platform=systrap\0boot\0{id}\0");
+                assert!(is_runsc_boot(command.as_bytes(), id, root), "{command:?}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runsc_boot_rejects_a_foreign_root_run_or_command() {
+        let id = "safeyolo-f9c7cbfd6d8744b6bd6cbde0d10101f7";
+        let root = std::path::Path::new("/home/agent/f817n/a/run");
+        for (program, root_arguments, operation, run) in [
+            (
+                "runsc-sandbox",
+                "--root=/home/agent/f817n/b/run",
+                "boot",
+                id,
+            ),
+            ("runsc", "--root\0/home/agent/f817n/b/run", "boot", id),
+            (
+                "runsc-sandbox",
+                "--root=/home/agent/f817n/a/run-other",
+                "boot",
+                id,
+            ),
+            (
+                "runsc-sandbox",
+                "--root=/home/agent/f817n/a/run",
+                "boot",
+                "safeyolo-0123456789abcdef0123456789abcdef",
+            ),
+            (
+                "runsc-sandbox",
+                "--root=/home/agent/f817n/a/run",
+                "boot",
+                "prefix-safeyolo-f9c7cbfd6d8744b6bd6cbde0d10101f7",
+            ),
+            (
+                "runsc-sandbox",
+                "--root=/home/agent/f817n/a/run",
+                "state",
+                id,
+            ),
+            (
+                "not-runsc-sandbox",
+                "--root=/home/agent/f817n/a/run",
+                "boot",
+                id,
+            ),
+            ("sleep", "--root=/home/agent/f817n/a/run", "boot", id),
+        ] {
+            let command = format!("{program}\0{root_arguments}\0{operation}\0{run}\0");
+            assert!(!is_runsc_boot(command.as_bytes(), id, root), "{command:?}");
+        }
+    }
 
     #[test]
     fn vz_test_runner_receives_the_installed_helper_directly() {

@@ -321,6 +321,89 @@ fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
     assert!(survived, "the unrelated process was signalled");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn sentry_arguments_do_not_replace_birth_and_current_run_validation() {
+    use std::os::unix::process::CommandExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    fs::create_dir_all(directory.join("config-share")).unwrap();
+    let run_id = "0123456789abcdef0123456789abcdef";
+    let id = format!("safeyolo-{run_id}");
+    // An ordinary host process can carry the sentry's argument form.
+    // It must not gain signal authority from that form when birth/run disagree.
+    let mut unrelated = Command::new("/bin/sh")
+        .arg0("runsc-sandbox")
+        .args(["-c", "read line"])
+        .arg(format!("--root={}", root.join("run").display()))
+        .args(["boot", &id])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = unrelated.id();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let started = stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap();
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    let token = format!("linux:{}:{pid}:{started}", boot.trim());
+    fs::create_dir_all(root.join("run").join(&id)).unwrap();
+    let saved = serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token});
+    let mut results = Vec::new();
+    for (field, replacement, generation) in [
+        ("backend_token", "different-process-birth", run_id),
+        ("run_id", "fedcba9876543210fedcba9876543210", run_id),
+        ("run_id", run_id, "fedcba9876543210fedcba9876543210"),
+    ] {
+        let mut run = saved.clone();
+        run[field] = replacement.into();
+        fs::write(
+            directory.join("runtime.json"),
+            serde_json::to_vec(&run).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("config-share/host-launch-context.json"),
+            serde_json::to_vec(&serde_json::json!({"generation":generation})).unwrap(),
+        )
+        .unwrap();
+        results.push((
+            cli(&root, &["agent", "status", "marker"]),
+            cli(&root, &["agent", "stop", "marker"]),
+            unrelated.try_wait().unwrap().is_none(),
+        ));
+    }
+    if unrelated.try_wait().unwrap().is_none() {
+        unrelated.kill().unwrap();
+    }
+    unrelated.wait().unwrap();
+    for (status, stop, survived) in results {
+        assert_eq!(value(status)["runtime_state"], "unknown");
+        assert!(!stop.status.success());
+        assert!(
+            survived,
+            "a process with mismatched birth/run evidence was signalled"
+        );
+    }
+}
+
 #[test]
 fn configuration_rejection_is_atomic_and_current_run_is_unchanged() {
     let temp = tempfile::tempdir().unwrap();
