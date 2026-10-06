@@ -172,6 +172,72 @@ pub(crate) fn process_has_path_argument(
         })
 }
 
+#[cfg(target_os = "linux")]
+fn process_working_directory(pid: i32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn process_working_directory(pid: i32) -> Option<PathBuf> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>();
+    let returned = unsafe {
+        proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as i32,
+        )
+    };
+    if returned != size as i32 {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    let bytes: Vec<u8> = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|byte| *byte as u8)
+        .collect();
+    let path = std::ffi::CStr::from_bytes_until_nul(&bytes).ok()?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
+}
+
+pub(crate) fn process_has_config_path(
+    pid: i64,
+    executable: &std::path::Path,
+    config: &std::path::Path,
+) -> bool {
+    let Some(pid) = i32::try_from(pid).ok().filter(|pid| *pid > 0) else {
+        return false;
+    };
+    let Ok(config) = config.canonicalize() else {
+        return false;
+    };
+    process_arguments(pid, executable).is_some_and(|arguments| {
+        arguments.windows(2).any(|pair| {
+            if pair[0] != b"--config" {
+                return false;
+            }
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&pair[1]));
+            // A relative launch argument belongs to the process's working
+            // directory, which can differ from the current CLI caller's.
+            let path = if path.is_absolute() {
+                path.to_owned()
+            } else if let Some(directory) =
+                process_working_directory(pid).filter(|directory| directory.is_absolute())
+            {
+                directory.join(path)
+            } else {
+                return false;
+            };
+            path.canonicalize().is_ok_and(|path| path == config)
+        })
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn vm_process_token(name: &str, pid: i32) -> Option<String> {
     let token = macos_process_token(i64::from(pid))?;
