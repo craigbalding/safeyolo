@@ -97,9 +97,18 @@ mkdir -p -- "$root/assets/skills"
 for skill in safeyolo safeyolo-lab-controller; do
   mkdir -p -- "$root/assets/skills/$skill"
   tar -C "$repository/cli/src/safeyolo/agent_context/skills/$skill" \
-    --exclude='__pycache__' --exclude='*.pyc' -cf - . | \
+    --exclude='__pycache__' --exclude='*.pyc' \
+    --exclude='scripts/github_checks.py' --exclude='references/github-checks.md' -cf - . | \
     tar -C "$root/assets/skills/$skill" -xf -
 done
+# The optional Python GitHub checker remains in the repository. Its installed
+# skill route must be omitted with its executable and reference.
+awk '
+  /^- Read \[GitHub composite checks\]/ { omit = 1; next }
+  omit && /^- / { omit = 0 }
+  !omit { print }
+' "$repository/cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md" \
+  > "$root/assets/skills/safeyolo/SKILL.md"
 "$root/bin/safeyolo" --root "$root" init
 echo "$cli_identity"
 echo "Installed: $root/bin/safeyolo"

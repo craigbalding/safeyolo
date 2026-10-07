@@ -245,6 +245,44 @@ def test_installed_check_show_apply_and_scoped_enforcement(tmp_path):
         assert not (instance.root / "assets/guest" / binary).exists()
 
 
+def test_installed_lab_stages_skills_without_the_optional_python_checker(tmp_path):
+    artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
+    guest_artifacts = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")))
+    with native_instance(tmp_path) as instance:
+        skill = instance.root / "assets/skills/safeyolo"
+        instructions = (skill / "SKILL.md").read_bytes()
+        assert b"github-checks.md" not in instructions
+        assert not (skill / "references/github-checks.md").exists()
+        assert (skill / "references/coord.md").is_file()
+        assert (skill / "references/guest-tools.md").is_file()
+
+    # The fixture has stopped the proxy and removed its binary copies. Reuse
+    # its installed skills with the real CLI and checked Coord input. Missing
+    # host binaries stop startup after Lab staging, without allocating a guest
+    # or copying the two large inner inputs merely to check skill propagation.
+    coord = instance.root / "assets/guest/safeyolo-coord"
+    home = instance.root / "agents/lab-staging/home"
+    os.link(guest_artifacts / "safeyolo-coord", coord)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    try:
+        result = subprocess.run(
+            [str(artifacts / "safeyolo"), "--root", str(instance.root), "lab", "--agent", "lab-staging",
+             "--workspace", str(workspace), "--objective", "inspect installed Lab assets", "--yes"],
+            cwd=tmp_path, env=instance.environment, capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode != 0
+        staged = instance.root / "agents/lab-staging/config-share/skills"
+        assert (staged / "safeyolo/SKILL.md").read_bytes() == instructions
+        assert not list(staged.rglob("*.py"))
+        assert not (staged / "safeyolo/references/github-checks.md").exists()
+        assert (staged / "safeyolo-lab-controller/scripts/safeyolo-lab").is_file()
+        assert (home / ".agents/skills/safeyolo").readlink() == Path("/safeyolo/skills/safeyolo")
+    finally:
+        coord.unlink()
+        (home / ".safeyolo/safeyolo-coord").unlink(missing_ok=True)
+
+
 def test_installed_fixture_removes_executables_after_startup_failure(tmp_path):
     with pytest.raises(ReadinessError, match="Proxy process exited"):
         with native_instance(tmp_path, extra_config="\n[invalid\n"):
