@@ -23,6 +23,13 @@ def tmux(socket, *args, check=True):
                           text=True, check=check)
 
 
+def client_tty(socket, pid):
+    clients = tmux(socket, "list-clients", "-F", "#{client_pid}\t#{client_tty}").stdout.splitlines()
+    selected = [tty for client, tty in (row.split("\t", 1) for row in clients) if client == str(pid)]
+    assert len(selected) == 1, f"expected the owned viewer {pid}, got {clients}"
+    return selected[0]
+
+
 @pytest.fixture
 def servers(tmp_path, monkeypatch):
     installed_tmux = shutil.which("tmux")
@@ -103,7 +110,7 @@ def test_same_server_switches_existing_viewer(servers):
         clients = tmux(sockets[0], "list-clients", "-F", "#{client_pid}:#{session_name}").stdout.splitlines()
         assert clients == [f"{viewer.pid}:agent"], "reuse the existing client, do not nest another viewer"
     finally:
-        tmux(sockets[0], "detach-client", "-t", str(viewer.pid), check=False)
+        tmux(sockets[0], "detach-client", "-t", client_tty(sockets[0], viewer.pid), check=False)
         probe.wait_terminal_exit(viewer, master, output, timeout=5)
         os.close(master)
 
@@ -135,7 +142,7 @@ def test_attach_reads_writes_and_disconnects_from_recorded_server(servers, other
         os.write(master, b"hello\n")
         see(b"received:hello")
         # Detach this viewer. The agent pane and the other server must survive.
-        tmux(sockets[0], "detach-client", "-t", str(viewer.pid))
+        tmux(sockets[0], "detach-client", "-t", client_tty(sockets[0], viewer.pid))
         assert probe.wait_terminal_exit(viewer, master, output, timeout=5) == 0
         assert tmux(sockets[0], "show-options", "-p", "-v", "-t", "%0", "@safeyolo_launch_id").stdout.strip() == record["launch_id"]
         assert "received:hello" in tmux(sockets[0], "capture-pane", "-p", "-t", "%0").stdout
