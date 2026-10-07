@@ -1,0 +1,45 @@
+[
+  {
+    "event": {
+      "type": "safeyolo.supervisor",
+      "event": "started",
+      "pid": 42
+    },
+    "label": "SUPERV",
+    "text": "started pid=42"
+  },
+  {
+    "event": {
+      "type": "safeyolo.supervisor",
+      "event": "signal",
+      "signal": "SIGTERM"
+    },
+    "label": "SUPERV",
+    "text": "signal signal=SIGTERM"
+  },
+  {
+    "event": {
+      "type": "safeyolo.supervisor",
+      "event": "crashed",
+      "error_type": "RuntimeError"
+    },
+    "label": "ERROR",
+    "text": "crashed error_type=RuntimeError"
+  },
+  {
+    "event": {
+      "type": "safeyolo.codex.stderr",
+      "text": "provider diagnostic"
+    },
+    "label": "STDERR",
+    "text": "provider diagnostic"
+  },
+  {
+    "event": {
+      "type": "safeyolo.pi.stderr",
+      "text": "provider diagnostic"
+    },
+    "label": "STDERR",
+    "text": "provider diagnostic"
+  }
+]

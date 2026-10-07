@@ -1079,7 +1079,7 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
 }
 
 #[cfg(target_os = "linux")]
-async fn spawn_guest_command_with_output(
+pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
     command: &str,
     capture: bool,
@@ -1308,7 +1308,7 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
 }
 
 #[cfg(target_os = "macos")]
-async fn spawn_guest_command_with_output(
+pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
     command: &str,
     capture: bool,

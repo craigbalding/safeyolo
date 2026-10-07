@@ -201,11 +201,13 @@ its host, with a prepared guest runtime and a workspace you own. Lab retains
 that workspace, its guest home and experiment evidence. The operator supplies
 the objective and signs in to the Lab's own Codex account when needed.
 
-If the installed instance is on your command path and `./experiment` is an
-existing directory you own, start with:
+In these examples, the installed instance is `$HOME/.safeyolo-native` and
+`./experiment` is an existing directory you own. If you installed elsewhere,
+replace the instance path. Invoke its executable directly and select the same
+root for each command; the installer does not change `PATH`.
 
 ```sh
-safeyolo lab --workspace ./experiment
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab --workspace ./experiment
 ```
 
 Lab asks what you want to build, test or understand. It provisions the guest,
@@ -217,8 +219,8 @@ Exit the viewer with `Ctrl-a d`. The controller and evidence remain. Run the
 same command without the creation options to reattach:
 
 ```sh
-safeyolo lab
-safeyolo lab --status
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab --status
 ```
 
 If several Labs exist, select one with `--agent NAME`. If its controller has
@@ -229,7 +231,7 @@ runtime failures retain the Lab for repair; they do not report readiness.
 When you finish the experiment, restore its baseline before teardown:
 
 ```sh
-safeyolo lab --teardown
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab --teardown
 ```
 
 Teardown captures redacted pane evidence, removes the owned session and stops

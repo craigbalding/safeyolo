@@ -30,6 +30,18 @@ fn agents(root: &Path) -> toml::Value {
 }
 
 #[test]
+fn help_retains_lab_factory_and_operator_coord() {
+    let temp = tempfile::tempdir().unwrap();
+    let result = cli(temp.path(), &["--help"]);
+    assert!(result.status.success());
+    let help = String::from_utf8(result.stdout).unwrap();
+    for command in ["lab [--objective TEXT]", "factory check FILE", "coord send"] {
+        assert!(help.contains(command), "missing {command}: {help}");
+    }
+    assert!(!temp.path().join("config.toml").exists());
+}
+
+#[test]
 fn unrelated_agents_and_cancelled_creation_are_preserved() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");

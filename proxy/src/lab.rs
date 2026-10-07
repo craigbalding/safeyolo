@@ -448,7 +448,7 @@ async fn run_inner(options: Options) -> Result<i32, Error> {
                         && root.join("bin/safeyolo-proxy").is_file())
                     .then(|| root.clone())
                 });
-            let agent = host_agents::configure(&name, &settings, true).await?;
+            let agent = host_agents::configure(&name, &settings, true, None).await?;
             save(&Lab {
                 schema: 1,
                 agent: name,

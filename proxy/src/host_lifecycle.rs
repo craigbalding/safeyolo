@@ -17,6 +17,10 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_agents::Agent};
 
+fn tmux_command() -> tokio::process::Command {
+    tokio::process::Command::new(crate::host_platform::config_dir().join("bin/tmux"))
+}
+
 static LISTENER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn agent_dir(name: &str) -> PathBuf {
@@ -350,7 +354,7 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
         .to_owned();
     let mut changes = serde_json::Map::new();
     if let Ok(pane) = std::env::var("TMUX_PANE") {
-        let output = tokio::process::Command::new("tmux")
+        let output = tmux_command()
             .arg("-S")
             .arg(crate::host_platform::config_dir().join("data/tmux.sock"))
             .args(["display-message", "-p", "-t", &pane, "#{socket_path}"])
@@ -360,7 +364,7 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
             return Err("Could not identify agent tmux socket".into());
         }
         let socket = String::from_utf8(output.stdout)?.trim().to_owned();
-        let status = tokio::process::Command::new("tmux")
+        let status = tmux_command()
             .arg("-S")
             .arg(&socket)
             .args([
@@ -540,7 +544,7 @@ async fn terminal_live(record: &Value) -> bool {
     let Some(id) = record["launch_id"].as_str() else {
         return false;
     };
-    let output = tokio::process::Command::new("tmux")
+    let output = tmux_command()
         .args([
             "-S",
             socket,
@@ -568,7 +572,7 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
     let id = record["launch_id"]
         .as_str()
         .ok_or("recorded launch ID is absent")?;
-    let observed = tokio::process::Command::new("tmux")
+    let observed = tmux_command()
         .args([
             "-S",
             socket,
@@ -583,7 +587,7 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
     if !observed.status.success() || String::from_utf8(observed.stdout)?.trim() != id {
         return Err("recorded terminal is absent or belongs to another launch; attach did not launch an agent".into());
     }
-    let dead = tokio::process::Command::new("tmux")
+    let dead = tmux_command()
         .args([
             "-S",
             socket,
@@ -603,7 +607,7 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
         .rsplit_once(',')
         .and_then(|(value, _)| value.rsplit_once(','))
         .map(|(socket, _)| socket);
-    let mut command = tokio::process::Command::new("tmux");
+    let mut command = tmux_command();
     command.args(["-S", socket]);
     if own_socket == Some(socket) {
         command.args(["switch-client", "-t", pane]);
@@ -634,7 +638,7 @@ pub(crate) async fn persistent_shell(
         let _lock =
             tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&path))
                 .await??;
-        let existing = tokio::process::Command::new("tmux")
+        let existing = tmux_command()
             .arg("-S")
             .arg(root.join("data/tmux.sock"))
             .args(["has-session", "-t", &format!("={session}")])
@@ -669,7 +673,7 @@ pub(crate) async fn persistent_shell(
             }
         }
     }
-    Ok(tokio::process::Command::new("tmux")
+    Ok(tmux_command()
         .arg("-S")
         .arg(root.join("data/tmux.sock"))
         .env_remove("TMUX")
@@ -696,14 +700,14 @@ async fn tmux_session_with_current_env(
     // when creating a session. Transfer current names and mask values left
     // in a pre-existing server, without putting any values in command argv.
     let socket = crate::host_platform::config_dir().join("data/tmux.sock");
-    let option = tokio::process::Command::new("tmux")
+    let option = tmux_command()
         .arg("-S")
         .arg(&socket)
         .args(["show-options", "-gqv", "update-environment"])
         .output()
         .await?;
     let previous = if option.status.success() {
-        let global = tokio::process::Command::new("tmux")
+        let global = tmux_command()
             .arg("-S")
             .arg(&socket)
             .args(["show-environment", "-g"])
@@ -729,7 +733,7 @@ async fn tmux_session_with_current_env(
         }
         let previous = String::from_utf8(option.stdout)?.trim_end().to_owned();
         let names = names.into_iter().collect::<Vec<_>>().join(" ");
-        let set = tokio::process::Command::new("tmux")
+        let set = tmux_command()
             .arg("-S")
             .arg(&socket)
             .args(["set-option", "-g", "update-environment", &names])
@@ -740,7 +744,7 @@ async fn tmux_session_with_current_env(
         }
         Some(previous)
     } else {
-        let sessions = tokio::process::Command::new("tmux")
+        let sessions = tmux_command()
             .arg("-S")
             .arg(&socket)
             .arg("list-sessions")
@@ -751,7 +755,7 @@ async fn tmux_session_with_current_env(
         }
         None
     };
-    let created = tokio::process::Command::new("tmux")
+    let created = tmux_command()
         .arg("-S")
         .arg(&socket)
         .args([
@@ -770,7 +774,7 @@ async fn tmux_session_with_current_env(
         .output()
         .await;
     if let Some(previous) = previous {
-        let restored = tokio::process::Command::new("tmux")
+        let restored = tmux_command()
             .arg("-S")
             .arg(&socket)
             .args(["set-option", "-g", "update-environment", &previous])
@@ -778,7 +782,7 @@ async fn tmux_session_with_current_env(
             .await;
         if !matches!(restored, Ok(status) if status.success()) {
             if created.as_ref().is_ok_and(|output| output.status.success()) {
-                let _ = tokio::process::Command::new("tmux")
+                let _ = tmux_command()
                     .arg("-S")
                     .arg(&socket)
                     .args(["kill-session", "-t", &format!("={session}")])
@@ -857,13 +861,13 @@ pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Valu
     }
     // Each launch gets the caller's environment in its temporary session.
     // Moving its pane/window retains it without changing other live agents.
-    let existing = tokio::process::Command::new("tmux")
+    let existing = tmux_command()
         .arg("-S")
         .arg(&socket)
         .args(["has-session", "-t", &format!("={session}")])
         .output()
         .await?;
-    let mut arrange = tokio::process::Command::new("tmux");
+    let mut arrange = tmux_command();
     arrange.arg("-S").arg(&socket);
     if !existing.status.success() {
         arrange.args(["rename-session", "-t", &format!("={temporary}"), session]);
@@ -2023,6 +2027,7 @@ mod tests {
                 "beta",
                 &[("folder".into(), temp.path().to_string_lossy().into_owned())],
                 true,
+                None,
             )
             .await
             .unwrap();
@@ -2069,6 +2074,7 @@ mod tests {
                     ("launcher".into(), "supervisor".into()),
                 ],
                 true,
+                None,
             )
             .await
             .unwrap();

@@ -169,35 +169,7 @@ fn configured_agents() -> Result<Vec<Value>, Error> {
 }
 
 fn factory_agents(root: &Path, name: &str) -> Result<Vec<String>, Error> {
-    validate_name(name)?;
-    let directory = root.join("factories").join(name);
-    let pointer = match std::fs::read_to_string(directory.join("approved")) {
-        Ok(value) => value,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::read_to_string(directory.join("active"))?
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let id = pointer.trim();
-    if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Factory snapshot pointer is invalid".into());
-    }
-    let snapshot: Value = serde_json::from_slice(&std::fs::read(
-        directory.join("snapshots").join(format!("{id}.json")),
-    )?)?;
-    if snapshot["schema"] != "safeyolo.factory/v1" || snapshot["name"] != name {
-        return Err("Factory snapshot identity is invalid".into());
-    }
-    snapshot["roles"]
-        .as_object()
-        .ok_or("Factory roles unavailable")?
-        .values()
-        .map(|role| {
-            let agent = role["agent"].as_str().ok_or("Factory agent unavailable")?;
-            validate_name(agent)?;
-            Ok(agent.to_owned())
-        })
-        .collect()
+    Ok(crate::factory::approved(root, name)?.0.agents())
 }
 
 fn selected_agent(_root: &Path, name: &str) -> Result<Value, Error> {

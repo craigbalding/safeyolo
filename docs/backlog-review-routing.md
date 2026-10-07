@@ -45,7 +45,8 @@ gate.
 
 Run `scripts/watch_backlog_factory.sh start` from an existing tmux session to
 open one `factory-watch` window with equal-width Relay, Forge and Lens panes.
-Each pane runs `contrib/watch-agent-room.py` against the corresponding retained
-agent room. The launcher waits until each existing room is available through
+Set `SAFEYOLO_FACTORY_CONFIG_DIR` to the native instance root before launch.
+Each pane runs that instance's installed `safeyolo coord watch` against the
+corresponding retained agent room. The launcher waits until each existing room is available through
 the current Coord connection and restarts a viewer if it exits. It does not
 start or resume the factory.

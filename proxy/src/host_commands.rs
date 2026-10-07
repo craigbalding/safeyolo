@@ -413,7 +413,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                     },
                 ));
             }
-            let agent = host_agents::configure(name, &options, operation == "create").await?;
+            let agent = host_agents::configure(name, &options, operation == "create", None).await?;
             print(
                 &json!({"configuration":agent,"scope":"next sandbox start; current run is unchanged"}),
             )?;

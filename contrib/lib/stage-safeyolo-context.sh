@@ -75,7 +75,9 @@ _stage_safeyolo_repo_map() {
 
     helper_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "$helper_dir/../.." && pwd)"
-    if [ -f "$repo_root/repo_map.py" ]; then
+    if [ -d "$repo_root/skills" ] && [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ]; then
+        source_path=
+    elif [ -f "$repo_root/repo_map.py" ]; then
         source_path="$repo_root/repo_map.py"
     elif [ -f "$repo_root/cli/src/safeyolo/repo_map.py" ]; then
         source_path="$repo_root/cli/src/safeyolo/repo_map.py"
@@ -96,7 +98,15 @@ _stage_safeyolo_repo_map() {
     fi
 
     mkdir -p "$(dirname -- "$managed_path")" "$command_dir"
-    install -m 0755 "$source_path" "$managed_path"
+    if [ -z "$source_path" ]; then
+        cat > "$managed_path" <<'NATIVE_REPO_MAP'
+#!/usr/bin/env bash
+exec "$HOME/.safeyolo/safeyolo-coord" repo-map "$@"
+NATIVE_REPO_MAP
+        chmod 0755 "$managed_path"
+    else
+        install -m 0755 "$source_path" "$managed_path"
+    fi
     install -m 0644 "$repo_root/repo-map.toml" "$agent_home/.safeyolo/repo-map.toml"
     if [ ! -L "$command_path" ]; then
         ln -s "$command_target" "$command_path"
@@ -184,6 +194,9 @@ stage_safeyolo_context() {
         codex)
             link_dir="$agent_home/.agents/skills"
             skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability"
+            if [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] && [ -d "$repo_root/skills" ]; then
+                skill_names="safeyolo safeyolo-factory readme-usability"
+            fi
             ;;
         claude)
             link_dir="$agent_home/.claude/skills"
@@ -269,7 +282,7 @@ stage_safeyolo_context() {
         done
     fi
 
-    if [ "$consumer" = "codex" ]; then
+    if [ "$consumer" = "codex" ] && { [ -z "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] || [ ! -d "$repo_root/skills" ]; }; then
         _stage_safeyolo_codex_lab_entrypoint "$agent_home"
     fi
     if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then

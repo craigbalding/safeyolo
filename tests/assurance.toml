@@ -11,20 +11,20 @@
 [[factory_acceptance]]
 id = "FACTORY-RUN-STARTS-WORKERS"
 description = "Factory run executes each staged worker command after Coord is ready."
-node = "cli/tests/test_factory_contract.py::test_factory_run_executes_staged_worker_commands"
-sha256 = "465d6d442eee795c603b1b63540988dcb756989dae6986cd9b9ad8115781def2"
+node = "tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands"
+sha256 = "35a2d51ea26798fe15139bef3555e8227c98ad65c2cf541ed75ee36a38126c23"
 
 [[factory_acceptance]]
 id = "FACTORY-RUN-REQUIRES-COORD"
 description = "Factory run does not start workers when Coord cannot start."
-node = "cli/tests/test_factory_contract.py::test_factory_run_does_not_boot_workers_without_coord"
-sha256 = "de55bd201c2b4a33a1c1b3ac2eb2d34a9a82b76a7d30ed7420e72c1649793dae"
+node = "tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_without_coord"
+sha256 = "74dd9a978e70d08346597215f4f8c651f804820015cd238ea63b45164a6f7de4"
 
 [[factory_acceptance]]
 id = "FACTORY-RUN-REQUIRES-ROOM-PROVISIONING"
 description = "Factory run does not start workers when shared-room provisioning fails."
-node = "cli/tests/test_factory_contract.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails"
-sha256 = "ebb582a7c0e6f8788f2f2f31732e2e7062c36f1b13ba961743b05cced508935c"
+node = "tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails"
+sha256 = "b2a6fab472d8b9afb72e85668f9261188b06219b062fe008335116ce2d95c45f"
 
 [[factory_acceptance]]
 id = "FACTORY-OPERATOR-CONVERSATION"
@@ -54,7 +54,7 @@ sha256 = "ecbc86ab542f9995bb526022c1c70d7913537504332e53b4202ade1a8c196b6d"
 id = "FACTORY-AGENT-ROOM-BOUNDARY"
 description = "A retained Relay-to-Forge-to-Lens Coord stream survives restart, accepts new events, and keeps a receive-only observer from sending."
 node = "cli/tests/test_coord_attention.py::test_factory_agent_rooms_survive_restart_and_reject_observer_send"
-sha256 = "862c639338caf9ba7345c803096396247496e42175d976babf9c504f5a9557fe"
+sha256 = "ae27fe011492611dca607b95451682f269359de1cc1d847817b2fc8aa87336a1"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-AUTHORITY"
@@ -83,8 +83,8 @@ sha256 = "de44741fea4cfe3b5ac8d8d2e11e269ea8c019feaaa03cd4b81c476380c7658d"
 [[factory_acceptance]]
 id = "FACTORY-CHAT-AFTER-SEND"
 description = "One real chat process receives after a send and preserves the current draft."
-node = "cli/tests/test_coord_chat_live.py::test_real_chat_receives_after_operator_sends"
-sha256 = "baf732f7332fccc5feed915c083f70e5792feec76e30b26e62c2dfe716d86925"
+node = "tests/proxy_contracts/test_native_coord_operator.py::test_pty_draft_receive_unknown_count_and_later_send"
+sha256 = "0364d38db7e4e4dd751eecef9812548b9f4af6b4d0b60ef75048e414c37bd09d"
 
 [[factory_acceptance]]
 id = "FACTORY-CANDIDATE-PROVENANCE"

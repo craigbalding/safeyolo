@@ -35,6 +35,8 @@ func printUsage() {
       check               Verify that Apple Virtualization.framework is supported.
       version             Print helper build/signing identity; accepts --json.
       --version           Alias for version; does not require VZ support.
+      verify --profile PROFILE --source COMMIT
+                          Verify signed bytes, source and running debug posture.
 
     Options:
       --kernel PATH       Path to kernel Image (required)
@@ -178,6 +180,14 @@ func parseArguments() -> RunConfig? {
 
 if CommandLine.arguments.count >= 2 {
     switch CommandLine.arguments[1] {
+    case "verify":
+        let args = CommandLine.arguments
+        guard args.count == 6, args[2] == "--profile", args[4] == "--source" else {
+            fputs("Error: verify requires --profile production|development --source COMMIT\n", stderr)
+            exit(1)
+        }
+        do { try BuildIdentity.verify(profile: args[3], source: args[5]); exit(0) }
+        catch { fputs("Error: \(error.localizedDescription)\n", stderr); exit(1) }
     case "version", "--version":
         guard CommandLine.arguments.count == 2 ||
               (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--json") else {

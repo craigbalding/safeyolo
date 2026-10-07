@@ -8,10 +8,11 @@ case "${1:-}" in
     # guest command and run on_exit; that wrapper then closes its own pane.
     stop) exit 0 ;;
 esac
-command -v tmux >/dev/null || { echo "tmux is not installed on this SafeYolo host" >&2; exit 1; }
+tmux_binary=$SAFEYOLO_CONFIG_DIR/bin/tmux
+[ -x "$tmux_binary" ] || { echo "Installed tmux runtime is missing: $tmux_binary" >&2; exit 1; }
 
 session=$SAFEYOLO_TMUX_SESSION
-tmux_target=(tmux -S "$SAFEYOLO_TMUX_SOCKET")
+tmux_target=("$tmux_binary" -S "$SAFEYOLO_TMUX_SOCKET")
 pane=${SAFEYOLO_LAUNCH_PANE:-}
 case "${1:-}" in
     launch)
@@ -22,7 +23,7 @@ case "${1:-}" in
         [ -n "$pane" ] || { echo "No recorded agent pane" >&2; exit 1; }
         socket=${SAFEYOLO_TMUX_SOCKET:-}
         [ -n "$socket" ] || { echo "No recorded tmux server for this agent launch" >&2; exit 1; }
-        tmux_target=(tmux -S "$socket")
+        tmux_target=("$tmux_binary" -S "$socket")
         actual=$("${tmux_target[@]}" show-options -p -v -t "$pane" @safeyolo_launch_id) || {
             echo "Cannot reach agent pane $pane on tmux server $socket" >&2; exit 1;
         }
