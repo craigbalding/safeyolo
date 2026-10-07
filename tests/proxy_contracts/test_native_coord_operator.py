@@ -4,7 +4,8 @@ The Python driver owns one disposable installed instance and real pinned NATS.
 Product commands run without a Python import path. These are host/UDS probes;
 the Ubuntu guest witness in tests/nested-linux/operator_coord_acceptance.py
 supplies the actual guest observation. Readiness is 15 seconds and each PTY
-observation is bounded to the existing 10-second chat fixture deadline.
+observation is bounded to the existing 10-second chat fixture deadline, with
+five seconds of driver allowance for the preserved ten-second clipboard timeout.
 """
 
 from __future__ import annotations
@@ -239,11 +240,17 @@ def test_clipboard_editor_confirmation_and_cancellation(instance):
         until(b"send? [Y/n]")
         os.write(fd, b"y\r")
         until(b"message accepted;")
+        clipboard.write_text("#!/bin/sh\nexec /bin/sleep 30\n")
+        os.write(fd, b":paste\r")
+        until(b"clipboard command timed out; nothing sent", timeout=15)
+        os.write(fd, b"after clipboard timeout\r")
+        until(b"message accepted;")
         os.write(fd, b":q\r")
         process.wait(timeout=5)
         assert process.returncode == 0
     assert [m["body"] for m in history(instance)] == [
         "clipboard café\nsecond line\n", "editor café\nlast line\n", "\ufffd\n",
+        "after clipboard timeout",
     ]
 
 

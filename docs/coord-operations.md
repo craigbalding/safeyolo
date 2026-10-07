@@ -162,7 +162,7 @@ plain text; the default is `text/markdown`.
 Without `--to`, the command requests room-wide attention. Repeat `--to` to
 request targeted attention for multiple agents. Each target must be an active,
 receive-authorized member of the named room. The command uses the same
-SafeYolo-generated operator attribution and `api.send` authorization as
+SafeYolo-generated operator attribution and native publication/grant checks as
 interactive chat. It reports authorization, invalid-room, invalid-target,
 provider, and publish-outcome errors without printing credentials.
 
