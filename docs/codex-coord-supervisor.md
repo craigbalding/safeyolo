@@ -9,8 +9,7 @@ Use the installed native product and its matching Linux guest Coord executable.
 Set up the worker's own login before enabling supervision, as described in
 [factory setup](factories.md#fresh-setup-check-approve-and-run).
 
-For a fresh native instance, first configure the agents through the native host
-commands. Then create a room and grant its agents access:
+For a Factory, use the [native Factory preparation](factories.md#fresh-setup-check-approve-and-run); it provisions these declared inputs. For a standalone supervised worker, configure its agent through the native host commands, then create a room and grant access:
 
 ```bash
 safeyolo --root INSTANCE coord start

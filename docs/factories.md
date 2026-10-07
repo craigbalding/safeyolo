@@ -88,22 +88,13 @@ natural-language parser; they cannot overlap a handoff request or response.
 unreachable from that operator edge; old source-only v1 snapshots therefore
 fail closed instead of starting an inert factory.
 
-Interactive operator chat automatically resolves the coordinator bound by an
-approved factory snapshot for that room. An explicit target overrides that
-resolution:
-
-```sh
-safeyolo coord chat backlog --to relay
-```
-
-Without `--to`, a room with no approved factory keeps its room-wide wake
-behavior. If multiple approved factories bind different coordinators to one
-room, chat fails visibly instead of guessing. The target must be an active,
-receive-authorized room member; unknown, revoked, and send-only targets fail
-before the message is accepted. Targeting changes only attention delivery.
-Send confirmation and operator-visible retained history show the canonical
-attention mode (`targeted`, `room`, or `none`) without exposing recipient IDs
-or unrelated membership. The message remains canonically attributed.
+The native operator entry targets the coordinator selected by this approved
+Factory. Use `factory send NAME TEXT` for natural-language direction and
+`factory history NAME` for retained replies. Send requires an active,
+receive-authorized room member; unknown, revoked and send-only targets fail
+before acceptance. Targeting changes attention delivery. Confirmation and
+history retain canonical attribution and message IDs. See the commands under
+[operator direction](#operator-direction-and-ordinary-restart).
 
 The room brief is a separate operator-authored standing-context channel.
 Canonical `brief_changed` attention updates every receive-authorized factory
@@ -113,7 +104,7 @@ need no terminal response, and cause no automatic runtime transition.
 
 ## Authority and intake
 
-An approved factory has three distinct state layers:
+An approved factory retains the following state:
 
 - The approved immutable snapshot binds the room, operator edge, role and agent
   bindings, handoffs, context routes, repair policy, and exact bytes and SHA-256 of every Markdown
@@ -122,10 +113,10 @@ An approved factory has three distinct state layers:
 - Each running role uses the exact snapshot last staged into that agent by
   `factory run`. Until the next run, this can differ from the newly approved
   snapshot.
-- `factory doctor` reports both identities only after validating the staged
-  snapshot and its role, supervisor, command, and harness adapter bindings. A difference is
-  a staged-versus-approved warning, not evidence of the running process's
-  identity; process health is reported separately.
+- `factory doctor` compares each staged role, supervisor, command and harness
+  adapter with the selected approved content. It shows a valid retained staged
+  binding separately. A mismatch prevents readiness
+  for that selection. Approval does not establish the running process's identity.
 - The canonical trusted room brief is live operator-authored state. The brief
   is not part of the snapshot and can change by revision while the snapshot
   stays the same.
@@ -144,117 +135,118 @@ constraints, but the backlog factory does not require one.
 
 ## Fresh setup, check, approve, and run
 
-The shortest discoverable setup path is deliberately ordered. Register every
-agent with the ordinary bundled host setup named by its role (`@codex` or
-`@pi`). Before the factory starts, establish that harness's agent-local
-subscription login from inside the agent. Then validate the immutable
-contract, approve that exact snapshot, and only then run the factory.
-`--no-run` leaves agent creation separate from factory startup; host credentials
-are never copied into the agent.
+Use the [installed native product](native-policy.md#install-and-start) on the
+owning host account. Its guest runtime must be prepared for that host, and its
+proxy must be running. Select an operator-authored Factory TOML and the
+workspaces for its roles. Each role keeps its own home and authentication;
+SafeYolo does not copy the host's login or credentials.
+
+The example below uses the shipped backlog contract and three existing owned
+repository workspaces at `/work/relay`, `/work/forge` and `/work/lens`. Replace
+those paths with your selected directories. Keep the installation outside the
+agents' writable workspaces. The contract selects the role agents, harnesses,
+models, instructions and allowed handoffs.
 
 ```sh
-safeyolo agent add relay "$PWD" --host-script @codex --no-run
-safeyolo agent add forge "$PWD" --host-script @pi --no-run
-safeyolo agent add lens "$PWD" --host-script @codex --no-run
-safeyolo agent start relay --sandbox-only
-safeyolo agent shell relay
-# In the relay agent shell:
-#   codex login --device-auth
-safeyolo agent shell relay -c "/home/agent/.safeyolo/safeyolo-coord codex-state adopt"
-safeyolo agent stop relay
-# Repeat the Codex login sequence for other Codex roles.
-# For a Pi role, run it once with @pi, use Pi's /login flow, then stop it.
-safeyolo factory check docs/factories/backlog.toml
-safeyolo factory approve docs/factories/backlog.toml --yes
-safeyolo factory run backlog
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory check docs/factories/backlog.toml
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory approve docs/factories/backlog.toml
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" start
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory prepare backlog --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
 ```
 
-For reset recovery, run `/home/agent/.safeyolo/safeyolo-coord codex-state reset`
-inside the agent, then `codex login --device-auth`, then run the adopt command
-before reapplying the host setup.
+`check` validates the contract and displays each role's exact content identity.
+`approve` asks for operator approval and selects that immutable snapshot; use
+`--yes` for an explicit noninteractive approval. Neither command starts a
+Factory. `prepare` creates or checks the declared agents and their staging,
+shared room, private agent rooms and required send/receive grants. Existing
+room history and unrelated memberships remain. It starts no model.
 
-Use the role agent names from the factory file for another contract. The
-workspace argument may be changed per agent. `factory run` is the step that
-creates or verifies the shared Coord room and each private agent room and
-restores the required operator and role send/receive grants. It does this
-before starting any role supervisor.
-
-When a setup step fails, follow the commands printed by the CLI in order. The
-read-only diagnosis is always available as:
+Establish each role's own login through the native entry. For the shipped
+contract, authenticate the coordinator, owner and reviewer:
 
 ```sh
-safeyolo factory doctor backlog
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory login backlog coordinator
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory login backlog owner
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory login backlog reviewer
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory run backlog
 ```
 
-Correct the specific component named by `factory doctor`, then rerun
-`safeyolo factory run backlog`. A missing agent is recovered with
-`safeyolo agent add NAME "$PWD" --host-script @HARNESS --no-run`; a missing workspace is recovered
-with the installed native CLI, `ROOT/bin/safeyolo --root ROOT agent configure NAME --workspace "$PWD"`,
-where `ROOT` is that factory instance's absolute directory. Room and grant recovery is
-the idempotent `safeyolo factory run backlog` command itself. Factory run does
-not claim success until every role supervisor passes the doctor checks for the
-approved snapshot, agent identity/storage/workspace, rooms and grants, proxy,
-NATS, staged supervisor/Coord-adapter/contract files, checkpoint, and process tree.
-Pending approvals are reported for operator attention but do not block this
-operational preflight; `factory run` prints the warning without approving anything.
+Codex uses its device login and explicit agent-local adoption. Pi opens its
+normal interactive client; use `/login` for its selected provider, then exit.
+The entry stops the login sandbox afterward and keeps that role's installed
+tools and login. Provider configuration remains an operator choice. An
+existing supported external-provider configuration can supply authentication
+without another login.
 
-## Check, approve, and run
+`run` stages the approved supervised roles, provisions missing declared room
+access and starts them through the existing native agent lifecycle. It reports
+`Started Factory` only after observed runtime, role binding, executable,
+authentication, checkpoint and room checks pass. Approval alone is not
+readiness. If a role is already running, its staging must match the selected
+snapshot; run reuses its existing launch. Stop the Factory before changing a
+workspace or selecting different role instructions.
 
-Inspect the resolved source path, exact UTF-8 byte count, and SHA-256 of every
-Markdown contract, along with the operator edge and handoffs:
+Native preparation checks workspace ownership. Use
+`--dangerously-allow-unowned` only when you intentionally share an unowned
+workspace. Agent memory, additional mounts and direct recovery remain available
+through the native `agent` commands; the Factory does not grant itself host
+privileges.
+
+## Operator direction and ordinary restart
+
+After readiness, send natural-language direction to the role selected by the
+approved `operator_input` binding. The message is canonically attributed to the
+local operator and wakes that role only:
 
 ```sh
-safeyolo factory check docs/factories/backlog.toml
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory send backlog 'Inspect the disposable repository and repair its failing fixture test.'
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory history backlog
 ```
 
-The explanation also identifies the immutable snapshot boundary, the live
-brief boundary, the role that receives operator input, and the complete
-role/handoff graph. Static checking does not inspect live room state, grants,
-brief revision, or worker health.
+History returns canonical message IDs, senders and sequences. Use
+`--since SEQUENCE` to read the next retained page. Reading history does not
+assign work. Work completion comes from the correlated handoff and its
+independent result, together with the changed artifact and test.
 
-Approve prompts for explicit operator approval, stores the resolved manifest
-plus exact role-contract contents in an immutable, content-addressed snapshot
-under `~/.safeyolo/factories/`, and selects that snapshot for the next run.
-It does not change a running factory. `--yes` is the non-interactive form of
-the same explicit approval:
+Stop and restart the same newly created Factory:
 
 ```sh
-safeyolo factory approve docs/factories/backlog.toml
-safeyolo factory approve docs/factories/backlog.toml --yes
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory stop backlog
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory run backlog
 ```
 
-Existing installations may continue to invoke the hidden `factory apply`
-compatibility alias. It performs the same immutable snapshot selection and
-does not mutate live rooms, grants, agents, or processes. The `active` pointer
-from the pre-approve layout is read as a migration fallback without rewriting
-it; use `factory approve` to select a new snapshot explicitly.
+Stop affects the selected role runtimes. It retains the approved contract,
+agent identities, role homes, supervisor checkpoints and existing Coord
+messages. It leaves the instance proxy, Coord transport and unrelated agents
+running. Restart uses those same records; completed work is not a new task.
+This is continuity within fresh native state. Old Python state is not imported
+or converted.
 
-Run loads and verifies only the approved snapshot, configures each
-already-created agent through the `@codex-coord` or `@pi-coord` setup selected
-by its role, stages each approved role contract, provisions the declared shared
-Coord room and its required
-operator and role grants, starts all roles detached, and waits for operational
-preflight:
+## Direct diagnosis and recovery
+
+Use the read-only diagnosis when readiness fails:
 
 ```sh
-safeyolo factory run backlog
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory doctor backlog
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent diagnostics forge
 ```
 
-`factory run` never creates agents. Create the named agents first with their
-normal workspace and credentials. Room provisioning is idempotent: an existing
-room keeps its history and unrelated observer grants, while missing
-send/receive grants for the operator and bound role agents are restored. The
-declared shared room cannot reuse a bound agent's private `<agent>-agent` room.
-If Coord provisioning fails, no role is started. If a role launch or
-operational preflight fails, the command returns an actionable doctor and
-rerun sequence instead of printing `Started factory`. A factory does not
-live-reload: editing the TOML or Markdown files changes nothing in running
-workers.
+Doctor names the failed role or room and reports its actual runtime and
+checkpoint. A valid older staged binding is shown separately from the approved
+selection. A missing model executable or room permission is a readiness
+failure. Correct that input, stop affected roles, then repeat `factory run`.
+Use `factory prepare` with the selected workspace arguments to repair declared
+agents and grants. Failed startup retains reached role state and evidence for
+diagnosis; it does not report a running Factory or delete unrelated work.
+Pending human decisions remain visible through the normal operator approval
+commands and [native inspect](native-operator.md). Doctor reports pending
+Factory decisions as warnings; they do not prevent readiness or instruct the
+operator to approve them.
 
-The stored snapshot binds each Markdown file's exact bytes, byte count, hash,
-and decoded text. `factory run` prints the bound snapshot path, byte counts,
-hashes, and operator edge before it starts agents, so the operator can compare
-the running object with the approved check output.
+The snapshot stores every role contract's exact UTF-8 bytes, byte count and
+hash under `ROOT/factories/NAME/snapshots/`. The `approved` pointer selects the
+next run. Editing a source TOML or Markdown file does not change that snapshot
+or a running worker. Check and approve the changed content explicitly.
 
 ## Release stuck work after stopping its agents
 
@@ -263,7 +255,7 @@ the operator wants to abandon. Stop each affected agent with `safeyolo agent
 stop NAME` first. Select the exact target URL from the retained assignment:
 
 ```sh
-safeyolo factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
 ```
 
 The command shows the selected targets and matching record counts for each
@@ -292,65 +284,16 @@ work or discard newer state.
 This is checkpoint recovery, not live cancellation or a durable Coord work
 object. It does not consume assignments still waiting in the attention feed,
 stop external jobs, or undo published changes. Resume only the intended agents
-after recovery; normal factory startup still requires all its roles stopped.
+after recovery. Stop the roles before changing their staged instructions or workspaces.
 
 ## Diagnose an approved or running factory
 
-Inspect the approved snapshot and current runtime before you rely on them:
+Use the [native diagnosis and recovery commands](#direct-diagnosis-and-recovery).
+The approved snapshot and each staged role binding are checked separately.
+A stopped Factory has retained configuration and checkpoints, but is not ready.
+A trusted room brief carries operator-owned live context; it does not approve
+new role contracts or establish runtime readiness.
 
-```sh
-safeyolo factory doctor backlog
-```
-
-The doctor reports the current canonical brief as `state=none` or as its exact
-revision and content hash. It does not print or interpret the brief body. When
-the brief is absent, the doctor reports the intake behavior bound by the shipped
-coordinator contract. The output also gives the exact read and
-optimistic-concurrency update commands:
-
-```sh
-safeyolo coord brief show backlog
-safeyolo coord brief set backlog --file BRIEF.md --expected-revision REVISION
-```
-
-Use revision `0` for the first brief. For an existing brief, use the current
-revision reported by `brief show` or `factory doctor`. SafeYolo accepts
-operator-authored Markdown. SafeYolo does not claim that the Markdown contains
-a valid eligibility policy.
-
-The command reads existing host and sandbox state. It does not start, stop,
-repair, approve, or change the factory. Each output line has one status:
-
-- `PASS` means that the component has the expected state.
-- `WARN` reports a condition needing attention, such as a stopped role, a
-  pending operator decision, or unreadable approval audit state. It is not
-  permission to approve. A stopped role is valid persistent state, but the
-  factory is not fully running.
-- `FAIL` means that a required component is missing, corrupt, mismatched, or
-  not running. Each failure names a narrow recovery command or file category.
-
-The command checks the approved snapshot and role bindings, agent identity and
-storage, workspaces, room membership and grants, the traffic proxy, and the
-managed Coord NATS runtime. It also checks each staged command, supervisor
-configuration, role contract, harness-specific Coord binding, checkpoint, and
-running process tree. A healthy traffic proxy does not hide a stopped NATS
-runtime. A running sandbox fails the check if its supervisor, selected harness,
-or (for Codex) active-turn Coord MCP process is absent. Between bounded turns,
-the checkpoint normally records `owned_process=null`; the running supervisor is
-then reported as healthy without requiring a harness process. A PID that disappears while the
-read-only process probe runs is likewise reported as a non-disruptive turn
-transition. Doctor validates checkpoints through the same bundled supervisor
-decoder that runs them, so checkpoint migrations have one implementation.
-Doctor also reports unresolved decisions for this factory's workers from the
-recent audit log. Check the request in `safeyolo watch` before deciding; the
-warning does not decide for the operator. This diagnostic warning alone does
-not prevent `factory run` from starting healthy supervisors.
-
-The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
-`WARN` returns zero so that an operator can distinguish attention from corrupt
-state. The command reports checkpoint counts and process
-identity, but it does not print message bodies, role-contract contents,
-credentials, or inspected payloads.
 
 ## Optional backlog eligibility brief
 
@@ -379,39 +322,16 @@ State the identity relationship, not only the identity. State override
 semantics separately for `NEXT` and `PRIORITY`. An override does not bypass an
 unstated filter. Keep no more work in flight than the stated maximum.
 
-## Live upgrade
+## Reconfigure a native Factory
 
-There is no backward-compatible parser or completion path for the old
-`TASK task=<id> assignee=<agent>` protocol. Before changing a running legacy
-factory, drain it at a verified safe boundary:
+Stop the Factory before selecting changed role contracts or workspaces. Check
+and approve the changed TOML and role Markdown, then run the same Factory. The
+entry preserves existing role homes, identities, checkpoints and Coord history.
+It does not convert old Python product state or legacy supervisor checkpoints.
+A refused checkpoint remains available for direct inspection and recovery.
 
-1. Keep the existing role supervisors running and let every in-flight request
-   and awaiting handoff reach its terminal response.
-2. Run `safeyolo factory doctor backlog` repeatedly. Do not continue until the
-   checkpoint line for every role reports `in_flight=0 awaiting_handoffs=0`.
-3. Stop the drained roles, for example with `safeyolo agent stop relay`,
-   `safeyolo agent stop forge`, and `safeyolo agent stop lens`.
-4. Add or update the explicit `operator_input` table, then run
-   `safeyolo factory check docs/factories/backlog.toml` and verify the agents,
-   room, operator shorthand, reachable handoffs, paths, byte counts, and hashes.
-5. Run `safeyolo factory approve docs/factories/backlog.toml --yes` for that
-   exact resolved snapshot.
-6. Run `safeyolo factory run backlog`.
-
-The supervisor applies the same verified drain precondition to supported
-version-1 through version-5 checkpoints before upgrading them to the target-only
-version. A checkpoint with pending work is rejected without mutation and prints
-the recovery procedure; do not edit its messages or invent target URLs. An
-empty checkpoint upgrades to a clean harness session while retaining only its safe
-cursor, recent attention IDs, and trusted room brief context. New work must use
-target URLs.
-The running Markdown contract and routing table come from the immutable
-snapshot. To change either, stop the agents, check and approve a new snapshot,
-then run the factory again.
-
-Rollback is also snapshot-based: stop all roles, restore or re-approve the last
-known-good factory file and role Markdown, verify the newly produced exact
-snapshot details, then run it. A legacy snapshot without `operator_input`
-cannot be restarted. If Relay cannot receive the operator edge, keep the
-factory stopped and operate the issue manually; do not inject a peer-authored
-message that merely looks like an operator control.
+To restore an earlier native contract, stop the roles, check and approve that
+contract and its exact role Markdown, then run again. Approval selects content;
+it does not cancel outstanding work or grant a different role authority over it.
+Resolve any affected assignments through their existing handoffs or explicit
+stopped-work release before changing their authority.

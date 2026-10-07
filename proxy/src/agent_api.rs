@@ -11,6 +11,7 @@
 //! never lossy replacement. This is an incomplete development API slice.
 
 pub use coord::{CoordClient, CoordContext};
+pub(crate) use coord::{operator_history, operator_send};
 use std::{
     collections::HashMap,
     fs,

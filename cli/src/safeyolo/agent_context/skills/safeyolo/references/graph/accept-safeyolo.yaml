@@ -335,11 +335,11 @@ nodes:
           sha256: b82a483c756acf4eb1fa7fea325fa7b528d0789d6c3d326abd791e588271d46d
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 23177de06bd48ab1893d19e3ede820e59fd61dfee242fe2b4dfe0f8f48e2ddaf
-        - path: cli/tests/test_factory_doctor.py
-          sha256: 7dbcde088f528eeaec8f03dd02d63e0165959bbd0bdd594eecdce658e29d430b
-      setup: "Use the trusted base's locked Python environment."
-      verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
-      run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
+        - path: tests/proxy_contracts/test_native_factory_cli.py
+          sha256: 04f0318b309ee1da4c40ede6dd01749f936be17d2373a3d3452e4aa0a365170e
+      setup: "Use the trusted base's locked Python test environment and warm native debug artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."
+      verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
+      run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
       capture: [trusted base, focused test selection, exit status, exact failing test]
 
   - id: ev.accept_factory_recovery_lab

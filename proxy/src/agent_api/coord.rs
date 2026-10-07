@@ -255,6 +255,25 @@ impl CoordClient {
             .map_err(|_| CoordError::Unavailable)?
     }
 
+    async fn sender_access(
+        &self,
+        room: &str,
+        sender: Sender<'_>,
+    ) -> Result<RoomAccess, CoordError> {
+        match sender {
+            Sender::Agent { id, .. } => self.access(room, id).await,
+            Sender::Operator => {
+                let db = self.owner.data_dir.join("v0.db");
+                let room = room.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    read_access_as(&db, &room, "operator", "operator")
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)?
+            }
+        }
+    }
+
     async fn display_names(&self, principal_ids: &[String]) -> HashMap<String, String> {
         let principal_ids = principal_ids.to_vec();
         let policy_file = self.policy_file.clone();
@@ -1970,6 +1989,15 @@ async fn wait_cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>) -> bo
 }
 
 fn read_access(db: &Path, room_name: &str, principal: &str) -> Result<RoomAccess, CoordError> {
+    read_access_as(db, room_name, "agent", principal)
+}
+
+fn read_access_as(
+    db: &Path,
+    room_name: &str,
+    kind: &str,
+    principal: &str,
+) -> Result<RoomAccess, CoordError> {
     let conn = open_db(db, false)?;
     let room = conn
         .query_row(
@@ -2018,7 +2046,7 @@ fn read_access(db: &Path, room_name: &str, principal: &str) -> Result<RoomAccess
     }
     let member = members
         .iter()
-        .find(|member| member.principal_kind == "agent" && member.principal_id == principal)
+        .find(|member| member.principal_kind == kind && member.principal_id == principal)
         .ok_or(CoordError::NotFound)?;
     let instance_id = conn
         .query_row("SELECT id FROM instance LIMIT 1", [], |row| row.get(0))
@@ -2379,9 +2407,10 @@ async fn respond_payload(
                 context.client,
                 request,
                 &room_name,
-                access,
-                &principal,
-                agent_name,
+                Sender::Agent {
+                    id: &principal,
+                    name: agent_name,
+                },
                 payload,
             )
             .await
@@ -2408,7 +2437,18 @@ async fn respond_payload(
                 Ok(value) => value.min(MAX_PAGE as u64) as usize,
                 Err(()) => return response(400, json!({"error":"invalid limit"})),
             };
-            read_messages(context.client, &room_name, access, &principal, since, limit).await
+            read_messages(
+                context.client,
+                &room_name,
+                access,
+                Sender::Agent {
+                    id: &principal,
+                    name: agent_name,
+                },
+                since,
+                limit,
+            )
+            .await
         }
         "wait" => {
             if request.method != "GET" {
@@ -2690,15 +2730,90 @@ fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Result<bool,
     }
 }
 
+// Only the local operator CLI can select Operator. Agent API dispatch always
+// constructs Agent from its reconciled listener; payload fields cannot select it.
+#[derive(Clone, Copy)]
+enum Sender<'a> {
+    Agent { id: &'a str, name: &'a str },
+    Operator,
+}
+
+pub(crate) async fn operator_send(
+    config: &Path,
+    room: &str,
+    body: &str,
+    notify: &[String],
+) -> Result<Value, crate::Error> {
+    let config = crate::native_config::read(config)?;
+    let client = CoordClient::new(
+        config.policy_file.clone(),
+        config.data_dir.map(|dir| dir.join("coord")),
+    );
+    let payload = serde_json::to_vec(
+        &json!({"body":body,"notify":notify,"declared_content_type":"text/plain"}),
+    )?;
+    let outcome = send(
+        &client,
+        Request {
+            method: "POST",
+            path_and_query: "/local/operator/coord/send",
+            authorization: None,
+            identity: crate::network_guard::Identity::Unavailable,
+            client_ip: None,
+            request_id: "local-operator",
+        },
+        room,
+        Sender::Operator,
+        &payload,
+    )
+    .await;
+    let super::ResponseBody::Json(value) = &outcome.response.body else {
+        return Err("Coord send returned no JSON".into());
+    };
+    if outcome.response.status != 200 {
+        return Err(format!("Coord send failed: {value}").into());
+    }
+    Ok(value.clone())
+}
+
+pub(crate) async fn operator_history(
+    config: &Path,
+    room: &str,
+    since: u64,
+) -> Result<Value, crate::Error> {
+    let config = crate::native_config::read(config)?;
+    let client = CoordClient::new(
+        config.policy_file.clone(),
+        config.data_dir.map(|dir| dir.join("coord")),
+    );
+    let access = client
+        .sender_access(room, Sender::Operator)
+        .await
+        .map_err(|_| "operator room access is unavailable")?;
+    if !access.permissions.iter().any(|p| p == "receive") {
+        return Err("operator receive permission is missing".into());
+    }
+    let outcome = read_messages(&client, room, access, Sender::Operator, since, 200).await;
+    let super::ResponseBody::Json(value) = &outcome.response.body else {
+        return Err("Coord history returned no JSON".into());
+    };
+    if outcome.response.status != 200 {
+        return Err(format!("Coord history failed: {value}").into());
+    }
+    Ok(value.clone())
+}
+
 async fn send(
     client: &CoordClient,
     request: Request<'_>,
     room_name: &str,
-    _access: RoomAccess,
-    principal: &str,
-    agent_name: &str,
+    sender: Sender<'_>,
     payload: &[u8],
 ) -> Outcome<'static> {
+    let (principal, agent_name, sender_kind) = match sender {
+        Sender::Agent { id, name } => (id, Some(name), "agent"),
+        Sender::Operator => ("operator", None, "operator"),
+    };
     let Ok(document) = serde_json::from_slice::<Value>(payload) else {
         return response(400, json!({"error":"invalid JSON body"}));
     };
@@ -2767,7 +2882,7 @@ async fn send(
     // The SQLite grant is authoritative for the stream lookup. A second
     // snapshot below is taken after every preparation step, immediately
     // before the manifest is constructed and published.
-    let access = match client.access(room_name, principal).await {
+    let access = match client.sender_access(room_name, sender).await {
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
@@ -2807,7 +2922,7 @@ async fn send(
     // Stream lookup, baseline setup, and target-name resolution all perform
     // provider I/O. Re-read the newest active membership generation after
     // those operations so a revoke/regrant cannot authorize a stale manifest.
-    let final_access = match client.access(room_name, principal).await {
+    let final_access = match client.sender_access(room_name, sender).await {
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
@@ -2913,8 +3028,8 @@ async fn send(
     let envelope = json!({
         "msg_id":msg_id,
         "sent_at":sent_at,
-        "sender_kind":"agent",
-        "sender_agent_id":principal,
+        "sender_kind":sender_kind,
+        "sender_agent_id":if sender_kind=="agent" {Some(principal)} else {None},
         "sender_agent_name":agent_name,
         "origin_instance_id":final_access.instance_id,
         "content_type":content_type,
@@ -3048,7 +3163,7 @@ async fn read_messages(
     client: &CoordClient,
     room_name: &str,
     access: RoomAccess,
-    principal: &str,
+    sender: Sender<'_>,
     since: u64,
     limit: usize,
 ) -> Outcome<'static> {
@@ -3056,7 +3171,7 @@ async fn read_messages(
         client,
         room_name,
         access,
-        principal,
+        sender,
         since,
         limit,
         Duration::from_millis(500),
@@ -3091,7 +3206,10 @@ async fn wait_room(
         context.client,
         room_name,
         access,
-        principal,
+        Sender::Agent {
+            id: principal,
+            name: "",
+        },
         since,
         limit,
         Duration::from_secs_f64(bounded_timeout_seconds(timeout_seconds)),
@@ -3109,7 +3227,7 @@ async fn read_messages_with_timeout(
     client: &CoordClient,
     room_name: &str,
     access: RoomAccess,
-    principal: &str,
+    sender: Sender<'_>,
     since: u64,
     limit: usize,
     fetch_timeout: Duration,
@@ -3117,6 +3235,10 @@ async fn read_messages_with_timeout(
     wake_mode: bool,
     mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
+    let principal = match sender {
+        Sender::Agent { id, .. } => id,
+        Sender::Operator => "operator",
+    };
     let connection = match client.client().await {
         Ok(connection) => connection,
         Err(error) => return error_response(error),
@@ -3158,7 +3280,7 @@ async fn read_messages_with_timeout(
             // regrant rotated the membership generation, discard candidates
             // from the previous snapshot and keep waiting for a new match.
             if wake_mode {
-                let current = match client.access(room_name, principal).await {
+                let current = match client.sender_access(room_name, sender).await {
                     Ok(current) => current,
                     Err(CoordError::NotFound) => {
                         return Ok((Vec::new(), (since, since)));
@@ -3202,7 +3324,7 @@ async fn read_messages_with_timeout(
             // Evaluate the attention manifest against a grant snapshot taken
             // after this provider fetch, before any message is exposed.
             let evaluation_access = if wake_mode {
-                match client.access(room_name, principal).await {
+                match client.sender_access(room_name, sender).await {
                     Ok(access) => Some(access),
                     Err(CoordError::NotFound) => {
                         return Ok((Vec::new(), (since, since)));
@@ -3279,7 +3401,7 @@ async fn read_messages_with_timeout(
                 // A revoke or regrant can race the provider fetch. Re-read
                 // the current grant before returning a wake page, then apply
                 // the same candidate authorization against that snapshot.
-                let current = match client.access(room_name, principal).await {
+                let current = match client.sender_access(room_name, sender).await {
                     Ok(current) => current,
                     Err(CoordError::NotFound) => {
                         return Ok((Vec::new(), (since, since)));
@@ -3306,7 +3428,7 @@ async fn read_messages_with_timeout(
         if !wake_mode {
             // A revoke can land during the ordinary fetch/ack window. Never
             // return messages after that grant has ceased to authorize receipt.
-            let current = client.access(room_name, principal).await?;
+            let current = client.sender_access(room_name, sender).await?;
             if !current
                 .permissions
                 .iter()
@@ -3361,17 +3483,6 @@ mod tests {
             identity: crate::network_guard::Identity::Resolved("alice"),
             client_ip: None,
             request_id: "req-00000000000000000000000000000000",
-        }
-    }
-
-    fn test_receive_access() -> RoomAccess {
-        RoomAccess {
-            room_id: "rm-shared".to_owned(),
-            room_name: "shared".to_owned(),
-            permissions: vec!["receive".to_owned()],
-            members: Vec::new(),
-            instance_id: "instance".to_owned(),
-            brief: Value::Null,
         }
     }
 
@@ -3819,9 +3930,10 @@ mod tests {
             &client,
             test_coord_request("POST", "/api/coord/rooms/shared/send"),
             "shared",
-            test_receive_access(),
-            "ag-alice",
-            "alice",
+            Sender::Agent {
+                id: "ag-alice",
+                name: "alice",
+            },
             &oversized,
         )
         .await;
@@ -3839,9 +3951,10 @@ mod tests {
             &client,
             test_coord_request("POST", "/api/coord/rooms/shared/send"),
             "shared",
-            test_receive_access(),
-            "ag-alice",
-            "alice",
+            Sender::Agent {
+                id: "ag-alice",
+                name: "alice",
+            },
             &exact_limit,
         )
         .await;

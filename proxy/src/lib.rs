@@ -26,6 +26,7 @@ mod credential_text;
 pub mod credentials;
 pub(crate) mod desktop_present;
 mod desktop_preview;
+pub mod factory;
 mod flow_recorder;
 #[cfg(test)]
 mod flow_runtime_tests;
@@ -70,6 +71,7 @@ mod policy_runtime;
 mod provider_stream;
 mod python_json;
 mod python_text;
+pub mod repo_map;
 mod request_headers;
 mod request_logger;
 mod request_trace;

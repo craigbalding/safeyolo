@@ -92,6 +92,32 @@ for launcher in tmux-window tmux-pane tmux-common; do
   cp -- "$repository/cli/src/safeyolo/launchers/$launcher.sh" "$root/assets/launchers/$launcher.sh"
   chmod 0755 "$root/assets/launchers/$launcher.sh"
 done
+# Factory uses the existing supervised Codex/Pi setup and their transitive
+# shell inputs. This layout also gives stage_safeyolo_context its normal root.
+mkdir -p -- "$root/assets/contrib/lib" "$root/assets/docs" "$root/assets/skills"
+for script in codex-host-setup.sh codex-coord-host-setup.sh pi-host-setup.sh pi-coord-host-setup.sh coord-mcp-bootstrap.sh safeyolo-coord-mcp-launcher.sh pi-coord-extension.ts; do
+  cp -- "$repository/contrib/$script" "$root/assets/contrib/$script"
+done
+for script in stage-coord-native.sh stage-safeyolo-context.sh; do
+  cp -- "$repository/contrib/lib/$script" "$root/assets/contrib/lib/$script"
+done
+cp -- "$repository/docs/AGENTS.md" "$root/assets/docs/AGENTS.md"
+cp -- "$repository/repo-map.toml" "$root/assets/repo-map.toml"
+# Reuse PR948's checked skill inputs. The optional Python GitHub checker is
+# repository tooling and is excluded together with its installed instruction.
+for skill in safeyolo safeyolo-factory readme-usability; do
+  mkdir -p -- "$root/assets/skills/$skill"
+  tar -C "$repository/cli/src/safeyolo/agent_context/skills/$skill" \
+    --exclude='__pycache__' --exclude='*.pyc' \
+    --exclude='scripts/github_checks.py' --exclude='references/github-checks.md' -cf - . | \
+    tar -C "$root/assets/skills/$skill" -xf -
+done
+awk '
+  /^- Read \[GitHub composite checks\]/ { omit = 1; next }
+  omit && /^- / { omit = 0 }
+  !omit { print }
+' "$repository/cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md" \
+  > "$root/assets/skills/safeyolo/SKILL.md"
 "$root/bin/safeyolo" --root "$root" init
 echo "$cli_identity"
 echo "Installed: $root/bin/safeyolo"
