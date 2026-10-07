@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -17,7 +18,7 @@ from tests.blackbox import guest_exec, installed_access, installed_lifecycle, in
 def test_cli_bootstrap_works_without_an_ambient_safeyolo_package(tmp_path):
     """The full --cli path selects the installed interpreter before package imports."""
     ambient = tmp_path / "ambient"
-    venv.EnvBuilder(with_pip=False).create(ambient)
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(ambient)
     python = ambient / "bin/python"
     root = tmp_path / "selected instance"
     (root / "bin").mkdir(parents=True)
@@ -88,27 +89,59 @@ def test_runner_readiness_and_both_isolation_invocations_reach_the_dispatcher(tm
     (root / "bin").mkdir(parents=True)
     record = tmp_path / "calls"
     native = root / "bin/safeyolo"
-    native.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {shlex.quote(str(record))}\n")
+    native.write_text(
+        f"#!{sys.executable}\nimport json,sys\n"
+        f"with open({str(record)!r}, 'a') as stream:\n"
+        "    stream.write(json.dumps(['native', *sys.argv[1:]]) + '\\n')\n"
+        "if sys.argv[3:5] == ['agent', 'status']:\n"
+        "    print(json.dumps({'runtime_state': 'running', 'exec': True}))\n"
+    )
     native.chmod(0o755)
+    (root / "data/shell-sockets").mkdir(parents=True)
+    (root / "data/shell-sockets/marker.sock").touch()
+    (root / "data/vm_ssh_key").touch()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    ssh = tools / "ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\nimport json,sys\n"
+        "assert sys.stdin.read() == '', 'noninteractive SSH must close stdin'\n"
+        f"with open({str(record)!r}, 'a') as stream:\n"
+        "    stream.write(json.dumps(['ssh', *sys.argv[1:]]) + '\\n')\n"
+    )
+    ssh.chmod(0o755)
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
     monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
     environment = dict(os.environ, SCRIPT_DIR=str(Path("tests/blackbox").resolve()),
-                       INSTALLED_CLI=str(cli), AGENT_NAME="marker")
+                       INSTALLED_CLI=str(cli), AGENT_NAME="marker",
+                       PATH=str(tools) + os.pathsep + os.environ["PATH"])
     for line in selected:
         if line.startswith("if "):
             invocation = line.removeprefix("if ").removesuffix("; then")
         else:
             invocation = line.removesuffix("\\") + " 'printf literal'"
         result = subprocess.run(["bash", "-c", invocation], env=environment,
-                                capture_output=True, text=True, timeout=10)
+                                input="runner stdin", capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
-        calls.append(record.read_text())
+        calls.append([json.loads(row) for row in record.read_text().splitlines()])
         record.unlink()
-    assert "\ntrue\n" in calls[0]
-    assert "\nprintf literal\n" in calls[1]
-    root_command = calls[2].splitlines()[-1]
-    assert shlex.split(root_command)[:5] == ["exec", "sudo", "-n", "/bin/bash", "-lc"]
-    assert shlex.split(root_command)[5].endswith("printf literal")
+    prefix = ["native", "--root", str(root), "agent"]
+    assert calls[0] == [[*prefix, "shell", "marker", "-c", "true"]]
+    assert calls[1] == [[*prefix, "shell", "marker", "-c", "printf literal"]]
+    root_command = calls[2][-1][-1]
+    if sys.platform == "darwin":
+        assert calls[2][0] == [*prefix, "status", "marker"]
+        ssh_args = calls[2][1]
+        assert ssh_args[0] == "ssh" and "root@sandbox" in ssh_args and "-t" not in ssh_args
+        assert str(root / "data/vm_ssh_key") in ssh_args
+        assert f"ProxyCommand=nc -U {root / 'data/shell-sockets/marker.sock'}" in ssh_args
+        assert "--nofile=65536:65536" in root_command
+        assert "/usr/local/bin/sudo" not in root_command
+        assert root_command.endswith("printf literal")
+    else:
+        assert calls[2] == [[*prefix, "shell", "marker", "-c", root_command]]
+        assert shlex.split(root_command)[:5] == ["exec", "sudo", "-n", "/bin/bash", "-lc"]
+        assert shlex.split(root_command)[5].endswith("printf literal")
 
 
 def test_workload_producer_preserves_root_identity_and_literal_arguments():
@@ -126,32 +159,72 @@ def test_workload_producer_preserves_root_identity_and_literal_arguments():
         assert args[3:7] == ["marker", "--user", "agent", "-c"]
 
 
-def test_macos_root_uses_the_existing_root_ssh_login_and_limits(tmp_path, monkeypatch):
-    from safeyolo import agent_lifecycle, platform
+@pytest.fixture
+def macos_root(tmp_path, monkeypatch):
+    from safeyolo import platform
     from safeyolo.platform import darwin
 
+    root = tmp_path / "instance"
+    (root / "bin").mkdir(parents=True)
+    native = root / "bin/safeyolo"
+    native.write_text(
+        f"#!{sys.executable}\nimport os,sys\n"
+        "assert sys.argv[3:] == ['agent', 'status', 'marker']\n"
+        "print(os.environ['FIXTURE_NATIVE_STATUS'])\n"
+    )
+    native.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("FIXTURE_NATIVE_STATUS", json.dumps({"runtime_state": "running", "exec": True}))
     monkeypatch.setattr(guest_exec.sys, "platform", "darwin")
-    monkeypatch.setattr(agent_lifecycle, "native_agent_status", lambda _name: {"exec": True})
     monkeypatch.setattr(platform, "get_platform", darwin.DarwinPlatform)
-    socket = tmp_path / "shell.sock"
-    socket.touch()
-    key = tmp_path / "key"
-    key.touch()
-    monkeypatch.setattr(darwin, "_shell_socket_path", lambda _name: socket)
-    monkeypatch.setattr(darwin, "get_ssh_key_path", lambda: key)
-    calls = []
-    def run(command, *, stdin):
-        calls.append((command, stdin))
-        return subprocess.CompletedProcess(command, 11)
-    monkeypatch.setattr(darwin.subprocess, "run", run)
-    assert guest_exec.main(["marker", "--user", "root", "-c", "root-marker"]) == 11
-    command, stdin = calls.pop()
+    (root / "data/shell-sockets").mkdir(parents=True)
+    (root / "data/shell-sockets/marker.sock").touch()
+    (root / "data/vm_ssh_key").touch()
+    record = tmp_path / "ssh-call"
+    ssh = root / "bin/ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\nimport json,sys\n"
+        "assert sys.stdin.read() == '', 'noninteractive SSH must close stdin'\n"
+        f"with open({str(record)!r}, 'w') as stream: json.dump(sys.argv[1:], stream)\n"
+        "sys.exit(11)\n"
+    )
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(ssh.parent) + os.pathsep + os.environ["PATH"])
+    return root, record
+
+
+def test_macos_root_uses_the_existing_root_ssh_login_and_limits(macos_root):
+    root, record = macos_root
+    literal = "printf '%s' 'literal $(must not execute)'"
+    assert guest_exec.main(["marker", "--user", "root", "-c", literal]) == 11
+    command = json.loads(record.read_text())
     assert "root@sandbox" in command and "-t" not in command
-    assert stdin is subprocess.DEVNULL
+    assert str(root / "data/vm_ssh_key") in command
+    assert f"ProxyCommand=nc -U {root / 'data/shell-sockets/marker.sock'}" in command
     assert "--nofile=65536:65536" in command[-1]
     assert "/usr/local/bin/sudo" not in command[-1]
-    assert command[-1].endswith("root-marker")
-    monkeypatch.setattr(agent_lifecycle, "native_agent_status", lambda _name: {"exec": False})
-    with pytest.raises(RuntimeError, match="exec control is unavailable"):
-        guest_exec.main(["marker", "--user", "root", "-c", "root-marker"])
-    assert not calls
+    assert command[-1].endswith(literal)
+
+
+@pytest.mark.parametrize("status,error", [
+    ("", "invalid JSON"),
+    ("{", "invalid JSON"),
+    ("[]", "no status object"),
+    ('{"exec": true}', "no runtime state"),
+    ('{"runtime_state": "running", "exec": false}', "exec control is unavailable"),
+])
+def test_macos_root_refuses_invalid_or_unavailable_native_status(macos_root, monkeypatch, status, error):
+    _, record = macos_root
+    monkeypatch.setenv("FIXTURE_NATIVE_STATUS", status)
+    with pytest.raises(RuntimeError, match=error):
+        guest_exec.main(["marker", "--user", "root", "-c", "must-not-execute"])
+    assert not record.exists()
+
+
+def test_macos_root_refuses_a_missing_shell_socket(macos_root):
+    root, record = macos_root
+    (root / "data/shell-sockets/marker.sock").unlink()
+    with pytest.raises(RuntimeError, match="Shell bridge socket.*not found"):
+        guest_exec.main(["marker", "--user", "root", "-c", "must-not-execute"])
+    assert not record.exists()

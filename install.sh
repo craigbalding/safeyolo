@@ -23,10 +23,19 @@ build_native_proxy() {
     echo "install.sh: cargo is required to build safeyolo-proxy" >&2
     return 1
   fi
+  # Bind host and guest builds to the same clean checkout. The guest build
+  # also rebuilds the host Coord binary in the shared Cargo target.
+  local revision=${SAFEYOLO_BUILD_REVISION:-} checkout_revision
+  local revision_env=()
+  if [[ -z $revision ]] && checkout_revision=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null) && \
+      [[ -z $(git -C "$REPO_ROOT" status --porcelain) ]]; then
+    revision=$checkout_revision
+  fi
+  if [[ -n $revision ]]; then revision_env=(SAFEYOLO_BUILD_REVISION="$revision"); fi
   echo "install.sh: building the release Rust proxy" >&2
   if ! (
     cd "$REPO_ROOT"
-    cargo build --locked --release --manifest-path proxy/Cargo.toml
+    env "${revision_env[@]}" cargo build --locked --release --manifest-path proxy/Cargo.toml
   ); then
     echo "install.sh: Rust proxy build failed; the Python CLI was not installed" >&2
     return 1
@@ -36,7 +45,7 @@ build_native_proxy() {
     return 1
   fi
   if [[ $(uname -s) == Linux && -z ${SAFEYOLO_GUEST_HELPER:-} ]]; then
-    SAFEYOLO_BUILD_PROFILE=production "$REPO_ROOT/scripts/build_guest_command.sh" || return 1
+    env "${revision_env[@]}" SAFEYOLO_BUILD_PROFILE=production "$REPO_ROOT/scripts/build_guest_command.sh" || return 1
     export SAFEYOLO_GUEST_HELPER="${SAFEYOLO_GUEST_TARGET_DIR:-$REPO_ROOT/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}release/safeyolo-guest"
   fi
   if [[ ! -f ${SAFEYOLO_GUEST_HELPER:-} ]]; then

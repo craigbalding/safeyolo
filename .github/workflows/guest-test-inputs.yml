@@ -9,13 +9,16 @@ on:
       profile:
         required: true
         type: string
+      architecture:
+        default: amd64
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     env:
       CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
@@ -38,20 +41,20 @@ jobs:
       - name: Build Linux guest executables and receipts
         run: scripts/build_guest_command.sh
       - name: Build Linux recovery CLI
-        if: inputs.profile == 'debug'
+        if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
         run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
       - name: Upload Linux host test inputs
-        if: inputs.profile == 'debug'
+        if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: linux-host-debug
+          name: linux-host-${{ inputs.architecture }}-debug
           path: |
             proxy/target/debug/safeyolo
             proxy/target/debug/safeyolo-coord
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: linux-guest-${{ inputs.profile }}
+          name: linux-guest-${{ inputs.architecture }}-${{ inputs.profile }}
           path: |
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest*
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord*
