@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import venv
 import zipfile
 from pathlib import Path
 
@@ -34,6 +35,22 @@ def executable(path, identity):
     source.write_text(f'#include <stdio.h>\nint main(void){{puts("{identity}");return 0;}}\n')
     subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
+
+
+def preparation_interpreter(path):
+    """Use a supported isolated interpreter with controlled NATS output."""
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(path)
+    python = path / "bin/python"
+    library = subprocess.check_output(
+        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        text=True, timeout=10,
+    ).strip()
+    package = Path(library) / "safeyolo/coord"
+    package.mkdir(parents=True)
+    for directory in (package.parent, package):
+        (directory / "__init__.py").touch()
+    (package / "nats_runtime.py").write_text("def ensure_binary(): return 'verified fixture NATS'\n")
+    return python
 
 
 @pytest.fixture
@@ -129,18 +146,14 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         (host / name).touch()
     (guest / "safeyolo-guest").touch()
     python = shutil.which("python3")
+    interpreter = preparation_interpreter(tools / "python-environment")
     files = {
         checkout / "install.sh": "#!/bin/sh\nexit 0\n",
         tools / "uname": f"#!/bin/sh\nprintf '{platform}\\n'\n",
         tools / "tmux": "#!/bin/sh\nprintf 'tmux fixture\\n'\n",
         tools / "uv": '#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then printf "%s\\n" "$PREPARE_TOOLS"; fi\n',
-        tools / "python-driver": (
-            '#!/bin/sh\nif [ "$1" = -I ] && [ "$2" = -c ]; then\n'
-            '  printf "verified fixture NATS\\n"\n'
-            f'else exec "{python}" "$@"; fi\n'
-        ),
         tools / "safeyolo": (
-            f'#!{tools / "python-driver"}\n'
+            f'#!{interpreter}\n'
             "import json,os,sys\nfrom pathlib import Path\n"
             "if '--check' in sys.argv:\n"
             "    print(json.dumps({'package_manager':'apt','missing_deps':[]}))\n"
@@ -187,6 +200,7 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(guest / "safeyolo-guest"))
     result = run(str(scripts / "run-lane.sh"), lane, "--prepare-only", cwd=checkout)
     assert result.returncode == 0, result.stderr
+    assert "verified fixture NATS" in result.stdout
     options = json.loads((root / "native-inputs.json").read_text())
     assert Path(options["--artifacts"]) == host
     assert Path(options["--guest-artifacts"]) == guest
@@ -222,13 +236,15 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
             assert stream.extractfile(path).read() == notice.read_bytes()
 
 
-@pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source"])
+@pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source", "mode"])
 def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, tmp_path, damage):
     guest = package_inputs[2]
     if damage == "missing":
         (guest / "safeyolo-guest.sha256").unlink()
     elif damage == "checksum":
         (guest / "safeyolo-guest").write_bytes((guest / "safeyolo-guest").read_bytes() + b"damaged")
+    elif damage == "mode":
+        (guest / "safeyolo-guest").chmod(0o644)
     else:
         receipt = guest / "safeyolo-guest.version"
         receipt.write_text(receipt.read_text().replace("debug", "production") if damage == "profile"
@@ -236,6 +252,18 @@ def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, t
     result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
     assert result.returncode != 0
     assert "guest" in result.stderr.lower()
+    assert not (tmp_path / "bundle").exists()
+
+
+@pytest.mark.parametrize("damage", ["source", "profile"])
+def test_producer_rejects_a_different_host_coord_identity(package_inputs, tmp_path, damage):
+    coord = package_inputs[1] / "safeyolo-coord"
+    revision = "b" * 40 if damage == "source" else package_inputs[5]
+    profile = "production" if damage == "profile" else "debug"
+    executable(coord, f"safeyolo-coord 0.1.0 commit={revision} profile={profile}")
+    result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
+    assert result.returncode != 0
+    assert "host source/profile identities differ: safeyolo-coord" in result.stderr
     assert not (tmp_path / "bundle").exists()
 
 
