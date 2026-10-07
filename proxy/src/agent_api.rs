@@ -24,7 +24,7 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 mod approvals;
-mod coord;
+pub(crate) mod coord;
 mod declarations;
 mod discovery;
 mod explain;

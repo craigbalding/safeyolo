@@ -115,22 +115,26 @@ only the replacement password works, so clients must reconnect; agents may see
 temporary coord-unavailable responses during the rotation. SafeYolo's managed
 clients reconnect as the instance starts.
 
-Verify the runtime is healthy and retained history is readable without
-displaying either credential:
+Verify the legacy runtime and room list without displaying either credential:
 
 ```bash
 safeyolo status
 safeyolo coord room list
-safeyolo coord chat ROOM_NAME
 ```
 
-`safeyolo status` should report `Coord (nats-server)` as healthy. Attach to a
-known room and confirm its pre-rotation messages are present, then enter `:q`
-to detach.
+`safeyolo status` should report `Coord (nats-server)` as healthy. Confirm the expected rooms remain registered. This check does not prove
+message history. Native operator communication uses the separate fresh
+instance described below.
 
-## Interactive chat requires a terminal
+## Native interactive chat requires a terminal
 
-The default `safeyolo coord chat ROOM_NAME` mode is an editable prompt and
+Install the [native CLI](native-policy.md#install-and-start) and use its fresh
+instance for chat and scripted sends. These examples select
+`$HOME/.safeyolo-native`; replace `ROOM_NAME` with an existing room in that
+instance. Legacy credential rotation instructions apply to their earlier
+Python installation; they do not convert it into a native instance.
+
+The default `"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord chat ROOM_NAME` mode is an editable prompt and
 requires both standard input and standard output to be terminals. If either
 stream is piped or redirected, the command exits before connecting to Coord
 with an actionable error; it does not consume the input or emit terminal
@@ -139,14 +143,14 @@ non-interactive room tail is needed, or run interactive chat from a terminal.
 
 ## Scriptable operator sends
 
-Use `safeyolo coord send` when a trusted operator must send one ordinary Coord
+Use native `coord send` when a trusted operator must send one ordinary Coord
 message without opening an interactive terminal session. The command requires
 exactly one body source:
 
 ```bash
-safeyolo coord send ROOM_NAME "Operator direction"
-safeyolo coord send ROOM_NAME --file direction.md --to relay --to lens
-printf '%s\n' "Operator direction" | safeyolo coord send ROOM_NAME --stdin --to relay
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord send ROOM_NAME "Operator direction"
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord send ROOM_NAME --file direction.md --to relay --to lens
+printf '%s\n' "Operator direction" | "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord send ROOM_NAME --stdin --to relay
 ```
 
 A positional `TEXT`, `--file`, and `--stdin` are mutually exclusive. The

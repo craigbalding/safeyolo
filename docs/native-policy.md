@@ -5,6 +5,9 @@ existing native proxy. It also configures agents, controls their lifecycle,
 opens terminals and reads operator evidence. Native bundles extend the same
 installation layout. Final release and whole-product Python removal remain open.
 
+Use [native operator communication](native-coord.md) for scripted sends,
+draft-safe chat and room/harness-event observation.
+
 ## Install and start
 
 On supported Ubuntu or Apple Silicon macOS, use your ordinary host account.

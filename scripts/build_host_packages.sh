@@ -64,6 +64,9 @@ mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/asse
 for binary in safeyolo safeyolo-proxy safeyolo-coord; do cp "$artifacts/$binary" "$directory/bin/"; done
 cp "$runtime_artifacts/tmux" "$directory/libexec/"
 cp "$repository/scripts/tmux_runtime.sh" "$directory/bin/tmux"
+cp "$repository/scripts/watch_backlog_factory.sh" "$directory/bin/watch-backlog-factory"
+mkdir -p "$directory/assets/licenses"
+cp "$repository/proxy/licenses/"*.txt "$directory/assets/licenses/"
 # ldd resolves the entire Linux dependency closure. On macOS walk non-system
 # dylibs, whose install names are resolved by the private launcher's directory.
 libraries=()

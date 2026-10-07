@@ -343,7 +343,7 @@ fn sorted_json(value: &Value) -> Value {
         _ => value.clone(),
     }
 }
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     ring::digest::digest(&ring::digest::SHA256, bytes)
         .as_ref()
         .iter()
