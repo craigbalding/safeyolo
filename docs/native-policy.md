@@ -116,8 +116,11 @@ If matching binaries already exist, supply `--artifacts HOST_DIRECTORY` and
 Host and guest source/profile identities must match the clean checkout.
 
 On macOS, also supply `--vm-artifacts DIRECTORY`. Build the signed helper with
-`make -C vm build`, then stage `safeyolo-vm`, its `.dSYM` and build-info JSON,
-and the prepared Linux `vsock-term` executable in that directory. The terminal
+`make -C vm build`, then stage `safeyolo-vm`, `safeyolo-vm.dSYM` and
+`safeyolo-vm.build-info.json` in that directory. The production metadata comes
+from `vm/.build/build-info.json`. For a debug bundle, use `make -C vm debug`
+and the matching helper, symbols and metadata under `vm/.build/development`.
+Also stage the prepared Linux `vsock-term` executable there. The terminal
 helper's `.version` receipt is `vsock-term commit=FULL_SOURCE_COMMIT`; its
 `.sha256` receipt contains the built executable's SHA-256. Supply matching
 arm64 Linux guest artifacts with `--guest-artifacts`; cross-building their
