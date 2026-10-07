@@ -7,6 +7,8 @@ import tomllib
 from pathlib import Path
 from textwrap import dedent
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -339,6 +341,54 @@ def test_install_builds_native_proxy_without_factory_disk_reserve(tmp_path: Path
     assert result.returncode == 0, result.stderr
     assert cargo_log.read_text() == "build --locked --release --manifest-path proxy/Cargo.toml\n"
     assert (checkout / "proxy/target/release/safeyolo-proxy").is_file()
+
+
+@pytest.mark.parametrize("source", ["clean", "dirty", "explicit"])
+def test_install_binds_host_and_guest_builds_to_the_same_source(tmp_path, monkeypatch, source):
+    """The real guest helper rebuild must retain the host's source identity."""
+    monkeypatch.delenv("SAFEYOLO_BUILD_REVISION", raising=False)
+    checkout = make_install_checkout(tmp_path)
+    (checkout / "scripts").mkdir()
+    for name in ("build_guest_command.sh", "cargo_with_space.sh"):
+        shutil.copy2(REPO_ROOT / "scripts" / name, checkout / "scripts" / name)
+    (checkout / ".gitignore").write_text("**/target/\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture",
+                    "-c", "user.email=fixture@example.test", "commit", "-qm", "installer fixture"], check=True)
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    if source == "dirty":
+        with (checkout / "pyproject.toml").open("a") as stream:
+            stream.write("\n# dirty source fixture\n")
+    fake_bin, log, state = make_fake_uv(tmp_path)
+    cargo_log = tmp_path / "native-builds"
+    (fake_bin / "cargo").write_text(
+        '#!/bin/bash\nset -eu\n'
+        'printf "%s\\n" "${SAFEYOLO_BUILD_REVISION:-unknown}" >> "$FAKE_CARGO_LOG"\n'
+        'directory=${CARGO_TARGET_DIR:-proxy/target}/release\n'
+        'mkdir -p "$directory"\n'
+        'for name in safeyolo safeyolo-proxy safeyolo-coord safeyolo-guest; do\n'
+        '  printf "#!/bin/sh\\nprintf \'%s\\\\n\'\\n" "$name 0.1.0 commit=${SAFEYOLO_BUILD_REVISION:-unknown} profile=production" > "$directory/$name"\n'
+        '  chmod +x "$directory/$name"\n'
+        'done\n'
+    )
+    (fake_bin / "df").write_text(
+        "#!/bin/sh\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n"
+        "testfs 67108864 1048576 66060288 2%% /\\n'\n"
+    )
+    (fake_bin / "df").chmod(0o755)
+    (fake_bin / "uname").write_text("#!/bin/sh\nprintf 'Linux\\n'\n")
+    (fake_bin / "uname").chmod(0o755)
+    settings = {"SAFEYOLO_GUEST_HELPER": "", "FAKE_CARGO_LOG": str(cargo_log)}
+    if source == "explicit":
+        settings["SAFEYOLO_BUILD_REVISION"] = "a" * 40
+    result = run_installer(checkout, fake_bin, log, state, **settings)
+    assert result.returncode == 0, result.stderr
+    expected = "unknown" if source == "dirty" else "a" * 40 if source == "explicit" else revision
+    assert cargo_log.read_text().splitlines() == [expected] * 3
+    guest = checkout / "guest/command/target/release"
+    for name in ("safeyolo-guest", "safeyolo-coord"):
+        assert (guest / f"{name}.version").read_text().strip() == f"{name} 0.1.0 commit={expected} profile=production"
 
 
 def test_wheel_maps_the_built_native_proxy_into_the_runtime_package() -> None:

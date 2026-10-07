@@ -26,6 +26,7 @@ jobs:
     with:
       revision: ${{ github.sha }}
       profile: production
+      architecture: arm64
 
   systrap:
     name: Installed guest sections and host continuity — Linux systrap
@@ -151,7 +152,7 @@ jobs:
       - name: Download Linux guest package inputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-guest-production
+          name: linux-guest-arm64-production
           path: guest/command/target/release
 
       - name: Install and test the native proxy
@@ -159,6 +160,8 @@ jobs:
           SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          # Artifact transfer preserves bytes but resets executable modes.
+          chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
           ./tests/blackbox/run-installed-package.sh
 
       - name: Upload proxy evidence
