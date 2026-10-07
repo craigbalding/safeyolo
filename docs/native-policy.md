@@ -99,6 +99,9 @@ ldd. macOS needs Command Line Tools and a signed VM helper build. Prepared
 runtime inputs contain the native `tmux` executable for this host. The assembler
 copies its resolved non-system libraries. This Ubuntu example selects
 `/usr/bin/tmux`, so `/usr/bin` is the runtime input directory.
+For prepared runtime inputs, keep their required notices in a `licenses`
+directory alongside `tmux`. The assembler includes those notices and the
+project's license in the bundle.
 
 ```sh
 ./scripts/build_host_packages.sh --output "$HOME/native-packages" --runtime-artifacts /usr/bin

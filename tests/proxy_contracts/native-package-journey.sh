@@ -7,6 +7,7 @@ a=$state/a b=$state/b
 cleanup() {
   for root in "$a" "$b"; do
     if [[ -x $root/bin/safeyolo && -f $root/config.toml ]]; then
+      "$root/bin/tmux" -S "$root/data/package-tmux.sock" kill-server 2>/dev/null || true
       "$root/bin/safeyolo" --root "$root" stop
     fi
   done
@@ -58,6 +59,9 @@ instance "$a" doctor | grep '"proxy_state": "running"'
 instance "$a" policy show > "$state/a-policy.json"
 for binary in safeyolo safeyolo-proxy safeyolo-coord; do "$a/bin/$binary" --version; done
 "$a/bin/tmux" -V
+"$a/bin/tmux" -S "$a/data/package-tmux.sock" new-session -d -s package-check 'sleep 60'
+"$a/bin/tmux" -S "$a/data/package-tmux.sock" display-message -p -t package-check '#{session_name}' | grep '^package-check$'
+"$a/bin/tmux" -S "$a/data/package-tmux.sock" kill-server
 instance "$a" stop
 instance "$a" status | grep '"proxy_state": "unavailable"'
 instance "$b" policy show > "$state/b-policy-final.json"

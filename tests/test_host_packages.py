@@ -50,6 +50,7 @@ def package_inputs(tmp_path):
     (assets / "agent_context/skills/safeyolo/SKILL.md").write_text("fixture skill\n")
     (assets / "repo_map.py").write_text("# Remaining production helper fixture\n")
     (source / "repo-map.toml").write_text("# fixture\n")
+    (source / "LICENSE").write_text("fixture project notice\n")
     (source / "docs").mkdir()
     (source / "docs/AGENTS.md").write_text("fixture baseline\n")
     (source / "guest/rootfs").mkdir(parents=True)
@@ -74,6 +75,8 @@ def package_inputs(tmp_path):
         (guest / f"{name}.version").write_text(identity + "\n")
         (guest / f"{name}.sha256").write_text(hashlib.sha256((guest / name).read_bytes()).hexdigest() + "\n")
     shutil.copy2(shutil.which("tmux"), runtime / "tmux")
+    (runtime / "licenses").mkdir()
+    (runtime / "licenses/tmux.txt").write_text("fixture runtime notice\n")
     arguments = [str(scripts / "build_host_packages.sh"), "--profile", "debug", "--artifacts", str(host), "--guest-artifacts", str(guest), "--runtime-artifacts", str(runtime)]
     return source, host, guest, runtime, arguments, revision
 
@@ -94,6 +97,8 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         names = stream.getnames()
         assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
         assert any(name.endswith("/libexec/tmux") for name in names)
+        assert any(name.endswith("/assets/licenses/tmux.txt") for name in names)
+        assert any(name.endswith("/LICENSE") for name in names)
         assert any("/lib/" in name for name in names)
         assert not any(name.endswith((".whl", "/dependencies.txt", "/verify.py")) for name in names)
         path, = [name for name in names if name.endswith("/bin/safeyolo-proxy")]

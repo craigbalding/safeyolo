@@ -38,7 +38,7 @@ do {
             throw NSError(domain: "SafeYoloBuild", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "SAFEYOLO_BUILD_DIRTY must be yes, no or unknown"])
         }
-        dirty = supplied == "unknown" ? NSNull() : supplied == "yes" as Any
+        dirty = supplied == "unknown" ? NSNull() : (supplied == "yes") as Any
     } else {
         dirty = try !command(["git", "status", "--porcelain", "--untracked-files=normal"], in: root).isEmpty
     }

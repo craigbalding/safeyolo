@@ -99,6 +99,10 @@ cp "$repository/guest/rootfs/safeyolo-sudo" "$directory/assets/guest/guest-sudo"
 cp "$repository/cli/src/safeyolo/launchers/"*.sh "$directory/assets/launchers/"
 cp -R "$repository/cli/src/safeyolo/agent_context/skills" "$directory/assets/"
 cp -R "$repository/cli/src/safeyolo/services" "$directory/assets/"
+cp "$repository/LICENSE" "$directory/"
+if [[ -d $runtime_artifacts/licenses ]]; then
+  cp -R "$runtime_artifacts/licenses" "$directory/assets/"
+fi
 cp "$repository/docs/AGENTS.md" "$directory/assets/docs/"
 cp "$repository/cli/src/safeyolo/repo_map.py" "$directory/assets/"
 cp "$repository/repo-map.toml" "$directory/assets/"
