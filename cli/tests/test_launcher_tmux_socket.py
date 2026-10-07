@@ -85,6 +85,7 @@ def test_same_server_switches_existing_viewer(servers):
     waiting_pane = tmux(sockets[0], "new-session", "-d", "-P", "-F", "#{pane_id}",
                         "-s", "waiting", "printf 'WAITING-ROOM\\n'; read -r line").stdout.strip()
     master, slave = pty.openpty()
+    viewer_tty = os.ttyname(slave)
     env = viewer_environment(record, sockets, other_server=False)
     viewer = subprocess.Popen(["tmux", "-S", str(sockets[0]), "attach-session", "-t", "waiting"],
                               stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True)
@@ -103,8 +104,7 @@ def test_same_server_switches_existing_viewer(servers):
         clients = tmux(sockets[0], "list-clients", "-F", "#{client_pid}:#{session_name}").stdout.splitlines()
         assert clients == [f"{viewer.pid}:agent"], "reuse the existing client, do not nest another viewer"
     finally:
-        if viewer.poll() is None:
-            os.write(master, b"\x02d")  # Detach through this owned viewer's PTY.
+        tmux(sockets[0], "detach-client", "-t", viewer_tty, check=False)
         probe.wait_terminal_exit(viewer, master, output, timeout=5)
         os.close(master)
 
@@ -113,6 +113,7 @@ def test_same_server_switches_existing_viewer(servers):
 def test_attach_reads_writes_and_disconnects_from_recorded_server(servers, other_server):
     record, sockets = servers
     master, slave = pty.openpty()
+    viewer_tty = os.ttyname(slave)
     viewer = subprocess.Popen([record["launcher"]["script"], "attach"], stdin=slave, stdout=slave, stderr=slave,
                               env=viewer_environment(record, sockets, other_server=other_server), start_new_session=True)
     os.close(slave)
@@ -136,7 +137,7 @@ def test_attach_reads_writes_and_disconnects_from_recorded_server(servers, other
         os.write(master, b"hello\n")
         see(b"received:hello")
         # Detach this viewer. The agent pane and the other server must survive.
-        os.write(master, b"\x02d")
+        tmux(sockets[0], "detach-client", "-t", viewer_tty)
         assert probe.wait_terminal_exit(viewer, master, output, timeout=5) == 0
         assert tmux(sockets[0], "show-options", "-p", "-v", "-t", "%0", "@safeyolo_launch_id").stdout.strip() == record["launch_id"]
         assert "received:hello" in tmux(sockets[0], "capture-pane", "-p", "-t", "%0").stdout
