@@ -157,6 +157,7 @@ fn validate_links(root: &Path, pages: &[Page]) -> Result<(), Error> {
         }
     }
     let links = Regex::new(r"\[[^\]\n]+\]\(([^)\n]+)\)")?;
+    let url_scheme = Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?;
     for page in pages {
         let mut fenced = false;
         for line in page.content.lines() {
@@ -179,7 +180,7 @@ fn validate_links(root: &Path, pages: &[Page]) -> Result<(), Error> {
                     .strip_prefix('<')
                     .and_then(|d| d.strip_suffix('>'))
                     .unwrap_or(destination);
-                if Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?.is_match(destination) {
+                if url_scheme.is_match(destination) {
                     validate_public_url(destination)?;
                     continue;
                 }
