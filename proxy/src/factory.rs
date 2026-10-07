@@ -467,15 +467,56 @@ fn staged(root: &Path, snapshot: &Snapshot, role_name: &str, role: &Role) -> Res
     {
         return Err("staged Pi Coord extension differs from the installed adapter".into());
     }
-    let command = home.join(".safeyolo-command.payload");
-    let command = if command.exists() {
-        command
-    } else {
-        home.join(".safeyolo-command")
+    staged_command(root, &home, &role.harness)
+        .map_err(|error| format!("staged role command is invalid: {error}"))?;
+    Ok(())
+}
+
+fn staged_command(root: &Path, home: &Path, harness: &str) -> Result<(), Error> {
+    // Compare the complete launcher emitted by the installed setup script,
+    // using the same transformation as setup, rather than shell substrings.
+    let template = String::from_utf8(read(
+        &root.join(format!("assets/contrib/{harness}-host-setup.sh")),
+    )?)?;
+    let source = template
+        .split_once("<<'EOF'\n")
+        .and_then(|(_, body)| body.split_once("\nEOF\n"))
+        .map(|(body, _)| format!("{body}\n"))
+        .ok_or("installed harness launcher template is missing")?;
+    let expected = coord_setup::supervised_launcher_source(&source, harness)?;
+    let entry = home.join(".safeyolo-command");
+    let executable = |path: &Path| -> Result<Vec<u8>, Error> {
+        if !coord_setup::safe(path, false, None)?
+            || fs::metadata(path)?.permissions().mode() & 0o111 == 0
+        {
+            return Err(format!("missing or non-executable {}", path.display()).into());
+        }
+        read(path)
     };
-    let command = String::from_utf8(read(&command)?)?;
-    if !command.contains("exec \"$HOME/.safeyolo/safeyolo-coord\" supervise --") {
-        return Err("staged role command does not invoke the native supervisor".into());
+    let command = executable(&entry)?;
+    if command == crate::guest_commands::WRAPPER {
+        let payload = home.join(".safeyolo-command.payload");
+        if executable(&payload)? != expected.as_bytes() {
+            return Err("wrapped payload differs from the installed supervised launcher".into());
+        }
+        let share = home
+            .parent()
+            .ok_or("agent directory is missing")?
+            .join("config-share");
+        if !coord_setup::safe(&share, true, None)? {
+            return Err("wrapped command launch context is missing".into());
+        }
+        let context: Value =
+            serde_json::from_slice(&read(&share.join("host-launch-context.json"))?)?;
+        if context["command_payloads"][".safeyolo-command"]
+            != crate::guest_commands::payload_identity(&payload)?
+        {
+            return Err("wrapped command payload identity differs from its launch context".into());
+        }
+    } else if command != expected.as_bytes() {
+        return Err(
+            "entry differs from the installed supervised launcher or native wrapper".into(),
+        );
     }
     Ok(())
 }

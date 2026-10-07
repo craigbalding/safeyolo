@@ -219,6 +219,77 @@ def test_installed_repo_map_reads_working_tree_and_reports_guidance(tmp_path, _b
         assert fallback.returncode == 0 and "GUIDANCE" in fallback.stdout
 
 
+def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, _):
+        homes = {role: instance.root / f"agents/{agent}/home"
+                 for role, agent in (("owner", "fixture-forge"), ("reviewer", "fixture-lens"))}
+        originals = {role: (home / ".safeyolo-command").read_bytes() for role, home in homes.items()}
+
+        def diagnosis(role, *, valid):
+            result = instance.cli("factory", "doctor", "fixture")
+            assert result.returncode != 0  # These source fixtures have no role runtime.
+            check = next(item for item in json.loads(result.stdout)["checks"] if item.get("role") == role)
+            if valid:
+                assert check["staged_binding"]["role"] == role, check
+                assert "role runtime is not ready" in check["error"], check
+            else:
+                assert check["staged_binding"] is None, check
+                assert "staged role command is invalid" in check["error"], check
+
+        for role, home in homes.items():
+            entry, payload = home / ".safeyolo-command", home / ".safeyolo-command.payload"
+            expected = originals[role]
+            inert = b'#!/bin/sh\n# exec "$HOME/.safeyolo/safeyolo-coord" supervise --\nexit 0\n'
+            mutations = (inert, b"#!/bin/sh\nexit 0\n" + expected,
+                         originals["reviewer" if role == "owner" else "owner"],
+                         expected.replace(b" supervise -- ", b" supervise "))
+            diagnosis(role, valid=True)
+            for changed in mutations:
+                entry.write_bytes(changed)
+                diagnosis(role, valid=False)
+            entry.write_bytes(expected)
+            entry.chmod(0o600)
+            diagnosis(role, valid=False)
+            entry.chmod(0o700)
+            # An unattached legitimate payload cannot validate an inert entry.
+            payload.write_bytes(expected)
+            payload.chmod(0o700)
+            entry.write_bytes(inert)
+            diagnosis(role, valid=False)
+            entry.write_bytes(expected)
+            payload.unlink()
+            share = home.parent / "config-share"
+
+            def wrap():
+                # Use the production wrapper/identity producer, without booting.
+                context = {"generation": "stopped-source-fixture", "agent_id": roles(instance)[home.parent.name]["agent_id"]}
+                cli(instance, "guest-command", "stage", str(home), str(share),
+                    str(instance.root / "assets/guest"), json.dumps(context))
+
+            wrap()
+            wrapper = entry.read_bytes()
+            diagnosis(role, valid=True)
+            entry.write_bytes(inert)
+            diagnosis(role, valid=False)
+            entry.write_bytes(wrapper)
+            for changed in mutations:
+                payload.write_bytes(changed)
+                diagnosis(role, valid=False)
+            payload.write_bytes(expected)
+            # The restored bytes still need the actual recorded file identity.
+            diagnosis(role, valid=False)
+            wrap()
+            diagnosis(role, valid=True)
+            context_path = share / "host-launch-context.json"
+            context = json.loads(context_path.read_text())
+            del context["command_payloads"][".safeyolo-command"]
+            context_path.write_text(json.dumps(context))
+            diagnosis(role, valid=False)
+            wrap()
+            diagnosis(role, valid=True)
+        assert_no_role_launch(instance)
+
+
 def test_native_release_preserves_other_work_and_requires_canonical_audit(tmp_path, _binary_cache):
     with prepared(tmp_path, _binary_cache) as (instance, _):
         path = instance.root / "agents/fixture-forge/home/.safeyolo/coord-supervisor-state.json"

@@ -496,6 +496,14 @@ pub fn ordinary_stage(
 
 pub fn supervised_launcher(path: &Path, harness: &str) -> Result<(), Error> {
     let source = read_text(path)?;
+    atomic_write(
+        path,
+        supervised_launcher_source(&source, harness)?.as_bytes(),
+        fs::metadata(path)?.permissions().mode() & 0o7777,
+    )
+}
+
+pub(crate) fn supervised_launcher_source(source: &str, harness: &str) -> Result<String, Error> {
     let (anchor, replacement) = match harness {
         "codex" => (
             "exec codex \"${args[@]}\" \"$@\"\n",
@@ -510,11 +518,7 @@ pub fn supervised_launcher(path: &Path, harness: &str) -> Result<(), Error> {
     if source.matches(anchor).count() != 1 {
         return Err("cannot locate the harness foreground command".into());
     }
-    atomic_write(
-        path,
-        source.replace(anchor, replacement).as_bytes(),
-        fs::metadata(path)?.permissions().mode() & 0o7777,
-    )
+    Ok(source.replace(anchor, replacement))
 }
 
 fn argument_text(argument: &std::ffi::OsStr) -> Result<&str, Error> {
