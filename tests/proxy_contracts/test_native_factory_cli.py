@@ -369,6 +369,35 @@ def test_doctor_names_missing_role_executable_and_room_permission(tmp_path, _bin
             held.rename(directory)
 
 
+@pytest.mark.parametrize(("error", "wrong_identity", "diagnostic"), [
+    ("", False, None),
+    (None, False, None),
+    ("fixture supervisor failed", False, "fixture supervisor failed"),
+    ("", True, "Stored launcher identity does not match agent"),
+])
+def test_factory_stop_interprets_lifecycle_errors(
+    tmp_path, _binary_cache, error, wrong_identity, diagnostic,
+):
+    with prepared(tmp_path, _binary_cache) as (instance, _):
+        agent = "fixture-forge"
+        launch = instance.root / "agents" / agent / "current-launch.json"
+        record = {"name": agent, "agent_id": roles(instance)[agent]["agent_id"],
+                  "launcher": {"kind": "supervisor"}, "state": "stopped", "error": error}
+        if wrong_identity:
+            record["agent_id"] = "different-fixture-identity"
+        launch.write_text(json.dumps(record))
+        result = instance.cli("factory", "stop", "fixture")
+        if diagnostic is None:
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            assert "Stopped Factory fixture roles" in result.stdout
+        else:
+            assert result.returncode != 0, (result.stdout, result.stderr)
+            assert "role owner:" in result.stderr and diagnostic in result.stderr
+            assert "Stopped Factory" not in result.stdout
+        assert json.loads(launch.read_text()) == record
+        assert_no_role_launch(instance)
+
+
 def test_factory_run_does_not_boot_workers_without_coord(tmp_path, _binary_cache):
     with prepared(tmp_path, _binary_cache) as (instance, _):
         adopt_source_login(instance)

@@ -618,6 +618,13 @@ async fn doctor(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
         json!({"factory":snapshot.name,"status":if ready {"ready"} else {"not-ready"},"checks":checks}),
     )
 }
+fn role_lifecycle_error(observation: &Value) -> Option<&Value> {
+    // A healthy supervisor reports an empty last_stderr through this field.
+    observation
+        .get("error")
+        .filter(|error| !error.is_null() && error.as_str() != Some(""))
+}
+
 async fn start_roles(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
     let agents = host_agents::list()?;
     for (name, role) in &snapshot.roles {
@@ -636,7 +643,7 @@ async fn start_roles(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
             .ok_or("required role is missing")?;
         let observation =
             host_lifecycle::start(agent, "start", None, role.args.as_deref(), false).await?;
-        if let Some(error) = observation.get("error").filter(|error| !error.is_null()) {
+        if let Some(error) = role_lifecycle_error(&observation) {
             return Err(
                 format!("role {name} start failed: {error}; existing role state retained").into(),
             );
@@ -661,7 +668,7 @@ async fn stop_roles(snapshot: &Snapshot) -> Result<(), Error> {
     for (name, role) in &snapshot.roles {
         if let Some(agent) = agents.iter().find(|a| a.name == role.agent) {
             match host_lifecycle::stop(agent, None).await {
-                Ok(value) if value.get("error").is_none_or(Value::is_null) => {}
+                Ok(value) if role_lifecycle_error(&value).is_none() => {}
                 Ok(value) => errors.push(format!("role {name}: {value}")),
                 Err(error) => errors.push(format!("role {name}: {error}")),
             }

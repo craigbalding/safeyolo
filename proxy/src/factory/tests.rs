@@ -1,5 +1,34 @@
 use super::*;
 
+#[test]
+fn empty_supervisor_stderr_is_not_a_role_lifecycle_failure() {
+    for state in ["running", "stopped"] {
+        for observation in [
+            json!({"agent_state":state}),
+            json!({"agent_state":state,"error":null}),
+            json!({"agent_state":state,"error":""}),
+        ] {
+            assert!(
+                role_lifecycle_error(&observation).is_none(),
+                "{observation}"
+            );
+        }
+    }
+}
+
+#[test]
+fn role_lifecycle_failures_keep_their_original_diagnostic() {
+    for error in [
+        json!("supervisor failed to start"),
+        json!(" "),
+        json!({"message":"launcher failed"}),
+        json!(false),
+    ] {
+        let observation = json!({"error":error});
+        assert_eq!(role_lifecycle_error(&observation), Some(&error));
+    }
+}
+
 fn fixture(root: &Path) -> PathBuf {
     fs::write(
         root.join("role.md"),
