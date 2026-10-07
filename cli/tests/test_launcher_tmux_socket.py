@@ -25,15 +25,23 @@ def tmux(socket, *args, check=True):
 
 @pytest.fixture
 def servers(tmp_path, monkeypatch):
-    if not shutil.which("tmux"):
+    installed_tmux = shutil.which("tmux")
+    if not installed_tmux:
         pytest.skip("real tmux routing requires tmux")
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path / "config"))
+    root = tmp_path / "config"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin/tmux").symlink_to(installed_tmux)
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
     record = {"launch_id": "launch-preset-fixture", "pane_id": "%0",
               "launcher": {"script": str(Path(__file__).resolve().parents[1] / "src/safeyolo/launchers/tmux-window.sh")}}
     # Short, private socket paths also fit macOS's Unix socket path limit.
-    with tempfile.TemporaryDirectory(prefix="sy-tmux-") as directory:
+    parent = tempfile.gettempdir()
+    if len(os.fsencode(str(Path(parent) / "sy-tmux-xxxxxxxx" / "agent's server"))) >= 104:
+        parent = "/tmp"
+    with tempfile.TemporaryDirectory(prefix="sy-tmux-", dir=parent) as directory:
         sockets = [Path(directory) / "agent's server", Path(directory) / "viewer"]
+        assert all(len(os.fsencode(str(socket))) < 104 for socket in sockets)
         try:
             for index, socket in enumerate(sockets):
                 marker = "AGENT-READY" if index == 0 else "WRONG-SERVER"

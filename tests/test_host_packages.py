@@ -36,6 +36,22 @@ def executable(path, identity):
     source.unlink()
 
 
+def python_driver(path, python):
+    """A native shebang interpreter supplies controlled NATS tool output."""
+    source = path.with_suffix(".c")
+    source.write_text(
+        '#include <stdio.h>\n#include <string.h>\n#include <unistd.h>\n'
+        'int main(int argc, char **argv) {\n'
+        '  if (argc > 2 && !strcmp(argv[1], "-I") && !strcmp(argv[2], "-c")) {\n'
+        '    puts("verified fixture NATS"); return 0;\n'
+        '  }\n'
+        f'  argv[0] = {json.dumps(python)}; execv(argv[0], argv);\n'
+        '  perror("fixture Python exec"); return 1;\n}\n'
+    )
+    subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
+    source.unlink()
+
+
 @pytest.fixture
 def package_inputs(tmp_path):
     if os.uname().sysname != "Linux":
@@ -123,16 +139,12 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         (host / name).touch()
     (guest / "safeyolo-guest").touch()
     python = shutil.which("python3")
+    python_driver(tools / "python-driver", python)
     files = {
         checkout / "install.sh": "#!/bin/sh\nexit 0\n",
         tools / "uname": f"#!/bin/sh\nprintf '{platform}\\n'\n",
         tools / "tmux": "#!/bin/sh\nprintf 'tmux fixture\\n'\n",
         tools / "uv": '#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then printf "%s\\n" "$PREPARE_TOOLS"; fi\n',
-        tools / "python-driver": (
-            '#!/bin/sh\nif [ "$1" = -I ] && [ "$2" = -c ]; then\n'
-            '  printf "verified fixture NATS\\n"\n'
-            f'else exec "{python}" "$@"; fi\n'
-        ),
         tools / "safeyolo": (
             f'#!{tools / "python-driver"}\n'
             "import json,os,sys\nfrom pathlib import Path\n"
@@ -216,13 +228,15 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
             assert stream.extractfile(path).read() == notice.read_bytes()
 
 
-@pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source"])
+@pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source", "mode"])
 def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, tmp_path, damage):
     guest = package_inputs[2]
     if damage == "missing":
         (guest / "safeyolo-guest.sha256").unlink()
     elif damage == "checksum":
         (guest / "safeyolo-guest").write_bytes((guest / "safeyolo-guest").read_bytes() + b"damaged")
+    elif damage == "mode":
+        (guest / "safeyolo-guest").chmod(0o644)
     else:
         receipt = guest / "safeyolo-guest.version"
         receipt.write_text(receipt.read_text().replace("debug", "production") if damage == "profile"
@@ -230,6 +244,18 @@ def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, t
     result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
     assert result.returncode != 0
     assert "guest" in result.stderr.lower()
+    assert not (tmp_path / "bundle").exists()
+
+
+@pytest.mark.parametrize("damage", ["source", "profile"])
+def test_producer_rejects_a_different_host_coord_identity(package_inputs, tmp_path, damage):
+    coord = package_inputs[1] / "safeyolo-coord"
+    revision = "b" * 40 if damage == "source" else package_inputs[5]
+    profile = "production" if damage == "profile" else "debug"
+    executable(coord, f"safeyolo-coord 0.1.0 commit={revision} profile={profile}")
+    result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
+    assert result.returncode != 0
+    assert "host source/profile identities differ: safeyolo-coord" in result.stderr
     assert not (tmp_path / "bundle").exists()
 
 
