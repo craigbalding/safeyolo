@@ -284,23 +284,19 @@ impl Adapter {
                     .as_ref()
                     .and_then(|a| render::semantic(envelope, &a.trusted));
                 let mut capability = None;
-                if let (Some(request), Some(actions)) = (&semantic, &self.config.actions) {
-                    if !request.allowed_actions.is_empty()
-                        && self.listener_healthy.load(Ordering::Acquire)
-                    {
-                        use base64::Engine;
-                        let mut bytes = [0u8; 32];
-                        ring::rand::SecureRandom::fill(
-                            &ring::rand::SystemRandom::new(),
-                            &mut bytes,
-                        )
+                if let (Some(request), Some(actions)) = (&semantic, &self.config.actions)
+                    && !request.allowed_actions.is_empty()
+                    && self.listener_healthy.load(Ordering::Acquire)
+                {
+                    use base64::Engine;
+                    let mut bytes = [0u8; 32];
+                    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
                         .map_err(|_| "action capability randomness unavailable")?;
-                        let token = Zeroizing::new(
-                            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
-                        );
-                        self.execute("INSERT INTO action_capability(capability_hash,coord_msg_id,coord_room,channel_id,projection_key,adapter_id,allowed_actions,status,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'issued',?8)",params![crate::coord_setup::sha256(token.as_bytes()),msg,room.name,room.channel,key,self.config.id,serde_json::to_string(&request.allowed_actions)?,now().saturating_add(actions.ttl*1000)])?;
-                        capability = Some(token);
-                    }
+                    let token = Zeroizing::new(
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+                    );
+                    self.execute("INSERT INTO action_capability(capability_hash,coord_msg_id,coord_room,channel_id,projection_key,adapter_id,allowed_actions,status,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'issued',?8)",params![crate::coord_setup::sha256(token.as_bytes()),msg,room.name,room.channel,key,self.config.id,serde_json::to_string(&request.allowed_actions)?,now().saturating_add(actions.ttl*1000)])?;
+                    capability = Some(token);
                 }
                 let mut props = json!({"safeyolo_coord":{"schema":PROJECTION_SCHEMA,"adapter_id":self.config.id,"projection_key":key,"coord_room":room.name,"coord_msg_id":msg},"attachments":[]});
                 let message =

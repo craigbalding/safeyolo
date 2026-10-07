@@ -73,16 +73,16 @@ fn global_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, c, d] = ip.octets();
-            !matches!(a, 0 | 10 | 127 | 240..=255)
-                && !(a == 100 && (64..=127).contains(&b))
-                && !(a == 169 && b == 254)
-                && !(a == 172 && (16..=31).contains(&b))
-                && !(a == 192
+            !(matches!(a, 0 | 10 | 127 | 240..=255)
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192
                     && ((b == 0 && c == 0 && ![9, 10].contains(&d))
                         || (b == 0 && c == 2)
                         || b == 168))
-                && !(a == 198 && ([18, 19].contains(&b) || (b == 51 && c == 100)))
-                && !(a == 203 && b == 0 && c == 113)
+                || (a == 198 && ([18, 19].contains(&b) || (b == 51 && c == 100)))
+                || (a == 203 && b == 0 && c == 113))
         }
         IpAddr::V6(ip) => {
             if let Some(mapped) = ip.to_ipv4_mapped() {
@@ -94,16 +94,16 @@ fn global_ip(ip: IpAddr) -> bool {
                     || s[1] == 3
                     || (s[1] == 4 && s[2] == 0x112)
                     || [0x20, 0x30].contains(&(s[1] & 0xfff0)));
-            !ip.is_loopback()
-                && !ip.is_unspecified()
-                && !(s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
-                && !(s[0] == 0x100 && s[1..4].iter().all(|v| *v == 0))
-                && (!(s[0] == 0x2001 && s[1] < 0x200) || exception)
-                && !(s[0] == 0x2001 && s[1] == 0xdb8)
-                && s[0] != 0x2002
-                && !(s[0] == 0x3fff && s[1] & 0xf000 == 0)
-                && s[0] & 0xfe00 != 0xfc00
-                && s[0] & 0xffc0 != 0xfe80
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
+                || (s[0] == 0x100 && s[1..4].iter().all(|v| *v == 0))
+                || (s[0] == 0x2001 && s[1] < 0x200 && !exception)
+                || (s[0] == 0x2001 && s[1] == 0xdb8)
+                || s[0] == 0x2002
+                || (s[0] == 0x3fff && s[1] & 0xf000 == 0)
+                || s[0] & 0xfe00 == 0xfc00
+                || s[0] & 0xffc0 == 0xfe80)
         }
     }
 }
