@@ -2,8 +2,8 @@
 
 Verifies the contracts of lifecycle (start/stop/status/build), agent
 (add/list/remove/shell/stop), init, setup, doctor, sandbox, cert, and
-admin. All subprocess/vm/proxy/firewall calls are mocked; no real
-processes are started.
+admin. Native agent-name checks execute the supported Rust CLI. Other
+subprocess/vm/proxy/firewall calls are mocked.
 """
 
 import json
@@ -557,48 +557,60 @@ class TestLifecycleBuild:
 
 
 # ---------------------------------------------------------------------------
-# agent.py: name validation
+# Native CLI: name validation and missing agents
 # ---------------------------------------------------------------------------
 
 
 class TestAgentValidateName:
 
-    def test_empty_name_rejected(self, runner, config_dir):
-        """Empty instance name is rejected."""
-        # Typer itself will reject missing required argument, so test via add
-        result = runner.invoke(app, ["agent", "remove", ""])
-        assert result.exit_code == 1
+    @staticmethod
+    def agent(native_agent, operation, name):
+        arguments = [str(native_agent["cli"]), "--root", str(native_agent["root"]),
+                     "agent", operation, name]
+        if operation == "create":
+            arguments += ["--workspace", str(native_agent["root"])]
+        return subprocess.run(arguments, capture_output=True, text=True, timeout=5)
 
-    def test_name_too_long_rejected(self, runner, config_dir):
+    def test_empty_name_rejected(self, native_agent):
+        """Empty instance name is rejected."""
+        result = self.agent(native_agent, "create", "")
+        assert result.returncode == 1
+        assert "invalid agent name" in result.stderr.lower()
+
+    def test_name_too_long_rejected(self, native_agent):
         """Names over 63 chars are rejected."""
         long_name = "a" * 64
-        result = runner.invoke(app, ["agent", "remove", long_name])
-        assert result.exit_code == 1
-        assert "too long" in result.output.lower()
+        result = self.agent(native_agent, "create", long_name)
+        assert result.returncode == 1
+        assert "invalid agent name" in result.stderr.lower()
 
-    def test_invalid_chars_rejected(self, runner, config_dir):
+    def test_invalid_chars_rejected(self, native_agent):
         """Names with uppercase or special chars are rejected."""
-        result = runner.invoke(app, ["agent", "remove", "My_Agent"])
-        assert result.exit_code == 1
-        assert "invalid" in result.output.lower()
+        result = self.agent(native_agent, "create", "My_Agent")
+        assert result.returncode == 1
+        assert "invalid agent name" in result.stderr.lower()
 
-    def test_leading_hyphen_rejected(self, runner, config_dir):
+    def test_leading_hyphen_rejected(self, native_agent):
         """Names starting with a hyphen are rejected."""
-        result = runner.invoke(app, ["agent", "remove", "-bad"])
-        assert result.exit_code != 0
+        result = self.agent(native_agent, "create", "-bad")
+        assert result.returncode == 1
+        assert "invalid agent name" in result.stderr.lower()
 
-    def test_valid_name_accepted(self, runner, config_dir):
+    def test_valid_name_accepted(self, native_agent):
         """Valid RFC 1123 names pass validation."""
-        # "my-agent" is valid but agent dir won't exist, so exits 1 with "not found"
-        result = runner.invoke(app, ["agent", "remove", "my-agent"])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower()
+        result = self.agent(native_agent, "status", "my-agent")
+        assert result.returncode == 1
+        assert "not found" in result.stderr.lower()
+        created = self.agent(native_agent, "create", "my-agent")
+        assert created.returncode == 0, created.stderr
 
-    def test_single_char_name_accepted(self, runner, config_dir):
+    def test_single_char_name_accepted(self, native_agent):
         """Single character names are valid."""
-        result = runner.invoke(app, ["agent", "remove", "a"])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower()
+        result = self.agent(native_agent, "status", "a")
+        assert result.returncode == 1
+        assert "not found" in result.stderr.lower()
+        created = self.agent(native_agent, "create", "a")
+        assert created.returncode == 0, created.stderr
 
 
 # ---------------------------------------------------------------------------

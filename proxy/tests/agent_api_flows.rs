@@ -214,6 +214,25 @@ async fn actual_source_dispatch_and_body_projection() {
                 assert_eq!(outcome.response.status, 400);
                 assert_eq!(outcome.response.body_bytes().as_ref(), expected.as_bytes());
             }
+            "detail_invalid_trailing_separator"
+            | "detail_percent_digits"
+            | "detail_bad_suffix"
+            | "post_only_get" => {
+                // The retained Python-source receipt predates the supported
+                // shared approval routes. Keep that receipt and all other
+                // error bytes; account only for the two advertised routes.
+                let expected = row["text"].as_str().unwrap().replace(
+                    "\"/explain\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                );
+                assert_eq!(row["status"], 404, "{name}");
+                assert_eq!(outcome.response.status, 404, "{name}");
+                assert_eq!(
+                    outcome.response.body_bytes().as_ref(),
+                    expected.as_bytes(),
+                    "{name}"
+                );
+            }
             _ => {
                 assert_eq!(
                     u64::from(outcome.response.status),
