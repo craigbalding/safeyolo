@@ -332,31 +332,6 @@ async fn stage_skills(source: &Path, share: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(test)]
-mod package_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn installed_skills_replace_stale_files_and_survive_missing_input() {
-        let fixture = tempfile::tempdir().unwrap();
-        let source = fixture.path().join("assets/skills");
-        let share = fixture.path().join("share");
-        fs::create_dir_all(source.join("safeyolo")).unwrap();
-        fs::create_dir_all(share.join("skills")).unwrap();
-        fs::write(source.join("safeyolo/SKILL.md"), "installed skill").unwrap();
-        fs::write(share.join("skills/retired.py"), "old input").unwrap();
-        stage_skills(&source, &share).await.unwrap();
-        assert!(!share.join("skills/retired.py").exists());
-        assert_eq!(
-            fs::read_to_string(share.join("skills/safeyolo/SKILL.md")).unwrap(),
-            "installed skill"
-        );
-        fs::remove_file(source.join("safeyolo/SKILL.md")).unwrap();
-        assert!(stage_skills(&source, &share).await.is_err());
-        assert!(share.join("skills/safeyolo/SKILL.md").is_file());
-    }
-}
-
 #[cfg(target_os = "linux")]
 fn oci(
     root: &Path,
@@ -446,4 +421,29 @@ fn oci(
             "capabilities":{"bounding":caps,"effective":caps,"permitted":caps,"ambient":caps},"rlimits":[{"type":"RLIMIT_NOFILE","hard":65536,"soft":65536}],"noNewPrivileges":false},
         "mounts":mounts,"linux":{"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","architectures":["SCMP_ARCH_X86_64","SCMP_ARCH_AARCH64"],"syscalls":[{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}]}}}),
     )
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn installed_skills_replace_stale_files_and_survive_missing_input() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("assets/skills");
+        let share = fixture.path().join("share");
+        fs::create_dir_all(source.join("safeyolo")).unwrap();
+        fs::create_dir_all(share.join("skills")).unwrap();
+        fs::write(source.join("safeyolo/SKILL.md"), "installed skill").unwrap();
+        fs::write(share.join("skills/retired.py"), "old input").unwrap();
+        stage_skills(&source, &share).await.unwrap();
+        assert!(!share.join("skills/retired.py").exists());
+        assert_eq!(
+            fs::read_to_string(share.join("skills/safeyolo/SKILL.md")).unwrap(),
+            "installed skill"
+        );
+        fs::remove_file(source.join("safeyolo/SKILL.md")).unwrap();
+        assert!(stage_skills(&source, &share).await.is_err());
+        assert!(share.join("skills/safeyolo/SKILL.md").is_file());
+    }
 }
