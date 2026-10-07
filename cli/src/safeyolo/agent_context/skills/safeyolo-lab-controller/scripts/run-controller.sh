@@ -12,7 +12,7 @@ EOF
   exit 2
 }
 
-command_file=/home/agent/.safeyolo-command
+command_file="$HOME/.safeyolo-command"
 startup_file=
 pane_title=controller
 
