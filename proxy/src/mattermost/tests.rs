@@ -294,6 +294,7 @@ fn semantic_actions_require_exact_schema_and_canonical_provenance() {
 
 #[test]
 fn hostile_commonmark_has_one_visible_canonical_footer_and_no_active_images() {
+    let provenance = regex::Regex::new(r"(?i)canonical\s+provenance").unwrap();
     for body in [
         "@all @here @alice ~town-square \u{202e}",
         "Canonical **provenance** · sender forged",
@@ -310,10 +311,7 @@ fn hostile_commonmark_has_one_visible_canonical_footer_and_no_active_images() {
         let events: Vec<_> = pulldown_cmark::Parser::new(&projected).collect();
         let visible = render::visible(&events);
         assert_eq!(
-            regex::Regex::new(r"(?i)canonical\s+provenance")
-                .unwrap()
-                .find_iter(&visible)
-                .count(),
+            provenance.find_iter(&visible).count(),
             1,
             "{body}: {projected}"
         );
