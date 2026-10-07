@@ -2744,9 +2744,21 @@ pub(crate) struct OperatorCoord {
     client: CoordClient,
 }
 
+/// A stable publication identity from the existing Coord owner. Only the
+/// local operator can prepare or reconcile it; no agent API accepts this type.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PreparedMessage {
+    pub room_id: String,
+    pub since_sequence: u64,
+    pub envelope: Value,
+    pub attention_manifest: Value,
+}
+
 #[derive(Debug)]
 pub(crate) struct OperatorCoordError {
     pub unavailable: bool,
+    pub unknown: bool,
     detail: String,
 }
 
@@ -2754,6 +2766,7 @@ impl OperatorCoordError {
     pub(crate) fn display_error(detail: String) -> Self {
         Self {
             unavailable: false,
+            unknown: false,
             detail,
         }
     }
@@ -2769,6 +2782,7 @@ fn operator_result(outcome: Outcome<'_>) -> Result<Value, OperatorCoordError> {
     let super::ResponseBody::Json(value) = &outcome.response.body else {
         return Err(OperatorCoordError {
             unavailable: false,
+            unknown: false,
             detail: "Coord returned no JSON".into(),
         });
     };
@@ -2778,6 +2792,7 @@ fn operator_result(outcome: Outcome<'_>) -> Result<Value, OperatorCoordError> {
     let unknown = value["send_outcome"] == "unknown";
     Err(OperatorCoordError {
         unavailable: outcome.response.status == 503 && !unknown,
+        unknown,
         detail: if unknown {
             "message acceptance is UNKNOWN: JetStream may have accepted it. No automatic resend was made. Inspect retained room history before deciding whether to send again.".into()
         } else {
@@ -2828,6 +2843,108 @@ impl OperatorCoord {
         )
     }
 
+    pub(crate) async fn prepare(
+        &self,
+        room: &str,
+        body: &str,
+        content_type: &str,
+        notify: Value,
+    ) -> Result<PreparedMessage, crate::Error> {
+        let payload =
+            json!({"body":body,"notify":notify,"declared_content_type":content_type}).to_string();
+        let result = operator_result(
+            prepare_send(&self.client, room, Sender::Operator, payload.as_bytes()).await,
+        )?;
+        Ok(serde_json::from_value(result["prepared"].clone())?)
+    }
+
+    pub(crate) async fn publish_prepared(
+        &self,
+        room: &str,
+        prepared: &PreparedMessage,
+    ) -> Result<Value, OperatorCoordError> {
+        operator_result(
+            publish_prepared(
+                &self.client,
+                local_operator_request(),
+                room,
+                Sender::Operator,
+                prepared,
+            )
+            .await,
+        )
+    }
+
+    pub(crate) async fn find_prepared(
+        &self,
+        room: &str,
+        prepared: &PreparedMessage,
+    ) -> Result<Option<u64>, crate::Error> {
+        let access = self
+            .client
+            .sender_access(room, Sender::Operator)
+            .await
+            .map_err(|_| "cannot authorize Dispatch reconciliation")?;
+        validate_prepared(&access, Sender::Operator, prepared)
+            .map_err(|_| "prepared Dispatch message is not a canonical local operator message")?;
+        if !access.permissions.iter().any(|p| p == "receive") {
+            return Err("permission 'receive' denied for Dispatch reconciliation".into());
+        }
+        let connection = self
+            .client
+            .client()
+            .await
+            .map_err(|_| "coordination substrate unavailable")?;
+        let mut stream = jetstream::new(connection)
+            .get_stream(room_stream(&access.room_id))
+            .await?;
+        let info = stream.info().await?;
+        let first = info.state.first_sequence;
+        let last = info.state.last_sequence;
+        let Some(next) = prepared.since_sequence.checked_add(1) else {
+            return Err("prepared Dispatch sequence cannot advance".into());
+        };
+        // A missing retained message is unknown, never permission to resend.
+        for sequence in next.max(first)..=last {
+            let raw = stream.get_raw_message(sequence).await.map_err(|_| "Dispatch reconciliation is unavailable; delivery remains unknown and was not resent")?;
+            let envelope: Value = serde_json::from_slice(&raw.payload)?;
+            if envelope["msg_id"] == prepared.envelope["msg_id"] {
+                if envelope != prepared.envelope
+                    || raw
+                        .headers
+                        .get_last("SafeYolo-Coord-Attention")
+                        .is_none_or(|header| {
+                            serde_json::from_str::<Value>(header.as_str()).ok().as_ref()
+                                != Some(&prepared.attention_manifest)
+                        })
+                {
+                    return Err("prepared Dispatch message conflicts with retained history".into());
+                }
+                self.client.project_room_through(&access.room_id, &mut stream, sequence).await.map_err(|_| "Dispatch publication is retained but attention reconciliation is unavailable")?;
+                return Ok(Some(sequence));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) async fn authorize_prepared(
+        &self,
+        room: &str,
+        prepared: &PreparedMessage,
+    ) -> Result<(), crate::Error> {
+        let access = self
+            .client
+            .sender_access(room, Sender::Operator)
+            .await
+            .map_err(|_| "cannot authorize Dispatch request")?;
+        validate_prepared(&access, Sender::Operator, prepared)
+            .map_err(|_| "prepared Dispatch message is not a canonical local operator message")?;
+        if !access.permissions.iter().any(|p| p == "send") {
+            return Err("permission 'send' denied for Dispatch request".into());
+        }
+        Ok(())
+    }
+
     pub(crate) async fn read(
         &self,
         room: &str,
@@ -2842,6 +2959,7 @@ impl OperatorCoord {
             .await
             .map_err(|error| OperatorCoordError {
                 unavailable: matches!(error, CoordError::Unavailable),
+                unknown: false,
                 detail: match error {
                     CoordError::NotFound => "room not found or not accessible",
                     CoordError::Forbidden => "coordination permission denied",
@@ -2879,9 +2997,39 @@ impl OperatorCoord {
     }
 }
 
+fn local_operator_request() -> Request<'static> {
+    Request {
+        method: "POST",
+        path_and_query: "/local/operator/coord/send",
+        authorization: None,
+        identity: crate::network_guard::Identity::Unavailable,
+        client_ip: None,
+        request_id: "local-operator",
+    }
+}
+
 async fn send(
     client: &CoordClient,
     request: Request<'_>,
+    room_name: &str,
+    sender: Sender<'_>,
+    payload: &[u8],
+) -> Outcome<'static> {
+    let outcome = prepare_send(client, room_name, sender, payload).await;
+    if outcome.response.status != 200 {
+        return outcome;
+    }
+    let super::ResponseBody::Json(value) = &outcome.response.body else {
+        return error_response(CoordError::Data);
+    };
+    let Ok(prepared) = serde_json::from_value::<PreparedMessage>(value["prepared"].clone()) else {
+        return error_response(CoordError::Data);
+    };
+    publish_prepared(client, request, room_name, sender, &prepared).await
+}
+
+async fn prepare_send(
+    client: &CoordClient,
     room_name: &str,
     sender: Sender<'_>,
     payload: &[u8],
@@ -2995,6 +3143,10 @@ async fn send(
         },
         Notification::None | Notification::Room | Notification::LegacyRoom => None,
     };
+    let since_sequence = match stream.info().await {
+        Ok(info) => info.state.last_sequence,
+        Err(_) => return error_response(CoordError::Unavailable),
+    };
     // Stream lookup, baseline setup, and target-name resolution all perform
     // provider I/O. Re-read the newest active membership generation after
     // those operations so a revoke/regrant cannot authorize a stale manifest.
@@ -3096,11 +3248,6 @@ async fn send(
         Notification::LegacyRoom => "legacy_room",
         Notification::Agents(_) => "agents",
     };
-    let public_mode = match &notification {
-        Notification::None => "none",
-        Notification::Room | Notification::LegacyRoom => "room",
-        Notification::Agents(_) => "targeted",
-    };
     let envelope = json!({
         "msg_id":msg_id,
         "sent_at":sent_at,
@@ -3117,12 +3264,124 @@ async fn send(
         "mode":manifest_mode,
         "recipients":recipients_json
     });
+    response(
+        200,
+        json!({"prepared": PreparedMessage {
+            room_id: access.room_id,
+            since_sequence,
+            envelope,
+            attention_manifest: manifest,
+        }}),
+    )
+}
+
+fn validate_prepared(
+    access: &RoomAccess,
+    sender: Sender<'_>,
+    prepared: &PreparedMessage,
+) -> Result<Vec<Recipient>, CoordError> {
+    let envelope = &prepared.envelope;
+    let (kind, id, name) = match sender {
+        Sender::Operator => ("operator", Value::Null, Value::Null),
+        Sender::Agent { id, name } => ("agent", json!(id), json!(name)),
+    };
+    let msg_id = envelope["msg_id"].as_str().ok_or(CoordError::Data)?;
+    if prepared.room_id != access.room_id
+        || envelope["origin_instance_id"] != access.instance_id
+        || envelope["sender_kind"] != kind
+        || envelope["sender_agent_id"] != id
+        || envelope["sender_agent_name"] != name
+        || envelope["sent_at"].as_i64().is_none_or(|value| value <= 0)
+        || !matches!(
+            envelope["content_type"].as_str(),
+            Some("text/plain" | "text/markdown")
+        )
+        || envelope["body"]
+            .as_str()
+            .is_none_or(|body| body.is_empty() || body.len() > MAX_BODY_BYTES)
+        || !msg_id.strip_prefix("msg-").is_some_and(|id| {
+            id.len() == 32
+                && id
+                    .bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        })
+    {
+        return Err(CoordError::Data);
+    }
+    let header = prepared.attention_manifest.to_string();
+    let recipients = parse_attention_manifest(Some(&header), msg_id)?
+        .ok_or(CoordError::Data)?
+        .recipients;
+    Ok(recipients)
+}
+
+async fn publish_prepared(
+    client: &CoordClient,
+    request: Request<'_>,
+    room_name: &str,
+    sender: Sender<'_>,
+    prepared: &PreparedMessage,
+) -> Outcome<'static> {
+    let connection = match client.client().await {
+        Ok(connection) => connection,
+        Err(error) => return error_response(error),
+    };
+    let jetstream = jetstream::new(connection.clone());
+    let access = match client.sender_access(room_name, sender).await {
+        Ok(access) => access,
+        Err(error) => return error_response(error),
+    };
+    if !access.permissions.iter().any(|p| p == "send") {
+        return error_response(CoordError::Forbidden);
+    }
+    let recipients = match validate_prepared(&access, sender, prepared) {
+        Ok(recipients) => recipients,
+        Err(error) => return error_response(error),
+    };
+    if recipients.iter().any(|recipient| {
+        !access.members.iter().any(|member| {
+            member.principal_kind == "agent"
+                && member.principal_id == recipient.agent_id
+                && member.granted_at == recipient.membership_granted_at
+                && member.permissions.iter().any(|p| p == "receive")
+        })
+    }) {
+        return error_response(CoordError::Forbidden);
+    }
+    let mut stream = match jetstream.get_stream(room_stream(&access.room_id)).await {
+        Ok(stream) => stream,
+        Err(_) => return error_response(CoordError::Unavailable),
+    };
+    // Preparation can precede a durable restart. Check the latest grant after
+    // provider I/O, preserving the same authority check as ordinary send.
+    let latest = match client.sender_access(room_name, sender).await {
+        Ok(access) => access,
+        Err(error) => return error_response(error),
+    };
+    if latest.room_id != access.room_id
+        || latest.instance_id != access.instance_id
+        || !latest.permissions.iter().any(|p| p == "send")
+        || recipients.iter().any(|recipient| {
+            !latest.members.iter().any(|member| {
+                member.principal_kind == "agent"
+                    && member.principal_id == recipient.agent_id
+                    && member.granted_at == recipient.membership_granted_at
+                    && member.permissions.iter().any(|p| p == "receive")
+            })
+        })
+    {
+        return error_response(CoordError::Forbidden);
+    }
+    let envelope = &prepared.envelope;
     let mut headers = async_nats::HeaderMap::new();
     headers.insert(
         "Nats-Msg-Id",
         envelope["msg_id"].as_str().unwrap_or_default(),
     );
-    headers.insert("SafeYolo-Coord-Attention", manifest.to_string());
+    headers.insert(
+        "SafeYolo-Coord-Attention",
+        prepared.attention_manifest.to_string(),
+    );
     let ack = match jetstream
         .publish_with_headers(
             room_subject(&access.room_id),
@@ -3168,7 +3427,9 @@ async fn send(
             "envelope": envelope,
             "sequence": sequence,
             "attention_status":attention_status,
-            "attention_intent":{"mode":public_mode},
+            "attention_intent":{"mode":match prepared.attention_manifest["mode"].as_str() {
+                Some("agents") => "targeted", Some("none") => "none", _ => "room"
+            }},
         }),
     )
 }
