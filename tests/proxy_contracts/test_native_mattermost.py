@@ -57,6 +57,9 @@ class Mattermost(ThreadingHTTPServer):
         self.fail_create = None
         self.fail_backend = False
         self.fail_patch = False
+        self.operator_verification_started = threading.Event()
+        self.operator_verification_release = threading.Event()
+        self.operator_verification_release.set()
         self.human = {"id": HUMAN, "delete_at": 0}
         self.lock = threading.RLock()
         super().__init__(("127.0.0.1", 0), MattermostRequest)
@@ -99,6 +102,20 @@ class MattermostRequest(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length)) if length else None
         path = urlsplit(self.path)
         remote = self.server
+        if (self.command == "GET" and path.path == f"/api/v4/users/{HUMAN}"
+                and not remote.operator_verification_release.is_set()):
+            remote.operator_verification_started.set()
+            if not remote.operator_verification_release.wait(timeout=10):
+                self.close_connection = True
+                return
+            with remote.lock:
+                human = remote.human.copy()
+            try:
+                self.respond(200, human)
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
+                # The callback cancels its verification at the request deadline.
+                self.close_connection = True
+            return
         with remote.lock:
             if remote.fail_backend:
                 self.respond(500, {"error": f"remote canary {TOKEN}"})
@@ -351,8 +368,11 @@ def test_native_uncertain_callback_stays_pending_while_routine_exchange_continue
                    "context": post["props"]["attachments"][0]["actions"][0]["integration"]["context"]}
         before = asyncio.run(stream_control(instance, no_ack=True))
         try:
-            assert callback(instance, payload)[0] == 503
+            status, body = callback(instance, payload)
+            assert status == 503, body
             assert asyncio.run(stream_control(instance)) == before + 1
+            with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
+                assert db.execute("SELECT status,selected_action,coord_action_msg_id FROM action_capability").fetchone() == ("pending", "approve", None)
         finally:
             asyncio.run(stream_control(instance, no_ack=False))
         assert callback(instance, payload)[0] == 503
@@ -371,6 +391,32 @@ def test_native_uncertain_callback_stays_pending_while_routine_exchange_continue
         assert process.poll() is None
 
 
+def test_native_callback_operator_verification_timeout_does_not_publish(exchange):
+    instance, remote = exchange
+    agent_send(instance, semantic_body(), declared_content_type="text/plain")
+    with daemon(instance) as process:
+        until(lambda: healthy(instance))
+        post = until(lambda: remote.projected())[0]
+        payload = {"user_id": HUMAN, "channel_id": CHANNEL, "post_id": post["id"],
+                   "context": post["props"]["attachments"][0]["actions"][0]["integration"]["context"]}
+        remote.operator_verification_release.clear()
+        try:
+            status, body = callback(instance, payload)
+            assert status == 503, body
+            assert body == {"error": "request timed out; inspect pending actions before retrying"}
+            assert remote.operator_verification_started.is_set()
+            assert operator_requests(instance) == []
+            with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
+                assert db.execute("SELECT status,selected_action,coord_action_msg_id FROM action_capability").fetchone() == ("issued", None, None)
+        finally:
+            remote.operator_verification_release.set()
+        assert callback(instance, payload)[0] == 200
+        assert callback(instance, payload)[0] == 409
+        assert len(operator_requests(instance)) == 1
+        assert healthy(instance)["pending_action_reconciliation"] == 0
+        assert process.poll() is None
+
+
 def test_native_semantic_callback_authority_replay_and_restart(exchange):
     instance, remote = exchange
     agent_send(instance, semantic_body(), declared_content_type="text/plain")
@@ -381,6 +427,9 @@ def test_native_semantic_callback_authority_replay_and_restart(exchange):
         assert button["integration"]["url"] == "https://actions.example/safeyolo/mattermost/actions"
         payload = {"user_id": HUMAN, "channel_id": CHANNEL, "post_id": post["id"],
                    "context": button["integration"]["context"]}
+        for bad in ({}, {**payload, "user_id": 1}, {**payload, "context": []},
+                    {**payload, "context": {**payload["context"], "action": []}}):
+            assert callback(instance, bad)[0] == 400
         for field, value in (("user_id", "u" * 26), ("channel_id", "d" * 26),
                              ("post_id", "p" * 26), ("root_id", "p" * 26)):
             bad = copy.deepcopy(payload)
@@ -475,11 +524,17 @@ def test_native_callback_wire_limits_and_untrusted_schema(exchange):
         for wire in (b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\n\r\n",
                      b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nHost: a\r\nHost: b\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
                      b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                     b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}",
                      b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 65537\r\n\r\n",
+                     b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nX-Padding: " + b"x" * 16384 + b"\r\n\r\n",
+                     b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n!!",
+                     b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 4\r\n\r\nnull",
                      b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\n[1,2]",
                      b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"x\":1,\"x\":2}"):
             assert callback(instance, raw=wire)[0] == 400
         assert callback(instance, {}, path="/other")[0] == 404
         assert operator_requests(instance) == []
-        # An incomplete whole request reaches the existing five-second budget.
-        assert callback(instance, raw=b"POST /safeyolo/mattermost/actions HTTP/1.1\r\n")[0] == 400
+        # Incomplete headers and bodies retain the existing five-second budget.
+        for wire in (b"POST /safeyolo/mattermost/actions HTTP/1.1\r\n",
+                     b"POST /safeyolo/mattermost/actions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{"):
+            assert callback(instance, raw=wire)[0] == 400

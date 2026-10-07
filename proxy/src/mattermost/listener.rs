@@ -31,11 +31,15 @@ pub(super) async fn serve(
                 if tasks.len()>=32 {continue;}
                 let adapter=adapter.clone();
                 tasks.spawn(async move {
+                    let mut callback_started=false;
                     let response=tokio::time::timeout(Duration::from_secs(5),async {
-                        let response=read(&mut stream,&adapter).await.unwrap_or((400,json!({"error":"invalid request"})));
+                        let response=read(&mut stream,&adapter,&mut callback_started).await.unwrap_or((400,json!({"error":"invalid request"})));
                         write(&mut stream,response.0,&response.1).await
                     }).await;
-                    if response.is_err(){let _=tokio::time::timeout(Duration::from_millis(250),write(&mut stream,400,&json!({"error":"request timed out; inspect pending actions before retrying"}))).await;}
+                    if response.is_err(){
+                        let status=if callback_started {503}else{400};
+                        let _=tokio::time::timeout(Duration::from_millis(250),write(&mut stream,status,&json!({"error":"request timed out; inspect pending actions before retrying"}))).await;
+                    }
                     let _=stream.shutdown().await;
                 });
             }
@@ -45,7 +49,11 @@ pub(super) async fn serve(
     while tasks.join_next().await.is_some() {}
     result
 }
-async fn read(stream: &mut TcpStream, adapter: &Adapter) -> Result<(u16, Value), Error> {
+async fn read(
+    stream: &mut TcpStream,
+    adapter: &Adapter,
+    callback_started: &mut bool,
+) -> Result<(u16, Value), Error> {
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         if head.len() >= 16384 {
@@ -122,6 +130,9 @@ async fn read(stream: &mut TcpStream, adapter: &Adapter) -> Result<(u16, Value),
     if !payload.0.is_object() {
         return Err("request body must be an object".into());
     }
+    // Processing can time out after an action has been published. Its outcome
+    // is unavailable or pending, rather than a malformed wire request.
+    *callback_started = true;
     Ok(adapter.callback(&payload.0).await)
 }
 async fn write(stream: &mut TcpStream, status: u16, body: &Value) -> Result<(), Error> {

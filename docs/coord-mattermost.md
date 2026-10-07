@@ -123,6 +123,8 @@ bounded concurrency, sanitized failures, and clean bind/shutdown/restart
 lifecycle. Listener or tunnel failure is isolated from ordinary projection and
 replies; new posts simply contain no interactive buttons. The adapter does not
 start or supervise a tunnel.
+Incomplete or malformed wire requests return HTTP 400. Processing timeouts
+return HTTP 503; any pending action still requires reconciliation.
 
 ## Operator-owned setup
 
