@@ -72,3 +72,4 @@ path = "src/bin/safeyolo-coord.rs"
 fancy-regex = { path = "vendor/fancy-regex" }
 hyper = { path = "vendor/hyper" }
 h2 = { path = "vendor/h2" }
+rustyline = { path = "vendor/rustyline" }

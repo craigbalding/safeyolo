@@ -161,7 +161,9 @@ def test_scripted_inputs_payloads_authority_and_rejections(instance, tmp_path):
     assert [m["body"] for m in messages] == [body] * 3
     assert [m["content_type"] for m in messages] == ["text/plain", "text/markdown", "text/markdown"]
     assert all(m["sender_kind"] == "operator" and m["sender_agent_id"] is None for m in messages)
-    assert messages[0]["attention_intent"] == {"mode": "targeted"}
+    assert messages[0]["attention_intent"] == {
+        "mode": "targeted", "agent_ids": ["ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    }
     for args, input in ((("send", ROOM), None), (("send", ROOM, " "), None),
                         (("send", ROOM, "x", "--file", str(message)), None),
                         (("send", ROOM, "--stdin", "--file", str(message)), b"x"),

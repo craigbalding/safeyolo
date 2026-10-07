@@ -270,11 +270,11 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
         "safeyolo.codex.oversize" | "safeyolo.pi.oversize" => {
             let original = get(event, "original_type", "unknown");
             let mut reconstructed = json!({"type":original,"item":event["summary"]});
-            if !original.starts_with("item.") {
-                if let Some(summary) = event["summary"].as_object() {
-                    for (key, value) in summary {
-                        reconstructed[key] = value.clone();
-                    }
+            if !original.starts_with("item.")
+                && let Some(summary) = event["summary"].as_object()
+            {
+                for (key, value) in summary {
+                    reconstructed[key] = value.clone();
                 }
             }
             let (label, text) = if matches!(
