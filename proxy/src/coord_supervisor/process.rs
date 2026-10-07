@@ -1,9 +1,11 @@
 //! Linux invocation ownership, deadlines and Codex/Pi event consumption.
 
 use super::*;
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd;
 use std::{
     fs::OpenOptions,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsRawFd, OwnedFd},
     os::unix::fs::OpenOptionsExt,
     process::Stdio,
 };

@@ -16,7 +16,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 const PROVENANCE: &str = "safeyolo.codex-provenance/v1";
 
-fn safe(path: &Path, directory: bool, mode: Option<u32>) -> Result<bool, Error> {
+pub(crate) fn safe(path: &Path, directory: bool, mode: Option<u32>) -> Result<bool, Error> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -330,7 +330,7 @@ pub fn stage_mcp(home: &Path, harness: &str, require_local: bool) -> Result<(), 
     }
 }
 
-fn sorted_json(value: &Value) -> Value {
+pub(crate) fn sorted_json(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
             let sorted: std::collections::BTreeMap<_, _> = map
@@ -360,6 +360,30 @@ pub fn factory_stage(
     harness: &str,
 ) -> Result<(), Error> {
     let snapshot: Value = serde_json::from_str(&read_text(snapshot_path)?)?;
+    let config = factory_config(&snapshot, agent, role, harness)?;
+    let contract = snapshot["roles"][role]["contract_text"]
+        .as_str()
+        .ok_or("missing role contract")?;
+    let baseline = read_text(instructions)?;
+    atomic_write(config_path, &serde_json::to_vec(&config)?, 0o600)?;
+    atomic_write(
+        instructions,
+        format!(
+            "{}\n\n---\n\n{}",
+            baseline.trim_end(),
+            contract.trim_start()
+        )
+        .as_bytes(),
+        0o600,
+    )
+}
+
+pub(crate) fn factory_config(
+    snapshot: &Value,
+    agent: &str,
+    role: &str,
+    harness: &str,
+) -> Result<Config, Error> {
     let shape = snapshot
         .as_object()
         .ok_or("factory snapshot must be an object")?;
@@ -414,7 +438,7 @@ pub fn factory_stage(
             repairs[name] = repair.clone();
         }
     }
-    let mut canonical = serde_json::to_vec(&sorted_json(&snapshot))?;
+    let mut canonical = serde_json::to_vec(&sorted_json(snapshot))?;
     canonical.push(b'\n');
     let mut factory = serde_json::from_value::<Factory>(
         json!({"schema":snapshot["schema"],"name":snapshot["name"],"role":role,"roles":role_agents,"handoffs":snapshot["handoffs"],"operator_input":snapshot["operator_input"],"contract_sha256":sha256(contract.as_bytes()),"snapshot_id":sha256(&canonical),"updates":snapshot.get("updates").cloned().unwrap_or(json!([])),"repairs":repairs}),
@@ -426,7 +450,10 @@ pub fn factory_stage(
     }
     let mut coordinators = Vec::new();
     for handoff in factory.handoffs.iter().filter(|h| h.request == "TASK") {
-        let agent = &factory.roles[&handoff.source];
+        let agent = factory
+            .roles
+            .get(&handoff.source)
+            .ok_or("handoff source role does not exist")?;
         if !coordinators.contains(agent) {
             coordinators.push(agent.clone());
         }
@@ -446,18 +473,7 @@ pub fn factory_stage(
         ..Config::default()
     };
     config.validate()?;
-    let baseline = read_text(instructions)?;
-    atomic_write(config_path, &serde_json::to_vec(&config)?, 0o600)?;
-    atomic_write(
-        instructions,
-        format!(
-            "{}\n\n---\n\n{}",
-            baseline.trim_end(),
-            contract.trim_start()
-        )
-        .as_bytes(),
-        0o600,
-    )
+    Ok(config)
 }
 
 pub fn ordinary_stage(
@@ -480,6 +496,14 @@ pub fn ordinary_stage(
 
 pub fn supervised_launcher(path: &Path, harness: &str) -> Result<(), Error> {
     let source = read_text(path)?;
+    atomic_write(
+        path,
+        supervised_launcher_source(&source, harness)?.as_bytes(),
+        fs::metadata(path)?.permissions().mode() & 0o7777,
+    )
+}
+
+pub(crate) fn supervised_launcher_source(source: &str, harness: &str) -> Result<String, Error> {
     let (anchor, replacement) = match harness {
         "codex" => (
             "exec codex \"${args[@]}\" \"$@\"\n",
@@ -494,11 +518,7 @@ pub fn supervised_launcher(path: &Path, harness: &str) -> Result<(), Error> {
     if source.matches(anchor).count() != 1 {
         return Err("cannot locate the harness foreground command".into());
     }
-    atomic_write(
-        path,
-        source.replace(anchor, replacement).as_bytes(),
-        fs::metadata(path)?.permissions().mode() & 0o7777,
-    )
+    Ok(source.replace(anchor, replacement))
 }
 
 fn argument_text(argument: &std::ffi::OsStr) -> Result<&str, Error> {

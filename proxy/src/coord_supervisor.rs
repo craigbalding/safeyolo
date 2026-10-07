@@ -212,12 +212,16 @@ impl Config {
                 return Err("invalid factory role binding".into());
             }
             let mut reserved = BTreeSet::from(["PROTOCOL_WARNING".to_owned()]);
+            let mut incoming = BTreeSet::new();
             for h in &f.handoffs {
                 if !type_name(&h.request)
                     || !f.roles.contains_key(&h.source)
                     || !f.roles.contains_key(&h.destination)
                     || h.responses.is_empty()
                     || h.responses.iter().any(|t| !type_name(t))
+                    || !unique(&h.responses)
+                    || h.source == h.destination
+                    || !incoming.insert((&h.destination, &h.request))
                     || (!h.response_to.is_empty()
                         && (!h.response_to.contains(&h.source)
                             || h.response_to.iter().any(|r| !f.roles.contains_key(r))
@@ -227,6 +231,25 @@ impl Config {
                 }
                 reserved.insert(h.request.clone());
                 reserved.extend(h.responses.iter().cloned());
+            }
+            for role in f.roles.keys() {
+                let requests: BTreeSet<_> = f
+                    .handoffs
+                    .iter()
+                    .filter(|h| &h.destination == role)
+                    .map(|h| &h.request)
+                    .collect();
+                if f.handoffs
+                    .iter()
+                    .filter(|h| {
+                        h.response_to.contains(role)
+                            || h.response_to.is_empty() && &h.source == role
+                    })
+                    .flat_map(|h| &h.responses)
+                    .any(|response| requests.contains(response))
+                {
+                    return Err("Factory role has an ambiguous request/response type".into());
+                }
             }
             if f.operator_input.types.iter().any(|t| reserved.contains(t))
                 || !unique(&f.operator_input.types)
@@ -1265,6 +1288,9 @@ pub async fn run(
         harness_args: args,
         initial_preflight_complete: false,
     };
+    // A fresh, idle Factory also needs a readable checkpoint. Saving the
+    // existing state does not consume attention or create a task.
+    supervisor.state.save(state_path)?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {
@@ -1332,6 +1358,18 @@ pub async fn run(
     }
 }
 
+/// Read-only guest diagnosis uses the same harness and room prerequisites as
+/// the supervisor. The local operator receives no agent authentication bytes.
+pub async fn preflight(config_path: &Path, args: &[OsString]) -> Result<(), Error> {
+    let config = Config::load(config_path)?;
+    preflight::check(&config, args).await?;
+    let client = Client::default();
+    for room in config.rooms.iter().chain(config.agent_room.iter()) {
+        client.call("join_room", &json!({"room_name":room})).await?;
+    }
+    Ok(())
+}
+
 /// Pure release plan for the existing stopped-agent operator recovery caller.
 /// The caller keeps its established stop, lock, confirmation and audit gates.
 pub fn release_preview(value: Value, room: &str, targets: &[String]) -> Result<State, Error> {
@@ -1371,6 +1409,10 @@ pub fn release_preview(value: Value, room: &str, targets: &[String]) -> Result<S
     }
     state.validate()?;
     Ok(state)
+}
+
+pub(crate) fn lock_state(path: &Path) -> Result<fs::File, Error> {
+    process::lock(path)
 }
 
 pub fn inspect(path: &Path) -> Result<Value, Error> {

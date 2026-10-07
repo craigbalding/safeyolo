@@ -100,7 +100,19 @@ for asset in guest-init guest-init-static guest-init-per-run guest-proxy-forward
 done
 cp "$repository/guest/rootfs/safeyolo-sudo" "$directory/assets/guest/guest-sudo"
 cp "$repository/cli/src/safeyolo/launchers/"*.sh "$directory/assets/launchers/"
-cp -R "$repository/cli/src/safeyolo/agent_context/skills" "$directory/assets/"
+mkdir -p "$directory/assets/skills"
+# Ship workflow skills without the optional repository-only Python GitHub
+# checker or its installed instructions.
+tar -C "$repository/cli/src/safeyolo/agent_context/skills" \
+  --exclude='__pycache__' --exclude='*.pyc' \
+  --exclude='safeyolo/scripts/github_checks.py' --exclude='safeyolo/references/github-checks.md' -cf - . | \
+  tar -C "$directory/assets/skills" -xf -
+awk '
+  /^- Read \[GitHub composite checks\]/ { omit = 1; next }
+  omit && /^- / { omit = 0 }
+  !omit { print }
+' "$repository/cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md" \
+  > "$directory/assets/skills/safeyolo/SKILL.md"
 cp -R "$repository/cli/src/safeyolo/services" "$directory/assets/"
 cp "$repository/LICENSE" "$directory/"
 if [[ -d $runtime_artifacts/licenses ]]; then

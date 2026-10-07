@@ -17,6 +17,9 @@ fn input() -> Result<Value, Error> {
 async fn run() -> Result<(), Error> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
+        [kind, rest @ ..] if kind == "repo-map" => {
+            safeyolo_proxy::repo_map::run(rest)?;
+        }
         [kind] if kind == "--version" => println!(
             "safeyolo-coord {} commit={} profile={}",
             env!("CARGO_PKG_VERSION"),
@@ -39,6 +42,15 @@ async fn run() -> Result<(), Error> {
             "{}",
             safeyolo_proxy::coord_supervisor::inspect(&PathBuf::from(path))?
         ),
+        [kind, separator, args @ ..] if kind == "preflight" && separator == "--" => {
+            let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is missing")?);
+            safeyolo_proxy::coord_supervisor::preflight(
+                &home.join(".safeyolo/coord-supervisor.json"),
+                args,
+            )
+            .await?;
+            println!("Guest harness and Coord prerequisites are ready");
+        }
         [kind, path] if kind == "read-state" => println!(
             "{}",
             serde_json::to_string(&safeyolo_proxy::coord_supervisor::State::load(

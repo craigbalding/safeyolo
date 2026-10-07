@@ -2023,6 +2023,7 @@ mod tests {
                 "beta",
                 &[("folder".into(), temp.path().to_string_lossy().into_owned())],
                 true,
+                None,
             )
             .await
             .unwrap();
@@ -2069,6 +2070,7 @@ mod tests {
                     ("launcher".into(), "supervisor".into()),
                 ],
                 true,
+                None,
             )
             .await
             .unwrap();
