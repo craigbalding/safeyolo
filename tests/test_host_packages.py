@@ -94,6 +94,91 @@ def build_bundle(inputs, tmp_path):
     return directory
 
 
+@pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz")])
+def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane):
+    """Run the real preparation caller with controlled preceding tool outputs."""
+    checkout = tmp_path / "source"
+    scripts = checkout / "tests/blackbox"
+    scripts.mkdir(parents=True)
+    shutil.copy2(REPO / "tests/blackbox/run-lane.sh", scripts / "run-lane.sh")
+    (scripts / "installed_host_smoke.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def _installed_rust_binary(cli):\n"
+        "    return Path(os.environ['PREPARE_HOST']) / 'safeyolo-proxy', {}\n"
+    )
+    tools, host, guest, root = (tmp_path / name for name in ("tools", "host", "guest", "root"))
+    for path in (tools, host, guest, checkout / "scripts", checkout / "vm"):
+        path.mkdir(parents=True, exist_ok=True)
+    for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
+        (host / name).touch()
+    (guest / "safeyolo-guest").touch()
+    python = shutil.which("python3")
+    files = {
+        checkout / "install.sh": "#!/bin/sh\nexit 0\n",
+        tools / "uname": f"#!/bin/sh\nprintf '{platform}\\n'\n",
+        tools / "tmux": "#!/bin/sh\nprintf 'tmux fixture\\n'\n",
+        tools / "uv": '#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then printf "%s\\n" "$PREPARE_TOOLS"; fi\n',
+        tools / "python-driver": (
+            '#!/bin/sh\nif [ "$1" = -I ] && [ "$2" = -c ]; then\n'
+            '  printf "verified fixture NATS\\n"\n'
+            f'else exec "{python}" "$@"; fi\n'
+        ),
+        tools / "safeyolo": (
+            f'#!{tools / "python-driver"}\n'
+            "import json,os,sys\nfrom pathlib import Path\n"
+            "if '--check' in sys.argv:\n"
+            "    print(json.dumps({'package_manager':'apt','missing_deps':[]}))\n"
+            "else:\n"
+            "    assert Path(os.environ['SAFEYOLO_CONFIG_DIR'], 'native-inputs.json').is_file()\n"
+        ),
+        tools / "make": (
+            f"#!{python}\nimport pathlib,sys\n"
+            "directory = pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('INSTALL_DIR=')))\n"
+            "directory.mkdir(parents=True)\n"
+            "for name in ['safeyolo-vm','safeyolo-vm.build-info.json','vsock-term','vsock-term.version','vsock-term.sha256']:\n"
+            "    (directory / name).touch()\n"
+            "(directory / 'safeyolo-vm.dSYM').mkdir()\n"
+        ),
+        checkout / "scripts/install_native.sh": (
+            f"#!{python}\nimport json,pathlib,sys\n"
+            "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
+            "assert pathlib.Path(options['--runtime-artifacts'], 'tmux').is_file()\n"
+            "if '--vm-artifacts' in options:\n"
+            "    vm = pathlib.Path(options['--vm-artifacts'])\n"
+            "    assert all((vm / n).exists() for n in ['safeyolo-vm','safeyolo-vm.dSYM','safeyolo-vm.build-info.json','vsock-term.version','vsock-term.sha256'])\n"
+            "root = pathlib.Path(options['--root']); root.mkdir(exist_ok=True)\n"
+            "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
+        ),
+    }
+    for path, content in files.items():
+        path.write_text(content)
+        path.chmod(0o755)
+    # Preserve ordinary shell activation and mise discovery guards. Select
+    # controlled test tools after activation adds the global toolset to PATH.
+    activation = tmp_path / "shell-activation.sh"
+    activation.write_text(
+        'if [ -n "$PREPARE_ORIGINAL_BASH_ENV" ]; then . "$PREPARE_ORIGINAL_BASH_ENV"; fi\n'
+        'export PATH="$PREPARE_TOOLS:$PATH"\n'
+    )
+    monkeypatch.setenv("PREPARE_ORIGINAL_BASH_ENV", os.environ.get("BASH_ENV", ""))
+    monkeypatch.setenv("BASH_ENV", str(activation))
+    for name in ("SAFEYOLO_NATIVE_BUNDLE", "SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS", "SAFEYOLO_NATIVE_VM_ARTIFACTS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+    monkeypatch.setenv("PREPARE_HOST", str(host))
+    monkeypatch.setenv("PREPARE_TOOLS", str(tools))
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(guest / "safeyolo-guest"))
+    result = run(str(scripts / "run-lane.sh"), lane, "--prepare-only", cwd=checkout)
+    assert result.returncode == 0, result.stderr
+    options = json.loads((root / "native-inputs.json").read_text())
+    assert Path(options["--artifacts"]) == host
+    assert Path(options["--guest-artifacts"]) == guest
+    assert Path(options["--runtime-artifacts"]) == tools
+    if platform == "Darwin":
+        assert Path(options["--vm-artifacts"]) == root / "bin"
+
+
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))

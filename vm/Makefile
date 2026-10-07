@@ -97,6 +97,8 @@ install-helper: build
 
 install: install-helper guest-tools
 	install -m 0755 "$(BUILD_DIR)/vsock-term" "$(INSTALL_DIR)/vsock-term"
+	printf 'vsock-term commit=%s\n' "$${SAFEYOLO_BUILD_REVISION:-$$(git rev-parse HEAD)}" > "$(INSTALL_DIR)/vsock-term.version"
+	shasum -a 256 "$(INSTALL_DIR)/vsock-term" | awk '{print $$1}' > "$(INSTALL_DIR)/vsock-term.sha256"
 
 clean:
 	swift package clean

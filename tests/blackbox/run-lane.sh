@@ -95,32 +95,6 @@ fi
 uv sync --frozen --group dev
 export PATH="$(uv tool dir --bin):$REPO_ROOT/.venv/bin:$PATH"
 
-if [ "$PREPARE_ONLY" = true ]; then
-    # The installed Python workflow calls the native lifecycle owner in each
-    # instance. Reuse the native installer for its complete host/guest layout.
-    NATIVE_ARTIFACTS="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[1])
-from installed_host_smoke import _installed_rust_binary
-binary, _ = _installed_rust_binary(sys.argv[2])
-print(binary.parent)
-PY
-)"
-    GUEST_HELPER="${SAFEYOLO_GUEST_HELPER:-${SAFEYOLO_GUEST_TARGET_DIR:-$INSTALL_ROOT/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}release/safeyolo-guest}"
-    if [ -n "${SAFEYOLO_NATIVE_BUNDLE:-}" ]; then
-        "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" --bundle "$SAFEYOLO_NATIVE_BUNDLE"
-    else
-        # Legacy test transport still uses its wheel CLI. Native preparation
-        # needs the ordinary installer's complete checked runtime inputs.
-        NATIVE_INPUTS=(--artifacts "$NATIVE_ARTIFACTS" --guest-artifacts "$(dirname "$GUEST_HELPER")"
-            --runtime-artifacts "${SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS:?set the prepared tmux input directory}")
-        if [ "$(uname -s)" = Darwin ]; then
-            NATIVE_INPUTS+=(--vm-artifacts "${SAFEYOLO_NATIVE_VM_ARTIFACTS:?set the prepared signed VM/guest-terminal input directory}")
-        fi
-        "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" "${NATIVE_INPUTS[@]}"
-    fi
-fi
-
 if [ "$LANE" != "proxy" ]; then
     if [ "$(uname -s)" = "Linux" ]; then
         # Bootstrap owns the package list.  Read its structured preflight and
@@ -185,9 +159,47 @@ PY
     if [ "$LANE" = "vz" ]; then
         # bootstrap builds the guest artifacts; the source install deliberately
         # leaves this host-native Swift helper as an explicit macOS step.
-        make -C "$INSTALL_ROOT/vm" install
+        if [ "$PREPARE_ONLY" = false ]; then
+            make -C "$INSTALL_ROOT/vm" install
+        elif [ -z "${SAFEYOLO_NATIVE_BUNDLE:-}${SAFEYOLO_NATIVE_VM_ARTIFACTS:-}" ]; then
+            make -C "$INSTALL_ROOT/vm" INSTALL_DIR="$SAFEYOLO_CONFIG_DIR/bin" install
+        fi
     fi
+fi
 
+if [ "$PREPARE_ONLY" = true ]; then
+    # Resolve inputs after the lane has prepared its host tools and VM helper,
+    # but before bootstrap creates the instance's configuration.
+    if [ -n "${SAFEYOLO_NATIVE_BUNDLE:-}" ]; then
+        "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" --bundle "$SAFEYOLO_NATIVE_BUNDLE"
+    else
+        NATIVE_ARTIFACTS="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installed_host_smoke import _installed_rust_binary
+binary, _ = _installed_rust_binary(sys.argv[2])
+print(binary.parent)
+PY
+)"
+        GUEST_HELPER="${SAFEYOLO_GUEST_HELPER:-${SAFEYOLO_GUEST_TARGET_DIR:-$INSTALL_ROOT/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}release/safeyolo-guest}"
+        RUNTIME_ARTIFACTS="${SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS:-}"
+        if [ -z "$RUNTIME_ARTIFACTS" ]; then
+            if ! TMUX_BINARY="$(command -v tmux)"; then
+                echo 'ERROR: tmux is missing after host dependency preparation' >&2
+                exit 2
+            fi
+            RUNTIME_ARTIFACTS="$(dirname "$TMUX_BINARY")"
+        fi
+        NATIVE_INPUTS=(--artifacts "$NATIVE_ARTIFACTS" --guest-artifacts "$(dirname "$GUEST_HELPER")"
+            --runtime-artifacts "$RUNTIME_ARTIFACTS")
+        if [ "$(uname -s)" = Darwin ]; then
+            NATIVE_INPUTS+=(--vm-artifacts "${SAFEYOLO_NATIVE_VM_ARTIFACTS:-$SAFEYOLO_CONFIG_DIR/bin}")
+        fi
+        "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" "${NATIVE_INPUTS[@]}"
+    fi
+fi
+
+if [ "$LANE" != "proxy" ]; then
     safeyolo bootstrap --source-checkout "$INSTALL_ROOT"
 fi
 
