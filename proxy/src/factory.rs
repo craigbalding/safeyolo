@@ -476,14 +476,18 @@ fn staged(root: &Path, snapshot: &Snapshot, role_name: &str, role: &Role) -> Res
 fn staged_command(root: &Path, home: &Path, harness: &str) -> Result<(), Error> {
     // Compare the complete launcher emitted by the installed setup script,
     // using the same transformation as setup, rather than shell substrings.
-    let template = String::from_utf8(read(
-        &root.join(format!("assets/contrib/{harness}-host-setup.sh")),
-    )?)?;
-    let source = template
-        .split_once("<<'EOF'\n")
-        .and_then(|(_, body)| body.split_once("\nEOF\n"))
-        .map(|(body, _)| format!("{body}\n"))
-        .ok_or("installed harness launcher template is missing")?;
+    let source = if harness == "codex" {
+        String::from_utf8(read(&root.join("assets/contrib/codex-command.sh"))?)?
+    } else {
+        let template = String::from_utf8(read(
+            &root.join(format!("assets/contrib/{harness}-host-setup.sh")),
+        )?)?;
+        template
+            .split_once("<<'EOF'\n")
+            .and_then(|(_, body)| body.split_once("\nEOF\n"))
+            .map(|(body, _)| format!("{body}\n"))
+            .ok_or("installed harness launcher template is missing")?
+    };
     let expected = coord_setup::supervised_launcher_source(&source, harness)?;
     let entry = home.join(".safeyolo-command");
     let executable = |path: &Path| -> Result<Vec<u8>, Error> {
