@@ -92,8 +92,11 @@ Interactive operator chat automatically resolves the coordinator bound by an
 approved factory snapshot for that room. An explicit target overrides that
 resolution:
 
+On the host, use the [installed native CLI](native-coord.md) for a fresh native
+instance. This example selects `$HOME/.safeyolo-native`.
+
 ```sh
-safeyolo coord chat backlog --to relay
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord chat backlog --to relay
 ```
 
 Without `--to`, a room with no approved factory keeps its room-wide wake

@@ -43,8 +43,9 @@ def package_inputs(tmp_path):
     source = tmp_path / "source"
     scripts = source / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh"):
+    for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
+    shutil.copytree(REPO / "proxy/licenses", source / "proxy/licenses")
     assets = source / "cli/src/safeyolo"
     assets.mkdir(parents=True)
     for name in ("guest-init", "guest-init-static", "guest-init-per-run", "guest-proxy-forwarder", "guest-shell-bridge", "guest-desktop"):
@@ -194,6 +195,12 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         assert not any(name.endswith((".whl", "/dependencies.txt", "/verify.py")) for name in names)
         path, = [name for name in names if name.endswith("/bin/safeyolo-proxy")]
         assert stream.extractfile(path).read() == (package_inputs[1] / "safeyolo-proxy").read_bytes()
+        watcher, = [name for name in names if name.endswith("/bin/watch-backlog-factory")]
+        assert stream.extractfile(watcher).read() == (package_inputs[0] / "scripts/watch_backlog_factory.sh").read_bytes()
+        assert stream.getmember(watcher).mode & 0o111
+        for notice in (package_inputs[0] / "proxy/licenses").iterdir():
+            path, = [name for name in names if name.endswith(f"/assets/licenses/{notice.name}")]
+            assert stream.extractfile(path).read() == notice.read_bytes()
 
 
 @pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source"])

@@ -19,7 +19,7 @@ safeyolo coord dispatch-trigger backlog \
 ```
 
 The command uses the same trusted local operator principal as
-`safeyolo coord chat`; there is no agent-supplied sender identity. It targets
+native `coord chat`; there is no agent-supplied sender identity. It targets
 the registered Relay room member and produces one canonical `TASK` envelope.
 The explicit date is the stable key. The local coord data directory contains a
 locked, atomic outbox with the SafeYolo-minted message and attention IDs. A

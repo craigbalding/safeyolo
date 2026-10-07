@@ -114,6 +114,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         assert "commit=" in installation.stdout and "profile=" in installation.stdout
         assert set(HOST_BINARIES).issubset(path.name for path in (root / "bin").iterdir())
         assert (root / "bin/tmux").is_file() and not (root / ".venv").exists()
+        assert (root / "bin/watch-backlog-factory").stat().st_mode & 0o111
         assert (root / "data/admin_token").stat().st_mode & 0o777 == 0o600
         assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
         if source is not None:
@@ -160,9 +161,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         # The process fixture stops the proxy before these owned copies are
         # removed. Cover installation/startup failures too; retain diagnostics
         # and artifact identity sidecars, not repeated executable copies.
-        for binary in HOST_BINARIES:
+        for binary in (*HOST_BINARIES, "tmux", "watch-backlog-factory"):
             (root / "bin" / binary).unlink(missing_ok=True)
-        (root / "bin/tmux").unlink(missing_ok=True)
         (root / "libexec/tmux").unlink(missing_ok=True)
         for binary in GUEST_BINARIES:
             (root / "assets/guest" / binary).unlink(missing_ok=True)

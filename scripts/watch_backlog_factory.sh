@@ -2,9 +2,7 @@
 # Show the three supervised backlog-factory agent streams in tmux.
 set -euo pipefail
 
-repo=${SAFEYOLO_FACTORY_REPO:-/home/agent/safeyolo-rust-620}
 window_name=${SAFEYOLO_FACTORY_WATCH_WINDOW:-factory-watch}
-viewer="$repo/contrib/watch-agent-room.py"
 nested_root=${SAFEYOLO_FACTORY_INSTANCE_ROOT:-/var/lib/nested-safeyolo-lab}
 
 export SAFEYOLO_CONFIG_DIR=${SAFEYOLO_FACTORY_CONFIG_DIR:-$nested_root/state}
@@ -12,21 +10,24 @@ export SAFEYOLO_LOGS_DIR=${SAFEYOLO_FACTORY_LOGS_DIR:-$nested_root/logs}
 export SAFEYOLO_COORD_DATA_DIR=${SAFEYOLO_FACTORY_COORD_DATA_DIR:-$nested_root/state/coord}
 export SAFEYOLO_UPSTREAM_PROXY=${SAFEYOLO_FACTORY_UPSTREAM_PROXY:-http://127.0.0.1:8080}
 export SAFEYOLO_RUNSC_PLATFORM=${SAFEYOLO_FACTORY_RUNSC_PLATFORM:-systrap}
+repo=${SAFEYOLO_FACTORY_REPO:-$SAFEYOLO_CONFIG_DIR}
+viewer=${SAFEYOLO_FACTORY_CLI:-$SAFEYOLO_CONFIG_DIR/bin/safeyolo}
+native_config=${SAFEYOLO_FACTORY_NATIVE_CONFIG:-$SAFEYOLO_CONFIG_DIR/config.toml}
 
 die() { printf 'watch-backlog-factory: %s\n' "$*" >&2; exit 2; }
 
 [[ -n ${TMUX:-} ]] || die "run this command inside the operator's tmux session"
-[[ -f $viewer ]] || die "viewer not found: $viewer"
-command -v uv >/dev/null 2>&1 || die "uv is required"
+[[ -x $viewer ]] || die "native CLI not found: $viewer; set SAFEYOLO_FACTORY_CLI to the installed safeyolo executable"
+[[ -f $native_config ]] || die "native configuration not found: $native_config"
 
 session=$(tmux display-message -p '#S')
 target="$session:$window_name"
 
-watch_command='room=$1; repo=$2; label=$3
+watch_command='room=$1; viewer=$2; config=$3; label=$4
 printf "Watching %s (%s)\n" "$label" "$room"
 while :; do
-  if uv run --project "$repo" --no-sync python "$repo/contrib/watch-agent-room.py" "$room" --history 1 --once >/dev/null 2>&1; then
-    uv run --project "$repo" --no-sync python "$repo/contrib/watch-agent-room.py" "$room" --history 30 --max-text 600 --show-unknown
+  if "$viewer" --config "$config" coord watch "$room" --history 1 --once >/dev/null 2>&1; then
+    "$viewer" --config "$config" coord watch "$room" --history 30 --max-text 600 --show-unknown
   else
     printf "[%s] waiting for access to existing room %s\n" "$(date -u +%H:%M:%SZ)" "$room"
     sleep 5
@@ -43,7 +44,7 @@ start_pane() {
     SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_COORD_DATA_DIR" \
     SAFEYOLO_UPSTREAM_PROXY="$SAFEYOLO_UPSTREAM_PROXY" \
     SAFEYOLO_RUNSC_PLATFORM="$SAFEYOLO_RUNSC_PLATFORM" \
-    bash -lc "$watch_command" watch-factory "$room" "$repo" "$label"
+    bash -lc "$watch_command" watch-factory "$room" "$viewer" "$native_config" "$label"
 }
 
 case ${1:-start} in

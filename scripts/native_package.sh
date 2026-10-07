@@ -95,6 +95,7 @@ verify_native_package() {
     native_executable "$package/bin/$binary" "$platform" || return
   done
   require_file "$package/bin/tmux" || return
+  require_file "$package/bin/watch-backlog-factory" || return
   native_executable "$package/libexec/tmux" "$platform" || return
   for binary in guest-init guest-init-static guest-init-per-run guest-proxy-forwarder guest-shell-bridge guest-desktop guest-sudo; do
     require_file "$package/assets/guest/$binary" || return
