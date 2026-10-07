@@ -169,7 +169,8 @@ fi
 
 # --- Stage and register the coord MCP server ---------------------------------
 # The shared bootstrap stages the native adapter and preserves harness config.
-if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
+if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ] &&
+   [ "${SAFEYOLO_FACTORY_PREPARE_ONLY:-0}" != "1" ]; then
     "$SCRIPT_DIR/coord-mcp-bootstrap.sh" \
         --home "$AGENT_HOME" \
         --harness codex \

@@ -49,7 +49,7 @@ canonical read, without another mutation.
 attachable terminal. At this component boundary, #817 still owns that operation
 and terminal proof. If it is unavailable, inspect reports the problem and keeps
 the selection. Returning from the terminal or using `back` preserves the target.
-This command does not provision or start a Factory; #820 owns those entries.
+Use the [native Factory entry](factories.md#fresh-setup-check-approve-and-run) to prepare and start a Factory. Inspect reads its approved roles and live state.
 
 ## Direct commands and evidence
 

@@ -46,8 +46,7 @@ triggers = [
 ]
 advice = "Treat the factory TOML, role contracts, staged contract identity, supervisor checkpoint behaviour, and doctor verification as one change boundary. Prefer recovery from Coord/checkpoint state over another queue or task store."
 paths = [
-  "cli/src/safeyolo/factory_contract.py",
-  "cli/src/safeyolo/commands/factory.py",
+  "proxy/src/factory.rs",
   "proxy/src/coord_supervisor.rs",
   "proxy/src/coord_setup.rs",
   "proxy/src/coord_tools.rs",

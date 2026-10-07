@@ -18,6 +18,10 @@ workspaces and mounts, trusted brief when present, repository state, and the
 operator's direction to determine the authorized scope. A brief can refine
 standing priorities or constraints, but the factory does not require a brief.
 
+The native `factory send NAME TEXT` entry delivers that direction to the
+snapshot's operator-input role. `factory history NAME` reads canonical
+envelopes and attention attribution; reading history does not assign work.
+
 Keep repository scope, resource locations, and instance-specific tooling in
 operator direction or the trusted brief. Apply each target repository's own
 instructions and established security requirements when shaping its work; do

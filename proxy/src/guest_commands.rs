@@ -12,7 +12,7 @@ use std::{
 pub const HELPER: &str = "/safeyolo/safeyolo-guest";
 pub const WRAPPER: &[u8] = b"#!/bin/sh\n# SafeYolo configured-command observation\nif [ ! -x /safeyolo/safeyolo-guest ]; then\n    echo 'Required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n    exit 127\nfi\nexec /safeyolo/safeyolo-guest observe exec -- \"$0.payload\" \"$@\"\n";
 
-fn payload_identity(path: &Path) -> Result<Value, Error> {
+pub(crate) fn payload_identity(path: &Path) -> Result<Value, Error> {
     let info = fs::symlink_metadata(path)?;
     if !info.is_file() && !info.file_type().is_symlink() {
         return Err(format!("preserving unrecognized command payload {}", path.display()).into());

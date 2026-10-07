@@ -54,7 +54,16 @@ def package_inputs(tmp_path):
         (assets / name).mkdir(parents=True)
     for name in ("tmux-common", "tmux-window", "tmux-pane"):
         (assets / "launchers" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
-    (assets / "agent_context/skills/safeyolo/SKILL.md").write_text("fixture skill\n")
+    skill = assets / "agent_context/skills/safeyolo"
+    (skill / "scripts/__pycache__").mkdir(parents=True)
+    (skill / "references").mkdir()
+    (skill / "SKILL.md").write_text(
+        "fixture skill\n- Read [GitHub composite checks](references/github-checks.md)\n"
+        "  Optional repository tooling.\n- Keep the next instruction.\n",
+    )
+    (skill / "scripts/github_checks.py").write_text("# optional checker\n")
+    (skill / "scripts/__pycache__/old.pyc").write_bytes(b"old cache")
+    (skill / "references/github-checks.md").write_text("optional checker instructions\n")
     (assets / "repo_map.py").write_text("# Remaining production helper fixture\n")
     (source / "repo-map.toml").write_text("# fixture\n")
     (source / "LICENSE").write_text("fixture project notice\n")
@@ -188,6 +197,10 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
     with tarfile.open(archive) as stream:
         names = stream.getnames()
         assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
+        assert not any(name.endswith(("/github_checks.py", "/github-checks.md", ".pyc")) for name in names)
+        skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
+        assert stream.extractfile(skill_path).read() == b"fixture skill\n- Keep the next instruction.\n"
+        assert any(name.endswith("/assets/repo_map.py") for name in names)
         assert any(name.endswith("/libexec/tmux") for name in names)
         assert any(name.endswith("/assets/licenses/tmux.txt") for name in names)
         assert any(name.endswith("/LICENSE") for name in names)

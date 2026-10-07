@@ -127,6 +127,7 @@ pub(crate) async fn configure(
     name: &str,
     options: &[(String, String)],
     create: bool,
+    factory: Option<(&Path, &str, bool)>,
 ) -> Result<Agent, Error> {
     if !crate::host_platform::valid_agent_name(name) {
         return Err("invalid agent name".into());
@@ -215,7 +216,7 @@ pub(crate) async fn configure(
         if crate::host_runs::observe(name).await["runtime_state"] != "stopped" {
             return Err("stop the agent before applying a host setup script; saved configuration is unchanged".into());
         }
-        crate::host_boot::setup(&agent).await?;
+        crate::host_boot::setup(&agent, factory).await?;
     }
     save_document(&path, &document)?;
     Ok(agent)

@@ -196,7 +196,6 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
 
 def test_factory_agent_rooms_survive_restart_and_reject_observer_send(attention_env):
     """Retain a factory handoff and keep private rooms receive-only for observers."""
-    from safeyolo.commands.factory import _ensure_factory_rooms
 
     roles = {
         "relay": "ag-11111111111111111111111111111111",
@@ -206,7 +205,16 @@ def test_factory_agent_rooms_survive_restart_and_reject_observer_send(attention_
     observer = "ag-44444444444444444444444444444444"
     for name, agent_id in (*roles.items(), ("qa", observer)):
         save_agent(name, {"agent_id": agent_id})
-    _ensure_factory_rooms("factory-boundary", iter(roles))
+    async def provision() -> None:
+        await api.create_room("factory-boundary")
+        _grant("factory-boundary", "operator", "operator")
+        for name, agent_id in roles.items():
+            _grant("factory-boundary", "agent", agent_id)
+            await api.create_room(f"{name}-agent")
+            _grant(f"{name}-agent", "operator", "operator")
+            _grant(f"{name}-agent", "agent", agent_id)
+
+    asyncio.run(provision())
     for name in roles:
         _grant(f"{name}-agent", "agent", observer, ["receive"])
 

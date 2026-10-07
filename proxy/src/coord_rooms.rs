@@ -704,3 +704,71 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
+
+// Factory uses the same room and membership tables as all Coord callers.
+pub(crate) async fn ensure_factory_rooms(
+    config: &Path,
+    room: &str,
+    agents: &[String],
+) -> Result<(), Error> {
+    let root = config.parent().ok_or("native root is missing")?;
+    let mut rooms = vec![room.to_owned()];
+    rooms.extend(agents.iter().map(|agent| format!("{agent}-agent")));
+    for name in rooms {
+        let exists: bool = open(root)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM rooms WHERE name=?1)",
+            [&name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            create_room(root, &name).await?;
+        }
+        let mut connection = open(root)?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let id: String =
+            transaction.query_row("SELECT room_id FROM rooms WHERE name=?1", [&name], |row| {
+                row.get(0)
+            })?;
+        let current:Option<String>=transaction.query_row("SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind='operator' AND principal_id='operator' AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",[&id],|row|row.get(0)).optional()?;
+        if !current.as_deref().is_some_and(|permissions| {
+            ["send", "receive"].iter().all(|required| {
+                permissions
+                    .split(',')
+                    .any(|permission| permission == *required)
+            })
+        }) {
+            let latest:Option<i64>=transaction.query_row("SELECT MAX(granted_at) FROM memberships WHERE room_id=?1 AND principal_kind='operator' AND principal_id='operator'",[&id],|row|row.get(0))?;
+            transaction.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES(?1,'operator','operator','receive,send',?2)",params![id,now().max(latest.unwrap_or(0)+1)])?;
+        }
+        transaction.commit()?;
+        for agent in agents
+            .iter()
+            .filter(|agent| name == room || name == format!("{agent}-agent"))
+        {
+            grant(config, &name, agent, &[], false)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn factory_access(root: &Path, room: &str, agent_id: &str) -> Result<(), Error> {
+    let connection = open(root)?;
+    let room_id: String = connection
+        .query_row("SELECT room_id FROM rooms WHERE name=?1", [room], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("room {room}: {error}"))?;
+    for (kind, id) in [("operator", "operator"), ("agent", agent_id)] {
+        let permissions:Option<String>=connection.query_row("SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind=?2 AND principal_id=?3 AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",params![room_id,kind,id],|row|row.get(0)).optional()?;
+        for required in ["send", "receive"] {
+            if !permissions
+                .as_deref()
+                .is_some_and(|p| p.split(',').any(|p| p == required))
+            {
+                return Err(format!("room {room}: {kind} {id} missing {required} permission; factory prepare repairs declared grants after stopping roles").into());
+            }
+        }
+    }
+    Ok(())
+}
