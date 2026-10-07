@@ -396,6 +396,7 @@ async fn chat(
         let receiving = client.clone();
         let receiving_room = room.clone();
         let receiver = handle.spawn(async move {
+            let printing_cancel = cancellation.clone();
             let result = receive(
                 &receiving,
                 &receiving_room,
@@ -412,6 +413,11 @@ async fn chat(
                 },
             )
             .await;
+            if *printing_cancel.borrow() {
+                // Dropping the editor releases a printer blocked on its
+                // reader. That disconnect is intentional during shutdown.
+                return Ok(());
+            }
             if let Err(error) = &result {
                 let _ = notices.print(format!(
                     "receive stopped: {}; reattach after repairing room access",
@@ -480,6 +486,10 @@ async fn chat(
             Ok(())
         })();
         cancel.send_replace(true);
+        // The external printer can be blocked on its one-slot channel while
+        // readline finishes from queued quit/EOF input. Release the reader
+        // before joining the receiving task so cancellation can complete.
+        drop(editor);
         let received = handle.block_on(receiver)?;
         handle.block_on(client.shutdown());
         result?;

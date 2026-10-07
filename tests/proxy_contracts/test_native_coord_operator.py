@@ -210,6 +210,38 @@ def test_pty_draft_receive_unknown_count_and_later_send(instance):
     assert all(m["attention_intent"]["mode"] == "targeted" for m in operator)
 
 
+@pytest.mark.parametrize("exit_input", [b":q\r", b"\x04", b"\x03"], ids=["quit", "eof", "interrupt"])
+def test_pty_queued_arrivals_exit_without_another_message(instance, exit_input):
+    before = asyncio.run(stream_control(instance))
+    messages = [f"queued arrival {index}" for index in range(3)]
+    with terminal(instance) as (process, fd, until):
+        until(b"op> ")
+        # A bracketed paste keeps readline in its raw input reader while
+        # arrivals fill the external-printer channel. Ending the empty paste
+        # and quitting in one write makes terminal input ready before that
+        # channel is consumed. No product failure seam or extra message is used.
+        os.write(fd, b"\x1b[200~")
+        for message in messages:
+            agent_send(instance, message)
+        # Allow the receiver to reach its blocked send while paste is open;
+        # this is a fixture scheduling window, not a product timeout.
+        time.sleep(0.15)
+        os.write(fd, b"\x1b[201~" + exit_input)
+        process.wait(timeout=5)
+        assert process.returncode == 0
+        output = bytearray()
+        while select.select([fd], [], [], 0)[0]:
+            try:
+                output.extend(os.read(fd, 65536))
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                break
+        assert b"receive stopped:" not in output
+    assert [message["body"] for message in history(instance)] == messages
+    assert asyncio.run(stream_control(instance)) == before + len(messages)
+
+
 def test_clipboard_editor_confirmation_and_cancellation(instance):
     instance.environment["PATH"] += ":/usr/bin:/bin"
     clipboard = instance.root / "bin/pbpaste"
