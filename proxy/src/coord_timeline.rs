@@ -570,11 +570,20 @@ impl Display {
         });
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         let text = if let Some(limit) = self.max_text.filter(|l| text.chars().count() > *l) {
+            // Preserve the existing oversize provenance marker even when the
+            // operator selects a short event summary.
+            let (detail, marker) = text
+                .rsplit_once(" [middle snipped;")
+                .map(|(detail, marker)| (detail, format!(" [middle snipped;{marker}")))
+                .unwrap_or((&text, String::new()));
+            let count = limit.saturating_sub(marker.chars().count()).max(1);
             format!(
-                "{}…",
-                text.chars()
-                    .take(limit.saturating_sub(1))
-                    .collect::<String>()
+                "{}…{}",
+                detail
+                    .chars()
+                    .take(count.saturating_sub(1))
+                    .collect::<String>(),
+                marker
             )
         } else {
             text

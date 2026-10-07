@@ -523,7 +523,7 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
     let lock = directory(root)?.join("rooms.lock");
     let _lock =
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock)).await??;
-    let connection = open(root)?;
+    let mut connection = open(root)?;
     if connection
         .query_row("SELECT room_id FROM rooms WHERE name=?1", [name], |r| {
             r.get::<_, String>(0)
@@ -549,10 +549,22 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
         ..Config::default()
     })
     .await?;
-    if let Err(error) = connection.execute(
-        "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
-        params![id, name, now()],
-    ) {
+    // Match the existing operator room-create command: the creating host
+    // operator can send and receive. Register the room and its operator grant
+    // together; a failed grant must not leave an unusable room behind.
+    let registered = (|| -> rusqlite::Result<()> {
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
+            params![id, name, now()],
+        )?;
+        transaction.execute(
+            "INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES (?1,'operator','operator','send,receive',?2)",
+            params![id, now()],
+        )?;
+        transaction.commit()
+    })();
+    if let Err(error) = registered {
         js.delete_stream(stream).await.map_err(|cleanup| {
             format!("room registration failed ({error}); owned stream cleanup failed ({cleanup})")
         })?;

@@ -10,6 +10,7 @@ observation is bounded to the existing 10-second chat fixture deadline.
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import hashlib
 import json
@@ -124,7 +125,14 @@ def terminal(instance):
         deadline = time.monotonic() + timeout
         while marker not in buffer and time.monotonic() < deadline:
             if select.select([master], [], [], 0.1)[0]:
-                buffer.extend(os.read(master, 65536))
+                try:
+                    buffer.extend(os.read(master, 65536))
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    # Linux reports EIO when the PTY slave has closed. Expose
+                    # captured diagnostics instead of losing the failure.
+                    raise AssertionError(bytes(buffer)) from None
             assert process.poll() is None, bytes(buffer)
         assert marker in buffer, bytes(buffer)
         captured = bytes(buffer)
@@ -263,7 +271,7 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
         for pane in panes.stdout.splitlines():
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
-                captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", pane], env=env,
+                captured = subprocess.run([tmux, "-L", session, "capture-pane", "-J", "-p", "-t", pane], env=env,
                                           capture_output=True, text=True, check=True).stdout
                 if "completed command rc=0 printf marker" in captured:
                     break

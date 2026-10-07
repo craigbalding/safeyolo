@@ -486,8 +486,11 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             if line.is_empty() {
                 continue;
             }
-            let event: Value = serde_json::from_str(&line)?;
-            let message = json!({"sender_kind":"agent","sender_agent_name":"reviewer","body":event.to_string()});
+            if serde_json::from_str::<Value>(&line).is_err() {
+                eprintln!("coord watch: invalid JSONL event; continuing with the next line");
+                continue;
+            }
+            let message = json!({"sent_at":time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,"sender_kind":"agent","sender_agent_name":"reviewer","body":line});
             print!("{}", options.display.message(&message));
         }
         return Ok(());

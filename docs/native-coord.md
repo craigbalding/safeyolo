@@ -91,7 +91,8 @@ Only the test driver uses Python. For the required Ubuntu systrap observation,
 `tests/nested-linux/operator_coord_acceptance.py` uses an already running
 disposable installed proxy and guest. Supply their root, guest name and exact
 commit with `--root`, `--agent` and `--commit`. It observes native guest
-send/read, exact operator/agent attribution and the room timeline, then stops
+send/read, guest arrival during a PTY draft, exact operator/agent attribution
+and the room timeline, then stops
 that guest, proxy and Coord. It needs the matching native guest helper staged
 at `/home/agent/.safeyolo/safeyolo-coord`. A host-only probe does not prove that
 guest boundary.
