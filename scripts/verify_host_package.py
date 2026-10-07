@@ -94,8 +94,8 @@ def verify_wheel(wheel: Path, native: dict) -> None:
 def verify_helper(directory: Path, native: dict) -> None:
     helper = native["helper"]
     subprocess.run(
-        [sys.executable, str(directory / "build-info.py"), "verify", "--profile", helper["profile"],
-         str(directory / "safeyolo-vm")], check=True, timeout=60,
+        [str(directory / "safeyolo-vm"), "verify", "--profile", helper["profile"],
+         "--source", native["commit"]], check=True, timeout=60,
     )
     actual = json.loads(subprocess.check_output(
         [str(directory / "safeyolo-vm"), "--version", "--json"], text=True, timeout=15,

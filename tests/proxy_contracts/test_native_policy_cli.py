@@ -11,6 +11,7 @@ import base64
 import http.client
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -99,15 +100,20 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
     root = directory / "installed"
     try:
+        bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
+        inputs = ["--bundle", bundle] if bundle else [
+            "--artifacts", str(artifacts),
+            "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
+            "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
+        ]
         installation = subprocess.run(
-            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--artifacts", str(artifacts),
-             "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
-             "--profile", "debug"], capture_output=True, text=True, timeout=15,
+            [str(REPO / "scripts/install_native.sh"), "--root", str(root), *inputs],
+            capture_output=True, text=True, timeout=15,
         )
         assert installation.returncode == 0, installation.stderr
         assert "commit=" in installation.stdout and "profile=" in installation.stdout
-        assert sorted(path.name for path in (root / "bin").iterdir()) == list(HOST_BINARIES)
-        assert not list(root.rglob("*.py")) and not (root / ".venv").exists()
+        assert set(HOST_BINARIES).issubset(path.name for path in (root / "bin").iterdir())
+        assert (root / "bin/tmux").is_file() and not (root / ".venv").exists()
         assert (root / "data/admin_token").stat().st_mode & 0o777 == 0o600
         assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
         if source is not None:

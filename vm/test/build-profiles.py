@@ -33,6 +33,7 @@ def main() -> None:
         assert identity["hardened_runtime"] is True, identity
         assert identity["architecture"] == "arm64", identity
         assert len(identity["git_sha"]) == 40, identity
+        assert "Verified" in run(str(binary), "verify", "--profile", profile, "--source", identity["git_sha"])
         assert identity["swift_compiler"] != "unknown", identity
         assert uuid(binary) == uuid(Path(str(binary) + ".dSYM"))
         print(f"PASS {profile}: signing posture, embedded identity, matching dSYM")
@@ -48,7 +49,7 @@ def main() -> None:
         assert observed["build_profile"] == "production"
         assert observed["get_task_allow"] is True
         check = subprocess.run([
-            sys.executable, str(VM / "build-info.py"), "verify", "--profile", "production", str(candidate),
+            str(candidate), "verify", "--profile", "production", "--source", observed["git_sha"],
         ], capture_output=True, text=True, timeout=30)
         assert check.returncode != 0, check.stdout
         assert "unexpected entitlements" in check.stderr, check.stderr

@@ -201,6 +201,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});
     crate::guest_commands::stage(&home, &share, &root.join("assets/guest"), context.clone())?;
+    stage_skills(&root.join("assets/skills"), &share).await?;
     for name in ["agent_token", "authorized_keys"] {
         let source = if name == "agent_token" {
             crate::native_config::read(&crate::host_platform::config_path())?
@@ -293,6 +294,67 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
     }
     Ok(context)
+}
+
+async fn stage_skills(source: &Path, share: &Path) -> Result<(), Error> {
+    if !source.join("safeyolo/SKILL.md").is_file() {
+        return Err(format!(
+            "installed SafeYolo skills are missing: {}",
+            source.display()
+        )
+        .into());
+    }
+    // Replace the stopped guest's whole skill tree so removed files cannot
+    // survive an artifact refresh. Keep the prior tree if staging fails.
+    let temporary = tempfile::TempDir::new_in(share)?;
+    let staged = temporary.path().join("skills");
+    let copied = tokio::process::Command::new("cp")
+        .arg("-R")
+        .arg(source)
+        .arg(&staged)
+        .status()
+        .await?;
+    if !copied.success() {
+        return Err("could not stage installed SafeYolo skills; prior skills remain intact".into());
+    }
+    let destination = share.join("skills");
+    let backup = temporary.path().join("previous");
+    let previous = destination.try_exists()?;
+    if previous {
+        fs::rename(&destination, &backup)?;
+    }
+    if let Err(error) = fs::rename(&staged, &destination) {
+        if previous {
+            fs::rename(&backup, &destination)?;
+        }
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn installed_skills_replace_stale_files_and_survive_missing_input() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("assets/skills");
+        let share = fixture.path().join("share");
+        fs::create_dir_all(source.join("safeyolo")).unwrap();
+        fs::create_dir_all(share.join("skills")).unwrap();
+        fs::write(source.join("safeyolo/SKILL.md"), "installed skill").unwrap();
+        fs::write(share.join("skills/retired.py"), "old input").unwrap();
+        stage_skills(&source, &share).await.unwrap();
+        assert!(!share.join("skills/retired.py").exists());
+        assert_eq!(
+            fs::read_to_string(share.join("skills/safeyolo/SKILL.md")).unwrap(),
+            "installed skill"
+        );
+        fs::remove_file(source.join("safeyolo/SKILL.md")).unwrap();
+        assert!(stage_skills(&source, &share).await.is_err());
+        assert!(share.join("skills/safeyolo/SKILL.md").is_file());
+    }
 }
 
 #[cfg(target_os = "linux")]

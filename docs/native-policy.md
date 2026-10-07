@@ -1,42 +1,56 @@
 # Native agents and policy commands
 
 The native CLI validates, displays and applies host-centred policy through the
-existing native proxy. Use a fresh instance directory. These commands also
-validate runtime settings and format, write, declare, read and clear test context.
-The installed CLI also configures agents, controls their lifecycle and opens
-terminals. Final release packages remain separate work.
+existing native proxy. It also configures agents, controls their lifecycle,
+opens terminals and reads operator evidence. Native bundles extend the same
+installation layout. Final release and whole-product Python removal remain open.
 
 ## Install and start
 
-On supported Ubuntu, run the following command as your ordinary host account
-from the repository checkout. The source installation requires Bash and Rust
-1.94. The directory `$HOME/.safeyolo-native` must have no existing instance
-configuration or tokens. Installation builds the production CLI, proxy, native Coord executable and
-Linux guest command helper. It installs the host executables in `bin`, stages
-the guest helper and boot scripts in `assets/guest`, and creates `config.toml`, `policy.toml`, a private
-operator token, a separate private Agent API token, a durable instance identity,
-and separate runtime and log directories.
+On supported Ubuntu or Apple Silicon macOS, use your ordinary host account.
+Obtain a native bundle for your host from the source build below. Public release
+publication is stopped; existing wheel downloads are earlier packages.
+A bundle's `package-info` records its source, profile, platform and actual
+minimum glibc or macOS version. Unpacking and installation need Bash, tar and
+the host's SHA-256 tool. They need no compiler, Python, wheel, virtual
+environment or uv tool installation.
+
+This Ubuntu example uses an arm64 production archive in your current directory.
+On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
+The instance directory `$HOME/.safeyolo-native` must be absent or empty.
+Installation checks bundle checksums and executable identities, then creates
+configuration, trust, private tokens and runtime directories internally.
+There is no separate init, build or setup command after unpacking.
 
 ```sh
-./scripts/install_native.sh --root "$HOME/.safeyolo-native"
+tar -xzf safeyolo-linux-arm64-production.tar.gz
+./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo-native"
 ```
 
-The installer prints the full source commit and build profile. If matching
-native host binaries are already built, supply their directory with `--artifacts`
-and the Linux guest artifact directory with `--guest-artifacts`. The latter must
-contain `safeyolo-guest`, `safeyolo-guest.version` and `safeyolo-guest.sha256`
-from `scripts/build_guest_command.sh`, with the same source commit and profile.
-Installation verifies and copies those binaries without compiling. The installed
-commands use neither Python nor source-checkout imports.
+The installer prints the full source commit and build profile. Host executables
+are in `bin`, with the private tmux executable in `libexec` and its non-system
+libraries in `lib`. Guest helpers and boot scripts are in `assets/guest`;
+launchers, skills, host scripts and service definitions are under `assets`.
+macOS bundles also contain the signed VM helper, metadata and symbols, and the
+Linux terminal helper. This package/install/start path uses no first-party
+Python execution. Remaining helper and workflow dependencies are listed in the
+[entry responsibility map](native-settings.md#operator-entry-responsibilities).
 
-The generated policy retains the existing wildcard network allowance, credential
-approval prompt, global budget of 12,000 requests per minute and host rate of 600.
-Edit `policy.toml` to select the policy for your agent listeners.
+Before startup, make curl and tar available and permit the configured network
+route to acquire the pinned NATS runtime. Native Coord verifies the archive,
+binary and instance ownership. Its existing `coord start --binary PATH` option
+can supply the same pinned executable when acquisition is unavailable.
 
-Before startup, edit `config.toml` to select the Admin API port and the trusted
-agent listeners. Relative paths belong to this configuration directory. An
-agent name on a listener supplies host-owned identity; a request header cannot
-replace that identity. For two host-owned test listeners, the configuration is:
+The generated policy retains the existing wildcard network allowance,
+credential approval prompt, global budget of 12,000 requests per minute and
+host rate of 600. Edit `policy.toml` to select policy for your agent listeners.
+
+If you need different endpoints, edit `config.toml` before startup. Relative
+paths belong to this configuration directory. The default Admin API port is
+9090; its listener binds IPv4 loopback and requires `data/admin_token`.
+Keep that token on the host. The following optional configuration illustrates
+two host-owned test listeners. An agent name supplies trusted identity;
+a request header cannot replace it.
 
 ```toml
 admin_port = 9090
@@ -53,21 +67,66 @@ source_id = "10.0.0.3"
 ```
 
 The `source_id` values are host-owned declaration slots for these test listeners.
-The Admin API binds IPv4 loopback and requires the token in `data/admin_token`.
-Keep that token on the host. Check the configuration, then start and inspect
-the proxy from a host terminal:
+From a host terminal, check the configuration and start the selected instance:
 
 ```sh
 "$HOME/.safeyolo-native/bin/safeyolo" config check "$HOME/.safeyolo-native/config.toml"
 "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" start
 "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" status
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" doctor
+"$HOME/.safeyolo-native/bin/safeyolo" --version
 ```
 
-The proxy runs in the background. An occupied endpoint or unreadable input
-produces a startup error and points to `logs/proxy.log`. `status` and `doctor`
-report proxy health separately from each agent's runtime, control, command and
-terminal state. These observations remain available when the Admin API is down.
-The top-level `stop` command stops the proxy; stop each agent separately.
+Startup runs the proxy in the background. Status reports `proxy_state` as
+`running`; version prints the installed source and profile. Status and doctor
+report the proxy process separately from each agent's runtime, control, command
+and terminal state. These observations remain available when the Admin API is
+down. An occupied endpoint or unreadable input fails startup and points to
+`logs/proxy.log`. Resolve that named cause before repeating start.
+
+When you finish using the instance, stop its proxy and owned Coord runtime.
+Stop each agent separately; the top-level command leaves its sandbox intact.
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" stop
+```
+
+### Build a native bundle
+
+From a clean committed checkout on the target host, use Bash and the Rust
+toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
+ldd. macOS needs Command Line Tools and a signed VM helper build. Prepared
+runtime inputs contain the native `tmux` executable for this host. The assembler
+copies its resolved non-system libraries. This Ubuntu example selects
+`/usr/bin/tmux`, so `/usr/bin` is the runtime input directory.
+
+```sh
+./scripts/build_host_packages.sh --output "$HOME/native-packages" --runtime-artifacts /usr/bin
+```
+
+The command builds the three host executables and matching Linux guest helpers,
+then writes one production archive. Use `--profile debug` for the debug profile.
+If matching binaries already exist, supply `--artifacts HOST_DIRECTORY` and
+`--guest-artifacts LINUX_DIRECTORY`. Each guest executable requires its
+`.version` and `.sha256` receipt from `scripts/build_guest_command.sh`.
+Host and guest source/profile identities must match the clean checkout.
+
+On macOS, also supply `--vm-artifacts DIRECTORY`. Build the signed helper with
+`make -C vm build`, then stage `safeyolo-vm`, its `.dSYM` and build-info JSON,
+and the prepared Linux `vsock-term` executable in that directory. The terminal
+helper's `.version` receipt is `vsock-term commit=FULL_SOURCE_COMMIT`; its
+`.sha256` receipt contains the built executable's SHA-256. Supply matching
+arm64 Linux guest artifacts with `--guest-artifacts`; cross-building their
+Rust target needs an explicitly prepared Linux cross toolchain. The assembler
+verifies the helper's signing posture and source before packaging. Artifact
+rebuilding is a developer operation, separate from ordinary installation.
+
+Source installation runs the same assembler and installer without retaining an
+archive. On Ubuntu with the inputs above:
+
+```sh
+./scripts/install_native.sh --root "$HOME/.safeyolo-native" --runtime-artifacts /usr/bin
+```
 
 ## Configure and use an agent
 
@@ -78,6 +137,10 @@ starting a sandbox, also install the platform's guest images: Ubuntu uses
 `share/rootfs-base.ext4`. Ubuntu needs the maintained runsc and user-namespace
 setup. macOS needs the installed `bin/safeyolo-vm` and `bin/vsock-term` helpers.
 See the [guest build instructions](../guest/README.md) for these prerequisites.
+Supply their directory with `install.sh --root ROOT --platform-assets DIRECTORY`
+at the fresh installation step. macOS copies the three image files with APFS
+clones. Ubuntu links the prepared `rootfs-tree`, preserving its sandbox ownership;
+keep that shared tree available and immutable for the instance's lifetime.
 
 In this example, `$HOME/work` is an existing directory owned by your account.
 The command runs an interactive shell in the guest, using your current terminal:

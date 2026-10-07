@@ -83,4 +83,35 @@ enum BuildIdentity {
             print(summary)
         }
     }
+
+    /// Check both the signed bytes and this process's effective signing flags.
+    static func verify(profile: String, source: String) throws {
+        func require(_ condition: Bool, _ message: String) throws {
+            if !condition { throw NSError(domain: "SafeYoloBuild", code: 1,
+                                          userInfo: [NSLocalizedDescriptionKey: message]) }
+        }
+        try require(profile == "production" || profile == "development", "unknown helper profile")
+        var code: SecStaticCode?
+        let url = URL(fileURLWithPath: CommandLine.arguments[0]) as CFURL
+        try require(SecStaticCodeCreateWithPath(url, [], &code) == errSecSuccess,
+                    "cannot inspect helper signature")
+        guard let code else { throw NSError(domain: "SafeYoloBuild", code: 1) }
+        try require(SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), nil) == errSecSuccess,
+                    "helper signature verification failed")
+        var signingInfo: CFDictionary?
+        try require(SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
+                    "cannot read helper entitlements")
+        let info = signingInfo as? [String: Any]
+        let entitlements = info?[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
+        var expected: [String: Bool] = ["com.apple.security.virtualization": true]
+        if profile == "development" { expected["com.apple.security.get-task-allow"] = true }
+        try require(NSDictionary(dictionary: entitlements ?? [:]).isEqual(to: expected),
+                    "helper signature has unexpected entitlements")
+        try require(current["build_profile"] as? String == profile, "embedded helper profile differs")
+        try require(current["git_sha"] as? String == source, "helper source differs")
+        try require(current["get_task_allow"] as? Bool == (profile == "development"),
+                    "running helper debug posture differs")
+        try require(current["hardened_runtime"] as? Bool == true, "helper must retain hardened runtime")
+        print("Verified \(profile) VM helper: \(source)")
+    }
 }
