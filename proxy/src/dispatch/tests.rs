@@ -143,14 +143,40 @@ fn liquid_copy_generates_and_checks_without_restricting_authored_examples() {
     .unwrap();
     let generated = checked_files(&value);
     assert_eq!(generated.len(), 2);
-    for file in &generated {
-        assert!(file.content.contains("{{ '{{' }} 17 | plus: 4 }}"));
-        assert!(file.content.contains("{{ '{%' }} endraw %}"));
+    for (file, labels) in generated.iter().zip([
+        &[
+            "Theme",
+            "Title",
+            "Body liquid",
+            "Definition",
+            "Evidence",
+            "Lesson",
+        ][..],
+        &[
+            "Topic",
+            "Summary liquid",
+            "Definition",
+            "State",
+            "Topic evidence",
+        ][..],
+    ]) {
+        for label in labels {
+            let expected = format!(
+                "{label} {}",
+                r"{{ '{{' }} 17 \| plus: 4 }} {{ '{%' }} endraw %}"
+            );
+            assert!(file.content.contains(&expected));
+        }
     }
     assert!(
         generated[0]
             .content
-            .contains("{{ '{{' }}- 17 | plus: 4 -}}")
+            .contains("{{ '{{' }}- 17 \\| plus: 4 -}}")
+    );
+    assert!(
+        generated[0]
+            .content
+            .contains("Snippet {{ '{{' }} 17 | plus: 4 }}")
     );
     assert!(generated[0].content.contains("after [example](missing)"));
 }

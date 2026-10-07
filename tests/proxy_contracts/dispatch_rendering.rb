@@ -68,6 +68,7 @@ Dir.mktmpdir("dispatch-rendering-") do |temporary|
       raise "literal copy changed: #{expected}" unless text.include?(expected)
     end
     raise "editorial link became active" if html.include?('href="a"') || html.include?('href="missing"')
+    raise "public evidence link changed" unless html.include?('href="https://github.com/craigbalding/safeyolo/issues/437"')
   end
   _, dispatch = visible.call("dispatch/2026-08-29/index.html")
   ["[a](a)", "{{- 17 | plus: 4 -}}", "{{ '{{' }}", "{% include missing %}",

@@ -185,10 +185,16 @@ def test_installed_inert_generation_and_site_consumers(dispatch_instance, tmp_pa
     assert current.returncode == 0, current.stderr
     checked = instance.cli("dispatch", "check-site", "--site-root", str(root))
     assert checked.returncode == 0, checked.stderr
-    for relative in ("dispatch/2026-08-29.md", "topics/literal-copy.md"):
+    for relative, labels in (
+        ("dispatch/2026-08-29.md", ("Theme", "Title", "Body liquid", "Definition", "Evidence", "Lesson")),
+        ("topics/literal-copy.md", ("Topic", "Summary liquid", "Definition", "State", "Topic evidence")),
+    ):
         page = (root / relative).read_text()
-        assert "{{ '{{' }} 17 | plus: 4 }}" in page
-        assert "{{ '{%' }} endraw %}" in page
+        for label in labels:
+            assert label + " {{ '{{' }} 17 \\| plus: 4 }} {{ '{%' }} endraw %}" in page
+    dispatch = (root / "dispatch/2026-08-29.md").read_text()
+    assert "Snippet {{ '{{' }} 17 | plus: 4 }}" in dispatch
+    assert "after [example](missing)" in dispatch
     original = "---\nlayout: default\npermalink: /\n---\n"
     index = root / "index.md"
     for link in ("[Missing](/not-present/)", "[Private](https://localhost/status)"):
