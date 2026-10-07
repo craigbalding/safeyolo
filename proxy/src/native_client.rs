@@ -34,6 +34,11 @@ where
     let (mut client, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
     let driver = Connection(tokio::spawn(connection));
+    let bytes = if method == Method::GET && body.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&body)?
+    };
     let request = Request::builder()
         .method(method)
         .uri(path)
@@ -41,7 +46,7 @@ where
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .header("connection", "close")
-        .body(Full::new(Bytes::from(serde_json::to_vec(&body)?)))?;
+        .body(Full::new(Bytes::from(bytes)))?;
     let response = client.send_request(request).await?;
     Ok((response, driver))
 }
@@ -171,6 +176,125 @@ where
     tokio::time::timeout(timeout, async {
         let (response, _connection) = send(socket, host, path, token, method, body).await?;
         json(response).await
+    })
+    .await?
+}
+
+/// Host REST requests use the configured HTTPS proxy and the same native TLS
+/// trust loader as upstream connections. No redirects or automatic retries:
+/// callers own uncertain-write reconciliation. Credentials are header-only.
+pub(crate) async fn https_json(
+    url: &str,
+    token: &str,
+    method: Method,
+    body: Value,
+) -> Result<Value, Error> {
+    use rustls::pki_types::ServerName;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let uri: hyper::Uri = url.parse()?;
+    if uri.scheme_str() != Some("https") || uri.authority().is_none_or(|a| a.as_str().contains('@'))
+    {
+        return Err("REST destination must be HTTPS without credentials".into());
+    }
+    let host = uri
+        .host()
+        .ok_or("REST destination has no host")?
+        .trim_matches(['[', ']'])
+        .to_owned();
+    let authority = uri
+        .authority()
+        .ok_or("REST destination has no authority")?
+        .as_str()
+        .to_owned();
+    let path = uri.path_and_query().map_or("/", |p| p.as_str());
+    let ca = std::env::var_os("SSL_CERT_FILE").or_else(|| std::env::var_os("REQUESTS_CA_BUNDLE"));
+    let tls = crate::http::client_tls(ca.as_deref().map(Path::new))?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+            .into_iter()
+            .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
+        let socket: crate::tunnels::BoxStream = if let Some(proxy) = proxy {
+            let proxy: hyper::Uri = proxy.parse()?;
+            let route = proxy.authority().ok_or("invalid HTTPS proxy route")?;
+            let (credentials, route) = route
+                .as_str()
+                .rsplit_once('@')
+                .map_or((None, route.as_str()), |(c, r)| (Some(c), r));
+            let route: hyper::http::uri::Authority = route.parse()?;
+            let proxy_host = route.host().trim_matches(['[', ']']).to_owned();
+            let encrypted = match proxy.scheme_str() {
+                Some("http") => false,
+                Some("https") => true,
+                _ => return Err("HTTPS proxy route must use HTTP or HTTPS".into()),
+            };
+            let stream = tokio::net::TcpStream::connect((
+                proxy_host.as_str(),
+                route.port_u16().unwrap_or(if encrypted { 443 } else { 80 }),
+            ))
+            .await?;
+            let mut stream: crate::tunnels::BoxStream = if encrypted {
+                Box::new(
+                    tokio_rustls::TlsConnector::from(tls.clone())
+                        .connect(ServerName::try_from(proxy_host)?, stream)
+                        .await?,
+                )
+            } else {
+                Box::new(stream)
+            };
+            let destination = if uri.port_u16().is_some() {
+                authority.clone()
+            } else {
+                format!("{authority}:443")
+            };
+            let mut request = Zeroizing::new(format!(
+                "CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n"
+            ));
+            if let Some(credentials) = credentials {
+                use base64::Engine;
+                let decoded = percent_encoding::percent_decode_str(credentials).decode_utf8()?;
+                request.push_str(&format!(
+                    "Proxy-Authorization: Basic {}\r\n",
+                    base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes())
+                ));
+            }
+            request.push_str("\r\n");
+            stream.write_all(request.as_bytes()).await?;
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                if head.len() >= 16384 {
+                    return Err("HTTPS proxy response headers exceed limit".into());
+                }
+                head.push(stream.read_u8().await?);
+            }
+            let mut status_line = std::str::from_utf8(&head)?
+                .split("\r\n")
+                .next()
+                .ok_or("HTTPS proxy response is missing its status")?
+                .split(' ');
+            if !matches!(status_line.next(), Some("HTTP/1.0" | "HTTP/1.1")) {
+                return Err("HTTPS proxy response is invalid".into());
+            }
+            let status = status_line.next().and_then(|v| v.parse::<u16>().ok());
+            if !status.is_some_and(|v| (200..300).contains(&v)) {
+                return Err("HTTPS proxy refused CONNECT".into());
+            }
+            stream
+        } else {
+            Box::new(
+                tokio::net::TcpStream::connect((host.as_str(), uri.port_u16().unwrap_or(443)))
+                    .await?,
+            )
+        };
+        let socket = tokio_rustls::TlsConnector::from(tls)
+            .connect(ServerName::try_from(host)?, socket)
+            .await?;
+        let (response, _connection) = send(socket, &authority, path, token, method, body).await?;
+        let status = response.status();
+        if !matches!(status.as_u16(), 200 | 201) {
+            return Err(format!("REST request failed with HTTP {}", status.as_u16()).into());
+        }
+        let bytes = response.into_body().collect().await?.to_bytes();
+        Ok(serde_json::from_slice(&bytes)?)
     })
     .await?
 }

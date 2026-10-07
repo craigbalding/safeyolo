@@ -626,6 +626,9 @@ pub fn grant(
 }
 
 pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    if arguments.first().is_some_and(|v| v == "mattermost") {
+        return crate::mattermost::run(config, &arguments[1..]).await;
+    }
     if arguments
         .first()
         .is_some_and(|v| matches!(v.as_str(), "send" | "chat" | "watch" | "history"))
@@ -693,6 +696,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
                 "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nNative instance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
+            println!("{}", crate::mattermost::HELP);
             return Ok(());
         }
         _ => return Err("usage: safeyolo coord --help".into()),
