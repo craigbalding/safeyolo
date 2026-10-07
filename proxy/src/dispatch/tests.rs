@@ -13,6 +13,18 @@ fn files(value: &Value) -> Vec<GeneratedFile> {
     generate_files(&parse_manifest(&value.to_string()).unwrap()).unwrap()
 }
 
+fn checked_files(value: &Value) -> Vec<GeneratedFile> {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let sources = root.join("_sources/dispatch");
+    fs::create_dir_all(&sources).unwrap();
+    fs::write(sources.join("source.json"), value.to_string()).unwrap();
+    let generated = files(value);
+    write_generated_files(root, &generated, false).unwrap();
+    site::validate_site(root).unwrap();
+    generated
+}
+
 #[test]
 fn retained_source_generates_exact_committed_bytes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -106,19 +118,41 @@ fn plain_copy_safe_fences_and_transitive_definitions() {
     value["sections"][0]["items"][0]["body"] =
         json!("Authored [link](relative) and <script> stay inert. The plumb route remains.");
     value["definitions"] = json!({"plumb":"The path associates exchanges with a run_id.","run_id":"Identifier for a sandbox run."});
-    let output = &files(&value)[0].content;
+    let output = &checked_files(&value)[0].content;
     assert!(output.contains(r"\[link\](relative) and \<script\>"));
     assert!(output.contains("`run_id` — Identifier for a sandbox run."));
     value["sections"] = json!([{"kind":"lens_caught","items":[{"title":"Fence safely","body":"The plumb example remains inert.",
-        "attribution":"lens_review_finding","snippet":{"language":"text","code":"before\n```\nafter"},
+        "attribution":"lens_review_finding","snippet":{"language":"text","code":"before\n```\nafter [example](missing)"},
         "lesson":"Use a longer fence.","evidence":source()["sections"][0]["items"][0]["evidence"]}]}]);
     assert!(
-        files(&value)[0]
+        checked_files(&value)[0]
             .content
-            .contains("````text\nbefore\n```\nafter\n````")
+            .contains("````text\nbefore\n```\nafter [example](missing)\n````")
     );
     value["sections"][0]["items"][0]["attribution"] = json!("forge_implementation_discovery");
     assert!(parse_manifest(&value.to_string()).is_err());
+}
+
+#[test]
+fn liquid_copy_generates_and_checks_without_restricting_authored_examples() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let value: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("tests/proxy_contracts/fixtures/dispatch-inert.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let generated = checked_files(&value);
+    assert_eq!(generated.len(), 2);
+    for file in &generated {
+        assert!(file.content.contains("{{ '{{' }} 17 | plus: 4 }}"));
+        assert!(file.content.contains("{{ '{%' }} endraw %}"));
+    }
+    assert!(
+        generated[0]
+            .content
+            .contains("{{ '{{' }}- 17 | plus: 4 -}}")
+    );
+    assert!(generated[0].content.contains("after [example](missing)"));
 }
 
 #[test]
@@ -322,9 +356,17 @@ fn site_scope_links_hygiene_and_generated_bytes() {
         "\ngithub_pat_abcdefghijklmnop\n",
         "\n[Missing](/not-present/)\n",
         "\n[Private](https://localhost/status)\n",
+        "\n\\\\[Missing](/not-present/)\n",
+        "\n[Escaped \\] label](/not-present/)\n",
+        "\n````text\n```\n[Example](missing)\n````\n[Missing](/not-present/)\n",
+        "\n````text\n```\n[Example](missing)\n````\n[Private](https://localhost/status)\n",
     ] {
         fs::write(&index, format!("{original}{addition}")).unwrap();
         assert!(site::validate_site(&copy).is_err());
+    }
+    for addition in ["\n\\[a\\](a)\n", "\n\\\\\\[a](a)\n", "\n[a\\](a)\n"] {
+        fs::write(&index, format!("{original}{addition}")).unwrap();
+        site::validate_site(&copy).unwrap();
     }
     fs::write(&index, original).unwrap();
     let page = copy.join("dispatch/2026-08-29.md");

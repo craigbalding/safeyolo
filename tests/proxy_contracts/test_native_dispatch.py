@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -169,3 +170,28 @@ def test_installed_generation_and_site_consumers(dispatch_instance, tmp_path):
     absent = tmp_path / "absent"
     refused = instance.cli("dispatch", "generate", str(source), "--output-root", str(absent), "--check")
     assert refused.returncode != 0 and not absent.exists()
+
+
+def test_installed_inert_generation_and_site_consumers(dispatch_instance, tmp_path):
+    instance = dispatch_instance
+    source = REPO / "tests/proxy_contracts/fixtures/dispatch-inert.json"
+    root = tmp_path / "literal-site"
+    sources = root / "_sources/dispatch"
+    sources.mkdir(parents=True)
+    shutil.copyfile(source, sources / "source.json")
+    generated = instance.cli("dispatch", "generate", str(source), "--output-root", str(root))
+    assert generated.returncode == 0, generated.stderr
+    current = instance.cli("dispatch", "generate", str(source), "--output-root", str(root), "--check")
+    assert current.returncode == 0, current.stderr
+    checked = instance.cli("dispatch", "check-site", "--site-root", str(root))
+    assert checked.returncode == 0, checked.stderr
+    for relative in ("dispatch/2026-08-29.md", "topics/literal-copy.md"):
+        page = (root / relative).read_text()
+        assert "{{ '{{' }} 17 | plus: 4 }}" in page
+        assert "{{ '{%' }} endraw %}" in page
+    original = "---\nlayout: default\npermalink: /\n---\n"
+    index = root / "index.md"
+    for link in ("[Missing](/not-present/)", "[Private](https://localhost/status)"):
+        index.write_text(original + link + "\n")
+        refused = instance.cli("dispatch", "check-site", "--site-root", str(root))
+        assert refused.returncode != 0, link

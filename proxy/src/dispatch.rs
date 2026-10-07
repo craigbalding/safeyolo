@@ -777,7 +777,12 @@ fn render_item(item: &Item, level: usize) -> Result<String, Error> {
 }
 
 fn generated(path: PathBuf, content: String) -> Result<GeneratedFile, Error> {
-    let content = format!("{}\n", content.trim_end());
+    // Jekyll evaluates Liquid before Markdown, including code fences. Emit
+    // opening delimiters from literal expressions so authored tags are never
+    // parsed. The order keeps newly inserted expressions from being escaped.
+    let content = format!("{}\n", content.trim_end())
+        .replace("{{", "{{ '{{' }}")
+        .replace("{%", "{{ '{%' }}");
     if content.len() > MAX_OUTPUT_BYTES {
         return Err("rendered Dispatch exceeds the output bound".into());
     }

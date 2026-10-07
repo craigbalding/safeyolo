@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "period": {"kind": "daily", "start": "2026-08-29", "end": "2026-08-29"},
+  "definitions": {
+    "liquid": "Definition {{ 17 | plus: 4 }} {% endraw %} stays literal."
+  },
+  "sections": [
+    {
+      "kind": "shipped",
+      "items": [
+        {
+          "theme": "Theme {{ 17 | plus: 4 }} {% endraw %}",
+          "title": "Title {{ 17 | plus: 4 }} {% endraw %}",
+          "body": "Body liquid {{ 17 | plus: 4 }} {% endraw %} and [a](a) stay literal. Whitespace {{- 17 | plus: 4 -}} stays too.",
+          "attribution": "forge_implementation_discovery",
+          "evidence": [
+            {"kind": "issue", "label": "Evidence {{ 17 | plus: 4 }} {% endraw %}", "url": "https://github.com/craigbalding/safeyolo/issues/437"}
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "lens_caught",
+      "items": [
+        {
+          "title": "Fence safely",
+          "body": "Examples remain inert.",
+          "attribution": "lens_review_finding",
+          "snippet": {
+            "language": "text",
+            "code": "Snippet {{ 17 | plus: 4 }} {% endraw %}\n{{ '{{' }}\n{% include missing %}\n```\nafter [example](missing)"
+          },
+          "lesson": "Lesson {{ 17 | plus: 4 }} {% endraw %} stays literal.",
+          "evidence": [{"kind": "issue", "label": "Issue #437", "url": "https://github.com/craigbalding/safeyolo/issues/437"}]
+        }
+      ]
+    }
+  ],
+  "topic_updates": [
+    {
+      "slug": "literal-copy",
+      "title": "Topic {{ 17 | plus: 4 }} {% endraw %}",
+      "state_key": "literal-v1",
+      "summary": "Summary liquid {{ 17 | plus: 4 }} {% endraw %} stays literal.",
+      "current_state": ["State {{ 17 | plus: 4 }} {% endraw %} stays literal."],
+      "evidence": [{"kind": "issue", "label": "Topic evidence {{ 17 | plus: 4 }} {% endraw %}", "url": "https://github.com/craigbalding/safeyolo/issues/437"}]
+    }
+  ]
+}

@@ -156,23 +156,33 @@ fn validate_links(root: &Path, pages: &[Page]) -> Result<(), Error> {
             }
         }
     }
-    let links = Regex::new(r"\[[^\]\n]+\]\(([^)\n]+)\)")?;
+    let links = Regex::new(r"\[(?:\\.|[^\]\\\n])+\]\(([^)\n]+)\)")?;
     let url_scheme = Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?;
     for page in pages {
-        let mut fenced = false;
+        let mut fence = None;
         for line in page.content.lines() {
-            if line.trim_start().starts_with("```") {
-                fenced = !fenced;
+            let trimmed = line.trim_start();
+            let ticks = trimmed.bytes().take_while(|c| *c == b'`').count();
+            if let Some(opening) = fence {
+                if ticks >= opening && trimmed[ticks..].trim().is_empty() {
+                    fence = None;
+                }
                 continue;
             }
-            if fenced {
+            if ticks >= 3 {
+                fence = Some(ticks);
                 continue;
             }
             for capture in links.captures_iter(line) {
                 let Some(full) = capture.get(0) else {
                     continue;
                 };
-                if line[..full.start()].ends_with('!') {
+                let backslashes = line[..full.start()]
+                    .bytes()
+                    .rev()
+                    .take_while(|c| *c == b'\\')
+                    .count();
+                if backslashes % 2 == 1 || line[..full.start()].ends_with('!') {
                     continue;
                 }
                 let destination = capture[1].trim();
