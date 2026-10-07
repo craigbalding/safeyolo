@@ -17,11 +17,13 @@ const REDACTED: &str = "[REDACTED_CREDENTIAL]";
 // Preserve the credential shapes used by the replaced Python exporter, including
 // escaped JSON string values. Redaction is defense in depth; never collect login panes.
 fn redact(text: &str) -> Result<String, Error> {
+    // Remove whole JSON credential values before token substitutions can consume
+    // an escape backslash and expose a suffix after a false closing quote.
     let patterns = [
+        (r#"(?i)("(?:access_token|refresh_token|id_token|token|api_key|session_key|oauth_token|authorization|proxy-authorization|cookie|set-cookie|client_secret|password)"\s*:\s*")(?:\\.|[^"\\])*(")"#, "${1}[REDACTED_CREDENTIAL]${2}"),
         (r#"(?i)((?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|basic)\s+)[^\s\",}]+"#, "${1}[REDACTED_CREDENTIAL]"),
         (r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b", REDACTED),
         (r"\b(?:sk-(?:proj-|ant-oat01-|ant-api03-)?|sgw_)[A-Za-z0-9_-]{16,}\b", REDACTED),
-        (r#"(?i)("(?:access_token|refresh_token|id_token|token|api_key|session_key|oauth_token|authorization|proxy-authorization|cookie|set-cookie|client_secret|password)"\s*:\s*")(?:\\.|[^"\\])*(")"#, "${1}[REDACTED_CREDENTIAL]${2}"),
         (r"(?i)((?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CODEX_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|AGENT_TOKEN|ADMIN_TOKEN)\s*=\s*)\S+", "${1}[REDACTED_CREDENTIAL]"),
     ].into_iter().map(|(pattern, replacement)| Ok((Regex::new(pattern)?, replacement))).collect::<Result<Vec<_>, regex::Error>>()?;
     let begin =

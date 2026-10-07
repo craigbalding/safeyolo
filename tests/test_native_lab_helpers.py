@@ -192,6 +192,35 @@ def test_native_capture_refuses_credential_and_nontext_files(tmp_path: Path, gue
     assert "[REDACTED_CREDENTIAL]" in text
 
 
+@pytest.mark.parametrize(
+    ("field", "header", "token"),
+    [
+        ("password", "Authorization: Bearer ", "0"),
+        ("access_token", "Proxy-Authorization=Basic ", "YWJj"),
+        ("client_secret", "aUtHoRiZaTiOn : bearer ", "sk-proj-FakeValue0123456789ABCDE"),
+        ("authorization", "Proxy-Authorization: BASIC ", "token\\with-backslash"),
+    ],
+)
+def test_native_capture_redacts_json_credentials_before_header_tokens(
+    tmp_path: Path, guest_binary: Path, field: str, header: str, token: str,
+):
+    source = tmp_path / "results.json"
+    source.write_text(json.dumps(
+        {field: f'{header}{token}"FAKE_SUFFIX_MARKER', "marker": "PUBLIC_MARKER"},
+        separators=(",", ":"),
+    ))
+    result = subprocess.run(
+        [str(guest_binary), "lab-evidence", "capture", "--output", str(tmp_path / "evidence"), "--file", str(source)],
+        capture_output=True, text=True, timeout=5, check=True,
+    )
+    capture = Path(result.stdout.strip())
+    row = json.loads((capture / "manifest.jsonl").read_text())
+    exported = (capture / row["captured_path"]).read_text()
+    assert "FAKE_SUFFIX_MARKER" not in exported
+    assert json.loads(exported) == {field: "[REDACTED_CREDENTIAL]", "marker": "PUBLIC_MARKER"}
+    assert (capture / "capture-status.txt").read_text() == "status=complete\n"
+
+
 def test_nested_preparation_uses_native_configuration_and_preserves_retained_state(tmp_path: Path):
     binaries = ROOT / "proxy/target/debug"
     for name in ["safeyolo", "safeyolo-proxy"]:
