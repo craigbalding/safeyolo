@@ -306,8 +306,14 @@ fn compose(editor: bool) -> Result<String, Error> {
             .suffix(".md")
             .tempfile()?;
         let editor = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "vi".into());
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::env::var("EDITOR")
+                    .ok()
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or_else(|| "vi".into());
         // Host-authored editor settings may contain arguments. Pass the path
         // separately so neither its contents nor its name become shell code.
         let status = std::process::Command::new("sh")
@@ -319,7 +325,7 @@ fn compose(editor: bool) -> Result<String, Error> {
         if !status.success() {
             return Err("editor failed; nothing sent".into());
         }
-        return Ok(std::fs::read_to_string(file.path())?);
+        return Ok(String::from_utf8_lossy(&std::fs::read(file.path())?).into_owned());
     }
     for (program, args) in [
         ("pbpaste", vec![]),
@@ -327,11 +333,27 @@ fn compose(editor: bool) -> Result<String, Error> {
         ("xclip", vec!["-selection", "clipboard", "-o"]),
         ("xsel", vec!["--clipboard", "--output"]),
     ] {
-        match std::process::Command::new(program).args(args).output() {
-            Ok(output) if output.status.success() => return Ok(String::from_utf8(output.stdout)?),
-            Ok(_) => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
+        // Preserve the existing clipboard deadline and decoding behavior.
+        // Dropping the owned child on timeout prevents a hung clipboard tool
+        // from holding the operator's prompt indefinitely.
+        let output = tokio::runtime::Handle::current().block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                tokio::process::Command::new(program)
+                    .args(args)
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+        });
+        match output {
+            Ok(Ok(output)) if output.status.success() => {
+                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => return Err("clipboard command timed out; nothing sent".into()),
         }
     }
     Err("clipboard unavailable; use :edit with $EDITOR, or coord send --file".into())

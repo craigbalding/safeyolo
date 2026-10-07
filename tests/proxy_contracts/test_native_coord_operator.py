@@ -218,6 +218,7 @@ def test_clipboard_editor_confirmation_and_cancellation(instance):
     editor.write_text('#!/bin/sh\nprintf "editor café\\nlast line\\n" > "$1"\n')
     editor.chmod(0o755)
     instance.environment["EDITOR"] = str(editor)
+    instance.environment["VISUAL"] = ""
     with terminal(instance) as (process, fd, until):
         until(b"op> ")
         os.write(fd, b":paste\r")
@@ -233,11 +234,16 @@ def test_clipboard_editor_confirmation_and_cancellation(instance):
         until(b"send? [Y/n]")
         os.write(fd, b"\r")
         until(b"message accepted;")
+        clipboard.write_text("#!/bin/sh\nprintf '\\377\\n'\n")
+        os.write(fd, b":paste\r")
+        until(b"send? [Y/n]")
+        os.write(fd, b"y\r")
+        until(b"message accepted;")
         os.write(fd, b":q\r")
         process.wait(timeout=5)
         assert process.returncode == 0
     assert [m["body"] for m in history(instance)] == [
-        "clipboard café\nsecond line\n", "editor café\nlast line\n",
+        "clipboard café\nsecond line\n", "editor café\nlast line\n", "\ufffd\n",
     ]
 
 

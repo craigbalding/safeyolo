@@ -32,6 +32,8 @@ cursor remain intact. Enter sends the draft; `:q`, Ctrl-D or Ctrl-C detaches.
 `:paste` (or `:p`) reads the host clipboard. `:edit` (or `:e`) opens `$VISUAL`,
 then `$EDITOR`, with `vi` as the fallback. Clipboard/editor composition requires
 confirmation. No chat transcript or draft is saved separately from room history.
+Clipboard and editor input replace malformed UTF-8 bytes with the replacement
+character. Clipboard commands retain their ten-second timeout.
 Use `chat --observe` for a read-only stream without a terminal prompt.
 
 Scripted send accepts exactly one UTF-8 source: text, `--file FILE`, or `--stdin`.
