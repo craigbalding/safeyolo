@@ -122,7 +122,8 @@ safeyolo status
 safeyolo coord room list
 ```
 
-`safeyolo status` should report `Coord (nats-server)` as healthy. Confirm the expected rooms remain registered. This check does not prove
+`safeyolo status` should report `Coord (nats-server)` as healthy. Confirm the
+expected rooms remain registered. This check does not prove
 message history. Native operator communication uses the separate fresh
 instance described below.
 
