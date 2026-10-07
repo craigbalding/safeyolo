@@ -38,6 +38,12 @@ describe what the view can show. Its microVM patterns are informed by
 
 ## Quick Start
 
+For the native Rust product increment, use the [native bundle installation](docs/native-policy.md#install-and-start).
+It installs into a fresh instance root, then supports start, status, doctor and
+stop without a Python package environment. Build disposable bundles from source;
+public release publication is stopped. The published downloads below are the
+earlier Python CLI packages.
+
 ### 1. Install on your host
 
 Use your normal account on the Mac or Linux machine that will run SafeYolo.

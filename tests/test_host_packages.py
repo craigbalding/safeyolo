@@ -1,11 +1,17 @@
-"""Focused runtime reuse, wheel byte identity and consumer verification checks."""
+"""Native producer and installer checks with controlled executable identities.
+
+These fixtures test packaging failures. The installed journey runs real product
+binaries through tests/proxy_contracts/native-package-journey.sh.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -14,92 +20,241 @@ import pytest
 from scripts import build_host_packages as builder
 from scripts import verify_host_package as consumer
 
+REPO = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
 
 
+def run(*arguments, **kwargs):
+    return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
+
+
+def executable(path, identity):
+    # Real ELF header/architecture, controlled identity; never a runtime witness.
+    source = path.with_suffix(".c")
+    source.write_text(f'#include <stdio.h>\nint main(void){{puts("{identity}");return 0;}}\n')
+    subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
+    source.unlink()
+
+
 @pytest.fixture
-def debug_artifact(tmp_path, monkeypatch):
-    directory = tmp_path / "debug-input"
-    directory.mkdir()
-    binary = directory / "safeyolo-proxy"
-    binary.write_bytes(b"saved runtime bytes")
-    settings = {"profile": "dev", "rustc": "pinned compiler", "environment": {}}
-    metadata = {
-        "commit": REVISION, "platform": "linux-amd64", "profile": "debug",
-        "components": {"proxy": {"sha256": consumer.sha256(binary), "settings": json.loads(json.dumps(settings)),
-                                 "files": {binary.name: consumer.sha256(binary)}}},
+def package_inputs(tmp_path):
+    if os.uname().sysname != "Linux":
+        pytest.skip("controlled ELF producer fixture runs on Linux; macOS uses actual Tart artifacts")
+    source = tmp_path / "source"
+    scripts = source / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh"):
+        shutil.copy2(REPO / "scripts" / name, scripts / name)
+    assets = source / "cli/src/safeyolo"
+    assets.mkdir(parents=True)
+    for name in ("guest-init", "guest-init-static", "guest-init-per-run", "guest-proxy-forwarder", "guest-shell-bridge", "guest-desktop"):
+        (assets / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("launchers", "agent_context/skills/safeyolo", "services"):
+        (assets / name).mkdir(parents=True)
+    for name in ("tmux-common", "tmux-window", "tmux-pane"):
+        (assets / "launchers" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
+    (assets / "agent_context/skills/safeyolo/SKILL.md").write_text("fixture skill\n")
+    (assets / "repo_map.py").write_text("# Remaining production helper fixture\n")
+    (source / "repo-map.toml").write_text("# fixture\n")
+    (source / "LICENSE").write_text("fixture project notice\n")
+    (source / "docs").mkdir()
+    (source / "docs/AGENTS.md").write_text("fixture baseline\n")
+    (source / "guest/rootfs").mkdir(parents=True)
+    (source / "guest/rootfs/safeyolo-sudo").write_text("#!/bin/sh\nexit 0\n")
+    (source / "contrib/lib").mkdir(parents=True)
+    for name in ("claude-host-setup", "codex-host-setup", "codex-coord-host-setup", "pi-host-setup", "pi-coord-host-setup", "mise-shell-host-setup", "coord-mcp-bootstrap", "safeyolo-coord-mcp-launcher"):
+        (source / "contrib" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
+    (source / "contrib/lib/stage-coord-native.sh").write_text("# fixture\n")
+    (source / "contrib/pi-coord-extension.ts").write_text("// fixture\n")
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "package fixture"], check=True)
+    revision = run("git", "-C", str(source), "rev-parse", "HEAD").stdout.strip()
+    host, guest, runtime = (tmp_path / name for name in ("host", "guest", "runtime"))
+    for directory in (host, guest, runtime):
+        directory.mkdir()
+    for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
+        executable(host / name, f"{name} 0.1.0 commit={revision} profile=debug")
+    for name in ("safeyolo-guest", "safeyolo-coord"):
+        identity = f"{name} 0.1.0 commit={revision} profile=debug"
+        executable(guest / name, identity)
+        (guest / f"{name}.version").write_text(identity + "\n")
+        (guest / f"{name}.sha256").write_text(hashlib.sha256((guest / name).read_bytes()).hexdigest() + "\n")
+    shutil.copy2(shutil.which("tmux"), runtime / "tmux")
+    (runtime / "licenses").mkdir()
+    (runtime / "licenses/tmux.txt").write_text("fixture runtime notice\n")
+    arguments = [str(scripts / "build_host_packages.sh"), "--profile", "debug", "--artifacts", str(host), "--guest-artifacts", str(guest), "--runtime-artifacts", str(runtime)]
+    return source, host, guest, runtime, arguments, revision
+
+
+def build_bundle(inputs, tmp_path):
+    directory = tmp_path / "bundle"
+    result = run(*inputs[4], "--directory", str(directory))
+    assert result.returncode == 0, result.stderr
+    return directory
+
+
+@pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz")])
+def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane):
+    """Run the real preparation caller with controlled preceding tool outputs."""
+    checkout = tmp_path / "source"
+    scripts = checkout / "tests/blackbox"
+    scripts.mkdir(parents=True)
+    shutil.copy2(REPO / "tests/blackbox/run-lane.sh", scripts / "run-lane.sh")
+    (scripts / "installed_host_smoke.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def _installed_rust_binary(cli):\n"
+        "    return Path(os.environ['PREPARE_HOST']) / 'safeyolo-proxy', {}\n"
+    )
+    tools, host, guest, root = (tmp_path / name for name in ("tools", "host", "guest", "root"))
+    for path in (tools, host, guest, checkout / "scripts", checkout / "vm"):
+        path.mkdir(parents=True, exist_ok=True)
+    for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
+        (host / name).touch()
+    (guest / "safeyolo-guest").touch()
+    python = shutil.which("python3")
+    files = {
+        checkout / "install.sh": "#!/bin/sh\nexit 0\n",
+        tools / "uname": f"#!/bin/sh\nprintf '{platform}\\n'\n",
+        tools / "tmux": "#!/bin/sh\nprintf 'tmux fixture\\n'\n",
+        tools / "uv": '#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then printf "%s\\n" "$PREPARE_TOOLS"; fi\n',
+        tools / "python-driver": (
+            '#!/bin/sh\nif [ "$1" = -I ] && [ "$2" = -c ]; then\n'
+            '  printf "verified fixture NATS\\n"\n'
+            f'else exec "{python}" "$@"; fi\n'
+        ),
+        tools / "safeyolo": (
+            f'#!{tools / "python-driver"}\n'
+            "import json,os,sys\nfrom pathlib import Path\n"
+            "if '--check' in sys.argv:\n"
+            "    print(json.dumps({'package_manager':'apt','missing_deps':[]}))\n"
+            "else:\n"
+            "    assert Path(os.environ['SAFEYOLO_CONFIG_DIR'], 'native-inputs.json').is_file()\n"
+        ),
+        tools / "make": (
+            f"#!{python}\nimport pathlib,sys\n"
+            "directory = pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('INSTALL_DIR=')))\n"
+            "directory.mkdir(parents=True)\n"
+            "for name in ['safeyolo-vm','safeyolo-vm.build-info.json','vsock-term','vsock-term.version','vsock-term.sha256']:\n"
+            "    (directory / name).touch()\n"
+            "(directory / 'safeyolo-vm.dSYM').mkdir()\n"
+        ),
+        checkout / "scripts/install_native.sh": (
+            f"#!{python}\nimport json,pathlib,sys\n"
+            "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
+            "assert pathlib.Path(options['--runtime-artifacts'], 'tmux').is_file()\n"
+            "if '--vm-artifacts' in options:\n"
+            "    vm = pathlib.Path(options['--vm-artifacts'])\n"
+            "    assert all((vm / n).exists() for n in ['safeyolo-vm','safeyolo-vm.dSYM','safeyolo-vm.build-info.json','vsock-term.version','vsock-term.sha256'])\n"
+            "root = pathlib.Path(options['--root']); root.mkdir(exist_ok=True)\n"
+            "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
+        ),
     }
-    (directory / "build.json").write_text(json.dumps(metadata))
-    monkeypatch.setattr(builder, "commit", lambda: REVISION)
-    monkeypatch.setattr(builder, "host_platform", lambda: "linux-amd64")
-    monkeypatch.setattr(builder, "proxy_settings", lambda profile: {**settings, "profile": "release" if profile == "production" else "dev"})
-    monkeypatch.setattr(builder, "verify_proxy", lambda path, profile: None)
-    return directory, metadata, settings
+    for path, content in files.items():
+        path.write_text(content)
+        path.chmod(0o755)
+    # Preserve ordinary shell activation and mise discovery guards. Select
+    # controlled test tools after activation adds the global toolset to PATH.
+    activation = tmp_path / "shell-activation.sh"
+    activation.write_text(
+        'if [ -n "$PREPARE_ORIGINAL_BASH_ENV" ]; then . "$PREPARE_ORIGINAL_BASH_ENV"; fi\n'
+        'export PATH="$PREPARE_TOOLS:$PATH"\n'
+    )
+    monkeypatch.setenv("PREPARE_ORIGINAL_BASH_ENV", os.environ.get("BASH_ENV", ""))
+    monkeypatch.setenv("BASH_ENV", str(activation))
+    for name in ("SAFEYOLO_NATIVE_BUNDLE", "SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS", "SAFEYOLO_NATIVE_VM_ARTIFACTS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+    monkeypatch.setenv("PREPARE_HOST", str(host))
+    monkeypatch.setenv("PREPARE_TOOLS", str(tools))
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(guest / "safeyolo-guest"))
+    result = run(str(scripts / "run-lane.sh"), lane, "--prepare-only", cwd=checkout)
+    assert result.returncode == 0, result.stderr
+    options = json.loads((root / "native-inputs.json").read_text())
+    assert Path(options["--artifacts"]) == host
+    assert Path(options["--guest-artifacts"]) == guest
+    assert Path(options["--runtime-artifacts"]) == tools
+    if platform == "Darwin":
+        assert Path(options["--vm-artifacts"]) == root / "bin"
 
 
-def test_exact_debug_runtime_is_reused_without_a_compiler(debug_artifact, monkeypatch):
-    directory, _, _ = debug_artifact
-    monkeypatch.setattr(builder.subprocess, "run", lambda *args, **kwargs: pytest.fail("reused runtime compiled again"))
-    paths, native = builder.build_runtimes("debug", directory)
-    assert paths["proxy"].read_bytes() == b"saved runtime bytes"
-    assert os.access(paths["proxy"], os.X_OK)
-    assert native["proxy"]["origin"] == "master-ci"
-    assert native["proxy"]["sha256"] == consumer.sha256(paths["proxy"])
+def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
+    output = tmp_path / "output"
+    result = run(*package_inputs[4], "--output", str(output))
+    assert result.returncode == 0, result.stderr
+    archive, = output.glob("*.tar.gz")
+    with tarfile.open(archive) as stream:
+        names = stream.getnames()
+        assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
+        assert any(name.endswith("/libexec/tmux") for name in names)
+        assert any(name.endswith("/assets/licenses/tmux.txt") for name in names)
+        assert any(name.endswith("/LICENSE") for name in names)
+        assert any("/lib/" in name for name in names)
+        assert not any(name.endswith((".whl", "/dependencies.txt", "/verify.py")) for name in names)
+        path, = [name for name in names if name.endswith("/bin/safeyolo-proxy")]
+        assert stream.extractfile(path).read() == (package_inputs[1] / "safeyolo-proxy").read_bytes()
 
 
-@pytest.mark.parametrize("change", ["commit", "platform", "profile", "compiler", "flags", "bytes", "missing", "test-output", "invalid-json"])
-def test_unusable_debug_output_takes_one_bounded_fallback(debug_artifact, tmp_path, monkeypatch, change):
-    directory, metadata, _ = debug_artifact
-    if change in {"commit", "platform", "profile"}:
-        metadata[change] = "different"
-    elif change == "compiler":
-        metadata["components"]["proxy"]["settings"]["rustc"] = "another compiler"
-    elif change == "flags":
-        metadata["components"]["proxy"]["settings"]["environment"]["RUSTFLAGS"] = "-C opt-level=3"
-    elif change == "bytes":
-        (directory / "safeyolo-proxy").write_bytes(b"damaged artifact")
-    elif change in {"missing", "test-output"}:
-        (directory / "safeyolo-proxy").unlink()
-        if change == "test-output":
-            (directory / "deps").mkdir()
-            (directory / "deps/safeyolo_proxy-test").write_bytes(b"test executable")
-    (directory / "build.json").write_text("not JSON" if change == "invalid-json" else json.dumps(metadata))
-    target = tmp_path / "target"
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
-    calls = []
-
-    def compile_once(args, **kwargs):
-        calls.append(args)
-        runtime = target / "debug/safeyolo-proxy"
-        runtime.parent.mkdir(parents=True)
-        runtime.write_bytes(b"new debug runtime")
-
-    monkeypatch.setattr(builder.subprocess, "run", compile_once)
-    paths, native = builder.build_runtimes("debug", directory)
-    assert len(calls) == 1
-    assert calls[0][1:] == ["build", "--locked", "--bin", "safeyolo-proxy"]
-    assert paths["proxy"].read_bytes() == b"new debug runtime"
-    assert native["proxy"]["origin"] == "postmerge-build"
+@pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source"])
+def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, tmp_path, damage):
+    guest = package_inputs[2]
+    if damage == "missing":
+        (guest / "safeyolo-guest.sha256").unlink()
+    elif damage == "checksum":
+        (guest / "safeyolo-guest").write_bytes((guest / "safeyolo-guest").read_bytes() + b"damaged")
+    else:
+        receipt = guest / "safeyolo-guest.version"
+        receipt.write_text(receipt.read_text().replace("debug", "production") if damage == "profile"
+                           else receipt.read_text().replace(package_inputs[5], "b" * 40))
+    result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
+    assert result.returncode != 0
+    assert "guest" in result.stderr.lower()
+    assert not (tmp_path / "bundle").exists()
 
 
-def test_production_does_not_substitute_debug_bytes(debug_artifact, tmp_path, monkeypatch):
-    directory, _, _ = debug_artifact
-    target = tmp_path / "target"
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
-    calls = []
+def test_producer_rejects_script_substitution(package_inputs, tmp_path):
+    proxy = package_inputs[1] / "safeyolo-proxy"
+    proxy.write_text(f'#!/bin/sh\necho "safeyolo-proxy 0.1.0 commit={package_inputs[5]} profile=debug"\n')
+    result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
+    assert result.returncode != 0
+    assert "not a" in result.stderr and "executable" in result.stderr
 
-    def compile_once(args, **kwargs):
-        calls.append(args)
-        runtime = target / "release/safeyolo-proxy"
-        runtime.parent.mkdir(parents=True)
-        runtime.write_bytes(b"production runtime")
 
-    monkeypatch.setattr(builder.subprocess, "run", compile_once)
-    paths, native = builder.build_runtimes("production", directory)
-    assert len(calls) == 1 and calls[0][-1] == "--release"
-    assert paths["proxy"].read_bytes() == b"production runtime"
-    assert native["proxy"]["settings"]["profile"] == "release"
+def test_missing_bundle_input_is_reported_before_fresh_root_changes(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    (bundle / "bin/safeyolo-proxy").unlink()
+    root = tmp_path / "fresh"
+    result = run(str(bundle / "install.sh"), "--root", str(root), cwd=tmp_path)
+    assert result.returncode != 0
+    assert "required artifact is missing" in result.stderr and "safeyolo-proxy" in result.stderr
+    assert not root.exists()
 
+
+def test_installer_preserves_existing_instance(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    root = tmp_path / "existing"
+    root.mkdir()
+    (root / "config.toml").write_text("operator configuration\n")
+    result = run(str(bundle / "install.sh"), "--root", str(root))
+    assert result.returncode != 0 and "fresh root" in result.stderr
+    assert (root / "config.toml").read_text() == "operator configuration\n"
+    assert not (root / "bin").exists()
+
+
+def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    root = tmp_path / "prepared"
+    (root / "share").mkdir(parents=True)
+    image = root / "share/Image"
+    image.write_bytes(b"prepared boot input")
+    result = run(str(bundle / "install.sh"), "--root", str(root))
+    assert result.returncode == 0, result.stderr
+    assert image.read_bytes() == b"prepared boot input"
+    assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()
+
+
+# CI debug identity and the retained legacy wheel consumers remain active.
 
 def test_component_settings_survive_artifact_json_roundtrip(monkeypatch):
     monkeypatch.setattr(builder, "output", lambda *args, **kwargs: "rustc pinned")
@@ -229,152 +384,6 @@ def test_consumer_checks_actual_glibc_requirement(consumer_package, monkeypatch)
     directory, _ = consumer_package
     monkeypatch.setattr(consumer.platform, "libc_ver", lambda: ("glibc", "2.38"))
     with pytest.raises(ValueError, match="requires glibc 2.39"):
-        consumer.verify(directory)
-
-
-def macos_load_commands(minimum: str, command: str = "LC_BUILD_VERSION") -> str:
-    # Fields and layout follow Apple's otool/ofile_print.c deployment and version printers.
-    deployment = f"""
-      cmd LC_BUILD_VERSION
-  cmdsize 32
- platform 1
-    minos {minimum}
-      sdk 26.0
-   ntools 1
-     tool 3
-  version 1267.0
-""" if command == "LC_BUILD_VERSION" else f"""
-      cmd LC_VERSION_MIN_MACOSX
-  cmdsize 16
-  version {minimum}
-      sdk 26.0
-"""
-    return f"""test-runtime:
-Load command 0
-      cmd LC_SOURCE_VERSION
-  cmdsize 16
-  version 2048.1.2.3.4
-Load command 1
-{deployment}
-Load command 2
-          cmd LC_LOAD_DYLIB
-      cmdsize 56
-         name /usr/lib/libSystem.B.dylib (offset 24)
-   time stamp 2 Thu Jan  1 00:00:02 1970
-      current version 1345.100.2
-compatibility version 1.0.0
-Load command 3
-      cmd LC_SOURCE_VERSION
-  cmdsize 16
-  version 4096.0
-"""
-
-
-@pytest.mark.parametrize("command", ["LC_BUILD_VERSION", "LC_VERSION_MIN_MACOSX"])
-@pytest.mark.parametrize("minimum", ["11.0", "14.0", "15.2.1", "26.0"])
-def test_macos_deployment_requirement_ignores_unrelated_versions(monkeypatch, command, minimum):
-    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
-    monkeypatch.setattr(builder, "output", lambda *args, **kwargs: macos_load_commands(minimum, command))
-    major, minor, *_ = minimum.split(".")
-    assert builder.runtime_compatibility({"proxy": Path("proxy"), "helper": Path("helper")}) == (
-        f"macosx_{major}_{minor}_arm64", {"minimum_macos": minimum},
-    )
-
-
-@pytest.mark.parametrize("proxy_minimum,helper_minimum", [("11.0", "14.0"), ("14.0", "11.0"), ("15.2", "15.2.1")])
-def test_macos_package_uses_the_highest_component_requirement(monkeypatch, proxy_minimum, helper_minimum):
-    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
-    outputs = {
-        "proxy": macos_load_commands(proxy_minimum),
-        "helper": macos_load_commands(helper_minimum, "LC_VERSION_MIN_MACOSX"),
-    }
-    monkeypatch.setattr(builder, "output", lambda *args: outputs[args[-1]])
-    _, compatibility = builder.runtime_compatibility({"proxy": Path("proxy"), "helper": Path("helper")})
-    expected = "15.2.1" if proxy_minimum == "15.2" else "14.0"
-    assert compatibility == {"minimum_macos": expected}
-    monkeypatch.setattr(consumer.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: (expected, ("", "", ""), "arm64"))
-    consumer.verify_compatibility(compatibility)
-    older = "15.2" if expected == "15.2.1" else "13.6"
-    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: (older, ("", "", ""), "arm64"))
-    with pytest.raises(ValueError, match=f"requires macOS {expected}"):
-        consumer.verify_compatibility(compatibility)
-
-
-@pytest.mark.parametrize("missing_component", ["proxy", "helper"])
-def test_macos_package_requires_each_component_deployment_minimum(monkeypatch, missing_component):
-    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
-    unrelated = """Load command 0
-      cmd LC_SOURCE_VERSION
-  cmdsize 16
-  version 1267.0
-Load command 1
-      cmd LC_VERSION_MIN_IPHONEOS
-  cmdsize 16
-  version 18.0
-      sdk 26.0
-"""
-    monkeypatch.setattr(builder, "output", lambda *args: unrelated if args[-1] == missing_component else macos_load_commands("14.0"))
-    with pytest.raises(ValueError, match=f"deployment minimum is missing from {missing_component}"):
-        builder.runtime_compatibility({"proxy": Path("proxy"), "helper": Path("helper")})
-
-
-@pytest.mark.parametrize("profile", ["production", "debug"])
-def test_macos_package_wheel_and_manifest_share_the_actual_minimum(tmp_path, monkeypatch, compiler_canaries, profile):
-    proxy = tmp_path / "safeyolo-proxy"
-    proxy.write_bytes(b"selected proxy bytes")
-    proxy.chmod(0o755)
-    helper = tmp_path / "safeyolo-vm"
-    helper.write_bytes(b"selected helper bytes")
-    symbols = tmp_path / "safeyolo-vm.dSYM"
-    symbols.mkdir()
-    (symbols / "symbols").write_bytes(b"debug symbols")
-    helper_profile = "production" if profile == "production" else "development"
-    helper_identity = {"git_sha": REVISION, "build_profile": helper_profile}
-    (tmp_path / "safeyolo-vm.build-info.json").write_text(json.dumps(helper_identity))
-    guest = tmp_path / "guest"
-    guest.mkdir()
-    (guest / "vsock-term").write_bytes(b"guest terminal bytes")
-    (guest / "build.json").write_text(json.dumps({"commit": REVISION, "sha256": consumer.sha256(guest / "vsock-term")}))
-    native = {
-        "commit": REVISION, "platform": "darwin-arm64", "profile": profile,
-        "proxy": {"sha256": consumer.sha256(proxy), "settings": {"profile": "release" if profile == "production" else "dev"}},
-        "helper": {"sha256": consumer.sha256(helper), "profile": helper_profile, "identity": helper_identity},
-    }
-    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
-    monkeypatch.setattr(consumer, "host_platform", lambda: "darwin-arm64")
-    monkeypatch.setattr(consumer.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: ("15.2.1", ("", "", ""), "arm64"))
-    real_output = builder.output
-
-    def output(*args, **kwargs):
-        if args[:2] == ("otool", "-l"):
-            return macos_load_commands("14.0") if args[-1] == str(proxy) else macos_load_commands("15.2.1", "LC_VERSION_MIN_MACOSX")
-        return real_output(*args, **kwargs)
-
-    monkeypatch.setattr(builder, "output", output)
-    # Linux cannot execute/sign Mac runtimes; packaging, wheel inspection and compatibility checks remain real.
-    real_check_output = consumer.subprocess.check_output
-
-    def check_output(args, **kwargs):
-        if len(args) == 2 and Path(args[0]).name == "safeyolo-proxy" and args[1] == "--version":
-            return f"safeyolo-proxy test commit={REVISION} profile={profile}\n"
-        return real_check_output(args, **kwargs)
-
-    monkeypatch.setattr(consumer.subprocess, "check_output", check_output)
-    monkeypatch.setattr(consumer, "verify_helper", lambda *args: None)
-    directory = tmp_path / f"package-{profile}"
-    archive = builder.package(profile, {"proxy": proxy, "helper": helper}, native, directory, guest)
-    assert archive.is_file()
-    manifest = consumer.verify(directory)
-    assert manifest["native"] == native
-    assert manifest["compatibility"] == {"minimum_macos": "15.2.1"}
-    assert manifest["wheel"].endswith("-py3-none-macosx_15_2_arm64.whl")
-    with zipfile.ZipFile(directory / manifest["wheel"]) as wheel:
-        wheel_metadata, = [name for name in wheel.namelist() if name.endswith(".dist-info/WHEEL")]
-        assert b"Tag: py3-none-macosx_15_2_arm64" in wheel.read(wheel_metadata)
-    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: ("15.2", ("", "", ""), "arm64"))
-    with pytest.raises(ValueError, match="requires macOS 15.2.1"):
         consumer.verify(directory)
 
 

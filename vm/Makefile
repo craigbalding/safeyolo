@@ -12,12 +12,12 @@ INSTALL_DIR ?= $(HOME)/.safeyolo/bin
 GUEST_DIR = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../guest
 
 build:
-	$(PYTHON) build-info.py generate --profile $(PROFILE) "$(BUILD_INFO)"
+	swift build-info.swift --profile $(PROFILE) "$(BUILD_INFO)"
 	swift build --build-system native $(SWIFT_BUILD_FLAGS) --scratch-path "$(BUILD_ROOT)" -c release -Xswiftc -g \
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __sy_build -Xlinker "$(BUILD_INFO)"
 	dsymutil "$(BINARY)" -o "$(BINARY).dSYM"
 	codesign --entitlements "$(ENTITLEMENTS)" --options runtime --force -s - "$(BINARY)"
-	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(BINARY)"
+	"$(BINARY)" verify --profile $(PROFILE) --source "$${SAFEYOLO_BUILD_REVISION:-$$(git rev-parse HEAD)}"
 
 debug:
 	$(MAKE) PROFILE=development build
@@ -26,7 +26,7 @@ debug-install:
 	$(MAKE) PROFILE=development install-helper
 
 verify:
-	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(BINARY)"
+	"$(BINARY)" verify --profile $(PROFILE) --source "$${SAFEYOLO_BUILD_REVISION:-$$(git rev-parse HEAD)}"
 
 test-relays:
 	mkdir -p .build
@@ -93,10 +93,12 @@ install-helper: build
 	install -m 0755 "$(BINARY)" "$(INSTALL_DIR)/safeyolo-vm"
 	ditto "$(BINARY).dSYM" "$(INSTALL_DIR)/safeyolo-vm.dSYM"
 	install -m 0644 "$(BUILD_INFO)" "$(INSTALL_DIR)/safeyolo-vm.build-info.json"
-	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(INSTALL_DIR)/safeyolo-vm"
+	"$(INSTALL_DIR)/safeyolo-vm" verify --profile $(PROFILE) --source "$${SAFEYOLO_BUILD_REVISION:-$$(git rev-parse HEAD)}"
 
 install: install-helper guest-tools
 	install -m 0755 "$(BUILD_DIR)/vsock-term" "$(INSTALL_DIR)/vsock-term"
+	printf 'vsock-term commit=%s\n' "$${SAFEYOLO_BUILD_REVISION:-$$(git rev-parse HEAD)}" > "$(INSTALL_DIR)/vsock-term.version"
+	shasum -a 256 "$(INSTALL_DIR)/vsock-term" | awk '{print $$1}' > "$(INSTALL_DIR)/vsock-term.sha256"
 
 clean:
 	swift package clean

@@ -730,7 +730,7 @@ app.command()(mycommand)
 
 ## macOS VM helper development
 
-On an Apple Silicon Mac with Command Line Tools and Python 3.11 or later,
+On an Apple Silicon Mac with Command Line Tools,
 run these commands from the repository root. The production build retains
 hardened runtime and the virtualization entitlement. It does not carry
 `com.apple.security.get-task-allow`.
@@ -791,6 +791,8 @@ restart the affected agents.
 
 The build and install targets verify the actual signature and reject an
 unexpected entitlement set, a missing hardened runtime or a profile mismatch.
+Swift generates the embedded metadata. The compiled helper's `verify` command
+checks the signed bytes, source and running signing posture without Python.
 Run `make -C vm verify` when packaging an existing production artifact. To test
 both profiles and rejection of a production artifact re-signed with debugger
 access, build both profiles and run `python3 vm/test/build-profiles.py` on the Mac.
@@ -803,7 +805,8 @@ this profile. Stage dependencies through the approved SSH connection.
 
 For an exported source tree without Git metadata, the build can take a full
 `SAFEYOLO_BUILD_REVISION` and `SAFEYOLO_BUILD_DIRTY=yes|no|unknown` from the
-exporting build process. Without source evidence, identity reports `unknown`.
+exporting build process. The managed build requires a full source revision;
+direct `swift build` remains available and reports an unmanaged identity.
 
 The proxy and shell relays each use a dedicated thread with nonblocking socket
 I/O. Each direction buffers at most 64 KiB and stops reading while that buffer

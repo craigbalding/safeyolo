@@ -159,7 +159,7 @@ jobs:
       - name: Install preview test system dependency
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends socat
+          sudo apt-get install -y -qq --no-install-recommends socat tmux
 
       - name: Test workflow, fixture, deletion, and blackbox runner boundaries
         run: |
@@ -284,7 +284,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends socat
+          sudo apt-get install -y -qq --no-install-recommends socat tmux
 
       - name: Start the Python-owned Coord fixture
         env:
