@@ -36,6 +36,7 @@ pub mod guest_commands;
 mod host_agents;
 mod host_boot;
 pub mod host_commands;
+pub mod lab;
 mod host_events;
 mod host_lifecycle;
 mod host_runs;

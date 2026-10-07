@@ -92,6 +92,14 @@ for launcher in tmux-window tmux-pane tmux-common; do
   cp -- "$repository/cli/src/safeyolo/launchers/$launcher.sh" "$root/assets/launchers/$launcher.sh"
   chmod 0755 "$root/assets/launchers/$launcher.sh"
 done
+# Lab stages only the skills its native entry actually reaches.
+mkdir -p -- "$root/assets/skills"
+for skill in safeyolo safeyolo-lab-controller; do
+  mkdir -p -- "$root/assets/skills/$skill"
+  tar -C "$repository/cli/src/safeyolo/agent_context/skills/$skill" \
+    --exclude='__pycache__' --exclude='*.pyc' -cf - . | \
+    tar -C "$root/assets/skills/$skill" -xf -
+done
 "$root/bin/safeyolo" --root "$root" init
 echo "$cli_identity"
 echo "Installed: $root/bin/safeyolo"

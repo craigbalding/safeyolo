@@ -164,9 +164,10 @@ triggers = [
 ]
 advice = "Keep Lab a thin lifecycle over existing agent and tmux mechanisms: objective first, one authorized reversible fault, bounded evidence, restoration, and same-path proof. Use ownership checks before reattach or teardown."
 paths = [
-  "cli/src/safeyolo/commands/lab.py",
+  "proxy/src/lab.rs",
   "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/",
-  "cli/tests/test_lab.py",
+  "proxy/tests/native_lab.rs",
+  "tests/test_native_lab_helpers.py",
 ]
 source = "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md"
 

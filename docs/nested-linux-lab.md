@@ -1,132 +1,113 @@
-# SafeYolo-in-SafeYolo Linux lab
+# SafeYolo-in-SafeYolo Linux Lab
 
-SafeYolo can run inside an outer Linux SafeYolo agent as a disposable,
-proxy-only integration lab. This uses the normal Linux rootfs, UDS ingress,
-runsc launcher, Agent API, and coord MCP. It does not require a separate
-orchestrator or direct network access.
+Use the native Lab workflow to compare an owned request before and after a
+change to an inner instance's policy. The outer SafeYolo remains the security
+boundary. Lab retains the controller, experiment files and evidence when you
+exit its viewer.
 
-## Required topology
+## Start the Lab
 
-The outer agent supplies the only network path:
+Run the following command on an Ubuntu host as the account that owns the
+workspace. Use an [installed native instance](native-policy.md#install-and-start)
+with its prepared Ubuntu rootfs, runsc and Lab assets. Select the supported
+systrap runtime through the normal host setup. The Lab guest needs Bash, tmux,
+flock, curl and mise. The workflow prepares Codex in that guest and checks its
+own normal authentication before starting the controller.
+
+In this example, `/srv/lab-outer` is that installed instance and
+`/srv/experiment` is an existing workspace owned by your account. Lab reuses
+the installed Linux CLI and proxy as inner inputs. These inputs do not share
+writable state or authentication with the inner instance. Lab copies only those
+two executables into its read-only guest share; it does not mount an outer
+instance's tokens or policy.
+
+```sh
+/srv/lab-outer/bin/safeyolo --root /srv/lab-outer lab \
+  --workspace /srv/experiment \
+  --objective 'Compare the same owned request before and after a narrow policy change'
+```
+
+Lab provisions its owned agent and opens the persistent Codex controller.
+Supply any missing normal Codex login outside the experiment panes. The
+controller receives the objective and proposes the smallest experiment before
+changing policy. No guest-shell command or pane discovery is needed to enter
+the Lab. See the [Lab entry](../cli/README.md#lab) for retention, recovery and
+teardown choices.
+
+To select a different prepared Linux build, add `--nested-assets PATH`. That
+directory must contain `bin/safeyolo` and `bin/safeyolo-proxy` for the guest's
+architecture, at the same source commit and profile. A missing or mismatched
+input reports failure and retains the Lab for repair.
+
+## Inner instance and outer boundary
+
+The selected request experiment uses a fresh, proxy-only native inner instance:
 
 ```text
-nested agent -> nested per-agent UDS -> nested SafeYolo
-             -> outer proxy at 127.0.0.1:8080 -> Internet
+owned Lab request -> inner agent Unix socket -> inner native SafeYolo
+                  -> outer proxy at 127.0.0.1:8080 -> owned HTTP destination
 ```
 
-Use a guest-local filesystem for the nested source and state. The outer
-agent's `/home/agent` and host checkout mounts use VirtioFS, which cannot
-preserve the UID/GID 100000 ownership required by rootless runsc. `/var/lib`
-is the conventional disposable location.
+The controller uses the staged `prepare-nested.sh` helper. It initializes a
+private instance under `$HOME/.safeyolo/lab-inner`, with a new instance identity,
+tokens, certificate authority and policy. It configures the `lab-client` Unix
+socket and saves `policy-original.toml` before any experiment change. It refuses
+to overwrite a retained instance. The helper checks native CLI/proxy identities,
+the inherited outer proxy URL and readable `SSL_CERT_FILE` before preparation.
 
-Install the package floor needed to prepare and build the lab, including
-`rsync` and `e2fsprogs`:
+The inner `config.toml` selects `parent_proxy = "http://127.0.0.1:8080"` and
+Admin port `19090`. The inner proxy has no TCP request listener that could shadow
+the outer proxy. The controller starts it through the native inner CLI and
+sends the owned request through the configured Unix socket. This experiment
+needs no second model or inner sandbox. All external traffic still traverses
+the outer proxy; keep inherited proxy and certificate trust settings intact.
 
-```bash
-sudo -n apt-get update
-sudo -n apt-get install -y \
-  skopeo umoci mmdebstrap debootstrap acl jq rsync e2fsprogs tmux curl
-```
+Each proxy adds an instance-specific Via token. Another instance's token can
+pass through; a request returning through the same instance receives a `508`
+loop block. The default is selected when the proxy starts. An explicit
+`via_token` in the inner native configuration selects a different test token.
 
-Then prepare a lab root as the outer agent user:
+Bind one owned HTTP destination and a marker before the experiment. Observe
+delivery with the initial policy. Ask the operator to authorize a deny for
+that destination in the inner policy, then observe that the same request does
+not deliver. Apply changes with the inner CLI's normal `policy check`,
+`policy apply` and `policy show` commands. Restore `policy-original.toml` and
+observe marker delivery again. Independently inspect destination records and
+responses. Keep the outer policy unchanged and verify an outer control request
+throughout. Process status and the controller's explanation do not prove these
+effects.
 
-```bash
-sudo -n install -d -m 0755 -o "$(id -u)" -g "$(id -g)" \
-  /var/lib/nested-safeyolo-lab \
-  /var/lib/nested-safeyolo-lab/source \
-  /var/lib/nested-safeyolo-lab/state
+Exit the viewer with `Ctrl-a d`, then run the same outer instance's `lab`
+command without creation options. Lab selects the existing controller and
+evidence. You can intervene in its ordinary persistent shell panes. Before
+teardown, stop the owned inner proxy with its native CLI and verify that its
+socket and process are stopped. Restore reversible faults and preserve useful
+evidence before removing any explicitly selected experiment files.
 
-rsync -a --delete --exclude .git --exclude .venv --exclude guest/out \
-  /path/to/mounted/safeyolo/ /var/lib/nested-safeyolo-lab/source/
+## Experiments that also need an inner sandbox
 
-export SAFEYOLO_CONFIG_DIR=/var/lib/nested-safeyolo-lab/state
-export SAFEYOLO_COORD_DATA_DIR=/var/lib/nested-safeyolo-lab/state/coord
-export SAFEYOLO_UPSTREAM_PROXY=http://127.0.0.1:8080
-export SAFEYOLO_RUNSC_PLATFORM=systrap
-```
+The request experiment above does not require a rootfs build. An experiment
+that launches another runsc guest needs the additional native host runtime
+inputs and an unpacked rootfs. Use a guest-local filesystem such as `/var/lib`
+for those nested guest images, source and state. Outer host mounts can use
+VirtioFS, which cannot preserve the subordinate UID/GID `100000` ownership
+required by rootless runsc. Keep any rootfs builder output on the same
+guest-local filesystem. See the [guest build reference](../guest/README.md)
+for its package floor, including rsync and e2fsprogs.
 
-Both state variables are required. `SAFEYOLO_CONFIG_DIR` does not implicitly
-relocate coord data. A source snapshot under `/var/lib` also keeps the
-builder's `guest/out/rootfs-tree` on a filesystem that preserves subordinate
-ownership. Alternatively, set `OUTPUT_DIR` to a dedicated guest-local path.
+The maintained native host operations select the instance with `--root`.
+Use `agent create`, `agent sandbox-start`, `agent shell` and `agent stop` for
+an owned inner guest. `sandbox-start` boots without starting a coding model.
+`start` and `stop` control the inner proxy separately from the guest. Stop both
+before deleting that instance. Do not delete a retained NATS pidfile or signal
+an unverified process.
 
-Bootstrap from the relocated source:
+Without systemd and a usable user bus, the Linux launcher runs runsc directly.
+It reports that inner `MemoryMax` and `CPUQuota` controls are unavailable. The
+outer sandbox still bounds the complete experiment. With a usable user manager,
+the existing `systemd-run --user --scope` path remains active.
 
-```bash
-cd /var/lib/nested-safeyolo-lab/source
-uv sync
-uv run safeyolo bootstrap
-```
-
-The build uses the inherited outer proxy and stages the readable
-`SSL_CERT_FILE` at the same absolute path inside the temporary chroot. TLS
-verification remains enabled. The builder removes that outer CA and any
-copied host resolver before it emits the rootfs artifacts.
-
-Choose ports that do not shadow the inherited outer proxy endpoint. For
-example, set `proxy.port` to `18080`, `proxy.admin_port` to `19090`, and
-`proxy.web_port` to `18081` in the nested `config.yaml`. For the native
-runtime, set `proxy.backend` to `rust`, set `proxy.rust_config` to the lab's
-absolute `state/data/native.json` path, and set `proxy.upstream_proxy` to the
-same parent proxy URL as `SAFEYOLO_UPSTREAM_PROXY`. Start without `--dev`:
-
-```bash
-uv run safeyolo start
-```
-
-The normal native launcher generates `state/data/native.json` from this
-configuration. If a stopped lab changes its parent proxy for the self-loop
-check, update `proxy.upstream_proxy` and remove only that lab-generated JSON
-before starting again.
-
-Before you start the source-copy lab, make `safeyolo-proxy` available through
-`SAFEYOLO_RUST_PROXY`, the installed `safeyolo/bin/safeyolo-proxy`, or the
-copied checkout's `proxy/target/{release,debug}/safeyolo-proxy`. A missing
-binary fails the selected Rust backend and does not fall back to Python.
-
-The nested traffic master uses mitmproxy's upstream HTTP-proxy layer for each
-per-agent UDS connection. UDS-derived peer attribution is unchanged. Each
-SafeYolo process also uses a stable instance-specific Via pseudonym derived
-from its coord instance ID. Set `SAFEYOLO_VIA_TOKEN` or `proxy.via_token` only
-when a lab needs an explicit pseudonym. The default unprefixed instance ID is
-also compatible with older outer releases that matched their fixed Via token
-as a substring. Another instance's token is allowed; a request returning
-through the same instance remains a 508 loop block.
-
-When PID 1 is not systemd and no user bus is available, the Linux launcher
-runs runsc directly. It warns that inner `MemoryMax` and `CPUQuota` controls
-are unavailable. The outer SafeYolo sandbox still bounds the complete lab.
-The normal `systemd-run --user --scope` path remains active on hosts with a
-usable user manager.
-
-Use `agent add --no-run` followed by `agent start --sandbox-only` for a boot-only
-sandbox. Ordinary `agent start` launches the agent persistently; it is not the
-boot-only operation. Install the [native host commands](native-policy.md) in the
-selected `SAFEYOLO_CONFIG_DIR`. If the lab needs the staged coding harness and
-bundled Coord dependencies, invoke a bounded command through that native CLI:
-
-```bash
-"$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --root "$SAFEYOLO_CONFIG_DIR" agent shell nested-worker \
-  -c '/home/agent/.safeyolo-command --version'
-```
-
-Subscription login inside the nested agent is supported; no API key is
-required. Nested shutdown also keeps the conservative NATS ownership checks.
-Do not delete a retained NATS pidfile or send an unverified SIGKILL.
-
-## Full acceptance lane
-
-Run the real topology from an outer Linux SafeYolo agent. The lane copies the
-current checkout into `/var/lib`, installs guest packages, builds the standard
-rootfs, starts a nested runsc agent without systemd, proves both Agent APIs and
-both proxy layers, checks nested flow attribution, creates a genuine inner
-self-loop, and handshakes with the bundled coord MCP:
-
-```bash
-cd /path/to/mounted/safeyolo
-SAFEYOLO_NESTED_ACCEPT=1 tests/nested-linux/acceptance.sh
-```
-
-The lane leaves the nested instance running with its normal outer upstream so
-the operator can inspect it. Remove the dedicated lab directory only after
-stopping the nested instance and preserving any evidence that is needed.
+The broader `tests/nested-linux/acceptance.sh` lane retains the nested guest,
+Agent API, loop and Coord checks. Its Python test/bootstrap tooling is separate
+from the native Lab entry and from this finite request experiment. A source
+test or a prepared Lab is not the installed Codex demonstration.

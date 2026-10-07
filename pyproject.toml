@@ -104,6 +104,7 @@ packages = ["cli/src/safeyolo"]
 "guest/rootfs/safeyolo-sudo"          = "safeyolo/guest/rootfs/safeyolo-sudo"
 "contrib/claude-host-setup.sh"          = "safeyolo/contrib/claude-host-setup.sh"
 "contrib/codex-host-setup.sh"           = "safeyolo/contrib/codex-host-setup.sh"
+"contrib/codex-command.sh"              = "safeyolo/contrib/codex-command.sh"
 "contrib/codex-coord-host-setup.sh"     = "safeyolo/contrib/codex-coord-host-setup.sh"
 "contrib/pi-host-setup.sh"              = "safeyolo/contrib/pi-host-setup.sh"
 "contrib/pi-coord-host-setup.sh"        = "safeyolo/contrib/pi-coord-host-setup.sh"

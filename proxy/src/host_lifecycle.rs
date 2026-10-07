@@ -615,13 +615,17 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
     Ok(command.status().await?.code().unwrap_or(1))
 }
 
-pub(crate) async fn persistent_shell(agent: &Agent, command: &str) -> Result<i32, Error> {
+pub(crate) async fn persistent_shell(
+    agent: &Agent,
+    command: &str,
+    session_prefix: &str,
+) -> Result<i32, Error> {
     if !crate::host_platform::guest_exec_available(&agent.name).await {
         return Err("sandbox exec control is unavailable; run agent diagnostics".into());
     }
     let root = crate::host_platform::config_dir();
     let session = format!(
-        "sy-shell-{}-{}",
+        "{session_prefix}-{}-{}",
         std::fs::read_to_string(root.join("data/instance_id"))?.trim(),
         agent.id
     );

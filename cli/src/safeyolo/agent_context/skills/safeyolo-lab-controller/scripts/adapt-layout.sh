@@ -120,20 +120,15 @@ for window in "${windows[@]}"; do
   )
 
   controller=
-  lesson=
   while IFS=$'\t' read -r pane role; do
     if [ "$role" = controller ]; then
       controller=$pane
-    elif [ "$role" = lesson ] && [ -z "$lesson" ]; then
-      lesson=$pane
     fi
   done < <(
     "${tmux_cmd[@]}" list-panes -t "$window" \
       -F $'#{pane_id}\t#{@safeyolo_lab_role}'
   )
   [ -n "$controller" ] || continue
-  "${tmux_cmd[@]}" set-option -w -t "$window" \
-    @safeyolo_lab_lesson_pane "$lesson"
 
   focus_target=$("${tmux_cmd[@]}" show-options -w -qv \
     -t "$window" @safeyolo_lab_focus_target 2>/dev/null || true)
@@ -198,19 +193,6 @@ for window in "${windows[@]}"; do
       "${tmux_cmd[@]}" resize-pane -Z -t "$focus_target"
     fi
     warning="Screen ${width}x${height} is too small for ${pane_count} lab panes; the focus pane is zoomed"
-    if [ -n "$lesson" ]; then
-      questions_file=$("${tmux_cmd[@]}" display-message -p -t "$lesson" \
-        '#{@safeyolo_lab_questions_file}' 2>/dev/null || true)
-      if [ -n "$questions_file" ]; then
-        warning+=" | q: questions"
-      fi
-      sources_file=$("${tmux_cmd[@]}" display-message -p -t "$lesson" \
-        '#{@safeyolo_lab_sources_file}' 2>/dev/null || true)
-      if [ -n "$sources_file" ]; then
-        warning+=" | o: source"
-      fi
-      warning+=" | F12: controller/lesson"
-    fi
     "${tmux_cmd[@]}" set-option -w -t "$window" \
       @safeyolo_lab_auto_zoomed 1
     "${tmux_cmd[@]}" set-option -w -t "$window" \
