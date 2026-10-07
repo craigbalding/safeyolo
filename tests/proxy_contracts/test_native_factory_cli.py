@@ -106,6 +106,8 @@ def prepared(directory, nats_binary):
             assert stopped.returncode == 0, stopped.stderr
             for binary in instance.root.glob("agents/*/home/.safeyolo/safeyolo-coord"):
                 binary.unlink(missing_ok=True)
+            for binary in instance.root.glob("agents/*/config-share/safeyolo-guest"):
+                binary.unlink(missing_ok=True)
 
 
 def roles(instance):
@@ -263,8 +265,10 @@ def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_pat
             def wrap():
                 # Use the production wrapper/identity producer, without booting.
                 context = {"generation": "stopped-source-fixture", "agent_id": roles(instance)[home.parent.name]["agent_id"]}
+                context_input = home.parent / "source-launch-context.json"
+                context_input.write_text(json.dumps(context))
                 cli(instance, "guest-command", "stage", str(home), str(share),
-                    str(instance.root / "assets/guest"), json.dumps(context))
+                    str(instance.root / "assets/guest"), str(context_input))
 
             wrap()
             wrapper = entry.read_bytes()
