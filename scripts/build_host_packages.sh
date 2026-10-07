@@ -138,8 +138,14 @@ minimum=
 runtime_binaries=("$directory/libexec/tmux")
 for library in ${libraries[@]+"${libraries[@]}"}; do runtime_binaries+=("$directory/lib/${library##*/}"); done
 if [[ $platform == darwin-arm64 ]]; then
-  minimum=$(otool -l "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord,safeyolo-vm} "${runtime_binaries[@]}" | awk '
-    $1=="cmd" {command=$2} (command=="LC_BUILD_VERSION" && $1=="minos") || (command=="LC_VERSION_MIN_MACOSX" && $1=="version") {print $2}' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+  minimum_versions=()
+  for binary in "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord,safeyolo-vm} "${runtime_binaries[@]}"; do
+    value=$(otool -l "$binary" | awk '
+      $1=="cmd" {command=$2} (command=="LC_BUILD_VERSION" && $1=="minos") || (command=="LC_VERSION_MIN_MACOSX" && $1=="version") {print $2}' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    [[ $value =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { package_error "macOS deployment minimum is missing: $binary"; exit 1; }
+    minimum_versions+=("$value")
+  done
+  minimum=$(printf '%s\n' "${minimum_versions[@]}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
 else
   minimum=$(readelf --version-info "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord} "${runtime_binaries[@]}" | sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -1)
 fi
