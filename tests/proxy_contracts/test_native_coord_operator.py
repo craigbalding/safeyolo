@@ -179,9 +179,10 @@ def test_scripted_inputs_payloads_authority_and_rejections(instance, tmp_path):
 
 
 def test_pty_draft_receive_unknown_count_and_later_send(instance):
+    prefix = "横e\u0301 " * 30  # More than one terminal row, with combining text.
     with terminal(instance) as (process, fd, until):
         until(b"op> ")
-        os.write(fd, "draft café tail".encode())
+        os.write(fd, (prefix + "draft café tail").encode())
         agent_send(instance, "arrives mid-draft\x1b]52;c;CANARY\x07\r\u202e")
         output = until(b"arrives mid-draft")
         assert b"\x1b]52;c;CANARY" not in output and b"\\x1b]52;c;CANARY\\x07\\x0d" in output
@@ -203,9 +204,41 @@ def test_pty_draft_receive_unknown_count_and_later_send(instance):
         assert process.returncode == 0
     messages = history(instance)
     operator = [m for m in messages if m["sender_kind"] == "operator"]
-    assert [m["body"] for m in operator] == ["draft café complete tail", "ack withheld marker", "later independent marker"]
+    assert [m["body"] for m in operator] == [prefix + "draft café complete tail", "ack withheld marker", "later independent marker"]
     assert all(m["sender_agent_id"] is None and m["sender_agent_name"] is None for m in operator)
     assert all(m["attention_intent"]["mode"] == "targeted" for m in operator)
+
+
+def test_clipboard_editor_confirmation_and_cancellation(instance):
+    instance.environment["PATH"] += ":/usr/bin:/bin"
+    clipboard = instance.root / "bin/pbpaste"
+    clipboard.write_text("#!/bin/sh\nprintf 'clipboard café\\nsecond line\\n'\n")
+    clipboard.chmod(0o755)
+    editor = instance.root / "bin/fixture-editor"
+    editor.write_text('#!/bin/sh\nprintf "editor café\\nlast line\\n" > "$1"\n')
+    editor.chmod(0o755)
+    instance.environment["EDITOR"] = str(editor)
+    with terminal(instance) as (process, fd, until):
+        until(b"op> ")
+        os.write(fd, b":paste\r")
+        until(b"send? [Y/n]")
+        os.write(fd, b"n\r")
+        until(b"cancelled")
+        assert history(instance) == []
+        os.write(fd, b":p\r")
+        until(b"send? [Y/n]")
+        os.write(fd, b"y\r")
+        until(b"message accepted;")
+        os.write(fd, b":edit\r")
+        until(b"send? [Y/n]")
+        os.write(fd, b"\r")
+        until(b"message accepted;")
+        os.write(fd, b":q\r")
+        process.wait(timeout=5)
+        assert process.returncode == 0
+    assert [m["body"] for m in history(instance)] == [
+        "clipboard café\nsecond line\n", "editor café\nlast line\n",
+    ]
 
 
 def test_watch_timeline_payload_modes_and_cursor_reconnect(instance):
