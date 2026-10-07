@@ -1,4 +1,4 @@
-"""Typed legacy-attachment actions and narrow loopback callback ingress.
+"""Legacy action/listener test fixture, excluded from the production package.
 
 This is intentionally not a generic card or forms system.  A small fixed
 SafeYolo operator-request schema selects a fixed action vocabulary, and the

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from safeyolo.coord import mattermost_actions as actions
+from tests.legacy_mattermost import mattermost_actions as actions
 
 TRUSTED_AGENT_ID = "ag-" + "1" * 32
 

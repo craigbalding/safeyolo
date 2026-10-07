@@ -65,7 +65,8 @@ def _native_cli_surface() -> dict[str, set[str]]:
     Native help and its parser are also checked by native_host_cli tests.
     """
     surface: dict[str, set[str]] = {"": set()}
-    for relative in ("proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/factory.rs"):
+    for relative in ("proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/factory.rs",
+                     "proxy/src/mattermost.rs"):
         source = (REPO_ROOT / relative).read_text()
         for literal in re.findall(r'"(safeyolo (?:[^"\\]|\\.)*)"', source):
             for usage in json.loads('"' + literal + '"').splitlines():

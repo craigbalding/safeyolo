@@ -18,8 +18,8 @@ import pytest
 from markdown_it import MarkdownIt
 from typer.testing import CliRunner
 
-from safeyolo.commands import coord as coord_commands
-from safeyolo.coord import mattermost, mattermost_actions
+from tests.legacy_mattermost import commands as coord_commands
+from tests.legacy_mattermost import mattermost, mattermost_actions
 
 BOT_ID = "b" * 26
 OPERATOR_ID = "o" * 26
@@ -1626,7 +1626,7 @@ def test_emulated_darwin_recovers_committed_wal_after_abrupt_process_exit(
 import os
 import sys
 from pathlib import Path
-from safeyolo.coord import mattermost
+from tests.legacy_mattermost import mattermost
 
 real_alias_matches = mattermost._fd_alias_matches
 mattermost._is_darwin = lambda: True
@@ -1786,7 +1786,7 @@ def test_state_lease_is_private_sibling_and_does_not_lock_sqlite(tmp_path: Path)
     competing_process = """
 import sys
 from pathlib import Path
-from safeyolo.coord import mattermost
+from tests.legacy_mattermost import mattermost
 
 config = mattermost.MattermostConfig(
     server_url="https://mattermost.example",
