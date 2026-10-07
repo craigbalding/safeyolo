@@ -139,17 +139,65 @@ fn sqlite_ledger_reopens_with_wal_and_excludes_a_second_owner() {
     assert!(State::open(&config).is_err());
     drop(state);
     let state = State::open(&config).unwrap();
-    assert_eq!(
-        state
-            .query("SELECT coord_cursor FROM room_state", [])
-            .unwrap()[0]["coord_cursor"],
-        42
-    );
+    assert_eq!(state.coord_cursor("backlog").unwrap(), 42);
     let mut changed = config.clone();
     changed.id = "different".to_owned();
     assert!(State::open(&changed).is_err());
     drop(state);
     assert!(State::open(&changed).is_err());
+}
+
+#[test]
+fn coord_cursor_preserves_unsigned_boundaries_and_initialization_across_restart() {
+    for cursor in [0, 42, i64::MAX as u64, (i64::MAX as u64) + 1, u64::MAX] {
+        let root = tempfile::tempdir().unwrap();
+        let config = configuration(root.path(), false);
+        let state = State::open(&config).unwrap();
+        assert_eq!(state.coord_cursor("backlog").unwrap(), 0);
+        assert_eq!(state.initialize_room("backlog", cursor, 123).unwrap(), 1);
+        // Bootstrap cannot erase progress or replay previously accepted input.
+        assert_eq!(state.initialize_room("backlog", 0, 0).unwrap(), 0);
+        drop(state);
+
+        let state = State::open(&config).unwrap();
+        assert_eq!(state.coord_cursor("backlog").unwrap(), cursor);
+        let row = &state.query("SELECT coord_cursor, typeof(coord_cursor) AS storage, inbound_since, initialized FROM room_state", []).unwrap()[0];
+        assert_eq!(row["storage"], "text");
+        assert_eq!(row["coord_cursor"], cursor.to_string());
+        assert_eq!(row["inbound_since"], 123);
+        assert_eq!(row["initialized"], 1);
+
+        let next = cursor.saturating_add(1);
+        assert_eq!(state.set_coord_cursor("backlog", next).unwrap(), 1);
+        drop(state);
+        assert_eq!(
+            State::open(&config)
+                .unwrap()
+                .coord_cursor("backlog")
+                .unwrap(),
+            next
+        );
+    }
+}
+
+#[test]
+fn invalid_persisted_coord_cursor_reports_failure_without_resetting_progress() {
+    let root = tempfile::tempdir().unwrap();
+    let config = configuration(root.path(), false);
+    let state = State::open(&config).unwrap();
+    for cursor in ["", "-1", "1.5", "18446744073709551616", "invalid"] {
+        state
+            .execute("UPDATE room_state SET coord_cursor=?1", [cursor])
+            .unwrap();
+        assert!(state.coord_cursor("backlog").is_err(), "{cursor:?}");
+        assert_eq!(
+            state
+                .query("SELECT coord_cursor FROM room_state", [])
+                .unwrap()[0]["coord_cursor"],
+            cursor
+        );
+    }
+    assert!(state.coord_cursor("missing-room").is_err());
 }
 
 #[test]

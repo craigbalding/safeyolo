@@ -175,7 +175,7 @@ impl Adapter {
                 }
             }
         }
-        self.execute("UPDATE room_state SET initialized=1,coord_cursor=?2,inbound_since=?3 WHERE coord_room=?1 AND initialized=0",params![room.name,cursor,inbound.saturating_add(1)])?;
+        self.state(|s| s.initialize_room(&room.name, cursor, inbound.saturating_add(1)))?;
         Ok(())
     }
     fn room(&self, room: &Room) -> Result<Value, Error> {
@@ -240,9 +240,7 @@ impl Adapter {
             .is_ok_and(|v| v["schema"] == OPERATOR_SCHEMA && v["adapter_id"] == self.config.id)
     }
     async fn project(&self, room: &Room) -> Result<(), Error> {
-        let mut cursor = self.room(room)?["coord_cursor"]
-            .as_u64()
-            .ok_or("invalid projection cursor")?;
+        let mut cursor = self.state(|s| s.coord_cursor(&room.name))?;
         loop {
             let page = self.read(&room.name, cursor, 50).await?;
             for envelope in page["messages"]
@@ -267,10 +265,7 @@ impl Adapter {
                     || existing.as_ref().is_some_and(|v| v["status"] == "sent")
                 {
                     cursor = sequence;
-                    self.execute(
-                        "UPDATE room_state SET coord_cursor=?2 WHERE coord_room=?1",
-                        params![room.name, cursor],
-                    )?;
+                    self.state(|s| s.set_coord_cursor(&room.name, cursor))?;
                     continue;
                 }
                 if existing.is_some() {
@@ -338,10 +333,7 @@ impl Adapter {
                 let post = self.validate_post(&post, &room.channel, &key)?;
                 self.state(|s| s.finish_projection(msg, &post))?;
                 cursor = sequence;
-                self.execute(
-                    "UPDATE room_state SET coord_cursor=?2 WHERE coord_room=?1",
-                    params![room.name, cursor],
-                )?;
+                self.state(|s| s.set_coord_cursor(&room.name, cursor))?;
             }
             if page["has_more"] != true {
                 break;

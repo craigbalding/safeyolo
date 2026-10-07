@@ -181,9 +181,11 @@ impl State {
                 return Err("Mattermost native adapter requires a fresh state path; preserve the previous store".into());
             }
         }
+        // Coord sequences are u64. TEXT affinity preserves their decimal value
+        // above i64::MAX; INTEGER affinity would coerce that text to lossy REAL.
         state.db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS room_state(coord_room TEXT PRIMARY KEY,channel_id TEXT UNIQUE NOT NULL,coord_cursor INTEGER NOT NULL DEFAULT 0,inbound_since INTEGER NOT NULL DEFAULT 0,initialized INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS room_state(coord_room TEXT PRIMARY KEY,channel_id TEXT UNIQUE NOT NULL,coord_cursor TEXT NOT NULL DEFAULT '0',inbound_since INTEGER NOT NULL DEFAULT 0,initialized INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS outbound_projection(coord_msg_id TEXT PRIMARY KEY,coord_room TEXT NOT NULL,channel_id TEXT NOT NULL,projection_key TEXT UNIQUE NOT NULL,status TEXT NOT NULL CHECK(status IN ('pending','sent')),mattermost_post_id TEXT UNIQUE,created_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS inbound_post(mattermost_post_id TEXT PRIMARY KEY,coord_room TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('ignored','pending','sent')),reason TEXT,coord_msg_id TEXT,created_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS action_capability(capability_hash TEXT PRIMARY KEY,coord_msg_id TEXT UNIQUE NOT NULL REFERENCES outbound_projection(coord_msg_id),coord_room TEXT NOT NULL,channel_id TEXT NOT NULL,projection_key TEXT UNIQUE NOT NULL,adapter_id TEXT NOT NULL,allowed_actions TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('issued','pending','used')),mattermost_post_id TEXT UNIQUE,expires_at INTEGER NOT NULL,selected_action TEXT,coord_action_msg_id TEXT,
@@ -294,6 +296,38 @@ impl State {
         let count = self.db.execute(sql, parameters)?;
         self.validate()?;
         Ok(count)
+    }
+    pub fn initialize_room(
+        &self,
+        room: &str,
+        cursor: u64,
+        inbound_since: i64,
+    ) -> Result<usize, Error> {
+        self.execute(
+            "UPDATE room_state SET initialized=1,coord_cursor=?2,inbound_since=?3 WHERE coord_room=?1 AND initialized=0",
+            params![room, cursor.to_string(), inbound_since],
+        )
+    }
+    pub fn set_coord_cursor(&self, room: &str, cursor: u64) -> Result<usize, Error> {
+        self.execute(
+            "UPDATE room_state SET coord_cursor=?2 WHERE coord_room=?1",
+            params![room, cursor.to_string()],
+        )
+    }
+    pub fn coord_cursor(&self, room: &str) -> Result<u64, Error> {
+        let row = self
+            .query(
+                "SELECT coord_cursor FROM room_state WHERE coord_room=?1",
+                [room],
+            )?
+            .into_iter()
+            .next()
+            .ok_or("Mattermost room state is missing")?;
+        row["coord_cursor"]
+            .as_str()
+            .ok_or("invalid projection cursor")?
+            .parse()
+            .map_err(|_| "invalid projection cursor".into())
     }
     pub fn finish_projection(&mut self, msg: &str, post: &str) -> Result<(), Error> {
         self.validate()?;
