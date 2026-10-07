@@ -83,8 +83,8 @@ sha256 = "de44741fea4cfe3b5ac8d8d2e11e269ea8c019feaaa03cd4b81c476380c7658d"
 [[factory_acceptance]]
 id = "FACTORY-CHAT-AFTER-SEND"
 description = "One real chat process receives after a send and preserves the current draft."
-node = "cli/tests/test_coord_chat_live.py::test_real_chat_receives_after_operator_sends"
-sha256 = "baf732f7332fccc5feed915c083f70e5792feec76e30b26e62c2dfe716d86925"
+node = "tests/proxy_contracts/test_native_coord_operator.py::test_pty_draft_receive_unknown_count_and_later_send"
+sha256 = "0364d38db7e4e4dd751eecef9812548b9f4af6b4d0b60ef75048e414c37bd09d"
 
 [[factory_acceptance]]
 id = "FACTORY-CANDIDATE-PROVENANCE"

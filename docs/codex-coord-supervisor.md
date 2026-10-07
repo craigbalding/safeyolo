@@ -106,19 +106,21 @@ events to this room. Harness stderr is retained as labelled stderr events. It
 does not emit idle or heartbeat messages. An abruptly killed supervisor cannot
 report its own death; runtime supervision is a separate concern.
 
-Render the retained stream and continue watching it with:
+On the operator host, use the installed native CLI. Replace `ROOT` with the
+selected instance root and `AGENT` with the supervised agent name. Render the
+retained stream and continue watching it with:
 
 ```bash
-uv run python contrib/watch-agent-room.py <agent>-agent
+safeyolo --root ROOT coord watch AGENT-agent
 ```
 
 The default view renders a concise mixed operator and agent timeline. Use
-`--raw` to show each message body unchanged, or `--json` to emit canonical
+`--raw` to show each message body without event summarization, or `--json` to emit canonical
 Coord messages as JSONL. The rendered view uses colour on a terminal; use
 `--no-color` or `NO_COLOR` for plain output. The default shows the complete
 rendered content after canonical log-safe control-character handling; use
-`--redact` to hide common credential patterns. Raw and JSON modes preserve the
-retained message unless `--redact` is set. Use `--max-text` to opt in to a
+`--redact` to hide common credential patterns. Raw mode makes terminal controls inert; JSON mode preserves the exact payload
+with JSON escaping. `--redact` changes display only. Use `--max-text` to opt in to a
 rendered event-text limit. The watcher also supports `--history`, `--once`, and
 `--show-unknown`. File selection, agent-home selection, and filesystem polling
 do not apply because this watcher reads one retained Coord room.

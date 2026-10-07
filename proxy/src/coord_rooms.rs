@@ -523,7 +523,7 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
     let lock = directory(root)?.join("rooms.lock");
     let _lock =
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock)).await??;
-    let connection = open(root)?;
+    let mut connection = open(root)?;
     if connection
         .query_row("SELECT room_id FROM rooms WHERE name=?1", [name], |r| {
             r.get::<_, String>(0)
@@ -549,10 +549,22 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
         ..Config::default()
     })
     .await?;
-    if let Err(error) = connection.execute(
-        "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
-        params![id, name, now()],
-    ) {
+    // Match the existing operator room-create command: the creating host
+    // operator can send and receive. Register the room and its operator grant
+    // together; a failed grant must not leave an unusable room behind.
+    let registered = (|| -> rusqlite::Result<()> {
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
+            params![id, name, now()],
+        )?;
+        transaction.execute(
+            "INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES (?1,'operator','operator','send,receive',?2)",
+            params![id, now()],
+        )?;
+        transaction.commit()
+    })();
+    if let Err(error) = registered {
         js.delete_stream(stream).await.map_err(|cleanup| {
             format!("room registration failed ({error}); owned stream cleanup failed ({cleanup})")
         })?;
@@ -614,6 +626,12 @@ pub fn grant(
 }
 
 pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    if arguments
+        .first()
+        .is_some_and(|v| matches!(v.as_str(), "send" | "chat" | "watch" | "history"))
+    {
+        return crate::coord_operator::run(config, arguments).await;
+    }
     let root = config.parent().ok_or("native root is missing")?;
     let result = match arguments {
         [kind, options @ ..] if kind == "start" => {
@@ -674,6 +692,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             println!(
                 "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nNative instance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
+            println!("{}", crate::coord_operator::HELP);
             return Ok(());
         }
         _ => return Err("usage: safeyolo coord --help".into()),
@@ -708,7 +727,13 @@ pub(crate) async fn ensure_factory_rooms(
                 row.get(0)
             })?;
         let current:Option<String>=transaction.query_row("SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind='operator' AND principal_id='operator' AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",[&id],|row|row.get(0)).optional()?;
-        if current.as_deref() != Some("receive,send") {
+        if !current.as_deref().is_some_and(|permissions| {
+            ["send", "receive"].iter().all(|required| {
+                permissions
+                    .split(',')
+                    .any(|permission| permission == *required)
+            })
+        }) {
             let latest:Option<i64>=transaction.query_row("SELECT MAX(granted_at) FROM memberships WHERE room_id=?1 AND principal_kind='operator' AND principal_id='operator'",[&id],|row|row.get(0))?;
             transaction.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES(?1,'operator','operator','receive,send',?2)",params![id,now().max(latest.unwrap_or(0)+1)])?;
         }

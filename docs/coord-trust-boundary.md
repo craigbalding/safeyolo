@@ -52,7 +52,8 @@ controls `U+061C`, `U+200E`, `U+200F`, `U+202A`–`U+202E`, `U+2066`–`U+2069`.
 Render them visibly rather than deleting them — an operator should be able to
 see that a body tried. Print bodies as text objects, never as console markup.
 Give the body a visual namespace (a gutter) on every *physical* line, wrapping
-explicitly rather than letting the console wrap. Reference implementation:
+explicitly rather than letting the console wrap. The native chat uses `visible()` and `chat_message()` in
+`proxy/src/coord_timeline.rs`. The remaining Python brief display uses
 `_visible_controls()` and `_render_body()` in
 `cli/src/safeyolo/commands/coord.py`.
 

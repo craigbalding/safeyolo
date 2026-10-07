@@ -96,6 +96,18 @@ before acceptance. Targeting changes attention delivery. Confirmation and
 history retain canonical attribution and message IDs. See the commands under
 [operator direction](#operator-direction-and-ordinary-restart).
 
+Interactive operator chat automatically resolves the coordinator bound by an
+approved factory snapshot for that room. `coord chat ROOM --to AGENT` overrides
+that selection. Without `--to`, a room with no approved factory keeps its
+room-wide wake behavior. If multiple approved factories bind different coordinators to one
+room, chat fails visibly instead of guessing. The target must be an active,
+receive-authorized room member; unknown, revoked, and send-only targets fail
+before the message is accepted. Targeting changes only attention delivery.
+Send confirmation and operator-visible retained history show the canonical
+attention mode (`targeted`, `room`, or `none`) without exposing recipient IDs
+or unrelated membership. See [native operator chat](native-coord.md) for the
+interactive controls.
+
 The room brief is a separate operator-authored standing-context channel.
 Canonical `brief_changed` attention updates every receive-authorized factory
 role's bounded checkpoint, and preflight refreshes the current brief after a
@@ -136,13 +148,15 @@ constraints, but the backlog factory does not require one.
 ## Fresh setup, check, approve, and run
 
 Use the [installed native product](native-policy.md#install-and-start) on the
-owning host account. Its guest runtime must be prepared for that host, and its
-proxy must be running. Select an operator-authored Factory TOML and the
-workspaces for its roles. Each role keeps its own home and authentication;
+owning host account. Its guest runtime must be prepared for that host.
+Preparation requires a running proxy; the `start` command below starts it.
+Select an operator-authored Factory TOML and the workspaces for its roles.
+Each role keeps its own home and authentication;
 SafeYolo does not copy the host's login or credentials.
 
-The example below uses the shipped backlog contract and three existing owned
-repository workspaces at `/work/relay`, `/work/forge` and `/work/lens`. Replace
+Run the example from the SafeYolo repository root containing
+`docs/factories/backlog.toml`. The example uses that contract and three existing
+owned repository workspaces at `/work/relay`, `/work/forge` and `/work/lens`. Replace
 those paths with your selected directories. Keep the installation outside the
 agents' writable workspaces. The contract selects the role agents, harnesses,
 models, instructions and allowed handoffs.
@@ -201,6 +215,13 @@ local operator and wakes that role only:
 ```sh
 "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory send backlog 'Inspect the disposable repository and repair its failing fixture test.'
 "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory history backlog
+```
+
+For an interactive terminal conversation in the same instance, use native
+chat. The approved snapshot selects the coordinator without pane discovery:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord chat backlog
 ```
 
 History returns canonical message IDs, senders and sequences. Use

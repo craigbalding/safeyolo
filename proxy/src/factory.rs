@@ -1,7 +1,8 @@
 //! Operator-owned Factory entry. Coord and role checkpoints own work state.
 
 use crate::{
-    Error, coord_setup, coord_supervisor, host_agents, host_boot, host_lifecycle, host_platform,
+    Error, agent_api::coord::OperatorCoord, coord_setup, coord_supervisor, host_agents, host_boot,
+    host_lifecycle, host_platform,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -792,16 +793,17 @@ async fn release(
         backups.push(backup);
     }
     let mut changed = Vec::new();
+    let operator = OperatorCoord::open(&host_platform::config_path())?;
     let result = async {
-        crate::agent_api::operator_send(
-            &host_platform::config_path(),
+        operator.send(
             room,
             &format!(
                 "Factory work release requested. operation_id={operation}\nfactory={} targets={}",
                 snapshot.name,
                 targets.join(",")
             ),
-            &[],
+            "text/plain",
+            json!([]),
         )
         .await?;
         for (agent, path, original, next) in &plans {
@@ -811,20 +813,21 @@ async fn release(
             next.save(path)?;
             changed.push(agent.clone());
         }
-        crate::agent_api::operator_send(
-            &host_platform::config_path(),
+        operator.send(
             room,
             &format!(
                 "Factory work release completed. operation_id={operation}\nfactory={} targets={}",
                 snapshot.name,
                 targets.join(",")
             ),
-            &[],
+            "text/plain",
+            json!([]),
         )
         .await?;
         Ok::<_, Error>(())
     }
     .await;
+    operator.shutdown().await;
     if let Err(error) = result {
         return Err(format!("release {operation} did not finish: {error}; changed agents={}; keep affected agents stopped and inspect checkpoints. Backups: {}", changed.join(","), backups.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")).into());
     }
@@ -898,13 +901,19 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
             [kind,name,role] if kind=="login" => { let(snapshot,_)=approved(&root,name)?; login(&snapshot,role).await }
             [kind,name,text] if kind=="send" => {
                 let(snapshot,_)=approved(&root,name)?;
-                let result=crate::agent_api::operator_send(&host_platform::config_path(),&snapshot.room,text,&[snapshot.operator_agent().into()]).await?;
-                println!("{}",serde_json::to_string_pretty(&result)?); Ok(())
+                let operator = OperatorCoord::open(&host_platform::config_path())?;
+                let result = operator.send(&snapshot.room, text, "text/plain", json!([snapshot.operator_agent()])).await;
+                operator.shutdown().await;
+                println!("{}",serde_json::to_string_pretty(&result?)?); Ok(())
             }
             [kind,name,options @ ..] if kind=="history" => {
                 let(snapshot,_)=approved(&root,name)?;
                 let since=match options { []=>0, [flag,sequence] if flag=="--since"=>sequence.parse()?, _=>return Err("usage: factory history NAME [--since SEQUENCE]".into()) };
-                println!("{}",serde_json::to_string_pretty(&crate::agent_api::operator_history(&host_platform::config_path(),&snapshot.room,since).await?)?); Ok(())
+                let operator = OperatorCoord::open(&host_platform::config_path())?;
+                let (_cancel, cancellation) = tokio::sync::watch::channel(false);
+                let result = operator.read(&snapshot.room, since, 200, false, cancellation).await;
+                operator.shutdown().await;
+                println!("{}",serde_json::to_string_pretty(&result?)?); Ok(())
             }
             [kind,name,options @ ..] if kind=="release" => {
                 let(snapshot,_)=approved(&root,name)?;

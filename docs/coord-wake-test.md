@@ -26,20 +26,20 @@ collaboration.
 
 ## Prerequisites
 
-Use the retained Python package CLI for the setup and Coord administration
-commands below. The lifecycle start in **Run** uses the installed native CLI;
-replace `ROOT` with the same instance's absolute directory.
+Use an already prepared [native instance](native-coord.md). Replace `ROOT`
+with its absolute directory in every command below. Its proxy and Coord must
+be running, and `wake-test-bob` must already have the approved Claude Code
+launcher, authentication and registered native `safeyolo-coord` MCP adapter.
+This runbook does not prepare that harness. The shipped Claude host setup
+still uses inline Python, as recorded in the
+[responsibility map](native-settings.md#operator-entry-responsibilities).
 
-- SafeYolo running (`safeyolo start`).
-- One agent registered with the bundled harness setup, for example:
-  `safeyolo agent add wake-test-bob <folder> --host-script @claude --no-run`.
-- Coord initialized: `safeyolo coord init`.
-- A room with wake-test-bob granted:
-  `safeyolo coord room create wake-loop --member wake-test-bob`.
-- For an existing bundled agent, reapply its normal setup with
-  `safeyolo agent add wake-test-bob <folder> --host-script @claude --no-run`,
-  using the same registered folder and script. The setup stages and registers
-  `safeyolo-coord`; no manual MCP config edit is needed.
+Create the fixture room and grant the configured agent before starting it:
+
+```sh
+ROOT/bin/safeyolo --root ROOT coord room create wake-loop
+ROOT/bin/safeyolo --root ROOT coord grant wake-loop wake-test-bob
+```
 
 ## Setup — Claude's system prompt
 
@@ -69,7 +69,7 @@ ROOT/bin/safeyolo --root ROOT agent start wake-test-bob
 In another terminal, attach as operator:
 
 ```sh
-safeyolo coord chat wake-loop
+ROOT/bin/safeyolo --root ROOT coord chat wake-loop --to wake-test-bob
 ```
 
 Then, one at a time, type these prompts and hit Enter. **Wait for bob's
@@ -86,8 +86,8 @@ third message with slightly more content
 
 - Each of the three real messages produces exactly one `ack:` from bob,
   within a few seconds of you sending.
-- Bob's messages carry `sender_agent_id` = bob's `agent_id` (verify in the
-  transcript header or via `safeyolo coord chat wake-loop --observe`).
+- Bob's canonical messages carry `sender_agent_id` = bob's `agent_id` (verify
+  with `ROOT/bin/safeyolo --root ROOT coord history wake-loop`).
 - After each ack, bob re-arms `wait_for_coord` without you doing
   anything.
 - On `:done`, bob stops.

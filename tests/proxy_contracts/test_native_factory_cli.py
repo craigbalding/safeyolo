@@ -136,7 +136,13 @@ def assert_no_role_launch(instance):
 
 def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache):
     with prepared(tmp_path, _binary_cache) as (instance, workspaces):
-        assert not list(instance.root.rglob("*.py"))
+        # The shared native bundle retains non-Factory inputs. Factory homes
+        # stage native commands and link only their workflow skills.
+        assert not list((instance.root / "agents").rglob("*.py"))
+        skill = instance.root / "assets/skills/safeyolo"
+        assert not (skill / "scripts/github_checks.py").exists()
+        assert not (skill / "references/github-checks.md").exists()
+        assert "GitHub composite checks" not in (skill / "SKILL.md").read_text()
         assert_no_role_launch(instance)
         bound = roles(instance)
         snapshot = (instance.root / "factories/fixture/approved").read_text().strip()
@@ -174,6 +180,11 @@ def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp
         message = sent["envelope"]
         assert message["sender_kind"] == "operator" and message["sender_agent_id"] is None
         assert sent["attention_intent"]["mode"] == "targeted"
+        with sqlite3.connect(instance.root / "data/coord/v0.db") as db:
+            operator_grants = db.execute(
+                "SELECT room_id, permissions, granted_at, revoked_at FROM memberships "
+                "WHERE principal_kind='operator' ORDER BY room_id, granted_at",
+            ).fetchall()
         # Approval alone retains the former staged binding and cannot report
         # readiness for changed role content.
         role_source = tmp_path / "contract/role.md"
@@ -188,6 +199,11 @@ def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp
         cli(instance, "factory", "stop", "fixture")
         cli(instance, "factory", "prepare", "fixture", *workspaces)
         assert roles(instance) == {**bound, "observer": roles(instance)["observer"]}
+        with sqlite3.connect(instance.root / "data/coord/v0.db") as db:
+            assert db.execute(
+                "SELECT room_id, permissions, granted_at, revoked_at FROM memberships "
+                "WHERE principal_kind='operator' ORDER BY room_id, granted_at",
+            ).fetchall() == operator_grants
         history = json.loads(cli(instance, "factory", "history", "fixture").stdout)
         assert [item["msg_id"] for item in history["messages"]] == [message["msg_id"]]
         assert history["messages"][0]["attention_intent"]["mode"] == "targeted"

@@ -2738,69 +2738,145 @@ enum Sender<'a> {
     Operator,
 }
 
-pub(crate) async fn operator_send(
-    config: &Path,
-    room: &str,
-    body: &str,
-    notify: &[String],
-) -> Result<Value, crate::Error> {
-    let config = crate::native_config::read(config)?;
-    let client = CoordClient::new(
-        config.policy_file.clone(),
-        config.data_dir.map(|dir| dir.join("coord")),
-    );
-    let payload = serde_json::to_vec(
-        &json!({"body":body,"notify":notify,"declared_content_type":"text/plain"}),
-    )?;
-    let outcome = send(
-        &client,
-        Request {
-            method: "POST",
-            path_and_query: "/local/operator/coord/send",
-            authorization: None,
-            identity: crate::network_guard::Identity::Unavailable,
-            client_ip: None,
-            request_id: "local-operator",
-        },
-        room,
-        Sender::Operator,
-        &payload,
-    )
-    .await;
-    let super::ResponseBody::Json(value) = &outcome.response.body else {
-        return Err("Coord send returned no JSON".into());
-    };
-    if outcome.response.status != 200 {
-        return Err(format!("Coord send failed: {value}").into());
-    }
-    Ok(value.clone())
+/// Host-local access to the existing room store and publication owner. This
+/// client is never constructed by the agent routes or exposed as an API route.
+pub(crate) struct OperatorCoord {
+    client: CoordClient,
 }
 
-pub(crate) async fn operator_history(
-    config: &Path,
-    room: &str,
-    since: u64,
-) -> Result<Value, crate::Error> {
-    let config = crate::native_config::read(config)?;
-    let client = CoordClient::new(
-        config.policy_file.clone(),
-        config.data_dir.map(|dir| dir.join("coord")),
-    );
-    let access = client
-        .sender_access(room, Sender::Operator)
-        .await
-        .map_err(|_| "operator room access is unavailable")?;
-    if !access.permissions.iter().any(|p| p == "receive") {
-        return Err("operator receive permission is missing".into());
+#[derive(Debug)]
+pub(crate) struct OperatorCoordError {
+    pub unavailable: bool,
+    detail: String,
+}
+
+impl OperatorCoordError {
+    pub(crate) fn display_error(detail: String) -> Self {
+        Self {
+            unavailable: false,
+            detail,
+        }
     }
-    let outcome = read_messages(&client, room, access, Sender::Operator, since, 200).await;
+}
+impl std::fmt::Display for OperatorCoordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+impl std::error::Error for OperatorCoordError {}
+
+fn operator_result(outcome: Outcome<'_>) -> Result<Value, OperatorCoordError> {
     let super::ResponseBody::Json(value) = &outcome.response.body else {
-        return Err("Coord history returned no JSON".into());
+        return Err(OperatorCoordError {
+            unavailable: false,
+            detail: "Coord returned no JSON".into(),
+        });
     };
-    if outcome.response.status != 200 {
-        return Err(format!("Coord history failed: {value}").into());
+    if outcome.response.status == 200 {
+        return Ok(value.clone());
     }
-    Ok(value.clone())
+    let unknown = value["send_outcome"] == "unknown";
+    Err(OperatorCoordError {
+        unavailable: outcome.response.status == 503 && !unknown,
+        detail: if unknown {
+            "message acceptance is UNKNOWN: JetStream may have accepted it. No automatic resend was made. Inspect retained room history before deciding whether to send again.".into()
+        } else {
+            value["error"]
+                .as_str()
+                .unwrap_or("Coord operation failed")
+                .into()
+        },
+    })
+}
+
+impl OperatorCoord {
+    pub(crate) fn open(config: &Path) -> Result<Self, crate::Error> {
+        let config = crate::native_config::read(config)?;
+        Ok(Self {
+            client: CoordClient::new(
+                config.policy_file.clone(),
+                config.data_dir.map(|dir| dir.join("coord")),
+            ),
+        })
+    }
+
+    pub(crate) async fn send(
+        &self,
+        room: &str,
+        body: &str,
+        content_type: &str,
+        notify: Value,
+    ) -> Result<Value, OperatorCoordError> {
+        let payload =
+            json!({"body":body,"notify":notify,"declared_content_type":content_type}).to_string();
+        operator_result(
+            send(
+                &self.client,
+                Request {
+                    method: "POST",
+                    path_and_query: "/local/operator/coord/send",
+                    authorization: None,
+                    identity: crate::network_guard::Identity::Unavailable,
+                    client_ip: None,
+                    request_id: "local-operator",
+                },
+                room,
+                Sender::Operator,
+                payload.as_bytes(),
+            )
+            .await,
+        )
+    }
+
+    pub(crate) async fn read(
+        &self,
+        room: &str,
+        since: u64,
+        limit: usize,
+        wait: bool,
+        cancellation: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Value, OperatorCoordError> {
+        let access = self
+            .client
+            .sender_access(room, Sender::Operator)
+            .await
+            .map_err(|error| OperatorCoordError {
+                unavailable: matches!(error, CoordError::Unavailable),
+                detail: match error {
+                    CoordError::NotFound => "room not found or not accessible",
+                    CoordError::Forbidden => "coordination permission denied",
+                    CoordError::Unavailable => "coordination substrate unavailable",
+                    _ => "coordination state unavailable",
+                }
+                .into(),
+            })?;
+        if !access.permissions.iter().any(|p| p == "receive") {
+            return operator_result(error_response(CoordError::Forbidden));
+        }
+        operator_result(
+            read_messages_with_timeout(
+                &self.client,
+                room,
+                access,
+                Sender::Operator,
+                since,
+                limit,
+                if wait {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(500)
+                },
+                false,
+                wait,
+                cancellation,
+            )
+            .await,
+        )
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.client.shutdown().await;
+    }
 }
 
 async fn send(
@@ -3294,7 +3370,9 @@ async fn read_messages_with_timeout(
                 {
                     return Ok((Vec::new(), (since, since)));
                 }
-                page = filter_wait_candidates(page, principal, &current, exclude_self)?;
+                if !matches!(sender, Sender::Operator) {
+                    page = filter_wait_candidates(page, principal, &current, exclude_self)?;
+                }
                 if page.len() >= limit.saturating_add(1) {
                     break;
                 }
@@ -3358,7 +3436,7 @@ async fn read_messages_with_timeout(
                     .stream_sequence;
                 let mut value: Value =
                     serde_json::from_slice(&message.payload).map_err(|_| CoordError::Data)?;
-                let qualifies = if wake_mode {
+                let qualifies = if wake_mode && !matches!(sender, Sender::Operator) {
                     message_wakes_waiter(
                         message.headers.as_ref(),
                         &value,
@@ -3415,7 +3493,9 @@ async fn read_messages_with_timeout(
                 {
                     return Ok((Vec::new(), (since, since)));
                 }
-                page = filter_wait_candidates(page, principal, &current, exclude_self)?;
+                if !matches!(sender, Sender::Operator) {
+                    page = filter_wait_candidates(page, principal, &current, exclude_self)?;
+                }
                 if !page.is_empty() {
                     break;
                 }

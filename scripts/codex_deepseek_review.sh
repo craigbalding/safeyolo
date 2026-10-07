@@ -11,8 +11,7 @@ repo=${SAFEYOLO_REVIEW_REPO:-/home/agent/safeyolo-rust-620}
 root=${SAFEYOLO_REVIEW_LOG_ROOT:-/home/agent/safeyolo-rust-620-evidence/deepseek-reviews}
 profile=${SAFEYOLO_REVIEW_PROFILE:-opencode-go-review}
 launcher_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-viewer_repo=${SAFEYOLO_REVIEW_VIEWER_REPO:-$launcher_root}
-viewer_script="$viewer_repo/contrib/watch-agent-room.py"
+viewer=${SAFEYOLO_REVIEW_VIEWER_CLI:-$HOME/.safeyolo/bin/safeyolo}
 model_provider=opencode_go_review
 model=deepseek-v4.1-flash
 reasoning=max
@@ -40,8 +39,7 @@ die() { echo "codex-deepseek-review: $*" >&2; exit 2; }
 
 git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1 || \
   die "review repository is not a git checkout: $repo"
-[[ -f "$viewer_script" ]] || die "factory JSONL viewer is missing: $viewer_script"
-command -v uv >/dev/null 2>&1 || die "uv is required for the factory JSONL viewer"
+[[ -x "$viewer" ]] || die "native JSONL viewer is missing: $viewer; set SAFEYOLO_REVIEW_VIEWER_CLI"
 mkdir -p "$root"
 
 extract_session() {
@@ -112,10 +110,10 @@ launch() {
   {
     printf '#!/usr/bin/env bash\nset -u -o pipefail\nset +e\n'
     printf "printf '%%s\\\\n' %q\n" "DeepSeek review issue=$issue candidate=${CANDIDATE:-unknown}"
-    printf "printf '%%s\\\\n' %q\n" "Live view uses contrib/watch-agent-room.py; raw JSONL and receipt are retained."
+    printf "printf '%%s\\\\n' %q\n" "Live view uses native coord watch; raw JSONL and receipt are retained."
     printf ' %q' "${command[@]}"
     printf ' 2>%q | tee %q |' "$err" "$log"
-    printf ' %q' uv run --project "$viewer_repo" --no-sync python "$viewer_script" \
+    printf ' %q' "$viewer" coord watch \
       --jsonl - --max-text 240 --show-unknown
     printf '\n'
     printf 'pipe_status=("${PIPESTATUS[@]}")\n'

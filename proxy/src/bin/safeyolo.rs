@@ -262,6 +262,7 @@ async fn run() -> Result<(), Error> {
         [help] if matches!(help.as_str(), "--help" | "help") => {
             println!("{}", safeyolo_proxy::factory::HELP);
             println!("{}", safeyolo_proxy::operator_commands::HELP);
+            println!("{}", safeyolo_proxy::coord_operator::HELP);
             println!(
                 "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
             );
