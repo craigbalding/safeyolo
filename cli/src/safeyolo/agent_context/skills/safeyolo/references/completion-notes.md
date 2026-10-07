@@ -32,9 +32,10 @@ kinds are `issue`, `pr`, `commit`, `head`, `tree`, `test`, `runtime`, `coord`,
 and `document`. The limits are 8 candidates, 8 evidence entries per candidate,
 and 32 KiB of JSON.
 
-Use `safeyolo.coord.completion_notes.append_completion_notes` to render the
-suffix. Passing no candidates returns the original completion body
-byte-for-byte. An issue owner may add a genuine `DISPATCH_CANDIDATE` to final
+Write one compact JSON line using the contract above, and send the complete
+body through the ordinary native Coord command or MCP tool. The native bundle
+does not ship a Python completion-note helper. With no candidates, omit the
+suffix and preserve the original completion body byte-for-byte. An issue owner may add a genuine `DISPATCH_CANDIDATE` to final
 `DONE`; an independent reviewer may add a genuine `FACTORY_CANDIDATE` to an
 exact-head disposition. Never add filler to satisfy an imagined quota.
 
@@ -63,3 +64,9 @@ authority to publish or change workflow automatically. Exclude credentials,
 private or customer data, chain-of-thought, unnecessary transcript, and
 unredacted sensitive snippets. Prefer durable authoritative evidence refs over
 copied material.
+
+That parser and its shared Factory proposal consumers remain source libraries
+owned by #818's remaining native replacement work. Native Dispatch generation
+calls neither library; give the generator only Relay's final public manifest.
+Do not treat a body-authored provenance field or unvalidated candidate as a
+substitute for canonical ingestion.

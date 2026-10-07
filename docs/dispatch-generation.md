@@ -13,7 +13,13 @@ the renderer supports any concise defined term and emits it only where the
 content uses it. Relay, Forge, and Lens are expanded in the standard editorial
 and attribution labels.
 
-## Repository paths and deterministic command
+## Generate and check output
+
+Use an installed native `safeyolo` executable on your command path. See
+[native installation](native-policy.md#install-and-start) if it is not installed.
+Run generation from the SafeYolo repository root, using the checked-in source
+below or an independently edited public manifest. Generation needs neither a
+running proxy nor Coord, operator credentials, Python, or network access.
 
 Public editorial sources and generated Markdown live under:
 
@@ -26,14 +32,20 @@ site/
   snapshots/2026-08.md
 ```
 
-Generate one strict source or verify committed output without writing:
+Generate the dated Dispatch and topic output, then verify the same files without
+writing:
 
 ```sh
-uv run python scripts/generate_dispatch.py \
+safeyolo dispatch generate \
   site/_sources/dispatch/2026-08-29.json --output-root site
-uv run python scripts/generate_dispatch.py \
+safeyolo dispatch generate \
   site/_sources/dispatch/2026-08-29.json --output-root site --check
 ```
+
+The first command reports the generated paths, or reports that the output is
+already current. The second reports `Dispatch output is current (2 files).`
+Missing or stale output makes `--check` fail without writing. Invalid source,
+unreadable input, unsafe paths and failed writes return a nonzero exit status.
 
 Dates and content are explicit inputs; generation never reads the clock or
 network. The same source produces identical bytes. Writes are atomic and
@@ -93,7 +105,8 @@ Lens review, Forge implementation discovery, a pre-existing bug exposed by
 testing, infrastructure/environment behavior, a factory-process observation,
 and Relay synthesis. The renderer escapes editorial text as plain Markdown;
 only validated evidence records become links and only a dedicated snippet
-becomes a code fence.
+becomes a code fence. Liquid template expressions remain literal in the Jekyll
+site. Pipes remain literal in prose and fenced snippets.
 
 ## The final manifest is the publication input
 
@@ -132,7 +145,21 @@ evidence corrections may keep the same key; a genuinely material state change
 uses a new one. No topic entry in the source means no topic write.
 
 Generated Markdown includes fixed Jekyll front matter and canonical
-permalinks. `scripts/check_dispatch_site.py` regenerates every retained source
+permalinks. `safeyolo dispatch check-site` regenerates every retained source
 in memory and checks committed bytes, metadata, duplicate periods and paths,
 obvious leaks, local and HTTPS links, and publication-branch path scope. The
 check is mechanical; it does not judge Relay's prose or evidence quality.
+
+From the same repository root, check the whole publication tree with:
+
+```sh
+safeyolo dispatch check-site --site-root site
+```
+
+Success reports `Dispatch site validation passed.` For a `dispatch/<date>`
+branch, also use `--publication-base REVISION`, replacing `REVISION` with the
+publication PR's base commit. The checker uses Git to reject changes outside the
+fixed site content paths. It ignores links shown as inert examples in fenced
+code or escaped prose; actual Markdown links still need valid destinations.
+The publication and Pages workflows invoke this same native checker before the
+existing Jekyll build.

@@ -100,6 +100,18 @@ FAKE_SURFACE = {
 
 
 class TestValidateLine:
+    def test_native_dispatch_commands_are_present_after_python_retirement(self):
+        surface = mod._load_cli_surface()
+        for invocation in (
+            "safeyolo dispatch generate source.json --output-root site --check",
+            "safeyolo dispatch check-site --site-root site --publication-base master",
+            "safeyolo --root root coord dispatch-trigger backlog --date 2026-08-29 --weekly-on monday --publication-mode manual",
+        ):
+            assert mod._validate_line(invocation, surface) is None
+        assert mod._validate_line("safeyolo dispatch generate source.json --publish", surface)
+        assert mod._validate_line("safeyolo --root root coord dispatch-trigger backlog --invented", surface)
+        assert mod._validate_line("safeyolo --root", surface)
+
     def test_builtin_help_is_valid_for_groups_and_commands(self):
         for invocation in (
             "safeyolo --help",

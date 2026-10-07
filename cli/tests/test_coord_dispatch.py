@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from safeyolo.coord import dispatch
+from tests.legacy_dispatch import dispatch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ISSUE_URL = "https://github.com/craigbalding/safeyolo/issues/437"

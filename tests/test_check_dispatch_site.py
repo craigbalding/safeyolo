@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "scripts" / "check_dispatch_site.py"
-SPEC = importlib.util.spec_from_file_location("check_dispatch_site", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-check_dispatch_site = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = check_dispatch_site
-SPEC.loader.exec_module(check_dispatch_site)
+from tests.legacy_dispatch import check_site as check_dispatch_site
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def copy_site(tmp_path: Path) -> Path:
     destination = tmp_path / "site"

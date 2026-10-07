@@ -9,9 +9,18 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from safeyolo.commands.coord import coord_app
-from safeyolo.coord import api, dispatch, dispatch_schedule
+from safeyolo.coord import api
 from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown
+from tests.legacy_dispatch import dispatch, dispatch_schedule
+from tests.legacy_dispatch.commands import coord_app
+
+
+def test_production_python_cli_no_longer_registers_dispatch_trigger() -> None:
+    from safeyolo.commands.coord import coord_app as production_coord
+
+    result = CliRunner().invoke(production_coord, ["dispatch-trigger", "--help"])
+    assert result.exit_code != 0
+    assert "No such command 'dispatch-trigger'" in result.output
 
 
 def prepared(body: str = "TASK relay test") -> dict:

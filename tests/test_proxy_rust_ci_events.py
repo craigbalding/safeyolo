@@ -79,8 +79,13 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert native["if"] == "steps.changes.outputs.rust == 'true'"
     assert steps["Check Rust formatting and lint"]["if"] == native["if"]
     assert steps["Install the pinned Rust toolchain"]["if"] == (
-        "steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'"
+        "steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'"
     )
+    cli_build = steps["Build the native CLI for recovery and Dispatch checks"]
+    site_check = steps["Validate the Dispatch publication tree"]
+    assert "--bin safeyolo" in cli_build["run"]
+    assert step_names.index(cli_build["name"]) < step_names.index(site_check["name"])
+    assert site_check["run"] == "proxy/target/debug/safeyolo dispatch check-site"
     assert "--ignored" not in native["run"]
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
@@ -178,9 +183,11 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     ("cli/src/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}, "available"),
     ("docs/DEVELOPERS.md", {}, "available"),
+    ("site/index.md", {"dispatch": "true"}, "available"),
+    (".github/workflows/pages.yml", {"dispatch": "true"}, "available"),
     ("proxy/src/host_platform.rs", {}, "missing"),
     ("proxy/src/host_platform.rs", {}, "failing"),
-], ids=["linux-only", "mac-only", "shared-native", "docs-only", "missing-grep", "failing-grep"])
+], ids=["linux-only", "mac-only", "shared-native", "docs-only", "dispatch-content", "dispatch-workflow", "missing-grep", "failing-grep"])
 def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected, matcher):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
