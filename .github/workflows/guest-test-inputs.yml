@@ -41,10 +41,10 @@ jobs:
       - name: Build Linux guest executables and receipts
         run: scripts/build_guest_command.sh
       - name: Build Linux recovery CLI
-        if: inputs.profile == 'debug'
+        if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
         run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
       - name: Upload Linux host test inputs
-        if: inputs.profile == 'debug'
+        if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-host-${{ inputs.architecture }}-debug
