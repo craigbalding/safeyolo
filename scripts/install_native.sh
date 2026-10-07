@@ -17,14 +17,14 @@ while (($#)); do
     --help)
       echo 'Usage: install_native.sh --root ROOT [--bundle UNPACKED_BUNDLE] [--platform-assets DIRECTORY]'
       echo 'From source: scripts/install_native.sh --root ROOT --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
-      echo 'Installation checks the native bundle and creates configuration, trust and tokens internally. ROOT must be absent or empty. Prepared guest images are optional for proxy startup and required before agent start.'
+      echo 'Installation checks the native bundle and creates configuration, trust and tokens internally. ROOT must have no existing instance configuration. Prepared guest images are optional for proxy startup and required before agent start.'
       exit 0;;
     *) echo "Unknown argument: $1" >&2; exit 2;;
   esac
 done
 [[ -n $root ]] || { echo '--root is required; choose a fresh instance directory' >&2; exit 2; }
-if [[ -e $root && ( ! -d $root || -n $(find "$root" -mindepth 1 -maxdepth 1 -print -quit) ) ]]; then
-  echo 'Instance root is not empty; choose a fresh root' >&2; exit 1
+if [[ ( -e $root && ! -d $root ) || -e $root/config.toml || -e $root/policy.toml || -e $root/data/admin_token ]]; then
+  echo 'Instance already has configuration or is not a directory; choose a fresh root' >&2; exit 1
 fi
 temporary=
 if [[ -z $bundle ]]; then

@@ -107,8 +107,18 @@ print(binary.parent)
 PY
 )"
     GUEST_HELPER="${SAFEYOLO_GUEST_HELPER:-${SAFEYOLO_GUEST_TARGET_DIR:-$INSTALL_ROOT/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}release/safeyolo-guest}"
-    "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" \
-        --artifacts "$NATIVE_ARTIFACTS" --guest-artifacts "$(dirname "$GUEST_HELPER")"
+    if [ -n "${SAFEYOLO_NATIVE_BUNDLE:-}" ]; then
+        "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" --bundle "$SAFEYOLO_NATIVE_BUNDLE"
+    else
+        # Legacy test transport still uses its wheel CLI. Native preparation
+        # needs the ordinary installer's complete checked runtime inputs.
+        NATIVE_INPUTS=(--artifacts "$NATIVE_ARTIFACTS" --guest-artifacts "$(dirname "$GUEST_HELPER")"
+            --runtime-artifacts "${SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS:?set the prepared tmux input directory}")
+        if [ "$(uname -s)" = Darwin ]; then
+            NATIVE_INPUTS+=(--vm-artifacts "${SAFEYOLO_NATIVE_VM_ARTIFACTS:?set the prepared signed VM/guest-terminal input directory}")
+        fi
+        "$INSTALL_ROOT/scripts/install_native.sh" --root "$SAFEYOLO_CONFIG_DIR" "${NATIVE_INPUTS[@]}"
+    fi
 fi
 
 if [ "$LANE" != "proxy" ]; then

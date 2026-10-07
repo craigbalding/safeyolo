@@ -149,3 +149,15 @@ def test_installer_preserves_existing_instance(package_inputs, tmp_path):
     assert result.returncode != 0 and "fresh root" in result.stderr
     assert (root / "config.toml").read_text() == "operator configuration\n"
     assert not (root / "bin").exists()
+
+
+def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    root = tmp_path / "prepared"
+    (root / "share").mkdir(parents=True)
+    image = root / "share/Image"
+    image.write_bytes(b"prepared boot input")
+    result = run(str(bundle / "install.sh"), "--root", str(root))
+    assert result.returncode == 0, result.stderr
+    assert image.read_bytes() == b"prepared boot input"
+    assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()

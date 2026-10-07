@@ -34,7 +34,7 @@ if [[ -z $artifacts ]]; then
   options=() target_profile=debug
   if [[ $profile == production ]]; then options+=(--release); target_profile=release; fi
   (cd "$repository"; SAFEYOLO_BUILD_REVISION=$revision CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1} scripts/cargo_with_space.sh build \
-    --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-proxy --bin safeyolo-coord "${options[@]}")
+    --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-proxy --bin safeyolo-coord ${options[@]+"${options[@]}"})
   artifacts=${CARGO_TARGET_DIR:-$repository/proxy/target}/${CARGO_BUILD_TARGET:+$CARGO_BUILD_TARGET/}$target_profile
 fi
 if [[ -z $guest_artifacts ]]; then
@@ -102,6 +102,21 @@ cp -R "$repository/cli/src/safeyolo/services" "$directory/assets/"
 cp "$repository/LICENSE" "$directory/"
 if [[ -d $runtime_artifacts/licenses ]]; then
   cp -R "$runtime_artifacts/licenses" "$directory/assets/"
+fi
+# Retain installed Ubuntu package notices for the runtime bytes we copy.
+# Prepared or other-platform artifacts carry their notices alongside tmux.
+if [[ $platform == linux-* ]] && command -v dpkg-query >/dev/null 2>&1; then
+  mkdir -p "$directory/assets/licenses"
+  for runtime_file in "$runtime_artifacts/tmux" ${libraries[@]+"${libraries[@]}"}; do
+    if provider=$(dpkg-query -S "$(readlink -f "$runtime_file")" 2>/dev/null); then
+      provider=${provider%%: /*}
+      provider=${provider%%:*}
+      if [[ -f /usr/share/doc/$provider/copyright ]]; then
+        cp "/usr/share/doc/$provider/copyright" "$directory/assets/licenses/$provider-copyright"
+      fi
+    fi
+  done
+  cp -R /usr/share/common-licenses "$directory/assets/licenses/"
 fi
 cp "$repository/docs/AGENTS.md" "$directory/assets/docs/"
 cp "$repository/cli/src/safeyolo/repo_map.py" "$directory/assets/"

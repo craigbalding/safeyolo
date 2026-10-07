@@ -17,7 +17,8 @@ environment or uv tool installation.
 
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
-The instance directory `$HOME/.safeyolo-native` must be absent or empty.
+The instance directory `$HOME/.safeyolo-native` must have no existing instance
+configuration. Prepared platform assets may already be present.
 Installation checks bundle checksums and executable identities, then creates
 configuration, trust, private tokens and runtime directories internally.
 There is no separate init, build or setup command after unpacking.
