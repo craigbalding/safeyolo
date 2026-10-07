@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import venv
 import zipfile
 from pathlib import Path
 
@@ -36,20 +37,20 @@ def executable(path, identity):
     source.unlink()
 
 
-def python_driver(path, python):
-    """A native shebang interpreter supplies controlled NATS tool output."""
-    source = path.with_suffix(".c")
-    source.write_text(
-        '#include <stdio.h>\n#include <string.h>\n#include <unistd.h>\n'
-        'int main(int argc, char **argv) {\n'
-        '  if (argc > 2 && !strcmp(argv[1], "-I") && !strcmp(argv[2], "-c")) {\n'
-        '    puts("verified fixture NATS"); return 0;\n'
-        '  }\n'
-        f'  argv[0] = {json.dumps(python)}; execv(argv[0], argv);\n'
-        '  perror("fixture Python exec"); return 1;\n}\n'
-    )
-    subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
-    source.unlink()
+def preparation_interpreter(path):
+    """Use a supported isolated interpreter with controlled NATS output."""
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(path)
+    python = path / "bin/python"
+    library = subprocess.check_output(
+        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        text=True, timeout=10,
+    ).strip()
+    package = Path(library) / "safeyolo/coord"
+    package.mkdir(parents=True)
+    for directory in (package.parent, package):
+        (directory / "__init__.py").touch()
+    (package / "nats_runtime.py").write_text("def ensure_binary(): return 'verified fixture NATS'\n")
+    return python
 
 
 @pytest.fixture
@@ -139,14 +140,14 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         (host / name).touch()
     (guest / "safeyolo-guest").touch()
     python = shutil.which("python3")
-    python_driver(tools / "python-driver", python)
+    interpreter = preparation_interpreter(tools / "python-environment")
     files = {
         checkout / "install.sh": "#!/bin/sh\nexit 0\n",
         tools / "uname": f"#!/bin/sh\nprintf '{platform}\\n'\n",
         tools / "tmux": "#!/bin/sh\nprintf 'tmux fixture\\n'\n",
         tools / "uv": '#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then printf "%s\\n" "$PREPARE_TOOLS"; fi\n',
         tools / "safeyolo": (
-            f'#!{tools / "python-driver"}\n'
+            f'#!{interpreter}\n'
             "import json,os,sys\nfrom pathlib import Path\n"
             "if '--check' in sys.argv:\n"
             "    print(json.dumps({'package_manager':'apt','missing_deps':[]}))\n"
@@ -193,6 +194,7 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(guest / "safeyolo-guest"))
     result = run(str(scripts / "run-lane.sh"), lane, "--prepare-only", cwd=checkout)
     assert result.returncode == 0, result.stderr
+    assert "verified fixture NATS" in result.stdout
     options = json.loads((root / "native-inputs.json").read_text())
     assert Path(options["--artifacts"]) == host
     assert Path(options["--guest-artifacts"]) == guest
