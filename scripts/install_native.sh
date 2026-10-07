@@ -48,7 +48,7 @@ fi
 mkdir -p "$root"
 cp -R "$bundle/bin" "$bundle/libexec" "$bundle/assets" "$root/"
 if [[ -d $bundle/lib ]]; then cp -R "$bundle/lib" "$root/"; fi
-cp "$bundle/package-info" "$bundle/SHA256SUMS" "$root/"
+cp "$bundle/package-info" "$bundle/SHA256SUMS" "$bundle/LICENSE" "$root/"
 if [[ -n $platform_assets ]]; then
   mkdir -p "$root/share"
   if [[ $(uname -s) == Darwin ]]; then

@@ -162,6 +162,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         # and artifact identity sidecars, not repeated executable copies.
         for binary in HOST_BINARIES:
             (root / "bin" / binary).unlink(missing_ok=True)
+        (root / "bin/tmux").unlink(missing_ok=True)
+        (root / "libexec/tmux").unlink(missing_ok=True)
         for binary in GUEST_BINARIES:
             (root / "assets/guest" / binary).unlink(missing_ok=True)
 
