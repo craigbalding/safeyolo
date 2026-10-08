@@ -12,6 +12,7 @@ pub mod audit;
 mod circuit_runtime;
 pub mod circuits;
 mod command_centre;
+mod completion_notes;
 mod config;
 mod connection_tasks;
 pub mod contracts;
@@ -30,6 +31,7 @@ pub(crate) mod desktop_present;
 mod desktop_preview;
 pub mod dispatch;
 pub mod factory;
+pub mod factory_proposals;
 mod flow_recorder;
 #[cfg(test)]
 mod flow_runtime_tests;

@@ -27,6 +27,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 
+@pytest.fixture
+def native_proposals(tmp_path):
+    # Load the native fixture only when requested, after the repository path
+    # above is available. The other CLI consumers need no native binaries.
+    from tests.proxy_contracts.native_proposal_fixture import proposal_instance
+
+    yield from proposal_instance(tmp_path)
+
+
 # ---------- NATS runtime fixtures ----------
 # Shared between test_coord_nats_runtime.py and test_coord_nats_client.py
 # so the binary download happens once per session across both files.

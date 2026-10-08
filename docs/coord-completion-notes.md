@@ -48,18 +48,13 @@ Model Context Protocol (MCP) tool. If there are no candidates, omit the suffix
 and leave the original body byte-for-byte unchanged. No Python helper import is
 needed to author a note.
 
-The retained source helper
-`safeyolo.coord.completion_notes.append_completion_notes` also renders this
-suffix and preserves an empty completion body. The native bundle does not ship
-that Python library. Its shared ingestion and Factory proposal consumers remain
-owned by #818's separate replacement work; native Dispatch generation consumes
-only the independently authored final public manifest.
-
 ## Trusted ingestion
 
-Relay and other trusted consumers must pass the complete canonical `read_room`
-envelope to `safeyolo.coord.completion_notes.parse_completion_envelope`. The
-parser derives `msg_id`, coord `sequence`, send time, sender identity, and
+On the host, use `safeyolo --root ROOT coord completion-notes ROOM SEQUENCE`.
+In a guest, use `safeyolo-coord completion-notes ROOM SEQUENCE` with the ordinary
+scoped Agent API connection. The commands read exactly the requested retained
+sequence through the existing Coord reader and parse its canonical envelope.
+Neither command accepts an envelope file or authored sender identity. The parser derives `msg_id`, coord `sequence`, send time, sender identity, and
 origin instance from that envelope and attaches them as `provenance` to every
 accepted candidate. Authors must never supply provenance.
 

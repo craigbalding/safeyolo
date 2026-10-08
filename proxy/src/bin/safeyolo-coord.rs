@@ -17,6 +17,9 @@ fn input() -> Result<Value, Error> {
 async fn run() -> Result<(), Error> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
+        [kind, ..] if kind == "completion-notes" || kind == "proposals" => {
+            safeyolo_proxy::factory_proposals::run_agent(&arguments).await?;
+        }
         [kind, rest @ ..] if kind == "repo-map" => {
             safeyolo_proxy::repo_map::run(rest)?;
         }

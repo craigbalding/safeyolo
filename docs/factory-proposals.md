@@ -11,37 +11,89 @@ operator message.
 
 ## Trusted workflow
 
-Use `safeyolo.coord.factory_proposals.FactoryProposalWorkflow` with a
-`FactoryProposalLedger`:
+Use `safeyolo --root ROOT coord proposals` on the host, or
+`safeyolo-coord proposals` in a guest. Both use the existing Coord reader.
+The guest reader has only its Agent API room permissions. Every message is read
+by room and retained sequence; there is no envelope-file or sender override.
+The commands neither publish a message nor perform a proposed change.
 
-1. Pass the complete canonical retained coord envelope to `consume_envelope`.
-   The #437 parser accepts only a valid completion-note trailer and attaches
-   sender identity, coord sequence, message ID, send time, and origin from the
-   envelope.
-2. Treat every candidate field as an untrusted nomination. The verifier must
-   check cited coord state, issues, PRs, exact commits/trees, tests, or runtime
-   evidence and return a bounded `VerifiedFactoryObservation`. It also supplies
-   the authoritative task key used to distinguish recurrence from two messages
-   about one task and a stable recommendation key that changes only when the
-   proposed intervention materially changes.
-3. Search authoritative issue state through `find_existing_issue` before any
-   ledger write. Return `ExistingIssueCoverage` when an open or otherwise
-   relevant issue already covers the intervention; the record becomes
-   `covered` and is not proposed again.
-4. Call `pending`. A proposal becomes ready after verified evidence spans two
-   task keys, or after the verifier explicitly identifies one material delivery
-   or review impact. Repeated messages from one task do not establish
-   recurrence.
-5. Relay sends the returned body unchanged over the existing operator-facing
-   coord room as Relay, never as the operator. Pass the canonical envelope
-   returned by the successful send to `mark_presented`.
-6. On restart, call `reconcile_presentations` with retained operator-facing room
-   history before sending pending work. It closes the crash boundary where
-   coord accepted a proposal but Relay stopped before recording the returned
-   envelope.
+1. Run `completion-notes ROOM SEQUENCE` to inspect a terminal nomination.
+   Invalid, absent, or non-factory trailers produce no observation write.
+2. Treat every candidate field as untrusted. Relay checks cited Coord state,
+   issues, PRs, exact commits/trees, tests, or runtime evidence. Relay supplies
+   the checked facts, authoritative task key, and stable recommendation key.
+3. Search authoritative issue state before recording the observation. Relay
+   supplies an explicit `coverage` result: an issue reference when covered, or
+   `null` after finding no relevant coverage. Missing coverage is refused.
+4. Run `proposals observe ROOM SEQUENCE --verified FILE`. The file contains
+   the verified observation and coverage result, separately from candidate text.
+   For several candidates, select the zero-based index with `--candidate INDEX`.
+5. Run `proposals pending`. Evidence spanning two task keys, or one explicitly
+   material delivery/review impact, can produce a frozen body for Relay to send
+   unchanged through its existing operator-facing Coord tool **as Relay**.
+6. After a successful send, run `proposals presented ROOM SEQUENCE` with the
+   actual Relay send's retained sequence. After restart or an unknown send
+   outcome, run `proposals reconcile ROOM` **before** inspecting pending bodies.
+   Reconciliation recognizes exact retained Relay sends across the send/ledger
+   crash boundary. Truncated history leaves publication unknown and reports an
+   error; inspect surviving messages before deciding whether to send again.
+7. Run `proposals outcome ROOM SEQUENCE` only after an authenticated operator
+   decision appears in retained history. The command checks its actual envelope
+   attribution and exact body. It records status only.
 
-No component in this module sends a message or performs a proposed change.
-Rendering is deliberately separate from Relay's attributed coord send.
+For host examples, first select the existing native instance with `--root ROOT`.
+For guest examples, retain the staged Agent API connection and token-file
+settings. `--ledger FILE` selects a disposable ledger when needed. `list` and
+`pending` read local state without requiring a live Coord connection.
+
+After Relay has verified the evidence and searched for existing coverage, write
+this shape to a local `verified.json`. Replace the example facts, task key,
+evidence and recommendation with the actual checked values. `material` means a
+verified material delivery/review impact, not nomination urgency.
+
+```json
+{
+  "observation": {
+    "correlation_key": "exact-review-handoff",
+    "task_key": "issue:#500",
+    "facts": ["The reviewed handoff omitted the source identity."],
+    "inference": "The omission delayed the review.",
+    "recommendation": "Include the source identity in the handoff.",
+    "recommendation_key": "include-source-identity",
+    "evidence": [{"kind": "issue", "ref": "#500", "task_key": "issue:#500"}],
+    "impact": "One blocked review round trip.",
+    "confidence": "Exact retained message verified.",
+    "material": false
+  },
+  "coverage": null
+}
+```
+
+The observation requires `correlation_key`, `task_key`, `facts`, `inference`,
+`recommendation`, `recommendation_key` and `evidence`. `impact`, `confidence`
+and `material` are optional; materiality defaults to false. Evidence requires
+`kind`, `ref` and `task_key`. The native operation adds nomination evidence
+from canonical provenance; verified input cannot supply nomination provenance.
+No command independently authenticates Relay's facts or performs the issue
+lookup. Those checks remain Relay's responsibility, as with the replaced
+caller-provided verifier and coverage checker.
+
+For a guest with receive permission in `backlog`, and a checked nomination at
+sequence 123, these commands inspect and record the observation:
+
+```sh
+safeyolo-coord completion-notes backlog 123
+safeyolo-coord proposals observe backlog 123 --verified verified.json
+safeyolo-coord proposals list
+safeyolo-coord proposals pending
+```
+
+A task-local observation yields `observed` and an empty pending array. To finish
+an actual presentation, use the retained sequence of the unchanged Relay body;
+never substitute an operator-authored proposal. `--relay NAME` on `presented`
+and `reconcile` selects an explicitly bound Relay agent name when it differs
+from `relay`. `reconcile --since SEQUENCE` is available only when that starting
+point includes every potentially unrecorded presentation.
 
 ## Correlation and presentation
 
@@ -106,15 +158,19 @@ recommendation or create follow-up work.
 
 ## Deliberately small persistence
 
-The default ledger is
-`~/.safeyolo/data/coord/factory-proposals.json`. Each entry stores only the
+The host ledger defaults to `coord/factory-proposals.json` in the selected
+native data directory. The guest ledger defaults to
+`$SAFEYOLO_COORD_DATA_DIR/factory-proposals.json`, or
+`~/.safeyolo/data/coord/factory-proposals.json` when that variable is unset.
+Native state starts fresh; historical ledger conversion is unsupported. Each entry stores only the
 stable proposal and fingerprint, normalized evidence set, first/last canonical
 send times, status, last-presented revision, and the minimal canonical source
 marker needed for deterministic proposal selection. It is a bounded atomic JSON
 file, not a database, daemon, scheduler, observation archive, or retrospective
 framework.
 
-Writes take an in-process lock and an inter-process `flock`, stage a mode-0600
+Writes reuse the existing file-lock owner, serialize concurrent threads and
+processes with `flock`, stage a mode-0600
 file, `fsync`, and atomically replace the ledger. Malformed, duplicate-key,
 oversized, or schema-invalid state fails closed and is not overwritten. The
 ledger is bounded to 256 proposals, 64 evidence references and 16 facts per

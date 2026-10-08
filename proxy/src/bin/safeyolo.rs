@@ -1,6 +1,7 @@
 //! Installed operator commands use the native policy library and Admin API.
 
 use std::{
+    ffi::OsString,
     io::Write,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
@@ -200,7 +201,7 @@ async fn context_command(arguments: &[String]) -> Result<(), Error> {
 }
 
 async fn run() -> Result<(), Error> {
-    let mut arguments: Vec<String> = std::env::args().skip(1).collect();
+    let mut arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     let explicit_config = arguments.first().is_some_and(|value| value == "--config");
     let explicit_root = arguments.first().is_some_and(|value| value == "--root");
     let selected = if explicit_config || explicit_root {
@@ -241,6 +242,20 @@ async fn run() -> Result<(), Error> {
     } else {
         root.join("config.toml")
     };
+    // Proposal file options retain Unix filename bytes through the shared
+    // parser, as do the native guest CLI's existing path-taking commands.
+    if matches!(arguments.as_slice(), [coord, kind, ..] if coord == "coord" && (kind == "completion-notes" || kind == "proposals"))
+    {
+        return safeyolo_proxy::factory_proposals::run_operator(&config, &arguments[1..]).await;
+    }
+    let arguments: Vec<String> = arguments
+        .into_iter()
+        .map(|argument| {
+            argument
+                .into_string()
+                .map_err(|_| "command arguments must be UTF-8 text")
+        })
+        .collect::<Result<_, _>>()?;
     if arguments.first().is_some_and(|value| value == "lab") {
         let code = safeyolo_proxy::lab::run(config, &arguments[1..]).await?;
         if code != 0 {
@@ -277,6 +292,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::operator_commands::HELP);
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
+            println!("{}", safeyolo_proxy::factory_proposals::HELP);
             println!("{}", safeyolo_proxy::dispatch::request::HELP);
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
