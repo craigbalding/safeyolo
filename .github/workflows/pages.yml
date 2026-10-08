@@ -22,14 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          version: "0.9.24"
-          prune-cache: true
-      - run: uv python install 3.12
-      - run: uv sync --frozen
+          workspaces: proxy -> target
+          cache-bin: false
+      - name: Build the native Dispatch command
+        env:
+          CARGO_BUILD_JOBS: "1"
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
       - name: Validate publication tree
-        run: uv run python scripts/check_dispatch_site.py
+        run: proxy/target/debug/safeyolo dispatch check-site
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:

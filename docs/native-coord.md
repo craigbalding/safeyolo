@@ -99,8 +99,8 @@ that guest, proxy and Coord. It needs the matching native guest helper staged
 at `/home/agent/.safeyolo/safeyolo-coord`. A host-only probe does not prove that
 guest boundary.
 
-Mattermost remote/mobile exchange and semantic actions, and Dispatch period
-requests/rendering, are retained for their separate native G6 implementation.
-They are outside this communication increment. Other staging dependencies and
+Use the same installed native CLI for [Dispatch period requests](dispatch-publication.md)
+and [generation/site validation](dispatch-generation.md), and for
+[Mattermost exchange and semantic actions](coord-mattermost.md). Other staging dependencies and
 unfinished G2/G4/G7 proof remain in the
 [responsibility map](native-settings.md#operator-entry-responsibilities).

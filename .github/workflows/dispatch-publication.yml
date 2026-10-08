@@ -22,18 +22,26 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          version: "0.9.24"
-          prune-cache: true
-      - run: uv python install 3.12
-      - run: uv sync --frozen
+          workspaces: proxy -> target
+          cache-bin: false
+      - name: Build the native Dispatch command
+        env:
+          CARGO_BUILD_JOBS: "1"
+          SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha }}
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
       - name: Validate generated content, metadata, links, and hygiene
-        run: uv run python scripts/check_dispatch_site.py
+        run: proxy/target/debug/safeyolo dispatch check-site
       - name: Enforce the publication-branch path boundary
         if: startsWith(github.head_ref, 'dispatch/')
         run: >-
-          uv run python scripts/check_dispatch_site.py
+          proxy/target/debug/safeyolo dispatch check-site
           --publication-base "${{ github.event.pull_request.base.sha }}"
 
   build:

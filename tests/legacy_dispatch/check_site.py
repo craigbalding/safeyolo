@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 import yaml
 
-from safeyolo.coord import dispatch
+from . import dispatch
 
 _LINK_RE = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
 _PUBLICATION_PATHS = (

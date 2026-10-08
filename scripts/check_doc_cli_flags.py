@@ -67,7 +67,8 @@ def _native_cli_surface() -> dict[str, set[str]]:
     surface: dict[str, set[str]] = {"": set()}
     for relative in (
         "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
-        "proxy/src/mattermost.rs",
+        "proxy/src/coord_rooms.rs", "proxy/src/coord_operator.rs", "proxy/src/mattermost.rs",
+        "proxy/src/dispatch.rs", "proxy/src/dispatch/request.rs",
     ):
         source = (REPO_ROOT / relative).read_text()
         for literal in re.findall(r'"(safeyolo (?:[^"\\]|\\.)*)"', source):
@@ -172,6 +173,12 @@ def _validate_line(
     # unknown bare token is an invalid subcommand, not a positional argument.
     path: list[str] = []
     i = 1
+    # Native instance selection precedes the command. Resolve the command
+    # after its path value so its own flags still receive the normal check.
+    if i < len(tokens) and tokens[i] in {"--root", "--config"}:
+        if tokens[i] not in surface.get("", set()) or i + 1 >= len(tokens):
+            return f"unknown global flag or missing path: `{tokens[i]}`"
+        i += 2
     while i < len(tokens):
         candidate = " ".join(path + [tokens[i]])
         if candidate in surface:

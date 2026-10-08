@@ -54,7 +54,8 @@ def test_manifest_fails_closed_when_native_binary_is_missing(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("obsolete", ["pdp/__init__.py", "safeyolo/core/plumb_service.py",
-                                     "safeyolo/storage/flow_store.py", "safeyolo/coord/mattermost.py",
+                                     "safeyolo/storage/flow_store.py", "safeyolo/coord/dispatch.py",
+                                     "safeyolo/coord/dispatch_schedule.py", "safeyolo/coord/mattermost.py",
                                      "safeyolo/coord/mattermost_actions.py"])
 def test_manifest_rejects_retired_python_production_code(tmp_path: Path, obsolete: str) -> None:
     wheel = tmp_path / "safeyolo-0.1.0-py3-none-any.whl"

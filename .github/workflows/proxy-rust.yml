@@ -10,6 +10,9 @@ on:
       - "cli/src/safeyolo/rust_proxy.py"
       - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
+      - "site/**"
+      - ".github/workflows/dispatch-publication.yml"
+      - ".github/workflows/pages.yml"
       - "guest/command/**"
       - "scripts/build_guest_command.sh"
       - "tests/proxy_contracts/**"
@@ -85,6 +88,12 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
+          if grep -Eq '^(site/|\.github/workflows/(dispatch-publication|pages)\.yml)' "$RUNNER_TEMP/changed-paths"; then
+            echo 'dispatch=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
+          fi
           if grep -Eq '^(guest/command/|proxy/src/(guest_commands|host_lifecycle)|scripts/(build_guest_command|install_native)|cli/src/safeyolo/(guest-|vm\.py|agent_command_supervisor)|cli/tests/test_(agent_command_supervisor|guest_command_observation|vm_recovery_recipe))' "$RUNNER_TEMP/changed-paths"; then
             echo 'guest=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
@@ -105,14 +114,14 @@ jobs:
           fi
 
       - name: Install the pinned Rust toolchain
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         working-directory: proxy
         run: |
           rustup show active-toolchain
           printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
 
       - name: Restore Rust dependency cache
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
@@ -141,9 +150,13 @@ jobs:
           scripts/cargo_with_space.sh test --manifest-path guest/command/Cargo.toml --locked
           scripts/cargo_with_space.sh clippy --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
 
-      - name: Build the native CLI for recovery checks
-        if: steps.changes.outputs.guest == 'true'
+      - name: Build the native CLI for recovery and Dispatch checks
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+
+      - name: Validate the Dispatch publication tree
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.dispatch == 'true'
+        run: proxy/target/debug/safeyolo dispatch check-site
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1

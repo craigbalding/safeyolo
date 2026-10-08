@@ -257,6 +257,12 @@ async fn run() -> Result<(), Error> {
     if safeyolo_proxy::operator_commands::handles(&arguments) {
         return safeyolo_proxy::operator_commands::run(&config, &arguments).await;
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "dispatch")
+    {
+        return safeyolo_proxy::dispatch::run(&arguments[1..]);
+    }
     if safeyolo_proxy::host_commands::handles(&arguments) {
         let code = safeyolo_proxy::host_commands::run(config, &arguments).await?;
         if code != 0 {
@@ -271,6 +277,8 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::operator_commands::HELP);
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
+            println!("{}", safeyolo_proxy::dispatch::request::HELP);
+            println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(
                 "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."

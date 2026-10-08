@@ -28,6 +28,7 @@ mod credential_text;
 pub mod credentials;
 pub(crate) mod desktop_present;
 mod desktop_preview;
+pub mod dispatch;
 pub mod factory;
 mod flow_recorder;
 #[cfg(test)]

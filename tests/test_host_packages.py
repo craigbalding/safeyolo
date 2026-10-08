@@ -378,6 +378,9 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     assert wheel.name.endswith(f"-py3-none-{tag}.whl")
     assert f".dev0+g{REVISION}.debug-" in wheel.name
     with zipfile.ZipFile(wheel) as archive:
+        assert "safeyolo/coord/dispatch.py" not in archive.namelist()
+        assert "safeyolo/coord/dispatch_schedule.py" not in archive.namelist()
+        assert not any("legacy_dispatch" in name for name in archive.namelist())
         assert "safeyolo/coord/mattermost.py" not in archive.namelist()
         assert "safeyolo/coord/mattermost_actions.py" not in archive.namelist()
         assert not any("legacy_mattermost" in name for name in archive.namelist())

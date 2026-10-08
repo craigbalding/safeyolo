@@ -42,9 +42,18 @@ These compact fields are optional when they add useful context:
 
 The supported limits are 8 candidates, 8 evidence references per candidate,
 and 32 KiB for the JSON payload. The implementation also bounds individual
-text fields. Use
-`safeyolo.coord.completion_notes.append_completion_notes` to render a canonical
-suffix; the helper returns the original body byte-for-byte for an empty list.
+text fields. Authors can write the compact JSON line using the wire contract
+above and send the complete body through their ordinary native Coord command or
+Model Context Protocol (MCP) tool. If there are no candidates, omit the suffix
+and leave the original body byte-for-byte unchanged. No Python helper import is
+needed to author a note.
+
+The retained source helper
+`safeyolo.coord.completion_notes.append_completion_notes` also renders this
+suffix and preserves an empty completion body. The native bundle does not ship
+that Python library. Its shared ingestion and Factory proposal consumers remain
+owned by #818's separate replacement work; native Dispatch generation consumes
+only the independently authored final public manifest.
 
 ## Trusted ingestion
 
