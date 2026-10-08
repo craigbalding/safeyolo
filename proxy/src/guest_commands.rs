@@ -26,8 +26,15 @@ pub(crate) fn payload_identity(path: &Path) -> Result<Value, Error> {
 }
 
 pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), Error> {
+    write_json_with_mode(path, value, 0o600)
+}
+
+pub(crate) fn write_json_with_mode(path: &Path, value: &Value, mode: u32) -> Result<(), Error> {
     let parent = path.parent().ok_or("state has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))?;
     serde_json::to_writer(&mut temporary, value)?;
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;

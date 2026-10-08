@@ -40,6 +40,8 @@ serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision
 subtle = "2.6.1"
 tempfile = "3"
 toml_edit = "0.25"
+tree-sitter = "=0.25.10"
+tree-sitter-python = "=0.25.0"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 futures-util = "0.3"

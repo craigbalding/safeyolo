@@ -46,7 +46,8 @@ def inspect_wheel(wheel: Path, *, expected_binary_sha256: str | None = None) -> 
             ("pdp/", "safeyolo/mitm_addons/", "safeyolo/proxy_modes/", "safeyolo/traffic_master.py",
              "safeyolo/storage/flow_store.py", "safeyolo/core/plumb_service.py",
              "safeyolo/coord/dispatch.py", "safeyolo/coord/dispatch_schedule.py",
-             "safeyolo/coord/mattermost.py", "safeyolo/coord/mattermost_actions.py")
+             "safeyolo/coord/mattermost.py", "safeyolo/coord/mattermost_actions.py",
+             "safeyolo/repo_map.py")
         ))
         if obsolete:
             raise ValueError("wheel contains retired Python production code: " + ", ".join(obsolete))

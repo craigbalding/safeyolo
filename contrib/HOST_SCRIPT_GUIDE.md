@@ -34,7 +34,16 @@ you run it.
 The retained Python CLI accepts bundled aliases without a checkout-relative
 script path. From its source installation, use `uv run --frozen safeyolo agent add`
 in the separate Python instance. For native commands, select the corresponding
-executable file in the trusted checkout's `contrib/` directory:
+executable file in the trusted checkout's `contrib/` directory.
+
+Codex, Pi and Claude setup use the installed native Coord host executable and
+its matching Linux guest artifact. Native creation and configuration select
+both inputs automatically, including on macOS. Direct script invocation uses
+`SAFEYOLO_COORD_EXECUTABLE` and `SAFEYOLO_COORD_GUEST_BINARY`, or finds
+`safeyolo-coord` on `PATH` or in the wheel's `bin/` directory. The default
+guest input is the host executable's sibling `../assets/guest/safeyolo-coord`.
+Missing or mismatched artifacts abort setup with a diagnostic. Setup requires
+no Python interpreter.
 
 | Alias | Setup |
 | --- | --- |
@@ -50,6 +59,18 @@ Codex setup installs guest-owned shell rules in `.codex/rules/safeyolo-guest.rul
 so its command heuristics allow ordinary shell cleanup inside SafeYolo. Host rules
 are not imported. Organization-managed restrictions and Codex model modes that
 ignore local allow rules can still reject commands.
+
+Claude setup selects the host identity/onboarding fields from `~/.claude.json`
+and preserves agent-side MCP servers and unrelated configuration. It merges
+host settings over retained agent settings, including permission keys, then
+sets workspace onboarding/trust and `permissions.defaultMode=bypassPermissions`.
+Reapply preserves unselected settings and projects. Invalid agent configuration
+or non-object trust/MCP fields stop setup before those documents change.
+Non-object permission fields also stop setup unless valid host preferences
+replace them.
+Malformed settings JSON recovers to defaults; missing or invalid host identity
+metadata leaves the retained agent identity intact. Claude credentials still use
+the explicit sharing path described below.
 
 ### First Codex login
 
@@ -144,7 +165,11 @@ documentation. An exact Python symbol, such as `repo-map --query api.send`,
 returns its definition with defaults, annotations, and docstring, plus one
 lexical example use when found. Large definitions show a labelled 60-line
 preview with the full source range; the example is not a semantic binding claim.
-The tool reads the current working tree and caches content-derived symbols.
+The native tool parses Python definitions and maps lexical symbols in other
+languages. Directory views show up to four public symbols per file; select a
+file for private symbols and class methods. The tool reads the current working
+tree and caches content-derived symbols. Internal repository symlinks remain
+usable; off-tree, broken and looping links are omitted.
 Run it in the checkout being worked on, after selecting the task's revision.
 
 The helper also stages repository guidance beside the command. A checkout's

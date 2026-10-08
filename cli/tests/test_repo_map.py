@@ -4,8 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import safeyolo.repo_map as repo_map
-from safeyolo.repo_map import _task_query_terms, build_repo_map, build_repo_query, main
+import repo_map_reference as repo_map
+from repo_map_reference import _task_query_terms, build_repo_map, build_repo_query, main
 
 
 def _git(path: Path, *args: str) -> None:
