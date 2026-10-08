@@ -1,11 +1,16 @@
 """Executable regression tests for first-party agent host setup scripts."""
 
 import hashlib
+import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import tarfile
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -219,15 +224,18 @@ def test_mise_installed_agent_is_immediately_executable_with_context(
     fake_mise = fake_bin / "mise"
     fake_mise.write_text(
         "#!/usr/bin/env python3\n"
-        "import os\n"
+        "import os, sys\n"
         "from pathlib import Path\n"
         "assert os.environ['MISE_OVERRIDE_CONFIG_FILENAMES'] == "
         "'/etc/safeyolo/mise-project-config-disabled.toml'\n"
         "assert os.environ['MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES'] == 'none'\n"
-        "if any(arg.startswith('npm:') for arg in __import__('sys').argv[1:]):\n"
+        "if sys.argv[1:2] == ['latest']:\n"
+        "    print('9.9.9'); sys.exit(0)\n"
+        "if any(arg.startswith('npm:') for arg in sys.argv[1:]):\n"
         "    tool = Path(os.environ['MISE_DATA_DIR']) / 'shims' / os.environ['TEST_TOOL_NAME']\n"
         "    tool.parent.mkdir(parents=True, exist_ok=True)\n"
-        '    tool.write_text("#!/bin/sh\\nprintf \'%s\\\\0\' \\"$@\\" > \\"$TEST_EXEC_LOG\\"\\n")\n'
+        '    tool.write_text("#!/bin/sh\\nif [ \\"$1\\" = --version ]; then echo codex-cli 9.9.9; exit 0; fi\\n'
+        'printf \'%s\\\\0\' \\"$@\\" > \\"$TEST_EXEC_LOG\\"\\n")\n'
         "    tool.chmod(0o755)\n"
     )
     fake_mise.chmod(0o755)
@@ -2081,6 +2089,13 @@ def test_alpine_bootstrap_uses_noninteractive_guest_sudo(script_name: str) -> No
 
 
 def _codex_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict:
+    # The fake installer must expose the runtime needed to read its installed
+    # package identity. Resolve a mise shim before switching to a fresh HOME.
+    node, mise = shutil.which("node"), shutil.which("mise")
+    if node and not (fake_bin / "node").exists():
+        if mise and Path(node).resolve() == Path(mise).resolve():
+            node = subprocess.check_output([mise, "which", "node"], text=True).strip()
+        (fake_bin / "node").symlink_to(node)
     env = os.environ.copy()
     for key in list(env):
         if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
@@ -2102,7 +2117,10 @@ def _codex_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict
 
 _HEALTHY_CODEX = (
     "#!/bin/sh\n"
-    "if [ \"$1\" = --version ]; then echo 'codex-cli 0.0.0-test'; exit 0; fi\n"
+    "if [ \"$1\" = --version ]; then\n"
+    "  version=${TEST_PROBE_VERSION:-$(cat \"$TEST_INSTALLED_STATE\" 2>/dev/null || echo 9.9.9)}\n"
+    "  printf 'codex-cli %s\\n' \"$version\"; exit 0\n"
+    "fi\n"
     'printf \'%s\\0\' "$@" > "$TEST_EXEC_LOG"\n'
 )
 
@@ -2115,17 +2133,20 @@ _BROKEN_CODEX = "#!/bin/sh\necho 'Error: could not find codex-aarch64-apple-darw
 # Repairs the wrapper when asked to install, so the command can go on to exec.
 _FAKE_MISE = (
     "#!/usr/bin/env python3\n"
-    "import os, sys\n"
+    "import json, os, sys\n"
     "from pathlib import Path\n"
     "argv = sys.argv[1:]\n"
     "with Path(os.environ['TEST_MISE_LOG']).open('a') as f:\n"
     "    f.write(' '.join(argv) + '\\n')\n"
     "state = Path(os.environ['TEST_INSTALLED_STATE'])\n"
+    "root = state.parent / 'mise-codex'\n"
     "def installed():\n"
     "    return state.read_text().strip() if state.exists() else ''\n"
     "if argv[:2] == ['settings', 'get']:\n"
+    "    assert argv[2] == 'minimum_release_age'\n"
     "    if os.environ.get('TEST_MISE_HAS_MIN_AGE') == '1':\n"
-    "        print('24h'); sys.exit(0)\n"
+    "        assert os.environ['MISE_MINIMUM_RELEASE_AGE'] == os.environ.get('SAFEYOLO_MIN_RELEASE_AGE', '24h')\n"
+    "        print(os.environ['MISE_MINIMUM_RELEASE_AGE']); sys.exit(0)\n"
     "    print('Unknown setting', file=sys.stderr); sys.exit(1)\n"
     "if argv[:1] == ['latest']:\n"
     "    if '--installed' in argv:\n"
@@ -2136,8 +2157,15 @@ _FAKE_MISE = (
     "    if not remote:\n"
     "        sys.exit(1)\n"
     "    print(remote); sys.exit(0)\n"
+    "if argv[:1] == ['where']:\n"
+    "    print(root); sys.exit(0)\n"
     "if argv[:2] == ['use', '-g'] and 'codex' in argv[-1]:\n"
-    "    state.write_text(argv[-1].split('@')[-1])\n"
+    "    version = argv[-1].split('@')[-1]\n"
+    "    if version == 'latest': version = installed() or '9.9.9'\n"
+    "    state.write_text(version)\n"
+    "    manifest = root / 'node_modules/@openai/codex/package.json'\n"
+    "    manifest.parent.mkdir(parents=True, exist_ok=True)\n"
+    "    manifest.write_text(json.dumps({'name': '@openai/codex', 'version': version}))\n"
     "    shim = Path(os.environ['TEST_CODEX_SHIM'])\n"
     "    shim.write_text(os.environ['TEST_HEALTHY_CODEX'])\n"
     "    shim.chmod(0o755)\n"
@@ -2270,6 +2298,229 @@ def test_codex_repair_installs_an_explicitly_resolved_remote_version(
     assert not any(c.endswith("npm:@openai/codex@latest") and "use" in c for c in calls), (
         f"fell back to @latest: {calls}"
     )
+
+
+@pytest.mark.parametrize("selection", ["@openai/codex@0.130.0", "@openai/codex@0.130", "@openai/codex"])
+@pytest.mark.parametrize("override", ["SAFEYOLO_CODEX_NPM_SPEC", "SAFEYOLO_CODEX_NPM_PACKAGE"])
+def test_codex_repair_preserves_operator_selection(tmp_path, selection, override):
+    operator, home, tools = tmp_path / "operator", tmp_path / "agent", tmp_path / "bin"
+    operator.mkdir()
+    tools.mkdir()
+    _run_setup("codex-host-setup.sh", operator, home, tmp_path)
+    for name, source in [("codex", _BROKEN_CODEX), ("mise", _FAKE_MISE)]:
+        (tools / name).write_text(source)
+        (tools / name).chmod(0o755)
+    env = _codex_command_env(home, tools, tmp_path)
+    env.update({override: ("npm:" if override.endswith("SPEC") else "") + selection,
+                "TEST_REMOTE_VERSION": "0.130.0"})
+    result = subprocess.run([str(home / ".safeyolo-command"), "--probe"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert f"latest npm:{selection}" in calls
+    assert "use -g --force npm:@openai/codex@0.130.0" in calls
+    assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_text().split("\0")
+
+
+@pytest.mark.parametrize("payload", [_BROKEN_CODEX, _HEALTHY_CODEX])
+@pytest.mark.parametrize("entry", ["ordinary", "interactive", "supervised"])
+@pytest.mark.parametrize("lookup_failure", [False, True])
+def test_codex_refuses_missing_or_wrong_selected_payload(tmp_path, payload, entry, lookup_failure):
+    operator, home, tools = tmp_path / "operator", tmp_path / "agent", tmp_path / "bin"
+    operator.mkdir()
+    tools.mkdir()
+    if entry == "supervised":
+        _seed_adopted_codex_auth(home)
+        _run_setup("codex-coord-host-setup.sh", operator, home, tmp_path,
+                   extra_env={"SAFEYOLO_CODEX_COORD_ROOMS": "backlog", "SAFEYOLO_CODEX_COORDINATORS": "relay"})
+    else:
+        _run_setup("codex-host-setup.sh", operator, home, tmp_path)
+    for name, source in [("codex", _BROKEN_CODEX), ("mise", _FAKE_MISE)]:
+        (tools / name).write_text(source)
+        (tools / name).chmod(0o755)
+    env = _codex_command_env(home, tools, tmp_path)
+    env.update({"TEST_HEALTHY_CODEX": payload, "TEST_PROBE_VERSION": "0.129.0"})
+    if lookup_failure:
+        env["TEST_REMOTE_VERSION"] = ""
+    command = home / (".safeyolo-interactive-command" if entry == "interactive" else ".safeyolo-command")
+    result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "package/native payload" in result.stderr
+    assert not Path(env["TEST_EXEC_LOG"]).exists()
+
+
+@pytest.mark.parametrize("installer", ["npm", "mise"])
+@pytest.mark.parametrize(("failure", "selection", "lookup_failure"), [
+    (failure, "latest" if failure == "young-latest" else "9.9.9", False)
+    for failure in [None, "wrapper-integrity", "native-integrity", "missing-native", "wrong-native", "young-latest"]
+] + [
+    (failure, selection, True)
+    for failure in [None, "wrong-native"]
+    for selection in ["9.9.9", "9.9", "latest"]
+] + [("wrong-wrapper-version", "9.9.9", True)])
+def test_codex_repair_with_real_registry_installers(tmp_path, installer, failure, selection, lookup_failure):
+    """Real installers consume selected tarballs; registry digests are challenged.
+
+    The Alpine branch uses real npm on this host, not an Alpine guest. Both
+    payloads are small synthetic packages, so this runs without a model or a
+    native build and does not claim publisher authenticity or a locked tree.
+    """
+    npm, node, mise = (shutil.which(name) for name in ["npm", "node", "mise"])
+    if not npm or not node or (installer == "mise" and not mise):
+        pytest.skip("Real npm/Node and, for the mise path, mise are required")
+    # mise shims select from the caller's home; resolve their actual commands
+    # before giving the launcher a fresh home without installed tool state.
+    if mise:
+        for name in ["node", "npm"]:
+            executable = shutil.which(name)
+            if Path(executable).resolve() == Path(mise).resolve():
+                selected = subprocess.check_output([mise, "which", name], text=True).strip()
+                if name == "node":
+                    node = selected
+                else:
+                    npm = selected
+    operator, home, tools = tmp_path / "operator", tmp_path / "agent", tmp_path / "bin"
+    operator.mkdir()
+    tools.mkdir()
+    _run_setup("codex-host-setup.sh", operator, home, tmp_path)
+    version = "9.9.9"
+    packages = {
+        "@openai/codex": {"name": "@openai/codex", "version": version, "bin": {"codex": "codex.js"},
+                          "optionalDependencies": {"codex-native-fixture": version}},
+        "codex-native-fixture": {"name": "codex-native-fixture", "version": version},
+    }
+    archives = {}
+    for name, package in packages.items():
+        for published in [version, "10.0.0"]:
+            manifest = {**package, "version": published}
+            if name == "@openai/codex":
+                if failure == "wrong-wrapper-version":
+                    manifest["version"] = "8.8.8"
+                manifest["optionalDependencies"] = {"codex-native-fixture": published}
+            files = {"package.json": json.dumps(manifest).encode()}
+            if name == "@openai/codex":
+                files["codex.js"] = (b"#!/usr/bin/env node\n"
+                                     b"if (!process.argv.includes('--version'))\n"
+                                     b"  require('fs').writeFileSync(process.env.TEST_EXEC_LOG, 'launched');\n"
+                                     b"process.stdout.write(require('codex-native-fixture'));\n")
+            elif failure != "missing-native":
+                identity = "8.8.8" if failure in {"wrong-native", "wrong-wrapper-version"} else published
+                files["index.js"] = f"module.exports = 'codex-cli {identity}\\n';\n".encode()
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+                for path, data in files.items():
+                    member = tarfile.TarInfo(f"package/{path}")
+                    member.size, member.mode = len(data), 0o755 if path == "codex.js" else 0o644
+                    archive.addfile(member, io.BytesIO(data))
+            archives[name, published] = buffer.getvalue()
+
+    wrapper_requests = 0
+
+    class Registry(BaseHTTPRequestHandler):
+        def do_GET(self):
+            nonlocal wrapper_requests
+            import base64
+            from urllib.parse import unquote
+
+            path = unquote(self.path).lstrip("/")
+            if path == "@openai/codex":
+                wrapper_requests += 1
+                if lookup_failure and wrapper_requests == 1:
+                    self.send_error(404)
+                    return
+            if path.endswith(".tgz"):
+                kind, published = path.removesuffix(".tgz").split("/")
+                name = "@openai/codex" if kind == "wrapper" else "codex-native-fixture"
+                data = archives[name, published]
+            elif path in packages:
+                wrong_digest = (failure == "wrapper-integrity" and path == "@openai/codex") or (
+                    failure == "native-integrity" and path == "codex-native-fixture")
+                versions = {}
+                for published in [version, "10.0.0"]:
+                    package = {**packages[path], "version": published}
+                    if path == "@openai/codex":
+                        package["optionalDependencies"] = {"codex-native-fixture": published}
+                    digest = hashlib.sha512(b"wrong" if wrong_digest else archives[path, published]).digest()
+                    kind = "wrapper" if path == "@openai/codex" else "native"
+                    package["dist"] = {"tarball": f"http://127.0.0.1:{self.server.server_port}/{kind}/{published}.tgz",
+                                       "integrity": "sha512-" + base64.b64encode(digest).decode()}
+                    versions[published] = package
+                times = dict.fromkeys(versions, "2020-01-01T00:00:00Z")
+                if failure == "young-latest":
+                    times["10.0.0"] = "2099-01-01T00:00:00Z"
+                data = json.dumps({"name": path, "dist-tags": {"latest": "10.0.0"}, "versions": versions,
+                                   "time": times}).encode()
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for name, executable in [("node", node), ("mise", mise)]:
+            if executable:
+                (tools / name).symlink_to(Path(executable).resolve())
+        # Invoke npm at its own path: mise's npm wrapper locates npm-cli.js
+        # relative to the script and cannot itself be moved into the fixture.
+        (tools / "npm").write_text(f'#!/bin/sh\nexec {shlex.quote(npm)} "$@"\n')
+        (tools / "npm").chmod(0o755)
+        command = home / ".safeyolo-command"
+        if installer == "npm":
+            # Select the existing Alpine branch without changing this machine.
+            marker = tmp_path / "alpine-release"
+            marker.touch()
+            command.write_text(command.read_text().replace("/etc/alpine-release", str(marker)))
+        else:
+            # Use the already installed runtime; no toolchain download is part
+            # of this boundary. mise still performs the real npm installation.
+            node_root = subprocess.check_output([mise, "where", "node@22"], text=True).strip()
+            installed_node = home / ".mise/installs/node/22.0.0"
+            installed_node.parent.mkdir(parents=True)
+            installed_node.symlink_to(node_root, target_is_directory=True)
+        env = _codex_command_env(home, tools, tmp_path)
+        env.update({"SAFEYOLO_CODEX_NODE_SPEC": "node@22.0.0", "SAFEYOLO_CODEX_NPM_PACKAGE": f"@openai/codex@{selection}",
+                    "NPM_CONFIG_REGISTRY": f"http://127.0.0.1:{server.server_port}",
+                    "NPM_CONFIG_CACHE": str(tmp_path / "npm-cache"), "NPM_CONFIG_FETCH_RETRIES": "0",
+                    "NPM_CONFIG_USERCONFIG": str(tmp_path / "empty-npmrc")})
+        result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=45)
+        marker = Path(env["TEST_EXEC_LOG"])
+        if lookup_failure:
+            assert "could not resolve a remote version" in result.stderr
+            assert wrapper_requests >= 2, "fallback installation must retry the real registry"
+        if failure and failure != "young-latest":
+            assert result.returncode != 0, (result.stdout, result.stderr)
+            assert not marker.exists(), "the wrong or unavailable payload must not launch"
+            assert f"codex-cli {version}" not in result.stdout
+            if failure.endswith("integrity"):
+                assert "integrity" in result.stderr.lower() or "checksum" in result.stderr.lower() or (
+                    "package/native payload" in result.stderr)
+            elif failure == "wrong-wrapper-version" and installer == "mise":
+                assert "mismatch" in result.stderr.lower(), result.stderr
+                assert "9.9.9" in result.stderr and "8.8.8" in result.stderr
+            else:
+                assert "package/native payload" in result.stderr
+                if failure in {"wrong-native", "wrong-wrapper-version"}:
+                    expected = "10.0.0" if selection == "latest" else version
+                    assert f"expected Codex {expected}" in result.stderr
+                    assert "but got codex-cli 8.8.8" in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            assert marker.read_text() == "launched"
+            expected = "10.0.0" if selection == "latest" and (lookup_failure or installer == "npm") else version
+            assert result.stdout.strip() == f"codex-cli {expected}"
+            if installer == "npm":
+                assert "no delayed-deployment protection on this path" in result.stderr
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_codex_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None:
