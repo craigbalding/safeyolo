@@ -513,7 +513,9 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     use std::os::unix::net::UnixListener;
 
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("instance");
+    // The CLI adds /private to Darwin's /var alias. Keep both owned socket
+    // paths within SUN_LEN while still passing the ordinary alias to the CLI.
+    let root = temp.path().join("i");
     initialize(&root);
     value(cli(
         &root,
@@ -588,7 +590,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     run["backend_token"] = backend_token.into();
     fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     let dead = value(cli(&root, &["agent", "status", "marker"]));
-    assert_eq!(dead["runtime_state"], "stopped");
+    assert_eq!(dead["runtime_state"], "stopped", "{dead}");
     fs::create_dir_all(root.join("data/shell-sockets")).unwrap();
     let shell_path = root.join("data/shell-sockets/marker.sock");
     let listener = UnixListener::bind(&shell_path).unwrap();
@@ -1289,7 +1291,10 @@ fn configuration_rejection_is_atomic_and_current_run_is_unchanged() {
         ],
     ));
     assert_eq!(changed["configuration"]["id"], id);
-    assert_eq!(changed["configuration"]["folder"], next.to_str().unwrap());
+    assert_eq!(
+        changed["configuration"]["folder"],
+        fs::canonicalize(&next).unwrap().to_str().unwrap()
+    );
     assert_eq!(
         changed["scope"],
         "next sandbox start; current run is unchanged"
@@ -1389,7 +1394,7 @@ fn host_setup_keeps_the_explicit_config_and_failed_setup_does_not_publish() {
         fs::read_to_string(root.join("agents/marker/home/source"))
             .unwrap()
             .trim(),
-        selected.to_str().unwrap()
+        fs::canonicalize(&selected).unwrap().to_str().unwrap()
     );
 }
 
@@ -1715,7 +1720,10 @@ fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
             String::from_utf8_lossy(&started.stderr)
         );
         let target: Value = serde_json::from_slice(&started.stdout).unwrap();
-        assert_eq!(target["tmux_socket"], socket.to_str().unwrap());
+        assert_eq!(
+            target["tmux_socket"],
+            fs::canonicalize(&socket).unwrap().to_str().unwrap()
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while !root.join("custom-entry").exists() {
             assert!(std::time::Instant::now() < deadline);
