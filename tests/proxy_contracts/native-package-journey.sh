@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Finite package/install/start witness. The test driver stays outside the bundle.
+# Finite package/install/start witness. Optional fourth input selects the source installer.
 set -euo pipefail
 package=$1 state=$2 occupied_port=$3
 mkdir -p "$state"
@@ -23,7 +23,11 @@ instance() {
   SAFEYOLO_NATS_TEST_INSTANCE="${root##*/}-native-package" "$root/bin/safeyolo" --root "$root" "$@"
 }
 
-"$package/install.sh" --root "$b"
+if (($# == 4)); then
+  "$4" --root "$b" --bundle "$package"
+else
+  "$package/install.sh" --root "$b"
+fi
 configure "$b" "$occupied_port"
 instance "$b" start
 instance "$b" status | grep '"proxy_state": "running"'

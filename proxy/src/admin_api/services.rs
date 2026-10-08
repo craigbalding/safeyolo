@@ -27,6 +27,13 @@ pub struct Revocation {
     pub(super) credential: Zeroizing<String>,
 }
 
+pub(super) fn decode_name(segment: &str) -> Result<String, Error> {
+    percent_encoding::percent_decode_str(segment)
+        .decode_utf8()
+        .map(|name| name.into_owned())
+        .map_err(|_| Error::ServiceRepresentation)
+}
+
 pub(super) fn agent_path(path: &str) -> Option<&str> {
     let agent = path
         .strip_prefix("/admin/agents/")?
@@ -44,12 +51,68 @@ pub(super) fn revocation_path(path: &str) -> Option<(&str, &str)> {
     segments.next().is_none().then_some((agent, service))
 }
 
+pub(super) fn catalogue(policy: Option<&Policy>) -> Result<Outcome, Error> {
+    let Some(registry) = policy
+        .and_then(Policy::gateway)
+        .and_then(crate::services::GatewaySnapshot::registry)
+    else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"service catalogue is unavailable"}),
+        ));
+    };
+    let services = registry.services.iter().map(|(name, definition)| {
+        json!({"definition":definition.raw,"source":registry.source_by_service.get(name)})
+    }).collect::<Vec<_>>();
+    Ok(response(StatusCode::OK, json!({"services":services})))
+}
+
+pub(super) fn authorized(policy: Option<&Policy>, agent: &str) -> Result<Outcome, Error> {
+    let Some(gateway) = policy.and_then(Policy::gateway) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"service catalogue is unavailable"}),
+        ));
+    };
+    let encoded = gateway
+        .agent_services_json(agent)
+        .map_err(|_| Error::ServiceRepresentation)?;
+    let mut services: Value =
+        serde_json::from_str(encoded.expose_secret()).map_err(|_| Error::ServiceRepresentation)?;
+    if let Some(entries) = services.as_object_mut() {
+        for (name, service) in entries {
+            // Use the accepted token binding and compiled routes, not a second
+            // catalogue load or the possibly newer saved policy file.
+            let credential = service["token"]
+                .as_str()
+                .and_then(|token| gateway.canonical_gateway()["token_map"].get(token))
+                .and_then(|binding| binding.get("token"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            service["credential"] = credential;
+            service["routes"] = json!(
+                gateway
+                    .compiled_routes()
+                    .iter()
+                    .filter(|route| route.agent == agent && route.service == *name)
+                    .map(|route| json!({"methods":route.methods,"path":route.path}))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    Ok(response(
+        StatusCode::OK,
+        json!({"agent":agent,"services":services}),
+    ))
+}
+
 pub(super) async fn authorize<B: Body<Data = Bytes>>(
     request: Request<B>,
     agent: String,
     policy: Option<&Policy>,
     policy_path: Option<&Path>,
     audit: Option<super::ServiceAudit<'_>>,
+    state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome, Error> {
     let data = match read_json(request).await? {
         ParsedBody::Terminal(outcome) => return Ok(outcome),
@@ -139,6 +202,56 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
         credential: Zeroizing::new(credential.to_owned()),
     };
     let path = path.to_owned();
+    if let Some(state) = state.filter(|_| policy.and_then(Policy::native_controls).is_some()) {
+        let host = fields
+            .get("host")
+            .map(|_| text("host"))
+            .transpose()?
+            .unwrap_or(&definition.default_host)
+            .to_owned();
+        let account = fields
+            .get("account")
+            .map(|_| text("account"))
+            .transpose()?
+            .unwrap_or("agent")
+            .to_owned();
+        let allow_host_network = match fields.get("allow_host_network") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err(Error::ServiceRepresentation),
+        };
+        // Service routing uses the hostname. Egress can separately retain an
+        // operator's explicit port constraint.
+        let service_host = if host.is_empty() {
+            String::new()
+        } else {
+            crate::policy::split_destination(&host)
+                .map_err(|_| Error::ServiceRepresentation)?
+                .0
+        };
+        let state = state.clone();
+        return mutation_owner.spawn_blocking(move || {
+            crate::edit_service_policy(&state, |document| {
+                document["agents"][authorization.agent.as_str()]["services"][authorization.service.as_str()]["capability"] = toml_edit::value(authorization.capability.as_str());
+                if !authorization.credential.is_empty() {
+                    document["agents"][authorization.agent.as_str()]["services"][authorization.service.as_str()]["token"] = toml_edit::value(authorization.credential.as_str());
+                } else if let Some(binding) = document["agents"][authorization.agent.as_str()]["services"].get_mut(authorization.service.as_str()).and_then(Item::as_table_like_mut) {
+                    binding.remove("token");
+                }
+                document["agents"][authorization.agent.as_str()]["services"][authorization.service.as_str()]["account"] = toml_edit::value(&account);
+                if !host.is_empty() {
+                    document["hosts"][&service_host]["service"] = toml_edit::value(authorization.service.as_str());
+                    if allow_host_network { document["hosts"][&host]["egress"] = toml_edit::value("allow"); }
+                } else if allow_host_network { return Err(mutation_error()); }
+                Ok(())
+            }).map_err(|_| Error::ServiceMutation)?;
+            let mut outcome = response(StatusCode::OK, json!({"status":"authorized","agent":authorization.agent.as_str(),"service":authorization.service.as_str(),"capability":authorization.capability.as_str(),"credential":authorization.credential.as_str(),"account":account,"host":host,"next":"Use services authorized for the minted credential. Contract binding and risky-route approval are separate steps."}));
+            outcome.audit = Some(Audit::ServiceAuthorized(authorization));
+            let mut outcome = outcome.submit_audit(&writer, &client_ip, &target)?;
+            outcome.audit = None;
+            Ok(outcome)
+        }).await?.await.map_err(|_| Error::ServiceMutation)?;
+    }
     // Request cancellation drops only this receiver. The process owner retains
     // the worker and its audit attempt until graceful shutdown joins it.
     mutation_owner
@@ -161,6 +274,7 @@ pub(super) async fn revoke<B: Body<Data = Bytes>>(
     service: String,
     policy_path: Option<&Path>,
     audit: Option<super::ServiceAudit<'_>>,
+    state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome, Error> {
     let Some(path) = policy_path else {
         return Ok(response(
@@ -184,6 +298,22 @@ pub(super) async fn revoke<B: Body<Data = Bytes>>(
         service: Zeroizing::new(service),
         credential: Zeroizing::new(String::new()),
     };
+    if let Some(state) = state {
+        let state = state.clone();
+        return mutation_owner.spawn_blocking(move || {
+            crate::edit_service_policy(&state, |document| {
+                let services = document.get_mut("agents").and_then(|agents| agents.get_mut(revocation.agent.as_str()))
+                    .and_then(|agent| agent.get_mut("services")).and_then(Item::as_table_like_mut).ok_or_else(mutation_error)?;
+                services.remove(revocation.service.as_str()).ok_or_else(mutation_error)?;
+                Ok(())
+            }).map_err(|_| Error::ServiceMutation)?;
+            let mut outcome = response(StatusCode::OK, json!({"status":"revoked","agent":revocation.agent.as_str(),"service":revocation.service.as_str()}));
+            outcome.audit = Some(Audit::ServiceRevoked(revocation));
+            let mut outcome = outcome.submit_audit(&writer, &client_ip, &target)?;
+            outcome.audit = None;
+            Ok(outcome)
+        }).await?.await.map_err(|_| Error::ServiceMutation)?;
+    }
     mutation_owner
         .spawn_blocking(move || {
             let outcome = persist_revocation(path, revocation)?;

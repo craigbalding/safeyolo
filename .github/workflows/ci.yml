@@ -141,7 +141,7 @@ jobs:
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: |
           uv run --frozen pytest -q cli/tests/test_config.py cli/tests/test_api.py \
-            cli/tests/test_sockets.py cli/tests/test_rust_proxy.py cli/tests/test_policy_cli.py
+            cli/tests/test_sockets.py cli/tests/test_rust_proxy.py
 
       - name: Install the pinned Rust toolchain
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

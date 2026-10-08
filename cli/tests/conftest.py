@@ -25,6 +25,7 @@ def socket_dir():
 # Mirror that environment for TrafficMaster composition tests.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
+sys.path.insert(0, str(_PROJECT_ROOT / "tests/reference"))
 
 
 @pytest.fixture
@@ -251,3 +252,7 @@ def write_log_file(tmp_config_dir, sample_log_events):
         for event in sample_log_events:
             f.write(json.dumps(event) + "\n")
     return log_file
+
+# Standalone fixture children use the same explicit test references.
+_reference_path = str(Path(__file__).resolve().parents[2] / "tests/reference")
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (_reference_path, os.environ.get("PYTHONPATH"))))

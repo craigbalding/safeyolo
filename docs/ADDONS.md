@@ -288,7 +288,7 @@ Maps client IPs to projects for per-project credential policy isolation.
 
 **How it works:**
 - Reads `services.yaml` (static configuration)
-- CLI manages services.yaml when adding agents (`safeyolo agent add`)
+- CLI manages services.yaml when adding agents (the former `agent add` command)
 - Pro teams provide their own services.yaml with IP ranges
 
 **Historical setup:** See [the former Python service-discovery guide](SERVICE_DISCOVERY.md).
@@ -384,7 +384,7 @@ NetworkGuard handles egress approvals for unlisted hosts when the wildcard entry
 
 **Egress postures** (set on the wildcard `"*"` entry or per-host):
 - `egress = "allow"` -- unlisted hosts are permitted (default)
-- `egress = "prompt"` -- unlisted hosts trigger a 428 requiring human approval via `safeyolo watch`
+- `egress = "prompt"` -- unlisted hosts trigger a 428 requiring human approval via the former `watch` command
 - `egress = "deny"` -- unlisted hosts are blocked outright (403)
 
 ```toml
@@ -395,7 +395,7 @@ NetworkGuard handles egress approvals for unlisted hosts when the wildcard entry
 "*"                 = { egress = "prompt", unknown_creds = "prompt", rate = 600 }
 ```
 
-With `egress = "prompt"`, any request to a host not explicitly listed in `[hosts]` gets a 428 response. The operator sees the pending request in `safeyolo watch` and can approve or deny it. Approved hosts are added to the policy file automatically.
+With `egress = "prompt"`, any request to a host not explicitly listed in `[hosts]` gets a 428 response. The operator sees the pending request in the former `watch` command and can approve or deny it. Approved hosts are added to the policy file automatically.
 
 Note that `egress` and `unknown_creds` are independent controls. `egress` governs whether the host itself is reachable; `unknown_creds` governs what happens when an unrecognized credential is sent to any host.
 
@@ -553,7 +553,7 @@ safe_patterns:
 Credential guard emits events to JSONL. The CLI handles the interactive workflow:
 
 1. Credential blocked → `security.credential` event with `decision: block`
-2. `safeyolo watch` displays the event
+2. the former `watch` command displays the event
 3. User approves → CLI calls `POST /admin/policy/baseline/approve`
 4. Admin API adds permission to baseline policy (destination-first)
 5. PolicyEngine hot reloads (within 1s)
@@ -700,10 +700,10 @@ environment variables above).
 **Hot-reload:** Both packaged and user service directories are watched for changes (2s poll). A complete valid reload updates the registry and recompiles policy; an invalid reload keeps the previous pair active and logs the offending file. Vault requires proxy restart.
 
 **Related CLI:**
-- `safeyolo agent authorize <agent> <service> --capability <name>` -- wire an agent to a service
-- `safeyolo services list` and `safeyolo services show` -- inspect service definitions
-- `safeyolo vault add`, `safeyolo vault list`, `safeyolo vault remove`, and
-  `safeyolo vault oauth2` -- manage credentials
+- the former `agent authorize <agent> <service> --capability <name>` command -- wire an agent to a service
+- the former `services list` command and the former `services show` command -- inspect service definitions
+- the former `vault add` command, the former `vault list` command, the former `vault remove` command, and
+  the former `vault oauth2` command -- manage credentials
 
 ---
 

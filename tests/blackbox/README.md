@@ -9,7 +9,7 @@ Run installed acceptance on a disposable supported host, from a clean checkout
 of the exact commit being tested. Install uv and select Rust 1.94.0 from
 [`proxy/rust-toolchain.toml`](../../proxy/rust-toolchain.toml); Cargo must be on
 `PATH`. Linux preparation needs noninteractive host sudo, subordinate IDs
-covering 100000–165535, and the bootstrap dependency plan. The workloads
+covering 100000–165535, and the [native guest prerequisites](../../docs/native-policy.md#guest-prerequisites). The workloads
 section additionally needs `dpkg-deb` and `openssh-server` on its host. KVM
 requires a fresh libvirt guest with usable `/dev/kvm`. VZ requires physical
 Apple Silicon and the Swift helper build prerequisites in the
@@ -38,14 +38,22 @@ On the physical Apple Silicon host:
 ```
 
 The runner creates a disk-backed directory under the operator's home. It calls
-`run-lane.sh --prepare-only` once: the supported `install.sh` wheel/native
-build, locked host test dependencies, bootstrap prerequisites, kernel/rootfs,
-and (VZ) source-built helper. Linux preparation reads
-`bootstrap --check --json` rather than maintaining another dependency list.
-For KVM it grants the current operator UID access to `/dev/kvm`; product
-bootstrap supplies the persistent udev rule and subordinate-UID ACL. Systrap
-is explicitly selected even when the host exposes KVM. KVM must pass actual
-auto-detection instead of forcing a KVM label.
+`run-lane.sh --prepare-only` once: the supported native `install.sh`, locked
+host test dependencies and verified NATS input. Supply prepared native bundles
+with `SAFEYOLO_NATIVE_BUNDLE`, or matching host/guest/runtime inputs with
+`SAFEYOLO_NATIVE_ARTIFACTS`, `SAFEYOLO_NATIVE_GUEST_ARTIFACTS` and
+`SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS`; macOS also uses
+`SAFEYOLO_NATIVE_VM_ARTIFACTS`. Without artifacts the source assembler builds
+them. `SAFEYOLO_BUILD_PROFILE` selects production by default, or debug.
+
+Prepare the platform images/tree separately with the maintained shell builders
+and set `SAFEYOLO_PLATFORM_ASSETS` to that directory. Linux requires runsc,
+newuidmap/newgidmap, setfacl and unshare plus the prepared rootfs-tree; VZ needs
+Image, initramfs.cpio.gz and rootfs-base.ext4. Preparation does not invoke the
+retired Python bootstrap. The KVM lane grants the operator and subordinate UID
+100000 read/write access to `/dev/kvm`, then actual platform selection must
+succeed. Systrap is explicitly selected even when the host exposes KVM. KVM
+must pass actual detection instead of forcing a KVM label.
 
 Each section then borrows the same compatible guest artifacts and installed
 CLI/native executable. Each gets a fresh agent, config, data, logs, public and
@@ -120,15 +128,17 @@ Historical #640 receipts remain historical acceptance; #320 does not reopen them
 
 ## Existing single-section entry points
 
-`run-lane.sh` remains the supported install/bootstrap plus one test selection
+`run-lane.sh` remains the supported native installation plus one test selection
 entry point, including the full installed isolation lane used by acceptance
-hosts. From the repository root on the matching disposable host:
+hosts. From the repository root on the matching disposable host, set
+`SAFEYOLO_CONFIG_DIR` to a fresh installation root and supply the native and
+platform inputs above before running:
 
 ```sh
 ./tests/blackbox/run-lane.sh systrap --verbose
 ```
 
-If the product is already installed and bootstrapped, run a section without
+If the native product and platform inputs are already prepared, run a section without
 reinstalling. `SAFEYOLO_CONFIG_DIR` names the prepared source instance;
 `SAFEYOLO_TEST_CONFIG_DIR` names the separate live test instance:
 
@@ -141,15 +151,15 @@ SAFEYOLO_TEST_CONFIG_DIR=/path/to/disposable-test \
 The native Rust package is the default. The runner refuses to use its source
 instance, the operator's normal instance or an ambiguous live config as test
 state. It links compatible `share/` and `bin/` inputs, creates fresh writable
-state, verifies `doctor --json` platform selection, and records the installed
-wheel, packaged executable, actual process/start identity, authenticated admin
+state, verifies actual native guest metadata for platform selection, and records the
+installed source/profile, packaged executable, actual process/start identity, authenticated Admin
 runtime identity and per-agent listener before guest assertions. `--workloads`,
 `--access`, `--lifecycle` and KVM `--ingress` select procedures and exit before
 the full pytest phases. `run-lane.sh` supplies their selected source checkout.
 For a direct prepared procedural run, also set
 `SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT` to the checkout that produced the installed
-wheel and native binary. The runner resolves its HEAD; `--install-commit FULL_SHA`
-must match that checkout before setup. The wheel stamp and live executable
+native layout and executable. The runner resolves its HEAD; `--install-commit FULL_SHA`
+must match that checkout before setup. The installed native executables, package metadata and live runtime
 are checked against the same selection. For pytest selections, pass arguments
 after `--`; the runner forwards argument boundaries without shell reinterpretation.
 
@@ -162,8 +172,8 @@ pruning scope remain in the
 [approved disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
 Lens's [physical replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767)
 records the VZ isolation, access and lifecycle observations at their actual
-commits, including the five unexecuted isolation assertions. Explicit package
-recovery remains in the [CLI guide](../../cli/README.md#return-to-the-prior-python-package).
+commits, including the five unexecuted isolation assertions. Fresh native installation and direct recovery commands are in the
+[CLI guide](../../cli/README.md); there is no old-package rollback operation.
 
 ## What each installed selection observes
 
@@ -244,7 +254,7 @@ alias, as prepared by the workflow.
 ./tests/blackbox/run-installed-package.sh
 ```
 
-This installs the current wheel/native binary without rootfs bootstrap, uses the
+This installs the current native layout without a guest rootfs build, uses the
 normal launcher/configuration, authenticates exact running identity, observes
 native allow/deny at two authorities on one owned HTTP listener and verifies
 stop/cleanup. The allowed IP and denied localhost authorities both reach that

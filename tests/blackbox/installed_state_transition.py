@@ -34,7 +34,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -49,6 +48,7 @@ if __package__:
         _runtime_observation,
     )
     from .installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance, surviving_processes
+    from .native_credentials import native_cli, store_credential
 else:
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
@@ -59,9 +59,9 @@ else:
         _runtime_observation,
     )
     from installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance, surviving_processes
+    from native_credentials import native_cli, store_credential
 
 BODY = b"owned-r638-response-needle\n"
-PASS = "synthetic-r638-vault-passphrase"
 TASK_ID = "r638-process-local"
 
 
@@ -232,16 +232,13 @@ def run(command: list[str], env: dict, *, timeout: float = 25) -> str:
 
 
 def installed_identity(cli: Path, revision: str) -> dict:
-    launcher = cli.read_text().splitlines()[0]
-    check(launcher.startswith("#!"), f"no interpreter in {cli}")
-    python = Path(launcher[2:])
-    code = "import json,safeyolo,pathlib,importlib.metadata as m,sys; p=pathlib.Path(safeyolo.__file__).parent; print(json.dumps({'package':str(p),'identity':json.loads((p/'_build_identity.json').read_text()),'version':m.version('safeyolo'),'python_version':sys.version.split()[0]}))"
-    result = json.loads(run([str(python), "-I", "-c", code], os.environ.copy()))
-    check("site-packages" in result["package"], "CLI is not an installed wheel")
-    check(result["identity"]["source_revision"] == revision, "wheel revision mismatch")
-    return {"interpreter": str(python), "package": result["package"],
-            "version": result["version"], "python_version": result["python_version"],
-            "source_revision": revision}
+    if __package__:
+        from .installed_host_smoke import _cli_identity
+    else:
+        from installed_host_smoke import _cli_identity
+    identity = _cli_identity(cli)
+    check(identity["source_revision"] == revision, "installed native revision mismatch")
+    return identity
 
 
 def env_for(root: Path) -> dict:
@@ -252,6 +249,7 @@ def env_for(root: Path) -> dict:
     env.pop("SAFEYOLO_PYTHON_SOURCE", None)
     env.pop("SAFEYOLO_PDP_DIR", None)
     env["SAFEYOLO_CONFIG_DIR"] = str(root)
+    env["SAFEYOLO_NATIVE_CONFIG_PATH"] = str(root / "config.toml")
     env["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     env["SAFEYOLO_COORD_DATA_DIR"] = str(root / "data" / "coord")
     env["SAFEYOLO_NATS_TEST_INSTANCE"] = "continuity-" + hashlib.sha256(os.fsencode(root)).hexdigest()[:16]
@@ -259,23 +257,22 @@ def env_for(root: Path) -> dict:
 
 
 def socket_for(root: Path, agent: str) -> Path:
-    ip = "10.4.0.2" if agent == "alice" else "10.4.0.3"
-    return root / "data" / "sockets" / f"{ip}_{agent}" / "proxy.sock"
+    return root / "data" / f"{agent}.sock"
 
 
 def start(cli: Path, root: Path, env: dict, revision: str) -> dict:
-    config = yaml.safe_load((root / "config.yaml").read_text())
-    check("backend" not in config["proxy"], "package selection used proxy.backend")
+    config = tomllib.loads((root / "config.toml").read_text())
+    check("backend" not in config, "package selection used a retired backend selector")
     package = installed_identity(cli, revision)
-    run([str(cli), "start", "--wait"], env, timeout=45)
+    run([str(cli), "--root", str(root), "start"], env, timeout=45)
     path = socket_for(root, "alice")
     check(path.is_socket(), "native proxy did not publish Alice's listener")
     token = (root / "data" / "agent_token").read_text().strip()
     status, health = json_request(path, "GET", "/health", token)
     check(status == 200 and isinstance(health, dict), "native proxy health failed")
-    pid = json.loads((root / "data" / "proxy-rust.json").read_text())["pid"]
-    expected = Path(package["package"]) / "bin" / "safeyolo-proxy"
-    native_path = root / "data/native.json"
+    pid = json.loads((root / "data" / "proxy-process.json").read_text())["pid"]
+    expected = Path(package["package_root"]) / "bin" / "safeyolo-proxy"
+    native_path = root / "config.toml"
     runtime = _runtime_observation(
         root, _native_config(native_path, Path.cwd()), expected,
         config_path=native_path, working_directory=Path.cwd(),
@@ -297,7 +294,7 @@ def stop(cli: Path, root: Path, env: dict) -> None:
     run([str(cli), "stop"], env)
     check(not surviving_processes(processes), "stop left an owned native/NATS process alive")
     check(not any((root / "data" / marker).exists() for marker in
-                  ("proxy.pid", "proxy-rust.json", "proxy-readiness.json")),
+                  ("proxy.pid", "ready.json")),
           "stop left a process or readiness marker")
     for agent in ("alice", "bob"):
         with socket.socket(socket.AF_UNIX) as probe:
@@ -311,7 +308,7 @@ def stop(cli: Path, root: Path, env: dict) -> None:
 
 
 def admin(root: Path, method: str, target: str, payload: dict | None = None):
-    port = json.loads((root / "data" / "proxy-readiness.json").read_text())["admin_port"]
+    port = json.loads((root / "data" / "ready.json").read_text())["admin_port"]
     token = (root / "data" / "admin_token").read_text().strip()
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     body = json.dumps(payload).encode() if payload is not None else None
@@ -327,19 +324,16 @@ def admin(root: Path, method: str, target: str, payload: dict | None = None):
         connection.close()
 
 
-def installed_python(cli: Path, env: dict, code: str, *args: str):
-    interpreter = cli.read_text().splitlines()[0][2:]
-    result = run([interpreter, "-I", "-c", code, *args], env)
+def fixture_python(env: dict, code: str, *args: str):
+    """Run unshipped reference readers/state constructors in the test driver."""
+    reference = Path(__file__).resolve().parents[1] / "reference"
+    bootstrap = "import sys; sys.path.insert(0, " + repr(str(reference)) + ");\n"
+    result = run([sys.executable, "-I", "-c", bootstrap + code, *args], env)
     return json.loads(result) if result.strip() else None
 
 
 def ensure_nats(cli: Path, env: dict) -> dict:
-    return installed_python(cli, env, """
-import json
-from safeyolo.coord import nats_runtime
-pid=nats_runtime.start_server(ready_timeout=8.0)
-print(json.dumps({'pid':pid,'version':nats_runtime.NATS_VERSION}))
-""")
+    return json.loads(run([str(cli), "coord", "start"], env))
 
 
 def summary_value(value: bytes) -> dict:
@@ -450,7 +444,7 @@ def trusted_tls_request(socket_path: Path, origin_port: int, root: Path,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--native", action="store_true", help="Compatibility option; all runs use the native proxy")
+    parser.add_argument("--native", action="store_true", help="Run the native installed continuity selection")
     parser.add_argument("--cli", "--rust-cli", dest="cli", required=True, type=Path)
     parser.add_argument("--install-commit", "--rust-revision", dest="rust_revision", required=True)
     parser.add_argument("--state-parent", required=True, type=Path)
@@ -463,11 +457,13 @@ def main() -> None:
     parser.add_argument("--https-port", type=int, default=0, help="TLS fixture port (default: ephemeral)")
     parser.add_argument("--oauth-port", type=int, default=0, help="OAuth fixture port (default: ephemeral)")
     parser.add_argument("--admin-port", type=int, default=0, help="Installed admin listener port (default: ephemeral)")
+    parser.add_argument("--native-cli", type=Path, help="Matching native credential CLI (defaults to installed bin/safeyolo)")
     args = parser.parse_args()
     origin_bind = args.origin_bind or args.origin_host
     task_policy = {"permissions": [{"action": "network:request", "resource": f"{args.origin_host}/*",
                                     "effect": "deny", "condition": {"agent": "alice"}}]}
     package_id = installed_identity(args.cli, args.rust_revision)
+    args.native_cli = native_cli(args.native_cli or args.cli, proxy=Path(package_id["package"]) / "bin/safeyolo-proxy", revision=args.rust_revision)
     args.state_parent.mkdir(parents=True, exist_ok=True)
     if args.config_dir is not None:
         root = args.config_dir.resolve()
@@ -496,38 +492,33 @@ def main() -> None:
     try:
         if args.prepared_config is not None:
             prepare_native_instance(args.prepared_config, root)
-        run([str(args.cli), "init", "--no-interactive"], env)
+        if args.prepared_config is None:
+            run([str(args.cli), "init"], env)
         (root / ".safeyolo-platform-smoke").touch()
-        config = yaml.safe_load((root / "config.yaml").read_text())
-        config["proxy"].update({"port": 0,
-                                "admin_port": args.admin_port,
-                                "web_port": 0,
-                                "upstream_ca_cert": str(tls_cert_path)})
-        config["proxy"]["upstream_proxy"] = parent
-        config["proxy"].pop("backend", None)
-        (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        import tomlkit
+        config = tomlkit.parse((root / "config.toml").read_text())
+        config.update(admin_port=args.admin_port, upstream_ca_file=str(tls_cert_path),
+                      parent_proxy=parent, gateway_services_dir="services",
+                      gateway_builtin_services_dir=str(args.prepared_config / "assets/services") if args.prepared_config else "services",
+                      circuit_state_file="data/circuit_breaker_state.json")
+        config["listeners"] = [
+            {"agent_id": name, "socket_path": f"data/{name}.sock", "source_id": ip}
+            for name, ip in (("alice", "10.4.0.2"), ("bob", "10.4.0.3"))]
+        (root / "config.toml").write_text(tomlkit.dumps(config))
         (root / "data/agent_map.json").write_text(json.dumps({
             "alice": {"ip": "10.4.0.2"}, "bob": {"ip": "10.4.0.3"}}))
-        installed_python(args.cli, env, """
+        fixture_python(env, """
 import json,sys
 from safeyolo.agents_store import save_agent
-save_agent('alice',{'agent_id':'ag-r638-alice','folder':sys.argv[1]})
-save_agent('bob',{'agent_id':'ag-r638-bob','folder':sys.argv[1]})
+save_agent('alice',{'agent_id':'ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','folder':sys.argv[1]})
+save_agent('bob',{'agent_id':'ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','folder':sys.argv[1]})
 print(json.dumps({'agents':'registered'}))
 """, str(root))
-        # The installed CLI creates the canonical encrypted file and its key.
-        installed_python(args.cli, env, """
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault,VaultCredential
-p=Path(sys.argv[1]); v=Vault(p/'vault.yaml.enc'); v.unlock(sys.argv[2]);
-v.store(VaultCredential('contract-secret','oauth2','synthetic-r638-expired',
-    refresh_token='synthetic-r638-refresh-v0',token_url=sys.argv[3],
-    client_id='r638',client_secret='synthetic-client',expires_at='2020-01-01T00:00:00+00:00'))
-(p/'vault.key').write_text(sys.argv[2]); (p/'vault.key').chmod(0o600)
-print(json.dumps({'names':v.list_names()}))
-""", str(root / "data"), PASS,
-                   f"http://127.0.0.1:{oauth.server_port}/oauth/token")
+        store_credential(root / "data", "contract-secret", "synthetic-r638-expired",
+                         kind="oauth2", refresh_token="synthetic-r638-refresh-v0",
+                         token_url=f"http://127.0.0.1:{oauth.server_port}/oauth/token",
+                         client_id="r638", client_secret="synthetic-client",
+                         expires_at="2020-01-01T00:00:00+00:00", binary=args.native_cli)
         # A service file is an operator-authored input, shared by both releases.
         service_dir = root / "services"
         service_dir.mkdir(exist_ok=True)
@@ -593,7 +584,7 @@ capabilities:
       - methods: [GET]
         path: /v1/catalog
 """)
-        installed_python(args.cli, env, """
+        fixture_python(env, """
 import json,sys,tomlkit
 from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
@@ -602,35 +593,37 @@ def update(doc):
     doc['hosts'][sys.argv[3]]=host
     doc['agents']=tomlkit.table()
     doc['agents']['alice']=tomlkit.table()
-    doc['agents']['alice']['agent_id']='ag-r638-alice'
+    doc['agents']['alice']['agent_id']='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     doc['agents']['alice']['folder']=str(Path(sys.argv[1]).parent)
     doc['agents']['alice']['hosts']=tomlkit.table()
     tls_host=tomlkit.inline_table(); tls_host['egress']='allow'; tls_host['rate']=600
     doc['agents']['alice']['hosts'][sys.argv[3]+':'+sys.argv[2]]=tls_host
     doc['agents']['bob']=tomlkit.table()
-    doc['agents']['bob']['agent_id']='ag-r638-bob'
+    doc['agents']['bob']['agent_id']='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
     doc['agents']['bob']['folder']=str(Path(sys.argv[1]).parent)
-    doc['addons']=tomlkit.table()
-    doc['addons']['test_context']=tomlkit.table()
-    doc['addons']['test_context']['target_hosts']=[sys.argv[3]]
-    doc['addons']['test_context']['inject_declared']=True
-    doc['addons']['credential_guard']=tomlkit.table()
-    doc['addons']['credential_guard']['enabled']=True
-    doc['addons']['credential_guard']['detection_level']='none'
-    doc['addons']['credential_guard']['settings']=tomlkit.table()
-    doc['addons']['credential_guard']['settings']['use_default_credential_rules']=False
-    doc['addons']['credential_guard']['settings']['entropy']=tomlkit.table()
-    doc['addons']['credential_guard']['settings']['entropy']['min_length']=1000
-    doc['addons']['circuit_breaker']=tomlkit.table()
-    doc['addons']['circuit_breaker']['failure_threshold']=2
-    doc['addons']['circuit_breaker']['success_threshold']=1
-    doc['addons']['circuit_breaker']['timeout_seconds']=120
-    doc['addons']['circuit_breaker']['use_exponential_backoff']=False
-    doc['addons']['circuit_breaker']['jitter_factor']=0
+    doc['controls']=tomlkit.table()
+    doc['controls']['test_context']=tomlkit.table()
+    doc['controls']['test_context']['target_hosts']=[sys.argv[3]]
+    doc['controls']['test_context']['inject_declared']=True
+    doc['controls']['credentials']=tomlkit.table()
+    doc['controls']['credentials']['enabled']=True
+    doc['controls']['credentials']['detection_level']='none'
+    doc['controls']['credentials']['use_default_credential_rules']=False
+    doc['controls']['credentials']['entropy']=tomlkit.table()
+    doc['controls']['credentials']['entropy']['min_length']=1000
+    doc['controls']['circuits']=tomlkit.table()
+    doc['controls']['circuits']['failure_threshold']=2
+    doc['controls']['circuits']['success_threshold']=1
+    doc['controls']['circuits']['timeout_seconds']=120
+    doc['controls']['circuits']['use_exponential_backoff']=False
+    doc['controls']['circuits']['jitter_factor']=0
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
 """, str(root / "policy.toml"), str(tls_origin.server_port), args.origin_host)
-        run([str(args.cli), "policy", "egress", "set", "deny"], env)
+        policy = tomlkit.parse((root / "policy.toml").read_text())
+        policy["hosts"]["*"]["egress"] = "deny"
+        (root / "policy.toml").write_text(tomlkit.dumps(policy))
+        run([str(args.cli), "policy", "check", str(root / "policy.toml")], env)
         check(tomllib.loads((root / "policy.toml").read_text())["hosts"]["*"]["egress"] == "deny",
               "installed policy writer did not set wildcard egress deny")
         provider_dir = root / "coord-providers"
@@ -638,7 +631,7 @@ print(json.dumps({'policy':'created'}))
         provider_snapshot = provider_dir / "fixture.json"
         observed_at = int(time.time() * 1000)
         provider_snapshot.write_text(json.dumps({"leases": [{
-            "resource": "slot", "state": "held", "holder_agent_id": "ag-r638-bob",
+            "resource": "slot", "state": "held", "holder_agent_id": "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "observed_at": observed_at, "valid_until": observed_at + 300_000,
         }]}))
         provider_hash = sha(provider_snapshot)
@@ -647,23 +640,23 @@ print(json.dumps({'policy':'created'}))
         stages.append(start(active, root, env, args.rust_revision))
         agent_token = (root / "data/agent_token").read_text().strip()
         alice = socket_for(root, "alice")
-        initial_coord = installed_python(args.cli, env, """
+        initial_coord = fixture_python(env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
 async def exercise():
     room_id=await api.create_room('r638-rollback')
-    api.grant('r638-rollback','agent','ag-r638-alice',operation_id='r638-grant-alice')
-    api.grant('r638-rollback','agent','ag-r638-bob',operation_id='r638-grant-bob')
+    api.grant('r638-rollback','agent','ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',operation_id='r638-grant-alice')
+    api.grant('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',operation_id='r638-grant-bob')
     api.advertise_resource('r638-rollback','fixture','slot',advertised=True,
                            operation_id='r638-resource-advertisement')
-    sent=await api.send('r638-rollback','agent','ag-r638-alice','python-created-r638',
+    sent=await api.send('r638-rollback','agent','ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','python-created-r638',
         declared_content_type='text/plain',sender_agent_name='alice',notify=['bob'])
-    page=await api.read_room('r638-rollback','agent','ag-r638-bob')
+    page=await api.read_room('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
     assert len(page['messages'])==1
-    state=await api.get_room_state('r638-rollback','agent','ag-r638-bob')
+    state=await api.get_room_state('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
     assert state['resource_leases'][0]['state']=='held'
-    assert state['resource_leases'][0]['holder_agent_id']=='ag-r638-bob'
+    assert state['resource_leases'][0]['holder_agent_id']=='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
     return {'room_id':room_id,'message_id':sent['envelope']['msg_id'],
             'sequence':page['messages'][0]['sequence'],'attention_status':sent['attention_status'],
             'provider_owned_lease':state['resource_leases'][0]['state']}
@@ -684,12 +677,12 @@ print(json.dumps(asyncio.run(exercise())))
         check(ca.is_file() and hmac.is_file(), "initial native process did not create CA/HMAC state")
         ca_snapshot = ca_files(root)
         check(len(ca_snapshot) >= 2, "installed launcher did not create CA and key files")
-        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
+        for path in (ca, hmac, root / "data/credentials.key", root / "data/credentials.enc"):
             private_file(path)
         initial_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         initial_state = {"ca_sha256": sha(ca), "hmac_sha256": sha(hmac),
                          "hmac_fingerprint": key_fingerprint(hmac),
-                         "vault_sha256": sha(root / "data/vault.yaml.enc"),
+                         "vault_sha256": sha(root / "data/credentials.enc"),
                          "policy_sha256": sha(root / "policy.toml")}
         stop(active, root, env)
         active = None
@@ -702,7 +695,7 @@ print(json.dumps(asyncio.run(exercise())))
         print(json.dumps({"nats": nats_identity}), flush=True)
         active = args.cli
         stages.append(start(active, root, env, args.rust_revision))
-        native = json.loads((root / "data/native.json").read_text())
+        native = _native_config(root / "config.toml", root)["raw"]
         check(Path(native["circuit_state_file"]) == root / "data/circuit_breaker_state.json",
               "Rust generated a different circuit path")
         check(Path(native["flow_store_db_path"]) == root / "logs/flows.sqlite3",
@@ -711,8 +704,8 @@ print(json.dumps(asyncio.run(exercise())))
               "Rust generated a different service directory")
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
-              "Rust changed the Python CA files, HMAC key, or synthetic fingerprint")
-        private_file(root / "data/vault.yaml.enc")
+              "native restart changed the CA files, HMAC key, or synthetic fingerprint")
+        private_file(root / "data/credentials.enc")
         private_file(hmac)
         native_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         bob = socket_for(root, "bob")
@@ -833,11 +826,11 @@ print(json.dumps(asyncio.run(exercise())))
               "native task clear did not restore scoped host approval")
         check(sha(root / "policy.toml") == policy_before_task,
               "native task registration, activation, or clear changed durable policy")
-        installed_python(args.cli, env, """
+        fixture_python(env, """
 import json,sys
 from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
-def update(doc): del doc['addons']['test_context']
+def update(doc): del doc['controls']['test_context']
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'test_context':'removed_after_flow'}))
 """, str(root / "policy.toml"))
@@ -903,10 +896,10 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               "native OAuth refresh did not inject refreshed credential: "
               f"{origin.seen[-1]['authorization'][-24:]!r}; provider calls={len(oauth.seen)}")
         check(len(oauth.seen) == 1, "native OAuth did not call provider exactly once")
-        native_vault_hash = sha(root / "data/vault.yaml.enc")
+        native_vault_hash = sha(root / "data/credentials.enc")
         check(native_vault_hash != initial_state["vault_sha256"],
               "native OAuth refresh did not durably change vault")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         print(json.dumps({"native_write": {"authorization": authorization,
                           "binding_id": binding_id, "grant_id": grant_id,
                           "request_status": gateway_status,
@@ -965,7 +958,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "Python rollback changed CA/HMAC identity")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         private_file(hmac)
         replacement_circuit_status, replacement_circuit = json_request(alice, "GET", "/circuits", agent_token)
         check(replacement_circuit_status == 200 and
@@ -1028,18 +1021,18 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               f"replacement native process did not use native grant/binding: {replacement_gateway_status}")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
               "replacement native process did not inject native-refreshed vault credential")
-        replacement_coord_read = installed_python(args.cli, env, """
+        replacement_coord_read = fixture_python(env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
 async def exercise():
-    page=await api.read_room('r638-rollback','agent','ag-r638-bob',since_sequence=0,limit=5)
+    page=await api.read_room('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',since_sequence=0,limit=5)
     assert [m['body'] for m in page['messages']]==['python-created-r638','native-written-r638']
-    attention=await api.wait_for_attention('ag-r638-bob',since_sequence=0,timeout_seconds=0.1,limit=5)
+    attention=await api.wait_for_attention('ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',since_sequence=0,timeout_seconds=0.1,limit=5)
     assert attention['edges']
-    state=await api.get_room_state('r638-rollback','agent','ag-r638-bob')
+    state=await api.get_room_state('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
     assert state['resource_leases'][0]['state']=='held'
-    sent=await api.send('r638-rollback','agent','ag-r638-bob','python-rollback-r638',
+    sent=await api.send('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','python-rollback-r638',
         declared_content_type='text/plain',sender_agent_name='bob',notify=['alice'])
     return {'messages_read':len(page['messages']),'attention_edges':len(attention['edges']),
             'new_message_id':sent['envelope']['msg_id'],
@@ -1060,17 +1053,19 @@ print(json.dumps(asyncio.run(exercise())))
         status, _ = json_request(alice, "POST", f"/api/flows/{flow_id}/tag", agent_token,
                                  {"tag": "replacement", "value": "rollback"})
         check(status == 200, "replacement could not write its durable flow tag")
-        replacement_read = installed_python(args.cli, env, """
+        store_credential(root / "data", "contract-secret", "synthetic-r638-access-v1",
+                         kind="oauth2", refresh_token="synthetic-r638-refresh-v1",
+                         token_url=f"http://127.0.0.1:{oauth.server_port}/oauth/token",
+                         client_id="r638", client_secret="synthetic-client",
+                         expires_at="2020-01-01T00:00:00+00:00", binary=args.native_cli)
+        eventually(granted_request, "replacement native OAuth did not deliver")
+        check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v2",
+              "replacement native OAuth did not inject the second refreshed value")
+        replacement_read = fixture_python(env, """
 import json,sys
 from pathlib import Path
-from safeyolo.core.vault import Vault
 from safeyolo.policy.toml_roundtrip import load_agents,load_roundtrip,locked_policy_mutate,upsert_agent
 root=Path(sys.argv[1]); binding_id=sys.argv[2]; grant_id=sys.argv[3]
-vault=Vault(root/'data/vault.yaml.enc'); vault.unlock((root/'data/vault.key').read_text())
-cred=vault.get('contract-secret'); assert cred and cred.value=='synthetic-r638-access-v1'
-cred.expires_at='2020-01-01T00:00:00+00:00'; vault.store(cred)
-assert vault.refresh_oauth2('contract-secret')
-assert vault.get('contract-secret').value=='synthetic-r638-access-v2'
 policy=root/'policy.toml'; alice=load_agents(load_roundtrip(policy))['alice']
 assert any(g['grant_id']==grant_id for g in alice['grants'])
 assert any(b['binding_id']==binding_id for b in alice['contract_bindings'])
@@ -1086,18 +1081,19 @@ def revoke(doc):
 locked_policy_mutate(policy,revoke,save_if_unchanged=False)
 alice=load_agents(load_roundtrip(policy))['alice']
 assert not alice.get('services') and not alice.get('grants') and not alice.get('contract_bindings')
-print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
+print(json.dumps({'native_grant_read':True,
           'native_binding_read':True,'service_revoked':True}))
 """, str(root), binding_id, grant_id)
         check(len(oauth.seen) == 2, "replacement native process OAuth writer did not call provider")
-        check(sha(root / "data/vault.yaml.enc") != native_vault_hash,
+        check(sha(root / "data/credentials.enc") != native_vault_hash,
               "replacement native process OAuth did not durably update native vault")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         check(sha(provider_snapshot) == provider_hash,
               "replacement changed the provider-owned snapshot")
         catalog_override.unlink()
-        run([str(args.cli), "policy", "host", "remove", args.origin_host,
-             "--port", str(origin.server_port), "--agent", "alice"], env)
+        status, removed = admin(root, "DELETE", f"/admin/policy/host/{args.origin_host}",
+                                {"port": origin.server_port, "agent": "alice"})
+        check(status == 200, f"native scoped host removal failed: {status} {removed}")
         host_policy = tomllib.loads((root / "policy.toml").read_text())
         check(f"{args.origin_host}:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
               "replacement native process writer did not revoke scoped host approval")
@@ -1133,7 +1129,7 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "return Rust changed CA/HMAC identity")
-        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
+        for path in (ca, hmac, root / "data/credentials.key", root / "data/credentials.enc"):
             private_file(path)
         returned_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         status, returned_circuit = json_request(alice, "GET", "/circuits", agent_token)
@@ -1242,12 +1238,7 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
               flush=True)
         stop(active, root, env)
         active = None
-        installed_python(args.cli, env, """
-import json
-from safeyolo.coord import nats_runtime
-nats_runtime.stop_server()
-print(json.dumps({'nats':'stopped'}))
-""")
+        run([str(args.cli), "coord", "stop"], env)
         nats_started = False
         check(len({stage["runtime"]["receipt"]["start_token"] for stage in stages}) == 4,
               "native replacement reused a prior process identity")
@@ -1261,12 +1252,7 @@ print(json.dumps({'nats':'stopped'}))
                 cleanup_errors.append(str(exc))
         if nats_started:
             try:
-                installed_python(args.cli, env, """
-import json
-from safeyolo.coord import nats_runtime
-nats_runtime.stop_server()
-print(json.dumps({'nats':'stopped'}))
-""")
+                run([str(args.cli), "coord", "stop"], env)
             except Exception as exc:
                 print(f"NATS cleanup failed: {type(exc).__name__}: {exc}", flush=True)
                 cleanup_errors.append(str(exc))
@@ -1281,7 +1267,7 @@ print(json.dumps({'nats':'stopped'}))
                     stage["runtime"]["receipt"]["start_token"]):
                 cleanup_errors.append(f"owned native process {stage['pid']} is still live")
         if any((root / "data" / marker).exists() for marker in (
-                "proxy-rust.json", "proxy-readiness.json", "coord/nats/nats.pid.json")):
+                "ready.json", "coord/nats/process.json")):
             cleanup_errors.append("owned runtime marker remains")
         if cleanup_errors:
             raise PreparationError("owned cleanup failed: " + "; ".join(cleanup_errors))

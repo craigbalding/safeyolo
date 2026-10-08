@@ -1,6 +1,6 @@
 # SafeYolo Guest Image Builds
 
-For host installation and individual bootstrap phases, see the
+For native host installation and prepared platform inputs, see the
 [installation reference](../cli/README.md#installation). For default guest tools
 and custom distributions, see the [rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md).
 
@@ -12,7 +12,7 @@ Builds the artifacts SafeYolo needs to run agent sandboxes:
 - `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; files are owned by uid 100000, the subuid-root for rootless userns)
 - `out/cache-paths.txt` — absolute in-rootfs paths SafeYolo bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
 
-Every `build-rootfs.sh` run produces **both** the ext4 image and the tree on Linux (natively or inside the Lima VM on macOS). The tree is what gVisor uses on Linux hosts; without it, `safeyolo agent add` fails with a "Rootfs tree not found" error.
+Every `build-rootfs.sh` run produces **both** the ext4 image and the tree on Linux (natively or inside the Lima VM on macOS). The tree is what gVisor uses on Linux hosts; without it, `safeyolo agent start` fails with a "Rootfs tree not found" error.
 
 No Docker. Uses `skopeo` + `umoci` to pull + unpack the official `debian:trixie` OCI image for the rootfs, and native cross-compile for the kernel/initramfs. Works on any Linux distro (Fedora, Arch, Alpine, Debian, Ubuntu) — no mmdebstrap/debootstrap on the build host.
 
@@ -44,16 +44,20 @@ sudo rm -rf guest/out/rootfs-base.ext4 guest/out/rootfs-tree guest/out/cache-pat
 The download cache under `guest/out/.download-cache/` is preserved — mise/gh
 tarballs and the trixie OCI image don't re-fetch.
 
-Artifacts land in `guest/out/`. To use them, from the same `guest/` directory you ran `./build-all.sh` in:
+Artifacts land in `guest/out/`. Return to the repository root, then provide
+that directory to the native installer at a fresh installation:
 
-```bash
-mkdir -p ~/.safeyolo/share
-sudo cp -a out/* ~/.safeyolo/share/
+```sh
+./install.sh --root "$HOME/.safeyolo-native" --runtime-artifacts /usr/bin --platform-assets "$PWD/guest/out"
 ```
 
-(If you're back at the repo root, adjust to `sudo cp -a guest/out/* ~/.safeyolo/share/`.)
-
-`sudo cp -a` is required so the tree's uid 100000 ownership is preserved (rootless gVisor maps container root to host uid 100000; a plain `cp` would change ownership to the invoking user and `safeyolo agent add` would reject the tree with a chown instruction).
+Supply matching guest/VM artifacts as described in the
+[native build guide](../docs/native-policy.md#build-a-native-bundle).
+The Ubuntu example uses prepared `/usr/bin/tmux`. On Linux the installer links
+the prepared `rootfs-tree` without changing its UID 100000 ownership. Keep the
+tree available and immutable for the instance's lifetime. On macOS it clones
+Image, initramfs.cpio.gz and rootfs-base.ext4 into the instance's share.
+A missing or incorrectly owned tree fails native agent start.
 
 ## macOS setup
 
@@ -72,7 +76,7 @@ mise use -g lima
 
 That's it. The first `./build-all.sh` run creates a Lima VM named `safeyolo-builder` from `guest/lima.yaml` and provisions it with the required build tools (~2-3 min). Subsequent runs reuse the VM.
 
-The same VM is reused by `safeyolo agent add --rootfs-script` on macOS when you build a custom per-agent rootfs. Its provisioning includes `skopeo` + `umoci` + `e2fsprogs` (for the default base and for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`) plus the kernel toolchain.
+The same VM is reused by `contrib/ROOTFS_SCRIPT_GUIDE.md` on macOS when you build a custom per-agent rootfs. Its provisioning includes `skopeo` + `umoci` + `e2fsprogs` (for the default base and for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`) plus the kernel toolchain.
 
 ### Why Lima
 

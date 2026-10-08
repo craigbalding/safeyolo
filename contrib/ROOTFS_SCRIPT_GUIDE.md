@@ -2,15 +2,10 @@
 
 Rootfs scripts replace SafeYolo's default Debian-trixie base rootfs with a
 custom distribution. The source can be an Open Container Initiative (OCI)
-image or a rootfs tarball. SafeYolo invokes the script with:
-
-```sh
-safeyolo agent add <name> <folder> \
-    --rootfs-script path/to/my-rootfs-builder.sh
-```
-
-The script is a plain shell script. Read it, edit it, run it on any Linux
-box to reproduce what SafeYolo would run. No DSL, no templates.
+image or a rootfs tarball. Prepare the custom image on a Linux builder with the shell inputs below,
+then supply the result to an installed native instance. The native CLI does
+not run a Python rootfs builder or accept the retired --rootfs-script flag.
+Existing shell builders and guest support files remain usable.
 
 ## Why this is safe to skip for most users
 
@@ -19,7 +14,7 @@ The standard Debian-trixie image includes `ripgrep`, `fd-find`, `file`, `unzip`,
 and BusyBox-backed `nc` and `hexdump` shims. Install project language runtimes
 through mise.
 
-You don't need `--rootfs-script` unless you actually want a different
+You don't need a custom rootfs unless you actually want a different
 distro. The default base (Debian trixie with `mise` plus a compact
 agent-oriented Unix toolkit) covers the
 common agent workflows and ships with SafeYolo. Reach for a rootfs-script
@@ -29,15 +24,16 @@ distro.
 
 ## The contract
 
-Your script is called with these env vars set:
+Run your selected builder with these environment variables. The operator
+chooses outputs and owns their temporary work directory and cleanup:
 
 | Variable | Meaning |
 |---|---|
-| `SAFEYOLO_AGENT_NAME` | Instance name passed to `agent add`. |
+| `SAFEYOLO_AGENT_NAME` | Name of the agent for which you prepare the image. |
 | `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image (set when the host running SafeYolo is macOS). Not set on Linux. |
 | `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** as a directory (set when the host is Linux). gVisor reads it as OCI root.path. Not set on macOS. |
-| `SAFEYOLO_ROOTFS_WORK_DIR` | Guaranteed-empty scratch directory. Write intermediates here; SafeYolo cleans it up. |
-| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to SafeYolo's guest support files: the source checkout's `guest/` directory or the version-matched files bundled with an installed Linux CLI. Contains `safeyolo-guest-init`, `safeyolo-sudo`, and `install-guest-common.sh`. |
+| `SAFEYOLO_ROOTFS_WORK_DIR` | An empty disk-backed scratch directory owned by this build; clean it after the command finishes. |
+| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to SafeYolo's guest support files: the source checkout's `guest/` directory with matching native guest support. Contains `safeyolo-guest-init`, `safeyolo-sudo`, and `install-guest-common.sh`. |
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
 | `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
@@ -51,16 +47,36 @@ Handle both branches if the script supports both host platforms. Always create
 `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS`; write an empty file when no package cache
 should persist.
 
-Exit `0` → SafeYolo validates the expected output file exists, is non-empty,
-and uses it for the agent. Non-zero → SafeYolo aborts `agent add`, prints
-your stderr, and does not persist agent config. Fix the script and re-run
-with `--force`.
+For example, from the trusted source checkout on Linux, prepare an Alpine
+tree for a fresh native installation. Select the architecture for the actual
+runtime and keep host inputs separate from agent-writable files:
 
-On Linux, the rootfs script stays attached to the invoking terminal. SafeYolo
-sends it `SIGTERM` after an interrupt and allows five seconds for its `EXIT`
-cleanup before killing the script. Builders should keep privileged commands in
-the foreground and use an `EXIT` trap to release any mounts they create. The
-bundled Kali builder follows that model.
+```sh
+work=$(mktemp -d "$HOME/rootfs-build.XXXXXX")
+mkdir -p "$work/scratch" "$work/platform"
+SAFEYOLO_AGENT_NAME=work \
+SAFEYOLO_TARGET_ARCH=amd64 \
+SAFEYOLO_GUEST_SRC_DIR="$PWD/guest" \
+SAFEYOLO_ROOTFS_WORK_DIR="$work/scratch" \
+SAFEYOLO_ROOTFS_OUT_TREE="$work/platform/rootfs-tree" \
+SAFEYOLO_ROOTFS_OUT_CACHE_PATHS="$work/platform/cache-paths.txt" \
+  ./contrib/alpine-minimal/build-alpine-rootfs.sh
+```
+
+On failure, retain stderr and the build inputs; resolve the cause before retrying. Keep
+privileged commands in the foreground and use an EXIT trap for owned mounts.
+The builder must return zero and produce the expected nonempty image/tree.
+Supply `--platform-assets "$work/platform"` to the native installer. The
+existing Linux boot owner requires sandbox-root UID 100000 ownership and
+host-traversable bind targets; the maintained builders perform that preparation.
+Do not replace a tree in use by a running sandbox.
+
+For a per-agent custom tree, prepare `ROOT/agents/NAME/rootfs` while that agent
+is stopped; native `host_boot.rs` selects it before the shared default.
+On macOS the existing VM owner selects `ROOT/agents/NAME/rootfs.ext4` before
+`ROOT/share/rootfs-base.ext4`. Build ext4 on Linux using OUT_EXT4 rather than
+OUT_TREE and provide the matching kernel/initramfs as ordinary platform inputs.
+These paths reuse native boot selection and introduce no automatic conversion.
 
 ## What the rootfs must contain
 
@@ -93,10 +109,9 @@ must meet these requirements:
      the agent's existing namespace capabilities on rootless Linux gVisor;
      PID 1 uses `prlimit` to set the open-file limit on its numeric process)
 
-   Optional:
-   - `python3` — only needed if you want `safeyolo agent shell <name>
-     -- python3 /safeyolo/guest-diag` (an interactive egress-chain
-     diagnostic). Nothing on the boot path depends on Python any more.
+   Additional project tools can be installed in the guest. Native boot,
+   control, terminal, Coord and diagnostics do not require a Python package.
+   Use `safeyolo agent diagnostics NAME` on the host for the owned native hops.
 
 Everything else (systemd, SELinux policy, unit files, distro-specific
 boot choreography) is ignored because our init runs instead of the
@@ -165,11 +180,9 @@ more packages.
 
 ## Building on macOS (Lima)
 
-macOS can't natively build Linux rootfs trees — `umoci unpack`, chroot
-apt/apk, and `mkfs.ext4` are all Linux-only syscalls or binaries.
-SafeYolo handles this transparently by invoking your script inside a
-Lima VM (the same `safeyolo-builder` VM that `guest/build-all.sh` uses
-for the default base).
+macOS needs a Linux builder for `umoci unpack`, chrooted apt/apk, and
+`mkfs.ext4`. `guest/build-all.sh` creates the narrowly mounted
+`safeyolo-builder` Lima VM for the default image.
 
 One-time setup:
 
@@ -177,20 +190,18 @@ One-time setup:
 brew install lima
 ```
 
-The Lima VM is created on first `agent add --rootfs-script` run (or first
-`guest/build-all.sh`) and pre-provisioned with `skopeo`, `umoci`,
-`e2fsprogs`, plus the kernel-build toolchain. Your script runs inside
-that VM with the script directory and the target agent directory mounted
-in. Output images land on the macOS host via the bind mount.
+Run `guest/build-all.sh` for the default images. For a custom image, run the
+selected script explicitly on an owned Linux builder, with the inputs from
+this guide. Supply `SAFEYOLO_ROOTFS_OUT_EXT4` for the output image, then transfer
+it to the stopped agent's `ROOT/agents/NAME/rootfs.ext4`. Reuse the separately
+prepared kernel and initramfs. Native `agent add` does not invoke a custom
+script or create a Lima builder.
 
-Linux hosts skip Lima and run a private copy of the script from the native
-temporary build directory. Staging avoids `ETXTBSY` (`Text file busy`) when
-the selected script lives on a writable 9p/FUSE share or is open in an editor.
-SafeYolo itself does not elevate arbitrary custom scripts. The bundled Kali
-example requests command-scoped `sudo` for rootful `umoci unpack`, chrooted
-distro package installation (including temporary `/proc`, `/sys`, and `/dev`
-binds), filesystem staging, and the uid-100000 ownership required by the
-rootless gVisor mapping. Downloads and orchestration remain unprivileged.
+On Linux, use an owned disk-backed scratch directory and the tree outputs
+shown above. The bundled Kali example requests command-scoped `sudo` for
+rootful `umoci unpack`, chrooted distro package installation, filesystem
+staging, and UID-100000 ownership for rootless gVisor. Downloads and
+orchestration remain unprivileged.
 
 ## Tooling cheat sheet, by approach
 
@@ -227,31 +238,20 @@ custom rootfs legitimately needs them.
 
 ## Idempotency
 
-Rootfs scripts run on `safeyolo agent add`. Re-running with `--force`
-reruns the script. Make yours reproducible: pin image digests, tool
+Rootfs scripts run explicitly on the selected builder. Re-run them only
+against owned outputs and after their prior command has finished. Make yours reproducible: pin image digests, tool
 versions, and git commit hashes so two builds produce byte-comparable
 rootfs.
 
 ## Reusing a built custom rootfs
 
-Package installation often dominates a custom build. After one agent has a
-validated custom rootfs, clone that immutable lower layer into another agent:
-
-```sh
-safeyolo agent add second-agent /path/to/second-workspace \
-    --rootfs-from first-agent
-```
-
-The clone does not include the source agent's writable overlay, persistent
-home, workspace, credentials, or package-cache contents. The destination gets
-fresh mutable state and remains independent if either agent is later removed
-or rebuilt. On Linux, SafeYolo requests command-scoped `sudo` for an
-ownership-preserving `cp --reflink=auto`; filesystems with reflink support make
-the clone copy-on-write, while other filesystems fall back to a normal copy.
-On macOS, SafeYolo uses an APFS clone when available.
-
-Only custom per-agent rootfs images can be cloned. Agents using SafeYolo's
-shared default rootfs already reuse the same immutable base automatically.
+Prepared immutable platform assets can be shared by several fresh native
+installations. Linux installations link the same prepared tree and keep each
+agent's writable overlay, home, workspace, credentials and caches independent.
+For separate custom per-agent trees, an operator can use an ownership-preserving
+`sudo cp -a --reflink=auto` on Linux. On APFS use `cp -c` for an ext4 image so
+the new file retains independent writes. Stop affected guests before replacing
+boot inputs. Native installation does not copy another agent's mutable state.
 
 ## Using an agent to write rootfs scripts
 
@@ -264,14 +264,14 @@ SafeYolo agent. Share this guide and the existing examples
 > `install-guest-common.sh`, and emits either ext4 (`$SAFEYOLO_ROOTFS_OUT_EXT4`)
 > or an unpacked tree (`$SAFEYOLO_ROOTFS_OUT_TREE`) depending on which is set.
 
-Review the script, save it in `contrib/<distro>/`, and wire it in via
-`--rootfs-script`.
+Review the script, save it in `contrib/<distro>/`, run it on the selected Linux
+builder, and install its prepared outputs as described above.
 
 ## Security note
 
-SafeYolo invokes the script with your permissions on Linux, or as root inside
-the isolated Lima builder VM on macOS. A Linux script may request privilege
-itself; the bundled Kali example uses command-scoped `sudo` rather than
+Run the custom script with your own permissions on the selected Linux builder.
+The script may request privilege itself; the bundled Kali example uses
+command-scoped `sudo` rather than
 elevating the entire script. Its chrooted distro package manager still executes
 signed package maintainer scripts as host root, and `chroot` is not a security
 boundary. Downloads from other sources should remain unprivileged and be

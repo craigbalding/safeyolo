@@ -17,6 +17,19 @@ fn input() -> Result<Value, Error> {
 async fn run() -> Result<(), Error> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
+        [kind, help] if kind == "ssh-proxy" && help == "--help" => {
+            println!(
+                "{}",
+                safeyolo_proxy::ssh_proxy::HELP.replace("safeyolo ", "safeyolo-coord ")
+            );
+        }
+        [kind, host, port] if kind == "ssh-proxy" => {
+            safeyolo_proxy::ssh_proxy::run(
+                host.to_str().ok_or("SSH host must be UTF-8")?,
+                port.to_str().ok_or("SSH port must be UTF-8")?.parse()?,
+            )
+            .await?;
+        }
         [kind, ..] if kind == "completion-notes" || kind == "proposals" => {
             safeyolo_proxy::factory_proposals::run_agent(&arguments).await?;
         }

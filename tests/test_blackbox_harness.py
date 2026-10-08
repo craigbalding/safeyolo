@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
-import yaml
 
 from tests.blackbox import installed_lifecycle as lifecycle
 from tests.blackbox import installed_sections, installed_shared_approvals
@@ -47,7 +46,6 @@ def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch):
     binary = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
     if not binary:
         pytest.skip("requires the built native CLI (SAFEYOLO_TEST_NATIVE_CLI)")
-    from safeyolo.agent_lifecycle import list_agent_runtimes
 
     with tempfile.TemporaryDirectory(prefix="sy908-", dir="/tmp") as directory:
         parent = Path(directory)
@@ -61,7 +59,7 @@ def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch):
             installed_sections.prepare_native_instance(source, root)
             monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
             monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
-            assert list_agent_runtimes() == []
+            assert json.loads(subprocess.check_output([str(root / "bin/safeyolo"), "--root", str(root), "status"]))["agents"] == []
             assert (root / "bin/safeyolo").resolve() == Path(binary).resolve()
             assert (root / "assets/input").stat().st_ino == (source / "assets/input").stat().st_ino
         assert (roots[0] / "data/admin_token").read_bytes() != (roots[1] / "data/admin_token").read_bytes()
@@ -115,17 +113,17 @@ def test_harness_assigns_distinct_proxy_admin_and_web_ports():
     assert "TEST_PROXY_PORT=8180" in harness
     assert "TEST_ADMIN_PORT=9190" in harness
     assert "TEST_WEB_PORT=8181" in harness
-    assert "config['proxy']['port'] = $TEST_PROXY_PORT" in harness
-    assert "config['proxy']['admin_port'] = $TEST_ADMIN_PORT" in harness
-    assert "config['proxy']['web_port'] = $TEST_WEB_PORT" in harness
+    assert "TEST_PROXY_PORT=8180" in harness
+    assert 'config["admin_port"] = int(sys.argv[2])' in harness
+    assert "TEST_WEB_PORT=8181" in harness
 
 
 def test_native_isolation_lane_selects_rust_before_test_start():
     """Ordinary installed guest runs select the production native runtime."""
     harness = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
 
-    selector = "config['proxy']['backend'] = '$PROXY_IMPL'"
-    start = "safeyolo start --no-wait"
+    selector = "INSTALLED_RUST_BIN="
+    start = "safeyolo start"
     assert 'PROXY_IMPL="rust"' in harness
     assert selector in harness
     assert harness.index(selector) < harness.index(start)
@@ -424,19 +422,12 @@ def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_pa
     assert not sentinel.exists()
 
 
-def test_kvm_lane_prepares_operator_access_before_product_bootstrap():
-    lane = (Path(__file__).parent / "blackbox" / "run-lane.sh").read_text()
-
-    operator_acl = 'sudo -n setfacl -m "u:${OPERATOR_UID}:rw" /dev/kvm'
-    assert 'if [ "$LANE" = "kvm" ]; then' in lane
-    assert 'OPERATOR_UID="$(id -u)"' in lane
-    assert operator_acl in lane
-    assert lane.index(operator_acl) < lane.index(
-        '    safeyolo bootstrap --source-checkout "$INSTALL_ROOT"\n'
-    )
-    # The harness supplies only its operator prerequisite. Product setup owns
-    # the separate persistent uid 100000 ACL and udev rule.
-    assert 'setfacl -m "u:100000:rw"' not in lane
+def test_kvm_lane_prepares_operator_and_subordinate_access_before_native_installation():
+    lane = (Path(__file__).parent / "blackbox/run-lane.sh").read_text()
+    acl = 'sudo -n setfacl -m "u:$(id -u):rw,u:100000:rw" /dev/kvm'
+    assert acl in lane
+    assert lane.index(acl) < lane.index('"$checkout/install.sh"')
+    assert 'safeyolo bootstrap' not in lane
 
 
 def test_backend_selector_records_actual_rust_binary_identity(tmp_path):
@@ -745,15 +736,21 @@ SELECTED_REVISION = "a" * 40
 
 
 def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch):
-    """Run the launcher's final addon rewrite and capture the guest's calls."""
+    """Read the launcher's final native policy and capture its matching guest calls."""
+    binary = os.environ.get('SAFEYOLO_TEST_NATIVE_CLI')
+    if not binary:
+        pytest.skip('requires built native CLI (SAFEYOLO_TEST_NATIVE_CLI)')
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    (tools / 'safeyolo').symlink_to(binary)
     source = tmp_path / "source-instance"
     instance = tmp_path / "test-instance"
     environment = os.environ.copy()
     environment.update(
         SAFEYOLO_CONFIG_DIR=str(source),
         SAFEYOLO_TEST_CONFIG_DIR=str(instance),
-        PATH=f"{Path(sys.executable).parent}:{environment['PATH']}",
-        PYTHONPATH=f"{ROOT / 'cli/src'}:{ROOT}",
+        PATH=f"{tools}:{Path(sys.executable).parent}:{environment['PATH']}",
+        PYTHONPATH=f"{ROOT / 'tests/reference'}:{ROOT}",
     )
     command = [
         str(ROOT / "tests/blackbox/run-tests.sh"),
@@ -766,7 +763,7 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
     prepared = subprocess.run(command, env=environment, cwd=ROOT, capture_output=True, text=True, timeout=60)
     assert prepared.returncode == 0, prepared.stdout[-1000:] + prepared.stderr[-1000:]
     assert "no proxy or guest started" in prepared.stdout
-    targets = yaml.safe_load((instance / "addons.yaml").read_text())["addons"]["test_context"]["target_hosts"]
+    targets = tomllib.loads((instance / "policy.toml").read_text())["controls"]["test_context"]["target_hosts"]
     policy = tomllib.loads((instance / "policy.toml").read_text())
     assert policy["hosts"][guest.BASIC_HOST]["service"] == "p3_basic"
     assert policy["hosts"][guest.CONTRACT_HOST]["service"] == "p3_contract"
@@ -827,10 +824,13 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
 
 def test_installed_setup_command_failure_is_infrastructure(tmp_path):
     cli = tmp_path / "safeyolo"
-    cli.write_text("#!/bin/sh\necho 'deliberate init failure' >&2\nexit 1\n")
+    cli.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then\n"
+                   "echo 'safeyolo 0.1.0 commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa profile=debug'\n"
+                   "exit 0\nfi\necho 'deliberate init failure' >&2\nexit 1\n")
     cli.chmod(0o755)
     environment = {**os.environ,
                    "PATH": f"{tmp_path}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+                   "SAFEYOLO_NATIVE_CLI": str(cli),
                    "SAFEYOLO_CONFIG_DIR": str(tmp_path / "prepared"),
                    "SAFEYOLO_TEST_CONFIG_DIR": str(tmp_path / "section")}
     result = subprocess.run(
@@ -993,63 +993,39 @@ def test_blocked_sse_input():
     assert json.loads(cleanup.read_text()) == [-1, -1]
 
 
-def test_selected_installed_identity_requires_exact_wheel_stamp_and_binary(tmp_path):
-    revision = SELECTED_REVISION
-    checkout = tmp_path / "source"
-    built = checkout / "proxy/target/release/safeyolo-proxy"
-    built.parent.mkdir(parents=True)
-    built.write_bytes(b"selected-native-binary")
-
-    package = tmp_path / "tool/safeyolo"
-    packaged = package / "bin/safeyolo-proxy"
-    packaged.parent.mkdir(parents=True)
-    packaged.write_bytes(built.read_bytes())
-    (package / "_build_identity.json").write_text(json.dumps({"source_revision": revision, "state": "known"}))
-    cli = tmp_path / "tool/bin/safeyolo"
-    cli.parent.mkdir(parents=True)
-    diagnostic = {
-        "checks": [
-            {
-                "name": "Runtime identity",
-                "status": "pass",
-                "message": f"Running {packaged.resolve()}",
-                "detail": "PID 4242",
-            }
-        ],
-    }
-    cli.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys\n"
-        f"if sys.argv[1] == 'doctor': print({json.dumps(json.dumps(diagnostic))})\n"
-        "else: print('native running 4242')\n"
-    )
+def test_selected_installed_identity_requires_native_source_binary_and_instance(tmp_path):
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
+    subprocess.run(['git', '-C', str(checkout), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@test',
+                    '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '-qm', 'fixture'], check=True)
+    revision = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+    package = tmp_path / 'package'
+    (package / 'bin').mkdir(parents=True)
+    packaged = package / 'bin/safeyolo-proxy'
+    packaged.write_bytes(b'selected native bytes')
+    cli = package / 'bin/safeyolo'
+    root = tmp_path / 'instance'
+    diagnostic = {'proxy_state': 'running', 'root': str(root)}
+    cli.write_text(f'#!{sys.executable}\nimport json\nprint({json.dumps(json.dumps(diagnostic))})\n')
     cli.chmod(0o755)
-    runtime = {
-        "status": "attached_ready",
-        "cli": {"path": str(cli), "package_location": str(package / "__init__.py")},
-        "candidate": {"path": str(packaged), "sha256": hashlib.sha256(built.read_bytes()).hexdigest()},
-        "runtime": {
-            "status": "ready",
-            "pid": 4242,
-            "actual_executable": str(packaged),
-            "authenticated_runtime_identity": {"status": "authenticated"},
-        },
-        "native": {},
-    }
-
+    runtime = {'status': 'attached_ready', 'instance': {'config_dir': str(root)},
+               'cli': {'path': str(cli), 'package_root': str(package), 'source_revision': revision, 'profile': 'debug'},
+               'candidate': {'path': str(packaged), 'sha256': hashlib.sha256(packaged.read_bytes()).hexdigest()},
+               'runtime': {'status': 'ready', 'actual_executable': str(packaged),
+                           'authenticated_runtime_identity': {'status': 'authenticated'}}, 'native': {}}
     selected = installed_identity(runtime, checkout, expected_revision=revision)
-    assert selected["build_identity"]["source_revision"] == revision
-    assert selected["cli_diagnostics"]["detail"] == "PID 4242"
-    with pytest.raises(AssertionError, match="selected source build identity"):
+    assert selected['build_identity']['source_revision'] == revision
+    assert selected['cli_diagnostics'] == diagnostic
+    with pytest.raises(AssertionError, match='CLI source differs'):
         installed_identity(runtime, checkout, expected_revision=OTHER_REVISION)
-    wrong_diagnostic = {"checks": [{**diagnostic["checks"][0], "message": "Running /wrong/proxy"}]}
-    cli.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys\n"
-        f"if sys.argv[1] == 'doctor': print({json.dumps(json.dumps(wrong_diagnostic))})\n"
-        "else: print('native running 4242')\n"
-    )
+    packaged.write_bytes(b'substituted')
     with pytest.raises(AssertionError):
+        installed_identity(runtime, checkout, expected_revision=revision)
+    packaged.write_bytes(b'selected native bytes')
+    diagnostic['root'] = str(tmp_path / 'other')
+    cli.write_text(f'#!{sys.executable}\nprint({json.dumps(json.dumps(diagnostic))})\n')
+    with pytest.raises(AssertionError, match='selected running instance'):
         installed_identity(runtime, checkout, expected_revision=revision)
 
 
@@ -1131,7 +1107,7 @@ def installed_section_commands(tmp_path, monkeypatch):
         "if os.environ.get('FAIL_PREPARATION'): sys.exit(9)\n"
         "(root / 'share').mkdir()\n"
         "(root / 'share/kernel').write_bytes(b'compatible immutable boot input')\n"
-        "binary_dir = pathlib.Path(os.environ['UV_TOOL_BIN_DIR'])\n"
+        "binary_dir = root / 'bin'\n"
         "binary_dir.mkdir(parents=True)\n"
         f"(binary_dir / 'safeyolo').write_text({stop_script!r})\n"
         "(binary_dir / 'safeyolo').chmod(0o755)\n"
@@ -1148,11 +1124,11 @@ def installed_section_commands(tmp_path, monkeypatch):
         "assert not root.exists(), 'a section received another section writable state'\n"
         "root.mkdir(parents=True)\n"
         "(root / 'share').symlink_to(source / 'share')\n"
-        "(root / 'config.yaml').write_text('owned section configuration')\n"
+        "(root / 'config.toml').write_text('owned section configuration')\n"
         "(root / 'agents/bbtest').mkdir(parents=True)\n"
         "(root / 'agents/bbtest/container.pid').write_text(str(os.getpid()))\n"
         "(root / 'data').mkdir()\n"
-        "(root / 'data/proxy-rust.json').write_text(json.dumps({'pid': os.getpid()}))\n"
+        "(root / 'data/proxy-process.json').write_text(json.dumps({'pid': os.getpid()}))\n"
         "for name in ('token', 'certificate', 'capture', 'approval', 'overlay'):\n"
         "    (root / name).write_text(uuid.uuid4().hex)\n"
         "(root / 'selection.json').write_text(json.dumps(sys.argv[1:]))\n"
@@ -1187,7 +1163,7 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     for name in ("token", "certificate", "capture", "approval", "overlay", "nats-instance"):
         assert (first / name).read_text() != (second / name).read_text()
     assert not list(directory.glob("*/agents/*/container.pid"))
-    assert not list(directory.glob("*/data/proxy-rust.json"))
+    assert not list(directory.glob("*/data/proxy-process.json"))
     selected = json.loads((second / "selection.json").read_text())
     assert "--access" in selected and selected[-2:] == ["--install-commit", "a" * 40]
 
@@ -1226,7 +1202,7 @@ import json, os, pathlib, signal, sys, time
 sys.path.insert(0, {str(ROOT)!r})
 from tests.blackbox.installed_host_smoke import _pid_alive
 root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])
-marker = root / 'data/proxy-rust.json'
+marker = root / 'data/proxy-process.json'
 if marker.exists():
     pid = json.loads(marker.read_text())['pid']
     marker.unlink()
@@ -1250,7 +1226,7 @@ if marker.exists():
         "#!/bin/bash\nset -euo pipefail\n"
         "export SAFEYOLO_CONFIG_DIR=\"$SAFEYOLO_TEST_CONFIG_DIR\"\n"
         "mkdir -p \"$SAFEYOLO_CONFIG_DIR/data\"\n"
-        "touch \"$SAFEYOLO_CONFIG_DIR/config.yaml\"\n"
+        "touch \"$SAFEYOLO_CONFIG_DIR/config.toml\"\n"
         "if [ \"${SAFEYOLO_CONFIG_DIR##*/}\" = access ]; then\n"
         "    touch \"$SAFEYOLO_CONFIG_DIR/access-started\"\n"
         "    exit 0\n"
@@ -1263,8 +1239,8 @@ if marker.exists():
         + _runner_cleanup_helpers()
         + runner[trap_start:trap_end]
         + f"\nowned_root={owned_root}\n"
-        + 'mkdir -p "$owned_root/data"\ntouch "$owned_root/config.yaml"\n'
-        + "printf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$owned_root/data/proxy-rust.json\"\n"
+        + 'mkdir -p "$owned_root/data"\ntouch "$owned_root/config.toml"\n'
+        + "printf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$owned_root/data/proxy-process.json\"\n"
         + ('set +e\n"$FIXTURE_INSTALLED_RUNNER"\nexit $?\n' if aggregate else f"exit {section_exit}\n")
     )
     section.chmod(0o755)
@@ -1288,7 +1264,7 @@ if marker.exists():
         first = report["sections"][0]
         if aggregate:
             assert installed_pytest_runner.with_name("suites.log").read_text().splitlines() == list(INSTALLED_PYTEST_SLOTS)
-        assert not (directory / ("lifecycle-owner" if owner else "isolation") / "data/proxy-rust.json").exists()
+        assert not (directory / ("lifecycle-owner" if owner else "isolation") / "data/proxy-process.json").exists()
         if leave_process_live:
             assert process.poll() is None, "the injected stop must leave the owned lifetime live"
             assert result == 2
@@ -1341,10 +1317,12 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
     scripts = repository / "tests/blackbox"
     for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py"):
         shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
-    package = repository / "cli/src/safeyolo"
+    (scripts / 'harness').mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'tests/blackbox/harness/process_identity.py', scripts / 'harness/process_identity.py')
+    package = repository / "tests/reference/safeyolo"
     package.mkdir(parents=True)
     for name in ("__init__.py", "runtime_identity.py"):
-        shutil.copy2(ROOT / "cli/src/safeyolo" / name, package / name)
+        shutil.copy2(ROOT / "tests/reference/safeyolo" / name, package / name)
     for command in (
         ["git", "init", "--quiet"],
         ["git", "add", "."],
@@ -1384,11 +1362,11 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
         root = Path(row["config_dir"])
         if row["result"] == "cleanup_failure":
             assert row["cleanup"] == "failed" and row["cleanup_failures"]
-            assert (root / "data/proxy-rust.json").exists()
+            assert (root / "data/proxy-process.json").exists()
             assert not (root.parent / "access").exists()
         else:
             assert row["cleanup"] == "stopped" and row["cleanup_failures"] == []
-            assert not (root / "data/proxy-rust.json").exists()
+            assert not (root / "data/proxy-process.json").exists()
             assert not (root / "agents/bbtest/container.pid").exists()
         if row["section"] == "access":
             selected = json.loads((root / "selection.json").read_text())
@@ -1408,19 +1386,19 @@ def test_installed_source_rejects_ambiguous_commit_before_preparation(tmp_path):
 def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_path):
     root = tmp_path / "instance"
     (root / "data").mkdir(parents=True)
-    (root / "config.yaml").write_text("owned fixture")
+    (root / "config.toml").write_text("owned fixture")
     cli = tmp_path / "cli"
     cli.write_text(
         f"#!{sys.executable}\n"
         "import os, pathlib\n"
-        "(pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR']) / 'data/proxy-rust.json').unlink()\n"
+        "(pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR']) / 'data/proxy-process.json').unlink()\n"
     )
     cli.chmod(0o755)
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        (root / "data/proxy-rust.json").write_text(json.dumps({"pid": process.pid}))
+        (root / "data/proxy-process.json").write_text(json.dumps({"pid": process.pid}))
         failures = installed_sections.cleanup_instance(cli, root)
-        assert not (root / "data/proxy-rust.json").exists()
+        assert not (root / "data/proxy-process.json").exists()
         assert any(f"owned process {process.pid} is still live" == error for error in failures)
         assert process.poll() is None
     finally:

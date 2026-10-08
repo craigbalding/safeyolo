@@ -11,7 +11,6 @@ filter/transcript/export. These observations stay in one installed composition.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import select
@@ -27,24 +26,20 @@ from pathlib import Path
 if __package__:
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _agent_map, _sha256
+    from .installed_host_smoke import _agent_map, _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _agent_map, _sha256
+    from installed_host_smoke import _agent_map, _native_config, _sha256
     from installed_ingress import installed_identity, runsc_identity
     from installed_workloads import control
 from urllib.parse import urlsplit
 
 from websockets.sync.client import connect
 
-from safeyolo.agents_store import get_agent_id
 from safeyolo.api import AdminAPI
-from safeyolo.coord import api as coord_api
-from safeyolo.coord.identity import new_operation_id
-from safeyolo.coord.nats_runtime import is_healthy
 from safeyolo.operator_approvals import approve
 
 ROOM = "p3-owned-room"
@@ -121,17 +116,18 @@ def approve_service(api: AdminAPI, agent: str, service: str, credential: str) ->
     assert approve(event, api, service_credential=credential) in {"authorized", "ok"}
 
 
-def setup_coord(primary: str, peer: str) -> dict:
-    assert is_healthy(), "owned NATS backing service is not healthy"
-    instance = coord_api.bootstrap()
-    room_id = asyncio.run(coord_api.create_room(ROOM))
+def setup_coord(cli: str, root: Path, primary: str, peer: str) -> dict:
+    """Provision the real native Coord owner rather than the Python reference."""
+    prefix = [cli, "--root", str(root), "coord"]
+    status = json.loads(checked([*prefix, "status"]).stdout)
+    assert status["state"] == "running", "owned native NATS is not running"
+    room = json.loads(checked([*prefix, "room", "create", ROOM]).stdout)
     identities = {}
     for name in (primary, peer):
-        agent_id = get_agent_id(name)
-        assert agent_id and agent_id.startswith("ag-"), name
-        coord_api.grant(ROOM, "agent", agent_id, operation_id=new_operation_id())
-        identities[name] = agent_id
-    return {"instance_id": instance, "room_id": room_id, "agents": identities}
+        granted = json.loads(checked([*prefix, "grant", ROOM, name]).stdout)
+        identities[name] = granted
+    return {"instance_id": (root / "data/instance_id").read_text().strip(),
+            "room_id": room["room_id"], "agents": identities}
 
 
 def run_coord(cli: str, primary: str, platform: str, marker: str) -> dict:
@@ -293,7 +289,7 @@ def main() -> None:
     assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
-    native = json.loads((config_dir / "data/native.json").read_text())
+    native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     policy = tomllib.loads((config_dir / "policy.toml").read_text())
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
     assert Path(native["upstream_ca_file"]).is_file()
@@ -310,7 +306,7 @@ def main() -> None:
         bridge = {"platform": "vz", "host_listener": listener["path"], "guest_forwarder": "vsock:2:1080"}
     cli = identity["cli"]["path"]
     admin = AdminAPI(
-        base_url=f"http://127.0.0.1:{native['admin_port']}", token=(config_dir / "data/admin_token").read_text().strip()
+        base_url=f"http://127.0.0.1:{runtime['runtime']['readiness']['admin_port']}", token=(config_dir / "data/admin_token").read_text().strip()
     )
     fixture = json.loads((config_dir / "p3-fixture.json").read_text())
     marker = "p3-" + uuid.uuid4().hex
@@ -321,9 +317,9 @@ def main() -> None:
         sinkhole.wait_for_receiver_ready(timeout=10)
         sinkhole.clear_requests()
         repository = Path(__file__).resolve().parents[2]
-        checked([cli, "agent", "add", PEER, str(repository), "--no-run"], timeout=30)
+        checked([cli, "agent", "create", PEER, "--workspace", str(repository)], timeout=30)
         peer_added = True
-        checked([cli, "agent", "run", PEER, "--sandbox-only"], timeout=120)
+        checked([cli, "agent", "start", PEER, "--sandbox-only"], timeout=120)
         peer_listeners = [item for item in _agent_map(config_dir) if item["agent_id"] == PEER]
         assert len(peer_listeners) == 1 and peer_listeners[0]["path"] != listener["path"]
         peer_socket = Path(peer_listeners[0]["path"])
@@ -372,7 +368,7 @@ def main() -> None:
                 cli, agent, args.platform, marker, "flow-peer-denial", peer=peer,
                 flow_id=foreign["flow_id"], message=foreign["request_id"],
             ))
-        coord_backing = setup_coord(args.agent, PEER)
+        coord_backing = setup_coord(cli, config_dir, args.agent, PEER)
         coord = run_coord(cli, args.agent, args.platform, marker)
         assert coord["room_id"] == coord_backing["room_id"]
         plumb = run_plumb_and_event(admin, cli, args.agent, args.platform, marker, admin.token)

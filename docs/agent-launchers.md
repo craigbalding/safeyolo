@@ -191,15 +191,25 @@ On an installed SafeYolo host with Tailscale connected, enable the explicit
 Tailnet share and restart the native proxy. Select two free Tailnet HTTPS ports;
 the defaults are 9443 for Admin and 9444 for events.
 
-```sh
-safeyolo command-centre enable --share tailnet
-safeyolo stop
-safeyolo start
-safeyolo command-centre status
+Set these values in the selected instance's `config.toml` (merge them into
+an existing `command_centre` table rather than creating a duplicate):
+
+```toml
+[command_centre]
+enabled = true
+share = "tailnet"
+tailnet_admin_port = 9443
+tailnet_events_port = 9444
 ```
 
-The status command reports the Admin and event URLs after both Serve mappings
-are ready. The proxy owns the mappings and removes them when it stops. The
+```sh
+safeyolo config check "$SAFEYOLO_CONFIG_DIR/config.toml"
+safeyolo stop
+safeyolo start
+```
+
+The authenticated Admin instance endpoint reports the Admin/events URLs.
+The proxy owns the mappings and removes them when it stops. The
 existing Admin credential authorizes both endpoints. Keep that credential in
 the app's Keychain profile; Tailnet access alone does not authorize Admin
 requests.

@@ -64,7 +64,7 @@ known_bad = "lists/stevenblack-hosts.txt"
 # ── Domain overrides ──────────────────────────────────────────
 "*.internal"          = { bypass = ["pattern_scanner"] }
 
-# ── Service gateway (add after running `safeyolo agent authorize`) ──
+# ── Service gateway (add after running `safeyolo services authorize`) ──
 # "mail.google.com" = { service = "gmail" }
 # "api.slack.com"   = { service = "slack" }
 

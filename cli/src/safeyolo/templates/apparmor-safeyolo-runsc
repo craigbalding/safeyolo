@@ -8,11 +8,7 @@ include <tunables/global>
 # which SafeYolo uses for rootless container isolation (loopback-only
 # network namespace + gVisor sandbox).
 #
-# Install automatically:
-#   safeyolo setup apparmor      # just this step
-#   safeyolo setup               # this step + KVM udev rule
-#
-# Or by hand:
+# Install on the trusted host:
 #   sudo cp apparmor-safeyolo-runsc /etc/apparmor.d/safeyolo-runsc
 #   sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
 

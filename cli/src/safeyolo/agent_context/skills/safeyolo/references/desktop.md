@@ -9,12 +9,12 @@ noVNC through a token-gated SafeYolo preview.
 The preferred operator command is:
 
 ```sh
-safeyolo agent desktop AGENT --open
+safeyolo agent present AGENT
 ```
 
-It starts or reuses the guest desktop and runs the host preview in the
-foreground. The operator should use a separate terminal or tmux pane when the
-agent session must remain available.
+It uses the existing native desktop/presentation owner to start or reuse the
+guest desktop and open its token-gated host view. Set remembered geometry
+and an explicitly permitted host presentation port in native desktop settings.
 
 Inside the guest, inspect or start the desktop with:
 
@@ -29,14 +29,14 @@ by the launcher. Do not expose guest ports 5900 or 6080 directly.
 
 ## Start a browser
 
-For a generic browser profile, the operator can combine startup and preview:
+The operator opens the desktop view; browser startup remains a guest operation:
 
 ```sh
-safeyolo agent desktop AGENT --browser URL --open
+safeyolo agent present AGENT
 ```
 
 If the task owns its own browser launcher, profile, or debugging-port allocation,
-use `safeyolo agent desktop AGENT --open` without `--browser`, then start that
+use `safeyolo agent present AGENT` then start that
 browser inside the ready guest desktop. This avoids profile and port collisions.
 
 The guest launcher also provides:

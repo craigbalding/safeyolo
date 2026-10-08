@@ -174,37 +174,6 @@ class TestPathsAndCredentials:
         assert nr.nats_root().stat().st_mode & 0o777 == 0o700
         assert nr.nats_data_path().stat().st_mode & 0o777 == 0o700
 
-    def test_wedged_stop_does_not_emit_runbook_success_signal(
-        self, isolated_coord
-    ):
-        """The manual-rotation guard must fail closed on a caught wedge."""
-        from rich.console import Console
-
-        from safeyolo.commands import lifecycle
-
-        credential = nr.ensure_credentials()
-        output = io.StringIO()
-        with (
-            patch.object(
-                nr,
-                "stop_server",
-                autospec=True,
-                side_effect=nr.WedgedNatsServer("simulated ownership wedge"),
-            ),
-            patch.object(
-                lifecycle,
-                "console",
-                Console(file=output, color_system=None),
-            ),
-        ):
-            lifecycle._stop_coord_best_effort()
-
-        rendered = output.getvalue()
-        assert "coord message plane stopped" not in rendered
-        assert "simulated ownership wedge" in rendered
-        assert nr.nats_creds_path().exists()
-        if credential in rendered:
-            pytest.fail("caught stop failure printed the raw NATS credential")
 
 
 class TestConfig:
@@ -917,7 +886,6 @@ class TestMaliciousTarball:
         our synthetic tarball before extraction and the test can't
         exercise the tar-parser defenses."""
         import hashlib
-        import io
         class FakeResp:
             def __init__(self, data):
                 self._buf = io.BytesIO(data)
@@ -942,7 +910,6 @@ class TestMaliciousTarball:
         """A symlink named nats-server pointing at /etc/passwd would let
         a chmod 0755 change the perms of the target if we treated it as
         a regular file. isfile() filter blocks it."""
-        import io
         import tarfile as tf
         buf = io.BytesIO()
         with tf.open(fileobj=buf, mode="w:gz") as t:
@@ -959,7 +926,6 @@ class TestMaliciousTarball:
         """A member named `../../etc/evil/nats-server` should be renamed
         to `nats-server` and land under nats_bin_dir, not outside it.
         The extracted-binary checksum then rejects it since it's fake."""
-        import io
         import tarfile as tf
         buf = io.BytesIO()
         fake_binary = b"#!/bin/sh\necho fake\n"

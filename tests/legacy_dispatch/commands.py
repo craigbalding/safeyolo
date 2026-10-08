@@ -1,12 +1,12 @@
 """Legacy trigger registration used only by retained Python contract tests."""
 
+import asyncio
 from datetime import date
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 
-from safeyolo.commands.coord import _run
 from safeyolo.coord import api
 
 coord_app = typer.Typer()
@@ -55,7 +55,7 @@ def dispatch_trigger(
         raise typer.Exit(2) from None
     api.bootstrap()
     try:
-        result = _run(
+        result = asyncio.run(
             dispatch_schedule.deliver_task(
                 room,
                 run_date,

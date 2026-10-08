@@ -40,7 +40,9 @@ def prepare_native_instance(source: Path, root: Path) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
     subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
                    check=True, timeout=10)
-    for name in ("bin", "assets"):
+    for name in ("bin", "assets", "lib", "libexec", "share"):
+        if not (source / name).exists():
+            continue
         target = root / name
         if target.exists():
             target.rmdir()  # Only an empty initialization directory may be replaced.
@@ -55,8 +57,8 @@ def owned_processes(root: Path) -> list[dict]:
         from installed_host_smoke import _pid_alive, _process_start_token
 
     processes = []
-    for pattern in ("agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
-                    "data/coord/nats/nats.pid.json"):
+    for pattern in ("agents/*/container.pid", "agents/*/vm.pid", "data/proxy-process.json",
+                    "data/coord/nats/process.json"):
         for path in root.glob(pattern):
             content = path.read_text()
             pid = json.loads(content)["pid"] if path.suffix == ".json" else int(content.strip())
@@ -99,19 +101,19 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
     except (OSError, ValueError, KeyError) as exc:
         failures.append(f"owned process inspection: {exc}")
         processes = []
-    if (root / "config.yaml").is_file():
+    if (root / "config.toml").is_file():
         agents = ("bbowner",) if owner else ("bbtest", "bbpeer")
         for agent in agents:
             if (root / "agents" / agent).is_dir():
                 try:
-                    result = subprocess.run([str(cli), "agent", "stop", agent], env=env,
+                    result = subprocess.run([str(cli), "--root", str(root), "agent", "stop", agent], env=env,
                                             capture_output=True, timeout=60, check=False)
                     if result.returncode:
                         failures.append(f"agent stop {agent} exited {result.returncode}")
                 except (OSError, subprocess.SubprocessError) as exc:
                     failures.append(f"agent stop {agent}: {exc}")
         try:
-            result = subprocess.run([str(cli), "stop"], env=env, capture_output=True,
+            result = subprocess.run([str(cli), "--root", str(root), "stop"], env=env, capture_output=True,
                                     timeout=60, check=False)
             if result.returncode:
                 failures.append(f"proxy stop exited {result.returncode}")
@@ -119,8 +121,8 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
             failures.append(f"proxy stop: {exc}")
     for pattern in (
         "agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
-        "data/proxy-readiness.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
-        "data/coord/nats/nats.pid.json", "sinkhole.pid", "native-parent.pid",
+        "data/ready.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
+        "data/coord/nats/process.json", "sinkhole.pid", "native-parent.pid",
     ):
         failures.extend(str(path) for path in root.glob(pattern))
     failures.extend(surviving_processes(processes))
@@ -135,9 +137,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR",
                  "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR"):
         env.pop(name, None)
-    env.update(UV_TOOL_DIR=str(directory / "uv-tools"),
-               UV_TOOL_BIN_DIR=str(directory / "bin"),
-               SAFEYOLO_CONFIG_DIR=str(source), SAFEYOLO_LOGS_DIR=str(source / "logs"),
+    env.update(SAFEYOLO_CONFIG_DIR=str(source), SAFEYOLO_LOGS_DIR=str(source / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(source / "data/coord"),
                SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex, CARGO_BUILD_JOBS="1")
     report = {"source_revision": revision, "lane": lane, "preparation": {}, "sections": []}
@@ -162,10 +162,13 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     if prepared.returncode:
         print(f"Product preparation failed (exit {prepared.returncode}); no sections ran")
         return 2
-    cli = directory / "bin/safeyolo"
-    env["PATH"] = os.pathsep.join((str(directory / "bin"), str(REPOSITORY / ".venv/bin"), env["PATH"]))
+    cli = source / "bin/safeyolo"
+    env["PATH"] = os.pathsep.join((str(source / "bin"), str(REPOSITORY / ".venv/bin"), env["PATH"]))
+    env["PYTHONPATH"] = os.pathsep.join((str(REPOSITORY / "tests/reference"), str(REPOSITORY)))
     env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
     env["SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR"] = str(source)
+    # All sections use the prepared installation, including supplied bundles.
+    env["SAFEYOLO_NATIVE_CLI"] = str(cli)
     if lane == "systrap":
         env["SAFEYOLO_RUNSC_PLATFORM"] = "systrap"
     else:
@@ -260,5 +263,5 @@ if __name__ == "__main__":
     # This bootstrap starts before run-lane.sh creates the test environment.
     # Reuse the checkout's stdlib process-identity helper in this parent only;
     # installed CLI subprocesses retain their isolated package imports.
-    sys.path.insert(0, str(REPOSITORY / "cli/src"))
+    sys.path.insert(0, str(REPOSITORY / "tests/reference"))
     raise SystemExit(main())

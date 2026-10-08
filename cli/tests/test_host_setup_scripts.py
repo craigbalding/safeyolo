@@ -23,7 +23,7 @@ LAB_CONTROLLER_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safey
 FACTORY_SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
-COORD_NATIVE_BINARY = REPO_ROOT / "proxy/target/debug/safeyolo-coord"
+COORD_NATIVE_BINARY = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "proxy/target")) / "debug/safeyolo-coord"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 PI_COORD_SETUP_SOURCE = REPO_ROOT / "contrib/pi-coord-host-setup.sh"
 PI_COORD_EXTENSION_SOURCE = REPO_ROOT / "contrib/pi-coord-extension.ts"
@@ -1758,7 +1758,7 @@ def test_codex_context_stages_native_repo_map(tmp_path: Path) -> None:
     command = agent_home / ".safeyolo/repo-map"
     assert (agent_home / ".safeyolo/repo-map.toml").read_bytes() == (REPO_ROOT / "repo-map.toml").read_bytes()
     result = subprocess.run(
-        [str(command), str(REPO_ROOT / "cli/src/safeyolo/coord")],
+        [str(command), str(REPO_ROOT / "proxy/src/coord_rooms.rs")],
         env={**os.environ, "HOME": str(agent_home)},
         cwd=REPO_ROOT,
         check=False,
@@ -1767,9 +1767,9 @@ def test_codex_context_stages_native_repo_map(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.startswith("# repo-map scope=cli/src/safeyolo/coord mode=overview ")
-    assert "cli/src/safeyolo/coord/api.py" in result.stdout
-    assert "class NotFoundError @" in result.stdout
+    assert result.stdout.startswith("# repo-map scope=proxy/src/coord_rooms.rs mode=detail ")
+    assert "proxy/src/coord_rooms.rs" in result.stdout
+    assert "function run() @" in result.stdout
 
 
 def test_codex_context_refuses_incomplete_lab_bashrc_block(tmp_path: Path) -> None:

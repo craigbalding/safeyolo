@@ -12,14 +12,11 @@ import os
 import shutil
 import subprocess
 import tarfile
-import venv
-import zipfile
 from pathlib import Path
 
 import pytest
 
 from scripts import build_host_packages as builder
-from scripts import verify_host_package as consumer
 
 REPO = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
@@ -36,21 +33,6 @@ def executable(path, identity):
     subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 
-
-def preparation_interpreter(path):
-    """Use a supported isolated interpreter with controlled NATS output."""
-    venv.EnvBuilder(with_pip=False, symlinks=True).create(path)
-    python = path / "bin/python"
-    library = subprocess.check_output(
-        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-        text=True, timeout=10,
-    ).strip()
-    package = Path(library) / "safeyolo/coord"
-    package.mkdir(parents=True)
-    for directory in (package.parent, package):
-        (directory / "__init__.py").touch()
-    (package / "nats_runtime.py").write_text("def ensure_binary(): return 'verified fixture NATS'\n")
-    return python
 
 
 @pytest.fixture
@@ -128,84 +110,52 @@ def build_bundle(inputs, tmp_path):
 
 @pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz")])
 def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane):
-    """Run the real preparation caller with controlled preceding tool outputs."""
+    """The maintained caller delegates prepared inputs to the normal installer."""
     checkout = tmp_path / "source"
     scripts = checkout / "tests/blackbox"
     scripts.mkdir(parents=True)
     shutil.copy2(REPO / "tests/blackbox/run-lane.sh", scripts / "run-lane.sh")
-    (scripts / "installed_host_smoke.py").write_text(
-        "import os\nfrom pathlib import Path\n"
-        "def _installed_rust_binary(cli):\n"
-        "    return Path(os.environ['PREPARE_HOST']) / 'safeyolo-proxy', {}\n"
-    )
-    tools, host, guest, root = (tmp_path / name for name in ("tools", "host", "guest", "root"))
-    for path in (tools, host, guest, checkout / "scripts", checkout / "vm"):
-        path.mkdir(parents=True, exist_ok=True)
-    for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
-        (host / name).touch()
-    (guest / "safeyolo-guest").touch()
-    python = shutil.which("python3")
-    interpreter = preparation_interpreter(tools / "python-environment")
-    files = {
-        checkout / "install.sh": "#!/bin/sh\nexit 0\n",
-        tools / "uname": f"#!/bin/sh\nprintf '{platform}\\n'\n",
-        tools / "tmux": "#!/bin/sh\nprintf 'tmux fixture\\n'\n",
-        tools / "uv": '#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then printf "%s\\n" "$PREPARE_TOOLS"; fi\n',
-        tools / "safeyolo": (
-            f'#!{interpreter}\n'
-            "import json,os,sys\nfrom pathlib import Path\n"
-            "if '--check' in sys.argv:\n"
-            "    print(json.dumps({'package_manager':'apt','missing_deps':[]}))\n"
-            "else:\n"
-            "    assert Path(os.environ['SAFEYOLO_CONFIG_DIR'], 'native-inputs.json').is_file()\n"
-        ),
-        tools / "make": (
-            f"#!{python}\nimport pathlib,sys\n"
-            "directory = pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('INSTALL_DIR=')))\n"
-            "directory.mkdir(parents=True)\n"
-            "for name in ['safeyolo-vm','safeyolo-vm.build-info.json','vsock-term','vsock-term.version','vsock-term.sha256']:\n"
-            "    (directory / name).touch()\n"
-            "(directory / 'safeyolo-vm.dSYM').mkdir()\n"
-        ),
-        checkout / "scripts/install_native.sh": (
-            f"#!{python}\nimport json,pathlib,sys\n"
-            "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
-            "assert pathlib.Path(options['--runtime-artifacts'], 'tmux').is_file()\n"
-            "if '--vm-artifacts' in options:\n"
-            "    vm = pathlib.Path(options['--vm-artifacts'])\n"
-            "    assert all((vm / n).exists() for n in ['safeyolo-vm','safeyolo-vm.dSYM','safeyolo-vm.build-info.json','vsock-term.version','vsock-term.sha256'])\n"
-            "root = pathlib.Path(options['--root']); root.mkdir(exist_ok=True)\n"
-            "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
-        ),
-    }
-    for path, content in files.items():
-        path.write_text(content)
+    tools, host, guest, runtime, images, root = (tmp_path / name for name in
+                                                ("tools", "host", "guest", "runtime", "images", "root"))
+    for path in (tools, host, guest, runtime, images):
+        path.mkdir()
+    for name in ("Image", "initramfs.cpio.gz", "rootfs-base.ext4"):
+        (images / name).touch()
+    (images / "rootfs-tree").mkdir()
+    installer = checkout / "install.sh"
+    fixture_cli = '#!/bin/sh\nprintf "native %s\\n" "$*"\n'
+    installer.write_text(f"#!{os.sys.executable}\nimport json,pathlib,sys\n"
+        "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
+        "root = pathlib.Path(options['--root']); (root / 'bin').mkdir(parents=True)\n"
+        "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
+        "cli = root / 'bin/safeyolo'\n"
+        f"cli.write_text({fixture_cli!r})\ncli.chmod(0o755)\n")
+    installer.chmod(0o755)
+    for name in ('uv', 'runsc', 'newuidmap', 'newgidmap', 'setfacl', 'unshare'):
+        path = tools / name
+        path.write_text('#!/bin/sh\nexit 0\n')
         path.chmod(0o755)
-    # Preserve ordinary shell activation and mise discovery guards. Select
-    # controlled test tools after activation adds the global toolset to PATH.
-    activation = tmp_path / "shell-activation.sh"
-    activation.write_text(
-        'if [ -n "$PREPARE_ORIGINAL_BASH_ENV" ]; then . "$PREPARE_ORIGINAL_BASH_ENV"; fi\n'
-        'export PATH="$PREPARE_TOOLS:$PATH"\n'
-    )
-    monkeypatch.setenv("PREPARE_ORIGINAL_BASH_ENV", os.environ.get("BASH_ENV", ""))
-    monkeypatch.setenv("BASH_ENV", str(activation))
-    for name in ("SAFEYOLO_NATIVE_BUNDLE", "SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS", "SAFEYOLO_NATIVE_VM_ARTIFACTS"):
+    (tools / 'uname').write_text(f'#!/bin/sh\nprintf "{platform}\\n"\n')
+    (tools / 'uname').chmod(0o755)
+    activation = tmp_path / 'activation.sh'
+    activation.write_text('export PATH="$PREPARE_TOOLS:$PATH"\n')
+    monkeypatch.setenv('BASH_ENV', str(activation))
+    monkeypatch.setenv('PREPARE_TOOLS', str(tools))
+    monkeypatch.setenv('PATH', f'{tools}:{os.environ["PATH"]}')
+    for name in ('SAFEYOLO_NATIVE_BUNDLE', 'SAFEYOLO_NATIVE_VM_ARTIFACTS'):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
-    monkeypatch.setenv("PREPARE_HOST", str(host))
-    monkeypatch.setenv("PREPARE_TOOLS", str(tools))
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
-    monkeypatch.setenv("SAFEYOLO_GUEST_HELPER", str(guest / "safeyolo-guest"))
-    result = run(str(scripts / "run-lane.sh"), lane, "--prepare-only", cwd=checkout)
+    for name, path in {'SAFEYOLO_CONFIG_DIR': root, 'SAFEYOLO_NATIVE_ARTIFACTS': host,
+                       'SAFEYOLO_NATIVE_GUEST_ARTIFACTS': guest, 'SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS': runtime,
+                       'SAFEYOLO_PLATFORM_ASSETS': images}.items():
+        monkeypatch.setenv(name, str(path))
+    result = run(str(scripts / 'run-lane.sh'), lane, '--prepare-only', cwd=checkout)
     assert result.returncode == 0, result.stderr
-    assert "verified fixture NATS" in result.stdout
-    options = json.loads((root / "native-inputs.json").read_text())
-    assert Path(options["--artifacts"]) == host
-    assert Path(options["--guest-artifacts"]) == guest
-    assert Path(options["--runtime-artifacts"]) == tools
-    if platform == "Darwin":
-        assert Path(options["--vm-artifacts"]) == root / "bin"
+    options = json.loads((root / 'native-inputs.json').read_text())
+    assert Path(options['--artifacts']) == host
+    assert Path(options['--guest-artifacts']) == guest
+    assert Path(options['--runtime-artifacts']) == runtime
+    assert Path(options['--platform-assets']) == images
+    assert 'native --root' in result.stdout and 'coord stop' in result.stdout
 
 
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
@@ -319,7 +269,30 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
         ).read_bytes()
 
 
-# CI debug identity and the retained legacy wheel consumers remain active.
+@pytest.mark.parametrize("with_cache_paths", [False, True])
+def test_platform_install_stages_cache_paths_without_changing_prepared_tree(package_inputs, tmp_path, with_cache_paths):
+    bundle = build_bundle(package_inputs, tmp_path)
+    platform = tmp_path / "platform"
+    tree = platform / "rootfs-tree"
+    tree.mkdir(parents=True)
+    (tree / "prepared-input").write_bytes(b"unchanged rootfs input")
+    cache_paths = "/var/cache/apt\n/var/cache/apk\n"
+    if with_cache_paths:
+        (platform / "cache-paths.txt").write_text(cache_paths)
+    root = tmp_path / "installed"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--platform-assets", str(platform))
+    assert result.returncode == 0, result.stderr
+    assert (root / "share/rootfs-tree").is_symlink()
+    assert (root / "share/rootfs-tree").resolve() == tree.resolve()
+    assert (tree / "prepared-input").read_bytes() == b"unchanged rootfs input"
+    installed_caches = root / "share/cache-paths.txt"
+    if with_cache_paths:
+        assert installed_caches.read_text() == cache_paths
+    else:
+        assert not installed_caches.exists()
+
+
+# Python saves CI debug metadata only; production uses the shell producer.
 
 def test_component_settings_survive_artifact_json_roundtrip(monkeypatch):
     monkeypatch.setattr(builder, "output", lambda *args, **kwargs: "rustc pinned")
@@ -337,151 +310,49 @@ def test_runtime_verification_rejects_test_and_script_outputs(tmp_path):
         builder.verify_proxy(binary, "debug")
 
 
-@pytest.fixture
-def compiler_canaries(tmp_path, monkeypatch):
-    tools = tmp_path / "compiler-canaries"
-    tools.mkdir()
-    for command in ("cargo", "rustc", "swift"):
-        canary = tools / command
-        canary.write_text("#!/bin/sh\nexit 99\n")
-        canary.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
 
 
-def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(tmp_path, compiler_canaries):
-    binary = tmp_path / "selected-proxy"
-    binary.write_bytes(b"selected debug runtime, different from checkout release bytes")
-    binary.chmod(0o755)
-    host_binaries = {name: tmp_path / name for name in ("safeyolo", "safeyolo-coord")}
-    for name, path in host_binaries.items():
-        path.write_bytes(f"selected host {name} bytes".encode())
+def test_source_installer_runs_native_bundle_without_python_or_uv(tmp_path, package_inputs, monkeypatch):
+    bundle = build_bundle(package_inputs, tmp_path)
+    entry = package_inputs[0] / 'install.sh'
+    shutil.copy2(REPO / 'install.sh', entry)
+    canaries = tmp_path / 'canaries'
+    canaries.mkdir()
+    marker = tmp_path / 'python-fallback'
+    for name in ('python', 'python3', 'uv', 'pip'):
+        path = canaries / name
+        path.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 99\n')
         path.chmod(0o755)
-    guest_directory = tmp_path / "guest"
-    guest_directory.mkdir()
-    guest = guest_directory / "selected-guest"
-    guest.write_bytes(b"selected Linux guest command bytes")
-    guest.chmod(0o755)
-    coord_guest = guest_directory / "safeyolo-coord"
-    coord_guest.write_bytes(b"selected Linux Coord guest bytes")
-    coord_guest.with_suffix(".version").write_text(f"safeyolo-coord commit={REVISION} profile=debug\n")
-    coord_guest.with_suffix(".sha256").write_text(hashlib.sha256(coord_guest.read_bytes()).hexdigest() + "\n")
-    native = {"commit": REVISION, "profile": "debug", "platform": consumer.host_platform()}
-    metadata = tmp_path / "native.json"
-    metadata.write_text(json.dumps(native))
-    tag = "linux_aarch64" if native["platform"] == "linux-arm64" else "linux_x86_64"
-    destination = tmp_path / "dist"
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(destination)], cwd=builder.ROOT, check=True,
-        env={**os.environ, "SAFEYOLO_BUILD_REVISION": REVISION,
-             "SAFEYOLO_NATIVE_BINARY": str(binary), "SAFEYOLO_NATIVE_BUILD_METADATA": str(metadata),
-             "SAFEYOLO_GUEST_HELPER": str(guest),
-             "SAFEYOLO_BUILD_PROFILE": "debug",
-             "SAFEYOLO_NATIVE_PLATFORM_TAG": tag},
-        capture_output=True, text=True,
-    )
-    wheel, = destination.glob("*.whl")
-    assert wheel.name.endswith(f"-py3-none-{tag}.whl")
-    assert f".dev0+g{REVISION}.debug-" in wheel.name
-    with zipfile.ZipFile(wheel) as archive:
-        assert "safeyolo/coord/dispatch.py" not in archive.namelist()
-        assert "safeyolo/coord/dispatch_schedule.py" not in archive.namelist()
-        assert not any("legacy_dispatch" in name for name in archive.namelist())
-        assert "safeyolo/coord/mattermost.py" not in archive.namelist()
-        assert "safeyolo/coord/mattermost_actions.py" not in archive.namelist()
-        assert "safeyolo/repo_map.py" not in archive.namelist()
-        assert not any("legacy_mattermost" in name for name in archive.namelist())
-        assert archive.read("safeyolo/bin/safeyolo-proxy") == binary.read_bytes()
-        for name, path in host_binaries.items():
-            assert archive.read(f"safeyolo/bin/{name}") == path.read_bytes()
-        assert archive.read("safeyolo/bin/safeyolo-guest") == guest.read_bytes()
-        for artifact in (coord_guest, coord_guest.with_suffix(".version"), coord_guest.with_suffix(".sha256")):
-            assert archive.read(f"safeyolo/assets/guest/{artifact.name}") == artifact.read_bytes()
-        for notice in (REPO / "proxy/licenses").iterdir():
-            assert archive.read(f"safeyolo/licenses/{notice.name}") == notice.read_bytes()
-        assert json.loads(archive.read("safeyolo/_native_build.json")) == native
-        wheel_metadata, = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
-        assert b"Root-Is-Purelib: false" in archive.read(wheel_metadata)
+    # BASH_ENV may add mise's global commands; put canaries first after it.
+    activation = tmp_path / 'activation.sh'
+    activation.write_text('export PATH="$INSTALL_CANARIES:$PATH"\n')
+    monkeypatch.setenv('BASH_ENV', str(activation))
+    monkeypatch.setenv('INSTALL_CANARIES', str(canaries))
+    monkeypatch.setenv('PATH', f'{canaries}:{os.environ["PATH"]}')
+    root = tmp_path / 'selected root'
+    result = run(str(entry), '--root', str(root), '--bundle', str(bundle), cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (root / 'bin/safeyolo').read_bytes().startswith(b'\x7fELF')
+    assert (root / 'package-info').read_bytes() == (bundle / 'package-info').read_bytes()
+    assert (root / 'config.toml').exists()
+    assert not marker.exists()
+    assert not list(root.rglob('*.whl'))
+    # Challenge the same detector with a disposable hidden-fallback fixture.
+    fallback = tmp_path / 'hidden-fallback.sh'
+    fallback.write_text('#!/bin/bash\nexec python3 -c "print(123)"\n')
+    fallback.chmod(0o755)
+    control = run(str(fallback), cwd=tmp_path)
+    assert control.returncode == 99
+    assert marker.exists()
 
 
-def write_consumer_package(directory: Path, native: dict) -> dict:
-    binary = b"known proxy bytes"
-    native["proxy"] = {"sha256": hashlib.sha256(binary).hexdigest(), "settings": {"profile": "dev"}}
-    wheel = directory / "safeyolo-0.1.0-py3-none-linux_x86_64.whl"
-    with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("safeyolo/bin/safeyolo-proxy", binary)
-        archive.writestr("safeyolo/_native_build.json", json.dumps(native))
-        archive.writestr("safeyolo/_build_identity.json", json.dumps({
-            "source_revision": REVISION, "build_identifier": "host-linux-amd64-debug",
-        }))
-    manifest = {"schema_version": 1, "native": native, "wheel": wheel.name,
-                "compatibility": {"minimum_glibc": "2.39"}, "files": {wheel.name: consumer.sha256(wheel)}}
-    write_manifest(directory, manifest)
-    return manifest
-
-
-def write_manifest(directory: Path, manifest: dict) -> None:
-    path = directory / "manifest.json"
-    path.write_text(json.dumps(manifest))
-    sums = {**manifest["files"], "manifest.json": consumer.sha256(path)}
-    (directory / "SHA256SUMS").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(sums.items())))
-
-
-@pytest.fixture
-def consumer_package(tmp_path, monkeypatch):
-    native = {"commit": REVISION, "platform": "linux-amd64", "profile": "debug"}
-    manifest = write_consumer_package(tmp_path, native)
-    monkeypatch.setattr(consumer, "host_platform", lambda: "linux-amd64")
-    monkeypatch.setattr(consumer.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(consumer.platform, "libc_ver", lambda: ("glibc", "2.39"))
-    monkeypatch.setattr(consumer.subprocess, "check_output", lambda *args, **kwargs: f"safeyolo-proxy test commit={REVISION} profile=debug\n")
-    return tmp_path, manifest
-
-
-def test_consumer_checks_installed_runtime_identity_and_bytes(consumer_package):
-    directory, manifest = consumer_package
-    assert consumer.verify(directory) == manifest
-
-
-@pytest.mark.parametrize("change", ["wheel-bytes", "source", "profile", "platform", "extra", "checksum-list", "runtime-version"])
-def test_consumer_rejects_damaged_or_misidentified_download(consumer_package, monkeypatch, change):
-    directory, manifest = consumer_package
-    if change == "wheel-bytes":
-        with (directory / manifest["wheel"]).open("ab") as stream:
-            stream.write(b"damage")
-    elif change in {"source", "profile", "platform"}:
-        field = "commit" if change == "source" else change
-        manifest["native"][field] = "b" * 40 if field == "commit" else "different"
-        write_manifest(directory, manifest)
-    elif change == "extra":
-        (directory / "unexpected").write_text("unexpected")
-    elif change == "checksum-list":
-        (directory / "SHA256SUMS").write_text("")
-    else:
-        monkeypatch.setattr(consumer.subprocess, "check_output", lambda *args, **kwargs: "test executable 1.0")
-    with pytest.raises(ValueError):
-        consumer.verify(directory)
-
-
-def test_consumer_checks_actual_glibc_requirement(consumer_package, monkeypatch):
-    directory, _ = consumer_package
-    monkeypatch.setattr(consumer.platform, "libc_ver", lambda: ("glibc", "2.38"))
-    with pytest.raises(ValueError, match="requires glibc 2.39"):
-        consumer.verify(directory)
-
-
-def test_cli_version_uses_installed_commit_and_profile(monkeypatch):
-    from typer.testing import CliRunner
-
-    from safeyolo import runtime_identity
-    from safeyolo.cli import app
-
-    identity = runtime_identity.BuildIdentity(
-        package_version=f"0.1.0.dev0+g{REVISION}.debug", source_revision=REVISION,
-        build_identifier="host-linux-amd64-debug", provenance=runtime_identity.IdentityProvenance.BUILD_ENVIRONMENT,
-        state=runtime_identity.EvidenceState.KNOWN,
-    )
-    monkeypatch.setattr(runtime_identity, "load_stamped_build_identity", lambda: identity)
-    result = CliRunner().invoke(app, ["--version"])
-    assert result.exit_code == 0
-    assert f"commit={REVISION} profile=debug" in result.stdout
-    assert identity.package_version in result.stdout
+def test_source_installer_preserves_missing_artifact_error_and_fresh_root(tmp_path, package_inputs):
+    bundle = build_bundle(package_inputs, tmp_path)
+    entry = package_inputs[0] / 'install.sh'
+    shutil.copy2(REPO / 'install.sh', entry)
+    (bundle / 'bin/safeyolo-proxy').unlink()
+    root = tmp_path / 'fresh'
+    result = run(str(entry), '--root', str(root), '--bundle', str(bundle))
+    assert result.returncode != 0
+    assert 'required artifact is missing' in result.stderr and 'safeyolo-proxy' in result.stderr
+    assert not root.exists()

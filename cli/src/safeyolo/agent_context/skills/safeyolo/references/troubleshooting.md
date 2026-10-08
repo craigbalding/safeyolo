@@ -27,9 +27,9 @@ Important 428 distinctions:
 - `credential-guard` + `type: destination_mismatch` +
   `action: self_correct`: fix the destination URL. Approval is not the remedy.
 - `credential-guard` + `type: requires_approval`: stop retrying and ask the
-  operator to run `safeyolo watch`.
+  operator to run `safeyolo inspect`.
 - `network-guard` + `type: egress_approval_required`: verify the host is
-  expected, then ask the operator to approve or deny it in `safeyolo watch`.
+  expected, then ask the operator to approve or deny it in `safeyolo inspect`.
 - `service-gateway`: follow the response's requested capability, grant, or
   contract-binding workflow; do not substitute a broader route.
 
@@ -68,15 +68,14 @@ test -r /usr/local/share/ca-certificates/safeyolo.crt
 
 ## Logs and correlation
 
-The audit JSONL lives in the operator's SafeYolo state directory and is not
+The audit JSONL lives at the selected native audit_log_path and is not
 mounted into the sandbox. Ask the operator to use the CLI rather than guessing
 its filesystem path:
 
 ```sh
-safeyolo logs --tail 20
-safeyolo logs --event security --tail 20
-safeyolo logs --agent AGENT --tail 50
-safeyolo logs --request-id req-... --raw
+safeyolo logs --lines 20 --json
+safeyolo logs --agent AGENT --lines 50
+safeyolo diagnose --agent AGENT --json
 ```
 
 Current event prefixes include `traffic.*`, `security.*`, `gateway.*`,
@@ -95,15 +94,15 @@ Request the narrowest relevant host-side action and explain the evidence:
 
 | Command | Ask for it when |
 |---|---|
-| `safeyolo watch` | A 428, gateway request, contract binding, risky route, credential, or plumb chat awaits approval |
+| `safeyolo inspect` | A 428, gateway request, contract binding, risky route, credential, or plumb chat awaits approval |
 | `safeyolo agent diagnostics <name>` | Runtime control, the shell bridge, or proxy attachment may be unavailable |
 | `safeyolo doctor` | Proxy dependencies, native runtime, image, CA, or isolation may be unhealthy |
 | `safeyolo status` | You need the reconciled runtime, control, coding-agent and terminal observations |
-| `safeyolo logs --event security --tail 20` | You need recent security decisions |
-| `safeyolo mode` | You need to view enforcement modes; never ask the agent to change them |
+| `safeyolo logs --lines 20` | You need recent security decisions |
+| `safeyolo policy show` | You need to view enforcement modes; never ask the agent to change them |
 | `safeyolo policy show` | You need the operator to inspect compiled policy |
-| `safeyolo policy host add HOST --agent AGENT` | `/lookup` confirms a specific expected host is missing |
-| `safeyolo services show SERVICE` | You need capability, route, auth-header, or risk details |
+| `safeyolo policy show` | `/lookup` confirms a specific expected host is missing |
+| `safeyolo policy show` | You need capability, route, auth-header, or risk details |
 
 If the guest sudo helper is missing or broken, report that specific prerequisite
 for operator repair. The native shell command has no guest-root flag. Do not use
@@ -116,11 +115,14 @@ warn mode. State the exact host, capability, approval, or failing hop needed.
 
 The admin token is host-only. Never request it or suggest copying it into the
 sandbox. If the operator accidentally discloses it in chat, tell them to rotate
-it on the host without repeating the value:
+it on the host without repeating the value. In a host terminal, select the
+instance with SAFEYOLO_CONFIG_DIR first. This example assumes its ordinary
+admin_api_token_file is data/admin_token; use the configured path otherwise:
 
 ```sh
 safeyolo stop
-rm ~/.safeyolo/data/admin_token
+umask 077
+openssl rand -hex 32 > "$SAFEYOLO_CONFIG_DIR/data/admin_token"
 safeyolo start
 ```
 

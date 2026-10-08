@@ -23,18 +23,30 @@ import tomllib
 import uuid
 from pathlib import Path
 
-import yaml
-
 if __package__:
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _agent_map, _pid_alive, _probe_agent_health, _process_start_token, _sha256
+    from .installed_host_smoke import (
+        _agent_map,
+        _native_config,
+        _pid_alive,
+        _probe_agent_health,
+        _process_start_token,
+        _sha256,
+    )
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _agent_map, _pid_alive, _probe_agent_health, _process_start_token, _sha256
+    from installed_host_smoke import (
+        _agent_map,
+        _native_config,
+        _pid_alive,
+        _probe_agent_health,
+        _process_start_token,
+        _sha256,
+    )
     from installed_ingress import installed_identity, runsc_identity
     from installed_workloads import control
 
@@ -133,7 +145,7 @@ def runtime_identity(
             "--rust-bin",
             binary,
             "--rust-config",
-            str(config_dir / "data/native.json"),
+            str(config_dir / "config.toml"),
             "--config-dir",
             str(config_dir),
             "--working-directory",
@@ -181,7 +193,7 @@ def stop_guest(cli: str, config_dir: Path, agent: str) -> None:
 
 
 def start_guest(cli: str, config_dir: Path, agent: str) -> Path:
-    checked([cli, "agent", "run", agent, "--sandbox-only"], timeout=120)
+    checked([cli, "agent", "start", agent, "--sandbox-only"], timeout=120)
     listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == agent)
     path = Path(listener["path"])
     assert path.is_socket(), f"restarted guest has no native listener: {path}"
@@ -204,26 +216,24 @@ def prepare_owner(
     else:
         from installed_sections import prepare_native_instance
     prepare_native_instance(source_dir, config_dir)
-    checked([cli, "init", "--no-interactive"], env=env)
+    env["SAFEYOLO_NATIVE_CONFIG_PATH"] = str(config_dir / "config.toml")
     source = source_dir / "share"
-    target = config_dir / "share"
-    assert source.is_dir(), f"owner instance needs bootstrapped {source}"
-    target.rmdir()
-    target.symlink_to(source, target_is_directory=True)
-    config_path = config_dir / "config.yaml"
-    config = yaml.safe_load(config_path.read_text())
-    config["proxy"]["backend"] = "rust"
-    config["proxy"]["admin_port"] = int(os.environ.get("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "0"))
-    config["proxy"]["upstream_proxy"] = native["parent_proxy"]
-    config["proxy"]["upstream_ca_cert"] = native["upstream_ca_file"]
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    checked([cli, "policy", "host", "add", FIXTURE], env=env)
-    checked([cli, "policy", "host", "deny", "evil.com"], env=env)
-    checked(
-        [cli, "agent", "add", "bbowner", str(Path(__file__).resolve().parents[2]), "--no-run"], timeout=120, env=env
-    )
-    checked([cli, "start", "--no-wait"], env=env)
-    checked([cli, "agent", "run", "bbowner", "--sandbox-only"], timeout=120, env=env)
+    assert source.is_dir(), f"owner instance needs prepared {source}"
+    config_path = config_dir / "config.toml"
+    import tomlkit
+    config = tomlkit.parse(config_path.read_text())
+    config["admin_port"] = int(os.environ.get("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "0"))
+    config["parent_proxy"] = native["parent_proxy"]
+    config["upstream_ca_file"] = native["upstream_ca_file"]
+    config_path.write_text(tomlkit.dumps(config))
+    policy_path = config_dir / "policy.toml"
+    policy = tomlkit.parse(policy_path.read_text())
+    policy["hosts"][FIXTURE] = {"egress": "allow"}
+    policy["hosts"]["evil.com"] = {"egress": "deny"}
+    policy_path.write_text(tomlkit.dumps(policy))
+    checked([cli, "agent", "create", "bbowner", "--workspace", str(Path(__file__).resolve().parents[2])], timeout=120, env=env)
+    checked([cli, "start"], env=env)
+    checked([cli, "agent", "start", "bbowner", "--sandbox-only"], timeout=120, env=env)
     checked(
         [
             "python3",
@@ -235,7 +245,7 @@ def prepare_owner(
             "--rust-bin",
             binary,
             "--rust-config",
-            str(config_dir / "data/native.json"),
+            str(config_dir / "config.toml"),
             "--config-dir",
             str(config_dir),
             "--working-directory",
@@ -252,7 +262,7 @@ def prepare_owner(
     assert report["status"] == "attached_ready" and report["runtime"]["status"] == "ready", report
     assert report["candidate"]["sha256"] == _sha256(Path(binary))
     assert Path(report["runtime"]["actual_executable"]).resolve() == Path(binary).resolve()
-    owner_native = json.loads((config_dir / "data/native.json").read_text())
+    owner_native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     assert owner_native["parent_proxy"] == native["parent_proxy"]
     assert owner_native["upstream_ca_file"] == native["upstream_ca_file"]
     report["config_sha256"] = _sha256(config_path)
@@ -272,7 +282,7 @@ def owner_controls(
     assert _process_start_token(runtime["pid"]) == runtime["receipt"]["start_token"]
     assert readiness["pid"] == runtime["pid"]
     assert readiness["instance_id"] == runtime["readiness"]["instance_id"]
-    assert _sha256(config_dir / "config.yaml") == owner["config_sha256"]
+    assert _sha256(config_dir / "config.toml") == owner["config_sha256"]
     assert _sha256(config_dir / "policy.toml") == owner["policy_sha256"]
     agent = {"agent_id": "bbowner", "path": str(listener)}
     assert _probe_agent_health(agent, config_dir)["status"] == 200
@@ -330,7 +340,7 @@ def wait_passthrough_audit(path: Path, agent: str) -> list[dict]:
 
 
 def assert_shutdown_ownership(config_dir: Path, agent: str, marker: str) -> dict:
-    native = json.loads((config_dir / "data/native.json").read_text())
+    native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     events = event_rows(Path(native["event_log"]))
     audit = event_rows(Path(native["audit_log_path"]))
     p2_marker = "p2-" + marker[3:]
@@ -368,7 +378,7 @@ def main() -> None:
     assert checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip() == args.install_commit
     first_runtime = json.loads(args.runtime.read_text())
     first_identity = installed_identity(first_runtime, checkout, expected_revision=args.install_commit)
-    native = json.loads((config_dir / "data/native.json").read_text())
+    native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
     assert Path(native["upstream_ca_file"]).is_file()
     assert Path(native["tls_ca_file"]).is_file()
@@ -386,6 +396,9 @@ def main() -> None:
         else {"platform": "vz", "host_listener": first_listener["path"], "guest_forwarder": "vsock:2:1080"}
     )
     cli = first_identity["cli"]["path"]
+    from safeyolo.api import AdminAPI
+    admin = AdminAPI(base_url=f"http://127.0.0.1:{first_identity['runtime']['readiness']['admin_port']}",
+                     token=(config_dir / "data/admin_token").read_text().strip())
     binary = first_identity["candidate"]["path"]
     marker = "p4-" + uuid.uuid4().hex
     sinkhole = SinkholeClient(os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999"))
@@ -403,9 +416,9 @@ def main() -> None:
             cli, owner_dir, source_dir, native, binary, args.output.with_name("lifecycle-owner-runtime.json")
         )
         owner_checks = [owner_controls(cli, owner_dir, owner_listener, owner, owner_env, marker, sinkhole)]
-        checked([cli, "agent", "add", PEER, str(Path(__file__).resolve().parents[2]), "--no-run"])
+        checked([cli, "agent", "create", PEER, "--workspace", str(Path(__file__).resolve().parents[2])])
         peer_added = True
-        checked([cli, "agent", "run", PEER, "--sandbox-only"], timeout=120)
+        checked([cli, "agent", "start", PEER, "--sandbox-only"], timeout=120)
         peer_listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == PEER)
         peer_socket = Path(peer_listener["path"])
         assert peer_socket.is_socket() and peer_socket != Path(first_listener["path"])
@@ -416,7 +429,7 @@ def main() -> None:
         )
         assert guest(cli, PEER, "echo", marker)["status"] == 200
         assert guest(cli, args.agent, "echo", marker)["status"] == 200
-        checked([cli, "agent", "remove", PEER], timeout=60)
+        checked([cli, "agent", "cleanup", PEER], timeout=60)
         peer_added = False
         with socket.socket(socket.AF_UNIX) as closed:
             assert closed.connect_ex(str(peer_socket)) != 0, "removed agent listener still accepts new use"
@@ -428,7 +441,7 @@ def main() -> None:
         assert before["first_sent"] and not before["released"] and not before["finished"], before
         audit_path = Path(native["audit_log_path"])
         reload_before = policy_reload_count(audit_path)
-        checked([cli, "policy", "host", "deny", "failing.test"])
+        admin.deny_host("failing.test")
         denied_reload = wait_policy_reload(audit_path, reload_before)
         origin_before_denial = len(
             [row for row in sinkhole.get_requests(host=FIXTURE) if row.path == f"/p4/echo/{marker}"]
@@ -443,7 +456,7 @@ def main() -> None:
         sse = finish_guest(active, first, "sse", args.agent)
         active = None
         assert control("GET", f"/p2/state/{sse_marker}")["finished"]
-        checked([cli, "policy", "host", "add", "failing.test"])
+        admin.allow_host("failing.test", rate=600)
         allowed_reload = wait_policy_reload(audit_path, denied_reload)
         allowed = guest(cli, args.agent, "echo", marker)
         assert allowed["status"] == 200, allowed
@@ -469,9 +482,9 @@ def main() -> None:
             == passthrough_before
         )
 
-        checked([cli, "proxy", "ignore-host", "add", "self-signed.test:443"])
+        admin._request("PUT", "/admin/proxy/ignore-hosts", json={"ignore_hosts": ["self-signed.test:443"]})
         active, first = held_guest(cli, args.agent, "passthrough", marker)
-        checked([cli, "proxy", "ignore-host", "remove", "self-signed.test:443"])
+        admin._request("PUT", "/admin/proxy/ignore-hosts", json={"ignore_hosts": []})
         release.write_text("go\n")
         retained = finish_guest(active, first, "passthrough", args.agent)
         active = None
@@ -495,7 +508,7 @@ def main() -> None:
         owner_checks.append(
             owner_controls(cli, owner_dir, owner_listener, owner, owner_env, "p4-" + uuid.uuid4().hex, sinkhole)
         )
-        checked([cli, "start", "--no-wait"], timeout=40)
+        checked([cli, "start"], timeout=40)
         second_listener = start_guest(cli, config_dir, args.agent)
         second_runtime_path = args.output.with_name("lifecycle-restarted-runtime.json")
         second_identity = runtime_identity(
@@ -539,7 +552,7 @@ def main() -> None:
             owner_controls(cli, owner_dir, owner_listener, owner, owner_env, "p4-" + uuid.uuid4().hex, sinkhole)
         )
 
-        checked([cli, "start", "--no-wait"], timeout=40)
+        checked([cli, "start"], timeout=40)
         third_listener = start_guest(cli, config_dir, args.agent)
         third_runtime_path = args.output.with_name("lifecycle-recovery-runtime.json")
         third_identity = runtime_identity(
@@ -621,7 +634,7 @@ def main() -> None:
         stop_child(active)
         sinkhole.close()
         if peer_added:
-            checked([cli, "agent", "remove", PEER], timeout=60)
+            checked([cli, "agent", "cleanup", PEER], timeout=60)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ os.environ.setdefault(
 )
 
 # Use the checked-out CLI package when testing local edits.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "reference"))
 
 
 @pytest.fixture(scope="session")

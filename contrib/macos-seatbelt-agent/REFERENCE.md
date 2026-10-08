@@ -47,7 +47,7 @@ LaunchServices, or control of other VM/container runtimes.
   or recovers the login shell and SSH configuration together.
 - [check-account.c](check-account.c) supplies the native account/ACL preflight.
 - The normal client route uses OpenSSH and `socat`. The optional
-  [configure-client](configure-client) and [ssh-via-proxy.py](ssh-via-proxy.py)
+  [configure-client](configure-client) and [native SSH CONNECT command](../../proxy/src/ssh_proxy.rs)
   provide the alternative Python client setup described below.
 - [probe.py](probe.py) exercises representative workloads and denied operations
   against operator-created disposable fixtures.
@@ -290,10 +290,13 @@ Replace `mac.example.net`, `22`, and `client-agent` below with the destination
 host, SSH port, and SafeYolo agent name you selected:
 
 ```sh
-safeyolo policy host add mac.example.net --port 22 --agent client-agent
+safeyolo policy check reviewed-policy.toml
+safeyolo policy apply reviewed-policy.toml
 ```
 
-The CLI reports its policy update/reload result. Use these same host and port
+Prepare reviewed-policy.toml with the existing policy plus an agent-scoped
+`[agents.client-agent.hosts."mac.example.net:22"]` entry containing
+`egress = "allow"`. The CLI reports validation and apply results. Use these same host and port
 values with `configure-ssh --host` and `--port` on your Mac. That command reads
 the host public key from the selected daemon's `HostKey` files and includes it
 in the client instructions. Copy that output from your Mac; do not substitute
@@ -316,38 +319,34 @@ the operator because the Mac cannot infer how the proxy reaches it.
 
 `socat` reports a denied CONNECT as `Forbidden` (HTTP 403), and an approval
 request as `Precondition Required` (HTTP 428). For approval, the operator runs
-`safeyolo watch` or uses Commander, then the client retries. For a denial,
+`safeyolo inspect` or uses Commander, then the client retries. For a denial,
 inspect the applicable policy. SSH traffic needs no `ignore_hosts` or TCP
 inspection exemption. CONNECT admission is policy checked; SSH encrypts the
 subsequent session contents.
 
-### Optional Python client
+### Native HTTP(S) client
 
-For a proxy URL using `https://`, or to retain automatic proxy URL selection
-and SafeYolo request-ID diagnostics, the previous Python client remains
-available. It requires Python 3.9 or newer and both
-[configure-client](configure-client) and [ssh-via-proxy.py](ssh-via-proxy.py)
-together in a directory inside the client agent. It is optional; the `socat`
-setup above requires neither file.
+For automatic configured proxy selection and HTTPS proxy trust, run
+[configure-client](configure-client) directly with Bash; add `--user ACCOUNT`
+for a custom Mac account. It asks for the approved destination, port and
+Ed25519 host-key line. The global SSH configuration and identity key remain
+unchanged; existing managed config and known_hosts are saved as `.before`.
 
-From that directory, run `python3 configure-client`, adding `--user` for a
-custom Mac account. It asks for the approved destination host, port, and the
-Mac's public host-key line beginning with `ssh-ed25519`. If copying from the
-new Mac setup output, omit the leading `seatbelt-mac` host alias.
+An installed host discovers `safeyolo` on PATH. In an ordinarily prepared
+Claude/Codex/Pi guest, it discovers the matching Linux native Coord executable
+at `$HOME/.safeyolo/safeyolo-coord`, staged by the existing native host setup.
+Both dispatch `ssh-proxy HOST PORT` to the same native CONNECT implementation.
+Set `SAFEYOLO_SSH_PROXY_EXECUTABLE` to an explicit executable if needed.
+Do not copy a macOS host binary into a Linux client or a host Admin credential
+into the guest. A missing or incompatible native transport fails preparation;
+there is no Python or direct-network fallback.
 
-The helper reuses and verifies `~/.ssh/id_ed25519_sy_agent{,.pub}`. It writes
-`config`, `known_hosts`, and the Python transport under `~/.ssh/seatbelt-agent/`.
-It validates the key and SSH configuration locally without opening a network
-connection. It saves existing managed files as `.before`; the global SSH
-configuration and identity key remain unchanged. Connect using the same
-`ssh -F` command as in the README.
-
-The Python transport selects `HTTPS_PROXY`, falling back to `HTTP_PROXY`, and
-supports HTTP or HTTPS proxy URLs without embedded credentials. HTTPS proxies
-require TLS 1.2 or newer with certificate and hostname verification using the
-trusted CA environment. It has no direct destination fallback. On rejection,
-it reports the HTTP status, blocker and request ID; a 428 directs the operator
-to the existing approval flow.
+The generated OpenSSH ProxyCommand invokes the selected absolute executable.
+It selects HTTPS_PROXY, then HTTP_PROXY. HTTPS uses the existing configured CA
+trust, TLS 1.2 or newer, certificate and hostname verification. CONNECT
+rejection preserves status, blocker and request-ID diagnostics. OpenSSH still
+verifies the supplied host-key pin and uses only the dedicated known_hosts.
+Byte relay preserves an immediate SSH banner, binary data and half-close.
 
 The Mac's Seatbelt IP restriction applies to processes started by the shell launcher.
 It does not prevent replies over the SSH session already admitted by `sshd`.

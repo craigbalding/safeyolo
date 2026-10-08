@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from safeyolo.api import AdminAPI
-from safeyolo.commands.watch import scan_pending_approvals
+from safeyolo.core.audit_stream import scan_pending_approvals
 from safeyolo.core.vault import Vault, VaultCredential
 from safeyolo.operator_approvals import approve
 from tests.proxy_contracts.harness import read_events, request

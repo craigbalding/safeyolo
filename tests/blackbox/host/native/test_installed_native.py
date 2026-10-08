@@ -6,7 +6,7 @@ import os
 import socket
 from pathlib import Path
 
-from installed_host_smoke import _agent_map, _probe_agent_health
+from installed_host_smoke import _agent_map, _native_config, _probe_agent_health
 
 
 def _request(
@@ -66,7 +66,7 @@ class TestInstalledNative:
         assert len(delivered) == 1
         assert delivered[0].path == marker
 
-        native = json.loads((config_dir / "data" / "native.json").read_text())
+        native = _native_config(config_dir / "config.toml", config_dir)["raw"]
         admin_port = native["admin_port"]
         denied, _, blocked_by = _request(
             listener["path"], f"http://127.0.0.1:{admin_port}/admin/instance",

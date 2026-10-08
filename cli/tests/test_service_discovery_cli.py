@@ -11,7 +11,7 @@ Contract for _load_service_files():
 import pytest
 import yaml
 
-from safeyolo.commands._service_discovery import (
+from safeyolo.core.service_discovery import (
     ServiceDiscoveryError,
     _load_service_files,
 )
@@ -33,7 +33,7 @@ class TestLoadServiceFilesBuiltinOnly:
         (builtin / "redis.yaml").write_text(yaml.dump(svc))
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
@@ -58,7 +58,7 @@ class TestLoadServiceFilesUserOverride:
         (user / "slack.yaml").write_text(yaml.dump(user_svc))
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
@@ -80,7 +80,7 @@ class TestLoadServiceFilesBothContribute:
         (user / "postgres.yaml").write_text(yaml.dump(_service("postgres")))
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
@@ -101,7 +101,7 @@ class TestLoadServiceFilesInvalidFails:
         (builtin / "good.yaml").write_text(yaml.dump(_service("good-svc")))
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
@@ -119,7 +119,7 @@ class TestLoadServiceFilesInvalidFails:
         (builtin / "valid.yaml").write_text(yaml.dump(_service("valid-svc")))
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
@@ -137,7 +137,7 @@ class TestLoadServiceFilesEmptyDirs:
         user.mkdir()
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
@@ -150,7 +150,7 @@ class TestLoadServiceFilesEmptyDirs:
         user.mkdir()
 
         monkeypatch.setattr(
-            "safeyolo.commands._service_discovery._get_services_dirs",
+            "safeyolo.core.service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 

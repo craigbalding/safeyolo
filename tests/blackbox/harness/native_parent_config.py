@@ -10,8 +10,6 @@ import stat
 import tempfile
 from pathlib import Path
 
-import yaml
-
 
 def _replace(path: Path, content: str) -> None:
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
@@ -25,116 +23,60 @@ def _replace(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _yaml(path: Path) -> dict:
-    value = yaml.safe_load(path.read_text())
-    if not isinstance(value, dict) or not isinstance(value.get("proxy"), dict):
-        raise ValueError(f"test instance has no proxy configuration: {path}")
-    return value
-
-
-def _native(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise ValueError(f"native test configuration is not an object: {path}")
-    return value
+def _config(config_dir: Path):
+    import tomlkit
+    return tomlkit.parse((config_dir / "config.toml").read_text())
 
 
 def restore(config_dir: Path) -> None:
-    state_path = config_dir / "data" / "native-parent-original.json"
+    state_path = config_dir / "data/native-parent-original.json"
     if not state_path.exists():
         return
     state = json.loads(state_path.read_text())
-    selected_ca = config_dir / "data" / "native-parent-trust.pem"
-    if state["selected_ca"] != str(selected_ca):
+    trust = config_dir / "data/native-parent-trust.pem"
+    if state["selected_ca"] != str(trust):
         raise ValueError("native test trust path does not belong to this instance")
-    selected = state["selected"]
-    config_path = config_dir / "config.yaml"
-    config = _yaml(config_path)
-    if config["proxy"].get("upstream_proxy") == selected:
-        if state["upstream_parent_present"]:
-            config["proxy"]["upstream_proxy"] = state["upstream_proxy"]
-        else:
-            config["proxy"].pop("upstream_proxy", None)
-    if config["proxy"].get("upstream_ca_cert") == state["selected_ca"]:
-        if state["upstream_ca_present"]:
-            config["proxy"]["upstream_ca_cert"] = state["upstream_ca_cert"]
-        else:
-            config["proxy"].pop("upstream_ca_cert", None)
-    _replace(config_path, yaml.safe_dump(config))
-    native_path = config_dir / "data" / "native.json"
-    native = _native(native_path)
-    if native is not None and native.get("parent_proxy") == selected:
-        if state["native_parent_present"]:
-            native["parent_proxy"] = state["native_parent"]
-        else:
-            native.pop("parent_proxy", None)
-    if native is not None and native.get("upstream_ca_file") == state["selected_ca"]:
-        if state["native_ca_present"]:
-            native["upstream_ca_file"] = state["native_ca"]
-        else:
-            native.pop("upstream_ca_file", None)
-    if native is not None:
-        _replace(native_path, json.dumps(native, indent=2) + "\n")
+    config = _config(config_dir)
+    for key, selected in (("parent_proxy", state["selected"]), ("upstream_ca_file", str(trust))):
+        if config.get(key) == selected:
+            if key in state["original"]:
+                config[key] = state["original"][key]
+            else:
+                config.pop(key, None)
+    _replace(config_dir / "config.toml", config.as_string())
     state_path.unlink()
-    selected_ca.unlink(missing_ok=True)
+    trust.unlink(missing_ok=True)
 
 
 def select(config_dir: Path, selected: str, test_ca: Path) -> None:
-    state_path = config_dir / "data" / "native-parent-original.json"
+    state_path = config_dir / "data/native-parent-original.json"
     if state_path.exists():
         raise ValueError("a previous native test parent has not been restored")
-    config_path = config_dir / "config.yaml"
-    config = _yaml(config_path)
-    native_path = config_dir / "data" / "native.json"
-    native = _native(native_path)
-    original_ca = (
-        native.get("upstream_ca_file") if native is not None else config["proxy"].get("upstream_ca_cert")
-    )
-    selected_ca = config_dir / "data" / "native-parent-trust.pem"
-    state = {
-        "selected": selected,
-        "selected_ca": str(selected_ca),
-        "upstream_parent_present": "upstream_proxy" in config["proxy"],
-        "upstream_proxy": config["proxy"].get("upstream_proxy"),
-        "upstream_ca_present": "upstream_ca_cert" in config["proxy"],
-        "upstream_ca_cert": config["proxy"].get("upstream_ca_cert"),
-        "native_parent_present": native is not None and "parent_proxy" in native,
-        "native_parent": native.get("parent_proxy") if native is not None else None,
-        "native_ca_present": native is not None and "upstream_ca_file" in native,
-        "native_ca": native.get("upstream_ca_file") if native is not None else None,
-    }
+    config = _config(config_dir)
+    trust = config_dir / "data/native-parent-trust.pem"
+    original = {key: config[key] for key in ("parent_proxy", "upstream_ca_file") if key in config}
+    state = {"selected": selected, "selected_ca": str(trust), "original": original}
     _replace(state_path, json.dumps(state) + "\n")
     try:
-        roots = Path(original_ca).read_text() + "\n" if original_ca else ""
-        _replace(selected_ca, roots + test_ca.read_text())
-        config["proxy"]["upstream_proxy"] = selected
-        config["proxy"]["upstream_ca_cert"] = str(selected_ca)
-        _replace(config_path, yaml.safe_dump(config))
-        if native is not None:
-            native["parent_proxy"] = selected
-            native["upstream_ca_file"] = str(selected_ca)
-            _replace(native_path, json.dumps(native, indent=2) + "\n")
-    except Exception:
+        ca = original.get("upstream_ca_file")
+        ca_path = config_dir / ca if ca else None
+        roots = ca_path.read_text() + "\n" if ca_path else ""
+        _replace(trust, roots + test_ca.read_text())
+        config["parent_proxy"] = selected
+        config["upstream_ca_file"] = str(trust)
+        _replace(config_dir / "config.toml", config.as_string())
+    except (OSError, ValueError):
         restore(config_dir)
         raise
 
 
 def current(config_dir: Path) -> str:
-    native = _native(config_dir / "data" / "native.json")
-    if native is not None:
-        return native.get("parent_proxy") or ""
-    return os.environ.get("SAFEYOLO_UPSTREAM_PROXY") or (
-        _yaml(config_dir / "config.yaml")["proxy"].get("upstream_proxy") or ""
-    )
+    return _config(config_dir).get("parent_proxy") or ""
 
 
 def current_ca(config_dir: Path) -> str:
-    native = _native(config_dir / "data" / "native.json")
-    if native is not None:
-        return native.get("upstream_ca_file") or ""
-    return _yaml(config_dir / "config.yaml")["proxy"].get("upstream_ca_cert") or ""
+    ca = _config(config_dir).get("upstream_ca_file")
+    return str((config_dir / ca).resolve()) if ca else ""
 
 
 def main() -> None:

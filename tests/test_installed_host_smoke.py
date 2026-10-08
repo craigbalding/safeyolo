@@ -20,7 +20,8 @@ SCRIPT = REPO_ROOT / "tests" / "blackbox" / "installed_host_smoke.py"
 
 
 @pytest.fixture
-def smoke_module():
+def smoke_module(monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
     spec = importlib.util.spec_from_file_location("installed_host_smoke", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -29,8 +30,11 @@ def smoke_module():
 
 
 def _executable(path: Path, output: str) -> Path:
-    path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
-    path.chmod(0o755)
+    # Controlled native identity, never a real runtime witness.
+    source = path.with_suffix('.c')
+    source.write_text('#include <stdio.h>\nint main(void){puts(' + json.dumps(output) + ');return 0;}\n')
+    subprocess.run(['cc', str(source), '-o', str(path)], check=True, timeout=15)
+    source.unlink()
     return path
 
 
@@ -56,7 +60,11 @@ def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
 
 def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smoke_module, monkeypatch) -> None:
     monkeypatch.setattr(smoke_module, "_substrate_identity", lambda _config: {"status": "discovered", "kind": "gvisor"})
-    real_cli = _python_cli(tmp_path / "real-safeyolo", "safeyolo 0.1.0")
+    package = tmp_path / "package"
+    (package / "bin").mkdir(parents=True)
+    revision = 'a' * 40
+    (package / "package-info").write_text(f"source_commit={revision}\nprofile=debug\n")
+    real_cli = _executable(package / "bin/safeyolo", f"safeyolo 0.1.0 commit={revision} profile=debug")
     cli = tmp_path / "safeyolo"
     cli.symlink_to(real_cli)
     rust = _executable(tmp_path / "safeyolo-proxy", "safeyolo-proxy 0.1.0 (development)")
@@ -85,31 +93,39 @@ def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smok
     report = json.loads(output.read_text())
     assert report["status"] == "discovered"
     assert report["cli"]["path"] == str(cli)
-    assert report["cli"]["interpreter"] == sys.executable
-    assert report["cli"]["package_location"].endswith("safeyolo/__init__.py")
+    assert report["cli"]["package_root"] == str(package)
+    assert report["cli"]["source_revision"] == revision
     assert report["candidate"]["path"] == str(rust)
     assert report["candidate"]["sha256"]
     assert report["native"]["listeners"][0]["agent_id"] == "alice"
     assert report["runtime"]["status"] == "stopped"
 
 
-def test_cli_identity_rejects_launcher_without_usable_interpreter(tmp_path: Path, smoke_module) -> None:
-    cli = _executable(tmp_path / "safeyolo", "safeyolo 0.1.0")
+@pytest.mark.parametrize("entry", ["cli", "proxy"])
+def test_native_identity_refuses_a_hidden_python_fallback_before_execution(tmp_path, smoke_module, entry):
+    canary = tmp_path / "fallback-ran"
+    script = tmp_path / "safeyolo"
+    script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(canary)!r}).touch()\n")
+    script.chmod(0o755)
+    check = smoke_module._cli_identity if entry == "cli" else smoke_module._rust_identity
+    with pytest.raises(smoke_module.SmokeError, match="fallback is refused"):
+        check(script)
+    assert not canary.exists()
 
-    with pytest.raises(smoke_module.SmokeError, match="installed safeyolo package"):
-        smoke_module._cli_identity(cli)
 
-
-def test_installed_binary_comes_from_cli_loaded_package(tmp_path: Path, smoke_module, monkeypatch) -> None:
-    package = tmp_path / "site-packages" / "safeyolo"
+def test_installed_binary_comes_from_the_selected_native_layout(tmp_path, smoke_module, monkeypatch):
+    package = tmp_path / "package"
     (package / "bin").mkdir(parents=True)
-    (package / "__init__.py").touch()
-    binary = _executable(package / "bin" / "safeyolo-proxy", "safeyolo-proxy 0.1.0")
-    monkeypatch.setattr(smoke_module, "_cli_identity", lambda _cli: {"package_location": str(package / "__init__.py")})
-
+    revision = "a" * 40
+    binary = _executable(package / "bin/safeyolo-proxy", f"safeyolo-proxy commit={revision} profile=debug")
+    monkeypatch.setattr(smoke_module, "_cli_identity", lambda _cli: {
+        "package_root": str(package), "source_revision": revision, "profile": "debug",
+    })
     selected, _ = smoke_module._installed_rust_binary(tmp_path / "safeyolo")
-
     assert selected == binary.resolve()
+    _executable(binary, "safeyolo-proxy commit=" + "b" * 40 + " profile=debug")
+    with pytest.raises(smoke_module.SmokeError, match="source/profile differs"):
+        smoke_module._installed_rust_binary(tmp_path / "safeyolo")
     binary.unlink()
     with pytest.raises(smoke_module.SmokeError, match="Rust proxy executable"):
         smoke_module._installed_rust_binary(tmp_path / "safeyolo")
@@ -196,75 +212,32 @@ def test_json_inspection_has_a_size_bound(tmp_path: Path, smoke_module) -> None:
         smoke_module.JSON_LIMIT = original_limit
 
 
-def test_receipt_is_bound_to_supplied_native_paths(tmp_path: Path, smoke_module, monkeypatch) -> None:
-    config_dir = tmp_path / "config"
-    data_dir = config_dir / "data"
-    data_dir.mkdir(parents=True)
-    native_path = config_dir / "proxy.json"
-    readiness = config_dir / "ready.json"
-    working_directory = tmp_path / "work"
-    working_directory.mkdir()
+def test_native_receipt_is_bound_to_the_live_process_and_actual_config(tmp_path, smoke_module, monkeypatch):
+    (tmp_path / "data").mkdir()
+    config = tmp_path / "config.toml"
     candidate = tmp_path / "safeyolo-proxy"
-    candidate.write_text("native")
-    marker = {"ready": True, "pid": os.getpid(), "backend": "rust-m2", "instance_id": "x", "listeners": 0}
-    readiness.write_text(json.dumps(marker))
-    native = {
-        "path": str(native_path),
-        "readiness_file": str(readiness),
-        "listeners": [],
-    }
-    token = "test-start-token"
-    (data_dir / "proxy-rust.json").write_text(
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "start_token": token,
-                "readiness_file": str(readiness),
-                "admin_port": None,
-                "admin_token_file": None,
-                "config_file": str(native_path),
-                "working_directory": str(working_directory),
-            }
-        )
-    )
-    monkeypatch.setattr(smoke_module, "_process_start_token", lambda pid: token)
+    candidate.touch()
+    ready = tmp_path / "data/ready.json"
+    ready.write_text(json.dumps({"ready": True, "pid": os.getpid(), "backend": "rust-m2",
+                                 "instance_id": "owned", "listeners": 0}))
+    receipt = tmp_path / "data/proxy-process.json"
+    receipt.write_text(json.dumps({"pid": os.getpid(), "token": "owned-start"}))
+    native = {"readiness_file": str(ready), "listeners": []}
+    monkeypatch.setattr(smoke_module, "_process_start_token", lambda pid: "owned-start")
     monkeypatch.setattr(smoke_module, "_process_executable", lambda pid: candidate.resolve())
-
-    observed = smoke_module._runtime_observation(
-        config_dir,
-        native,
-        candidate,
-        config_path=native_path,
-        working_directory=working_directory,
-        require_running=True,
-    )
-    assert observed["status"] == "ready"
-
-    base_receipt = {
-        "pid": os.getpid(),
-        "start_token": token,
-        "readiness_file": str(readiness),
-        "admin_port": None,
-        "admin_token_file": None,
-        "config_file": str(native_path),
-        "working_directory": str(working_directory),
-    }
-    for field, value, message in (
-        ("config_file", str(tmp_path / "other.json"), "config_file does not match"),
-        ("readiness_file", str(tmp_path / "other-ready.json"), "readiness_file does not match"),
-        ("working_directory", str(tmp_path / "other-work"), "working_directory does not match"),
-    ):
-        receipt = {**base_receipt, field: value}
-        (data_dir / "proxy-rust.json").write_text(json.dumps(receipt))
-        with pytest.raises(smoke_module.SmokeError, match=message):
-            smoke_module._runtime_observation(
-                config_dir,
-                native,
-                candidate,
-                config_path=native_path,
-                working_directory=working_directory,
-                require_running=True,
-            )
+    monkeypatch.setattr(smoke_module, "_process_command_line", lambda pid: [b"proxy", b"--config", os.fsencode(config)])
+    def observe():
+        return smoke_module._runtime_observation(tmp_path, native, candidate, config_path=config,
+                                                  working_directory=tmp_path, require_running=True)
+    assert observe()["status"] == "ready"
+    receipt.write_text(json.dumps({"pid": os.getpid(), "token": "reused-pid"}))
+    with pytest.raises(smoke_module.SmokeError, match="does not own"):
+        observe()
+    receipt.write_text(json.dumps({"pid": os.getpid(), "token": "owned-start"}))
+    for argv in ([b"proxy", b"--config", b"/other/config.toml"], [b"proxy", b"--config"]):
+        monkeypatch.setattr(smoke_module, "_process_command_line", lambda pid: argv)
+        with pytest.raises(smoke_module.SmokeError, match="selected native configuration"):
+            observe()
 
 
 def test_authenticated_runtime_identity_matches_readiness_and_process(tmp_path: Path, smoke_module, monkeypatch) -> None:

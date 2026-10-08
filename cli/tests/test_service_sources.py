@@ -1,15 +1,12 @@
-"""Authoritative service-source contract across source and wheel layouts."""
+"""Authoritative service-source contract for retained protocol fixtures."""
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import zipfile
 from pathlib import Path
 
 import yaml
 
-from safeyolo.commands._service_discovery import _load_service_files
+from safeyolo.core.service_discovery import _load_service_files
 from safeyolo.core.service_loader import ServiceDefinition, ServiceRegistry
 from safeyolo.core.service_paths import (
     builtin_services_dir,
@@ -80,7 +77,7 @@ def test_cli_and_registry_expose_identical_effective_documents(
     _write_service(user / "shared.yaml", "shared", "user override")
     _write_service(user / "user-only.yaml", "user-only", "user")
     monkeypatch.setattr(
-        "safeyolo.commands._service_discovery._get_services_dirs",
+        "safeyolo.core.service_discovery._get_services_dirs",
         lambda: [builtin, user],
     )
 
@@ -96,54 +93,4 @@ def test_cli_and_registry_expose_identical_effective_documents(
     assert cli_documents["shared"]["description"] == "user override"
 
 
-def test_built_wheel_contains_curated_services_in_runtime_package(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "dist"
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(output)],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wheel = next(output.glob("*.whl"))
-
-    installed = tmp_path / "installed"
-    with zipfile.ZipFile(wheel) as archive:
-        packaged = {
-            Path(name).stem
-            for name in archive.namelist()
-            if name.startswith("safeyolo/services/") and name.endswith(".yaml")
-        }
-        archive.extractall(installed)
-
-    assert packaged == BUILTIN_NAMES
-    _assert_gmail_uses_omitted_header_default(installed / "safeyolo" / "services")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-c",
-            (
-                "import sys; sys.path.insert(0, sys.argv[1]); "
-                "from safeyolo.core.service_loader import ServiceRegistry; "
-                "from safeyolo.core.service_paths import builtin_services_dir; "
-                "services = builtin_services_dir(); "
-                "registry = ServiceRegistry(services / '_missing-user', "
-                "builtin_dir=services, require_builtin=True); "
-                "registry.load(strict=True); "
-                "operations = registry.get_service('gmail').capabilities"
-                "['read_messages'].contract.operations; "
-                "print(services); "
-                "print(all(op.transport.allow_headers is None for op in operations))"
-            ),
-            str(installed),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    output_lines = result.stdout.splitlines()
-    assert Path(output_lines[0]) == installed / "safeyolo" / "services"
-    assert output_lines[1] == "True"
+# Native bundle service staging is checked in tests/test_host_packages.py.
