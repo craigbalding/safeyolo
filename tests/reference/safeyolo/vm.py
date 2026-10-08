@@ -31,6 +31,10 @@ from .config import (
 
 log = logging.getLogger("safeyolo.vm")
 
+# This test-state producer reads the same retained shell/skill inputs as the
+# native assembler. Relocating the Python reference does not relocate assets.
+_SOURCE_ASSETS = Path(__file__).resolve().parents[3] / "cli" / "src" / "safeyolo"
+
 VM_HELPER_NAME = "safeyolo-vm"
 VM_HELPER_CHECK_OK = "safeyolo-vm check: ok"
 VM_HELPER_CHECK_TIMEOUT_SECONDS = 3.0
@@ -954,7 +958,7 @@ def stage_guest_desktop_launcher(
     """
     share_dir = get_agent_config_share_dir(name)
     share_dir.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).parent / "guest-desktop.sh"
+    source = _SOURCE_ASSETS / "guest-desktop.sh"
     destination = share_dir / "guest-desktop"
     fd, temporary_name = tempfile.mkstemp(prefix=".guest-desktop-", dir=share_dir)
     os.close(fd)
@@ -1003,7 +1007,7 @@ def prepare_config_share(
     # only native discovery symlinks. Replace the complete managed skill tree
     # so additions and removals take effect on the next run without leaving
     # stale skills behind.
-    skills_source = Path(__file__).parent / "agent_context" / "skills"
+    skills_source = _SOURCE_ASSETS / "agent_context" / "skills"
     skills_target = share_dir / "skills"
     if not (skills_source / "safeyolo" / "SKILL.md").is_file():
         raise VMError(f"Bundled SafeYolo skill is missing from {skills_source}")
@@ -1039,9 +1043,8 @@ def prepare_config_share(
     # TCP) to the host-side proxy (UDS on Linux / vsock on macOS) via
     # socat. Started by guest-init before the agent. guest-shell-bridge.sh
     # mirrors in the other direction for `safeyolo agent shell`.
-    # guest-diag.py is an opt-in user diagnostic and requires python3
-    # in the rootfs (default base includes it? no -- users install if
-    # needed, it's not on the boot path).
+    # The retired Python guest diagnostic is not a staging input. The native
+    # guest helper supplies the maintained command and probe operations.
     helper = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).parent / "bin/safeyolo-guest")))
     if not helper.is_file():
         raise VMError(f"Required native guest helper is missing: {helper}; build/stage the installed Linux guest assets")
@@ -1051,9 +1054,8 @@ def prepare_config_share(
         ("guest-init-per-run.sh", "guest-init-per-run"),
         ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
         ("guest-shell-bridge.sh", "guest-shell-bridge"),
-        ("guest-diag.py", "guest-diag"),
     ]
-    for src, dst_name in [(Path(__file__).parent / name, target) for name, target in boot_executables] + [(helper, "safeyolo-guest")]:
+    for src, dst_name in [(_SOURCE_ASSETS / name, target) for name, target in boot_executables] + [(helper, "safeyolo-guest")]:
         dst = share_dir / dst_name
         # Write each boot executable to a temporary file. Then replace the
         # destination. An in-place copy keeps the old inode. The guest can then

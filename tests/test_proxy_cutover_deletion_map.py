@@ -1,14 +1,13 @@
-"""Keep the #640 proxy deletion ledger path-level and rollback-safe."""
+"""Keep all original proxy owners and their current source disposition visible."""
 
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LEDGER = REPO_ROOT / "docs" / "proxy-cutover-deletion-map.md"
 
-# These are the current Python runtime owners that the parity inventory marks
-# as deletion targets. Keeping the set here makes an accidental omission in
-# the human-readable ledger fail close during review.
-REQUIRED_PATHS = {
+# Keep the original inventory even after all production Python owners retire.
+# Omitting a row must still fail; existence checks use each row's current state.
+PRE_CUTOVER_PATHS = {
     "cli/src/safeyolo/proxy.py",
     "cli/src/safeyolo/traffic_master.py",
     "cli/src/safeyolo/traffic_session.py",
@@ -84,10 +83,10 @@ def _paths_from_checks(checks: str) -> list[tuple[str, bool]]:
     return paths
 
 
-def test_ledger_covers_current_runtime_owners_and_existing_paths() -> None:
+def test_ledger_accounts_for_original_owners_and_current_source_state() -> None:
     rows = _table_rows()
     paths = {row[1].strip("`").rstrip("/") for row in rows}
-    expected = {path.rstrip("/") for path in REQUIRED_PATHS}
+    expected = {path.rstrip("/") for path in PRE_CUTOVER_PATHS}
     assert paths == expected
 
     ids = [row[0] for row in rows]
