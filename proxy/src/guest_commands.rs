@@ -4,7 +4,7 @@ use crate::Error;
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{Read, Write},
+    io::{BufWriter, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
@@ -35,8 +35,12 @@ pub(crate) fn write_json_with_mode(path: &Path, value: &Value, mode: u32) -> Res
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(mode))?;
-    serde_json::to_writer(&mut temporary, value)?;
-    temporary.write_all(b"\n")?;
+    {
+        let mut output = BufWriter::new(&mut temporary);
+        serde_json::to_writer(&mut output, value)?;
+        output.write_all(b"\n")?;
+        output.flush()?;
+    }
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
     fs::File::open(parent)?.sync_all()?;

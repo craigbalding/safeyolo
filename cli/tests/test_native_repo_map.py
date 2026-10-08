@@ -4,11 +4,12 @@ import json
 import os
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 
 import pytest
 import repo_map_reference as reference
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from test_repo_map import _repository
 
@@ -244,14 +245,50 @@ def test_native_query_recovers_invalid_cached_source_ranges(tmp_path, monkeypatc
     assert "DEFINITION pkg/app.py:5-6" in result.stdout
 
 
+@pytest.mark.parametrize("class_name,method_name", [("K", "ﬃ"), ("Ａ", "K"), ("é", "µ")])
+def test_native_python_names_and_async_status_survive_cache_reapply(tmp_path, monkeypatch, class_name, method_name):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    repository = _repository(checkout)
+    path = repository / "pkg/app.py"
+    path.write_text(f"class {class_name}:\n    µ: int\n    async\tdef {method_name}(self, K):\n        return K\n")
+    expected = reference.build_repo_map(path)
+    mapped = _run(repository, path).stdout
+    for line in expected.text.splitlines():
+        assert line in mapped
+    query = "app." + unicodedata.normalize("NFKC", f"{class_name}.{method_name}")
+    first = _run(repository, repository, "--query", query).stdout
+    assert "DEFINITION pkg/app.py:3-4" in first
+    warm = _run(repository, repository, "--query", query).stdout
+    assert "indexed=0" in warm and "DEFINITION pkg/app.py:3-4" in warm
+    cache = next((tmp_path / "home/.cache/safeyolo/repo-map").glob("native-*.json"))
+    data = json.loads(cache.read_text())
+    # Old derived entries have no parser version and can contain the source's
+    # unnormalized name and the former synchronous async-tab signature.
+    for entry in data.values():
+        entry.pop("version", None)
+        for symbol in entry["symbols"]:
+            symbol["name"] = method_name
+            symbol["qualified"] = f"{class_name}.{method_name}"
+            symbol["signature"] = symbol["signature"].replace("async ", "")
+    cache.write_text(json.dumps(data))
+    corrected = _run(repository, repository, "--query", query).stdout
+    assert "cached=0" in corrected and "DEFINITION pkg/app.py:3-4" in corrected
+    assert "indexed=0" in _run(repository, repository, "--query", query).stdout
+
+
 @settings(max_examples=40, deadline=None, database=None)
 @given(filename=st.binary(min_size=1, max_size=12).filter(lambda name: b"\0" not in name and b"/" not in name),
-       asynchronous=st.booleans(), argument=st.sampled_from(["item", "item: str", "item: list[str]", "*items: str"]))
-def test_native_syntax_and_path_bytes_keep_ast_symbols_without_string_definitions(filename, asynchronous, argument):
+       asynchronous=st.booleans(), argument=st.sampled_from(["item", "item: str", "item: list[str]", "*items: str", "K: str"]),
+       gap=st.sampled_from([" ", "\t", " \t", "\f"]), name=st.sampled_from(["generated_probe", "K", "ﬃ", "Ａ", "é"]))
+@example(filename=b"case", asynchronous=True, argument="item", gap="\t", name="K")
+@example(filename=b"ascii", asynchronous=True, argument="item", gap="\t", name="generated_probe")
+def test_native_syntax_and_path_bytes_keep_ast_symbols_without_string_definitions(filename, asynchronous, argument, gap, name):
     with tempfile.TemporaryDirectory(prefix="map-generated-", dir=os.environ.get("TMPDIR")) as directory:
         repository = _repository(Path(directory))
         path = repository / os.fsdecode(b"source-" + filename + b".py")
-        path.write_text(f"{'async ' if asynchronous else ''}def generated_probe({argument}) -> str:\n"
+        path.write_text(f"{'async' + gap if asynchronous else ''}def {name}({argument}) -> str:\n"
                         '    """Source text is not a second definition.\n'
                         'def phantom_function():\n'
                         '    return "phantom"\n'
@@ -260,12 +297,14 @@ def test_native_syntax_and_path_bytes_keep_ast_symbols_without_string_definition
         expected, count = reference._python_symbols(path, overview=False)
         assert count == 1
         mapped = _run(repository, path).stdout
+        normalized = unicodedata.normalize("NFKC", name)
         for line in expected:
-            if "generated_probe(" in line:
+            if f"{normalized}(" in line:
                 assert line in mapped
         assert "def phantom_function" not in mapped
-        queried = _run(repository, repository, "--query", "generated_probe").stdout
+        queried = _run(repository, repository, "--query", normalized).stdout
         assert queried.count("DEFINITION ") == 1
+        assert "EXAMPLE USE" not in queried
         assert 'return "actual"' in queried
 
 

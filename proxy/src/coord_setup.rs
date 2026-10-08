@@ -436,15 +436,20 @@ pub fn claude_state(home: &Path, operator_home: &Path) -> Result<(), Error> {
     let settings = settings
         .as_object_mut()
         .ok_or("Claude settings must be an object")?;
+    if host_settings.as_ref().is_some_and(Value::is_object)
+        && settings.get("permissions").is_some_and(|p| !p.is_object())
+    {
+        // A valid host object used to replace the entire agent document,
+        // repairing this field even when host preferences omit permissions.
+        // Keep that recovery while preserving unrelated valid agent keys.
+        settings.insert("permissions".into(), json!({}));
+    }
     if let Some(host) = host_settings {
         let host = host
             .as_object()
             .ok_or("Claude host settings must be an object")?;
         for (key, value) in host {
             if key == "permissions" && value.is_object() {
-                if settings.get(key).is_some_and(|p| !p.is_object()) {
-                    settings.insert(key.clone(), json!({}));
-                }
                 let permissions = settings
                     .entry(key.clone())
                     .or_insert_with(|| json!({}))

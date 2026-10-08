@@ -2884,6 +2884,25 @@ def test_claude_native_reapply_keeps_host_repair_of_invalid_agent_settings(tmp_p
     assert settings.stat().st_mode & 0o777 == 0o664
 
 
+@pytest.mark.parametrize("invalid", [None, [], "wrong", False, 7])
+def test_claude_native_host_preferences_without_permissions_repair_only_invalid_agent_field(tmp_path, invalid):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    host = operator_home / ".claude/settings.json"
+    host.parent.mkdir(parents=True)
+    host.write_text('{"model": "fixture-model"}')
+    settings = agent_home / ".claude/settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": invalid, "agentPreference": {"value": 42}}))
+    for _ in range(2):
+        _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+        value = json.loads(settings.read_text())
+        assert value["model"] == "fixture-model"
+        assert value["agentPreference"] == {"value": 42}
+        assert value["permissions"] == {"defaultMode": "bypassPermissions"}
+        assert value["skipDangerousModePermissionPrompt"] is True
+        assert (agent_home / ".safeyolo-command").is_file()
+
+
 @pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh", "claude-host-setup.sh"])
 def test_packaged_native_setup_discovers_host_and_guest_artifacts_without_overrides(tmp_path, script_name):
     package = tmp_path / "package/safeyolo"

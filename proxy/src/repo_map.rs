@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
+    fmt::Write,
     fs,
     io::Read,
     os::unix::{
@@ -12,9 +13,11 @@ use std::{
     },
     path::{Path, PathBuf},
     process::Command,
+    sync::LazyLock,
     time::Instant,
 };
 use tree_sitter::{Node, Parser};
+use unicode_normalization::UnicodeNormalization;
 
 fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
     let output = Command::new("git")
@@ -33,20 +36,25 @@ fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
 }
 
 fn words(text: &str, task: bool) -> BTreeMap<String, usize> {
-    let references =
+    static REFERENCES: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(?i)\b(?:pull[\s_-]+requests?|prs?|issues?)[\s:/#_-]*\d+\b|#\d+\b")
-            .expect("constant work reference pattern");
+            .expect("constant work reference pattern")
+    });
+    static TOKENS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"[A-Za-z][A-Za-z0-9_.\-/]*|[0-9]+(?:\.[0-9]+)*")
+            .expect("constant word pattern")
+    });
+    static STOPS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
+        "about actual after again against also and any already an are around as at be before being both but by can change changes current do does each ensure every existing for from has have if in into is it its keep make may more must no not of on one only or other our outcome over preserve required same should than that the their then this through to under up use using was we what when where which will with without work workflow you"
+            .split_whitespace().collect()
+    });
     let text = if task {
-        references.replace_all(text, " ")
+        REFERENCES.replace_all(text, " ")
     } else {
         text.into()
     };
-    let tokens = regex::Regex::new(r"[A-Za-z][A-Za-z0-9_.\-/]*|[0-9]+(?:\.[0-9]+)*")
-        .expect("constant word pattern");
-    let stops = "about actual after again against also and any already an are around as at be before being both but by can change changes current do does each ensure every existing for from has have if in into is it its keep make may more must no not of on one only or other our outcome over preserve required same should than that the their then this through to under up use using was we what when where which will with without work workflow you";
-    let stops: BTreeSet<_> = stops.split_whitespace().collect();
     let mut result = BTreeMap::new();
-    for token in tokens.find_iter(&text) {
+    for token in TOKENS.find_iter(&text) {
         let token = token.as_str();
         let mut pieces = BTreeSet::from([token.trim_matches(['.', '/', '-']).to_lowercase()]);
         for piece in token.split(['.', '/', '-', '_']) {
@@ -64,7 +72,7 @@ fn words(text: &str, task: bool) -> BTreeMap<String, usize> {
             pieces.extend(camel.split_whitespace().map(str::to_lowercase));
         }
         for piece in pieces {
-            if piece.len() >= 2 && (!task || !stops.contains(piece.as_str())) {
+            if piece.len() >= 2 && (!task || !STOPS.contains(piece.as_str())) {
                 *result.entry(piece).or_insert(0) += 1;
             }
         }
@@ -118,16 +126,24 @@ fn parameter(node: Node<'_>, source: &str) -> String {
         .child_by_field_name("name")
         .or_else(|| node.named_child(0));
     match node.kind() {
-        "default_parameter" => name.map(|n| node_text(n, source)).unwrap_or("").into(),
+        "default_parameter" => name
+            .map(|n| node_text(n, source))
+            .unwrap_or("")
+            .nfkc()
+            .collect(),
         "typed_parameter" | "typed_default_parameter" => {
-            let name = name.map(|n| node_text(n, source)).unwrap_or("");
+            let name: String = name
+                .map(|n| node_text(n, source))
+                .unwrap_or("")
+                .nfkc()
+                .collect();
             let annotation = node
                 .child_by_field_name("type")
                 .map(|n| node_text(n, source))
                 .unwrap_or("");
             format!("{name}: {annotation}")
         }
-        _ => node_text(node, source).into(),
+        _ => node_text(node, source).nfkc().collect(),
     }
 }
 fn python_nodes(
@@ -150,7 +166,7 @@ fn python_nodes(
         let Some(name_node) = definition.child_by_field_name("name") else {
             return;
         };
-        let name = node_text(name_node, source).to_owned();
+        let name: String = node_text(name_node, source).nfkc().collect();
         let mut qualified = parents.to_vec();
         qualified.push(name.clone());
         let class = definition.kind() == "class_definition";
@@ -195,7 +211,10 @@ fn python_nodes(
                 .child_by_field_name("return_type")
                 .map(|n| format!(" -> {}", node_text(n, source)))
                 .unwrap_or_default();
-            let asynchronous = if node_text(definition, source).starts_with("async ") {
+            let asynchronous = if definition
+                .children(&mut definition.walk())
+                .any(|child| child.kind() == "async")
+            {
                 "async "
             } else {
                 ""
@@ -240,7 +259,7 @@ fn python_nodes(
                 && let Some(name) = child.child_by_field_name("left")
                 && name.kind() == "identifier"
             {
-                let name = node_text(name, source).to_owned();
+                let name: String = node_text(name, source).nfkc().collect();
                 output.push(Symbol {
                     qualified: format!("{}.{name}", parents.join(".")),
                     signature: format!("{name}: {}", node_text(annotation, source)),
@@ -300,20 +319,24 @@ fn symbols(path: &Path, source: &str) -> Result<(Vec<Symbol>, Vec<String>), Erro
         }
         return Ok((output, imports));
     }
-    let pattern = regex::Regex::new(r"^\s*(?:(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+|(?:public\s+|private\s+|static\s+)*func\s+|function\s+)([A-Za-z_][A-Za-z0-9_]*)|^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{").expect("constant symbol pattern");
-    let assignment = regex::Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=")
-        .expect("constant shell assignment pattern");
+    static PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^\s*(?:(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+|(?:public\s+|private\s+|static\s+)*func\s+|function\s+)([A-Za-z_][A-Za-z0-9_]*)|^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{").expect("constant symbol pattern")
+    });
+    static ASSIGNMENT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=")
+            .expect("constant shell assignment pattern")
+    });
     let mut output = Vec::new();
     for (index, line) in source.lines().enumerate() {
         let shell = path.extension() == Some(OsStr::new("sh"))
             || path.file_name() == Some(OsStr::new("Makefile"));
-        let found = pattern
+        let found = PATTERN
             .captures(line)
             .and_then(|c| c.get(1).or_else(|| c.get(2)))
             .map(|n| (n.as_str(), "function"))
             .or_else(|| {
                 if shell {
-                    assignment
+                    ASSIGNMENT
                         .captures(line)
                         .and_then(|c| c.get(1))
                         .map(|n| (n.as_str(), "variable"))
@@ -340,6 +363,10 @@ fn symbols(path: &Path, source: &str) -> Result<(Vec<Symbol>, Vec<String>), Erro
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Indexed {
+    // Discard derived entries produced before Python-name/async semantics
+    // were corrected, even when the source content itself is unchanged.
+    #[serde(default)]
+    version: u8,
     digest: String,
     terms: BTreeMap<String, usize>,
     symbols: Vec<Symbol>,
@@ -348,6 +375,7 @@ struct Indexed {
 struct File {
     relative: PathBuf,
     path: String,
+    path_terms: BTreeMap<String, usize>,
     source: Option<String>,
     indexed: Indexed,
     score: f64,
@@ -454,13 +482,15 @@ fn files(
         };
         let key = crate::coord_setup::sha256(name);
         let digest = crate::coord_setup::sha256(&bytes);
+        let line_count = source.as_deref().unwrap_or("").lines().count();
         let indexed = if let Some(entry) = cached.get(&key).filter(|entry| {
-            entry.digest == digest
+            entry.version == 1
+                && entry.digest == digest
                 && entry.symbols.iter().all(|symbol| {
                     symbol.preview_start > 0
                         && symbol.preview_start <= symbol.line
                         && symbol.line <= symbol.end
-                        && symbol.end <= source.as_deref().unwrap_or("").lines().count()
+                        && symbol.end <= line_count
                 })
         }) {
             cached_count += 1;
@@ -469,6 +499,7 @@ fn files(
             indexed_count += 1;
             let (symbols, imports) = symbols(path, source.as_deref().unwrap_or(""))?;
             Indexed {
+                version: 1,
                 digest,
                 terms: words(source.as_deref().unwrap_or(""), false),
                 symbols,
@@ -476,9 +507,16 @@ fn files(
             }
         };
         updated.insert(key, indexed.clone());
+        let path_text = path.to_string_lossy().into_owned();
+        let path_terms = if query {
+            words(&path_text, false)
+        } else {
+            BTreeMap::new()
+        };
         output.push(File {
             relative: path.to_owned(),
-            path: path.to_string_lossy().into_owned(),
+            path: path_text,
+            path_terms,
             source,
             indexed,
             score: 0.0,
@@ -486,7 +524,10 @@ fn files(
             exact: vec![],
         });
     }
-    if query && let Some(path) = cache_path {
+    if query
+        && (indexed_count > 0 || cached.keys().ne(updated.keys()))
+        && let Some(path) = cache_path
+    {
         // Cache availability is not repository-map availability. Atomic updates
         // keep concurrent queries from observing a partially written cache.
         if let Some(parent) = path.parent()
@@ -702,7 +743,13 @@ fn hints(path: Option<&Path>, terms: &BTreeMap<String, usize>) -> Result<Vec<Hin
     output.truncate(3);
     Ok(output)
 }
-fn excerpt(file: &File, start: usize, end: usize, limit: usize) {
+fn excerpt(
+    output: &mut String,
+    file: &File,
+    start: usize,
+    end: usize,
+    limit: usize,
+) -> Result<(), Error> {
     let source: Vec<_> = file
         .source
         .as_deref()
@@ -716,15 +763,17 @@ fn excerpt(file: &File, start: usize, end: usize, limit: usize) {
     for (i, (index, text)) in source.iter().enumerate() {
         if source.len() > limit && i >= limit - tail && i < source.len() - tail {
             if i == limit - tail {
-                println!(
+                writeln!(
+                    output,
                     "... {} lines omitted; full range {start}-{end} ...",
                     source.len() - limit
-                );
+                )?;
             }
             continue;
         }
-        println!("{}: {text}", index + 1);
+        writeln!(output, "{}: {text}", index + 1)?;
     }
+    Ok(())
 }
 fn query(
     root: &Path,
@@ -733,7 +782,7 @@ fn query(
     limit: usize,
     mut files: Vec<File>,
     counts: (usize, usize),
-    elapsed: u128,
+    started: Instant,
 ) -> Result<(), Error> {
     let (indexed, cached) = counts;
     let terms = words(query, true);
@@ -750,9 +799,7 @@ fn query(
         .filter_map(|(term, count)| {
             let frequency = files
                 .iter()
-                .filter(|f| {
-                    f.indexed.terms.contains_key(term) || words(&f.path, false).contains_key(term)
-                })
+                .filter(|f| f.indexed.terms.contains_key(term) || f.path_terms.contains_key(term))
                 .count() as f64;
             (frequency > 0.0).then(|| {
                 (
@@ -767,7 +814,6 @@ fn query(
     weights.truncate(32);
     let exact_query = query.trim().strip_suffix("()").unwrap_or(query.trim());
     for file in &mut files {
-        let path_terms = words(&file.path, false);
         let length = file.indexed.terms.values().sum::<usize>() as f64;
         for (weight, term) in &weights {
             if let Some(count) = file.indexed.terms.get(*term) {
@@ -776,7 +822,7 @@ fn query(
                     / (count + 1.2 * (0.25 + 0.75 * length / average.max(1.0)));
                 file.reasons.push(format!("text={term}"));
             }
-            if path_terms.contains_key(*term) {
+            if file.path_terms.contains_key(*term) {
                 file.score += 2.5 * weight;
                 file.reasons.push(format!("path={term}"));
             }
@@ -859,26 +905,26 @@ fn query(
             }
         }
     }
-    println!(
-        "# repo-map mode=query head={} files={} indexed={indexed} cached={cached} elapsed_ms={elapsed} symbols=lexical",
-        head(root),
-        files.len()
-    );
+    // Prepare the same report before timing it, including selected-symbol
+    // ranking and definition/usage rendering rather than indexing alone.
+    let mut output = String::new();
     if let Some(path) = path {
-        println!("# guidance_file={}", path.display());
+        writeln!(output, "# guidance_file={}", path.display())?;
     }
     if !hints.is_empty() {
-        println!("GUIDANCE (repository-authored, not syntax-derived)");
+        writeln!(output, "GUIDANCE (repository-authored, not syntax-derived)")?;
         for hint in &hints {
-            println!(
+            writeln!(
+                output,
                 "- [{}] {}\n  matched: {}; source: {}",
                 hint.id,
                 hint.advice,
                 hint.triggers.join(", "),
                 hint.source
-            );
+            )?;
             if !hint.paths.is_empty() {
-                println!(
+                writeln!(
+                    output,
                     "  related: {}",
                     hint.paths
                         .iter()
@@ -886,7 +932,7 @@ fn query(
                         .cloned()
                         .collect::<Vec<_>>()
                         .join(", ")
-                );
+                )?;
             }
         }
     }
@@ -903,9 +949,12 @@ fn query(
         if group.is_empty() {
             continue;
         }
-        println!("\n{heading} (lexical + repository guidance; returned-file symbols)");
+        writeln!(
+            output,
+            "\n{heading} (lexical + repository guidance; returned-file symbols)"
+        )?;
         for file in group {
-            println!("- {} [{}]", file.path, file.reasons.join("; "));
+            writeln!(output, "- {} [{}]", file.path, file.reasons.join("; "))?;
             let mut relevant: Vec<_> = file
                 .indexed
                 .symbols
@@ -919,7 +968,7 @@ fn query(
                     .map(|i| &file.indexed.symbols[*i])
                     .collect();
             } else {
-                relevant.sort_by_key(|s| {
+                relevant.sort_by_cached_key(|s| {
                     std::cmp::Reverse(
                         words(&s.name, false)
                             .keys()
@@ -929,7 +978,13 @@ fn query(
                 });
             }
             for symbol in relevant.into_iter().take(5) {
-                println!("  {} {} {}", symbol.kind, symbol.name, symbol.range(true));
+                writeln!(
+                    output,
+                    "  {} {} {}",
+                    symbol.kind,
+                    symbol.name,
+                    symbol.range(true)
+                )?;
             }
         }
     }
@@ -937,37 +992,45 @@ fn query(
     for file in selected {
         for index in &file.exact {
             let symbol = &file.indexed.symbols[*index];
-            println!(
+            writeln!(
+                output,
                 "\nDEFINITION {}:{}-{}",
                 file.path, symbol.preview_start, symbol.end
-            );
-            excerpt(file, symbol.preview_start, symbol.end, 60);
+            )?;
+            excerpt(&mut output, file, symbol.preview_start, symbol.end, 60)?;
             preview = true;
         }
     }
     if preview {
         let usage =
             regex::Regex::new(&format!(r"(?:^|[^\w.]){}\s*\(", regex::escape(exact_query)))?;
+        static DECLARATION: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"\b(?:def|class)\s").expect("constant declaration pattern")
+        });
         let mut examples: Vec<_> = files.iter().collect();
         examples.sort_by_key(|f| (category(&f.path) != "test", &f.path));
         'example: for file in examples {
             for (index, line) in file.source.as_deref().unwrap_or("").lines().enumerate() {
-                if usage.is_match(line)
-                    && !line.trim_start().starts_with("def ")
-                    && !line.trim_start().starts_with("class ")
-                    && !line.trim_start().starts_with("async def ")
-                {
-                    println!(
+                if usage.is_match(line) && !DECLARATION.is_match(line) {
+                    writeln!(
+                        output,
                         "\nEXAMPLE USE (text match; binding not verified) {}:{}",
                         file.path,
                         index + 1
-                    );
-                    excerpt(file, index.max(1), index + 7, 8);
+                    )?;
+                    excerpt(&mut output, file, index.max(1), index + 7, 8)?;
                     break 'example;
                 }
             }
         }
     }
+    let revision = head(root);
+    let elapsed = started.elapsed().as_millis();
+    println!(
+        "# repo-map mode=query head={revision} files={} indexed={indexed} cached={cached} elapsed_ms={elapsed} symbols=lexical",
+        files.len()
+    );
+    print!("{output}");
     Ok(())
 }
 
@@ -1056,7 +1119,7 @@ pub fn run(args: &[OsString]) -> Result<(), Error> {
             limit,
             files,
             (indexed, cached),
-            started.elapsed().as_millis(),
+            started,
         );
     }
     for (scope, overview) in &scopes {
