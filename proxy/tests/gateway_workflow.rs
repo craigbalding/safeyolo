@@ -403,7 +403,7 @@ assert result == "authorized", result
 "#;
     Command::new("python3")
         .current_dir(repository)
-        .env("PYTHONPATH", repository.join("cli/src"))
+        .env("PYTHONPATH", repository.join("tests/reference"))
         .env("TEST_SERVICE_CREDENTIAL", credential)
         .args([
             "-c",
