@@ -232,8 +232,8 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
               f"since_sequence={cursor}, include_self=true, timeout_seconds=1. "
               "Verify your exact marker in both results. End the session after these four calls. "
               "Do not substitute shell calls, invent results, retry a send, or edit files.")
-    codex_version = shell(primary, "codex --version").strip()
-    login = shell(primary, "codex login status", check=False)
+    codex_version = shell(primary, "/home/agent/.safeyolo-command --version").strip()
+    login = shell(primary, "/home/agent/.safeyolo-command login status", check=False)
     assert login.returncode == 0, "provisioned Codex login is missing"
     # Reuse the installed real-Helper's five-minute session deadline.
     events = shell(primary, "/home/agent/.safeyolo-command exec --json --skip-git-repo-check " + shlex.quote(prompt), timeout=300)
