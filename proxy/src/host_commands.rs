@@ -481,7 +481,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                 "attach"=>{if !extra.is_empty(){return Err("unexpected attach argument".into());}return host_lifecycle::attach(&agent).await;},
                 "shell"=>{
                     let command=match extra {[]=>"exec /bin/bash -l",[flag,command]if flag=="-c"=>command,_=>return Err("shell accepts -c COMMAND".into())};
-                    if persistent {return host_lifecycle::persistent_shell(&agent,command).await;}
+                    if persistent {return host_lifecycle::persistent_shell(&agent,command,"sy-shell").await;}
                     let mut child=host_platform::spawn_guest_command(name,command).await?;
                     return Ok(child.wait().await?.code().unwrap_or(1));
                 },

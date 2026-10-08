@@ -673,6 +673,7 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     assert force_include["repo-map.toml"] == "safeyolo/repo-map.toml"
+    assert force_include["contrib/codex-command.sh"] == "safeyolo/contrib/codex-command.sh"
 
     assert force_include["contrib/coord-mcp-bootstrap.sh"] == ("safeyolo/contrib/coord-mcp-bootstrap.sh")
     assert force_include["contrib/safeyolo-coord-mcp-launcher.sh"] == (
@@ -1902,7 +1903,7 @@ def test_lab_controller_skill_is_codex_scoped_and_self_contained() -> None:
         "safeyolo-lab",
         "run-controller.sh",
         "adapt-layout.sh",
-        "self-test.sh",
+        "prepare-nested.sh",
     ):
         path = LAB_CONTROLLER_SOURCE / "scripts" / script
         assert path.is_file()
@@ -2072,7 +2073,8 @@ def test_coord_guidance_requires_a_harness_visible_foreground_wait() -> None:
 )
 def test_alpine_bootstrap_uses_noninteractive_guest_sudo(script_name: str) -> None:
     """First-boot package setup must never wait for a guest password."""
-    source = (REPO_ROOT / "contrib" / script_name).read_text()
+    command_name = "codex-command.sh" if script_name == "codex-host-setup.sh" else script_name
+    source = (REPO_ROOT / "contrib" / command_name).read_text()
 
     assert "sudo -n apk add nodejs npm" in source
     assert "sudo apk add nodejs npm" not in source

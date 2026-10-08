@@ -45,10 +45,11 @@ def inspect_wheel(wheel: Path, *, expected_binary_sha256: str | None = None) -> 
         obsolete = sorted(name for name in members if name.startswith(
             ("pdp/", "safeyolo/mitm_addons/", "safeyolo/proxy_modes/", "safeyolo/traffic_master.py",
              "safeyolo/storage/flow_store.py", "safeyolo/core/plumb_service.py",
-             "safeyolo/coord/dispatch.py", "safeyolo/coord/dispatch_schedule.py")
+             "safeyolo/coord/dispatch.py", "safeyolo/coord/dispatch_schedule.py",
+             "safeyolo/coord/mattermost.py", "safeyolo/coord/mattermost_actions.py")
         ))
         if obsolete:
-            raise ValueError("wheel contains retired production Python: " + ", ".join(obsolete))
+            raise ValueError("wheel contains retired Python production code: " + ", ".join(obsolete))
 
         binary_info = members["safeyolo/bin/safeyolo-proxy"]
         if binary_info.is_dir():

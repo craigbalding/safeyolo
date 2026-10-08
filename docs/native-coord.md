@@ -100,7 +100,7 @@ at `/home/agent/.safeyolo/safeyolo-coord`. A host-only probe does not prove that
 guest boundary.
 
 Use the same installed native CLI for [Dispatch period requests](dispatch-publication.md)
-and [generation/site validation](dispatch-generation.md). Mattermost remote/mobile
-exchange and semantic actions remain a separate native G6 outcome. Other staging dependencies and
+and [generation/site validation](dispatch-generation.md), and for
+[Mattermost exchange and semantic actions](coord-mattermost.md). Other staging dependencies and
 unfinished G2/G4/G7 proof remain in the
 [responsibility map](native-settings.md#operator-entry-responsibilities).

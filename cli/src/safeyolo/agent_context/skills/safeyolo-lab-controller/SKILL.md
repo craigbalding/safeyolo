@@ -20,28 +20,16 @@ below; do not invoke a Demo-specific workflow.
 
 ## Respect the controller bootstrap
 
-The ordinary controller startup is operator-owned and ordered:
+The operator runs the installed native `safeyolo lab` entry. It asks for the
+objective, provisions or selects the owned guest, checks Codex authentication,
+and enters the viewer. Repeating the command reattaches to the same controller
+and evidence. `--recover` restarts an owned dead controller; `--relaunch`
+explicitly replaces it. No pane discovery or guest-shell bootstrap is required.
 
-1. on the host, attach with `safeyolo agent shell AGENT`;
-2. from `/home/agent` in the guest, run `safeyolo-lab` once.
-
-The command creates the guest tmux session, starts its persistent controller
-shell, injects the host-script-provided `.safeyolo-command` through the runner,
-and attaches the operator. With no host-level objective, the first controller
-turn briefly explains the lab, gives a few experiment examples, and invites the
-operator to say what they want to explore. With a recorded host-level
-objective, it acknowledges that objective and does not ask the operator to
-repeat it. Neither first turn changes lab state. Keep the startup briefing and
-objective in developer instructions. Send only the short `Hello.` user message;
-do not display the briefing as operator input. If the session already exists,
-the command only attaches. It must not start another controller or send the
-welcome turn again.
-
-Use `safeyolo-lab --help` as the operator discovery point. During initial skill
-setup, run `scripts/install-operator-entrypoint.sh` if `safeyolo-lab` is not on
-the guest shell path. The installer creates a persistent user command and adds
-the standard user command directory to interactive Bash shells. Do not replace
-the operator's shell startup file or an unrelated command.
+The guest `safeyolo-lab` helper remains internal terminal plumbing. It starts
+one persistent controller shell and injects the recorded objective with the
+base instructions. It does not adopt an unrelated session. A reconnect does
+not start another controller or repeat the initial objective prompt.
 
 Use the same guest tmux profile for a direct terminal and for a guest displayed
 inside host tmux. Its `C-a` prefix avoids the common host `C-b` prefix.
@@ -85,20 +73,14 @@ styling, capturing, or closing panes.
 ## Run experiments visibly
 
 - Keep the parent shell alive after commands under test finish.
-- Give panes short purpose-based titles. Use a dedicated lesson pane when an
-  ordered explanation is part of the experiment. Keep raw process panes alive
-  and inspectable behind that surface.
-- Keep raw output unchanged. Use the responsive annotation rail for one ad hoc
-  point in raw output. Give an annotation a stable ID, state, short finding,
-  exact evidence fragment, and plain-language explanation. Do not use a series
-  of annotations as the navigation model for a structured lesson.
-- Return focus to the controller after command injection and observation. When
-  a structured lesson is open, the learner can press `F12` to read at their
-  own pace, press `o` to inspect a registered source file, press `q` to choose
-  a question shown on the page, and press `F12` to return to the controller.
-  Do not steal focus while the learner is reading.
-  Set another explicit temporary focus target only for interactive login,
-  prompts, or an operator action.
+- Give panes short purpose-based titles. Keep raw process panes alive and
+  inspectable. Use ordinary shell panes for source, requests, policy and logs
+  only when the objective needs them.
+- Keep raw output unchanged. Use the responsive annotation rail for an ad hoc
+  observation with a stable ID, state, exact evidence fragment and explanation.
+- Return focus to the controller after command injection and observation.
+  Set another explicit temporary focus target for interactive login, prompts,
+  or direct operator intervention. Do not steal focus while the operator uses it.
 - Inject simple commands literally. Put complex or multiline command sequences
   in a reviewed script, then inject only the script path and arguments.
 - Never construct a tmux command containing a credential value. Read secrets at

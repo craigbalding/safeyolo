@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real Mattermost check/once with a disposable test-only config on macOS."""
+"""Retained legacy Python protocol probe; does not prove native Mattermost behavior."""
 
 from __future__ import annotations
 
@@ -23,7 +23,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from safeyolo.coord import api as coord_api
-from safeyolo.coord.mattermost import (
+
+# Load only the retained repository test fixture, never installed product code.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.legacy_mattermost.mattermost import (
     HTTPMattermostAPI,
     MattermostAdapterError,
     MattermostConfig,
@@ -223,6 +227,7 @@ def _write_disposable_config(config: MattermostConfig, path: Path, state_file: P
 def _run_local_diagnostic(command: list[str], *, timeout: int, secrets: Sequence[str] = ()) -> int:
     result = subprocess.run(
         command,
+        cwd=Path(__file__).resolve().parents[1],
         stdin=subprocess.DEVNULL,
         check=False,
         capture_output=True,
@@ -380,13 +385,11 @@ def main() -> int:
         )
         print(f"TEMP_ROOT {root}", flush=True)
 
-        cli = Path(sys.executable).with_name("safeyolo")
-        if not cli.is_file():
-            raise AcceptanceError("candidate safeyolo console script is unavailable")
+        cli = [sys.executable, "-m", "tests.legacy_mattermost.commands"]
         current_step, current_label = 8, "real mattermost check with disposable state/config"
         if (
             _run_local_diagnostic(
-                [str(cli), "coord", "mattermost", "check", "--config", str(temp_config)],
+                [*cli, "mattermost", "check", "--config", str(temp_config)],
                 timeout=90,
                 secrets=diagnostic_secrets,
             )
@@ -398,7 +401,7 @@ def main() -> int:
         current_step, current_label = 9, "real mattermost baseline run --once on dedicated test mapping"
         if (
             _run_local_diagnostic(
-                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)],
+                [*cli, "mattermost", "run", "--once", "--config", str(temp_config)],
                 timeout=180,
                 secrets=diagnostic_secrets,
             )
@@ -411,7 +414,7 @@ def main() -> int:
         msg_id, sequence = asyncio.run(_append_rendering_fixture(source))
         if (
             _run_local_diagnostic(
-                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)],
+                [*cli, "mattermost", "run", "--once", "--config", str(temp_config)],
                 timeout=180,
                 secrets=diagnostic_secrets,
             )

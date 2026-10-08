@@ -4,44 +4,23 @@ Read this reference when the operator starts or reconnects to a SafeYolo lab.
 
 ## Operator workflow
 
-From the host, enter the SafeYolo agent:
+On the native instance host, run `safeyolo lab`. The entry asks for the
+objective before preparing its guest and checking its own Codex authentication.
+The operator does not enter a guest shell or discover a controller pane first.
 
-```bash
-safeyolo agent shell AGENT
-```
+The internal `safeyolo-lab` helper creates the owned guest session and a
+persistent interactive controller shell. The runner invokes the staged Codex
+command without replacing that shell. The recorded objective and base
+instructions are supplied as developer instructions. Codex receives `Hello.`
+as the short first user message, acknowledges the objective and proposes the
+smallest useful experiment before mutations.
 
-The guest shell starts in `/home/agent`. Run one command there:
+When the controller exits, its shell remains alive with the real exit marker.
+`lab --status` reports that the controller is dead. `lab --recover` explicitly
+restarts it; reattach alone does not start a second controller.
 
-```bash
-safeyolo-lab
-```
-
-Do not run another startup command inside tmux.
-
-On first use, `safeyolo-lab`:
-
-1. creates the named guest tmux session `lab`;
-2. creates a persistent interactive controller shell;
-3. injects the SafeYolo controller runner with hidden startup instructions;
-4. attaches the operator to the session.
-
-The runner invokes `/home/agent/.safeyolo-command` without replacing the
-interactive shell. When the controller exits, the shell remains alive and
-shows the controller exit marker.
-
-Codex receives `Hello.` as the short first user message. The startup briefing
-and any recorded objective are in developer instructions, so Codex does not
-show them as long user messages. Without an objective, the first controller
-response explains that the lab is a visible tmux workspace for experiments,
-gives brief examples, and invites the operator to state what they want to
-explore. With an objective, it acknowledges that objective and does not ask the
-operator to repeat it. Neither response makes a tool call or changes lab state.
-The controller discusses the pass condition, constraints, evidence, and
-teardown before changing lab state.
-
-The same `safeyolo-lab` command works when the guest is displayed directly and
-when a host tmux pane displays the guest. The guest prefix is `C-a`. A host tmux
-can retain `C-b`. Detach from the guest with `C-a d`.
+The guest prefix is `C-a`. A host tmux can retain `C-b`. Exit the Lab viewer
+with `C-a d`.
 
 The tmux profile does not start a shell, harness, or provider. It sets the
 prefix, status, borders, labels, and scrollback. Its UI-only hooks adapt pane
@@ -56,17 +35,11 @@ the operator must interact with it.
 
 ## Reconnect
 
-After a disconnection, enter the agent again and run:
+After a disconnection, run `safeyolo lab` on the same instance host. Use
+`--agent NAME` when several Labs exist. A live owned controller is reused;
+Lab does not inject its runner or startup message again.
 
-```bash
-safeyolo-lab
-```
-
-If the `lab` session exists, the command only attaches. It does not inject the
-runner again. Inspect the controller pane before you authorize a new controller
-invocation.
-
-## Command installation
+## Internal guest command
 
 A pre-lab shell in `/home/agent` prints this discovery hint:
 

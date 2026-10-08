@@ -69,6 +69,11 @@ def package_inputs(tmp_path):
         (assets / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     for name in ("launchers", "agent_context/skills/safeyolo", "services"):
         (assets / name).mkdir(parents=True)
+    for name in ("safeyolo-lab-controller", "safeyolo-factory"):
+        shutil.copytree(
+            REPO / "cli/src/safeyolo/agent_context/skills" / name,
+            assets / "agent_context/skills" / name,
+        )
     for name in ("tmux-common", "tmux-window", "tmux-pane"):
         (assets / "launchers" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     skill = assets / "agent_context/skills/safeyolo"
@@ -91,6 +96,7 @@ def package_inputs(tmp_path):
     (source / "contrib/lib").mkdir(parents=True)
     for name in ("claude-host-setup", "codex-host-setup", "codex-coord-host-setup", "pi-host-setup", "pi-coord-host-setup", "mise-shell-host-setup", "coord-mcp-bootstrap", "safeyolo-coord-mcp-launcher"):
         (source / "contrib" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
+    shutil.copy2(REPO / "contrib/codex-command.sh", source / "contrib/codex-command.sh")
     (source / "contrib/lib/stage-coord-native.sh").write_text("# fixture\n")
     (source / "contrib/pi-coord-extension.ts").write_text("// fixture\n")
     subprocess.run(["git", "init", "-q", str(source)], check=True)
@@ -300,6 +306,18 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     assert result.returncode == 0, result.stderr
     assert image.read_bytes() == b"prepared boot input"
     assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()
+    # The Codex setup script loads this adjacent command at agent preparation.
+    assert (root / "assets/contrib/codex-command.sh").read_bytes() == (
+        REPO / "contrib/codex-command.sh"
+    ).read_bytes()
+    skill_source = REPO / "cli/src/safeyolo/agent_context/skills"
+    for name, relative in (
+        ("safeyolo-lab-controller", "scripts/prepare-nested.sh"),
+        ("safeyolo-factory", "SKILL.md"),
+    ):
+        assert (root / "assets/skills" / name / relative).read_bytes() == (
+            skill_source / name / relative
+        ).read_bytes()
 
 
 # CI debug identity and the retained legacy wheel consumers remain active.
@@ -363,6 +381,9 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
         assert "safeyolo/coord/dispatch.py" not in archive.namelist()
         assert "safeyolo/coord/dispatch_schedule.py" not in archive.namelist()
         assert not any("legacy_dispatch" in name for name in archive.namelist())
+        assert "safeyolo/coord/mattermost.py" not in archive.namelist()
+        assert "safeyolo/coord/mattermost_actions.py" not in archive.namelist()
+        assert not any("legacy_mattermost" in name for name in archive.namelist())
         assert archive.read("safeyolo/bin/safeyolo-proxy") == binary.read_bytes()
         for name, path in host_binaries.items():
             assert archive.read(f"safeyolo/bin/{name}") == path.read_bytes()

@@ -31,11 +31,21 @@ def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
         "safeyolo agent shell --persistent marker -c bash",
         "safeyolo agent diagnostics marker",
         "safeyolo agent recover marker --timeout 15",
+        "safeyolo coord mattermost check --config FILE",
+        "safeyolo coord mattermost run --config FILE --once",
+        "safeyolo lab --workspace PATH --objective TEXT --agent marker --yes",
+        "safeyolo lab --agent marker --status --json",
+        "safeyolo factory approve FILE --yes",
+        "safeyolo factory prepare NAME --workspace ROLE=PATH",
+        "safeyolo factory history NAME --since 42",
     ):
         assert mod._validate_line(invocation, surface) is None
     assert "--root" in surface[""]
     assert mod._validate_line("safeyolo agent start marker --invented", surface)
     assert mod._validate_line("safeyolo agent up marker", surface)
+    assert mod._validate_line("safeyolo coord mattermost run --invented", surface)
+    assert mod._validate_line("safeyolo lab --invented", surface)
+    assert mod._validate_line("safeyolo factory approve FILE --invented", surface)
     assert "agent run" not in surface
 
 

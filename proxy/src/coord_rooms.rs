@@ -626,6 +626,9 @@ pub fn grant(
 }
 
 pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    if arguments.first().is_some_and(|v| v == "mattermost") {
+        return crate::mattermost::run(config, &arguments[1..]).await;
+    }
     if arguments
         .first()
         .is_some_and(|command| command == "dispatch-trigger")
@@ -700,6 +703,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::dispatch::request::HELP);
+            println!("{}", crate::mattermost::HELP);
             return Ok(());
         }
         _ => return Err("usage: safeyolo coord --help".into()),

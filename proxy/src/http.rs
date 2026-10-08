@@ -836,6 +836,10 @@ async fn wait_test_dial_barrier(host: &str, port: u16) {
 }
 
 pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Error> {
+    client_tls(config.upstream_ca_file.as_deref())
+}
+
+pub(crate) fn client_tls(ca_file: Option<&std::path::Path>) -> Result<Arc<ClientConfig>, Error> {
     let mut roots = RootCertStore::empty();
     let native = rustls_native_certs::load_native_certs();
     for cert in native.certs {
@@ -844,7 +848,7 @@ pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Er
     for error in native.errors {
         eprintln!("native TLS trust store: {error}");
     }
-    if let Some(path) = &config.upstream_ca_file {
+    if let Some(path) = ca_file {
         for cert in CertificateDer::pem_reader_iter(std::fs::File::open(path)?) {
             roots.add(cert?)?;
         }

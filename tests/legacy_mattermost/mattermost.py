@@ -1,4 +1,4 @@
-"""Small, fail-closed Mattermost projection for the local coord operator.
+"""Legacy Mattermost test fixture, excluded from the production package.
 
 Mattermost is deliberately not a coord principal.  This adapter authenticates
 one configured Mattermost user, then uses the existing *local* operator path
@@ -31,7 +31,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from . import api
+from safeyolo.coord import api
+
 from .mattermost_actions import (
     ActionIngressConfig,
     CallbackHTTPResponse,

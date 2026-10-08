@@ -26,6 +26,7 @@ memmap2 = "0.9"
 num-bigint = "0.4"
 pkcs8 = { version = "0.10", features = ["std"] }
 percent-encoding = "2"
+pulldown-cmark = { version = "=0.13.4", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 rand = "=0.10.2"
 regex = "1"
