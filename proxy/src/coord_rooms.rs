@@ -630,7 +630,11 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         .first()
         .is_some_and(|kind| matches!(kind.as_str(), "completion-notes" | "proposals"))
     {
-        return crate::factory_proposals::run_operator(config, arguments).await;
+        let arguments = arguments
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        return crate::factory_proposals::run_operator(config, &arguments).await;
     }
     if arguments.first().is_some_and(|v| v == "mattermost") {
         return crate::mattermost::run(config, &arguments[1..]).await;

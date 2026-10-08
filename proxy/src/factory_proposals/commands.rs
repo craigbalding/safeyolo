@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{agent_api::coord::OperatorCoord, coord_tools::Client};
+use std::ffi::OsString;
 
 pub const HELP: &str = "safeyolo [--root ROOT] coord completion-notes ROOM SEQUENCE\nsafeyolo [--root ROOT] coord proposals observe ROOM SEQUENCE --verified FILE [--candidate INDEX] [--ledger FILE]\nsafeyolo [--root ROOT] coord proposals list|pending [--ledger FILE]\nsafeyolo [--root ROOT] coord proposals presented ROOM SEQUENCE [--ledger FILE] [--relay NAME]\nsafeyolo [--root ROOT] coord proposals outcome ROOM SEQUENCE [--ledger FILE]\nsafeyolo [--root ROOT] coord proposals reconcile ROOM [--since SEQUENCE] [--ledger FILE] [--relay NAME]\n\nThe agent CLI supports the same operations as safeyolo-coord completion-notes|proposals, using its scoped Agent API reader.\nEvery envelope is read from retained Coord data; there is no envelope-file or operator-attribution input.\n--verified is Relay's checked observation plus an explicit coverage result (null or an issue reference); candidate text is not verified evidence.\nPending returns frozen bodies for Relay to send unchanged through its existing Coord tool. No command publishes or applies a recommendation.\nReconcile retained history before pending after restart or unknown publication. Outcome requires an exact retained operator message.\nDefault ledger: the selected native data directory's coord/factory-proposals.json on the host, or $SAFEYOLO_COORD_DATA_DIR/factory-proposals.json in a guest (otherwise ~/.safeyolo/data/coord/factory-proposals.json).";
 
@@ -60,36 +61,47 @@ struct Options {
     relay: Option<String>,
     positional: Vec<String>,
 }
-fn options(command: &str, args: &[String]) -> Result<Options, Error> {
+fn options(command: &str, args: &[OsString]) -> Result<Options, Error> {
     let mut parsed = Options::default();
     let mut seen = BTreeSet::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
+        let arg = arg
+            .to_str()
+            .ok_or("proposal option, room or sequence must be UTF-8 text")?;
         if arg.starts_with("--") {
-            if !seen.insert(arg.clone()) {
+            if !seen.insert(arg) {
                 return Err("duplicate proposal option".into());
             }
             let value = args.next().ok_or("proposal option needs a value")?;
-            match arg.as_str() {
+            match arg {
                 "--ledger" if command != "completion-notes" => parsed.ledger = Some(value.into()),
                 "--verified" if command == "observe" => parsed.verified = Some(value.into()),
                 "--candidate" if command == "observe" => {
                     parsed.candidate = value
+                        .to_str()
+                        .ok_or("candidate index must be nonnegative")?
                         .parse()
                         .map_err(|_| "candidate index must be nonnegative")?
                 }
                 "--since" if command == "reconcile" => {
                     parsed.since = value
+                        .to_str()
+                        .ok_or("since sequence must be nonnegative")?
                         .parse()
                         .map_err(|_| "since sequence must be nonnegative")?
                 }
                 "--relay" if matches!(command, "presented" | "reconcile") => {
-                    parsed.relay = Some(bounded(value, "Relay name", 128)?)
+                    parsed.relay = Some(bounded(
+                        value.to_str().ok_or("Relay name must be UTF-8 text")?,
+                        "Relay name",
+                        128,
+                    )?)
                 }
                 _ => return Err("unknown option for this proposal command".into()),
             }
         } else {
-            parsed.positional.push(arg.clone());
+            parsed.positional.push(arg.to_owned());
         }
     }
     let count = match command {
@@ -207,18 +219,22 @@ async fn execute(
     }
 }
 
-async fn run(config: Option<&Path>, args: &[String]) -> Result<(), Error> {
+async fn run(config: Option<&Path>, args: &[OsString]) -> Result<(), Error> {
     if args.is_empty()
-        || args == ["--help"]
-        || args == ["proposals", "--help"]
-        || args == ["completion-notes", "--help"]
+        || matches!(args, [help] if help == "--help")
+        || matches!(args, [kind, help] if (kind == "proposals" || kind == "completion-notes") && help == "--help")
     {
         println!("{HELP}");
         return Ok(());
     }
     let (command, rest) = match args {
-        [kind, command, rest @ ..] if kind == "proposals" => (command.as_str(), rest),
-        [kind, rest @ ..] if kind == "completion-notes" => (kind.as_str(), rest),
+        [kind, command, rest @ ..] if kind == "proposals" => (
+            command
+                .to_str()
+                .ok_or("proposal command must be UTF-8 text")?,
+            rest,
+        ),
+        [kind, rest @ ..] if kind == "completion-notes" => ("completion-notes", rest),
         _ => return Err("usage: coord proposals --help".into()),
     };
     let options = options(command, rest)?;
@@ -251,9 +267,9 @@ async fn run(config: Option<&Path>, args: &[String]) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(&result?)?);
     Ok(())
 }
-pub async fn run_operator(config: &Path, args: &[String]) -> Result<(), Error> {
+pub async fn run_operator(config: &Path, args: &[OsString]) -> Result<(), Error> {
     run(Some(config), args).await
 }
-pub async fn run_agent(args: &[String]) -> Result<(), Error> {
+pub async fn run_agent(args: &[OsString]) -> Result<(), Error> {
     run(None, args).await
 }

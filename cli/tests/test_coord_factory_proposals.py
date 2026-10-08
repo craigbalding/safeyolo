@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 from pathlib import Path
 
 import pytest
@@ -741,6 +742,54 @@ def native_observation(*, task="issue:#500", material=False, **changes):
 
 def native_nomination(instance, *, sender="lens"):
     return instance.send(candidate_envelope()["body"], sender=sender)
+
+
+@pytest.mark.parametrize("agent", [True, False])
+def test_native_file_options_accept_unix_filenames(native_proposals, agent):
+    from tests.proxy_contracts.native_proposal_fixture import ROOM
+
+    sent = native_nomination(native_proposals)
+    parent = native_proposals.root.parent
+    def non_utf8(name):
+        return Path(os.fsdecode(os.fsencode(parent) + b"/" + name + b"-\xff.json"))
+
+    verified = non_utf8(b"verified")
+    control = parent / "verified-control.json"
+    source = json.dumps({"observation": native_observation(material=True), "coverage": None})
+    verified.write_text(source)
+    control.write_text(source)
+    def invoke(file, ledger):
+        return native_proposals.command(
+            "proposals", "observe", ROOM, str(sent["sequence"]), "--verified", file,
+            "--ledger", ledger, agent=agent)
+
+    # Identical bytes must be usable independently through both file options,
+    # without lossy conversion or a filename-based admission restriction.
+    expected = invoke(control, parent / "control-ledger.json")
+    actual = invoke(verified, parent / "verified-ledger.json")
+    assert actual == expected and actual[0]["status"] == "proposal_ready"
+    ledger = non_utf8(b"ledger")
+    assert invoke(control, ledger) == expected and ledger.is_file()
+    assert ledger.with_name(ledger.name + ".lock").is_file()
+    copied = parent / "copied-ledger.json"
+    copied.write_bytes(ledger.read_bytes())
+    for command in ("list", "pending"):
+        assert native_proposals.command("proposals", command, "--ledger", ledger, agent=agent) == \
+            native_proposals.command("proposals", command, "--ledger", copied, agent=agent)
+    assert len(native_proposals.command("proposals", "pending", "--ledger", ledger, agent=agent)) == 1
+    # Room/command names and numeric/Relay values remain textual. Invalid text
+    # fails before reading Coord or modifying the valid selected ledger.
+    bad = os.fsdecode(b"\xff")
+    before = ledger.read_bytes()
+    for args in (("proposals", bad),
+                 ("proposals", "observe", bad, str(sent["sequence"]), "--verified", verified),
+                 ("proposals", "observe", ROOM, bad, "--verified", verified),
+                 ("proposals", "observe", ROOM, str(sent["sequence"]), "--verified", verified,
+                  "--candidate", bad),
+                 ("proposals", "reconcile", ROOM, "--since", bad),
+                 ("proposals", "reconcile", ROOM, "--relay", bad)):
+        result = native_proposals.command(*args, "--ledger", ledger, agent=agent, check=False)
+        assert result.returncode != 0 and ledger.read_bytes() == before
 
 
 def test_native_quiet_covered_material_and_verified_input_boundary(native_proposals):

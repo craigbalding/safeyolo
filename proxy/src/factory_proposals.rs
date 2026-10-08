@@ -368,12 +368,12 @@ impl Ledger {
                 .mode(0o700)
                 .create(parent)?;
         }
-        let lock_path = parent.join(format!(
-            "{}.lock",
-            path.file_name()
-                .ok_or("ledger has no filename")?
-                .to_string_lossy()
-        ));
+        let mut lock_name = path
+            .file_name()
+            .ok_or("ledger has no filename")?
+            .to_os_string();
+        lock_name.push(".lock");
+        let lock_path = parent.join(lock_name);
         let lock = crate::host_platform::lock_host_state(&lock_path)?;
         let records = match read_json(path) {
             Err(error)
