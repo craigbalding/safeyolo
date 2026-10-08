@@ -119,8 +119,11 @@ the service mapping uses its hostname.
 
 ## Catalogue changes and removals
 
-Native init installs built-in definitions in `builtin-services`. Operator
-definitions in `services` replace builtins with the same service name.
+The native installer selects built-in definitions in `assets/services` and
+operator definitions in `data/services`, relative to the instance root.
+Standalone `safeyolo init` creates `builtin-services` and `services` instead.
+The two configured catalogue paths select the directories the proxy watches.
+Operator definitions replace builtins with the same service name.
 `services list` and `services show` read the running process's accepted catalogue.
 The existing watcher activates valid definition changes with policy. If a
 definition is malformed, the previous catalogue and policy remain active.

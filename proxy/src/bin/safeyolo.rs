@@ -90,6 +90,25 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             include_str!("../../config/native/config.toml")
         ),
     )?;
+    safeyolo_proxy::credentials::open(&root.join("data"))?;
+    std::fs::create_dir_all(root.join("builtin-services"))?;
+    std::fs::create_dir_all(root.join("services"))?;
+    for (name, source) in [
+        (
+            "builtin-services/gmail.yaml",
+            include_str!("../../../cli/src/safeyolo/services/gmail.yaml"),
+        ),
+        (
+            "builtin-services/slack.yaml",
+            include_str!("../../../cli/src/safeyolo/services/slack.yaml"),
+        ),
+        (
+            "builtin-services/minifuse.yaml",
+            include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
+        ),
+    ] {
+        write_new(name, source)?;
+    }
     println!("Initialized native instance: {}", root.display());
     Ok(())
 }
