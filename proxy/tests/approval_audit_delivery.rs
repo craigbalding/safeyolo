@@ -151,7 +151,7 @@ fn watch_pending(audit_path: &Path) -> Value {
         .arg("-c")
         .arg("import json,sys; from pathlib import Path; from safeyolo.core.audit_stream import scan_pending_approvals; print(json.dumps(scan_pending_approvals(Path(sys.argv[1]))[0]))")
         .arg(audit_path)
-        .env("PYTHONPATH", root.join("cli/src"))
+        .env("PYTHONPATH", root.join("tests/reference"))
         .output()
         .unwrap();
     assert!(

@@ -19,6 +19,9 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
+#[path = "safeyolo/credential_commands.rs"]
+mod credential_commands;
+
 fn check(path: &Path) -> Result<(), Error> {
     // The shared loader compiles the policy without evaluating a request or
     // persisting expiry changes. It therefore does not spend a live quota.
@@ -87,6 +90,25 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             include_str!("../../config/native/config.toml")
         ),
     )?;
+    safeyolo_proxy::credentials::open(&root.join("data"))?;
+    std::fs::create_dir_all(root.join("builtin-services"))?;
+    std::fs::create_dir_all(root.join("services"))?;
+    for (name, source) in [
+        (
+            "builtin-services/gmail.yaml",
+            include_str!("../../../cli/src/safeyolo/services/gmail.yaml"),
+        ),
+        (
+            "builtin-services/slack.yaml",
+            include_str!("../../../cli/src/safeyolo/services/slack.yaml"),
+        ),
+        (
+            "builtin-services/minifuse.yaml",
+            include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
+        ),
+    ] {
+        write_new(name, source)?;
+    }
     println!("Initialized native instance: {}", root.display());
     Ok(())
 }
@@ -286,10 +308,20 @@ async fn run() -> Result<(), Error> {
         return Ok(());
     }
     match arguments.as_slice() {
+        [command, help] if command == "ssh-proxy" && help == "--help" => {
+            println!("{}", safeyolo_proxy::ssh_proxy::HELP);
+            Ok(())
+        }
+        [command, host, port] if command == "ssh-proxy" => {
+            safeyolo_proxy::ssh_proxy::run(host, port.parse()?).await
+        }
         [command] if command == "init" => initialize(&root, &config),
         [help] if matches!(help.as_str(), "--help" | "help") => {
+            println!("{}", credential_commands::CREDENTIAL_HELP);
+            println!("{}", credential_commands::SERVICE_HELP);
             println!("{}", safeyolo_proxy::factory::HELP);
             println!("{}", safeyolo_proxy::operator_commands::HELP);
+            println!("{}", safeyolo_proxy::ssh_proxy::HELP);
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
             println!("{}", safeyolo_proxy::factory_proposals::HELP);
@@ -297,7 +329,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(
-                "safeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
             );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
@@ -323,6 +355,12 @@ async fn run() -> Result<(), Error> {
             native_config::read(Path::new(path))?;
             println!("Configuration is valid: {path}");
             Ok(())
+        }
+        [command, rest @ ..] if command == "credentials" => {
+            credential_commands::credentials(&config, rest).await
+        }
+        [command, rest @ ..] if command == "services" => {
+            credential_commands::services(&config, rest).await
         }
         [command, rest @ ..] if command == "test-context" => context_command(rest).await,
         [command, rest @ ..] if command == "coord" => {

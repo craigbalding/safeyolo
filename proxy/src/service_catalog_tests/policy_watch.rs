@@ -67,9 +67,9 @@ async fn authorization_during_publication() {
     settings.gateway_services_dir = Some(services.clone());
     std::fs::write(root.join("admin-token"), "owned-admin-token").unwrap();
     std::fs::create_dir(root.join("data")).unwrap();
-    std::fs::write(root.join("data/vault.key"), "owned-vault-passphrase").unwrap();
+    std::fs::write(root.join("data/credentials.key"), "owned-vault-passphrase").unwrap();
     Vault::unlock(
-        root.join("data/vault.yaml.enc"),
+        root.join("data/credentials.enc"),
         &Secret::new("owned-vault-passphrase"),
     )
     .unwrap()
@@ -329,9 +329,9 @@ async fn expiry_prune_and_admin_workflow() {
     settings.gateway_services_dir = Some(services.clone());
     std::fs::write(root.join("admin-token"), "owned-admin-token").unwrap();
     std::fs::create_dir(root.join("data")).unwrap();
-    std::fs::write(root.join("data/vault.key"), "owned-vault-passphrase").unwrap();
+    std::fs::write(root.join("data/credentials.key"), "owned-vault-passphrase").unwrap();
     Vault::unlock(
-        root.join("data/vault.yaml.enc"),
+        root.join("data/credentials.enc"),
         &Secret::new("owned-vault-passphrase"),
     )
     .unwrap()

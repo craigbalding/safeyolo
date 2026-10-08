@@ -1,260 +1,144 @@
 # SafeYolo
 
 SafeYolo runs coding agents in isolated Linux sandboxes with controlled network
-and service access. Give agents guest-local root to install tools, run browsers,
-start services, and debug code within the workspace and permissions you choose.
-They use ordinary command-line tools, libraries, and web services.
-
-Works with Claude Code, OpenAI Codex, and other coding agents.
+and service access. Give an agent a workspace and guest-local root to install
+tools, run browsers, start services and debug code within the permissions you
+choose. Works with Claude Code, OpenAI Codex, Pi and other coding agents.
 
 [![CI](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/craigbalding/safeyolo/badge)](https://scorecard.dev/viewer/?uri=github.com/craigbalding/safeyolo)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11693/badge)](https://www.bestpractices.dev/projects/11693)
 [![CodeQL](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml)
 
 ## What you get
 
-- **An isolated workspace:** hardware-backed Linux microVMs on macOS, rootless
-  gVisor on Linux. Each agent has its own sandbox and persistent home.
-- **Controlled network access:** sandboxes have no external network interface.
-  Traffic goes through SafeYolo's host proxy, with per-agent policies for hosts,
-  approvals, rate budgets, and service capabilities.
-- **Protected service credentials:** the service gateway keeps vaulted credentials
-  on the host and injects them into authorized requests. Credential guards
-  control where detected secrets can be sent.
-- **Visible work:** inspect live HTTP(S) traffic, open sandboxed browser and desktop
-  previews, and optionally share these operator views over Tailscale.
-- **Limits and evidence:** rate budgets, circuit breakers, and loop detection
-  contain runaway requests. Audit logs and queryable traffic records retain
-  scoped observations and test context, subject to capture and retention limits.
-  Agents can inspect their policy and block reasons to resolve problems.
+- A separate sandbox and persistent home for each agent: hardware-backed Linux
+  microVMs on Apple Silicon macOS, rootless gVisor on Linux.
+- Mediated network access with per-agent host policies, approvals, rate budgets
+  and service capabilities. Sandboxes have no external network interface.
+- Host-owned service credentials and scoped credential enforcement. A network
+  permission does not grant permission to send a credential.
+- Native operator commands for traffic, approvals, logs and diagnosis, with
+  scoped exports and capture/retention limits. Commander provides the Mac GUI.
+- Controlled labs, canonical Coord messaging and supervised factories.
 
-SafeYolo is **pre-v1**. Published host packages include the command-line
-interface (CLI) and Rust proxy.
-The first Rust release provides read-only traffic
-inspection and selected exports; [traffic scope and capture limits](docs/DEVELOPERS.md#live-traffic-inspection)
-describe what the view can show. Its microVM patterns are informed by
-[Shuru](https://github.com/superhq-ai/shuru/).
+SafeYolo is pre-v1. The current source product is native Rust, with a signed
+Swift VM helper on macOS. Python is used by repository tests and black-box
+instruments. Public release publication is stopped; published Python CLI
+packages describe the earlier product.
 
-## Quick Start
-
-For the native Rust product increment, use the [native bundle installation](docs/native-policy.md#install-and-start).
-It installs into a fresh instance root, then supports start, status, doctor and
-stop without a Python package environment. Build disposable bundles from source;
-public release publication is stopped. The published downloads below are the
-earlier Python CLI packages.
+## Quick start
 
 ### 1. Install on your host
 
-Use your normal account on the Mac or Linux machine that will run SafeYolo.
-Open the [latest successful release](https://github.com/craigbalding/safeyolo/releases/latest).
-Choose the **production** archive for your host. Current packages have these
-compatibility requirements; each archive's `manifest.json` records its minimum,
-which the installer checks before installation:
+Use your ordinary account on a supported Ubuntu or Apple Silicon Mac host.
+[Build a native bundle](docs/native-policy.md#build-a-native-bundle), or obtain
+an already prepared bundle for your host and selected source. The bundle's
+`package-info` states its platform, build profile and minimum glibc or macOS
+version. Verify a transferred archive against its supplied SHA-256 before
+extracting it. The installer checks its internal checksums and identities.
 
-| Host | Archive | Compatibility |
-| --- | --- | --- |
-| Apple Silicon macOS | `safeyolo-darwin-arm64-production.tar.gz` | macOS 14.0 or newer |
-| x86_64 Linux | `safeyolo-linux-amd64-production.tar.gz` | GNU libc (glibc) 2.39 or newer |
-| arm64 Linux | `safeyolo-linux-arm64-production.tar.gz` | glibc 2.39 or newer |
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
-The package installer requires uv and uses it to select or download Python
-3.12 or 3.13 and install dependencies. Cargo, Swift and a local C compiler are
-not needed to install the host package.
-
-Put uv's tool directory, normally `~/.local/bin`, on your `PATH` before
-installation. This command updates your shell configuration; open a new
-terminal after running it:
+Follow [native installation](docs/native-policy.md#install-and-start).
+This arm64 Linux example uses an unpacked production bundle and a fresh root:
 
 ```sh
-uv tool update-shell
-```
-
-Download the archive and `SHA256SUMS` from **the same release** into a new
-directory. In a host terminal, change to that directory. Run only the commands
-for your platform below. Run the checksum command first: it must print your
-archive's filename followed by `: OK`. If the command fails or does not print
-that result, stop. Do not extract or install the archive.
-
-Installation replaces any existing uv `safeyolo` tool environment. On macOS,
-it also installs the helper and guest terminal utility in `~/.safeyolo/bin/`.
-
-**Apple Silicon macOS** — verify:
-
-```sh
-grep ' safeyolo-darwin-arm64-production.tar.gz$' SHA256SUMS | shasum -a 256 --check -
-```
-
-After the checksum reports `OK`, extract and install:
-
-```sh
-tar -xzf safeyolo-darwin-arm64-production.tar.gz
-./safeyolo-darwin-arm64-production/install.sh
-```
-
-**x86_64 Linux** — verify:
-
-```sh
-grep ' safeyolo-linux-amd64-production.tar.gz$' SHA256SUMS | sha256sum --check -
-```
-
-After the checksum reports `OK`, extract and install:
-
-```sh
-tar -xzf safeyolo-linux-amd64-production.tar.gz
-./safeyolo-linux-amd64-production/install.sh
-```
-
-**arm64 Linux** — verify:
-
-```sh
-grep ' safeyolo-linux-arm64-production.tar.gz$' SHA256SUMS | sha256sum --check -
-```
-
-After the checksum reports `OK`, extract and install:
-
-```sh
-tar -xzf safeyolo-linux-arm64-production.tar.gz
-./safeyolo-linux-arm64-production/install.sh
-```
-
-If the installer fails, stop and resolve its reported error. After a successful
-installation, confirm that the CLI loads:
-
-```sh
+./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo-native"
+export PATH="$HOME/.safeyolo-native/bin:$PATH"
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo-native"
 safeyolo --help
+safeyolo --version
 ```
 
-Expected result: SafeYolo's command help appears. For debug profiles, upgrades
-and package identity, see the [host package reference](docs/host-packages.md).
+Use `linux-amd64` for x86_64 Ubuntu or `darwin-arm64` for Apple Silicon.
+Installation creates configuration, trust and private tokens. It requires no
+Python, wheel, virtual environment or uv tool installation. Choose a fresh
+root; this product does not convert an earlier Python installation's state.
+If installation fails, resolve its named error before retrying.
 
-**Before adding an agent**, complete [guest and host runtime setup](cli/README.md#bootstrap-and-individual-phases).
-Host packages do not include guest images or configure the sandbox runtime.
-Guest builds currently need a source checkout and these platform prerequisites:
-
-| Host | Guest/runtime setup prerequisites |
-| --- | --- |
-| macOS | Command Line Tools, Lima, and tmux. For Homebrew, use `brew install lima tmux`. The host package already installs the VM helper. |
-| Linux | Bootstrap checks guest build dependencies and configures gVisor. If packages are missing, it prints an installation command and stops. |
-
-**Source installation is an alternative.** For contributor builds and their
-compiler requirements, see [source installation](cli/README.md#installation).
-For an explicit return to the selected prior Python package, see
-[package rollback](cli/README.md#return-to-the-prior-python-package).
+Before starting an agent, supply the
+[host runtime and prepared guest inputs](docs/native-policy.md#guest-prerequisites)
+for its platform. The package supplies native helpers and setup scripts;
+platform images/rootfs are separate. Pass their directory to installation with
+`--platform-assets DIRECTORY`. For source installation, the repository's
+`./install.sh` delegates to the same installer and accepts the same inputs.
 
 ### 2. Choose your agent and workspace
 
-Choose an existing project directory that you own. Replace `~/code` below with
-that directory: the agent can read and change its files through `/workspace`.
-The example names the agent `work`.
-
-Choose the host setup before running the command. Host scripts execute with
-your host permissions and can copy files into the agent's readable home.
-
-| Setup | Authentication and result |
-| --- | --- |
-| `@claude` | Copies your Claude Code authentication and selected extensions into the agent, then launches Claude Code. |
-| `@codex` | Launches Codex without copying host credentials. Complete the [first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login) after its first run installs the CLI. |
-| `@mise-shell` | Opens a shell with mise for installing your tools. |
-
-Claude and Codex setup now require the native Coord host executable and matching
-Linux guest assets from the [native installation](docs/native-policy.md#install-and-start).
-When using the retained Python CLI below, set
-`SAFEYOLO_COORD_EXECUTABLE="$HOME/.safeyolo-native/bin/safeyolo-coord"` in its
-environment. Native host commands supply this path automatically.
-
-Codex keeps its login inside the agent. After login, run
-`/home/agent/.safeyolo/safeyolo-coord codex-state adopt` inside that agent before
-reapplying its setup. This records credential provenance without copying host
-credentials.
-
-The example uses Claude Code; substitute another alias if needed:
+Choose an existing project that you own. The agent can read and change that
+project through `/workspace`. Host setup scripts run with your host permissions
+and can copy selected files into its home.
 
 ```sh
-safeyolo agent add work ~/code --host-script @claude
+safeyolo agent create work --workspace "$HOME/code" --host-script "$SAFEYOLO_CONFIG_DIR/assets/contrib/claude-host-setup.sh"
+safeyolo agent start work
 ```
 
-After first-run tool installation and any required login, you should reach the
-agent's terminal. Ask it to list `/workspace`; it should see the project you
-selected. Toolchains and agent state in `/home/agent` persist across restarts.
+Choose `codex-host-setup.sh`, `pi-host-setup.sh` or `mise-shell-host-setup.sh`
+in the same installed directory for those tools. Claude setup copies selected
+host authentication and extensions. Ordinary Codex setup requires its
+[first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login);
+it does not copy host login credentials. Ask the agent to list `/workspace`
+to check the selected project. Tools and agent state under `/home/agent` persist.
 
-### 3. Handle access requests
+### 3. Review access requests
 
-When a request needs your approval, open a second terminal **on the host**:
+Open a second host terminal with the same instance selection:
 
 ```sh
-safeyolo watch
+safeyolo inspect
 ```
 
-Review the agent, destination or service capability, and requested credential use.
-You can authorize, deny, or defer the request. See [access configuration](docs/CONFIGURATION.md#policy-cli-commands)
-for host policies and [service access](cli/README.md#service-gateway)
-for binding credentials to specific capabilities.
+Select the instance and agent, inspect the request, then make its scoped
+approval or denial. Direct `approvals` commands use the same native owners.
+See [operator commands](docs/native-operator.md) and
+[policy configuration](docs/CONFIGURATION.md#policy).
 
 ## Everyday commands
 
-The examples above use the retained Python CLI. For the native host path,
-complete the [native installation and guest prerequisites](docs/native-policy.md#install-and-start)
-in a fresh `$HOME/.safeyolo-native` instance. The installer does not change
-`PATH` or convert the earlier Python agent. From a trusted checkout outside
-agent-writable shares, create a native `work` agent in an existing owned `~/code`
-workspace. The host script runs with your host permissions:
-
-```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create work --workspace ~/code --host-script "$PWD/contrib/claude-host-setup.sh"
-```
-
-Run these commands as the same host account against that native instance.
+These commands use the root and PATH selected above. Use `--root ROOT` before
+the command to select another installed instance.
 
 | Task | Command |
 | --- | --- |
-| List agents and their state | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native status` |
-| Start a persistent agent run | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent start work` |
-| Reconnect to its terminal | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent attach work` |
-| Open a separate shell in a running sandbox | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent shell work` |
-| Stop an agent | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native agent stop work` |
-| Diagnose a setup or runtime problem | `~/.safeyolo-native/bin/safeyolo --root ~/.safeyolo-native doctor` |
+| Read proxy and agent state | `safeyolo status` |
+| Reconnect to the agent terminal | `safeyolo agent attach work` |
+| Open a separate shell | `safeyolo agent shell work` |
+| Open the running desktop | `safeyolo agent present work` |
+| Stop the agent | `safeyolo agent stop work` |
+| Diagnose runtime state | `safeyolo doctor` |
+| Stop the proxy and its Coord runtime | `safeyolo stop` |
 
-To add another agent, choose a different name and an existing workspace:
-
-```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create side-project --workspace ~/side-project --host-script "$PWD/contrib/claude-host-setup.sh"
-```
-
-For persistent background runs and reconnecting, see [agent launchers](docs/agent-launchers.md).
-For changing a saved folder or memory allocation, see [agent configuration](docs/CONFIGURATION.md#workspace-and-memory).
-The [CLI reference](cli/README.md) covers traffic inspection, previews, logs, and
-other commands. `safeyolo doctor` checks reported prerequisites and runtime state;
-[security verification](docs/security-verification.md) covers isolation testing.
+Stopping the proxy leaves agents running. Stop each disposable agent separately.
+[Agent launchers](docs/agent-launchers.md) describe persistent terminals,
+foreground runs, sandbox-only starts and explicit supervision.
+[Configuration](docs/CONFIGURATION.md) describes workspace, memory, mounts,
+policy, trust and operator listeners. The [CLI guide](cli/README.md) links each
+command family to its current operating instructions.
 
 ## Optional workflows
 
 | Need | Documentation |
 | --- | --- |
-| Guided tour | Run `safeyolo demo` on the host, with `safeyolo watch` in a second host terminal. |
-| Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging tools](docs/agent-debugging.md) |
-| Coordinating several agents | [Supervised factories](docs/factories.md), [coord operations](docs/coord-operations.md), and the [Mattermost adapter](docs/coord-mattermost.md) |
-| A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md), including `@codex-coord` |
-| Kali, Alpine, or another guest image | [Custom rootfs guide](contrib/ROOTFS_SCRIPT_GUIDE.md), [Kali example](contrib/kali-pentest/build-kali-rootfs.sh), and [Alpine example](contrib/alpine-minimal/build-alpine-rootfs.sh) |
-| macOS work that needs a physical Mac | [Contained SSH access with Seatbelt](contrib/macos-seatbelt-agent/README.md) |
-| SafeYolo inside an existing Linux agent | [Nested integration lab](docs/nested-linux-lab.md) |
+| Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging](docs/agent-debugging.md) |
+| Coordinating agents | [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
+| A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |
+| Kali, Alpine or another rootfs | [Custom rootfs preparation](contrib/ROOTFS_SCRIPT_GUIDE.md) |
+| Contained physical Mac access | [Seatbelt SSH account](contrib/macos-seatbelt-agent/README.md) |
+| SafeYolo inside a Linux agent | [Nested integration lab](docs/nested-linux-lab.md) |
+| Publish approved public output | [Dispatch](docs/dispatch-generation.md) |
 
 ## Trust model and reference
 
-The host and operator are trusted. SafeYolo constrains agent actions but does
-not eliminate prompt injection, protect an already compromised host, or replace
-an external service's authentication. The service-vault guarantee is separate
-from authentication that a host script intentionally copies into the agent.
-See the [security model](SECURITY.md) for the boundaries and limitations.
+The host and operator are trusted; agent code may be compromised. SafeYolo
+constrains agent actions, but cannot eliminate prompt injection, protect an
+already compromised host or replace service authentication. Host scripts that
+intentionally copy authentication into an agent have a different boundary from
+host-vault service credentials. See [the security model](SECURITY.md).
 
-- [Configuration](docs/CONFIGURATION.md)
-- [Current proxy architecture](docs/DEVELOPERS.md#architecture-overview) and [platform runtimes](docs/ARCHITECTURE.md#sandbox-runtime-and-networking)
-- [Network routing and agent identity](docs/networking-vsock-uds.md)
-- [Historical Python addon reference](docs/ADDONS.md)
-- [Historical Python proxy architecture](docs/ARCHITECTURE.md#historical-python-policy-model)
+- [Configuration](docs/CONFIGURATION.md) and [native settings](docs/native-settings.md)
+- [Proxy architecture](docs/DEVELOPERS.md#architecture-overview) and [platform runtimes](docs/ARCHITECTURE.md#sandbox-runtime-and-networking)
+- [Network routing and identity](docs/networking-vsock-uds.md)
+- [Historical Python addons](docs/ADDONS.md)
 - [Coord completion notes](docs/coord-completion-notes.md) and [factory proposals](docs/factory-proposals.md)
-- [Dispatch generation](docs/dispatch-generation.md)
 - [Contributing](docs/DEVELOPERS.md)
 
 ## License

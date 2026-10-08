@@ -35,6 +35,7 @@ import stat
 import subprocess
 import sys
 import threading
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -135,71 +136,35 @@ def _git_identity(path: Path) -> dict[str, Any]:
     return {"root": None, "revision": None, "dirty": None}
 
 
-def _interpreter_from_shebang(executable: Path) -> Path | None:
-    """Find a Python interpreter for a script launcher, when it is explicit."""
-    try:
-        first = executable.read_text(encoding="utf-8", errors="replace").splitlines()[0]
-    except (OSError, IndexError):
-        return None
-    if not first.startswith("#!"):
-        return None
-    fields = first[2:].split()
-    if not fields:
-        return None
-    if Path(fields[0]).name == "env" and len(fields) > 1:
-        selected = shutil.which(fields[1])
-        return Path(os.path.abspath(selected)) if selected else None
-    interpreter = Path(fields[0])
-    return Path(os.path.abspath(os.fspath(interpreter))) if interpreter.is_file() else None
-
-
 def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
-    """Identify the installed CLI and, where possible, its loaded package."""
-    executable = _resolve_executable(
-        value or os.environ.get("SAFEYOLO_CLI") or "safeyolo", "SafeYolo CLI"
-    )
+    """Identify a native installation; refuse a Python or shell product fallback."""
+    executable = _resolve_executable(value or os.environ.get("SAFEYOLO_CLI") or "safeyolo", "SafeYolo CLI")
+    with executable.open("rb") as stream:
+        magic = stream.read(4)
+    if magic not in {b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe"}:
+        raise SmokeError("selected CLI is not a native executable; Python/script fallback is refused")
+    root = executable.resolve().parent.parent
+    try:
+        fields = dict(line.split("=", 1) for line in (root / "package-info").read_text().splitlines())
+    except (OSError, ValueError) as exc:
+        raise SmokeError("selected native CLI has no usable installed package-info") from exc
+    revision, profile = fields.get("source_commit"), fields.get("profile")
+    if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None or profile not in {"production", "debug"}:
+        raise SmokeError("installed package has no immutable source/profile identity")
     version = _version(executable, ["--version"], "SafeYolo CLI")
-    result: dict[str, Any] = {
-        "path": str(executable),
-        "sha256": _sha256(executable),
-        "version": version,
-        "source": _git_identity(executable.parent),
-    }
-    interpreter = _interpreter_from_shebang(executable)
-    if interpreter is not None:
-        result["interpreter"] = str(interpreter)
-        package = _run(
-            [
-                str(interpreter),
-                "-I",
-                "-c",
-                "import safeyolo; print(safeyolo.__file__ or '')",
-            ],
-            timeout=5,
-        )
-        if package.returncode == 0 and package.stdout.strip():
-            package_location = Path(package.stdout.strip()[-OUTPUT_LIMIT:]).expanduser()
-            try:
-                package_path = package_location.resolve(strict=True)
-            except (FileNotFoundError, OSError) as exc:
-                raise SmokeError(
-                    f"selected CLI interpreter reported an unusable safeyolo package: {package_location}"
-                ) from exc
-            result["package_location"] = str(package_path)
-        else:
-            raise SmokeError("selected CLI interpreter could not import an installed safeyolo package")
-    else:
-        raise SmokeError("selected CLI launcher has no usable Python shebang interpreter")
-    return result
+    if not version.startswith("safeyolo ") or f"commit={revision} profile={profile}" not in version:
+        raise SmokeError("native CLI identity differs from installed package-info")
+    return {"path": str(executable), "sha256": _sha256(executable), "version": version,
+            "package_root": str(root), "source_revision": revision, "profile": profile,
+            "source": _git_identity(executable.parent)}
 
 
 def _installed_rust_binary(cli_path: str | os.PathLike[str]) -> tuple[Path, dict[str, Any]]:
-    """Select the native binary beside the package loaded by the installed CLI."""
+    """Select the native proxy in the same verified installed layout."""
     cli = _cli_identity(cli_path)
-    package_file = Path(cli["package_location"])
-    if package_file.name != "__init__.py" or package_file.parent.name != "safeyolo":
-        raise SmokeError("installed CLI did not load the safeyolo package")
-    binary, _ = _rust_identity(package_file.parent / "bin" / "safeyolo-proxy")
+    binary, identity = _rust_identity(Path(cli["package_root"]) / "bin/safeyolo-proxy")
+    if f"commit={cli['source_revision']} profile={cli['profile']}" not in identity["version"]:
+        raise SmokeError("installed proxy source/profile differs from its CLI")
     return binary, cli
 
 
@@ -208,6 +173,9 @@ def _rust_identity(value: str | os.PathLike[str] | None) -> tuple[Path, dict[str
     executable = _resolve_executable(
         value or os.environ.get("SAFEYOLO_RUST_PROXY"), "Rust proxy executable"
     )
+    with executable.open("rb") as stream:
+        if stream.read(4) not in {b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe"}:
+            raise SmokeError("selected proxy is not a native executable; script fallback is refused")
     version = _version(executable, ["--version"], "Rust proxy executable")
     if version.split(maxsplit=1)[0] != "safeyolo-proxy":
         raise SmokeError(f"Rust proxy executable has unexpected identity: {version[:200]}")
@@ -267,7 +235,22 @@ def _absolute_path(value: str, cwd: Path) -> Path:
 
 def _native_config(path: Path, cwd: Path) -> dict[str, Any]:
     """Read native JSON and expose paths as resolved inspection metadata."""
-    native = _read_json(path, "native Rust configuration")
+    if path.suffix == ".toml":
+        try:
+            native = tomllib.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise SmokeError(f"native TOML configuration is missing or malformed: {path}") from exc
+        cwd = path.parent
+        for key, default in (("policy_file", "policy.toml"), ("readiness_file", "data/ready.json"),
+                             ("admin_api_token_file", "data/admin_token"), ("flow_store_db_path", "logs/flows.sqlite3"),
+                             ("circuit_state_file", "data/circuits.json")):
+            native[key] = str(_absolute_path(native.get(key, default), cwd))
+        native.setdefault("listeners", [])
+        for key in ("upstream_ca_file", "gateway_services_dir", "gateway_builtin_services_dir"):
+            if native.get(key):
+                native[key] = str(_absolute_path(native[key], cwd))
+    else:
+        native = _read_json(path, "native Rust configuration")
     listeners = native.get("listeners")
     if not isinstance(listeners, list):
         raise SmokeError("native Rust configuration listeners must be an array")
@@ -341,9 +324,11 @@ def _proxy_status(socket_path: str, url: str) -> int:
 
 
 def _process_start_token(process_id: int) -> str | None:
-    """Load the installed identity helper only when inspecting a process."""
-    from safeyolo.runtime_identity import process_start_token
-
+    """Observe native receipts without importing a product Python package."""
+    if __package__:
+        from .harness.process_identity import process_start_token
+    else:
+        from harness.process_identity import process_start_token
     return process_start_token(process_id)
 
 
@@ -416,7 +401,7 @@ def _process_executable(pid: int) -> Path | None:
 
 def _read_receipt(config_dir: Path) -> dict[str, Any] | None:
     """Read the CLI-owned native receipt, preserving stale records for diagnosis."""
-    path = config_dir / "data" / "proxy-rust.json"
+    path = config_dir / "data" / "proxy-process.json"
     if not path.exists():
         return None
     return _read_json(path, "Rust process receipt")
@@ -453,6 +438,20 @@ def _socket_accepting(path: Path, timeout: float = 0.5) -> bool:
     return True
 
 
+def _process_command_line(pid: int) -> list[bytes]:
+    """Observe the running proxy's exact configuration argument."""
+    if sys.platform.startswith("linux"):
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+        except OSError as exc:
+            raise SmokeError("cannot inspect the selected proxy's command") from exc
+    if __package__:
+        from .harness.macos_process_argv import process_argv
+    else:
+        from harness.macos_process_argv import process_argv
+    return process_argv(pid)
+
+
 def _runtime_observation(
     config_dir: Path,
     native: dict[str, Any],
@@ -472,7 +471,7 @@ def _runtime_observation(
     pid = receipt.get("pid")
     if type(pid) is not int or pid <= 1:
         raise SmokeError("Rust process receipt has an invalid pid")
-    recorded_token = receipt.get("start_token")
+    recorded_token = receipt.get("token")
     if not isinstance(recorded_token, str) or not recorded_token:
         raise SmokeError("Rust process receipt has no process start token")
     if not _pid_alive(pid):
@@ -480,22 +479,12 @@ def _runtime_observation(
     observed_token = _process_start_token(pid)
     if observed_token is None or observed_token != recorded_token:
         raise SmokeError(f"Rust process receipt does not own pid {pid}")
-    recorded_config = receipt.get("config_file")
-    if not isinstance(recorded_config, str) or not Path(recorded_config).is_absolute():
-        raise SmokeError("Rust process receipt config_file must be absolute")
-    if Path(recorded_config).resolve() != config_path.resolve():
-        raise SmokeError("Rust process receipt config_file does not match supplied native config")
-    recorded_working_directory = receipt.get("working_directory")
-    if not isinstance(recorded_working_directory, str) or not Path(recorded_working_directory).is_absolute():
-        raise SmokeError("Rust process receipt working_directory must be absolute")
-    if Path(recorded_working_directory).resolve() != working_directory.resolve():
-        raise SmokeError("Rust process receipt working_directory does not match smoke working directory")
-    readiness_value = receipt.get("readiness_file")
-    if not isinstance(readiness_value, str) or not Path(readiness_value).is_absolute():
-        raise SmokeError("Rust process receipt readiness_file must be absolute")
-    readiness_path = Path(readiness_value).resolve()
-    if readiness_path != Path(native["readiness_file"]).resolve():
-        raise SmokeError("Rust process receipt readiness_file does not match supplied native config")
+    if config_path.resolve() != (config_dir / "config.toml").resolve():
+        raise SmokeError("selected runtime configuration does not belong to this native instance")
+    argv = _process_command_line(pid)
+    if b"--config" not in argv or argv[-1] == b"--config" or argv[argv.index(b"--config") + 1] != os.fsencode(config_path.resolve()):
+        raise SmokeError("running proxy command does not use the selected native configuration")
+    readiness_path = Path(native["readiness_file"])
     marker = _read_json(readiness_path, "Rust readiness marker")
     _validate_marker(marker, pid, len(native["listeners"]))
     actual = _process_executable(pid)
@@ -535,7 +524,7 @@ def _runtime_observation(
         "status": "ready",
         "pid": pid,
         "actual_executable": str(actual) if actual else None,
-        "receipt": receipt,
+        "receipt": {**receipt, "start_token": recorded_token},
         "readiness": marker,
         "listeners": listeners,
         "authenticated_runtime_identity": identity,
@@ -821,16 +810,15 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     """Prove the installed host package, traffic effects and owned stop."""
     config_dir = _config_dir(args.config_dir)
     _require_disposable(config_dir)
-    if Path(args.rust_config).expanduser().resolve() != config_dir / "data/native.json":
-        raise SmokeError("native smoke must observe the current CLI-generated data/native.json")
+    if Path(args.rust_config).expanduser().resolve() != config_dir / "config.toml":
+        raise SmokeError("native smoke must observe the installed config.toml")
     cwd = Path(args.working_directory).expanduser().resolve()
     candidate_path, cli = _installed_rust_binary(args.cli or "safeyolo")
     supplied, candidate = _rust_identity(args.rust_bin or candidate_path)
     if supplied.resolve() != candidate_path.resolve():
         raise SmokeError("package smoke must use the native binary installed beside its CLI")
-    stamp = _read_json(Path(cli["package_location"]).parent / "_build_identity.json", "installed wheel identity")
-    if not args.install_commit or stamp.get("source_revision") != args.install_commit:
-        raise SmokeError("installed wheel source revision does not match --install-commit")
+    if not args.install_commit or cli["source_revision"] != args.install_commit:
+        raise SmokeError("installed native source revision does not match --install-commit")
     report = _base_report(cli, candidate, _substrate_identity(config_dir))
     report["source_revision"] = args.install_commit
     report["limitations"] = ["No guest was booted. Guest isolation and hardware virtualization remain unproved."]
@@ -878,22 +866,24 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             finally:
                 connection.close()
         origin.requests.clear()
-        for action, endpoint in (("add", endpoints[0]), ("deny", endpoints[1])):
-            result = _run([cli_path, "policy", "host", action, endpoint], env=env, cwd=cwd)
-            if result.returncode:
-                raise SmokeError(f"installed policy host {action} failed (exit {result.returncode})")
+        import tomlkit
+        policy = config_dir / "policy.toml"
+        document = tomlkit.parse(policy.read_text())
+        for decision, endpoint in (("allow", endpoints[0]), ("deny", endpoints[1])):
+            document["hosts"][endpoint] = {"egress": decision}
+        policy.write_text(tomlkit.dumps(document))
         started = True  # A failed start can still have spawned an owned process.
-        result = _run([cli_path, "start", "--wait"], env=env, cwd=cwd, timeout=45)
+        result = _run([cli_path, "--root", str(config_dir), "start"], env=env, cwd=cwd, timeout=45)
         if result.returncode:
             raise SmokeError(f"installed native start failed (exit {result.returncode}): "
                              f"{result.stdout.strip()} {result.stderr.strip()}")
-        native_path = config_dir / "data/native.json"
+        native_path = config_dir / "config.toml"
         native = _native_config(native_path, cwd)
         runtime = _runtime_observation(config_dir, native, candidate_path,
                                        config_path=native_path, working_directory=cwd,
                                        require_running=True, require_authenticated_identity=True)
         report["runtime"] = runtime
-        listeners = _agent_map(config_dir)
+        listeners = [{"agent_id": row["agent_id"], "path": row["socket_path"]} for row in native["listeners"]]
         selected = next((row for row in listeners if row["agent_id"] == args.agent), None)
         if selected is None:
             raise SmokeError("package smoke agent has no registered installed UDS listener")
@@ -961,11 +951,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cli", help="installed safeyolo executable (defaults to SAFEYOLO_CLI/PATH)")
     parser.add_argument("--rust-bin", help="supplied safeyolo-proxy executable")
     parser.add_argument("--rust-config", required=True,
-                        help="native JSON; smoke verifies the CLI-generated data/native.json")
+                        help="installed native config.toml")
     parser.add_argument("--config-dir", help="SafeYolo config directory (required and disposable for --mode smoke)")
     parser.add_argument("--working-directory", default=os.getcwd(), help="working directory used for relative native paths")
     parser.add_argument("--agent", help="agent name for the UDS health probe")
-    parser.add_argument("--install-commit", help="exact source revision stamped in the installed wheel")
+    parser.add_argument("--install-commit", help="exact source revision in installed package-info")
     parser.add_argument("--http-port", type=int, default=0,
                         help="current package smoke's loopback HTTP fixture port (default: ephemeral)")
     parser.add_argument("--output", type=Path, required=True, help="JSON evidence output outside the checkout")

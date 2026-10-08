@@ -22,10 +22,11 @@ The instance policy file is the source of truth for durable permissions.
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
   traffic-view implementations.
-- `cli/src/safeyolo/` contains the Python CLI, host lifecycle, shared policy
-  compiler, and platform-specific sandbox launchers.
-- `cli/src/safeyolo/templates/` contains initial policy, addon settings, and
-  named lists consumed by native policy loading.
+- `proxy/src/bin/` contains the native host CLI and guest Coord entry.
+- `cli/src/safeyolo/` retains shell boot scripts, launchers, skills, services
+  and policy templates assembled into native bundles.
+- `tests/reference/` contains Python protocol/storage references used only
+  by repository fixtures. No Python package or CLI is installed.
 - `tests/proxy_contracts/` contains native process/protocol contracts.
   Completed comparator receipts and their source references remain in
   [the historical state inventory](state-compatibility.md).
@@ -139,11 +140,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check (no auth required) |
-| GET | `/stats` | Aggregated addon stats |
-| GET | `/modes` | Current addon modes |
-| PUT | `/modes` | Set all addon modes |
-| GET | `/plugins/{addon}/mode` | Get specific addon mode |
-| PUT | `/plugins/{addon}/mode` | Set specific addon mode |
+| GET | `/stats` | Native control and runtime counters |
 | GET | `/admin/policy/baseline` | Get baseline policy |
 | PUT | `/admin/policy/baseline` | Update baseline policy (see note below) |
 | POST | `/admin/policy/baseline/approve` | Add credential approval |
@@ -159,6 +156,11 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 > comments as guidance should prefer incremental local updates or regenerate from
 > a canonical source.
 
+On the host, supply the selected native instance's Admin URL and token.
+This example uses a credential fingerprint; service authorization and risk
+approval remain separate. The native product does not expose addon-mode
+authoring; use the policy check/show/apply operations.
+
 **Add an approval via API:**
 ```bash
 curl -X POST "http://localhost:9090/admin/policy/baseline/approve" \
@@ -166,32 +168,21 @@ curl -X POST "http://localhost:9090/admin/policy/baseline/approve" \
   -H "Content-Type: application/json" \
   -d '{
     "destination": "api.openai.com",
-    "credential": "sk-proj-abc123",
+    "cred_id": "hmac:EXACT_REPORTED_FINGERPRINT",
     "tier": "explicit"
   }'
 ```
 
-**Python client:**
-```python
-from safeyolo.api import AdminAPI
-
-api = AdminAPI(base_url="http://localhost:9090", token="...")
-
-# Get stats
-stats = api.stats()
-print(stats["credential-guard"]["violations_total"])
-
-# Get current modes
-modes = api.get_modes()
-print(modes)
-
-# Change mode
-api.set_mode("credential-guard", "warn")
-```
+Use the installed native commands for policy, credentials, services and
+operator diagnosis. The retired Python `safeyolo.api` client is not shipped.
+[Native policy](native-policy.md), [credentials](native-credentials.md) and
+[operator commands](native-operator.md) describe the current operations and
+their authority. CLI and Commander use the authenticated Admin API; guest
+requests use the separately authenticated Agent API and listener identity.
 
 ## Development Setup
 
-For host installation and retrying an individual bootstrap phase, use the
+For fresh native host installation and prepared guest inputs, use the
 [installation reference](../cli/README.md#installation).
 
 The [contract notes](../tests/proxy_contracts/CONTRACT.md) retain historical
@@ -217,17 +208,12 @@ full suite or a product installation. Installed guest compositions use the
 
 ### Native proxy development
 
-The CLI uses Rust and generates a native JSON configuration under
-`data/native.json` for each initialized instance. Existing
-`proxy.backend: rust` settings remain valid; this package rejects a Python
-backend setting and never falls back after a Rust launch failure. Explicit
-rollback selects a pinned prior Python package. Native listeners include the
-supplied JSON entries and the CLI's agent-map sockets. See
-[proxy parity](proxy-parity.md) for current scope.
-
-`./install.sh` builds `proxy/target/release/safeyolo-proxy` with Cargo and
-installs a wheel containing that native executable. The installer does
-not impose the factory host's disk-space reserve. The wheel keeps the Python CLI.
+The installed CLI reads `config.toml` and `policy.toml` from its selected
+root. It selects that root's native binaries, helper assets and process records.
+It does not generate `native.json`, select an old backend, install a wheel or
+fall back to Python. Source `install.sh` and the unpacked bundle use the same
+[native installer](native-policy.md#install-and-start). Builds remain separate
+from an operator's ordinary install/start journey.
 
 ### Cargo disk-space guard and target retirement
 
@@ -316,92 +302,38 @@ descriptors. A rejected candidate keeps its target until it is repaired, superse
 or explicitly retired with its receipt. Source, fixtures, patches and review
 reports remain untouched.
 
-Run the following on the host from the checkout root, with the Rust toolchain,
-tmux, and an initialized CLI configuration. Stop the current backend before
-changing selection. These commands change the currently selected CLI instance
-and stop its proxy. This example copies the default policy into development
-state because native loads can remove expired TOML entries from disk. If your
-policy is elsewhere, use that path as the copy source.
+### Disposable native development instance
+
+Use the [native bundle build and installation](native-policy.md#build-a-native-bundle)
+from a clean committed checkout. Choose a fresh development root; leave the
+operator's live instance intact. The bundle requires matching host and Linux
+guest artifacts, private tmux runtime, and the signed helper on macOS. Prepared
+platform images are required before a guest start. Internal JSON configuration
+remains available to embedded tests; it is not the installed CLI's settings
+format or a backend-selection adapter.
+
+After installing into `$HOME/sy-development`, run from a host terminal:
 
 ```sh
-safeyolo stop
-cargo build --manifest-path proxy/Cargo.toml
-export SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy"
-mkdir -p .native-dev
-cp ~/.safeyolo/policy.toml .native-dev/policy.toml
+"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" start
+"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" status
+"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" doctor
+"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" stop
 ```
 
-Create `.native-dev/proxy.json` with a listener identity and paths for this
-development instance. This example supplies a local Unix socket; it does not
-provision or attach a sandbox:
+Start waits for native readiness. Status and doctor use the owned process
+record and distinguish process, endpoint, sandbox and command state. Startup
+success does not prove a working guest or policy scenario. Stop shuts down the
+proxy and its Coord runtime; stop each disposable agent separately.
+The Admin client reads the configured private token and the live readiness
+port, including an automatically assigned port. Stale ownership or an
+unavailable endpoint fails visibly. Token-file changes require a restart.
 
-```json
-{
-  "listeners": [{"agent_id": "development", "socket_path": ".native-dev/agent.sock"}],
-  "policy_file": ".native-dev/policy.toml",
-  "readiness_file": ".native-dev/ready.json",
-  "event_log": ".native-dev/diagnostics.jsonl",
-  "audit_log_path": ".native-dev/audit.jsonl",
-  "flow_store_db_path": ".native-dev/flows.sqlite3"
-}
-```
-
-The [native configuration](../proxy/src/config.rs) defines additional fields,
-including TLS and an optional authenticated operator listener. Relative paths
-inside the JSON resolve from the directory where the CLI is launched. Keep that
-working directory consistent across starts; JSON paths do not expand `~`.
-
-In your existing CLI `config.yaml` (normally `~/.safeyolo/config.yaml`), set these
-fields under `proxy`, retaining other configuration. Set `rust_config` to the
-absolute path of the JSON you created:
-
-```yaml
-proxy:
-  backend: rust
-  rust_config: /absolute/path/to/checkout/.native-dev/proxy.json
-```
-
-The export selects this build for the current shell, including an installed CLI.
-Without it, a CLI running from the checkout uses
-`proxy/target/debug/safeyolo-proxy`. Missing binaries or invalid configuration
-fail without falling back to Python. Selection persists for subsequent starts,
-including automatic starts. Rust rejects `--dev`, `--test`, `--flow-cache` and
-`--flow-cache-bytes`; set native values in its JSON instead. It does not change
-the Python `test.enabled` setting.
-
-```sh
-safeyolo start
-```
-
-The success panel identifies the Rust native backend and its listener
-configuration. Startup requires native readiness. The default `--wait` also
-checks the running native operator endpoint when configured; otherwise it uses
-readiness. This establishes process availability, not full policy parity or a
-working sandbox. `--no-wait` skips that extra health check, not startup readiness.
-
-`safeyolo status` reports the running Rust process's PID, readiness file and
-native admin port, even if `proxy.backend` has since changed. A live process
-without its readiness marker is shown as running but not ready. Status does not
-query the Python management APIs for a Rust process.
-
-The shared CLI admin client uses the running Rust process record's admin port
-and token file, including an automatically assigned port. An explicit client
-URL keeps its existing behavior. For the default Rust target, token precedence
-is an explicit client token, `SAFEYOLO_ADMIN_TOKEN`, then the recorded token file.
-Long-lived clients can follow a verified Rust restart and refresh the port and
-default token. Once a client selects Rust, missing or stale process ownership
-prevents the request; it does not select a Python endpoint. Established admin
-listeners remain usable for
-diagnostics while the process is alive even if its readiness marker is absent.
-The native listener loads its token at startup, so token-file changes require
-a proxy restart. This client integration reaches the native APIs already
-implemented, including budget and circuit resets used by `safeyolo watch`.
-With native TOML policy and a loaded service catalog, the operator API can
-persist an agent's service binding through `POST /admin/agents/{agent}/services`.
-It validates the accepted service and capability, requires an existing agent,
-and saves the selected vault credential name. It does not read the vault.
-The existing policy watcher activates accepted changes after the save; the
-response does not promise immediate service access.
+Service authorization and revocation use the current native policy transaction:
+the store and file locks precede the runtime lock; activation prepares the
+candidate before publication. A failure restores saved bytes and the exact
+prior live generation. See [native credentials and services](native-credentials.md)
+for service scope, credential approval, contract binding and risk grants.
 
 ### Live traffic inspection
 
@@ -583,13 +515,11 @@ the result is unconfirmed; the requested JSON remains for the next reload or
 start. It does not imply that the live configuration was rolled back. Processes
 launched before configuration-path recording need one restart to use live sync.
 
-For an explicit return to Python and then Rust, follow the
-[package rollback procedure](../cli/README.md#return-to-the-prior-python-package).
-The current package does not switch implementations through `proxy.backend`.
-Native stop waits for process exit;
-an interrupted stop retains ownership state so it can be retried. The exited
-console remains in the private tmux session for diagnostics, and the next
-start reaps that dead pane.
+The fresh native product has no backend switch or old-package rollback.
+Historical comparator receipts remain in [state compatibility](state-compatibility.md).
+Native stop waits for observed process exit and retains ownership state when an
+interrupted stop can be retried. Direct diagnosis and stopped-agent cleanup
+preserve persistent homes and operator evidence.
 
 ### Runtime and build identity
 
@@ -601,19 +531,18 @@ exists. It does not compare the running image's bytes with a file that may have
 been replaced after launch.
 
 The authenticated host-admin `GET /admin/runtime-identity` route reports the
-native instance ID. It does not report the wheel's source revision. The sandbox
+native instance ID. It does not report the executable's source revision. The sandbox
 Agent API does not expose this host-admin route.
 
-Production wheels include `safeyolo/_build_identity.json`, generated by the
-Hatch wheel-build hook. Release automation may set `SAFEYOLO_BUILD_REVISION`
-to the immutable source revision and `SAFEYOLO_BUILD_ID` to a CI or release
-identifier before running `uv build --wheel`. A local wheel build uses the
-Git revision only from a clean checkout rooted at the build project. A dirty
-checkout or missing Git evidence produces an explicit `unknown` stamp. The
-installed runtime reads this package resource without invoking Git.
+Native `--version` reports the executable's source commit and build profile.
+The package's `package-info` and guest receipts bind matching source/profile
+inputs. A dirty working-tree build without an explicit full source ID reports
+`unknown`; it is not an exact committed candidate. Production installation
+uses no Hatch hook, Python package resource or wheel stamp. See
+[native package identity](host-packages.md) for package verification.
 
 Guest VM artifacts (kernel, initramfs, rootfs) are rebuilt separately via
-`safeyolo build` — see the top-level README for the full guest-build flow.
+`./guest/build-all.sh` — see the top-level README for the full guest-build flow.
 
 **Install dev dependencies and pre-commit hooks:**
 ```bash
@@ -699,34 +628,15 @@ a missing query pack fails instead of contacting a package registry.
 
 ## CLI Development
 
-The CLI is part of the root SafeYolo package and uses Typer.
+The native host entry is `proxy/src/bin/safeyolo.rs`. Add commands through
+its existing dispatch and the responsible native owner. Keep authoritative
+usage strings beside that owner; the documentation checker reads those strings
+without importing Python or building Rust. Do not register a Python command or
+introduce another production launcher.
 
-**Setup:**
-```bash
-uv sync --group dev
-```
-
-**Add a new command:**
-```python
-# cli/src/safeyolo/commands/mycommand.py
-import typer
-from rich.console import Console
-
-console = Console()
-
-def mycommand(
-    arg: str = typer.Argument(..., help="Required argument"),
-    flag: bool = typer.Option(False, "--flag", "-f", help="Optional flag"),
-) -> None:
-    """Description shown in --help."""
-    console.print(f"Running with {arg}, flag={flag}")
-```
-
-**Register in cli.py:**
-```python
-from .commands.mycommand import mycommand
-app.command()(mycommand)
-```
+Use the affected Cargo test and direct command or installed consumer. Python
+fixtures run from the non-package environment prepared with
+`uv sync --frozen --group dev`; they do not supply a product CLI.
 
 ## macOS VM helper development
 
@@ -863,7 +773,7 @@ uv run pytest cli/tests/ -v
 ```bash
 # Start SafeYolo and add a test agent
 safeyolo start
-safeyolo agent add scratch --host-script @claude
+safeyolo agent create scratch --workspace "$HOME/scratch" --host-script "$SAFEYOLO_CONFIG_DIR/assets/contrib/claude-host-setup.sh"
 
 # Shell into the agent and issue requests through its per-agent socket
 safeyolo agent shell scratch

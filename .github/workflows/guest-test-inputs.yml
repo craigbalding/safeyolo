@@ -40,9 +40,9 @@ jobs:
           cache-bin: false
       - name: Build Linux guest executables and receipts
         run: scripts/build_guest_command.sh
-      - name: Build Linux recovery CLI
+      - name: Build Linux host test inputs
         if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
       - name: Upload Linux host test inputs
         if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -51,6 +51,24 @@ jobs:
           path: |
             proxy/target/debug/safeyolo
             proxy/target/debug/safeyolo-coord
+            proxy/target/debug/safeyolo-proxy
+          if-no-files-found: error
+      - name: Build Linux guest terminal input
+        if: inputs.profile == 'production' && inputs.architecture == 'arm64'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gcc-aarch64-linux-gnu
+          make -C vm guest-tools
+          mkdir -p "$RUNNER_TEMP/guest-terminal"
+          install -m 0755 vm/.build/release/vsock-term "$RUNNER_TEMP/guest-terminal/vsock-term"
+          printf 'vsock-term commit=%s\n' "$SAFEYOLO_BUILD_REVISION" > "$RUNNER_TEMP/guest-terminal/vsock-term.version"
+          sha256sum "$RUNNER_TEMP/guest-terminal/vsock-term" | awk '{print $1}' > "$RUNNER_TEMP/guest-terminal/vsock-term.sha256"
+      - name: Upload Linux guest terminal input
+        if: inputs.profile == 'production' && inputs.architecture == 'arm64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-guest-terminal-arm64-production
+          path: ${{ runner.temp }}/guest-terminal
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

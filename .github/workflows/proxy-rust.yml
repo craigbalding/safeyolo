@@ -7,7 +7,6 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
-      - "cli/src/safeyolo/rust_proxy.py"
       - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
       - "site/**"
@@ -25,16 +24,11 @@ on:
       - "tests/blackbox/sinkhole/server.py"
       - "tests/test_blackbox_sinkhole.py"
       - "tests/test_workflow_action_pins.py"
-      - "cli/src/safeyolo/desktop_presenter*.py"
-      - "cli/src/safeyolo/preview.py"
-      - "cli/src/safeyolo/vm*.py"
-      - "cli/src/safeyolo/platform/**"
-      - "cli/tests/test_linux_platform*.py"
-      - "cli/tests/test_darwin_platform.py"
-      - "cli/src/safeyolo/runtime_identity.py"
+      - "tests/reference/safeyolo/rust_proxy.py"
+      - "tests/reference/safeyolo/platform/**"
+      - "cli/tests/test_vm_control.py"
+      - "cli/tests/test_vm_diagnostics.py"
       - "vm/**"
-      - "cli/tests/test_agent_preview.py"
-      - "cli/tests/test_desktop_presenter*.py"
       - ".github/workflows/proxy-rust.yml"
       - "scripts/cargo_with_space.sh"
   push:
@@ -100,13 +94,13 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
-          if grep -Eq '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|desktop|preview|platform/(darwin|__init__))|cli/tests/test_darwin_platform)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
-          if grep -Eq '^(proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|platform/(linux|__init__))|cli/tests/test_linux_platform)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(linux|__init__)))' "$RUNNER_TEMP/changed-paths"; then
             echo 'linux=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -194,20 +188,17 @@ jobs:
           SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/debug/safeyolo-guest
         run: |
           uv run --frozen pytest -q cli/tests/test_agent_command_supervisor.py \
-            cli/tests/test_guest_command_observation.py cli/tests/test_vm_recovery_recipe.py \
-            cli/tests/test_vm.py::TestPrepareConfigShare
+            cli/tests/test_vm_recovery_recipe.py
 
-      - name: Test desktop presentation and preview
-        run: |
-          uv run --frozen pytest -q \
-            cli/tests/test_desktop_presenter.py \
-            cli/tests/test_agent_preview.py
+      - name: Test native desktop presentation and host entry
+        if: steps.changes.outputs.rust == 'true'
+        working-directory: proxy
+        run: ../scripts/cargo_with_space.sh test --locked --test desktop_native --test native_host_cli
 
       - name: Test changed Linux platform boundaries
-        if: steps.changes.outputs.linux == 'true'
-        run: |
-          uv run --frozen pytest -q cli/tests/test_linux_platform_selection.py \
-            cli/tests/test_linux_platform_oci.py
+        if: steps.changes.outputs.linux == 'true' && steps.changes.outputs.rust == 'true'
+        working-directory: proxy
+        run: ../scripts/cargo_with_space.sh test --locked --test native_runtime_dependency
 
       - name: Test focused native boundaries
         if: steps.changes.outputs.rust == 'true'
@@ -220,7 +211,7 @@ jobs:
           ../scripts/cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
           ../scripts/cargo_with_space.sh test --locked --lib native_config::tests
           ../scripts/cargo_with_space.sh test --locked --lib policy::native::tests
-          ../scripts/cargo_with_space.sh test --locked --test command_centre_lifecycle --test desktop_native
+          ../scripts/cargo_with_space.sh test --locked --test command_centre_lifecycle
 
       - name: Test installed native policy commands
         if: steps.changes.outputs.rust == 'true'
@@ -359,6 +350,9 @@ jobs:
           rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
           test -x "$rust_proxy"
           printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
+          native_cli="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo"
+          test -x "$native_cli"
+          printf 'SAFEYOLO_NATIVE_CLI=%s\n' "$native_cli" >> "$GITHUB_ENV"
 
       - name: Stop the Python-owned Coord fixture
         if: always()
@@ -434,18 +428,15 @@ jobs:
           prune-cache: true
       - name: Prepare platform test dependencies
         run: uv sync --frozen --group dev --python 3.12
-      - name: Install Mac preview test dependency
-        run: brew install socat
+      - name: Install Mac native test dependencies
+        run: brew install socat tmux
       - name: Test current CLI platform boundaries
         run: |
-          uv run --frozen pytest -q cli/tests/test_vm.py cli/tests/test_vm_control.py \
-            cli/tests/test_vm_identity.py cli/tests/test_vm_diagnostics.py \
-            cli/tests/test_darwin_platform.py cli/tests/test_agent_preview.py \
-            cli/tests/test_desktop_presenter.py
+          uv run --frozen pytest -q cli/tests/test_vm_control.py cli/tests/test_vm_diagnostics.py
       - name: Test changed native platform boundaries
         if: needs.focused-pr.outputs.rust == 'true'
         working-directory: proxy
-        run: ../scripts/cargo_with_space.sh test --locked --test native_runtime_dependency
+        run: ../scripts/cargo_with_space.sh test --locked --test native_runtime_dependency --test native_host_cli --test native_host_identity
       - name: Save actual master CI debug runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.focused-pr.outputs.rust == 'true'
         run: uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"

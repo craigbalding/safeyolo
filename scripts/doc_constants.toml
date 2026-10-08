@@ -31,8 +31,8 @@ must_contain = "{maximum} shell connections"
 
 [[assertion]]
 name = "seatbelt-guide-operator-vm-ssh-key"
-source = "cli/src/safeyolo/config.py"
-pattern = 'return get_data_dir\(\) / "(?P<key_name>vm_ssh_key)"'
+source = "proxy/src/host_platform.rs"
+pattern = 'config_dir\(\)\.join\("data/(?P<key_name>vm_ssh_key)"\)'
 docs = ["contrib/macos-seatbelt-agent/REFERENCE.md"]
 must_contain = "~/.safeyolo/data/{key_name}"
 
@@ -46,8 +46,8 @@ forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
 
 [[assertion]]
 name = "default-agent-memory-mib"
-source = "cli/src/safeyolo/agent_configuration.py"
-pattern = 'DEFAULT_AGENT_MEMORY_MB = (?P<memory_mb>\d+)'
+source = "proxy/src/host_lifecycle.rs"
+pattern = 'memory_mb\.unwrap_or\((?P<memory_mb>\d+)\)'
 docs = ["docs/CONFIGURATION.md"]
 must_contain = "defaults to {memory_mb} MiB"
 
@@ -156,8 +156,8 @@ must_contain = "gh"
 
 [[assertion]]
 name = "attribution-cidr-linux"
-source = "cli/src/safeyolo/platform/linux.py"
-pattern = 'attribution_ip = f"10\.200\.'
+source = "proxy/src/host_lifecycle.rs"
+pattern = 'format!\("10\.200\.'
 docs = ["SECURITY.md"]
 must_contain = "synthetic loopback"
 
@@ -214,8 +214,8 @@ must_contain = "HTTP {code}"
 
 [[assertion]]
 name = "rootfs-tree-install-path"
-source = "cli/src/safeyolo/vm.py"
-pattern = 'return get_share_dir\(\) / "(?P<subdir>rootfs-tree)"'
+source = "proxy/src/host_boot.rs"
+pattern = 'root\.join\("share/(?P<subdir>rootfs-tree)"\)'
 docs = ["docs/ARCHITECTURE.md"]
 must_contain = "share/{subdir}"
 
@@ -225,16 +225,16 @@ must_contain = "share/{subdir}"
 # (the pre-PR-#195 name must not).
 [[assertion]]
 name = "linux-rootfs-artifact-in-security-verification"
-source = "cli/src/safeyolo/vm.py"
-pattern = 'return get_share_dir\(\) / "(?P<subdir>rootfs-tree)"'
+source = "proxy/src/host_boot.rs"
+pattern = 'root\.join\("share/(?P<subdir>rootfs-tree)"\)'
 docs = ["docs/security-verification.md"]
 must_contain = "{subdir}"
 forbidden = ["rootfs-base.erofs"]
 
 [[assertion]]
 name = "guest-root-uid-mapping"
-source = "cli/src/safeyolo/platform/linux.py"
-pattern = '"0", "100000", "1000"'
+source = "proxy/src/host_platform.rs"
+pattern = '\(0, 100000, 1000\)'
 docs = ["docs/security-verification.md", "docs/ARCHITECTURE.md"]
 must_contain = "100000"
 
@@ -253,7 +253,7 @@ docs = ["contrib/macos-seatbelt-agent/README.md"]
 must_contain = "{entry_root}"
 
 [[assertion]]
-name = "installer-python-requirement"
+name = "test-driver-python-requirement"
 source = "pyproject.toml"
 pattern = 'requires-python = "(?P<requirement>[^"\n]+)"'
 docs = ["cli/README.md"]

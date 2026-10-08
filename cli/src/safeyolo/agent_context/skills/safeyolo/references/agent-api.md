@@ -478,7 +478,7 @@ credential.
 
 3. Handle the response:
 
-   - `202` with `status: pending`: ask the operator to review `safeyolo watch`.
+   - `202` with `status: pending`: ask the operator to review `safeyolo inspect`.
    - `decision: needs_contract_binding`: submit only the requested binding
      variables to `/gateway/submit-binding`.
    - `decision: contract_not_enforceable`: explain that SafeYolo cannot safely
@@ -520,7 +520,7 @@ sy_api /plumb/request-chat \
 ```
 
 The request returns `202` pending. Tell the operator to review it in
-`safeyolo watch`, then poll the conversation list:
+`safeyolo inspect`, then poll the conversation list:
 
 ```sh
 sy_api /plumb/conversations | jq

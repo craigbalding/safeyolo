@@ -18,7 +18,7 @@ and the sandboxes have separate dependency and isolation boundaries.
 | Python CLI deps | Locked with hashes in `uv.lock` (`--frozen`) | [uv.lock](../uv.lock) |
 | Native proxy deps | Locked in `proxy/Cargo.lock`; the installer builds the packaged executable | [proxy/Cargo.lock](../proxy/Cargo.lock), [install.sh](../install.sh) |
 | No root at runtime | Started by the operator, runs as the operator's uid | n/a |
-| Bind address | Loopback by default; listen host configurable | [cli/src/safeyolo/proxy.py](../cli/src/safeyolo/proxy.py) |
+| Bind address | IPv4 loopback Admin listener; per-agent Unix proxy listeners | [proxy/src/host_commands.rs](../proxy/src/host_commands.rs) |
 | Admin API listener and gating | Native host-local routes require the configured admin token | [proxy/src/admin_api.rs](../proxy/src/admin_api.rs) |
 | Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/security/test_firewall_structural.py](../tests/blackbox/host/security/test_firewall_structural.py) |
 
@@ -29,60 +29,49 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Platform | Runtime | Rootfs | Isolation |
 |----------|---------|--------|-----------|
 | macOS (Apple Silicon) | `safeyolo-vm` on Apple Virtualization.framework | per-agent ext4 disk image | Hardware-backed microVM |
-| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; a per-agent file-backed overlay persists across stop and run by default; `--ephemeral` selects a memory-backed overlay that is discarded on stop | Sentry-emulated kernel; optional KVM hardware platform |
+| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; a per-agent file-backed overlay persists across stop and run by default; `rootfs_overlay = "memory"` selects a memory-backed overlay that is discarded on stop | Sentry-emulated kernel; optional KVM hardware platform |
 
 ### Sandbox Hardening
 
 | Aspect | Implementation | Where |
 |--------|----------------|-------|
-| No external interface | Sandbox netns has only loopback (Linux); VM has no virtio-net (macOS) | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py), [cli/src/safeyolo/platform/darwin.py](../cli/src/safeyolo/platform/darwin.py) |
-| Only egress = proxy UDS | Private per-agent directory mounted read-only at `/safeyolo/proxy`, containing `proxy.sock` | [cli/src/safeyolo/sockets.py](../cli/src/safeyolo/sockets.py) |
+| No external interface | Sandbox netns has only loopback (Linux); VM has no virtio-net (macOS) | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs), [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
+| Only egress = proxy UDS | Private per-agent directory mounted read-only at `/safeyolo/proxy`, containing `proxy.sock` | [proxy/src/host_boot.rs](../proxy/src/host_boot.rs) |
 | Identity on every flow | The native per-agent Unix listener binds the selected agent identity to each connection | [proxy/src/main.rs](../proxy/src/main.rs), [proxy/src/policy_runtime.rs](../proxy/src/policy_runtime.rs) |
-| Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
-| Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
-| Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
-| Read-only config share | `/safeyolo` mounted `ro` | [cli/src/safeyolo/vm.py](../cli/src/safeyolo/vm.py) |
-| Rootfs overlay (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; the default per-agent file-backed overlay persists across stop and run; `--ephemeral` selects a memory-backed overlay that is discarded on stop | [guest/build-rootfs.sh](../guest/build-rootfs.sh), [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
+| Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
+| Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
+| Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
+| Read-only config share | `/safeyolo` mounted `ro` | [proxy/src/host_boot.rs](../proxy/src/host_boot.rs) |
+| Rootfs overlay (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; the default per-agent file-backed overlay persists across stop and run; `rootfs_overlay = "memory"` selects a memory-backed overlay that is discarded on stop | [guest/build-rootfs.sh](../guest/build-rootfs.sh), [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 
 ### Build Verification
 
-Build everything from source (no pre-built images):
+Build and install through [native installation](native-policy.md#build-a-native-bundle),
+with [prepared guest inputs](../guest/README.md). Supply their directory with
+`--platform-assets DIRECTORY` at fresh install. On Linux keep the prepared
+`share/rootfs-tree` available, immutable and owned by sandbox root UID 100000;
+plain ownership-changing copies break this boundary. macOS uses the prepared
+ext4 image, signed VM helper, kernel and initramfs.
 
-```bash
-# Build the guest rootfs and kernel artefacts
-cd guest && ./build-all.sh && cd ..
-# `sudo cp -a` preserves the uid-100000 tree ownership required by
-# rootless gVisor on Linux; a plain cp would chown-to-you and break
-# the sandbox.
-mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
+Read `package-info` for installed source/profile/platform identity. Native
+installation verifies internal checksums, native executables and guest receipts;
+macOS additionally checks helper identity/signature. A rootfs tree is not one
+hashable file; retain its production input provenance and inspect the actual
+paths used by the owned native boot. Host build/install contains no first-party
+Python command or wheel environment.
 
-# Install the CLI and packaged Rust proxy through the supported installer
-./install.sh install
-
-# macOS only: the Swift VM helper
-cd vm && make install && cd ..
-```
-
-Verify the shipped artefacts:
-
-```bash
-# Linux: directory tree at ~/.safeyolo/share/rootfs-tree/ used as
-# gVisor's OCI root.path. Content is not a single hashable artefact;
-# spot-check with a manifest walk.
-find ~/.safeyolo/share/rootfs-tree -type f | wc -l   # Linux
-
-# macOS: single ext4 image consumed by Apple Virtualization.framework
-sha256sum ~/.safeyolo/share/rootfs-base.ext4         # macOS
-
-# See the selected proxy's status without printing tokens
+```sh
+safeyolo --version
 safeyolo status
-
-# Host-level prerequisites + current sandbox runtime detection
-safeyolo setup       # apply one-time config (AppArmor, /dev/kvm udev rule)
-safeyolo doctor      # full health check; reports runtime, isolation
-                     # platform (KVM vs systrap), userns prerequisites,
-                     # guest images, running agents
+safeyolo doctor
+safeyolo agent diagnostics NAME
 ```
+
+These observations distinguish runtime/control/command and proxy state. They
+are not by themselves isolation acceptance. Apply the actual
+[host prerequisites](native-policy.md#guest-prerequisites), including AppArmor
+and subordinate UID/GID mapping where required. The retired Python setup
+command is not an installed operation.
 
 ## Automated Security Testing
 
@@ -95,7 +84,7 @@ prioritizes semantic permission deltas, cross-agent isolation, concurrent
 mutation integrity, and fail-closed behavior over generic parser fuzzing.
 
 The current tree retains focused policy command and transaction tests in
-`cli/tests/test_policy_cli.py` and `tests/test_policy_transaction_regressions.py`.
+`tests/proxy_contracts/test_native_policy_cli.py` and `tests/test_policy_transaction_regressions.py`.
 Native policy decisions have separate Rust checks in `proxy/tests/policy.rs`.
 These checks do not replace generated native transaction sequences, concurrent
 mutations, failure-stage injection, or abrupt disposable-VM death. Those
@@ -151,16 +140,16 @@ the historical dependency ratings do not establish a current scan result.
 | Area | Location |
 |------|----------|
 | Native policy enforcement | [policy_runtime.rs](../proxy/src/policy_runtime.rs), [policy.rs](../proxy/src/policy.rs) |
-| Credential detection | [detection/credentials.py](../cli/src/safeyolo/detection/credentials.py), [proxy/src/policy.rs](../proxy/src/policy.rs) |
-| Credential type mapping | [detection/credentials.py](../cli/src/safeyolo/detection/credentials.py) |
-| HMAC fingerprinting | [detection/matching.py](../cli/src/safeyolo/detection/matching.py) |
-| Shannon entropy | [detection/credentials.py](../cli/src/safeyolo/detection/credentials.py) |
+| Credential detection | [credentials.rs](../proxy/src/credentials.rs), [proxy/src/policy.rs](../proxy/src/policy.rs) |
+| Credential type mapping | [credentials.rs](../proxy/src/credentials.rs) |
+| HMAC fingerprinting | [credential_hmac.rs](../proxy/src/credential_hmac.rs) |
+| Shannon entropy | [credentials.rs](../proxy/src/credentials.rs) |
 | Budget tracking | [policy/budgets.rs](../proxy/src/policy/budgets.rs) |
 | Circuit breaker | [circuits.rs](../proxy/src/circuits.rs) |
 | Service gateway | [admin_api/gateway.rs](../proxy/src/admin_api/gateway.rs) |
 | Admin API auth | [admin_api.rs](../proxy/src/admin_api.rs) |
 | Request ID | [request_trace.rs](../proxy/src/request_trace.rs) |
 | Request logging | [request_logger.rs](../proxy/src/request_logger.rs) |
-| Native proxy startup | [proxy.py](../cli/src/safeyolo/proxy.py), [main.rs](../proxy/src/main.rs) |
+| Native proxy startup | [host_commands.rs](../proxy/src/host_commands.rs), [main.rs](../proxy/src/main.rs) |
 | Blackbox tests | [tests/blackbox/](../tests/blackbox/) |
 | Policy assurance threat model | [policy-assurance-threat-model.md](policy-assurance-threat-model.md) |

@@ -34,13 +34,13 @@ from pathlib import Path
 if __package__:
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _sha256
+    from .installed_host_smoke import _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _sha256
+    from installed_host_smoke import _native_config, _sha256
     from installed_ingress import installed_identity, runsc_identity
     from isolation.installed_ingress import is_mounted_forwarder
 from urllib.parse import urlsplit
@@ -298,7 +298,7 @@ def main() -> None:
     substrate = runtime["substrate"]
     assert substrate["status"] == "discovered" and substrate["kind"] == "gvisor"
     substrate["sha256"] = _sha256(Path(substrate["path"]))
-    native = json.loads((config_dir / "data" / "native.json").read_text())
+    native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     policy = tomllib.loads((config_dir / "policy.toml").read_text())
     assert policy["hosts"]["evil.com"]["egress"] == "deny"
     assert policy["hosts"]["failing.test"]["egress"] == "allow"
@@ -337,7 +337,7 @@ def main() -> None:
         "host": runtime["host"], "substrate": substrate,
         "installed": identity, "gvisor": gvisor, "guest": {"package_repo": guest, "sse": stream,
         "websocket_ssh": websocket}, "sse_control": stream_control, "origin": origin,
-        "runtime_config": {"path": str(config_dir / "data/native.json"),
+        "runtime_config": {"path": str(config_dir / "config.toml"),
         "parent_proxy": native["parent_proxy"], "upstream_ca_file": native["upstream_ca_file"]},
     }
     args.output.write_text(json.dumps(report, indent=2) + "\n")

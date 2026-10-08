@@ -1,0 +1,1759 @@
+"""MicroVM lifecycle management for SafeYolo.
+
+Drives agent sandboxes: Apple Virtualization.framework microVMs on
+macOS via the ``safeyolo-vm`` Swift helper binary, rootless gVisor
+(``runsc``) on Linux.
+"""
+
+import json
+import logging
+import os
+import platform
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+from .config import (
+    get_agent_map_path,
+    get_agents_dir,
+    get_config_dir,
+    get_desktop_size,
+    get_share_dir,
+    get_ssh_key_path,
+)
+
+log = logging.getLogger("safeyolo.vm")
+
+# This test-state producer reads the same retained shell/skill inputs as the
+# native assembler. Relocating the Python reference does not relocate assets.
+_SOURCE_ASSETS = Path(__file__).resolve().parents[3] / "cli" / "src" / "safeyolo"
+
+VM_HELPER_NAME = "safeyolo-vm"
+VM_HELPER_CHECK_OK = "safeyolo-vm check: ok"
+VM_HELPER_CHECK_TIMEOUT_SECONDS = 3.0
+VSOCK_TERM_NAME = "vsock-term"
+VSOCK_TERM_INSTALL_HINT = "make -C vm install"
+_VM_HELPER_STARTUP_GRACE_SECONDS = 0.2
+_VM_HELPER_OUTPUT_LIMIT = 320
+_SENSITIVE_HELPER_OUTPUT_RE = re.compile(
+    r"(?i)\b(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*\S+"
+)
+
+
+class VMError(Exception):
+    """VM operation failed."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+def find_vm_helper() -> Path:
+    """Find the safeyolo-vm binary."""
+    # Dev override: SAFEYOLO_VM_HELPER lets you point a single agent run
+    # at a test binary without replacing ~/.safeyolo/bin/safeyolo-vm.
+    # Essential for testing VM helper changes without disrupting running agents.
+    override = os.environ.get("SAFEYOLO_VM_HELPER")
+    if override:
+        override_path = Path(override)
+        if override_path.exists() and os.access(override_path, os.X_OK):
+            return override_path
+
+    # Check ~/.safeyolo/bin/ first
+    local = get_config_dir() / "bin" / VM_HELPER_NAME
+    if local.exists() and os.access(local, os.X_OK):
+        return local
+
+    # Check PATH
+    result = shutil.which(VM_HELPER_NAME)
+    if result:
+        return Path(result)
+
+    # Check repo layout (for development)
+    repo_bin = Path(__file__).resolve().parents[3] / "vm" / ".build" / "release" / VM_HELPER_NAME
+    if repo_bin.exists() and os.access(repo_bin, os.X_OK):
+        return repo_bin
+
+    raise VMError(
+        f"Cannot find {VM_HELPER_NAME}. Install with:\n"
+        f"  cd vm && make install"
+    )
+
+
+def _helper_output_excerpt(stdout: str | None, stderr: str | None) -> str:
+    """Return one bounded, single-line, obviously redacted helper diagnostic."""
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    if not raw:
+        return ""
+    single_line = " ".join(raw.split())
+    redacted = _SENSITIVE_HELPER_OUTPUT_RE.sub(r"\1=<redacted>", single_line)
+    if len(redacted) > _VM_HELPER_OUTPUT_LIMIT:
+        return redacted[:_VM_HELPER_OUTPUT_LIMIT] + "…"
+    return redacted
+
+
+def _vm_helper_exit_message(
+    helper: Path,
+    returncode: int,
+    *,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    operation: str = "capability check",
+) -> str:
+    excerpt = _helper_output_excerpt(stdout, stderr)
+    suffix = f": {excerpt}" if excerpt else ""
+    if returncode < 0:
+        signal_number = -returncode
+        try:
+            signal_label = signal.Signals(signal_number).name
+        except ValueError:
+            signal_label = f"signal {signal_number}"
+        return f"{helper} {operation} terminated by {signal_label} ({signal_number}){suffix}"
+    if returncode == 0:
+        return f"{helper} {operation} exited unexpectedly with exit code 0{suffix}"
+    return f"{helper} {operation} failed with exit code {returncode}{suffix}"
+
+
+def vm_helper_failure_summary(name: str, pid: int) -> str:
+    """Summarize a helper that died before guest readiness was observed."""
+    returncode: int | None = None
+    try:
+        waited_pid, wait_status = os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        waited_pid = 0
+    if waited_pid:
+        if os.WIFEXITED(wait_status):
+            returncode = os.WEXITSTATUS(wait_status)
+        elif os.WIFSIGNALED(wait_status):
+            returncode = -os.WTERMSIG(wait_status)
+
+    serial_log = get_agents_dir() / name / "serial.log"
+    try:
+        helper_output = serial_log.read_text(errors="replace")
+    except OSError:
+        helper_output = ""
+    if returncode is not None:
+        return _vm_helper_exit_message(
+            Path(VM_HELPER_NAME),
+            returncode,
+            stderr=helper_output,
+            operation="startup",
+        )
+
+    excerpt = _helper_output_excerpt("", helper_output)
+    if excerpt:
+        return f"safeyolo-vm exited before guest startup: {excerpt}"
+    return (
+        "safeyolo-vm exited before guest startup without a diagnostic; "
+        "run `safeyolo doctor` to check the helper and Apple VZ capability"
+    )
+
+
+def probe_vm_helper(
+    helper: Path | None = None,
+    *,
+    timeout: float = VM_HELPER_CHECK_TIMEOUT_SECONDS,
+) -> Path:
+    """Execute the narrow, side-effect-free helper capability check.
+
+    A zero exit alone is insufficient: requiring the stable marker prevents an
+    unrelated or stale executable from being reported as a working VZ helper.
+    """
+    resolved = helper or find_vm_helper()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise VMError(f"safeyolo-vm is not executable at {resolved}")
+    try:
+        result = subprocess.run(
+            [str(resolved), "check"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VMError(
+            f"{resolved} capability check timed out after {timeout:g}s"
+        ) from exc
+    except OSError as exc:
+        detail = _helper_output_excerpt("", str(exc))
+        raise VMError(
+            f"Could not launch {resolved} capability check"
+            + (f": {detail}" if detail else "")
+        ) from exc
+
+    if result.returncode != 0:
+        raise VMError(
+            _vm_helper_exit_message(
+                resolved,
+                result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        )
+    if result.stdout.strip() != VM_HELPER_CHECK_OK or result.stderr.strip():
+        raise VMError(
+            f"{resolved} capability check returned an unexpected response; "
+            "reinstall the matching safeyolo-vm helper"
+        )
+    return resolved
+
+
+def get_vsock_term_path() -> Path:
+    """Return the installed host-side vsock-term path."""
+    return get_config_dir() / "bin" / VSOCK_TERM_NAME
+
+
+def require_vsock_term() -> Path:
+    """Return vsock-term or raise a clear error for macOS interactive runs."""
+    path = get_vsock_term_path()
+    if not path.exists():
+        raise VMError(
+            f"vsock-term not found at {path} - the interactive terminal cannot start. "
+            f"Build and install it with: {VSOCK_TERM_INSTALL_HINT}"
+        )
+    if not os.access(path, os.X_OK):
+        raise VMError(
+            f"vsock-term at {path} is not executable - the interactive terminal cannot start. "
+            f"Build and install it with: {VSOCK_TERM_INSTALL_HINT}"
+        )
+    return path
+
+
+def get_kernel_path() -> Path:
+    return get_share_dir() / "Image"
+
+
+def get_initrd_path() -> Path:
+    return get_share_dir() / "initramfs.cpio.gz"
+
+
+def get_base_rootfs_path() -> Path:
+    # Shared read-only ext4 base image. macOS VZ boots from this
+    # directly (initramfs mounts it `-o ro,noload`). All agents share
+    # the single file; per-agent state lives in the overlay upper
+    # (/dev/vdb) and /home/agent (virtiofs-bound).
+    return get_share_dir() / "rootfs-base.ext4"
+
+
+def get_agent_rootfs_path(name: str) -> Path:
+    # macOS VZ boot rootfs selection. Default: the shared
+    # get_base_rootfs_path(); per-agent runtime state lives in the in-VM
+    # overlay upper (persistent when /dev/vdb is attached, ephemeral via
+    # tmpfs when safeyolo.ephemeral_upper=1) and the /home/agent virtiofs
+    # bind.
+    #
+    # Override: a custom --rootfs-script writes a per-agent ext4 to
+    # agents/<name>/rootfs.ext4 (see build_custom_rootfs). When present
+    # that image is this agent's rootfs and takes precedence over the
+    # shared base. Mirrors the Linux platform's agent_rootfs_path, which
+    # overrides the shared tree with agents/<name>/rootfs/ the same way.
+    per_agent = get_agents_dir() / name / "rootfs.ext4"
+    if per_agent.exists():
+        return per_agent
+    return get_base_rootfs_path()
+
+
+def get_agent_pid_path(name: str) -> Path:
+    return get_agents_dir() / name / "vm.pid"
+
+
+def get_agent_overlay_path(name: str) -> Path:
+    """Per-agent writable overlay image (attached as /dev/vdb on macOS VZ).
+
+    Linux gVisor doesn't use this — gVisor's own `--overlay2=root:dir=`
+    manages its overlay in a per-agent directory (see the Linux
+    platform module). This function is macOS-VZ-only.
+
+    macOS VZ: a per-agent ext4 image layered on top of the shared
+    read-only ext4 rootfs via overlayfs inside the guest. Runtime
+    writes to /etc, /usr, /var, etc. persist here across agent
+    stop/run — /home/agent remains a separate virtiofs bind for
+    bulk user data.
+
+    The file is created as a sparse 256 GiB `truncate`. The guest's
+    initramfs detects the absent filesystem on first boot and runs
+    `mkfs.ext4 -F -E lazy_itable_init=1` in-place; eager mkfs work
+    is a few MiB of metadata (superblock, block-group descriptors,
+    bitmaps) regardless of logical size.
+    """
+    return get_agents_dir() / name / "overlay.img"
+
+
+# Default logical size for the per-agent overlay image.
+#
+# Chosen to be "plausibly unlimited" rather than a tight cap users can
+# hit by accident. 256 GiB covers any realistic in-VM install pattern
+# (multi-TB language toolchains, cached container images, debug dumps)
+# while staying well under ext4's ~16 TiB limit at the default 4 KiB
+# block size.
+#
+# Sparse-file semantics on APFS (macOS) and ext4 with extents (Linux):
+# the file reports 256 GiB via `ls -l` and `df -h` inside the VM, but
+# only written blocks consume physical disk. The real ceiling is host
+# disk capacity — when the host fills, the in-VM write fails with
+# ENOSPC (confusing-looking: "df says 200 GiB free" — but the error
+# is genuine).
+#
+# mkfs.ext4 cost: `-E lazy_itable_init=1` keeps inode-table zeroing
+# in a background kthread, so first-boot mkfs on a 256 GiB overlay
+# writes only ~5 MiB of eager metadata (superblock copies, block-group
+# descriptors, group bitmaps, journal header). Measured: well under
+# a second.
+_OVERLAY_IMAGE_SIZE_BYTES = 256 * 1024 * 1024 * 1024
+
+
+def ensure_agent_overlay(name: str) -> Path:
+    """Create the per-agent overlay image if missing. Returns its path.
+
+    Idempotent; no-op if the file already exists at any nonzero size.
+    Deliberately does NOT grow an existing smaller image to match the
+    current default — bumping the sparse size would need a resize2fs
+    on the guest side, which needs the VM stopped. Users who want the
+    new size on an existing agent can `safeyolo agent remove && add`.
+    """
+    path = get_agent_overlay_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > 0:
+        return path
+    # Sparse allocation: the file reports _OVERLAY_IMAGE_SIZE_BYTES
+    # logically but consumes ~0 physically until writes land.
+    with open(path, "wb") as fh:
+        fh.truncate(_OVERLAY_IMAGE_SIZE_BYTES)
+    path.chmod(0o600)
+    return path
+
+
+def get_agent_config_share_dir(name: str) -> Path:
+    return get_agents_dir() / name / "config-share"
+
+
+def get_agent_status_dir(name: str) -> Path:
+    """Writable share for guest→host status signals.
+
+    Separate from the config share so the config share can be mounted
+    read-only from the start.
+    """
+    d = get_agents_dir() / name / "status"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_agent_home_dir(name: str) -> Path:
+    """Host-side backing for /home/agent inside the guest.
+
+    Bind-mounted over the rootfs /home/agent -- VirtioFS on macOS VZ,
+    OCI bind-mount on Linux gVisor -- so writes survive the macOS
+    snapshot/restore dance (restore clones a pristine rootfs image,
+    wiping any in-rootfs writes) and Linux gVisor's ephemeral memory
+    overlay. MISE_DATA_DIR points at $HOME/.mise (set in
+    /etc/profile.d/mise.sh and vsock-term), so mise installs land here
+    too -- first-run installs persist and the install block in
+    guest-init-static is a no-op thereafter.
+    """
+    return get_agents_dir() / name / "home"
+
+
+def ensure_agent_persistent_dirs(name: str) -> None:
+    """Create per-agent host dirs used as persistent bind-mount sources.
+
+    Idempotent so `agent add` and `agent run` can both call it without
+    care -- backfills agents created before the persistent-home design.
+    """
+    d = get_agent_home_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)
+
+    # Seed cache-paths.txt from the default-base share if the agent
+    # doesn't already have one. Skipped when a rootfs-script wrote the
+    # file directly (build_custom_rootfs clears+lets-the-script-write,
+    # so a pre-existing file at this point is authoritative). The Linux
+    # OCI spec reads this file at start_sandbox time and bind-mounts
+    # each listed path to a persistent per-agent cache dir.
+    agent_cache_paths = get_agents_dir() / name / "cache-paths.txt"
+    share_cache_paths = get_share_dir() / "cache-paths.txt"
+    if not agent_cache_paths.exists() and share_cache_paths.exists():
+        shutil.copy2(share_cache_paths, agent_cache_paths)
+
+
+def get_agent_cache_paths_file(name: str) -> Path:
+    """Return the path to this agent's cache-paths.txt (may not exist)."""
+    return get_agents_dir() / name / "cache-paths.txt"
+
+
+def read_agent_cache_paths(name: str) -> list[str]:
+    """Return the list of in-rootfs paths this agent wants cache-bound.
+
+    Source of truth is <agent_dir>/cache-paths.txt — seeded from either
+    (a) a rootfs-script's SAFEYOLO_ROOTFS_OUT_CACHE_PATHS output, or
+    (b) the default base's <share>/cache-paths.txt (copied by
+    ensure_agent_persistent_dirs). Each line is an absolute path inside
+    the rootfs. Empty lines and `#` comments are ignored so future
+    shares can document themselves without breaking parsers.
+    """
+    f = get_agent_cache_paths_file(name)
+    if not f.exists():
+        return []
+    paths: list[str] = []
+    for raw in f.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith("/"):
+            log.warning("cache-paths.txt: ignoring non-absolute path %r", line)
+            continue
+        paths.append(line)
+    return paths
+
+
+def get_agent_cache_dir(name: str, in_rootfs_path: str) -> Path:
+    """Return the host-side per-agent cache dir for a given rootfs path.
+
+    Slug = path with leading slash stripped and remaining slashes
+    replaced by `_`, so `/var/cache/apt` → `var_cache_apt`. Readable in
+    `ls`, stable under repeated runs, no collision as long as the
+    rootfs paths themselves don't collide post-slug (caller's
+    responsibility to keep paths distinct).
+    """
+    slug = in_rootfs_path.lstrip("/").replace("/", "_")
+    return get_agents_dir() / name / "cache" / slug
+
+
+# ---------------------------------------------------------------------------
+# Rootfs management
+# ---------------------------------------------------------------------------
+
+def create_agent_rootfs(name: str) -> Path:
+    """Return the rootfs path this agent should boot from.
+
+    There is no per-agent rootfs copy. The shared ext4 base is
+    mounted read-only by every agent's VM (initramfs uses `-o ro,noload`);
+    writes land in the overlay upper (ext4 on /dev/vdb persistent, or
+    tmpfs ephemeral) and in /home/agent (virtiofs-bound, persistent).
+
+    Ensures the per-agent directory exists because other code
+    (config-share, status, overlay.img, ssh host keys) writes into it.
+    """
+    base = get_base_rootfs_path()
+    if not base.exists():
+        raise VMError(
+            f"Base rootfs not found at {base}\n"
+            f"Build guest images first: cd guest && ./build-all.sh"
+        )
+    (get_agents_dir() / name).mkdir(parents=True, exist_ok=True)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Custom rootfs builder (--rootfs-script)
+# ---------------------------------------------------------------------------
+#
+# build_custom_rootfs invokes a user-supplied shell script that produces a
+# per-agent rootfs image. The script always runs on Linux -- either on the
+# user's Linux host, or inside the shared safeyolo-builder Lima VM on macOS.
+# Scripts receive env vars telling them where to write the output image;
+# SafeYolo validates afterward. See contrib/ROOTFS_SCRIPT_GUIDE.md.
+
+LIMA_VM_NAME = "safeyolo-builder"
+LIMA_GUEST_MOUNT = "/build/guest"
+
+
+def _host_target_arch() -> str:
+    """Map the host's arch name to the DEB-style names scripts expect.
+
+    On macOS the kernel is arm64 only; on Linux we match the host arch.
+    """
+    m = platform.machine()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    raise VMError(f"Unsupported host architecture for rootfs build: {m}")
+
+
+def _guest_src_dir() -> Path:
+    """Return the source checkout's guest/ directory.
+
+    cli/src/safeyolo/vm.py → parents[3] is the repo root.
+    """
+    return Path(__file__).resolve().parents[3] / "guest"
+
+
+def _native_guest_src_dir() -> Path:
+    """Require checkout or wheel guest files before replacing a Linux rootfs."""
+    module = Path(__file__).resolve()
+    checkout_guest = _guest_src_dir()
+    if module == checkout_guest.parent / "cli" / "src" / "safeyolo" / "vm.py":
+        guest_src = checkout_guest
+    else:
+        guest_src = module.parent / "guest"
+    if not guest_src.is_dir():
+        raise VMError(
+            f"guest/ directory not found at {guest_src}. "
+            "SafeYolo must be run from a repo checkout or installed image."
+        )
+    for relative in (
+        "install-guest-common.sh",
+        "rootfs/safeyolo-guest-init",
+        "rootfs/safeyolo-sudo",
+    ):
+        file = guest_src / relative
+        if not file.is_file() or not os.access(file, os.R_OK):
+            raise VMError(f"Required guest support file not readable at {file}")
+    return guest_src
+
+
+def _guest_sudo_source() -> Path:
+    """Return the sudo shim from the wheel or editable source checkout."""
+    bundled = Path(__file__).parent / "guest" / "rootfs" / "safeyolo-sudo"
+    if bundled.is_file():
+        return bundled
+    source = _guest_src_dir() / "rootfs" / "safeyolo-sudo"
+    if source.is_file():
+        return source
+    raise VMError("SafeYolo guest sudo helper is missing from the package and source checkout")
+
+
+def _clear_rootfs_script_outputs(out_path: Path, cache_paths_file: Path) -> None:
+    """Clear the previous rootfs output and cache declarations before a rebuild."""
+    if out_path.exists():
+        if out_path.is_dir():
+            shutil.rmtree(out_path, ignore_errors=True)
+        else:
+            out_path.unlink()
+
+    # Remove the previous build's cache declarations. If the script leaves
+    # this file absent, the new build declares no persistent cache paths.
+    cache_paths_file.unlink(missing_ok=True)
+
+
+def build_custom_rootfs(name: str, script_path: Path) -> Path:
+    """Invoke a user rootfs-script to produce a per-agent rootfs.
+
+    Returns the output path. Raises VMError on failure.
+
+    Env contract (see contrib/ROOTFS_SCRIPT_GUIDE.md):
+      SAFEYOLO_AGENT_NAME
+      SAFEYOLO_ROOTFS_OUT_EXT4          (set when target is Darwin — ext4 image)
+      SAFEYOLO_ROOTFS_OUT_TREE          (set when target is Linux — directory tree)
+      SAFEYOLO_ROOTFS_OUT_CACHE_PATHS   (file path — script writes one
+                                         absolute in-rootfs cache path
+                                         per line; SafeYolo bind-mounts
+                                         persistent per-agent dirs onto
+                                         these paths at sandbox start)
+      SAFEYOLO_ROOTFS_WORK_DIR
+      SAFEYOLO_GUEST_SRC_DIR
+      SAFEYOLO_TARGET_ARCH
+    """
+    agent_dir = get_agents_dir() / name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    cache_paths_file = agent_dir / "cache-paths.txt"
+
+    system = platform.system()
+    if system == "Darwin":
+        out_path = agent_dir / "rootfs.ext4"
+        out_key = "SAFEYOLO_ROOTFS_OUT_EXT4"
+        out_is_dir = False
+        _clear_rootfs_script_outputs(out_path, cache_paths_file)
+        _run_rootfs_script_lima(
+            name, script_path, out_key, out_path, cache_paths_file,
+        )
+    elif system == "Linux":
+        # Linux runtime consumes a directory tree as OCI root.path.
+        # Custom rootfs-scripts write the unpacked tree here; umoci
+        # unpack does this natively, no extra conversion needed.
+        out_path = agent_dir / "rootfs"
+        out_key = "SAFEYOLO_ROOTFS_OUT_TREE"
+        out_is_dir = True
+        # Check support before clearing an existing rootfs or cache-paths file.
+        guest_src = _native_guest_src_dir()
+        _clear_rootfs_script_outputs(out_path, cache_paths_file)
+        _run_rootfs_script_native(
+            name, script_path, out_path, cache_paths_file, guest_src,
+        )
+    else:
+        raise VMError(f"Unsupported platform for --rootfs-script: {system}")
+
+    if not out_path.exists():
+        raise VMError(
+            f"Rootfs script {script_path} did not produce {out_path}.\n"
+            f"Scripts must write their output to ${out_key}."
+        )
+    if out_is_dir:
+        # The platform layer owns the one complete content/ownership check.
+        # At this boundary only verify that the script produced a real tree.
+        if out_path.is_symlink() or not out_path.is_dir():
+            raise VMError(
+                f"Rootfs script {script_path} did not produce a directory tree "
+                f"at {out_path}."
+            )
+        log.info("Custom rootfs tree built for '%s': %s", name, out_path)
+    else:
+        if out_path.stat().st_size == 0:
+            raise VMError(
+                f"Rootfs script {script_path} produced an empty file at {out_path}."
+            )
+        log.info("Custom rootfs image built for '%s': %s (%d bytes)",
+                 name, out_path, out_path.stat().st_size)
+    return out_path
+
+
+def clone_custom_rootfs(source_name: str, target_name: str) -> Path:
+    """Clone one agent's custom rootfs without copying runtime state.
+
+    The custom rootfs is an immutable lower layer at runtime. Only that lower
+    layer and its cache-path declarations are copied; the target's overlay,
+    persistent home, workspace, credentials, and package caches remain fresh.
+    """
+    if source_name == target_name:
+        raise VMError("rootfs source and target agents must be different")
+
+    agents_dir = get_agents_dir()
+    source_dir = agents_dir / source_name
+    target_dir = agents_dir / target_name
+    if source_dir.is_symlink() or target_dir.is_symlink():
+        raise VMError("agent directories used for rootfs cloning must not be symlinks")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    system = platform.system()
+
+    if system == "Linux":
+        source = source_dir / "rootfs"
+        target = target_dir / "rootfs"
+        if source.is_symlink() or not (
+            source.is_dir() and (source / "etc").is_dir()
+        ):
+            raise VMError(
+                f"Agent '{source_name}' has no cloneable custom rootfs tree"
+            )
+
+        temporary = target_dir / f".rootfs-clone-{uuid.uuid4().hex}"
+        try:
+            subprocess.run(
+                [
+                    "sudo", "cp", "-a", "--reflink=auto", "--",
+                    str(source), str(temporary),
+                ],
+                check=True,
+            )
+            if temporary.is_symlink() or not (
+                temporary.is_dir() and (temporary / "etc").is_dir()
+            ):
+                raise VMError("cloned rootfs tree failed validation")
+            if temporary.stat().st_uid != 100000:
+                raise VMError(
+                    "cloned rootfs tree has incorrect ownership; expected uid 100000"
+                )
+            if target.exists() or target.is_symlink():
+                subprocess.run(
+                    ["sudo", "rm", "-rf", "--", str(target)],
+                    check=True,
+                )
+            os.replace(temporary, target)
+        except FileNotFoundError as exc:
+            raise VMError(
+                "Cloning a Linux custom rootfs requires sudo and GNU cp"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            raise VMError(
+                f"Rootfs clone command exited with code {exc.returncode}"
+            ) from exc
+        finally:
+            if temporary.exists() or temporary.is_symlink():
+                subprocess.run(
+                    ["sudo", "rm", "-rf", "--", str(temporary)],
+                    check=False,
+                )
+    elif system == "Darwin":
+        source = source_dir / "rootfs.ext4"
+        target = target_dir / "rootfs.ext4"
+        if source.is_symlink() or not source.is_file() or source.stat().st_size == 0:
+            raise VMError(
+                f"Agent '{source_name}' has no cloneable custom rootfs image"
+            )
+
+        temporary = target_dir / f".rootfs-clone-{uuid.uuid4().hex}.ext4"
+        try:
+            result = subprocess.run(
+                ["cp", "-c", str(source), str(temporary)],
+                check=False,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                shutil.copy2(source, temporary)
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise VMError("cloned rootfs image failed validation")
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    else:
+        raise VMError(f"Unsupported platform for --rootfs-from: {system}")
+
+    source_cache_paths = source_dir / "cache-paths.txt"
+    target_cache_paths = target_dir / "cache-paths.txt"
+    target_cache_paths.unlink(missing_ok=True)
+    if source_cache_paths.is_symlink():
+        raise VMError("source cache-paths.txt must not be a symlink")
+    if source_cache_paths.is_file():
+        shutil.copy2(source_cache_paths, target_cache_paths)
+
+    return target
+
+
+def _run_rootfs_script_native(
+    name: str, script_path: Path, out_path: Path,
+    cache_paths_file: Path, guest_src: Path,
+) -> None:
+    """Run a private staged copy of the rootfs-script on the Linux host."""
+    work_dir = Path(tempfile.mkdtemp(prefix="safeyolo-rootfs-"))
+    try:
+        # Do not exec the checkout inode directly. A live editor or a writable
+        # 9p/FUSE workspace share may still have that inode open for writing,
+        # in which case Linux rejects execve with ETXTBSY ("Text file busy").
+        # The private, closed copy also matches the staging model used by the
+        # Lima runner below.
+        staged_script = work_dir / "rootfs-script"
+        shutil.copy2(script_path, staged_script)
+        staged_script.chmod(0o700)
+
+        env = {
+            **os.environ,
+            "SAFEYOLO_AGENT_NAME": name,
+            "SAFEYOLO_ROOTFS_OUT_TREE": str(out_path),
+            "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(cache_paths_file),
+            "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
+            "SAFEYOLO_GUEST_SRC_DIR": str(guest_src),
+            "SAFEYOLO_TARGET_ARCH": _host_target_arch(),
+        }
+        log.info("Running rootfs script: %s", script_path)
+        process = subprocess.Popen([str(staged_script)], env=env)
+        try:
+            returncode = process.wait()
+        except KeyboardInterrupt:
+            # subprocess.run() immediately kills only its direct child when
+            # interrupted. A rootfs script can have a privileged chroot/apt
+            # tree below that child, so give the script's signal trap time to
+            # stop its descendants and unmount build filesystems first. Keep
+            # handling repeated Ctrl-C presses here so they cannot bypass the
+            # bounded escalation path.
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                # The script finished between wait() raising and termination.
+                pass
+
+            deadline = time.monotonic() + 5.0
+            while process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    break
+                try:
+                    process.wait(timeout=remaining)
+                except KeyboardInterrupt:
+                    continue
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    break
+
+            while process.poll() is None:
+                try:
+                    process.wait()
+                except KeyboardInterrupt:
+                    continue
+            raise
+
+        if returncode != 0:
+            raise VMError(
+                f"Rootfs script {script_path} exited with code "
+                f"{returncode}."
+            )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _run_rootfs_script_lima(
+    name: str, script_path: Path, out_key: str, out_path: Path,
+    cache_paths_file: Path,
+) -> None:
+    """Run the rootfs-script inside the shared safeyolo-builder Lima VM.
+
+    Staging strategy: two-tier storage because macOS→VM VirtioFS confuses
+    libext2fs's `mkfs.ext4 -d` walker (it ENOENTs on files like
+    /etc/passwd- after useradd, which read fine on a regular Linux mount).
+
+      - WORK dir: VM-local /tmp/safeyolo-rootfs-<uuid>/ -- every heavy
+        operation (skopeo unpack, chroot+apt/apk, mkfs.ext4 -d reading
+        the source tree) happens here, on a plain Linux filesystem.
+      - STAGING dir: host guest/.scratch/<uuid>/ (virtiofs-mounted into
+        the VM at /build/guest/.scratch/<uuid>/) -- holds only the final
+        packed rootfs image. Script writes to $SAFEYOLO_ROOTFS_OUT_* here;
+        host-side then plain-moves it to the agent dir.
+
+    The script itself is staged into the staging dir (single small file,
+    crossing virtiofs once is fine).
+
+    Avoiding mutation of the Lima instance's mount list keeps the VM
+    config reusable and avoids stop/start overhead.
+    """
+    import uuid
+
+    limactl = shutil.which("limactl")
+    if not limactl:
+        raise VMError(
+            "Lima is not installed. --rootfs-script on macOS needs Lima.\n"
+            "Install: brew install lima\n"
+            "See contrib/ROOTFS_SCRIPT_GUIDE.md."
+        )
+
+    guest_src = _guest_src_dir()
+    if not guest_src.is_dir():
+        raise VMError(f"guest/ directory not found at {guest_src}.")
+
+    _ensure_lima_vm(limactl)
+
+    run_id = uuid.uuid4().hex[:12]
+    host_scratch = guest_src / ".scratch" / run_id
+    host_scratch.mkdir(parents=True, exist_ok=False)
+    vm_scratch = f"{LIMA_GUEST_MOUNT}/.scratch/{run_id}"
+    vm_work_dir = f"/tmp/safeyolo-rootfs-{run_id}"
+
+    try:
+        # Stage the user's script into the (virtiofs) staging dir so the VM
+        # sees it. Fixed name inside the VM keeps the command line predictable.
+        staged_script = host_scratch / "rootfs-script"
+        shutil.copy2(str(script_path), str(staged_script))
+        staged_script.chmod(0o755)
+
+        out_name = out_path.name  # rootfs.ext4 (Darwin) or rootfs (Linux tree)
+        vm_script_path = f"{vm_scratch}/rootfs-script"
+        vm_out_path = f"{vm_scratch}/{out_name}"
+        vm_cache_paths = f"{vm_scratch}/cache-paths.txt"
+        vm_guest_dir = LIMA_GUEST_MOUNT
+
+        env_args = [
+            f"SAFEYOLO_AGENT_NAME={name}",
+            f"{out_key}={vm_out_path}",
+            f"SAFEYOLO_ROOTFS_OUT_CACHE_PATHS={vm_cache_paths}",
+            f"SAFEYOLO_ROOTFS_WORK_DIR={vm_work_dir}",
+            f"SAFEYOLO_GUEST_SRC_DIR={vm_guest_dir}",
+            f"SAFEYOLO_TARGET_ARCH={_host_target_arch()}",
+        ]
+        # --workdir=/ silences Lima's "cd: <cwd>: No such file or directory"
+        # for callers whose host CWD isn't inside the VM's narrow mount set.
+        # sudo -E: rootfs builders need root (chroot, mkfs, apt-get --install-root,
+        # etc.); Lima's default user has NOPASSWD sudo. -E preserves the env
+        # vars we already set so the script sees SAFEYOLO_* without re-plumbing.
+        # Trap on the bash line cleans up the VM-local work dir even if the
+        # script crashes mid-way.
+        cmd = [
+            limactl, "shell", "--workdir=/", LIMA_VM_NAME, "--",
+            "sudo", "-E", "bash", "-c",
+            f"mkdir -p {vm_work_dir} && "
+            f"trap 'rm -rf {vm_work_dir}' EXIT && "
+            f"env {' '.join(env_args)} {vm_script_path}"
+        ]
+        log.info("Running rootfs script in Lima VM %s: %s", LIMA_VM_NAME, script_path)
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            raise VMError(
+                f"Rootfs script {script_path} exited with code "
+                f"{result.returncode} inside Lima VM."
+            )
+
+        # Pull the output back to the agent dir. The script wrote it into
+        # the virtiofs-backed staging dir, so this is a plain filesystem move.
+        produced = host_scratch / out_name
+        if not produced.exists():
+            raise VMError(
+                f"Rootfs script {script_path} did not produce "
+                f"${out_key} ({produced})."
+            )
+        shutil.move(str(produced), str(out_path))
+
+        # Optional: the script may have emitted a cache-paths list.
+        # Move it to the agent dir if present; harmless if not (macOS VZ
+        # ignores it anyway — the disk-backed overlay persists writes).
+        produced_cache = host_scratch / "cache-paths.txt"
+        if produced_cache.exists():
+            shutil.move(str(produced_cache), str(cache_paths_file))
+    finally:
+        # Host-side: staging dir cleanup is unconditional. VM-local work dir
+        # is cleaned up by the bash trap above; if that didn't run (e.g.
+        # SIGKILL from the host), it's under /tmp and the VM reboot will
+        # clear it.
+        shutil.rmtree(host_scratch, ignore_errors=True)
+        # Stop the builder VM so it doesn't keep CPU/RAM pinned on the host
+        # between builds. Boot cost on re-use is trivial.
+        subprocess.run(
+            [limactl, "stop", LIMA_VM_NAME],
+            check=False, capture_output=True,
+        )
+
+
+def _ensure_lima_vm(limactl: str) -> None:
+    """Make sure the safeyolo-builder Lima VM exists and is running.
+
+    Creates it from guest/lima.yaml if missing. Starts it if stopped.
+    Matches the pattern in guest/build-all.sh so the default-base and
+    custom-rootfs flows share one VM, and the post-build stop() in
+    _run_rootfs_script_lima doesn't leave the next run to trip over
+    Lima 2.x's interactive "Do you want to start the instance now?"
+    prompt on `limactl shell`.
+    """
+    # One list call, parsed locally. `limactl list --filter name=X` isn't
+    # supported on all Lima versions (2.x returns exit 1), so we avoid it.
+    listing = subprocess.run(
+        [limactl, "list", "--format", "{{.Name}}\t{{.Status}}"],
+        check=True, capture_output=True, text=True,
+    )
+    status_by_name: dict[str, str] = {}
+    for line in listing.stdout.splitlines():
+        name, _, status = line.partition("\t")
+        if name:
+            status_by_name[name] = status
+
+    if LIMA_VM_NAME not in status_by_name:
+        lima_yaml = _guest_src_dir() / "lima.yaml"
+        if not lima_yaml.is_file():
+            raise VMError(f"Missing {lima_yaml}; cannot create Lima VM.")
+        repo_dir = _guest_src_dir().parent.resolve()
+        log.info("Creating Lima VM '%s' (first run; ~2-3 min)", LIMA_VM_NAME)
+        subprocess.run(
+            [limactl, "start", f"--name={LIMA_VM_NAME}", "--tty=false",
+             f"--set=.param.REPO_DIR = \"{repo_dir}\"", str(lima_yaml)],
+            check=True,
+        )
+        return
+
+    if status_by_name[LIMA_VM_NAME] != "Running":
+        log.info("Starting Lima VM '%s'", LIMA_VM_NAME)
+        subprocess.run(
+            [limactl, "start", "--tty=false", LIMA_VM_NAME],
+            check=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Config share (VirtioFS directory mounted read-only in the guest)
+# ---------------------------------------------------------------------------
+
+def stage_guest_desktop_launcher(
+    name: str,
+    *,
+    preferred_size: str | None = None,
+) -> Path:
+    """Copy the current core desktop launcher into an agent's live share.
+
+    The share is mounted into running Linux and macOS guests, so this also
+    upgrades an already-running agent before ``agent desktop`` invokes it.
+    """
+    share_dir = get_agent_config_share_dir(name)
+    share_dir.mkdir(parents=True, exist_ok=True)
+    source = _SOURCE_ASSETS / "guest-desktop.sh"
+    destination = share_dir / "guest-desktop"
+    fd, temporary_name = tempfile.mkstemp(prefix=".guest-desktop-", dir=share_dir)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        shutil.copy2(source, temporary)
+        temporary.chmod(0o755)
+        # Replacing the directory entry is safe even if another invocation is
+        # still executing the previous inode, and prevents partial reads.
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    # Agent-side orchestrators such as browser fleets can start the same core
+    # launcher without inventing a second geometry default. The read-only
+    # share carries the host preference into the sandbox on every run and is
+    # refreshed alongside the launcher for already-running agents.
+    if preferred_size is not None:
+        (share_dir / "desktop-size").write_text(f"{preferred_size}\n")
+    return destination
+
+
+def prepare_config_share(
+    name: str,
+    workspace_path: str,
+    agent_args: str = "",
+    extra_env: dict[str, str] | None = None,
+    proxy_port: int = 8080,
+    host_mounts: list[tuple[str, str, bool]] | None = None,
+    gateway_ip: str = "127.0.0.1",
+    guest_ip: str = "127.0.0.1",
+    attribution_ip: str = "",
+    pre_write_per_run_go: bool = True,
+    debug_mode: bool = False,
+) -> Path:
+    """Create the config share directory for a VM.
+
+    The guest init script reads files from this directory to configure
+    proxy settings, CA trust, SSH access, and agent environment.
+    """
+    config_dir = get_config_dir()
+    share_dir = get_agent_config_share_dir(name)
+    share_dir.mkdir(parents=True, exist_ok=True)
+
+    # SafeYolo-owned agent guidance is served from the read-only per-run share,
+    # not copied into the persistent, agent-writable home. Host setup installs
+    # only native discovery symlinks. Replace the complete managed skill tree
+    # so additions and removals take effect on the next run without leaving
+    # stale skills behind.
+    skills_source = _SOURCE_ASSETS / "agent_context" / "skills"
+    skills_target = share_dir / "skills"
+    if not (skills_source / "safeyolo" / "SKILL.md").is_file():
+        raise VMError(f"Bundled SafeYolo skill is missing from {skills_source}")
+    temporary = Path(tempfile.mkdtemp(prefix=".skills-", dir=share_dir))
+    backup = share_dir / f".skills-old-{uuid.uuid4().hex}"
+    moved_existing = False
+    replacement_complete = False
+    try:
+        shutil.copytree(skills_source, temporary, dirs_exist_ok=True)
+        # mkdtemp creates the root as 0700. The config share is read-only in
+        # the guest, but the unprivileged agent still needs to traverse it.
+        temporary.chmod(0o755)
+        if skills_target.exists() or skills_target.is_symlink():
+            skills_target.rename(backup)
+            moved_existing = True
+        temporary.rename(skills_target)
+        replacement_complete = True
+    except Exception:
+        if moved_existing and not skills_target.exists() and backup.exists():
+            backup.rename(skills_target)
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+        if replacement_complete:
+            shutil.rmtree(backup, ignore_errors=True)
+
+    # Guest init scripts -- served from config share, not baked into rootfs.
+    # Changes here take effect on next agent run without rootfs rebuild.
+    # Three scripts split the boot into a snapshottable static phase and
+    # a per-run phase; the orchestrator gates between them on per-run-go.
+    #
+    # guest-proxy-forwarder.sh bridges the agent's HTTP_PROXY (localhost
+    # TCP) to the host-side proxy (UDS on Linux / vsock on macOS) via
+    # socat. Started by guest-init before the agent. guest-shell-bridge.sh
+    # mirrors in the other direction for `safeyolo agent shell`.
+    # The retired Python guest diagnostic is not a staging input. The native
+    # guest helper supplies the maintained command and probe operations.
+    helper = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).parent / "bin/safeyolo-guest")))
+    if not helper.is_file():
+        raise VMError(f"Required native guest helper is missing: {helper}; build/stage the installed Linux guest assets")
+    boot_executables = [
+        ("guest-init.sh", "guest-init"),
+        ("guest-init-static.sh", "guest-init-static"),
+        ("guest-init-per-run.sh", "guest-init-per-run"),
+        ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
+        ("guest-shell-bridge.sh", "guest-shell-bridge"),
+    ]
+    for src, dst_name in [(_SOURCE_ASSETS / name, target) for name, target in boot_executables] + [(helper, "safeyolo-guest")]:
+        dst = share_dir / dst_name
+        # Write each boot executable to a temporary file. Then replace the
+        # destination. An in-place copy keeps the old inode. The guest can then
+        # execute old bytes from the VirtioFS share. A new inode makes the next
+        # boot open the staged file.
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{dst_name}-", dir=share_dir)
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copy2(src, temporary)
+            temporary.chmod(0o755)
+            os.replace(temporary, dst)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    # Refresh the guest-root compatibility shim independently of the base
+    # image. guest-init-static installs it into the writable guest overlay,
+    # so existing images gain current sudo behavior without a rebuild.
+    guest_sudo = share_dir / "guest-sudo"
+    shutil.copy2(_guest_sudo_source(), guest_sudo)
+    guest_sudo.chmod(0o755)
+
+    stage_guest_desktop_launcher(name, preferred_size=get_desktop_size())
+
+    # Pre-write the per-run gate so the orchestrator falls straight through
+    # to per-run after static. CAPTURE / RESTORE callers disable this and
+    # write per-run-go themselves at the right moment (after snapshot
+    # completes, or after restore succeeds). Without a pre-write or an
+    # explicit write from the CLI, the guest would wait 30s before
+    # continuing on every cold boot.
+    per_run_go = share_dir / "per-run-go"
+    if pre_write_per_run_go:
+        per_run_go.write_text("")
+    else:
+        # CAPTURE mode needs a clean slate -- a stale per-run-go from an
+        # earlier passthrough run would let the guest skip past the
+        # snapshot point before we get a chance to SIGUSR1.
+        per_run_go.unlink(missing_ok=True)
+    # Ensure no stale per-boot markers from a prior run mask progress --
+    # the guest writes these fresh on every boot to the status share.
+    # The CLI polls for per-run-started specifically as a definitive
+    # "restore succeeded" signal; a stale copy would make a failed
+    # restore look successful.
+    status_dir = get_agent_status_dir(name)
+    for marker in ("static-init-done", "per-run-started", "vm-status"):
+        (status_dir / marker).unlink(missing_ok=True)
+
+    # Debug-mode marker -- presence enables per-iteration guest tracing.
+    # Checked by guest-init orchestrator (which runs before agent.env is
+    # sourced, so a file marker is cleaner than an env var).
+    debug_marker = share_dir / "debug-mode"
+    if debug_mode:
+        debug_marker.write_text("")
+    else:
+        debug_marker.unlink(missing_ok=True)
+
+    # vsock-term binary -- cross-compiled, served from config share
+    vsock_term_src = get_vsock_term_path()
+    if vsock_term_src.exists():
+        shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
+        (share_dir / "vsock-term").chmod(0o755)
+
+    # Proxy environment variables. proxy_port is 8080 -- the fixed port
+    # where guest-proxy-forwarder listens inside the sandbox. The host
+    # bridge (UDS on Linux, vsock on macOS) decouples it from whatever
+    # port the host Rust proxy uses. gateway_ip is the guest-side loopback.
+    proxy_url = f"http://{gateway_ip}:{proxy_port}"
+    proxy_env = (
+        f'export HTTP_PROXY="{proxy_url}"\n'
+        f'export HTTPS_PROXY="{proxy_url}"\n'
+        f'export http_proxy="{proxy_url}"\n'
+        f'export https_proxy="{proxy_url}"\n'
+        'export NO_PROXY="localhost,127.0.0.1"\n'
+        'export no_proxy="localhost,127.0.0.1"\n'
+        'export SSL_CERT_FILE="/usr/local/share/ca-certificates/safeyolo.crt"\n'
+        'export REQUESTS_CA_BUNDLE="/usr/local/share/ca-certificates/safeyolo.crt"\n'
+        'export NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/safeyolo.crt"\n'
+        'export NO_UPDATE_NOTIFIER=1\n'
+        'export npm_config_update_notifier=false\n'
+        'export HOME=/home/agent\n'
+    )
+    (share_dir / "proxy.env").write_text(proxy_env)
+
+    # Agent environment. The template system is gone -- host scripts set
+    # up whatever the agent needs directly in the persistent home. The
+    # only thing we still surface is extra_env (yolo / detach / host-
+    # terminal flags) and user-supplied agent args.
+    agent_env_lines = []
+    if agent_args:
+        agent_env_lines.append(f'export SAFEYOLO_AGENT_ARGS="{agent_args}"')
+    if extra_env:
+        for k, v in extra_env.items():
+            agent_env_lines.append(f'export {k}="{v}"')
+    (share_dir / "agent.env").write_text("\n".join(agent_env_lines) + "\n")
+
+    # Network config for static IP (used by initramfs init)
+    net_env = (
+        f"GUEST_IP={guest_ip}\n"
+        f"GATEWAY_IP={gateway_ip}\n"
+        f"NETMASK=255.255.255.0\n"
+    )
+    if attribution_ip:
+        net_env += f"AGENT_IP={attribution_ip}\n"
+    (share_dir / "network.env").write_text(net_env)
+
+    # Agent name → guest hostname. Read by guest-init-static, which
+    # calls `hostname <name>` and writes /etc/hostname. Setting it here
+    # ensures /etc/hosts, sudo, prompt, and sshd all identify the guest
+    # correctly.
+    (share_dir / "agent-name").write_text(name)
+
+    # CA certificate
+    ca_cert = config_dir / "certs" / "mitmproxy-ca-cert.pem"
+    if ca_cert.exists():
+        dest = share_dir / "mitmproxy-ca-cert.pem"
+        shutil.copy2(str(ca_cert), str(dest))
+        dest.chmod(0o644)  # public cert, must be readable by agent user
+
+    # SSH authorized keys
+    _ensure_ssh_key()
+    pub_key = get_ssh_key_path().with_suffix(".pub")
+    if pub_key.exists():
+        shutil.copy2(str(pub_key), str(share_dir / "authorized_keys"))
+
+    # Agent token (for agent API access)
+    agent_token = config_dir / "data" / "agent_token"
+    if agent_token.exists():
+        shutil.copy2(str(agent_token), str(share_dir / "agent_token"))
+
+    # Extra-mount manifest for the macOS guest. start_vm assigns matching,
+    # deterministic VirtioFS tags in the same list order. Linux consumes the
+    # guest destinations directly in its OCI spec; its harmless mount attempts
+    # are suppressed by guest-init after detecting the existing OCI mounts.
+    # Format: one line per mount, "tag:guest_path".
+    host_mount_manifest = share_dir / "host-mounts"
+    if host_mounts:
+        lines = []
+        for index, (_host_path, guest_path, _read_only) in enumerate(host_mounts):
+            lines.append(f"extra{index}:{guest_path}")
+        host_mount_manifest.write_text("\n".join(lines) + "\n")
+    else:
+        # One-off mounts must not survive into a later run via stale config.
+        host_mount_manifest.unlink(missing_ok=True)
+
+    # Retain actual boot inputs, including --folder and one-off --mount values.
+    # Host launchers need these after the booting CLI has exited. This share is
+    # host-owned and read-only in the guest; agent metadata describes future runs.
+    context_path = share_dir / "host-launch-context.json"
+    try:
+        payload_identities = json.loads(context_path.read_text()).get("command_payloads", {})
+    except FileNotFoundError:
+        payload_identities = {}
+    stage_guest_command_observation(get_agent_home_dir(name), payload_identities)
+    context_path.write_text(json.dumps({
+        "generation": uuid.uuid4().hex,
+        "command_payloads": payload_identities,
+        "workspace": str(Path(workspace_path).expanduser().resolve()),
+        "extra_shares": [
+            {"host_path": str(Path(host).expanduser().resolve()), "read_only": read_only}
+            for host, _guest, read_only in (host_mounts or [])
+        ],
+        "writable_mounts": [str(Path(host).resolve()) for host, _guest, read_only in (host_mounts or [])
+                            if not read_only],
+    }) + "\n")
+
+    return share_dir
+
+
+def stage_native_boot_inputs(name: str, metadata: dict) -> None:
+    """Stage host-owned boot inputs while the Python CLI is available.
+
+    The native proxy can later start this configured agent without importing
+    the CLI package. The ordinary CLI run still refreshes these inputs before
+    its own boot. Only a stopped agent may be staged here.
+    """
+    from .agent_configuration import _resolve_extra_shares
+    from .agents_store import reserve_agent_network_slot
+    from .platform import get_platform
+    from .sockets import path_for
+
+    platform = get_platform()
+    slot = reserve_agent_network_slot(name)
+    allocation = platform.setup_networking(slot)
+    attribution_ip = allocation["attribution_ip"]
+    socket_dir = path_for(name, attribution_ip).parent
+    socket_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    shares = _resolve_extra_shares(metadata, None)
+    workspace = str(Path(metadata["folder"]).expanduser().resolve())
+    share = prepare_config_share(
+        name=name,
+        workspace_path=workspace,
+        agent_args=" ".join(metadata.get("user_default_args", [])),
+        extra_env={"SAFEYOLO_YOLO_MODE": "1", "SAFEYOLO_DETACH": "1"},
+        proxy_port=8080,
+        host_mounts=shares,
+        gateway_ip=allocation["host_ip"],
+        guest_ip=allocation["guest_ip"],
+        attribution_ip=attribution_ip,
+        pre_write_per_run_go=True,
+        debug_mode=os.environ.get("SAFEYOLO_DEBUG") == "1",
+    )
+    if sys.platform.startswith("linux"):
+        specification = platform._generate_oci_config(
+            name=name,
+            rootfs_path=platform.agent_rootfs_path(name),
+            workspace_path=workspace,
+            config_share=share,
+            fw_alloc=allocation,
+            cpus=4,
+            memory_mb=metadata.get("memory_mb", 4096),
+            extra_shares=shares,
+            userns_pid=None,
+            ephemeral=metadata.get("rootfs_overlay") == "memory",
+        )
+        (get_agents_dir() / name / "config.json").write_text(
+            json.dumps(specification, indent=2) + "\n"
+        )
+
+
+def _command_payload_identity(payload: Path) -> list[int]:
+    info = payload.lstat()  # Identify the guest-owned path without following symlinks on the host.
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+        raise VMError(f"Cannot stage command: preserving unrecognized payload {payload}")
+    return [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def stage_guest_command_observation(home: Path, payload_identities: dict[str, list[int]]) -> None:
+    """Wrap configured entrypoints at boot, including custom host-script output."""
+    wrapper = (
+        b"#!/bin/sh\n"
+        b"# SafeYolo configured-command observation\n"
+        b'if [ ! -x /safeyolo/safeyolo-guest ]; then\n'
+        b"    echo 'Required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n"
+        b'    exit 127\n'
+        b'fi\n'
+        b'exec /safeyolo/safeyolo-guest observe exec -- "$0.payload" "$@"\n'
+    )
+    pending = []
+    for name in (".safeyolo-command", ".safeyolo-interactive-command"):
+        entrypoint = home / name
+        if not entrypoint.is_file() or not os.access(entrypoint, os.X_OK):
+            continue
+        payload = home / f"{name}.payload"
+        if entrypoint.read_bytes() == wrapper:
+            # Recognize wrappers from before payload ownership was recorded.
+            if name not in payload_identities:
+                payload_identities[name] = _command_payload_identity(payload)
+            continue
+        if payload.exists() or payload.is_symlink():
+            if payload_identities.get(name) != _command_payload_identity(payload):
+                raise VMError(f"Cannot stage {name}: preserving unrecognized payload {payload}")
+        pending.append((entrypoint, payload))
+    # A collision in either command must leave both entrypoints untouched.
+    for entrypoint, payload in pending:
+        entrypoint.replace(payload)
+        payload_identities[entrypoint.name] = _command_payload_identity(payload)
+        entrypoint.write_bytes(wrapper)
+        entrypoint.chmod(0o755)
+
+
+
+# ---------------------------------------------------------------------------
+# SSH key management
+# ---------------------------------------------------------------------------
+
+def _ensure_ssh_key() -> None:
+    """Generate SSH key pair for VM access if not present."""
+    key_path = get_ssh_key_path()
+    if key_path.exists():
+        return
+
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-q"],
+        check=True,
+    )
+    key_path.chmod(0o600)
+
+
+# ---------------------------------------------------------------------------
+# VM lifecycle
+# ---------------------------------------------------------------------------
+
+def start_vm(
+    name: str,
+    workspace_path: str,
+    cpus: int = 4,
+    memory_mb: int = 4096,
+    extra_shares: list[tuple[str, str, bool]] | None = None,
+    background: bool = False,
+    snapshot_capture_path: Path | None = None,
+    restore_from_path: Path | None = None,
+    proxy_socket_path: str | None = None,
+    shell_socket_path: str | None = None,
+    ephemeral: bool = False,
+) -> subprocess.Popen:
+    """Start a VM and return the Popen handle.
+
+    If background=True, serial console goes to a log file instead of
+    stdin/stdout (for SSH-primary mode).
+
+    snapshot_capture_path: if set, pass --snapshot-on-signal to the
+        helper. The CLI sends SIGUSR1 once the guest's static phase has
+        completed; the helper pauses the VM, saves memory state to this
+        path, clones the rootfs beside it, and resumes.
+
+    restore_from_path: if set, pass --restore-from to the helper and
+        override --rootfs to point at the paired APFS clone. The helper
+        restores VM memory from this path instead of cold-booting.
+        Mutually exclusive with snapshot_capture_path.
+
+    ephemeral: if True, don't attach a per-agent overlay disk. The
+        kernel cmdline gets `safeyolo.ephemeral_upper=1` which tells the
+        guest's initramfs to use tmpfs as the overlayfs upper. Writes
+        to / are discarded on stop. /home/agent (virtiofs) still
+        persists regardless.
+    """
+    if snapshot_capture_path and restore_from_path:
+        raise VMError("snapshot_capture_path and restore_from_path are mutually exclusive")
+
+    helper = find_vm_helper()
+    host_system = platform.system()
+    if host_system == "Darwin":
+        probe_vm_helper(helper)
+    rootfs = get_agent_rootfs_path(name)
+    if not rootfs.exists():
+        raise VMError(f"Agent rootfs not found: {rootfs}\nRun 'safeyolo agent add' first.")
+
+    if host_system == "Darwin" and not background:
+        require_vsock_term()
+
+    kernel = get_kernel_path()
+    initrd = get_initrd_path()
+    for path, label in [(kernel, "kernel"), (initrd, "initramfs")]:
+        if not path.exists():
+            raise VMError(f"{label} not found at {path}\nBuild guest images first.")
+
+    # Restore-time disk pairing. VZ requires every attached disk at
+    # restore to match byte-for-byte the state it had at save time.
+    #
+    # Rootfs: shared read-only ext4. It doesn't change between save and
+    # restore, so no pairing needed — we pass the same --rootfs as
+    # cold-boot.
+    #
+    # Overlay (writable, per-agent /dev/vdb): the guest DOES write to
+    # this between save and restore, so safeyolo-vm at save time clones
+    # it to {snapshot}.overlay. On restore we clone that pristine copy
+    # to a per-run working file ({snapshot}.overlay.run) and pass it as
+    # --overlay, so live writes during the restore session land in the
+    # working copy and the pristine is reusable for the next restore.
+    # APFS clonefile makes this ~instant regardless of logical size.
+    #
+    # Ephemeral mode: no overlay was attached at save time, so no
+    # pairing file was produced. start_vm below also omits --overlay
+    # on restore; the tmpfs upper is carried inside the memory image.
+    overlay_restore_working: Path | None = None
+    if restore_from_path is not None and not ephemeral:
+        pristine = Path(f"{restore_from_path}.overlay")
+        if not pristine.exists():
+            raise VMError(
+                f"Snapshot overlay clone missing: {pristine}\n"
+                f"Restore cannot proceed without the paired overlay clone.\n"
+                f"(Snapshots captured with pre-schema-4 safeyolo-vm versions\n"
+                f" pair to .rootfs, not .overlay — recapture the snapshot.)"
+            )
+        working = Path(f"{restore_from_path}.overlay.run")
+        # Discard any residue from a previous restore session.
+        working.unlink(missing_ok=True)
+        # APFS clone (cp -c). Falls back to a deep copy on non-APFS.
+        cp_result = subprocess.run(
+            ["cp", "-c", str(pristine), str(working)],
+            capture_output=True,
+        )
+        if cp_result.returncode != 0:
+            try:
+                shutil.copy2(str(pristine), str(working))
+            except Exception as err:
+                raise VMError(
+                    f"Failed to prepare restore working copy at {working}: {err}"
+                ) from err
+        overlay_restore_working = working
+
+    config_share = get_agent_config_share_dir(name)
+
+    # Per-agent persistent /home/agent. VirtioFS bind-mount from host
+    # keeps state (mise installs, .claude.json, shell history) outside
+    # the rootfs so it survives macOS snapshot restore (which rewinds
+    # the rootfs to a pristine clone) and Linux overlay discard.
+    ensure_agent_persistent_dirs(name)
+    agent_home = get_agent_home_dir(name)
+
+    # Default kernel cmdline. Ephemeral mode appends the flag the
+    # initramfs consumes to pick tmpfs-for-upper over /dev/vdb.
+    cmdline = "console=hvc0 root=/dev/vda rw quiet"
+    if ephemeral:
+        cmdline += " safeyolo.ephemeral_upper=1"
+
+    cmd = [
+        str(helper), "run",
+        "--kernel", str(kernel),
+        "--initrd", str(initrd),
+        "--rootfs", str(rootfs),
+        "--cpus", str(cpus),
+        "--memory", str(memory_mb),
+        "--share", f"{workspace_path}:workspace:rw",
+        "--share", f"{config_share}:config:ro",
+        "--share", f"{get_agent_status_dir(name)}:status:rw",
+        "--share", f"{agent_home}:home:rw",
+        "--serial-log", str(get_agents_dir() / name / "console.log"),
+        "--cmdline", cmdline,
+    ]
+
+    # Persistent mode (default): attach the per-agent writable overlay
+    # disk as /dev/vdb. The guest's initramfs layers overlayfs over the
+    # read-only ext4 base with this as the upper. Lazy-formatted on
+    # first boot. In ephemeral mode we deliberately don't attach it;
+    # the initramfs uses tmpfs instead. On restore, use the per-run
+    # working copy of the paired pristine clone (see the restore block
+    # above) so live writes don't corrupt the pristine.
+    if not ephemeral:
+        overlay_img = overlay_restore_working or ensure_agent_overlay(name)
+        cmd.extend(["--overlay", str(overlay_img)])
+
+    if snapshot_capture_path is not None:
+        cmd.extend(["--snapshot-on-signal", str(snapshot_capture_path)])
+    if restore_from_path is not None:
+        cmd.extend(["--restore-from", str(restore_from_path)])
+
+    # vsock→UDS relay. The cross-platform bridge stamps agent identity
+    # on upstream TCP, matching the Linux data path.
+    if proxy_socket_path:
+        cmd.extend(["--proxy-socket", proxy_socket_path])
+
+    # Shell bridge UDS (Phase 2). `safeyolo agent shell` uses SSH with
+    # ProxyCommand=`nc -U <path>` to reach sshd inside a VM that has
+    # no network interface.
+    if shell_socket_path:
+        cmd.extend(["--shell-socket", shell_socket_path])
+
+    if host_system == "Darwin":
+        from .vm_control import socket_path as control_socket_for
+
+        control_socket = control_socket_for(name)
+        control_socket.parent.mkdir(parents=True, exist_ok=True)
+        control_socket.parent.chmod(0o700)  # DOC: docs/agent-debugging.md
+        cmd.extend(["--control-socket", str(control_socket)])
+
+    # Additional shares. Tags are internal transport identifiers; the matching
+    # tag-to-destination manifest is written by prepare_config_share().
+    if extra_shares:
+        for index, (host_path, _guest_path, read_only) in enumerate(extra_shares):
+            mode = "ro" if read_only else "rw"
+            cmd.extend(["--share", f"{host_path}:extra{index}:{mode}"])
+
+    serial_log = get_agents_dir() / name / "serial.log"
+    try:
+        if background:
+            cmd.append("--no-terminal")
+            # `with` closes our parent-side handle on block exit; Popen has
+            # already duplicated the fd into the child process, which
+            # continues writing independently. Avoids the parent leaking an
+            # fd for the lifetime of the VM.
+            with open(serial_log, "w") as serial_fh:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=serial_fh,
+                    stderr=serial_fh,
+                )
+        else:
+            # Foreground mode: the vsock terminal's stdout is the agent's
+            # interactive session -- it must reach the user's terminal. But
+            # stderr carries bridge relay logs (proxy-relay, shell-bridge)
+            # which would corrupt the agent's TUI. Redirect stderr to the
+            # serial log so diagnostics are captured without leaking into
+            # the interactive session.
+            with open(serial_log, "w") as serial_fh:
+                proc = subprocess.Popen(cmd, stderr=serial_fh)
+    except OSError as exc:
+        detail = _helper_output_excerpt("", str(exc))
+        raise VMError(
+            f"Could not launch {helper}"
+            + (f": {detail}" if detail else "")
+        ) from exc
+
+    # A helper that fails before VZ boot previously became a generic
+    # "check serial.log" result (often pointing at an empty file). Give the
+    # child a short bounded window to expose immediate loader, signing,
+    # argument, or framework failures and preserve its actionable exit text.
+    # Restore failures remain on the existing liveness/fallback path.
+    if host_system == "Darwin" and restore_from_path is None:
+        try:
+            returncode = proc.wait(timeout=_VM_HELPER_STARTUP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            try:
+                helper_output = serial_log.read_text(errors="replace")
+            except OSError:
+                helper_output = ""
+            raise VMError(
+                _vm_helper_exit_message(
+                    helper,
+                    returncode,
+                    stderr=helper_output,
+                    operation="startup",
+                )
+            )
+
+    # Write PID file
+    pid_path = get_agent_pid_path(name)
+    # A Python-launched VM has no native start token. Clear one left by an
+    # earlier native run before exposing the new PID to the proxy.
+    (pid_path.parent / "vm.token").unlink(missing_ok=True)
+    pid_path.write_text(str(proc.pid))
+
+    return proc
+
+
+def stop_vm(name: str) -> None:
+    """Stop a running VM and clean up agent-map state."""
+    pid_path = get_agent_pid_path(name)
+    if not pid_path.exists():
+        _update_agent_map(name, remove=True)
+        return
+
+    pid = int(pid_path.read_text().strip())
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        (pid_path.parent / "vm.token").unlink(missing_ok=True)
+        _update_agent_map(name, remove=True)
+        return
+
+    # Wait up to 10 seconds (VM needs time for graceful + force stop)
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.1)
+        except ProcessLookupError:
+            break
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # Process died between the SIGTERM wait loop and SIGKILL -- fine.
+            pass
+
+    pid_path.unlink(missing_ok=True)
+    (pid_path.parent / "vm.token").unlink(missing_ok=True)
+    _update_agent_map(name, remove=True)
+
+
+def is_vm_running(name: str) -> bool:
+    """Check if a VM process is alive (and not a zombie)."""
+    pid_path = get_agent_pid_path(name)
+    if not pid_path.exists():
+        return False
+
+    pid = int(pid_path.read_text().strip())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        return False
+
+    # os.kill(pid, 0) also succeeds for zombies -- a Popen whose child has
+    # exited but hasn't been waited on. Ask ps for the state letter; 'Z'
+    # means zombie, which we treat as not running.
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.stdout.strip().startswith("Z"):
+            pid_path.unlink(missing_ok=True)
+            return False
+    except (subprocess.SubprocessError, OSError):
+        # ps unavailable or errored -- can't distinguish zombie from live.
+        # os.kill already said the pid exists, so fall through to "running".
+        pass
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Agent map for native listeners and discovery metadata
+# ---------------------------------------------------------------------------
+
+def _update_agent_map(
+    name: str,
+    ip: str | None = None,
+    socket: str | None = None,
+    remove: bool = False,
+) -> None:
+    """Update the agent-IP map file.
+
+    The CLI derives native listener entries from the map at proxy start and
+    listener reload. Rust also reads it for discovery reports and to reconcile
+    a listener identity with host metadata when a request has a client IP.
+    Diagnostics use `socket`; the managed listener path is derived with
+    `sockets.path_for(name, ip)`.
+    """
+    map_path = get_agent_map_path()
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+
+    agent_map: dict = {}
+    if map_path.exists():
+        try:
+            agent_map = json.loads(map_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            agent_map = {}
+
+    if remove:
+        agent_map.pop(name, None)
+    elif ip:
+        entry = {
+            "ip": ip,
+            "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if socket:
+            entry["socket"] = socket
+        agent_map[name] = entry
+
+    map_path.write_text(json.dumps(agent_map, indent=2) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Guest image checks
+# ---------------------------------------------------------------------------
+
+def get_base_rootfs_tree_path() -> Path:
+    """Directory tree used as OCI root.path on Linux gVisor.
+
+    gVisor reads the tree directly — shared across all agents on the
+    host (read-only from the container's perspective; the per-agent
+    dir= overlay above it captures writes).
+
+    Produced by guest/build-rootfs.sh as out/rootfs-tree/ alongside
+    the ext4 output; installed to ~/.safeyolo/share/rootfs-tree/.
+    """
+    return get_share_dir() / "rootfs-tree"
+
+
+def check_guest_images() -> bool:
+    """Check if required guest image artifacts exist.
+
+    Platform-specific — each platform checks the rootfs format its
+    runtime actually consumes:
+
+      - macOS (Virtualization.framework): ext4 rootfs + kernel + initramfs.
+      - Linux (gVisor):                    unpacked tree (OCI root.path).
+    """
+    if platform.system() == "Darwin":
+        return (
+            get_base_rootfs_path().exists()
+            and get_kernel_path().exists()
+            and get_initrd_path().exists()
+        )
+    if platform.system() == "Linux":
+        tree = get_base_rootfs_tree_path()
+        # A valid tree is a non-empty directory with at least the
+        # /etc hierarchy. Catches the "someone rm-rf'd its contents"
+        # case that a plain is_dir() misses.
+        return tree.is_dir() and (tree / "etc").is_dir()
+    # Unsupported platform — treat the rootfs as the minimum needed.
+    return get_base_rootfs_path().exists()
+
+
+def guest_image_status() -> dict[str, bool]:
+    """Return existence status of each guest image artifact.
+
+    Status keys reflect what's on disk. Callers (doctor, setup) decide
+    which to flag as missing per platform.
+    """
+    tree = get_base_rootfs_tree_path()
+    return {
+        "kernel": get_kernel_path().exists(),
+        "initramfs": get_initrd_path().exists(),
+        "rootfs-ext4": get_base_rootfs_path().exists(),
+        "rootfs-tree": tree.is_dir() and (tree / "etc").is_dir(),
+    }
+
+
+# Which keys from guest_image_status() each platform actually needs.
+# Used by `missing_guest_images` for a "missing: X, Y" list.
+_PLATFORM_REQUIRED_ARTIFACTS = {
+    "Darwin": ("kernel", "initramfs", "rootfs-ext4"),
+    "Linux": ("rootfs-tree",),
+}
+
+
+def missing_guest_images() -> list[str]:
+    """Return the artifacts this platform needs that aren't on disk yet."""
+    status = guest_image_status()
+    required = _PLATFORM_REQUIRED_ARTIFACTS.get(
+        platform.system(), ("rootfs-ext4",)
+    )
+    return [k for k in required if not status.get(k, False)]

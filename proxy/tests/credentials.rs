@@ -11,53 +11,6 @@ fn password() -> Secret {
     Secret::new("synthetic vault passphrase — not an operator key")
 }
 
-#[test]
-#[ignore = "Python empty-vault unlock/reload oracle; set SAFEYOLO_POLICY_PYTHON"]
-fn historical_empty_vault_representations_clear_the_active_snapshot() {
-    use serde_json::json;
-    let (_directory, path, vault) = setup();
-    vault.store(credential("kept")).unwrap();
-    let output = python(
-        r#"
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault
-x=json.load(sys.stdin);path=Path(x['path']);v=Vault(path);v.unlock(x['password'])
-original=path.read_bytes();out=[]
-for index,source in enumerate(['credentials: {}','credentials: ""','0.0','-0.0','credentials: []','credentials: null','credentials: false','credentials: 0','credentials: {bad: value}','credentials: nonempty']):
- path.write_bytes(original);old=Vault(path);old.unlock(x['password'])
- raw=v._salt+v._fernet.encrypt(source.encode());target=path.with_name(f'empty-{index}.enc');target.write_bytes(raw);path.write_bytes(raw)
- try:
-  restarted=Vault(path);restarted.unlock(x['password']);accepted=True;names=restarted.list_names()
- except (TypeError,AttributeError,KeyError):accepted=False;names=None
- old._reload()
- out.append({'path':str(target),'accepted':accepted,'restart_names':names,'reload_names':old.list_names()})
-path.write_bytes(original);print(json.dumps(out))
-"#,
-        &json!({"path":path,"password":password().expose_secret()}),
-    );
-    for case in output.as_array().unwrap() {
-        vault.store(credential("kept")).unwrap();
-        fs::copy(case["path"].as_str().unwrap(), &path).unwrap();
-        if case["accepted"] == true {
-            assert_eq!(case["restart_names"], json!([]));
-            assert_eq!(case["reload_names"], json!([]));
-            vault.reload().unwrap();
-            assert!(vault.list_names().unwrap().is_empty());
-            assert!(
-                Vault::unlock(&path, &password())
-                    .unwrap()
-                    .list_names()
-                    .unwrap()
-                    .is_empty()
-            );
-        } else {
-            assert_eq!(vault.reload().unwrap_err().kind, ErrorKind::Format);
-            assert_eq!(vault.list_names().unwrap(), ["kept"]);
-            assert!(Vault::unlock(&path, &password()).is_err());
-        }
-    }
-}
 fn now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1704067200).unwrap()
 }
@@ -70,9 +23,71 @@ fn credential(name: &str) -> Credential {
 }
 fn setup() -> (tempfile::TempDir, PathBuf, Vault) {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("vault.yaml.enc");
+    let path = directory.path().join("credentials.enc");
     let vault = Vault::unlock(&path, &password()).unwrap();
     (directory, path, vault)
+}
+
+#[test]
+fn native_open_ignores_old_vault_files_and_persists_only_an_external_reference() {
+    use safeyolo_proxy::credentials::{ExternalReference, open};
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("vault.yaml.enc"),
+        "unusable old vault",
+    )
+    .unwrap();
+    fs::write(directory.path().join("vault.key"), "unusable old key").unwrap();
+    let store = open(directory.path()).unwrap();
+    assert!(store.list_names().unwrap().is_empty());
+    let mut external = Credential::new("external", "bearer", Secret::new(""));
+    external.reference = Some(ExternalReference::Onepassword(
+        "op://synthetic/item/field".into(),
+    ));
+    store.store(external).unwrap();
+    let reopened = open(directory.path()).unwrap();
+    let credential = reopened.get("external").unwrap().unwrap();
+    assert_eq!(
+        credential.reference,
+        Some(ExternalReference::Onepassword(
+            "op://synthetic/item/field".into()
+        ))
+    );
+    assert!(credential.value.expose_secret().is_empty());
+    assert!(
+        serde_json::to_string(&reopened.metadata().unwrap())
+            .unwrap()
+            .contains("op://synthetic/item/field")
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("vault.key")).unwrap(),
+        "unusable old key"
+    );
+    for name in ["credentials.key", "credentials.enc", "credentials.lock"] {
+        assert_eq!(
+            fs::metadata(directory.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn independent_native_command_writers_keep_each_others_edits() {
+    let (_directory, path, first) = setup();
+    let second = Vault::unlock(&path, &password()).unwrap();
+    first.store(credential("one")).unwrap();
+    second.store(credential("two")).unwrap();
+    assert!(first.remove("one").unwrap());
+    let third = Vault::unlock(&path, &password()).unwrap();
+    assert_eq!(third.list_names().unwrap(), ["two"]);
+    assert_eq!(
+        third.get("two").unwrap().unwrap().value.expose_secret(),
+        "synthetic-private-value-for-two"
+    );
 }
 
 #[test]
@@ -239,7 +254,7 @@ fn write_activation_rollback_restores_exact_encrypted_file_and_snapshot() {
     assert!(vault.get("kept").unwrap().is_some());
     assert_eq!(
         fs::read_dir(directory.path()).unwrap().count(),
-        1,
+        2,
         "private temporary files are cleaned after success and rollback"
     );
 }
@@ -542,7 +557,9 @@ fn rollback_of_external_bytes_does_not_revalidate_a_stale_snapshot() {
             "rollback permitted a stale publication over an external edit"
         );
         assert!(!appeared_current);
-        assert!(vault.has_changes().unwrap());
+        // Native writes first reconcile another command's saved state under
+        // the cross-process lock. Rollback keeps that latest accepted state.
+        assert!(!vault.has_changes().unwrap());
         assert_eq!(fs::read(&path).unwrap(), external_bytes);
         vault.reload().unwrap();
         assert!(!vault.is_current(&snapshot).unwrap());
@@ -635,366 +652,5 @@ fn expiry_and_refresh_eligibility_keep_naive_timestamp_errors_explicit() {
                 .map_err(|failure| failure.kind),
             expected
         );
-    }
-}
-
-fn python_command(script: &str) -> std::process::Command {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
-    let mut command = std::process::Command::new(
-        std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
-    );
-    command.args(["-c", script]).env(
-        "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
-    );
-    command
-}
-fn python(script: &str, input: &serde_json::Value) -> serde_json::Value {
-    use std::{io::Write, process::Stdio};
-    let mut child = python_command(script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(serde_json::to_string(input).unwrap().as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    // Fixture outputs are synthetic. Production errors never include plaintext.
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
-#[test]
-#[ignore = "Python Fernet/YAML interoperability; set SAFEYOLO_POLICY_PYTHON"]
-fn python_rust_roundtrip_future_timestamps_unknown_fields_and_atomic_rollback() {
-    use serde_json::json;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("vault.yaml.enc");
-    let input = json!({"path":path,"password":password().expose_secret()});
-    let created = python(
-        r#"
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault,VaultCredential
-x=json.load(sys.stdin);v=Vault(Path(x['path']));v.unlock(x['password'])
-v.store(VaultCredential('python-mail','oauth2','synthetic-python-access',refresh_token='synthetic-python-refresh',token_url='https://example.invalid/token',client_id='synthetic-client-id',client_secret='synthetic-client-secret',expires_at='2099-01-01T00:00:00+00:00'))
-v.store(VaultCredential('unicode-雪','operator-custom','line1\nline2 "quoted" 雪\0'))
-print(json.dumps({'names':v.list_names(),'mode':Path(x['path']).stat().st_mode&0o777}))
-"#,
-        &input,
-    );
-    assert_eq!(created["mode"], json!(384));
-    let vault = Vault::unlock(&path, &password()).unwrap();
-    assert_eq!(
-        serde_json::to_value(vault.list_names().unwrap()).unwrap(),
-        created["names"]
-    );
-    let loaded = vault.get("python-mail").unwrap().unwrap();
-    assert_eq!(loaded.value.expose_secret(), "synthetic-python-access");
-    assert_eq!(
-        loaded.refresh_token.as_ref().unwrap().expose_secret(),
-        "synthetic-python-refresh"
-    );
-    assert_eq!(
-        loaded.client_secret.as_ref().unwrap().expose_secret(),
-        "synthetic-client-secret"
-    );
-    assert_eq!(
-        vault
-            .get("unicode-雪")
-            .unwrap()
-            .unwrap()
-            .value
-            .expose_secret(),
-        "line1\nline2 \"quoted\" 雪\0"
-    );
-    let mut native = Credential::new("rust-mail", "oauth2", Secret::new("synthetic-rust-access"));
-    native.refresh_token = Some(Secret::new("synthetic-rust-refresh"));
-    native.token_url = Some("https://example.invalid/native-token".into());
-    native.client_id = Some("synthetic-native-client".into());
-    native.client_secret = Some(Secret::new("synthetic-native-secret"));
-    native.expires_at = Some("2035-01-01T00:00:00Z".into());
-    vault.store(native).unwrap();
-    let original = fs::read(&path).unwrap();
-    let mut calls = 0;
-    assert_eq!(
-        vault
-            .remove_with_activation("python-mail", |_| {
-                calls += 1;
-                if calls == 1 { Err(()) } else { Ok(()) }
-            })
-            .unwrap_err()
-            .kind,
-        ErrorKind::Activation
-    );
-    assert_eq!(fs::read(&path).unwrap(), original);
-    let inspected = python(
-        r#"
-import json,sys,yaml
-from pathlib import Path
-from safeyolo.core.vault import Vault
-x=json.load(sys.stdin);v=Vault(Path(x['path']));v.unlock(x['password'])
-assert v.get('python-mail').value=='synthetic-python-access'
-assert v.get('unicode-雪').value=='line1\nline2 "quoted" 雪\0'
-c=v.get('rust-mail')
-assert c.to_dict()=={'name':'rust-mail','type':'oauth2','value':'synthetic-rust-access','refresh_token':'synthetic-rust-refresh','token_url':'https://example.invalid/native-token','client_id':'synthetic-native-client','client_secret':'synthetic-native-secret','expires_at':'2035-01-01T00:00:00Z'}
-raw=Path(x['path']).read_bytes();assert yaml.safe_load(v._fernet.decrypt(raw[16:]).decode())['credentials']
-print(json.dumps({'names':v.list_names(),'mode':Path(x['path']).stat().st_mode&0o777}))
-"#,
-        &input,
-    );
-    assert_eq!(
-        inspected["names"],
-        json!(["python-mail", "unicode-雪", "rust-mail"])
-    );
-    assert_eq!(inspected["mode"], json!(384));
-    assert_eq!(
-        Vault::unlock(&path, &password())
-            .unwrap()
-            .list_names()
-            .unwrap(),
-        ["python-mail", "unicode-雪", "rust-mail"]
-    );
-
-    let special = python(
-        r#"
-import json,sys,yaml
-from pathlib import Path
-from safeyolo.core.vault import Vault
-x=json.load(sys.stdin);path=Path(x['path']);v=Vault(path);v.unlock(x['password'])
-document={'extra_root':'dropped','credentials':[{'name':'duplicate','type':'bearer','value':'first','extra_field':'dropped'},{'name':'duplicate','type':'api_key','value':'last','refresh_token':''}]}
-out=[]
-for timestamp in [0,4102444800,2**64-1]:
- target=path.with_name(f'timestamp-{timestamp}.enc');target.write_bytes(v._salt+v._fernet.encrypt_at_time(yaml.safe_dump(document).encode(),timestamp))
- old=Vault(target);old.unlock(x['password']);assert old.get('duplicate').value=='last';out.append(str(target))
-print(json.dumps(out))
-"#,
-        &input,
-    );
-    for value in special.as_array().unwrap() {
-        let target = PathBuf::from(value.as_str().unwrap());
-        let special = Vault::unlock(&target, &password()).unwrap();
-        assert_eq!(special.list_names().unwrap(), ["duplicate"]);
-        assert_eq!(
-            special
-                .get("duplicate")
-                .unwrap()
-                .unwrap()
-                .value
-                .expose_secret(),
-            "last"
-        );
-        special.save().unwrap();
-        let output = python(
-            r#"
-import json,sys,yaml
-from pathlib import Path
-from safeyolo.core.vault import Vault
-x=json.load(sys.stdin);p=Path(x['path']);v=Vault(p);v.unlock(x['password']);doc=yaml.safe_load(v._fernet.decrypt(p.read_bytes()[16:]).decode())
-assert doc=={'credentials':[{'name':'duplicate','type':'api_key','value':'last'}]}
-print('true')
-"#,
-            &json!({"path":target,"password":password().expose_secret()}),
-        );
-        assert_eq!(output, json!(true));
-    }
-    println!(
-        "Python→Rust and Rust→Python full-field restart/rollback round trips pass; old, year-2100 and u64::MAX Fernet timestamps match Python's no-TTL behavior; duplicate names and unknown-field dropping agree."
-    );
-}
-
-#[test]
-#[ignore = "Controlled historical vault defects and expiry oracle; set SAFEYOLO_POLICY_PYTHON"]
-fn historical_failed_save_partial_reload_salt_tamper_and_expiry_oracle() {
-    use serde_json::json;
-    let (_directory, path, vault) = setup();
-    vault.store(credential("kept")).unwrap();
-    let input = json!({"path":path,"password":password().expose_secret(),"expiries":[null,"","malformed","2024-01-01T00:00:00Z","2024-01-01T00:00:01Z","2024-01-01T01:00:00+01:00","2024-01-01T00:00:00","2024-01-01","2024-W01-1T00:00:01Z"]});
-    let output = python(
-        r#"
-import json,sys,yaml
-from pathlib import Path
-from datetime import datetime,UTC
-from unittest.mock import patch
-import safeyolo.core.vault as module
-x=json.load(sys.stdin);path=Path(x['path']);v=module.Vault(path);v.unlock(x['password']);original=path.read_bytes()
-with patch.object(v,'save',side_effect=OSError('synthetic failure')):
- try:v.store(module.VaultCredential('failed','bearer','synthetic-failed'))
- except OSError:pass
-out={'old_failed_save_published':v.get('failed') is not None,'old_disk_unchanged':path.read_bytes()==original}
-v=module.Vault(path);v.unlock(x['password']);changed=bytearray(original);changed[0]^=1;path.write_bytes(changed);v._reload()
-out['old_changed_salt_reload_accepted']=not v._has_changes() and v.get('kept') is not None
-path.write_bytes(original);v=module.Vault(path);v.unlock(x['password'])
-bad={'credentials':[{'name':'partial','type':'bearer','value':'synthetic-partial'},{'name':'broken','type':'bearer'}]}
-path.write_bytes(v._salt+v._fernet.encrypt(yaml.safe_dump(bad).encode()));v._reload()
-out['old_partial_reload_published']=v.get('partial') is not None and v.get('kept') is None
-class Frozen(datetime):
- @classmethod
- def now(cls,tz=None):return cls(2024,1,1,tzinfo=UTC)
-module.datetime=Frozen
-out['expiry']=[]
-for expiry in x['expiries']:
- credential=module.VaultCredential('synthetic','oauth2','synthetic-value',expires_at=expiry)
- try:out['expiry'].append(credential.is_expired())
- except TypeError:out['expiry'].append('naive_timestamp_error')
-print(json.dumps(out))
-"#,
-        &input,
-    );
-    assert_eq!(output["old_failed_save_published"], json!(true));
-    assert_eq!(output["old_disk_unchanged"], json!(true));
-    assert_eq!(output["old_changed_salt_reload_accepted"], json!(true));
-    assert_eq!(output["old_partial_reload_published"], json!(true));
-    let error = vault.reload().unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Format);
-    assert_eq!(error.to_string(), "invalid decrypted vault document");
-    assert_eq!(vault.list_names().unwrap(), ["kept"]);
-    let actual: Vec<_> = input["expiries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|expiry| {
-            let mut credential = credential("synthetic");
-            credential.expires_at = expiry.as_str().map(str::to_owned);
-            match credential.is_expired(now()) {
-                Ok(value) => json!(value),
-                Err(failure) if failure.kind == ErrorKind::InvalidExpiry => {
-                    json!("naive_timestamp_error")
-                }
-                Err(_) => panic!("unexpected expiry error"),
-            }
-        })
-        .collect();
-    assert_eq!(json!(actual), output["expiry"]);
-    println!(
-        "Python oracle confirms 9 expiry cases and three native lifecycle corrections: failed-save publication, partial malformed reload, changed-salt reload acceptance."
-    );
-}
-
-#[test]
-#[ignore = "Python authenticated padding and token encoding oracle; set SAFEYOLO_POLICY_PYTHON"]
-fn authenticated_bad_padding_and_python_base64_encodings_keep_the_same_acceptance() {
-    use serde_json::json;
-    let (_directory, path, vault) = setup();
-    vault.store(credential("kept")).unwrap();
-    let original = fs::read(&path).unwrap();
-    let fixtures = python(
-        r#"
-import base64,json,sys,hmac,hashlib
-from pathlib import Path
-from cryptography.fernet import InvalidToken
-from cryptography.hazmat.primitives.ciphers import Cipher,algorithms,modes
-from safeyolo.core.vault import Vault
-x=json.load(sys.stdin);path=Path(x['path']);v=Vault(path);v.unlock(x['password'])
-raw=path.read_bytes();token=raw[16:]
-plaintext=v._fernet.decrypt(token)
-for spaces in range(33):
- token=v._fernet.encrypt(plaintext+b' '*spaces)
- if token.endswith(b'='):break
-assert token.endswith(b'=')
-variants={'canonical':token,'standard_alphabet':token.replace(b'-',b'+').replace(b'_',b'/'),'ignored_bytes':b' \xff\n'+token[:20]+b'\x00\t!'+token[20:],'extra_padding':token+b'====','missing_padding':token.rstrip(b'='),'incomplete':token[:-1],'leading_padding':b'===='+token,'padding_after_one':token[:1]+b'='+token[1:],'padding_after_two':token[:2]+b'='+token[2:],'alphabet_suffix':token+b'AAAA','garbage_suffix':token+b'!\xff\n'}
-for position in [0,1,2,3,4,5,6,7,8,len(token)-3]:
- for padding in [b'=',b'==']:
-  variants[f'pad_{position}_{len(padding)}']=token[:position]+padding+token[position:]
-if token.endswith(b'='):
- alphabet=b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
- index=len(token.rstrip(b'='))-1;value=alphabet.index(token[index]);variants['nonzero_pad_bits']=token[:index]+bytes([alphabet[value|1]])+token[index+1:]
-# Build valid-HMAC encrypted blocks with a deliberately invalid PKCS7 pad byte.
-# The maintained Python primitives supply AES-CBC/HMAC; the fixture tests the
-# Rust Fernet verifier, not new production cryptography.
-iv=b'\0'*16;encryptor=Cipher(algorithms.AES(v._fernet._encryption_key),modes.CBC(iv)).encryptor()
-encrypted=encryptor.update(b'\0'*16)+encryptor.finalize()
-for version,label in [(128,'valid_hmac_bad_padding'),(129,'valid_hmac_bad_version')]:
- message=bytes([version])+(0).to_bytes(8,'big')+iv+encrypted
- variants[label]=base64.urlsafe_b64encode(message+hmac.digest(v._fernet._signing_key,message,hashlib.sha256))
-out=[]
-for label,value in variants.items():
- target=path.with_name(label+'.enc');target.write_bytes(raw[:16]+value)
- try:v._fernet.decrypt(value);accepted=True
- except InvalidToken:accepted=False
- out.append({'path':str(target),'label':label,'accepted':accepted})
-assert not next(item['accepted'] for item in out if item['label']=='valid_hmac_bad_padding')
-print(json.dumps(out))
-"#,
-        &json!({"path":path,"password":password().expose_secret()}),
-    );
-    for fixture in fixtures.as_array().unwrap() {
-        fs::write(&path, fs::read(fixture["path"].as_str().unwrap()).unwrap()).unwrap();
-        let result = vault.reload();
-        assert_eq!(
-            result.is_ok(),
-            fixture["accepted"].as_bool().unwrap(),
-            "{}",
-            fixture["label"]
-        );
-        if let Err(failure) = result {
-            assert_eq!(failure.kind, ErrorKind::Authentication);
-        }
-        assert_eq!(vault.list_names().unwrap(), ["kept"]);
-    }
-    fs::write(path, original).unwrap();
-    println!(
-        "Python token-format and authenticated invalid-padding/version differential: {} cases passed.",
-        fixtures.as_array().unwrap().len()
-    );
-}
-
-#[test]
-#[ignore = "Python typed YAML expiry oracle; set SAFEYOLO_POLICY_PYTHON"]
-fn unquoted_yaml_datetime_is_not_silently_coerced_to_a_valid_expiry_string() {
-    use serde_json::json;
-    let (_directory, path, vault) = setup();
-    vault.store(credential("kept")).unwrap();
-    let fixtures = python(
-        r#"
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault
-x=json.load(sys.stdin);path=Path(x['path']);v=Vault(path);v.unlock(x['password']);out=[]
-for label,scalar in [('quoted',"'2099-01-01T00:00:00Z'"),('datetime','2099-01-01T00:00:00Z'),('explicit_datetime',"!!timestamp '2099-01-01T00:00:00Z'"),('ignored_timestamp',"'2099-01-01T00:00:00Z'"),('timestamp_alias','*expiry')]:
- document="credentials:\n- name: candidate\n  type: oauth2\n  value: synthetic-value\n  expires_at: "+scalar+'\n'
- if label=='ignored_timestamp':document="ignored_root: 2099-01-01T00:00:00Z\n"+document+"  ignored_field: !!timestamp '2099-01-01T00:00:00Z'\n"
- if label=='timestamp_alias':document="ignored_root: &expiry 2099-01-01T00:00:00Z\n"+document
- target=path.with_name(label+'.enc');target.write_bytes(v._salt+v._fernet.encrypt(document.encode()))
- old=Vault(target);old.unlock(x['password'])
- try:old.get('candidate').is_expired();outcome='valid_string'
- except TypeError:outcome='typed_timestamp_error'
- out.append({'path':str(target),'label':label,'old_outcome':outcome})
-print(json.dumps(out))
-"#,
-        &json!({"path":path,"password":password().expose_secret()}),
-    );
-    let original = fs::read(&path).unwrap();
-    for fixture in fixtures.as_array().unwrap() {
-        fs::write(&path, fs::read(fixture["path"].as_str().unwrap()).unwrap()).unwrap();
-        if fixture["old_outcome"] == "valid_string" {
-            assert_eq!(fixture["old_outcome"], json!("valid_string"));
-            vault.reload().unwrap();
-            assert!(
-                !vault
-                    .get("candidate")
-                    .unwrap()
-                    .unwrap()
-                    .is_expired(now())
-                    .unwrap()
-            );
-        } else {
-            assert_eq!(fixture["old_outcome"], json!("typed_timestamp_error"));
-            assert_eq!(vault.reload().unwrap_err().kind, ErrorKind::Format);
-            assert_eq!(vault.list_names().unwrap(), ["kept"]);
-        }
-        fs::write(&path, &original).unwrap();
-        vault.reload().unwrap();
     }
 }

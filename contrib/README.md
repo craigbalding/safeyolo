@@ -7,8 +7,8 @@ Example integrations. Copy and adapt for your own use.
 | Entry | Description |
 |-------|-------------|
 | [macOS Seatbelt SSH account](macos-seatbelt-agent/README.md) | Native login entry, developer policy, tmux, and validation for a dedicated non-admin macOS account |
-| `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent add --host-script` |
-| `ROOTFS_SCRIPT_GUIDE.md` | How to write custom rootfs builders for `safeyolo agent add --rootfs-script` (replace the default base with any distro) |
+| `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent configure NAME --host-script FILE` |
+| `ROOTFS_SCRIPT_GUIDE.md` | How to prepare custom platform assets for a native installation |
 | `../docs/AGENTS.md` | Compact always-on agent baseline (environment, guest tools, Agent API health check, security boundaries) |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/` | Codex skill and helper scripts for persistent, operator-visible tmux labs |
@@ -29,8 +29,6 @@ Example integrations. Copy and adapt for your own use.
 | `alpine-minimal/build-alpine-rootfs.sh` | Minimal custom rootfs example -- Alpine Linux via skopeo+umoci+apk |
 | `kali-pentest/build-kali-rootfs.sh` | Kali Linux pentest toolkit rootfs (nuclei, httpx, ffuf, sqlmap, ...) |
 | `kali-pentest/pentest-tools.md` | Tool reference for the Kali rootfs -- usage, proxy integration notes |
-| `monitors/` | Log monitoring and visualization tools |
-| `notifiers/` | Push notifications via ntfy with optional approval buttons |
 
 The supervisor owns the bounded Coord attention wait and launches the selected
 harness only after actionable canonical work is checkpointed. Codex uses its
@@ -72,62 +70,20 @@ only when the built-in presets do not cover your workflow. The
 [configuration prompt](agent-launcher-prompt.md) helps an operator work with
 a coding agent without writing one script per agent.
 
-## The Integration Pattern
+## Operator evidence and notifications
 
-SafeYolo integrations work by tailing the JSONL log:
+Use the native `safeyolo logs`, `safeyolo traffic` and `safeyolo approvals`
+commands for operator evidence and decisions. The retained
+[Mattermost adapter](../docs/coord-mattermost.md) provides Coord notifications
+and scoped actions. [Dispatch](../docs/dispatch-generation.md) generates
+public output from the approved manifest.
 
-```python
-import json
-import os
-import time
-from pathlib import Path
-
-
-def tail_jsonl(path):
-    with open(path) as f:
-        f.seek(0, 2)  # Start at end
-        while True:
-            line = f.readline()
-            if line:
-                yield json.loads(line)
-            else:
-                time.sleep(0.1)
-
-logs_dir = os.environ.get("SAFEYOLO_LOGS_DIR")
-if not logs_dir:
-    state_home = Path(
-        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
-    )
-    logs_dir = state_home / "safeyolo"
-log_path = Path(logs_dir) / "safeyolo.jsonl"
-
-for event in tail_jsonl(log_path):
-    if event.get("event") == "security.credential":
-        if event["data"].get("decision") == "block":
-            # Send notification, update dashboard, etc.
-            print(f"Blocked: {event['data']}")
-```
-
-## Key Events
-
-| Event | When | Key Fields |
-|-------|------|------------|
-| `security.credential` | Credential detected | `decision`, `rule`, `host`, `fingerprint` |
-| `security.ratelimit` | Rate limit hit | `domain`, `retry_after_seconds` |
-
-## Admin API
-
-To modify SafeYolo (add approvals, change modes):
-
-```python
-import httpx
-
-resp = httpx.post(
-    "http://localhost:9090/admin/policy/default/approve",
-    headers={"Authorization": f"Bearer {token}"},
-    json={"token_hmac": "abc123...", "hosts": ["api.example.com"]},
-)
-```
+The former Python ntfy notification/action and log-monitor examples are
+retired. They are optional examples, with no reached native installer or
+launcher consumer. Their ntfy push buttons and custom log summaries are no
+longer provided. Native evidence/approval commands and the retained adapters
+keep their separate authorities; a network allowance does not grant credential
+permission.
 
 ## Contributing
 

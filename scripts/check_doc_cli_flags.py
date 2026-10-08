@@ -9,10 +9,8 @@ things the code no longer provides (or never provided).
 How it works
 ------------
 
-1. Read the native CLI's usage strings and introspect the remaining Python
-   Typer ``app`` command tree during the native replacement.
-   Build ``{"agent add": {"--host-script", "--force", "-f", ...},
-            "start":     {"--dev", "--test", ...}, ...}``.
+1. Read the native CLI's authoritative usage strings. Build a command/flag
+   map without importing the retired Python CLI or building Rust.
 2. Walk every fenced code block and inline code span in the user-facing doc
    allowlist.
 3. For each invocation starting with ``safeyolo ``, parse the command path
@@ -28,22 +26,22 @@ Exit codes
     0  -- every safeyolo invocation in the docs resolves to a real command
           and uses only real flags.
     1  -- at least one invocation is invalid.
-    2  -- environment problem (cannot import the CLI, etc.).
+    2  -- environment problem (cannot read native usage strings, etc.).
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI_SRC = REPO_ROOT / "cli" / "src"
 
 # Load the shared shipped-docs allowlist (user-facing docs plus
 # agent-facing skill files). Both tiers can contain `safeyolo` invocations
-# that must resolve against the current native or Python surface. Defined once in
+# that must resolve against the current native surface. Defined once in
 # scripts/doc_allowlist.toml.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
@@ -67,13 +65,15 @@ def _native_cli_surface() -> dict[str, set[str]]:
     surface: dict[str, set[str]] = {"": set()}
     for relative in (
         "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
+        "proxy/src/bin/safeyolo/credential_commands.rs",
         "proxy/src/coord_rooms.rs", "proxy/src/coord_operator.rs", "proxy/src/mattermost.rs",
         "proxy/src/dispatch.rs", "proxy/src/dispatch/request.rs",
-        "proxy/src/factory_proposals/commands.rs",
+        "proxy/src/factory_proposals/commands.rs", "proxy/src/operator_commands.rs",
+        "proxy/src/ssh_proxy.rs",
     ):
         source = (REPO_ROOT / relative).read_text()
         for literal in re.findall(r'"(safeyolo (?:[^"\\]|\\.)*)"', source):
-            for usage in json.loads('"' + literal + '"').splitlines():
+            for usage in json.loads('"' + literal.replace("\n", r"\n") + '"').splitlines():
                 if not usage.startswith("safeyolo "):
                     continue
                 rest = usage.removeprefix("safeyolo ")
@@ -95,45 +95,8 @@ def _native_cli_surface() -> dict[str, set[str]]:
 
 
 def _load_cli_surface() -> dict[str, set[str]]:
-    """Return {command_path: allowed_flag_set} during native replacement.
-
-    ``command_path`` uses space-separated tokens as they'd be typed on the
-    CLI, e.g. ``"agent add"`` or ``"policy host add"``. The empty string is
-    the top-level app itself (only holds global flags).
-
-    Duck-types Group/Option because Typer's TyperGroup/TyperOption do not
-    subclass their Click counterparts in current versions.
-    """
-    sys.path.insert(0, str(CLI_SRC))
-    import typer
-
-    from safeyolo.cli import app
-
-    surface: dict[str, set[str]] = {}
-
-    def walk(cmd, path: list[str]) -> None:
-        key = " ".join(path)
-        flags: set[str] = set()
-        for p in getattr(cmd, "params", []):
-            opts = list(getattr(p, "opts", []) or [])
-            secondary = list(getattr(p, "secondary_opts", []) or [])
-            # An option is a param with at least one dash-prefixed opt string;
-            # arguments have bare names like `"name"`.
-            option_opts = [o for o in opts if o.startswith("-")]
-            option_secondary = [o for o in secondary if o.startswith("-")]
-            flags.update(option_opts)
-            flags.update(option_secondary)
-        surface[key] = flags
-        # Group check: presence of `.commands` mapping is the reliable signal.
-        subcommands = getattr(cmd, "commands", None)
-        if isinstance(subcommands, dict):
-            for sub_name in subcommands:
-                walk(subcommands[sub_name], path + [sub_name])
-
-    walk(typer.main.get_command(app), [])
-    for command, flags in _native_cli_surface().items():
-        surface.setdefault(command, set()).update(flags)
-    return surface
+    """Return the native commands and flags used by shipped guidance."""
+    return _native_cli_surface()
 
 
 def _extract_safeyolo_invocations(doc_path: Path) -> list[tuple[int, str]]:
@@ -166,7 +129,10 @@ def _validate_line(
     as the next token is a known subcommand. Then treat remaining tokens as
     flags (with values interleaved) or positional placeholders.
     """
-    tokens = line.split()
+    try:
+        tokens = shlex.split(line)
+    except ValueError as exc:
+        return f"invalid shell quoting: {exc}"
     if not tokens or tokens[0] != "safeyolo":
         return None  # not a safeyolo invocation; defensive
 
@@ -204,8 +170,7 @@ def _validate_line(
             attempted = " ".join(path + [token])
             return f"unknown command: `safeyolo {attempted}` — no such command"
 
-    # Click supplies help to each command even though it is absent from the
-    # declared parameter list returned by Typer introspection.
+    # Native entries provide --help through their existing command dispatch.
     allowed = surface.get(key, set()) | surface.get("", set()) | {"--help"}
 
     # Walk remaining tokens; validate flags

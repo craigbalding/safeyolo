@@ -181,9 +181,9 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 38d37d4097d76a8002d17563c9b70a4a22aa597e36ce5248598efe8f00702c5a
+          sha256: 950c2ce6f0e6f6c59487a3d1b0b9fde76144be027d56dc85afaebd7415b939df
         - path: uv.lock
-          sha256: 9778ce791a57621768bac679e9f81dde36b22effcb885dd33a91681142991490
+          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -213,53 +213,52 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: 2370e9e29d28a5e7f292291106a6dfe3efd659efe07ace522de343e472ce09d2
+          sha256: 058d024d5ecec8ad9df29c557a6fd0ee53b1ff36355db94b31b3c331d2686f58
         - path: tests/blackbox/run-lane.sh
-          sha256: dc985028ee5fa36171edb408df7fb56d6df5e14abf1fca7e52e0e4bfc571821f
+          sha256: f804a06d3aee9bb358a05fb362c0a41a0425e4513ec011907f0fc67ef7318e04
         - path: tests/blackbox/run-tests.sh
-          sha256: b1c8a39b28496b9b82bc8989efd26dee3cc5839116531dd04477a09b8024f937
+          sha256: f364885fe603051d7fc2e437afaba1a3a69e8ddfb463b876503c05746543db2a
         - path: uv.lock
-          sha256: 9778ce791a57621768bac679e9f81dde36b22effcb885dd33a91681142991490
-      setup: "Use an approved host; the lane owns a separate .safeyolo-test instance, ports, certificates, and sinkhole."
+          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
+      setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
-        install_and_proxy: "./tests/blackbox/run-lane.sh proxy --proxy-impl rust --verbose"
-        prepared_install: "./tests/blackbox/run-tests.sh --proxy --proxy-impl rust --verbose"
+        install_and_proxy: "./tests/blackbox/run-lane.sh proxy --verbose"
+        prepared_install: "./tests/blackbox/run-tests.sh --proxy --verbose"
       capture: [trusted base, native proxy identity, proxy and UDS readiness, sinkhole observation, TLS result, exit status]
 
   - id: ev.accept_runsc_lane
     kind: evidence
     label: "Use real runsc/gVisor with systrap or KVM through the full isolation blackbox lane"
     detail: |
-      This boots a real SafeYolo agent under runsc, asserts the selected
-      platform, and runs both ordinary-user and guest-root isolation/lifecycle
-      probes. Systrap is the deterministic no-KVM path; KVM must prove actual
+      This boots a real native SafeYolo agent under runsc and asserts the
+      selected platform with ordinary-user and guest-root lifecycle/isolation
+      probes. Systrap is the deterministic no-KVM path. KVM must prove actual
       device selection and must never silently fall back.
-      With runsc and SafeYolo installed, create a disposable agent and write a
-      script that drives the behavior under review. You can execute workloads
-      in the guest, stop and restart it, and inspect persistence, process exits,
-      resource use, and runtime logs. For a host-enforced resource limit, check
-      actual host enforcement as well as guest behavior; a generated setting
-      alone does not prove the limit works. Reuse a suitable prepared instance
-      instead of rerunning the full isolation lane for every issue.
+      Reuse a prepared disposable instance for a focused workload, restart,
+      persistence or host-resource check. Observe actual enforcement; a saved
+      setting alone does not prove the effect. The maintained shell builder
+      supplies guest inputs; the retired Python bootstrap is not invoked.
     source: tests/blackbox/run-lane.sh
     tool:
-      obtain_from: "runsc from gVisor's official signed apt repository, or its official tarball plus published SHA-512, through trusted-base safeyolo setup"
+      obtain_from: "operator-prepared runsc from gVisor's official signed repository or verified release, plus the trusted source's shell rootfs builder and native installer"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: dc985028ee5fa36171edb408df7fb56d6df5e14abf1fca7e52e0e4bfc571821f
+          sha256: f804a06d3aee9bb358a05fb362c0a41a0425e4513ec011907f0fc67ef7318e04
         - path: tests/blackbox/run-tests.sh
-          sha256: b1c8a39b28496b9b82bc8989efd26dee3cc5839116531dd04477a09b8024f937
-        - path: cli/src/safeyolo/commands/setup.py
-          sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
-        - path: cli/src/safeyolo/platform/linux.py
-          sha256: 181bbeff0363e8ce0098b33cd7fdf078dfdff325301d598d2351588bbabe78a7
-      setup: "Use an approved Linux host; run the product bootstrap/setup path and preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostic evidence."
-      verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh cli/src/safeyolo/commands/setup.py cli/src/safeyolo/platform/linux.py && runsc --version && safeyolo doctor --json"
+          sha256: f364885fe603051d7fc2e437afaba1a3a69e8ddfb463b876503c05746543db2a
+        - path: proxy/src/host_platform.rs
+          sha256: 72bcf38dd24d8856ee373f52a0f66f15a2770c84de920ff58ab884dfc82555d1
+        - path: proxy/src/host_boot.rs
+          sha256: 0e7f550e1f68fb1495cbe38751122e66030f1c13fcddf3c231d16352cc1ed129
+        - path: guest/build-rootfs.sh
+          sha256: 980493b29cc05dfde8c1e6632c1b8c3c8b274f2bbd9c8e16f736255bcfd830fa
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/native-policy.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+      verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && runsc --version && safeyolo doctor"
       run:
-        gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose"
-        gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --proxy-impl rust --verbose"
-      capture: [trusted base, runsc version, asserted platform, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
+        gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
+        gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
+      capture: [trusted base, runsc version, actual platform metadata, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
 
   - id: ev.accept_vz_lane
     kind: evidence
@@ -285,39 +284,36 @@ nodes:
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: dc985028ee5fa36171edb408df7fb56d6df5e14abf1fca7e52e0e4bfc571821f
+          sha256: f804a06d3aee9bb358a05fb362c0a41a0425e4513ec011907f0fc67ef7318e04
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
-        full_vz: "./tests/blackbox/run-lane.sh vz --proxy-impl rust --verbose"
+        full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
       capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
 
   - id: ev.accept_coord_lane
     kind: evidence
-    label: "Use the focused real-NATS Coord retention and two-revision upgrade acceptance"
+    label: "Use focused native Coord tests with an owned real NATS instance"
     detail: |
-      These tests own an isolated dynamic-port NATS instance and exercise real
-      JetStream and schema migration behavior. They are stronger evidence for
-      Coord durability than mocked API tests.
-      Reuse their fixtures to write focused publish, receive, retention, or
-      restart sequences. Assert the resulting messages and durable state for
-      the issue, including an intended failure when relevant; successful NATS
-      startup alone does not establish those behaviors.
-    source: cli/tests/test_coord_kernel_upgrade_acceptance.py
+      The native CLI tests use isolated roots and owned NATS endpoints. They
+      challenge listener selection, permissions, retained room state and
+      process ownership. Reuse the affected fixture or native operation for
+      publish, receive, retention or restart behavior. Startup alone does not
+      establish durability. Historical Python upgrade fixtures are test
+      references; the fresh product has no old-state conversion requirement.
+    source: proxy/tests/native_coord.rs
     tool:
-      obtain_from: "the trusted-base tests; nats-server from the official nats-io GitHub release with archive and binary SHA-256 pins in nats_runtime.py"
+      obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
-        - path: cli/tests/test_coord_kernel_upgrade_acceptance.py
-          sha256: c92ee94eba54e99b58d99e29e799919835d543a24b21c3808d51feaa9f997086
-        - path: cli/tests/test_coord_jetstream_acceptance.py
-          sha256: d83f40987910945ae959d13091f4e9df4d0630a3f595f47257cc3f873181adaf
-        - path: cli/src/safeyolo/coord/nats_runtime.py
-          sha256: 634ba6ee7b2aacf81b759e930ac352b5d367eb93f2414a62b0f7925f0e048281
-      setup: "Use the trusted base's locked Python environment; the tests allocate their own NATS ports."
-      verify: "sha256sum cli/tests/test_coord_kernel_upgrade_acceptance.py cli/tests/test_coord_jetstream_acceptance.py cli/src/safeyolo/coord/nats_runtime.py"
-      run: "uv run pytest -q cli/tests/test_coord_kernel_upgrade_acceptance.py cli/tests/test_coord_jetstream_acceptance.py"
-      capture: [trusted base, Python and nats-server versions, NATS endpoint ownership, schema before and after, exit status]
+        - path: proxy/tests/native_coord.rs
+          sha256: e9ef617cd2e7847d07adc09182e7b1b734204671f649fa111842cd795bc30a74
+        - path: proxy/src/coord_rooms.rs
+          sha256: 0567cef0233f44e0aff293ea1b0604db085e0d6cc48bf2fe74efbd60c5fccaa8
+      setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
+      verify: "sha256sum proxy/tests/native_coord.rs proxy/src/coord_rooms.rs && cargo --version"
+      run: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord"
+      capture: [trusted base, native source/profile, NATS version, endpoint ownership, retained state, exit status]
 
   - id: ev.accept_supervisor_contract_lane
     kind: evidence
@@ -430,31 +426,30 @@ nodes:
 
   - id: ev.accept_uds_lane
     kind: evidence
-    label: "Use current blackbox UDS transport plus focused socket and attribution pytest"
+    label: "Use current blackbox UDS transport plus focused native socket ownership tests"
     detail: |
       The system proof is the current proxy or platform blackbox path: it binds
       the native per-agent Unix listener, drives HTTP and CONNECT over the UDS, and
-      checks sandbox reachability and attribution. Use focused CLI pytest for
-      parsing, mount construction, native runsc stream donation, or doctor
-      diagnostics; do not substitute the excluded historical uds-networking
-      prototypes for current production acceptance.
+      checks sandbox reachability and attribution. Focused native host tests
+      challenge process ownership and stale socket cleanup. They do not replace
+      the actual platform lane for guest stream donation or sandbox reachability.
+      Do not substitute the excluded historical uds-networking prototypes or
+      Python reference modules for current production acceptance.
     source: tests/blackbox/host/uds_transport.py
     tool:
-      obtain_from: "the exact trusted-base blackbox and focused pytest sources; Python tools hash-locked in uv.lock"
+      obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: b1c8a39b28496b9b82bc8989efd26dee3cc5839116531dd04477a09b8024f937
+          sha256: f364885fe603051d7fc2e437afaba1a3a69e8ddfb463b876503c05746543db2a
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
-        - path: cli/tests/test_sockets.py
-          sha256: 6b25f165597add5d1d259be37cc4a63e56f4d6489a7694783d5b12d4c1ff30c2
-        - path: cli/tests/test_linux_platform_oci.py
-          sha256: 76bc42883c6832c0d5a5975d0062a1844f9652377d1b17a67b715a47acdd0192
-      setup: "Use the prepared proxy lane for system evidence or the locked Python environment for a focused implementation probe."
-      verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py cli/tests/test_sockets.py cli/tests/test_linux_platform_oci.py"
+        - path: proxy/tests/native_host_cli.rs
+          sha256: ae4ee4557fa9b84b43e26866d4d02f9738ade677c4b052ed211c80ec10c8f1c6
+      setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
+      verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:
-        real_proxy_uds: "./tests/blackbox/run-tests.sh --proxy --proxy-impl rust --verbose"
-        focused_implementation: "uv run pytest -q cli/tests/test_sockets.py cli/tests/test_linux_platform_oci.py"
+        real_proxy_uds: "./tests/blackbox/run-tests.sh --proxy --verbose"
+        focused_implementation: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --locked --test native_host_cli <affected-test-name>"
       capture: [trusted base, real or focused boundary, UDS path identity, agent attribution, transport result, exit status]
 
   - id: ev.accept_ruff_lane
@@ -474,7 +469,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 2a9be72ad47afcd4b9674af9b3ffd0d2b15a1877c24fe01d566c76565b2d3798
         - path: uv.lock
-          sha256: 9778ce791a57621768bac679e9f81dde36b22effcb885dd33a91681142991490
+          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -526,9 +521,9 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 38d37d4097d76a8002d17563c9b70a4a22aa597e36ce5248598efe8f00702c5a
+          sha256: 950c2ce6f0e6f6c59487a3d1b0b9fde76144be027d56dc85afaebd7415b939df
         - path: uv.lock
-          sha256: 9778ce791a57621768bac679e9f81dde36b22effcb885dd33a91681142991490
+          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -580,9 +575,9 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 38d37d4097d76a8002d17563c9b70a4a22aa597e36ce5248598efe8f00702c5a
+          sha256: 950c2ce6f0e6f6c59487a3d1b0b9fde76144be027d56dc85afaebd7415b939df
         - path: uv.lock
-          sha256: 9778ce791a57621768bac679e9f81dde36b22effcb885dd33a91681142991490
+          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
         - path: tools/acceptance/pyproject.toml
           sha256: 95d5d041dea3951f039ad4ffeebf8fb2897dd216df6ddf2bd1da0e03e7804d2c
         - path: tools/acceptance/uv.lock

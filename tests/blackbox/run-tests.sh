@@ -55,6 +55,8 @@ cd "$SCRIPT_DIR"
 # for anyone not running production there.
 SAFEYOLO_SOURCE_CONFIG_DIR="${SAFEYOLO_CONFIG_DIR:-$HOME/.safeyolo}"
 export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
+unset SAFEYOLO_NATIVE_CONFIG_PATH
+export PYTHONPATH="$REPO_ROOT/tests/reference:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export SAFEYOLO_SUBNET_BASE=75
 # Logs + flow store scoped to the test instance so blackbox runs
 # don't pollute production logs/flows.sqlite3.
@@ -377,6 +379,25 @@ PY
     unset SAFEYOLO_RUST_PROXY || true
 fi
 
+if [ "$ACCESS" = true ]; then
+    # The installed lane supplies its matching native host command. Config-only
+    # consumers also select an explicit input, without requiring a warm build.
+    if ! SAFEYOLO_NATIVE_CLI="$(cd "$CALLER_DIR" && python3 - "$SCRIPT_DIR" "$INSTALLED_RUST_BIN" "$INSTALL_COMMIT" "$INSTALLED_CLI" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from native_credentials import native_cli
+print(native_cli(Path(sys.argv[4]) if sys.argv[4] else None,
+                 proxy=Path(sys.argv[2]) if sys.argv[2] else None,
+                 revision=sys.argv[3] or None))
+PY
+)"; then
+        echo 'ERROR: native credential preparation has no matching installed CLI' >&2
+        exit 2
+    fi
+    export SAFEYOLO_NATIVE_CLI
+fi
+
 echo "=== SafeYolo Blackbox Tests ==="
 echo "  Instance: $SAFEYOLO_CONFIG_DIR"
 echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT  Web: localhost:$TEST_WEB_PORT"
@@ -386,7 +407,7 @@ echo ""
 # --- Phase 0: Prerequisites ---
 
 if ! command -v safeyolo &>/dev/null; then
-    echo "ERROR: safeyolo CLI not found. Activate the venv or install."
+    echo "ERROR: native safeyolo CLI not found. Select the installation bin directory."
     exit 2
 fi
 
@@ -409,7 +430,7 @@ if [ -n "$EXPECTED_PLATFORM" ] && [ "$RUN_ISOLATION" != true ]; then
 fi
 
 # Initialize test config dir on first run
-if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
+if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.toml" ]; then
     echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
     if [ -n "${SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR:-}" ]; then
         # Give each section fresh native identity/configuration. Only the
@@ -420,8 +441,9 @@ from pathlib import Path
 from installed_sections import prepare_native_instance
 prepare_native_instance(Path(sys.argv[1]), Path(sys.argv[2]))
 PY
+    else
+        safeyolo init
     fi
-    safeyolo init --no-interactive
     echo ""
 fi
 
@@ -434,69 +456,59 @@ copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
 PY
 fi
 
-if [ "$INGRESS" = true ] || [ "$WORKLOADS" = true ]; then
-    # This rule belongs only to the disposable instance and is loaded before
-    # the native process starts. The owned parent maps evil.com to the same
-    # sinkhole, so its absence there is a meaningful denial observation.
-    safeyolo policy host deny evil.com
-fi
-if [ "$WORKLOADS" = true ]; then
-    safeyolo policy host add failing.test
-fi
-if [ "$LIFECYCLE" = true ]; then
-    safeyolo policy host deny evil.com
-    safeyolo policy host add failing.test
-    safeyolo policy host add future-leaf.test
-    safeyolo policy host add example-chain-test.test
-    safeyolo policy host add wrong-san.test
-    safeyolo policy host add self-signed.test
-    safeyolo policy host add expired-leaf.test
-fi
+# Fixture host choices are native policy source, checked before any runtime starts.
+python3 - "$SAFEYOLO_CONFIG_DIR" "$INGRESS" "$WORKLOADS" "$LIFECYCLE" <<'PY_POLICY'
+import sys
+from pathlib import Path
+import tomlkit
+root = Path(sys.argv[1])
+path = root / "policy.toml"
+document = tomlkit.parse(path.read_text())
+if "true" in sys.argv[2:]:
+    document["hosts"]["evil.com"] = {"egress": "deny"}
+if sys.argv[3] == "true" or sys.argv[4] == "true":
+    document["hosts"]["failing.test"] = {"egress": "allow"}
+if sys.argv[4] == "true":
+    for host in ("future-leaf.test", "example-chain-test.test", "wrong-san.test", "self-signed.test", "expired-leaf.test"):
+        document["hosts"][host] = {"egress": "allow"}
+path.write_text(tomlkit.dumps(document))
+PY_POLICY
+safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
 if [ "$ACCESS" = true ]; then
     export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
     export SAFEYOLO_NATS_TEST_INSTANCE="${SAFEYOLO_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
-    python3 "$SCRIPT_DIR/access_setup.py" "$SAFEYOLO_CONFIG_DIR"
+    python3 "$SCRIPT_DIR/access_setup.py" "$SAFEYOLO_CONFIG_DIR" --native-cli "$SAFEYOLO_NATIVE_CLI"
 fi
 
 # Restore a parent selected by an interrupted native run before reading or
 # changing this disposable instance's configuration.
 python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR"
 
-# Configure test-specific ports in config.yaml
-python3 -c "
-import yaml
+# Fixture ports, services and test context use only the native configuration/policy.
+python3 - "$SAFEYOLO_CONFIG_DIR" "$TEST_ADMIN_PORT" "$ACCESS" "$WORKLOADS" <<'PY_CONFIG'
+import sys
 from pathlib import Path
-config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
-config = yaml.safe_load(config_path.read_text())
-# Keep the selected backend in the isolated instance across CLI restarts.
-config['proxy']['backend'] = '$PROXY_IMPL'
-config['proxy']['port'] = $TEST_PROXY_PORT
-config['proxy']['admin_port'] = $TEST_ADMIN_PORT
-config['proxy']['web_port'] = $TEST_WEB_PORT
-config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
-config['test']['ca_cert'] = '$SAFEYOLO_TEST_CERT_DIR/ca.crt'
-config_path.write_text(yaml.dump(config, default_flow_style=False))
-"
+import tomlkit
+root = Path(sys.argv[1])
+config = tomlkit.parse((root / "config.toml").read_text())
+config["admin_port"] = int(sys.argv[2])
+config["gateway_builtin_services_dir"] = str(root / "assets/services")
+config["gateway_services_dir"] = str(root / "services")
+(root / "services").mkdir(exist_ok=True)
+(root / "config.toml").write_text(tomlkit.dumps(config))
+policy_path = root / "policy.toml"
+policy = tomlkit.parse(policy_path.read_text())
+controls = policy.setdefault("controls", tomlkit.table())
+context = controls.setdefault("test_context", tomlkit.table())
+context["target_hosts"] = ["failing.test"] if sys.argv[3] == "true" else ["httpbin.org"]
+if sys.argv[4] == "true":
+    context["target_hosts"].append("failing.test")
+policy_path.write_text(tomlkit.dumps(policy))
+PY_CONFIG
+safeyolo config check "$SAFEYOLO_CONFIG_DIR/config.toml"
+safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
 
-# Configure test_context targets before the native process starts. Access's
-# basic and contract hosts send no context header; its explicit context
-# header still opts the non-target request into provenance and recording.
-python3 -c "
-import yaml
-from pathlib import Path
-addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
-addons = yaml.safe_load(addons_path.read_text())
-if '$ACCESS' == 'true':
-    targets = ['failing.test']
-else:
-    targets = ['httpbin.org']
-if '$WORKLOADS' == 'true':
-    targets.append('failing.test')
-addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = targets
-addons_path.write_text(yaml.dump(addons, default_flow_style=False))
-"
-
-# Focused launcher probe: the final addon file above is the one the installed
+# Focused launcher probe: the final native policy above is the one the installed
 # proxy would load. No proxy, fixture, or guest has been started yet.
 if [ "$ACCESS_CONFIG_ONLY" = true ]; then
     echo "Access configuration prepared; no proxy or guest started"
@@ -526,21 +538,6 @@ if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then
     echo "  Linked binaries: $TEST_BIN -> $PROD_BIN"
 fi
 
-# Capture and assert the selected runtime before producing isolation evidence.
-# Doctor may report unrelated non-fatal setup findings for the isolated test
-# config, so this gate deliberately validates the named platform check itself.
-if [ -n "$EXPECTED_PLATFORM" ]; then
-    ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
-    mkdir -p "$ARTIFACTS_DIR"
-    DOCTOR_JSON="$ARTIFACTS_DIR/doctor.json"
-    DOCTOR_STDERR="$ARTIFACTS_DIR/doctor.stderr"
-    safeyolo doctor --json >"$DOCTOR_JSON" 2>"$DOCTOR_STDERR" || true
-    if ! python3 "$SCRIPT_DIR/assert-platform.py" "$EXPECTED_PLATFORM" "$DOCTOR_JSON"; then
-        echo "ERROR: runtime platform assertion failed" >&2
-        [ ! -s "$DOCTOR_STDERR" ] || sed -n '1,80p' "$DOCTOR_STDERR" >&2
-        exit 2
-    fi
-fi
 
 echo "Generating test certificates..."
 if ! ./certs/generate-certs.sh --force; then
@@ -785,7 +782,7 @@ PY_OWNER
     for marker in "$SAFEYOLO_CONFIG_DIR"/agents/*/container.pid \
                   "$SAFEYOLO_CONFIG_DIR"/agents/*/vm.pid \
                   "$SAFEYOLO_CONFIG_DIR"/data/proxy-rust.json \
-                  "$SAFEYOLO_CONFIG_DIR"/data/proxy-readiness.json \
+                  "$SAFEYOLO_CONFIG_DIR"/data/ready.json \
                   "$SAFEYOLO_CONFIG_DIR"/data/proxy.pid \
                   "$SAFEYOLO_CONFIG_DIR"/data/sockets/*/proxy.sock \
                   "$SAFEYOLO_COORD_DATA_DIR"/nats/nats.pid.json; do
@@ -826,7 +823,7 @@ trap cleanup EXIT
 # Done at start (not end) so post-mortem analysis of failures is possible.
 echo "Cleaning stale state..."
 safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
-safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
+safeyolo agent cleanup "$AGENT_NAME" 2>/dev/null || true
 rm -rf "$SAFEYOLO_CONFIG_DIR/agents/"
 rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
 # Recover only a sinkhole process owned by a previous run.  The PID file and
@@ -978,7 +975,7 @@ fi
 # Proxy (test instance on separate ports)
 echo "Starting installed native test proxy (admin port $TEST_ADMIN_PORT)..."
 STARTED_PROXY=true
-if ! safeyolo start --no-wait; then
+if ! safeyolo start; then
     echo "ERROR: selected test proxy failed to start" >&2
     exit 2
 fi
@@ -999,7 +996,7 @@ echo "  Test proxy ready"
 # VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
     # Agent was cleaned at the top of the run; create fresh.
-    if ! safeyolo agent add "$AGENT_NAME" "$REPO_ROOT" --no-run; then
+    if ! safeyolo agent create "$AGENT_NAME" --workspace "$REPO_ROOT"; then
         echo "ERROR: test guest could not be provisioned" >&2
         exit 2
     fi
@@ -1044,7 +1041,7 @@ if [ "$RUN_ISOLATION" = true ]; then
 
     echo "Booting test VM ($AGENT_NAME)..."
     STARTED_VM=true
-    if ! safeyolo agent run "$AGENT_NAME" --sandbox-only; then
+    if ! safeyolo agent start "$AGENT_NAME" --sandbox-only; then
         echo "ERROR: test guest could not be started" >&2
         exit 2
     fi
@@ -1065,12 +1062,23 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
+# Inspect the running backend, not a host prerequisite prediction from doctor.
+if [ -n "$EXPECTED_PLATFORM" ]; then
+    ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
+    mkdir -p "$ARTIFACTS_DIR"
+    if ! python3 "$SCRIPT_DIR/assert-platform.py" "$EXPECTED_PLATFORM" \
+        "$SAFEYOLO_CONFIG_DIR" "$AGENT_NAME" --output "$ARTIFACTS_DIR/platform.json"; then
+        echo "ERROR: runtime platform assertion failed" >&2
+        exit 2
+    fi
+fi
+
 if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
     ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
     mkdir -p "$ARTIFACTS_DIR"
     if ! python3 "$SCRIPT_DIR/installed_host_smoke.py" \
         --mode attached --cli "$INSTALLED_CLI" --rust-bin "$INSTALLED_RUST_BIN" \
-        --rust-config "$SAFEYOLO_CONFIG_DIR/data/native.json" \
+        --rust-config "$SAFEYOLO_CONFIG_DIR/config.toml" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --working-directory "$SCRIPT_DIR" \
         --agent "$AGENT_NAME" --output "$ARTIFACTS_DIR/installed-rust-runtime.json"; then
         echo "ERROR: installed Rust runtime identity was not verified" >&2

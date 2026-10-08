@@ -669,6 +669,16 @@ pub(crate) fn update_policy<T>(
     mutate: impl FnOnce(&mut DocumentMut, &mut LargeIntegerContext) -> Result<T>,
     mut activate: impl FnMut(&str) -> std::result::Result<(), String>,
 ) -> Result<T> {
+    edit_policy(path, skip_unchanged, mutate, |source, _| activate(source))
+}
+
+/// An edit uses the same candidate/rollback activation as a whole replacement.
+pub(crate) fn edit_policy<T>(
+    path: &Path,
+    skip_unchanged: bool,
+    mutate: impl FnOnce(&mut DocumentMut, &mut LargeIntegerContext) -> Result<T>,
+    activate: impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
+) -> Result<T> {
     policy_transaction(
         path,
         skip_unchanged,
@@ -679,7 +689,7 @@ pub(crate) fn update_policy<T>(
             let changed = restore_large_toml_integers(&document.to_string(), &context);
             Ok((result, changed))
         },
-        |source, _| activate(source),
+        activate,
     )
 }
 

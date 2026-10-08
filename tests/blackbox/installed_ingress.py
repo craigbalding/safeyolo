@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check installed native ingress through one real gVisor/KVM guest.
 
-Require the selected wheel and packaged executable, authenticated runtime and
+Require the selected native installation and packaged executable, authenticated runtime and
 actual KVM runsc argv/UID mapping. Bind guest localhost requests to its mounted
 agent UDS. Observe an exact allowed HTTP marker at the owned origin, a denied
 request with no origin delivery, and protected local API boundaries.
@@ -21,12 +21,12 @@ from pathlib import Path
 if __package__:
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _sha256
+    from .installed_host_smoke import _native_config, _sha256
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _sha256
+    from installed_host_smoke import _native_config, _sha256
     from isolation.installed_ingress import is_mounted_forwarder
 
 
@@ -59,47 +59,28 @@ def installed_identity(runtime: dict, install_checkout: Path, *, expected_revisi
     running = runtime["runtime"]
     assert running["status"] == "ready"
     assert running["authenticated_runtime_identity"]["status"] == "authenticated"
-    package = Path(cli["package_location"]).resolve().parent
-    stamp = json.loads((package / "_build_identity.json").read_text())
-    assert stamp["source_revision"] == expected_revision and stamp["state"] == "known", (
-        "installed CLI wheel does not carry the selected source build identity"
-    )
-    packaged = (package / "bin" / "safeyolo-proxy").resolve()
+    package = Path(cli["package_root"]).resolve()
+    assert cli["source_revision"] == expected_revision, "installed native CLI source differs"
+    packaged = (package / "bin/safeyolo-proxy").resolve()
     assert Path(candidate["path"]).resolve() == packaged
     assert Path(running["actual_executable"]).resolve() == packaged
     assert candidate["sha256"] == _sha256(packaged)
-    built = install_checkout / "proxy" / "target" / "release" / "safeyolo-proxy"
-    assert built.is_file() and _sha256(built) == candidate["sha256"], (
-        "installed native binary differs from the selected source release build"
-    )
-    assert Path(install_checkout).resolve() != Path.cwd().resolve(), (
-        "selected install checkout must be separate from the blackbox harness"
-    )
-    status = subprocess.run([cli["path"], "status"], capture_output=True, text=True, check=False, timeout=15)
-    assert status.returncode == 0 and "running" in status.stdout and str(running["pid"]) in status.stdout, (
-        "installed CLI status did not identify the running native process"
-    )
-    identity = {
-        "cli": cli,
-        "candidate": candidate,
-        "build_identity": stamp,
-        "runtime": running,
-        "native": runtime["native"],
-        "cli_status": status.stdout.strip(),
-    }
-    doctor = subprocess.run(
-        [cli["path"], "doctor", "--json"], capture_output=True, text=True, check=False, timeout=45
-    )
-    checks = json.loads(doctor.stdout)["checks"]
-    runtime_checks = [row for row in checks if row["name"] == "Runtime identity"]
-    assert len(runtime_checks) == 1 and runtime_checks[0]["status"] == "pass", (
-        "installed CLI diagnostics did not identify the native process"
-    )
-    check = runtime_checks[0]
-    assert Path(check["message"].removeprefix("Running ")).resolve() == packaged
-    assert check["detail"] == f"PID {running['pid']}"
-    identity["cli_diagnostics"] = check
-    return identity
+    revision = subprocess.check_output(["git", "-C", str(install_checkout), "rev-parse", "HEAD"], text=True).strip()
+    assert revision == expected_revision, "selected installation checkout source differs"
+    root = Path(runtime["instance"]["config_dir"]).resolve()
+    observations = {}
+    for operation in ("status", "doctor"):
+        result = subprocess.run([cli["path"], "--root", str(root), operation],
+                                capture_output=True, text=True, check=False, timeout=45)
+        assert result.returncode == 0, f"installed {operation} failed: {result.stderr[-700:]}"
+        value = json.loads(result.stdout)
+        assert value["proxy_state"] == "running" and Path(value["root"]).resolve() == root, (
+            f"installed {operation} did not identify the selected running instance")
+        observations[operation] = value
+    return {"cli": cli, "candidate": candidate, "build_identity": {
+                "source_revision": cli["source_revision"], "profile": cli["profile"]},
+            "runtime": running, "native": runtime["native"],
+            "cli_status": observations["status"], "cli_diagnostics": observations["doctor"]}
 
 
 def guest_observation(cli: str, agent: str, marker: str) -> dict:
@@ -195,14 +176,13 @@ def main() -> None:
     assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
-    doctor = json.loads((args.output.parent / "doctor.json").read_text())
-    platform_checks = [check for check in doctor["checks"] if check.get("name") == "Isolation platform"]
-    assert len(platform_checks) == 1 and str(platform_checks[0].get("message", "")).startswith("KVM ")
+    platform_evidence = json.loads((args.output.parent / "platform.json").read_text())
+    assert platform_evidence["platform"] == "kvm"
     policy = tomllib.loads((config_dir / "policy.toml").read_text())
     assert policy["hosts"]["evil.com"]["egress"] == "deny"
-    native = json.loads((config_dir / "data" / "native.json").read_text())
-    assert native["network_guard_block"] is True
-    assert native["agent_api_enabled"] is True
+    assert policy["controls"]["network"]["mode"] == "block"
+    native = _native_config(config_dir / "config.toml", config_dir)["raw"]
+    assert native.get("agent_api_enabled", True) is True
     assert native.get("temporary_policy_socket") is None
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
     assert Path(native["upstream_ca_file"]).is_file()
@@ -227,11 +207,11 @@ def main() -> None:
         "source_revision": args.install_commit,
         "installed": identity,
         "runtime_config": {
-            "path": str(config_dir / "data" / "native.json"),
+            "path": str(config_dir / "config.toml"),
             "parent_proxy": native["parent_proxy"],
             "upstream_ca_file": native["upstream_ca_file"],
-            "network_guard_block": native["network_guard_block"],
-            "agent_api_enabled": native["agent_api_enabled"],
+            "network_guard_block": policy["controls"]["network"]["mode"] == "block",
+            "agent_api_enabled": native.get("agent_api_enabled", True),
             "policy_file": native["policy_file"],
         },
         "gvisor": gvisor,

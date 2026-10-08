@@ -2,35 +2,44 @@
 
 This existing ledger accounts for the 41 pre-cutover owners in the
 [reviewed B1 candidate](https://github.com/craigbalding/safeyolo/pull/826/commits/d680ef82e4cdd9f1b725a421bccf8496123fd55a).
-Its states describe source changes at that commit. #620 and #640 are now
+The table keeps all original paths and replacement obligations. Its source
+states now include the subsequent production Python retirement under
+[#815](https://github.com/craigbalding/safeyolo/issues/815) and
+[#822](https://github.com/craigbalding/safeyolo/issues/822). The three rows
+retained at B1 identify that earlier state explicitly. #620 and #640 are
 closed and integrated; their issue comments retain exact release acceptance.
-Current test-owner paths below follow #320's move to `tests/proxy_contracts`;
-the 41 original production paths and historical gates remain accounted for. The original replacement gates and retained
-checks remain visible. A removed row can still have an installed, rollback,
-or platform gate outstanding under [#640 B2–B7](https://github.com/craigbalding/safeyolo/issues/640).
+Their historical rollback and platform gates are not new requirements for
+the fresh native product. Remaining product responsibilities and final proof
+belong to the existing [native responsibility map](native-settings.md)
+and #815/#822, respectively. This ledger does not accept those outcomes.
 
 ## Responsibility groups
 
-- **Process and ingress (M7-01–M7-05):** the CLI `proxy.py` facade now launches
-  only the packaged Rust executable and reports its path. The native process
-  owns the listeners and readiness. `traffic_master.py` and Python Unix mode
-  registration are removed. `traffic_session.py` remains because Rust still
-  uses the private terminal for process lifetime and diagnostics.
+- **Process and ingress (M7-01–M7-05):** native host lifecycle and platform
+  operations now launch the packaged Rust executable and own its private
+  terminal, process identity, readiness and stop. B1 retained `proxy.py` and
+  `traffic_session.py` as CLI facades; #822 removes those production paths.
+  Copies under `tests/reference` support controlled lifecycle fixtures only.
+  `traffic_master.py` and Python Unix mode registration remain removed.
 - **Flow and audit (M7-06–M7-08):** native flow and audit writers own proxy
   records. Python addon integration, flow queue code, and the unused Python
   `storage/flow_store.py` writer are removed.
-  `core/audit_writer.py` remains for Python CLI service configuration events.
+  B1 retained `core/audit_writer.py` for Python CLI service events; #822 removes
+  that production path. The native audit writer owns product events. The
+  `tests/reference` copy remains an input to audit schema/writer fixtures.
 - **Proxy hooks (M8-01–M8-28):** the mitmproxy addon chain and its policy,
   inspection, Agent API, gateway, logging, and transport hooks are removed.
   The accepted native implementations supply those proxy responsibilities;
   the old process-local `core/plumb_service.py` and mitmproxy timing hooks are
-  removed. Retained shared CLI modules under `core/` remain where callers use them.
+  removed. Shared Python references under `tests/reference` support retained
+  tests; they are not packaged product owners.
 - **Package and comparator (M8-29–M8-31):** the Python PDP package and
-  mitmproxy dependency are removed from the current wheel and lockfile. The
-  installer builds Rust; its wheel audit rejects old proxy code. Historical
-  comparisons select a pinned prior Python checkout and environment
-  explicitly. An ordinary package rollback installs that prior package; the
-  current CLI has no Python backend selection or automatic fallback.
+  mitmproxy dependency remain removed. The native assembler and installer
+  replace wheel publication and Python build/install entries. `pyproject.toml`
+  and `uv.lock` select only the permitted Python test environment. There is
+  no Python backend selection or automatic fallback. The former comparator
+  and rollback checks used a pinned prior Python checkout; #893 retired that
+  comparator. #815 requires fresh native state, without cross-version rollback.
 - **Traffic view (M8-32–M8-33):** mitmproxy console patches are removed. The
   retained read-only terminal inspector and selected native exports own the
   supported traffic view.
@@ -46,31 +55,33 @@ that runner. The pinned pre-cutover checkout retains the historical experiments.
 Accepted component and selected shared-run results retain their recorded scope
 under [#621](https://github.com/craigbalding/safeyolo/issues/621) and
 [#640 A1/A2](https://github.com/craigbalding/safeyolo/issues/640#issuecomment-5859706461).
-They do not replace the exact-F installed, guest, or platform gates.
+They do not replace #822's final installed, guest, or platform proof.
 Engine-only policy, budget, loader, mutation, sensor, and Unix-mode pytest
 modules moved out of current collection with their removed owners. Tests for
-retained compiler, list loading, TOML round trips, CLI mutation, and endpoint
-keys remain in this tree.
+retained compiler, list loading, TOML round trips, native policy mutation, and
+endpoint keys remain in this tree. Original Python schema/protocol fixtures
+read `tests/reference`; native checks invoke the product separately.
 
 ## Path-level ledger
 
 `Replacement gate` records the obligation associated with the former owner.
-`Current or historical checks` names the original check family. Checks marked
-`historical` remain in the pinned pre-cutover checkout at
+`Current or historical checks` names retained or retired check families.
+Checks marked `historical` were present in the pinned pre-cutover checkout at
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`; they are not collected from
-this branch. Unmarked checks remain in this branch. The B1 candidate state
-records what the reviewed commit changes; it does not assert that later B2–B7
-gates passed.
+this branch. The wheel/CLI checks retired by #822 remain in its accepted base
+`0002b95f9fbc568c202d632d554c6e336aeb18ad`. Unmarked checks remain in this
+branch; a retained test reference is not native execution proof. Source states
+do not assert acceptance of their replacements or later installed journeys.
 
-| ID | Original path | Former responsibility | Replacement gate | Current or historical checks | B1 candidate state |
+| ID | Original path | Former responsibility | Replacement gate | Current or historical checks | Current production state |
 |---|---|---|---|---|---|
-| M7-01 | `cli/src/safeyolo/proxy.py` | Backend selection, Python process lifecycle, readiness, status/stop, and explicit rollback | Installed Rust start/status/stop, failure cleanup, source identity, and Python rollback on Linux and macOS | `cli/tests/test_rust_proxy.py`<br>`cli/tests/test_lifecycle_rust.py`<br>`cli/tests/test_doctor.py` | retained: native CLI facade |
+| M7-01 | `cli/src/safeyolo/proxy.py` | Backend selection, Python process lifecycle, readiness, status/stop, and explicit rollback | Installed Rust start/status/stop, failure cleanup, source identity, and Python rollback on Linux and macOS | `cli/tests/test_rust_proxy.py`<br>historical: `cli/tests/test_lifecycle_rust.py`<br>historical: `cli/tests/test_doctor.py`<br>`proxy/tests/native_host_cli.rs`<br>`tests/proxy_contracts/native-package-journey.sh` | removed in #822; B1 retained native CLI facade |
 | M7-02 | `cli/src/safeyolo/traffic_master.py` | Python production process owner and addon registration order | Native process owner publishes equivalent readiness, shutdown, event ordering, and listener lifecycle | historical: `cli/tests/test_traffic_master.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
-| M7-03 | `cli/src/safeyolo/traffic_session.py` | tmux/session process coupling and Python proxy child launch | Native launcher uses the retained private session for process lifetime and restart; explicit rollback still starts Python | historical: `cli/tests/test_proxy.py`<br>`cli/tests/test_lifecycle_rust.py` | retained: native session |
+| M7-03 | `cli/src/safeyolo/traffic_session.py` | tmux/session process coupling and Python proxy child launch | Native launcher uses the retained private session for process lifetime and restart; explicit rollback still starts Python | historical: `cli/tests/test_proxy.py`<br>historical: `cli/tests/test_lifecycle_rust.py`<br>`proxy/tests/native_host_cli.rs`<br>`tests/proxy_contracts/native-package-journey.sh` | removed in #822; B1 retained native session |
 | M7-04 | `cli/src/safeyolo/proxy_modes/unix_listener.py` | Per-agent UDS ingress and listener mode adaptation | Native listeners preserve agent identity, live add/remove, restart cleanup, and supported host/guest bridges | historical: `tests/test_unix_listener.py`<br>`cli/tests/test_sockets.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
 | M7-05 | `cli/src/safeyolo/proxy_modes/__init__.py` | Python UDS mode package boundary; runtime registration is owned by `proxy_modes/unix_listener.py::ensure_registered()` | Native ingress replaces the `unix_listener.py` registration owner and no Python mode import remains on the selected Rust path | historical: `tests/test_unix_listener.py` | removed in B1 candidate |
 | M7-06 | `cli/src/safeyolo/core/base.py` | Python flow integration and shared flow metadata dispatch | Native flow ownership and metadata preserve authorized evidence, redaction, and failure boundaries | historical: `tests/test_flow_recorder.py`<br>historical: `tests/test_flow_store.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
-| M7-07 | `cli/src/safeyolo/core/audit_writer.py` | Durable audit queue, ordering, shutdown drain, and failure reporting | Native writer preserves ordering, ownership, rollback/retention semantics, and graceful drain | `tests/test_audit_writer.py`<br>`tests/test_audit_schema.py`<br>`tests/proxy_contracts` | retained: shared CLI audit |
+| M7-07 | `cli/src/safeyolo/core/audit_writer.py` | Durable audit queue, ordering, shutdown drain, and failure reporting | Native writer preserves ordering, ownership, rollback/retention semantics, and graceful drain | `tests/test_audit_writer.py`<br>`tests/test_audit_schema.py`<br>`proxy/src/audit/writer/tests.rs`<br>`tests/proxy_contracts` | removed in #822; B1 retained shared CLI audit |
 | M7-08 | `cli/src/safeyolo/core/flow_writer.py` | SQLite flow persistence, body indexing, and transaction boundaries | Native store preserves schema interchange, evidence scope, rollback, and restart reads | historical: `tests/test_flow_writer.py`<br>historical: `tests/test_flow_store.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
 | M8-01 | `cli/src/safeyolo/mitm_addons/__init__.py` | Production addon chain construction and ordering | Native chain replaces every retained hook with equivalent ordering and failure containment | historical: `cli/tests/test_traffic_master.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
 | M8-02 | `cli/src/safeyolo/mitm_addons/pid_writer.py` | Atomic readiness marker publication and cleanup | Native readiness is published only after required listeners/state are ready and is removed on graceful exit | historical: `cli/tests/test_proxy.py`<br>historical: `cli/tests/test_traffic_master.py` | removed in B1 candidate |
@@ -85,7 +96,7 @@ gates passed.
 | M8-11 | `cli/src/safeyolo/mitm_addons/service_discovery.py` | Cached agent-map resolution and trusted UDS attribution | Native listener identity and external map behavior preserve conflict fail-closed semantics and lifecycle events | historical: `tests/test_service_discovery_file.py`<br>historical: `tests/test_agent_identity_resolution.py` | removed in B1 candidate |
 | M8-12 | `cli/src/safeyolo/mitm_addons/sse_streaming.py` | SSE/NDJSON/selected JSON streaming behavior and limits | Native incremental bodies preserve configured streaming, inspection coverage, and explicit bypass reporting | historical: `tests/test_sse_streaming.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
 | M8-13 | `cli/src/safeyolo/mitm_addons/policy_engine.py` | Python PolicyClient lifecycle, policy reload, and cache ownership | Native policy state and reload preserve TOML/YAML semantics, budgets, rollback, and remaining CLI consumers | historical: `tests/test_pdp_client.py`<br>historical: `tests/test_policy_engine.py`<br>historical: `tests/test_policy_loader.py`<br>historical: `tests/test_toml_policy_loader.py`<br>historical: `tests/test_budget_tracker.py`<br>historical: `tests/test_policy_chaos.py` | removed in B1 candidate |
-| M8-14 | `cli/src/safeyolo/mitm_addons/service_gateway.py` | Service tokens, contracts, grants, vault injection, and OAuth refresh | Native service authorization covers route/injection/OAuth/catalog writes and cross-runtime rollback, including installed rollback | historical: `tests/test_service_gateway.py`<br>historical: `tests/test_contract_enforcement.py`<br>`tests/test_oauth2_flow.py`<br>`tests/test_service_loader.py`<br>`proxy/tests/gateway_contract_workflow.rs` | removed in B1 candidate |
+| M8-14 | `cli/src/safeyolo/mitm_addons/service_gateway.py` | Service tokens, contracts, grants, vault injection, and OAuth refresh | Native service authorization covers route/injection/OAuth/catalog writes and cross-runtime rollback, including installed rollback. Native expired-token refresh remains; Python credential compatibility was removed in #819. | historical: `tests/test_service_gateway.py`<br>historical: `tests/test_contract_enforcement.py`<br>`proxy/tests/gateway_workflow.rs`<br>`tests/test_service_loader.py`<br>`proxy/tests/gateway_contract_workflow.rs` | removed in B1 candidate |
 | M8-15 | `cli/src/safeyolo/mitm_addons/network_guard.py` | HTTP/CONNECT policy decisions, budgets, and fail-closed errors | Native policy runs before outbound effects with matching decision/effect and port/agent scope | historical: `tests/test_network_guard.py`<br>historical: `tests/test_connect_policy.py`<br>`tests/test_agent_scoped_egress.py`<br>historical: `tests/test_destination_ports.py`<br>`tests/test_destination_keys.py` | removed in B1 candidate |
 | M8-16 | `cli/src/safeyolo/mitm_addons/circuit_breaker.py` | Circuit state, persistence, reset, and force-open controls | Native circuit lifecycle preserves thresholds, persistence, reload, reset, and restart behavior | historical: `tests/test_circuit_breaker.py` | removed in B1 candidate |
 | M8-17 | `cli/src/safeyolo/mitm_addons/credential_guard.py` | Credential detection, policy decisions, and block/warn outcomes | Native header/body credential coverage preserves ordering, fingerprints, budgets, and raw-secret boundaries | historical: `tests/test_credential_guard.py`<br>`tests/test_credential_catalog.py`<br>`tests/test_policy_budget_contract.py` | removed in B1 candidate |
@@ -101,12 +112,12 @@ gates passed.
 | M8-27 | `cli/src/safeyolo/mitm_addons/probe_sink.py` | Reserved diagnostic probes and local success synthesis | Native probe path reports only reached steps and never sends reserved probes upstream | historical: `tests/test_probe_sink.py`<br>historical: `tests/test_trace_chain_regression.py`<br>`proxy/src/http/probe/tests/` | removed in B1 candidate |
 | M8-28 | `cli/src/safeyolo/mitm_addons/transport_guard.py` | Reserved CONNECT containment, late probe fallback, and connection backstops | Native outbound boundary retains local classification and prevents handler failures from creating upstream effects | historical: `tests/test_transport_guard.py`<br>historical: `tests/test_agent_api.py`<br>historical: `tests/test_probe_lifecycle.py` | removed in B1 candidate |
 | M8-29 | `pdp/` | Python policy client/schema package retained by the comparator, CLI, and wheel | Native policy replacement plus all remaining CLI consumers pass; wheel/import and Python comparator rollback remain green | historical: `tests/test_pdp_client.py`<br>`cli/tests/test_runtime_identity.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
-| M8-30 | `pyproject.toml` | mitmproxy and Python runtime package declarations, including retained `pdp` packaging | Consumer search and frozen install prove no Python path is needed by the selected native runtime while Python rollback still installs and starts | `tests/test_install_sh.py`<br>`cli/tests/test_cli_imports.py`<br>`tests/proxy_contracts` | updated: native package |
-| M8-31 | `uv.lock` | Reproducible Python comparator and rollback dependency graph | Replacement environment is attested and comparator jobs remain reproducible before dependency removal | `tests/test_install_sh.py`<br>`tests/proxy_contracts` | updated: native lock |
+| M8-30 | `pyproject.toml` | mitmproxy and Python runtime package declarations, including retained `pdp` packaging | Consumer search and frozen install prove no Python path is needed by the selected native runtime while Python rollback still installs and starts | historical: `tests/test_install_sh.py`<br>historical: `cli/tests/test_cli_imports.py`<br>`tests/test_host_packages.py`<br>`tests/proxy_contracts/native-package-journey.sh` | updated in #822: test environment only, no product wheel |
+| M8-31 | `uv.lock` | Reproducible Python comparator and rollback dependency graph | Replacement environment is attested and comparator jobs remain reproducible before dependency removal | historical: `tests/test_install_sh.py`<br>`tests/test_host_packages.py`<br>`tests/proxy_contracts` | updated in #822: frozen test dependencies only |
 | M8-32 | `cli/src/safeyolo/websocket_console.py` | Python mitmproxy ConsoleMaster renderer patch and retained console flow details | Equivalent native console/detail outcomes are demonstrated before removing the mitmweb/ConsoleMaster glue | historical: `cli/tests/test_websocket_console.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
 | M8-33 | `cli/src/safeyolo/websocket_body_filter.py` | Python WebSocket body-filter and display rendering patch | Equivalent native WebSocket body filtering, display, and unsupported-outcome behavior are demonstrated before removal | historical: `cli/tests/test_websocket_body_filter.py`<br>`tests/proxy_contracts` | removed in B1 candidate |
 
-## Current disposition
+## Historical B1/B2 source disposition
 
 The B1 candidate was cut from integrated head `2ca598ce11d7c375a024b38eb3e7b4104a795d84`
 on an isolated branch. Normal installed launch selects Rust, and a missing or
@@ -123,8 +134,11 @@ passed the P3 consumer and P4 lifecycle runs on a fresh supported Ubuntu
 final launcher, required guest headers, P3 credential, approval, Agent API,
 coordination, event, and inspector paths, and P4 controls, Transport Layer
 Security (TLS), drain, and restart across three stopped proxy/guest cycles.
-This is a preparatory Linux result, not B2 or final-F acceptance.
+This was a preparatory Linux result; it did not by itself establish B2 or
+final-F acceptance.
 [B4 Linux package-return PR #828](https://github.com/craigbalding/safeyolo/pull/828)
-is also preparatory. The physical macOS/VZ pilot, the exact-F systrap/KVM/VZ
-lanes, and final package return remain #640 gates.
+was also preparatory. The physical macOS/VZ pilot, the exact-F systrap/KVM/VZ
+lanes, and final package return were #640 gates. That issue's completed
+acceptance stays at its recorded revisions. #822 owns the native product's
+remaining final proof.
 No acceptance state is inferred from this map.

@@ -58,8 +58,8 @@ and a read-only configuration share.
   go to a per-agent file-backed overlay and persist across stop and run.
   `--ephemeral` selects a memory-backed overlay whose rootfs writes are
   discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
-- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by `safeyolo setup` and surfaced in `safeyolo doctor`.
-- **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by `safeyolo setup`.
+- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by the native host prerequisites in `docs/native-policy.md` and surfaced in `safeyolo doctor`.
+- **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by the native host prerequisites in `docs/native-policy.md`.
 
 
 See the [macOS microVM architecture](microvm-architecture.md) and

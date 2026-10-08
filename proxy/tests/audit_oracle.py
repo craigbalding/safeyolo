@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 root = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
-sys.path[:0] = [str(root / "cli/src"), str(root)]
+sys.path[:0] = [str(root / "tests/reference"), str(root)]
 import yaml  # noqa: E402
 
 from safeyolo.core import audit_schema, audit_writer, utils  # noqa: E402

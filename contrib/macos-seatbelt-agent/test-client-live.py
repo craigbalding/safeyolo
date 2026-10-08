@@ -73,7 +73,7 @@ def main():
             (client / ".ssh/id_ed25519_sy_agent").chmod(0o600)
             env = {**os.environ, "HOME": str(client), "HTTPS_PROXY": f"http://127.0.0.1:{proxy.server_address[1]}"}
             handoff = f"127.0.0.1\n{ssh_port}\n{host_key.with_suffix('.pub').read_text()}"
-            run(sys.executable, str(source / "configure-client"), "--user", account, input=handoff, text=True, env=env)
+            run(str(source / "configure-client"), "--user", account, input=handoff, text=True, env=env)
             ssh = ["/usr/bin/ssh", "-F", str(client / ".ssh/seatbelt-agent/config"), "seatbelt-mac"]
             identity = run(*ssh, "id", env=env).stdout
             assert identity.startswith(f"uid={pwd.getpwnam(account).pw_uid}".encode()), identity
@@ -86,7 +86,7 @@ def main():
             assert denied.returncode != 0 and not denied.stdout
             run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(lab / "wrong-key"))
             wrong = f"127.0.0.1\n{ssh_port}\n{(lab / 'wrong-key.pub').read_text()}"
-            run(sys.executable, str(source / "configure-client"), "--user", account, input=wrong, text=True, env=env)
+            run(str(source / "configure-client"), "--user", account, input=wrong, text=True, env=env)
             rejected = subprocess.run([*ssh, "id"], env=env, capture_output=True, timeout=20)
             assert rejected.returncode == 255 and b"Host key verification failed" in rejected.stderr
             print("PASS: generated client config, fresh confined SSH login, binary stdin/stdout and host-key mismatch rejection")

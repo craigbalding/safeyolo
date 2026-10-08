@@ -242,6 +242,13 @@ def test_rust_start_stages_usable_agent_token_and_reuses_it_on_restart(launch, i
     assert token_path.stat().st_mode & 0o777 == 0o600
     share = vm.prepare_config_share("alice", str(launch.root))
     assert (share / "agent_token").read_text().strip() == first_token
+    assets = Path(__file__).resolve().parents[2] / "cli/src/safeyolo"
+    assert (share / "skills/safeyolo/SKILL.md").read_bytes() == (
+        assets / "agent_context/skills/safeyolo/SKILL.md"
+    ).read_bytes()
+    assert (share / "guest-init").read_bytes() == (assets / "guest-init.sh").read_bytes()
+    assert (share / "safeyolo-guest").read_bytes() == guest_helper.read_bytes()
+    assert not (share / "guest-diag").exists()
 
     launch.kill.side_effect = lambda _pid, _signal: setattr(launch.alive, "return_value", False)
     proxy.stop_proxy()

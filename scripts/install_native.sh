@@ -58,6 +58,9 @@ if [[ -n $platform_assets ]]; then
     # The prepared tree retains its sandbox UID/GID ownership. The operator
     # supplies a reusable immutable tree; per-agent writable state is separate.
     ln -s "$(cd "$platform_assets/rootfs-tree" && pwd)" "$root/share/rootfs-tree"
+    if [[ -f $platform_assets/cache-paths.txt ]]; then
+      cp "$platform_assets/cache-paths.txt" "$root/share/cache-paths.txt"
+    fi
   fi
 fi
 "$root/bin/safeyolo" --root "$root" init

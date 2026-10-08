@@ -25,6 +25,7 @@ pub mod coord_tools;
 pub mod credential_guard;
 mod credential_hmac;
 pub mod credential_injection;
+pub mod credential_resolver;
 mod credential_text;
 pub mod credentials;
 pub(crate) mod desktop_present;
@@ -85,6 +86,7 @@ mod request_trace;
 #[cfg(test)]
 mod service_catalog_tests;
 pub mod services;
+pub mod ssh_proxy;
 mod tailnet;
 pub mod tasks;
 pub mod test_context;
@@ -949,60 +951,7 @@ pub(crate) fn edit_native_policy<T>(
         .policy_file
         .clone()
         .ok_or("policy path is unavailable")?;
-    let activate = {
-        let path = path.clone();
-        let mut locked_runtime = None;
-        let mut before_activation = None;
-        move |saved: &str, activation| {
-            // Acquire after the store/file locks, and retain through rollback.
-            // No runtime writer can interleave with the rejected transaction.
-            if locked_runtime.is_none() {
-                locked_runtime = Some(
-                    state
-                        .write()
-                        .map_err(|_| "runtime lock is unavailable".to_string())?,
-                );
-            }
-            let current = locked_runtime
-                .as_mut()
-                .ok_or("runtime lock is unavailable")?;
-            let runtime = match activation {
-                approvals::PolicyActivation::Candidate => {
-                    before_activation = Some(Arc::clone(current));
-                    let policy = current
-                        .policy
-                        .as_ref()
-                        .ok_or("active policy is unavailable")?;
-                    let mut candidate = policy
-                        .reload_native_source(saved, &path)
-                        .map_err(|error| error.to_string())?;
-                    candidate
-                        .observe_baseline_files(Some(policy))
-                        .map_err(|error| error.to_string())?;
-                    prepare_policy_runtime(current, candidate).map_err(|error| error.to_string())?
-                }
-                approvals::PolicyActivation::Rollback { list_mtime } => {
-                    // Restored SAVED bytes may never have been live. Restore
-                    // the exact pre-apply generation instead of compiling them.
-                    let previous = before_activation
-                        .take()
-                        .unwrap_or_else(|| Arc::clone(current));
-                    let mut runtime = previous.as_ref().clone();
-                    if let Some(policy) = runtime.policy.as_mut() {
-                        policy
-                            .observe_restored_native_file(list_mtime)
-                            .map_err(|error| error.to_string())?;
-                    }
-                    runtime
-                }
-            };
-            runtime
-                .configure_declarations()
-                .map_err(|error| error.to_string())?;
-            **current = Arc::new(runtime);
-            Ok(())
-        }
-    };
+    let activate = native_policy_activation(state, path.clone());
     let store = state
         .read()
         .map_err(|_| "runtime lock is unavailable")?
@@ -1017,6 +966,83 @@ pub(crate) fn edit_native_policy<T>(
             prepare,
             activate,
         )?)
+    }
+}
+
+/// Service edits publish through the same store/file/runtime transaction as
+/// policy apply, preserving grants, current counters, and exact rollback.
+pub(crate) fn edit_service_policy(
+    state: &RuntimeState,
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), approvals::ApprovalError>,
+) -> Result<(), Error> {
+    edit_native_policy(state, false, |source| {
+        let (mut document, context) =
+            policy::parse_toml_for_edit(source).map_err(|error| approvals::ApprovalError {
+                kind: approvals::ErrorKind::Invalid,
+                message: error.to_string(),
+            })?;
+        edit(&mut document)?;
+        Ok((
+            (),
+            policy::restore_large_toml_integers(&document.to_string(), &context),
+        ))
+    })
+}
+
+fn native_policy_activation(
+    state: &RuntimeState,
+    path: PathBuf,
+) -> impl FnMut(&str, approvals::PolicyActivation) -> Result<(), String> + '_ {
+    let mut locked_runtime = None;
+    let mut before_activation = None;
+    move |saved: &str, activation| {
+        // Acquire after the store/file locks, and retain through rollback.
+        // No runtime writer can interleave with the rejected transaction.
+        if locked_runtime.is_none() {
+            locked_runtime = Some(
+                state
+                    .write()
+                    .map_err(|_| "runtime lock is unavailable".to_string())?,
+            );
+        }
+        let current = locked_runtime
+            .as_mut()
+            .ok_or("runtime lock is unavailable")?;
+        let runtime = match activation {
+            approvals::PolicyActivation::Candidate => {
+                before_activation = Some(Arc::clone(current));
+                let policy = current
+                    .policy
+                    .as_ref()
+                    .ok_or("active policy is unavailable")?;
+                let mut candidate = policy
+                    .reload_native_source(saved, &path)
+                    .map_err(|error| error.to_string())?;
+                candidate
+                    .observe_baseline_files(Some(policy))
+                    .map_err(|error| error.to_string())?;
+                prepare_policy_runtime(current, candidate).map_err(|error| error.to_string())?
+            }
+            approvals::PolicyActivation::Rollback { list_mtime } => {
+                // Restored SAVED bytes may never have been live. Restore
+                // the exact pre-apply generation instead of compiling them.
+                let previous = before_activation
+                    .take()
+                    .unwrap_or_else(|| Arc::clone(current));
+                let mut runtime = previous.as_ref().clone();
+                if let Some(policy) = runtime.policy.as_mut() {
+                    policy
+                        .observe_restored_native_file(list_mtime)
+                        .map_err(|error| error.to_string())?;
+                }
+                runtime
+            }
+        };
+        runtime
+            .configure_declarations()
+            .map_err(|error| error.to_string())?;
+        **current = Arc::new(runtime);
+        Ok(())
     }
 }
 
@@ -1242,13 +1268,13 @@ struct VaultMaterial {
 
 fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
     let data_dir = config.data_dir();
-    let vault_path = data_dir.join("vault.yaml.enc");
-    let key_path = data_dir.join("vault.key");
-    let passphrase = std::fs::read_to_string(&key_path).ok()?.trim().to_owned();
-    if passphrase.is_empty() {
+    let vault_path = data_dir.join("credentials.enc");
+    let key_path = data_dir.join("credentials.key");
+    let passphrase = zeroize::Zeroizing::new(std::fs::read_to_string(&key_path).ok()?);
+    if passphrase.trim().is_empty() {
         return None;
     }
-    let fingerprint = digest(&SHA256, passphrase.as_bytes());
+    let fingerprint = digest(&SHA256, passphrase.trim().as_bytes());
     let mut key_fingerprint = [0; 32];
     key_fingerprint.copy_from_slice(fingerprint.as_ref());
     Some(VaultMaterial {
@@ -1257,7 +1283,7 @@ fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
             key_path,
             key_fingerprint,
         },
-        passphrase: credentials::Secret::new(passphrase),
+        passphrase: credentials::Secret::new(passphrase.trim()),
     })
 }
 
@@ -1266,7 +1292,7 @@ struct LoadedGatewayVault {
     identity: VaultIdentity,
 }
 
-/// Load the existing Python-compatible vault material when both files are
+/// Load the fresh native credential material when both files are
 /// present. The passphrase is process-local configuration and is never copied
 /// into Runtime diagnostics. A missing or unusable vault leaves the gateway
 /// unavailable so a selected request fails closed at the injection boundary.

@@ -127,17 +127,17 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             if parent_proxy:
                 configuration += f'parent_proxy = {json.dumps(parent_proxy)}\n'
             if services:
-                (root / "builtin-services").mkdir()
-                (root / "services").mkdir()
+                (root / "builtin-services").mkdir(exist_ok=True)
+                (root / "services").mkdir(exist_ok=True)
                 configuration += 'gateway_builtin_services_dir = "builtin-services"\ngateway_services_dir = "services"\n'
             if services or agent_api:
                 agent_token = root / "data/agent_token"
                 agent_token.touch(mode=0o600)
                 agent_token.write_text(AGENT_TOKEN)
+            configuration += extra_config
             for index, (name, path) in enumerate(paths.items(), 2):
                 configuration += (f'[[listeners]]\nagent_id = "{name}"\nsocket_path = {json.dumps(path)}\n'
                                   f'source_id = "10.0.0.{index}"\n')
-            configuration += extra_config
             (root / "config.toml").write_text(configuration)
             environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
                                SAFEYOLO_CONFIG_DIR=str(root),
@@ -170,6 +170,25 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
 
 def scoped_policy(port):
     return DENY + f'\n[agents.alice.hosts]\n"127.0.0.1:{port}" = {{egress="allow"}}\n'
+
+
+def test_installed_stop_cleanup_accepts_inactive_native_process_record(tmp_path):
+    from tests.blackbox.installed_sections import cleanup_instance
+
+    with native_instance(tmp_path) as instance:
+        record = instance.root / "data/proxy-process.json"
+        # Proxy readiness precedes the host identity receipt. Reuse the
+        # fixture's fifteen-second readiness deadline for that publication.
+        deadline = time.monotonic() + 15
+        while not record.is_file():
+            assert instance.process.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert json.loads(record.read_text())["pid"] == instance.process.pid
+        failures = cleanup_instance(instance.root / "bin/safeyolo", instance.root)
+        assert instance.process.wait(timeout=10) == 0
+        assert failures == []
+        assert record.is_file()
 
 
 @contextmanager

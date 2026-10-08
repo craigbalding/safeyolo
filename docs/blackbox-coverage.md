@@ -44,7 +44,7 @@ receipts remain recorded in the issue; they are not a current execution mode.
 
 Check installed native ingress through one real gVisor/KVM guest.
 
-Require the selected wheel and packaged executable, authenticated runtime and
+Require the selected native installation and packaged executable, authenticated runtime and
 actual KVM runsc argv/UID mapping. Bind guest localhost requests to its mounted
 agent UDS. Observe an exact allowed HTTP marker at the owned origin, a denied
 request with no origin delivery, and protected local API boundaries.

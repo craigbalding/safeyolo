@@ -135,8 +135,19 @@ Source installation runs the same assembler and installer without retaining an
 archive. On Ubuntu with the inputs above:
 
 ```sh
-./scripts/install_native.sh --root "$HOME/.safeyolo-native" --runtime-artifacts /usr/bin
+./install.sh --root "$HOME/.safeyolo-native" --runtime-artifacts /usr/bin
 ```
+
+## Guest prerequisites
+
+Prepare the platform inputs below before creating an agent. The native package
+does not run a Python bootstrap or provision the host OS. On Ubuntu install
+runsc, uidmap, acl, iproute2 and util-linux; subordinate UID/GID ranges must
+cover 100000–165535. Where AppArmor restricts user namespaces, load the retained
+`cli/src/safeyolo/templates/apparmor-safeyolo-runsc` profile with
+`sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc`. For KVM grant
+the operator and subordinate uid 100000 read/write access to `/dev/kvm`.
+This preserves the existing namespace and hardware isolation setup.
 
 ## Configure and use an agent
 

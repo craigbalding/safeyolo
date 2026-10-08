@@ -1,169 +1,97 @@
-# TLS Certificate Management
+# TLS certificate management
 
-This document explains how SafeYolo's TLS interception works and how to configure CA trust.
+SafeYolo intercepts HTTPS at its mediated proxy. The client trusts the
+instance's signing CA; the proxy makes a separate verified TLS connection to
+the origin. TLS verification or parsing failure does not select passthrough.
 
-## How TLS Interception Works
+## Instance CA
 
-SafeYolo is a TLS-intercepting (MITM) proxy. When you make an HTTPS request through SafeYolo:
+Native initialization, performed by installation, creates a unique local CA:
 
-1. Your client connects to SafeYolo and sends a CONNECT request
-2. SafeYolo establishes a TLS connection with you using a certificate it generates on-the-fly
-3. SafeYolo connects to the real server and establishes a separate TLS session
-4. SafeYolo can now see the decrypted traffic between both endpoints
-
-For this to work without SSL errors, your client must trust the Certificate Authority (CA) that SafeYolo uses to sign its on-the-fly certificates.
-
-## The SafeYolo CA
-
-On first start, SafeYolo creates a **unique, local CA** in
-`~/.safeyolo/certs/` if one does not exist. The Rust proxy reuses the existing
-CA. The filenames retain their historical names so installed agents keep the
-same trust root:
-
-```
-~/.safeyolo/certs/
-├── mitmproxy-ca-cert.pem    # Public certificate
-└── mitmproxy-ca.pem         # Private key plus CA certificate (NEVER share this)
+```text
+ROOT/certs/mitmproxy-ca-cert.pem  # Public certificate for clients
+ROOT/certs/mitmproxy-ca.pem       # Private signing key and CA; keep on the host
 ```
 
-Older installations may also retain `mitmproxy-ca-cert.cer` and
-`mitmproxy-ca.p12`. A fresh Rust start does not create those files. The CA is
-unique to your installation. Only someone with access to the private key could
-abuse it.
+The proxy reuses the configured `tls_ca_file`. The native installer does not
+read or convert the earlier Python installation's keys. Keep the private key
+out of sandboxes, source control and messages. The public certificate can be
+inspected on the host without the retired certificate CLI:
 
-## Per-Process CA Trust (Recommended)
-
-SafeYolo uses per-process environment variables for CA trust. This avoids modifying your system trust store:
-
-```bash
-eval $(safeyolo cert env)
+```sh
+openssl x509 -in "$SAFEYOLO_CONFIG_DIR/certs/mitmproxy-ca-cert.pem" -noout -subject -dates -fingerprint -sha256
 ```
-
-This sets:
-
-```bash
-# CA trust (per-process, not system-wide)
-export NODE_EXTRA_CA_CERTS=~/.safeyolo/certs/mitmproxy-ca-cert.pem
-export REQUESTS_CA_BUNDLE=~/.safeyolo/certs/mitmproxy-ca-cert.pem
-export SSL_CERT_FILE=~/.safeyolo/certs/mitmproxy-ca-cert.pem
-export GIT_SSL_CAINFO=~/.safeyolo/certs/mitmproxy-ca-cert.pem
-
-# Proxy settings
-export HTTP_PROXY=http://localhost:8080
-export HTTPS_PROXY=http://localhost:8080
-```
-
-These environment variables configure:
-- **Node.js** - via `NODE_EXTRA_CA_CERTS`
-- **Python requests/httpx** - via `REQUESTS_CA_BUNDLE`
-- **OpenSSL/curl** - via `SSL_CERT_FILE`
-- **Git** - via `GIT_SSL_CAINFO`
-
-### Benefits of per-process trust
-
-1. **No sudo required** - No system-wide changes
-2. **Scoped** - Only affects your current shell session
-3. **Reversible** - Close the terminal and trust is gone
-4. **Safe** - Can't accidentally leave CA installed
 
 ## Agent sandboxes
 
-SafeYolo automatically injects the CA certificate into agent sandboxes via the VirtioFS config share and sets the environment variables. The guest init script handles this:
+Native lifecycle stages the public CA and proxy environment in the agent's
+configuration share. Guest init installs trust and supplies `SSL_CERT_FILE`,
+`REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS`. Preserve these variables when
+launching tools. Agent traffic uses the configured mediated route; use
+`http://_safeyolo.proxy.internal` for the authenticated Agent API. Do not
+change that URL to HTTPS or copy the host Admin token into the guest.
 
-- CA cert copied from `~/.safeyolo/certs/` to the config share
-- Guest init installs it to `/usr/local/share/ca-certificates/` and runs `update-ca-certificates`
-- Environment variables set in `proxy.env` on the config share:
-  - `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`
+A host-owned probe can use an explicitly configured agent Unix listener and
+public CA. This example assumes that the proxy is running, `data/alice.sock`
+is its configured listener, and the selected policy allows the destination:
 
-No manual configuration needed — `safeyolo agent add` handles everything.
-
-## Certificate Pinning
-
-Some applications embed expected certificate fingerprints ("pinning") and will refuse connections even with the CA configured.
-
-### Symptoms
-
-- SSL errors only for specific apps/domains
-- "Certificate verification failed" even with CA env vars set
-- Apps work without proxy but fail through SafeYolo
-
-### Solutions
-
-**Option 1: TLS passthrough (recommended)**
-
-Use the host-side operator command to skip inspection for an exact pinned
-domain. Agents cannot access this command or the authenticated admin endpoint:
-
-```bash
-safeyolo proxy ignore-host add pinned-app.example.test:443
-safeyolo proxy ignore-host list
-safeyolo proxy ignore-host remove pinned-app.example.test:443
+```sh
+curl --unix-socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --proxy http://localhost --cacert "$SAFEYOLO_CONFIG_DIR/certs/mitmproxy-ca-cert.pem" https://httpbin.org/get
 ```
 
-The command persists entries under `proxy.ignore_hosts` and updates a running
-proxy immediately. The equivalent configuration is:
+Per-process trust avoids changing the host's system trust store. Node uses
+`NODE_EXTRA_CA_CERTS`; OpenSSL/curl and many Go tools use `SSL_CERT_FILE`;
+Python requests uses `REQUESTS_CA_BUNDLE`; Git can use `GIT_SSL_CAINFO`. Java
+may require its own keystore. These are client trust inputs, not permission
+to disable origin verification.
 
-```yaml
-# In ~/.safeyolo/config.yaml
-proxy:
-  ignore_hosts:
-    - pinned-app.example.test:443
-    - another-pinned-domain.example.test
+## Additional upstream trust
+
+For a parent or origin with a private CA or missing intermediate, set
+`upstream_ca_file` in `config.toml` to a readable PEM bundle. It augments the
+native trust roots while retaining signature, validity and hostname checks.
+`parent_proxy` selects an explicit HTTP(S) parent authority. See
+[native settings](native-settings.md#runtime-settings) for their defaults and
+path resolution. Restart the owned proxy after changing runtime trust:
+
+```sh
+safeyolo stop
+safeyolo start
 ```
 
-Entries are exact `HOST` or `HOST:PORT` values; regular expressions and
-wildcards are rejected. Traffic passes through encrypted without inspection.
-SafeYolo logs connection start, failure, and end metadata but does not retain
-the encrypted payload.
+Keep each agent's lifecycle separate; stopping the proxy leaves its sandbox
+running. In a nested sandbox preserve the existing proxy and CA environment.
 
-**Option 2: Disable pinning in the app**
+## Certificate pinning and passthrough
 
-For development, some apps have flags to disable pinning:
-- `NODE_TLS_REJECT_UNAUTHORIZED=0` (Node.js - use carefully)
-- `--ignore-certificate-errors` (Chrome/Electron)
-- App-specific debug flags
+A pinned application can reject interception even when the CA is trusted.
+The operator can select exact TLS passthrough entries in `config.toml`:
 
-## Security Considerations
+```toml
+ignore_hosts = ["pinned-app.example.test:443", "another-pinned.example.test"]
+```
 
-### What you're trusting
+Use the native loader's supported exact host/port, address and CIDR semantics;
+do not broaden an exception to unrelated hosts or ports. Restart the proxy
+for the runtime setting to take effect. Passthrough retains encrypted bytes
+and connection start/error/end metadata; it does not produce inspected payload
+or credential-scan claims for that connection. Ordinary traffic remains
+inspected. This is an operator policy choice, unavailable through the Agent API.
 
-The SafeYolo CA is:
-- **Locally generated** and unique to your machine
-- **Private** - only someone with access to `~/.safeyolo/certs/mitmproxy-ca.pem` could abuse it
-- **Scoped** - per-process env vars don't affect other applications
-
-### Best practices
-
-1. **Keep the private key secure** - Don't commit it, don't share it
-2. **Run autonomous agents inside SafeYolo sandboxes** - Structural isolation prevents bypass attempts
-3. **Use per-process trust** - Avoid system-wide CA installation
+Disabling pinning in a development application can also make it accept the
+proxy CA. Avoid flags that disable all certificate verification: they remove
+origin authenticity rather than trusting this CA.
 
 ## Troubleshooting
 
-### "Certificate not trusted" errors
+Check the configured public CA path, its readable mode and its dates. Inspect
+`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`NODE_EXTRA_CA_CERTS` in the actual tool's
+environment. A client may use a bundled trust store; configure that client
+rather than disabling verification. For a specific pinned domain, review the
+exact passthrough choice and its security cost on the host. Use native logs
+and [diagnosis](native-operator.md) to distinguish client trust, upstream trust,
+network policy and an unavailable endpoint.
 
-1. Verify env vars are set: `echo $SSL_CERT_FILE`
-2. Re-run: `eval $(safeyolo cert env)`
-3. Check if app uses bundled certs instead of system/env certs
-
-### Different behavior in different apps
-
-Each app handles certificates differently:
-- **Python requests** - Uses `REQUESTS_CA_BUNDLE` or `certifi`
-- **Node.js** - Uses `NODE_EXTRA_CA_CERTS`
-- **Go** - Uses `SSL_CERT_FILE` or system certs
-- **Java** - Uses its own keystore (may need separate configuration)
-- **curl** - Uses `SSL_CERT_FILE` or `--cacert` flag
-
-### Viewing certificate details
-
-```bash
-safeyolo cert show
-```
-
-Shows certificate location, fingerprint, and file size.
-
-## Implementation reference
-
-The CLI [prepares the signing CA](../cli/src/safeyolo/rust_proxy.py). The Rust
-proxy [loads that CA and issues leaf certificates](../proxy/src/tls.rs).
+Native initialization in [the CLI](../proxy/src/bin/safeyolo.rs) prepares the
+signing CA. [The TLS owner](../proxy/src/tls.rs) imports it and signs leaf
+certificates. No Python certificate preparation runs on the product path.

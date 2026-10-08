@@ -32,7 +32,7 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
     assert "paths" not in events["push"]
     paths = events["pull_request"]["paths"]
     for path in (
-        "cli/src/safeyolo/rust_proxy.py",
+        "tests/reference/safeyolo/rust_proxy.py",
         "cli/tests/test_rust_proxy.py",
         "proxy/**",
         "tests/blackbox/proxy_backend.py",
@@ -40,10 +40,9 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
         "tests/test_blackbox_harness.py",
         "tests/test_proxy_rust_ci_events.py",
         "tests/test_proxy_rust_coord_fixture.py",
-        "cli/src/safeyolo/desktop_presenter*.py",
-        "cli/src/safeyolo/preview.py",
-        "cli/tests/test_agent_preview.py",
-        "cli/tests/test_desktop_presenter*.py",
+        "tests/reference/safeyolo/platform/**",
+        "cli/tests/test_vm_control.py",
+        "cli/tests/test_vm_diagnostics.py",
         ".github/workflows/proxy-rust.yml",
         "scripts/cargo_with_space.sh",
     ):
@@ -73,7 +72,7 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert "socat" in steps["Install preview test system dependency"]["run"]
     step_names = list(steps)
     assert step_names.index("Install preview test system dependency") < step_names.index(
-        "Test desktop presentation and preview"
+        "Test native desktop presentation and host entry"
     )
     native = steps["Test focused native boundaries"]
     assert native["if"] == "steps.changes.outputs.rust == 'true'"
@@ -95,8 +94,8 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "cli/tests/test_sockets.py",
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_proxy_cutover_deletion_map.py",
-        "cli/tests/test_desktop_presenter.py",
-        "cli/tests/test_agent_preview.py",
+        "--test desktop_native --test native_host_cli",
+        "--test native_runtime_dependency",
         "tests/test_blackbox_harness.py",
         "tests/proxy_contracts/test_readiness.py",
         "cargo_with_space.sh test --locked --test agent_api_audit",
@@ -171,7 +170,7 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     assert job["runs-on"] == "macos-latest"
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     assert "test_vm_control.py" in runs
-    assert "test_vm_identity.py" in runs
+    assert "--test native_host_identity" in runs
     assert "test_vm_diagnostics.py" in runs
     assert "--test native_runtime_dependency" in runs
     assert "tests/proxy_contracts --proxy-backend rust" not in runs
@@ -179,8 +178,8 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
 
 
 @pytest.mark.parametrize("path,expected,matcher", [
-    ("cli/src/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
-    ("cli/src/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
+    ("tests/reference/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
+    ("tests/reference/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}, "available"),
     ("docs/DEVELOPERS.md", {}, "available"),
     ("site/index.md", {"dispatch": "true"}, "available"),

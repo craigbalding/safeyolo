@@ -3,14 +3,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
-if [ "$(uname -s)" = "Linux" ] && ! command -v runsc >/dev/null 2>&1; then
-    echo "ERROR: the current installed Linux launcher requires runsc, even for this host-only witness" >&2
-    exit 2
-fi
 REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 PACKAGE_DIR="$(mktemp -d "$HOME/sy-package.XXXXXX")"
-export UV_TOOL_DIR="$PACKAGE_DIR/uv-tools"
-export UV_TOOL_BIN_DIR="$PACKAGE_DIR/bin"
 export SAFEYOLO_CONFIG_DIR="$PACKAGE_DIR/prepared"
 export SAFEYOLO_LOGS_DIR="$SAFEYOLO_CONFIG_DIR/logs"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_CONFIG_DIR/data/coord"
@@ -20,7 +14,8 @@ ARTIFACTS="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts/installed-pa
 export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --basetemp=$PACKAGE_DIR/p"
 mkdir -p "$ARTIFACTS"
 "$SCRIPT_DIR/run-lane.sh" proxy --prepare-only
-export PATH="$UV_TOOL_BIN_DIR:$REPO_ROOT/.venv/bin:$PATH"
+export PATH="$PACKAGE_DIR/prepared/bin:$REPO_ROOT/.venv/bin:$PATH"
+export PYTHONPATH="$REPO_ROOT/tests/reference:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export SAFEYOLO_CONFIG_DIR="$PACKAGE_DIR/instance"
 export SAFEYOLO_LOGS_DIR="$SAFEYOLO_CONFIG_DIR/logs"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_CONFIG_DIR/data/coord"
@@ -35,32 +30,18 @@ source, root = Path(sys.argv[1]), Path(sys.argv[2])
 prepare_native_instance(source, root)
 copy_prepared_nats(source, root)
 PY
-safeyolo init --no-interactive
 touch "$SAFEYOLO_CONFIG_DIR/.safeyolo-platform-smoke"
-python3 - "$SAFEYOLO_CONFIG_DIR/config.yaml" <<'PY'
+python3 - "$SAFEYOLO_CONFIG_DIR/config.toml" <<'PY_CONFIG'
 import sys
 from pathlib import Path
-import yaml
+import tomlkit
 path = Path(sys.argv[1])
-config = yaml.safe_load(path.read_text())
-config['proxy'].update(port=0, admin_port=0, web_port=0, upstream_proxy='')
-path.write_text(yaml.safe_dump(config, sort_keys=False))
-PY
-# Host-only registration uses the installed package's metadata writer. The
-# ordinary agent-add path provisions a guest rootfs even with --no-run.
-python3 - "$(command -v safeyolo)" "$SAFEYOLO_CONFIG_DIR" <<'PY'
-import subprocess
-import sys
-from pathlib import Path
-python = Path(sys.argv[1]).read_text().splitlines()[0][2:]
-subprocess.run([python, '-I', '-c', '''
-import json,sys
-from pathlib import Path
-from safeyolo.agents_store import save_agent
-save_agent('bbpackage', {'agent_id':'ag-installed-package','folder':sys.argv[1]})
-(Path(sys.argv[1])/'data/agent_map.json').write_text(json.dumps({'bbpackage':{'ip':'10.4.0.2'}}))
-''', sys.argv[2]], check=True)
-PY
+config = tomlkit.parse(path.read_text())
+config['admin_port'] = 0
+config['parent_proxy'] = ''
+config['listeners'] = [{'agent_id': 'bbpackage', 'socket_path': str(path.parent / 'data/bbpackage.sock')}]
+path.write_text(tomlkit.dumps(config))
+PY_CONFIG
 INSTALLED_BINARY="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -71,7 +52,7 @@ PY
 )"
 python3 "$SCRIPT_DIR/installed_host_smoke.py" --mode smoke \
     --cli "$(command -v safeyolo)" --rust-bin "$INSTALLED_BINARY" \
-    --rust-config "$SAFEYOLO_CONFIG_DIR/data/native.json" \
+    --rust-config "$SAFEYOLO_CONFIG_DIR/config.toml" \
     --config-dir "$SAFEYOLO_CONFIG_DIR" --agent bbpackage \
     --install-commit "$REVISION" --output "$ARTIFACTS/host-package.json"
 # The full platform contract suite runs once overnight. These three existing

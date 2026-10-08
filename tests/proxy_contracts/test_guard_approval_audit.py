@@ -7,7 +7,7 @@ import json
 import pytest
 
 from safeyolo.api import AdminAPI
-from safeyolo.commands.watch import scan_pending_approvals
+from safeyolo.core.audit_stream import scan_pending_approvals
 from tests.proxy_contracts.harness import read_events, request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_network_policy import policy_proxy

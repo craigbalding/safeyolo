@@ -7,7 +7,6 @@ import os
 import subprocess
 import sys
 import time
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -307,7 +306,7 @@ def test_safe_path_subprocess_imports_the_recorded_roots_not_launch_cwd(tmp_path
     (shadow / "safeyolo").mkdir(parents=True)
     (shadow / "safeyolo" / "__init__.py").write_text("SHADOW = True\n")
 
-    safeyolo_root = REPO_ROOT / "cli" / "src" / "safeyolo"
+    safeyolo_root = REPO_ROOT / "tests" / "reference" / "safeyolo"
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(safeyolo_root.parent)
     environment["SAFEYOLO_DEV_MODE"] = "1"
@@ -337,160 +336,3 @@ def test_safe_path_subprocess_imports_the_recorded_roots_not_launch_cwd(tmp_path
         Path(imported["roots"]["safeyolo"])
     )
     assert set(imported["roots"]) == {"safeyolo"}
-
-
-def test_isolated_wheel_carries_stamped_identity_without_git(tmp_path):
-    output = tmp_path / "dist"
-    environment = os.environ.copy()
-    environment["SAFEYOLO_BUILD_REVISION"] = "B" * 40
-    environment["SAFEYOLO_BUILD_ID"] = "ci-run-401"
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(output)],
-        cwd=REPO_ROOT,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wheel = next(output.glob("*.whl"))
-    installed = tmp_path / "installed"
-    with zipfile.ZipFile(wheel) as archive:
-        assert "safeyolo/_build_identity.json" in archive.namelist()
-        archive.extractall(installed)
-
-    script = (
-        "import json, sys; sys.path.insert(0, sys.argv[1]); "
-        "import safeyolo.runtime_identity as identity; "
-        "identity._run_git = lambda *a, **k: (_ for _ in ()).throw("
-        "RuntimeError('git forbidden')); "
-        "identity.fingerprint_source_roots = lambda *a, **k: (_ for _ in ())"
-        ".throw(RuntimeError('scan forbidden')); "
-        "print(json.dumps(identity.initialize_runtime_identity("
-        "dev_mode=False).to_dict(), sort_keys=True))"
-    )
-    result = subprocess.run(
-        [sys.executable, "-I", "-c", script, str(installed)],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": str(tmp_path / "no-tools")},
-    )
-    identity = json.loads(result.stdout)
-    assert identity["mode"] == "production"
-    assert identity["build"] == {
-        "build_identifier": "ci-run-401",
-        "package_version": "0.1.0",
-        "provenance": "build-environment",
-        "source_revision": "b" * 40,
-        "state": "known",
-    }
-
-
-def test_wheel_build_rejects_a_mutable_revision_name(tmp_path):
-    result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path / "dist")],
-        cwd=REPO_ROOT,
-        env={**os.environ, "SAFEYOLO_BUILD_REVISION": "main"},
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "SAFEYOLO_BUILD_REVISION must be" in result.stderr
-
-
-def _wheel_source(source: Path) -> Path:
-    package = source / "cli" / "src" / "safeyolo"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("")
-    (source / "hatch_build.py").write_text(
-        (REPO_ROOT / "hatch_build.py").read_text()
-    )
-    (source / "pyproject.toml").write_text(
-        """\
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
-name = "safeyolo"
-version = "9.9.9"
-
-[tool.hatch.build.targets.wheel]
-packages = ["cli/src/safeyolo"]
-
-[tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
-"""
-    )
-    return source
-
-
-def test_wheel_does_not_stamp_an_unrelated_parent_checkout(tmp_path):
-    parent = tmp_path / "unrelated"
-    source = _wheel_source(parent / "data" / "source")
-    parent.mkdir(exist_ok=True)
-    (parent / ".gitignore").write_text("data/\n")
-    _git(parent, "init")
-    _git(parent, "config", "user.email", "identity-test@example.invalid")
-    _git(parent, "config", "user.name", "Identity Test")
-    _git(parent, "add", ".gitignore")
-    _git(parent, "commit", "-m", "unrelated clean parent")
-
-    output = tmp_path / "dist"
-    environment = os.environ.copy()
-    environment.pop("SAFEYOLO_BUILD_REVISION", None)
-    environment.pop("SAFEYOLO_BUILD_ID", None)
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(output), str(source)],
-        cwd=parent,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    wheel = next(output.glob("*.whl"))
-    with zipfile.ZipFile(wheel) as archive:
-        stamp = json.loads(archive.read("safeyolo/_build_identity.json"))
-    assert stamp == {
-        "build_identifier": None,
-        "package_version": "9.9.9",
-        "provenance": "unknown",
-        "schema_version": 1,
-        "source_revision": None,
-        "state": "unknown",
-    }
-
-
-@pytest.mark.parametrize("explicit,missing", [(False, None), (True, None), (False, ".version"), (True, ".sha256")])
-def test_wheel_includes_matching_native_coord_guest_inputs(tmp_path, explicit, missing):
-    source = _wheel_source(tmp_path / "source")
-    guest = source / "guest/command/target/release/safeyolo-guest"
-    guest.parent.mkdir(parents=True)
-    guest.write_bytes(b"guest fixture")
-    coord = tmp_path / "selected-coord" if explicit else guest.with_name("safeyolo-coord")
-    artifacts = {"": b"native Coord guest fixture", ".version": b"safeyolo-coord commit=fixture profile=debug\n", ".sha256": b"fixture checksum\n"}
-    for suffix, data in artifacts.items():
-        path = coord.with_suffix(suffix) if suffix else coord
-        if suffix != missing:
-            path.write_bytes(data)
-    environment = os.environ.copy()
-    for key in ("SAFEYOLO_GUEST_HELPER", "SAFEYOLO_COORD_GUEST_BINARY", "SAFEYOLO_NATIVE_BINARY", "SAFEYOLO_NATIVE_BUILD_METADATA", "SAFEYOLO_BUILD_REVISION", "SAFEYOLO_BUILD_ID"):
-        environment.pop(key, None)
-    if explicit:
-        environment["SAFEYOLO_COORD_GUEST_BINARY"] = str(coord)
-    output = tmp_path / "dist"
-    result = subprocess.run(["uv", "build", "--wheel", "--out-dir", str(output), str(source)],
-                            env=environment, capture_output=True, text=True, check=False, timeout=60)
-    if missing:
-        assert result.returncode != 0
-        assert "Native Coord guest artifact is missing" in result.stderr
-        assert not list(output.glob("*.whl"))
-    else:
-        assert result.returncode == 0, result.stderr
-        with zipfile.ZipFile(next(output.glob("*.whl"))) as archive:
-            for suffix, data in artifacts.items():
-                assert archive.read(f"safeyolo/assets/guest/safeyolo-coord{suffix}") == data
-            assert "safeyolo/repo_map.py" not in archive.namelist()

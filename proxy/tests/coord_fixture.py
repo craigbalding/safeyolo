@@ -53,7 +53,7 @@ def coord_modules() -> tuple[Any, Any, Any]:
     repository_root = Path(__file__).resolve().parents[2]
     # The fixture is a standalone workflow helper, so import the candidate's
     # source tree only after the caller has selected its test-owned state path.
-    sys.path.insert(0, str(repository_root / "cli" / "src"))
+    sys.path.insert(0, str(repository_root / "tests" / "reference"))
     from safeyolo.coord import api, nats_client, nats_runtime
 
     return api, nats_client, nats_runtime

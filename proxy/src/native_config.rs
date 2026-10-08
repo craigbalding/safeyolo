@@ -10,6 +10,7 @@ use crate::{Config, Error};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub onepassword_executable: Option<PathBuf>,
     pub capture: Capture,
     pub trace: Trace,
     pub audit: Audit,
@@ -228,6 +229,7 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         "desktop",
         "command_centre",
         "web",
+        "onepassword_executable",
     ] {
         if let Some(value) = fields.shift_remove(key) {
             settings.insert(key.into(), value);
@@ -235,6 +237,13 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     }
     let settings: Settings = serde_json::from_value(Value::Object(settings))
         .map_err(|error| format!("config.toml settings: {error}"))?;
+    if settings
+        .onepassword_executable
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err("onepassword_executable must be an absolute host path".into());
+    }
     for (key, default) in [
         ("data_dir", "data"),
         ("policy_file", "policy.toml"),
@@ -244,6 +253,8 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         ("event_log", "logs/events.jsonl"),
         ("flow_store_db_path", "logs/flows.sqlite3"),
         ("circuit_state_file", "data/circuits.json"),
+        ("gateway_builtin_services_dir", "builtin-services"),
+        ("gateway_services_dir", "services"),
     ] {
         fields.entry(key).or_insert_with(|| json!(default));
     }

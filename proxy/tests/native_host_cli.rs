@@ -43,6 +43,18 @@ fn initialize(root: &Path) {
     .unwrap();
 }
 
+fn initialize_tmux_launcher(root: &Path) {
+    initialize(root);
+    let paths = std::env::var_os("PATH").expect("native launcher fixtures require PATH");
+    let tmux = std::env::split_paths(&paths)
+        .map(|directory| directory.join("tmux"))
+        .find(|path| {
+            path.is_file() && fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0
+        })
+        .expect("native launcher fixtures require an installed tmux executable");
+    symlink(fs::canonicalize(tmux).unwrap(), root.join("bin/tmux")).unwrap();
+}
+
 struct StopOnDrop<'a>(&'a Path);
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
@@ -501,7 +513,9 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     use std::os::unix::net::UnixListener;
 
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("instance");
+    // The CLI adds /private to Darwin's /var alias. Keep both owned socket
+    // paths within SUN_LEN while still passing the ordinary alias to the CLI.
+    let root = temp.path().join("i");
     initialize(&root);
     value(cli(
         &root,
@@ -576,7 +590,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     run["backend_token"] = backend_token.into();
     fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     let dead = value(cli(&root, &["agent", "status", "marker"]));
-    assert_eq!(dead["runtime_state"], "stopped");
+    assert_eq!(dead["runtime_state"], "stopped", "{dead}");
     fs::create_dir_all(root.join("data/shell-sockets")).unwrap();
     let shell_path = root.join("data/shell-sockets/marker.sock");
     let listener = UnixListener::bind(&shell_path).unwrap();
@@ -1277,7 +1291,10 @@ fn configuration_rejection_is_atomic_and_current_run_is_unchanged() {
         ],
     ));
     assert_eq!(changed["configuration"]["id"], id);
-    assert_eq!(changed["configuration"]["folder"], next.to_str().unwrap());
+    assert_eq!(
+        changed["configuration"]["folder"],
+        fs::canonicalize(&next).unwrap().to_str().unwrap()
+    );
     assert_eq!(
         changed["scope"],
         "next sandbox start; current run is unchanged"
@@ -1377,7 +1394,7 @@ fn host_setup_keeps_the_explicit_config_and_failed_setup_does_not_publish() {
         fs::read_to_string(root.join("agents/marker/home/source"))
             .unwrap()
             .trim(),
-        selected.to_str().unwrap()
+        fs::canonicalize(&selected).unwrap().to_str().unwrap()
     );
 }
 
@@ -1524,7 +1541,7 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
 fn native_tmux_launch_uses_current_environment_on_the_owned_socket() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("a");
-    initialize(&root);
+    initialize_tmux_launcher(&root);
     let workspace = temp.path().join("workspace");
     fs::create_dir(&workspace).unwrap();
     let created = value(cli(
@@ -1613,7 +1630,7 @@ fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
     for (kind, preset) in [("script", "tmux-window"), ("manager", "tmux-pane")] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("instance");
-        initialize(&root);
+        initialize_tmux_launcher(&root);
         let workspace = temp.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
         let created = value(cli(
@@ -1671,25 +1688,42 @@ fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../cli/src/safeyolo/launchers")
             .join(format!("{preset}.sh"));
-        let started = Command::new("bash")
-            .arg(script)
-            .arg("launch")
-            .env("SAFEYOLO_EXECUTABLE", env!("CARGO_BIN_EXE_safeyolo"))
-            .env("SAFEYOLO_NATIVE_CONFIG_PATH", root.join("config.toml"))
-            .env("SAFEYOLO_CONFIG_DIR", &root)
-            .env("SAFEYOLO_AGENT_NAME", "marker")
-            .env("SAFEYOLO_LAUNCH_ID", "launch-custom")
-            .env("SAFEYOLO_TMUX_SESSION", "custom")
-            .env("SAFEYOLO_TMUX_SOCKET", &socket)
-            .output()
-            .unwrap();
+        let launch_preset = || {
+            Command::new("bash")
+                .arg(&script)
+                .arg("launch")
+                .env("SAFEYOLO_EXECUTABLE", env!("CARGO_BIN_EXE_safeyolo"))
+                .env("SAFEYOLO_NATIVE_CONFIG_PATH", root.join("config.toml"))
+                .env("SAFEYOLO_CONFIG_DIR", &root)
+                .env("SAFEYOLO_AGENT_NAME", "marker")
+                .env("SAFEYOLO_LAUNCH_ID", "launch-custom")
+                .env("SAFEYOLO_TMUX_SESSION", "custom")
+                .env("SAFEYOLO_TMUX_SOCKET", &socket)
+                .output()
+                .unwrap()
+        };
+        let installed_tmux = root.join("bin/tmux");
+        let held_tmux = root.join("bin/tmux-held");
+        fs::rename(&installed_tmux, &held_tmux).unwrap();
+        let missing = launch_preset();
+        assert!(!missing.status.success());
+        assert!(
+            String::from_utf8_lossy(&missing.stderr).contains("Installed tmux runtime is missing")
+        );
+        assert!(!root.join("custom-entry").exists());
+        assert!(!socket.exists());
+        fs::rename(&held_tmux, &installed_tmux).unwrap();
+        let started = launch_preset();
         assert!(
             started.status.success(),
             "{kind} / {preset}: {}",
             String::from_utf8_lossy(&started.stderr)
         );
         let target: Value = serde_json::from_slice(&started.stdout).unwrap();
-        assert_eq!(target["tmux_socket"], socket.to_str().unwrap());
+        assert_eq!(
+            target["tmux_socket"],
+            fs::canonicalize(&socket).unwrap().to_str().unwrap()
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while !root.join("custom-entry").exists() {
             assert!(std::time::Instant::now() < deadline);

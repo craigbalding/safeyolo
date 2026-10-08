@@ -8,7 +8,6 @@ from unittest.mock import create_autospec
 import pytest
 
 from safeyolo import api, config, rust_proxy
-from safeyolo.commands import watch
 
 
 @pytest.fixture
@@ -381,7 +380,7 @@ def test_same_process_generation_keeps_the_cached_default_token(native):
     )
 
 
-def test_watch_budget_action_uses_restarted_native_endpoint_and_token(native):
+def test_client_budget_reset_uses_restarted_native_endpoint_and_token(native):
     client = api.AdminAPI()
     next_token = native.token.with_name("watch-next-token")
     next_token.write_text("owned-watch-next-token\n")
@@ -401,7 +400,8 @@ def test_watch_budget_action_uses_restarted_native_endpoint_and_token(native):
         "host": "owned.invalid",
         "details": {"budget": 3, "host": "owned.invalid"},
     }
-    assert watch._exec_reset_budget(event, client) == "Budget reset for owned.invalid"
+    assert event["host"] == "owned.invalid"
+    client.reset_budget("network:request:owned.invalid")
     native.http.request.assert_called_once_with(
         "POST",
         "http://127.0.0.1:19333/admin/budgets/reset",
