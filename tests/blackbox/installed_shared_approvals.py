@@ -130,7 +130,10 @@ def run_helper(command: list[str], events_path: Path) -> str:
     """Keep the one real model run's raw output before checking or parsing it."""
     descriptor = os.open(events_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as events:
-        completed = subprocess.run(command, stdout=events, stderr=subprocess.PIPE, text=True, timeout=300)
+        errors_path = events_path.with_name(events_path.name + ".stderr")
+        errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(errors_descriptor, "w") as errors:
+            completed = subprocess.run(command, stdout=events, stderr=errors, text=True, timeout=300)
     assert completed.returncode == 0, f"Helper exited {completed.returncode}; inspect private events at {events_path}"
     return events_path.read_text()
 
@@ -332,6 +335,7 @@ def run(args: argparse.Namespace) -> None:
             # command in a sandbox-only guest does not supply that launch ID.
             events_path = args.helper_events or root / "logs" / ("helper-821-" + uuid.uuid4().hex + ".jsonl")
             helper_session["events_path"] = str(events_path)
+            helper_session["stderr_path"] = str(events_path) + ".stderr"
             output = run_helper([str(cli), "--root", str(root), "agent", "start", args.helper,
                 "--foreground", "--", "exec", "--json", "--ephemeral", "--skip-git-repo-check", prompt], events_path)
             model_events = [json.loads(line) for line in output.splitlines()]

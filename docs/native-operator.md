@@ -151,10 +151,11 @@ the test driver. `ROOM` is an existing ordinary Coord room in this disposable
 instance, with Helper send/receive and Worker receive permission. Keep it
 separate from a running factory's work room. The guest's staged
 `/safeyolo/safeyolo-coord` supplies its normal Agent API identity.
-The real run saves raw Codex events to a new private file before parsing them,
-including when the command fails. `--helper-events FILE` selects that file in
+The real run saves raw Codex events and stderr before parsing them, including
+when the command fails. `--helper-events FILE` selects the events file in
 an existing host-owned directory outside guest writable mounts. The default
-is a unique file in the root's logs directory. Preserve a failed run's events
+is a unique file in the root's logs directory; stderr uses `FILE.stderr`.
+Both files have private permissions. Preserve a failed run's events
 for diagnosis instead of starting another model session to recover its operands.
 
 Replace these operands before running as the disposable instance's owner.

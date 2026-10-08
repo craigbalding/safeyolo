@@ -191,11 +191,14 @@ def test_helper_journey_expiry_and_changed_action_do_not_grant():
 def test_failed_real_helper_output_survives_before_parsing(tmp_path):
     """One failed model attempt retains its operands without a diagnostic rerun."""
     events = tmp_path / "helper-events.jsonl"
-    command = [sys.executable, "-c", 'print("unparsed failing event"); raise SystemExit(1)']
+    command = [sys.executable, "-c", 'import sys; print("unparsed failing event"); print("failure operand", file=sys.stderr); raise SystemExit(1)']
     with pytest.raises(AssertionError, match="inspect private events"):
         installed_shared_approvals.run_helper(command, events)
     assert events.read_text() == "unparsed failing event\n"
     assert stat.S_IMODE(events.stat().st_mode) == 0o600
+    errors = tmp_path / "helper-events.jsonl.stderr"
+    assert errors.read_text() == "failure operand\n"
+    assert stat.S_IMODE(errors.stat().st_mode) == 0o600
     with pytest.raises(FileExistsError):
         installed_shared_approvals.run_helper([sys.executable, "-c", 'print("replacement")'], events)
     assert events.read_text() == "unparsed failing event\n"
