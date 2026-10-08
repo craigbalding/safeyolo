@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -133,15 +134,51 @@ def wait_for_operator(read_approval: Callable[[], dict], action: dict, timeout: 
         time.sleep(min(0.25, remaining))
 
 
-def run_helper(command: list[str], events_path: Path) -> str:
-    """Keep the one real model run's raw output before checking or parsing it."""
-    descriptor = os.open(events_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as events:
-        errors_path = events_path.with_name(events_path.name + ".stderr")
-        errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(errors_descriptor, "w") as errors:
-            completed = subprocess.run(command, stdout=events, stderr=errors, text=True, timeout=300)
-    assert completed.returncode == 0, f"Helper exited {completed.returncode}; inspect private events at {events_path}"
+def run_helper(command: list[str], events_path: Path, *, timeout: float = 300) -> str:
+    """Stream child pipes into parent-owned private files before checking the run."""
+    exit_code = None
+    try:
+        descriptor = os.open(events_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as events:
+            errors_path = events_path.with_name(events_path.name + ".stderr")
+            errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(errors_descriptor, "wb") as errors:
+                with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
+                    streams = {process.stdout: events, process.stderr: errors}
+                    deadline = time.monotonic() + timeout
+                    try:
+                        while streams:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            readable, _, _ = select.select(list(streams), [], [], remaining)
+                            if not readable:
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            for stream in readable:
+                                chunk = os.read(stream.fileno(), 65536)
+                                if chunk:
+                                    streams[stream].write(chunk)
+                                    streams[stream].flush()
+                                else:
+                                    del streams[stream]
+                                    stream.close()
+                        process.wait(timeout=max(0, deadline - time.monotonic()))
+                    finally:
+                        # Keep an exit observed before cleanup, even if another
+                        # writer prevents EOF. Our forced kill is not that exit.
+                        exit_code = process.poll()
+                        if exit_code is None:
+                            process.kill()
+                        process.wait()
+    except (OSError, subprocess.SubprocessError) as error:
+        if exit_code not in (None, 0):
+            failure = AssertionError(f"Helper exited {exit_code}; inspect private events at {events_path}")
+            failure.add_note(f"Private Helper output capture also failed: {error}")
+            raise failure from error
+        observed = "unknown" if exit_code is None else str(exit_code)
+        error.add_note(f"Helper transport exit before cleanup: {observed}; inspect private events at {events_path}")
+        raise
+    assert exit_code == 0, f"Helper exited {exit_code}; inspect private events at {events_path}"
     return events_path.read_text()
 
 

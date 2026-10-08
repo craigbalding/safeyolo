@@ -13,7 +13,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -237,6 +239,186 @@ def test_failed_real_helper_output_survives_before_parsing(tmp_path):
     with pytest.raises(FileExistsError):
         installed_shared_approvals.run_helper([sys.executable, "-c", 'print("replacement")'], events)
     assert events.read_text() == "unparsed failing event\n"
+
+
+def test_helper_capture_keeps_private_files_in_parent_and_flushes_before_exit(tmp_path):
+    """Actual child descriptors are pipes; both large streams are readable live."""
+    events = tmp_path / "helper-events.jsonl"
+    errors = events.with_name(events.name + ".stderr")
+    stdout_unit = b'{"event":"private output"}\r\n'
+    stderr_unit = b"private stderr\r\n\x00\xff"
+    stdout, stderr = stdout_unit * 32768, stderr_unit * 32768
+    tail = b'{"event":"after barrier"}\r\n'
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        script = "\n".join([
+            "import os, socket, stat, sys, threading",
+            "assert all(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in (1, 2))",
+            "assert os.fstat(1).st_ino != os.fstat(2).st_ino",
+            "saved = [os.stat(path) for path in sys.argv[1:3]]",
+            "for entry in os.listdir('/proc/self/fd'):",
+            "    try: current = os.fstat(int(entry))",
+            "    except OSError: continue  # The directory enumeration FD is already closed.",
+            "    assert all((current.st_dev, current.st_ino) != (path.st_dev, path.st_ino) for path in saved)",
+            "def write(fd, data):",
+            "    while data: data = data[os.write(fd, data):]",
+            "outputs = [threading.Thread(target=write, args=(fd, data)) for fd, data in",
+            f"           ((1, {stdout_unit!r} * 32768), (2, {stderr_unit!r} * 32768))]",
+            "for output in outputs: output.start()",
+            "for output in outputs: output.join()",
+            f"with socket.create_connection({listener.getsockname()!r}, timeout=5) as barrier:",
+            "    assert barrier.recv(1) == b'x'",
+            f"write(1, {tail!r})",
+        ])
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(installed_shared_approvals.run_helper,
+                [sys.executable, "-c", script, str(events), str(errors)], events, timeout=5)
+            connection, _ = listener.accept()
+            with connection:
+                try:
+                    deadline = time.monotonic() + 3
+                    while events.read_bytes() != stdout or errors.read_bytes() != stderr:
+                        assert time.monotonic() < deadline, "output was not flushed before exit"
+                        time.sleep(0.01)
+                    assert not result.done()
+                    for path in (events, errors):
+                        state = path.stat()
+                        assert stat.S_IMODE(state.st_mode) == 0o600
+                        assert (state.st_uid, state.st_gid) == (os.getuid(), os.getgid())
+                    assert events.stat().st_ino != errors.stat().st_ino
+                finally:
+                    connection.sendall(b"x")
+            assert result.result(timeout=5) == (stdout + tail).decode().replace("\r\n", "\n")
+    assert events.read_bytes() == stdout + tail
+    assert errors.read_bytes() == stderr
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "launch", "timeout", "closed_timeout", "lingering_zero", "lingering_nonzero"])
+def test_helper_capture_preserves_partial_bytes_and_precleanup_exit(tmp_path, monkeypatch, failure):
+    """A live writer cannot hide a completed exit or prevent owned cleanup."""
+    events = tmp_path / "helper-events.jsonl"
+    errors = events.with_name(events.name + ".stderr")
+    stdout, stderr = b"partial\r\n\x00\xff", b"stderr\r\n\xff"
+    lingering = failure.startswith("lingering_")
+    live = failure in {"timeout", "closed_timeout"}
+    code = 17 if failure in {"nonzero", "lingering_nonzero"} else 0
+    script = f"import os,sys,time\nos.write(1,{stdout!r})\nos.write(2,{stderr!r})\n"
+    if failure == "closed_timeout":
+        script += "os.close(1);os.close(2)\n"
+    script += "time.sleep(5)\n" if live else f"sys.exit({code})\n"
+    command = [str(tmp_path / "absent")] if failure == "launch" else [sys.executable, "-c", script]
+    popen = subprocess.Popen
+    children, writers = [], []
+
+    def launch(*args, **kwargs):
+        assert kwargs["stdout"] == kwargs["stderr"] == subprocess.PIPE
+        if lingering:
+            stdout_read, stdout_write = os.pipe()
+            stderr_read, stderr_write = os.pipe()
+            try:
+                process = popen(*args, **{**kwargs, "stdout": stdout_write, "stderr": stderr_write})
+                process.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+                process.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+                writers.append(popen([sys.executable, "-c", "import time;time.sleep(10)"],
+                    stdout=stdout_write, stderr=stderr_write))
+                process.wait(timeout=3)
+            finally:
+                os.close(stdout_write)
+                os.close(stderr_write)
+        else:
+            process = popen(*args, **kwargs)
+        children.append(process)
+        return process
+
+    monkeypatch.setattr(installed_shared_approvals.subprocess, "Popen", launch)
+    expected = FileNotFoundError if failure == "launch" else AssertionError if code else subprocess.TimeoutExpired
+    started = time.monotonic()
+    try:
+        with pytest.raises(expected) as raised:
+            installed_shared_approvals.run_helper(command, events, timeout=0.2)
+        assert time.monotonic() - started < 3
+        assert all(child.poll() is not None for child in children)
+        assert events.read_bytes() == (b"" if failure == "launch" else stdout)
+        assert errors.read_bytes() == (b"" if failure == "launch" else stderr)
+        if code:
+            assert "Helper exited 17" in str(raised.value)
+            assert children[0].returncode == 17
+        if failure == "lingering_nonzero":
+            assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+            assert "capture also failed" in raised.value.__notes__[0]
+        elif not code:
+            observed = "0" if lingering else "unknown"
+            assert f"exit before cleanup: {observed}" in raised.value.__notes__[0]
+        if live:
+            assert children[0].returncode < 0
+        if lingering:
+            assert children[0].returncode == code and all(writer.poll() is None for writer in writers)
+        # This is the caller's independently owned cleanup, after capture returned.
+    finally:
+        for child in [*children, *writers]:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)
+    for path in (events, errors):
+        state = path.stat()
+        assert stat.S_IMODE(state.st_mode) == 0o600
+        assert (state.st_uid, state.st_gid) == (os.getuid(), os.getgid())
+
+
+@pytest.mark.parametrize("exit_code", [None, 0, 17])
+def test_helper_capture_write_failure_keeps_partial_output_and_original_error(tmp_path, monkeypatch, exit_code):
+    events = tmp_path / "helper-events.jsonl"
+    children = []
+    popen, fdopen = subprocess.Popen, os.fdopen
+
+    def launch(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        children.append(process)
+        if exit_code is not None:
+            process.wait(timeout=3)
+        return process
+
+    class FailedEvents:
+        def __init__(self, file):
+            self.file = file
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.file.__exit__(*args)
+
+        def write(self, data):
+            self.file.write(data[:4])
+            self.file.flush()
+            raise PermissionError("controlled private capture failure")
+
+    def open_output(fd, *args, **kwargs):
+        file = fdopen(fd, *args, **kwargs)
+        return FailedEvents(file) if os.fstat(fd).st_ino == events.stat().st_ino else file
+
+    monkeypatch.setattr(installed_shared_approvals.subprocess, "Popen", launch)
+    monkeypatch.setattr(installed_shared_approvals.os, "fdopen", open_output)
+    script = "import os,sys,time\nos.write(1,b'partial output')\n"
+    script += "time.sleep(5)\n" if exit_code is None else f"sys.exit({exit_code})\n"
+    with pytest.raises(AssertionError if exit_code == 17 else PermissionError) as raised:
+        installed_shared_approvals.run_helper([sys.executable, "-c", script], events, timeout=3)
+    assert events.read_bytes() == b"part"
+    assert len(children) == 1 and children[0].poll() is not None
+    if exit_code == 17:
+        assert "Helper exited 17" in str(raised.value)
+        assert isinstance(raised.value.__cause__, PermissionError)
+        assert "controlled private capture failure" in raised.value.__notes__[0]
+    else:
+        assert str(raised.value) == "controlled private capture failure"
+        observed = "unknown" if exit_code is None else "0"
+        assert f"exit before cleanup: {observed}" in raised.value.__notes__[0]
+    if exit_code is None:
+        assert children[0].returncode < 0
+    else:
+        assert children[0].returncode == exit_code
 
 
 def test_harness_assigns_distinct_proxy_admin_and_web_ports():
