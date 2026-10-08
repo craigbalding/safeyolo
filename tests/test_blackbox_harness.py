@@ -107,6 +107,100 @@ def test_shared_approval_transport_keeps_owned_selection_when_preparation_fails(
     assert {path: path.read_bytes() for path in untouched} == untouched
 
 
+def test_model_fixture_policy_runs_without_retired_product_python(tmp_path):
+    """Standalone U3 preparation preserves model routing and credential controls."""
+    policy = '''# retained model route
+budget=17
+[hosts]
+"chatgpt.com:443"={egress="allow"}
+"127.0.0.2:49124"={egress="allow"}
+[controls.credentials]
+enabled=true
+[agents.worker]
+agent_id="worker-id"
+folder="/owned/worker"
+[agents.worker.hosts]
+"127.0.0.2:49124"={egress="allow"}
+[agents.helper]
+agent_id="helper-id"
+folder="/owned/helper"
+evidence_reads=[{request_id="old-id"}]
+'''
+    (tmp_path / "policy.toml").write_text(policy)
+    # pytest includes tests/reference for historical tests. Exercise the
+    # installed driver's ordinary import path so that cannot mask retirement.
+    script = (
+        "from pathlib import Path\n"
+        "from tests.blackbox.installed_shared_approvals import model_fixture_policy\n"
+        "import sys\n"
+        "print(model_fixture_policy(Path(sys.argv[1]), ('worker', 'helper'), 49123))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1], env={**os.environ, "PYTHONPATH": "."},
+        capture_output=True, text=True, check=True, timeout=15)
+    selected = tomllib.loads(result.stdout)
+    assert "# retained model route" in result.stdout
+    assert selected["hosts"] == {"chatgpt.com:443": {"egress": "allow"}}
+    assert selected["controls"]["credentials"]["enabled"] is True
+    assert selected["budget"] == 17
+    for name in ("worker", "helper"):
+        assert selected["agents"][name]["agent_id"] == name + "-id"
+        assert selected["agents"][name]["folder"] == "/owned/" + name
+        assert selected["agents"][name]["hosts"] == {
+            "127.0.0.2": {"egress": "deny"}, "127.0.0.2:49123": {"egress": "prompt"}}
+    assert "evidence_reads" not in selected["agents"]["helper"]
+    assert (tmp_path / "policy.toml").read_text() == policy
+
+
+def test_helper_journey_waits_for_external_canonical_decision(monkeypatch):
+    """Pending preparation never decides; a later human outcome unlocks retry."""
+    action = {"kind": "network_allow", "agent": "worker", "agent_id": "worker-id",
+              "host": "127.0.0.2", "port": 49123, "revision": "selected"}
+    pending = {"request_id": "selected", "status": "pending", "action": action}
+    approved = {**pending, "status": "approved"}
+    replies = iter([pending, pending, approved])
+    reads = []
+
+    def read():
+        reply = next(replies)
+        reads.append(reply["status"])
+        return reply
+
+    monkeypatch.setattr(installed_shared_approvals.time, "sleep", lambda _seconds: None)
+    assert installed_shared_approvals.wait_for_operator(read, action, 1) == approved
+    assert reads == ["pending", "pending", "approved"]
+    assert pending["status"] == "pending"
+
+
+@pytest.mark.parametrize("status", ["rejected", "unavailable"])
+def test_helper_journey_refuses_nonapproval(status):
+    action = {"agent": "worker", "host": "127.0.0.2", "port": 49123}
+    with pytest.raises(AssertionError, match="no Worker retry"):
+        installed_shared_approvals.wait_for_operator(lambda: {"action": action, "status": status}, action, 1)
+
+
+def test_helper_journey_expiry_and_changed_action_do_not_grant():
+    action = {"agent": "worker", "host": "127.0.0.2", "port": 49123}
+    with pytest.raises(AssertionError, match="no automatic approval"):
+        installed_shared_approvals.wait_for_operator(lambda: {"action": action, "status": "pending"}, action, 0)
+    with pytest.raises(AssertionError, match="operator action changed"):
+        installed_shared_approvals.wait_for_operator(lambda: {
+            "action": {**action, "port": 49124}, "status": "approved"}, action, 1)
+
+
+def test_failed_real_helper_output_survives_before_parsing(tmp_path):
+    """One failed model attempt retains its operands without a diagnostic rerun."""
+    events = tmp_path / "helper-events.jsonl"
+    command = [sys.executable, "-c", 'print("unparsed failing event"); raise SystemExit(1)']
+    with pytest.raises(AssertionError, match="inspect private events"):
+        installed_shared_approvals.run_helper(command, events)
+    assert events.read_text() == "unparsed failing event\n"
+    assert stat.S_IMODE(events.stat().st_mode) == 0o600
+    with pytest.raises(FileExistsError):
+        installed_shared_approvals.run_helper([sys.executable, "-c", 'print("replacement")'], events)
+    assert events.read_text() == "unparsed failing event\n"
+
+
 def test_harness_assigns_distinct_proxy_admin_and_web_ports():
     harness = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
 
