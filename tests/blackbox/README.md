@@ -118,8 +118,8 @@ host. Python test drivers and the trace reader run on the external harness
 host, outside both product filesystems. Host tracing follows the launched
 descendants, including installation, CLI, proxy, Coord and host launch tools.
 The separate guest trace covers the selected native shell/helper/API lineage.
-It does not trace guest PID-1 boot, supervision/recovery, models or ordinary
-workloads. A tracer that cannot decode executable filenames is unavailable
+It does not trace guest PID-1 boot, supervision/recovery, models, ordinary
+workloads or launches delegated to an existing systemd owner. A tracer that cannot decode executable filenames is unavailable
 evidence. In particular, nested ARM64 gVisor can return an address instead of
 the `execve` filename; the reader refuses that log.
 
@@ -129,15 +129,21 @@ Supply the unpacked bundle at `/home/agent/r5/bundle`, prepared assets at
 `/home/agent/r5/state`. Replace `FULL_SOURCE_COMMIT` with the bundle's recorded
 full source commit, which may differ from this test entry's revision. Both
 host and guest need Bash, `strace` and curl. The host also needs the Linux
-prerequisites above. Permit the configured pinned NATS acquisition route, or
+prerequisites above and noninteractive sudo for the host tracer. [Root tracing
+with `-u`](https://github.com/strace/strace/blob/master/doc/strace.1.in) preserves the ordinary product account and the namespace helpers'
+setuid execution; tracing those helpers as an unprivileged user suppresses
+their required privileges. Permit the configured pinned NATS acquisition route, or
 set `SAFEYOLO_COORD_NATS_BINARY` to an already checked native binary. Preserve
 the proxy and certificate environment. Keep the execution logs private; they
-can contain command arguments. The following control deliberately exits 97;
-its stderr must report `interpreter_available=0` on this host.
+can contain command arguments. The log directory below must be absent;
+creation fails before tracing if earlier logs exist. The following control
+deliberately exits 97; its stderr must report `interpreter_available=0` on this host.
 
 ```sh
-strace -f -s 4096 -e trace=execve,execveat -o /home/agent/r5/control.exec ./tests/blackbox/attempt-python.sh
-strace -f -s 4096 -e trace=execve,execveat -o /home/agent/r5/product.exec ./tests/blackbox/native-python-journey.sh /home/agent/r5/bundle /home/agent/r5/platform /home/agent/r5/state FULL_SOURCE_COMMIT
+umask 077
+mkdir -m 700 /home/agent/r5/logs
+sudo -n strace -u "$(id -un)" -f -s 4096 -e trace=execve,execveat -o /home/agent/r5/logs/control.exec ./tests/blackbox/attempt-python.sh
+sudo -n strace -u "$(id -un)" -f -s 4096 -e trace=execve,execveat -o /home/agent/r5/logs/product.exec ./tests/blackbox/native-python-journey.sh /home/agent/r5/bundle /home/agent/r5/platform /home/agent/r5/state FULL_SOURCE_COMMIT
 ```
 
 The journey's guest control must exit 127 and retain a nonempty
