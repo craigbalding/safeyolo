@@ -251,10 +251,18 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     (root / "share").mkdir(parents=True)
     image = root / "share/Image"
     image.write_bytes(b"prepared boot input")
-    result = run(str(bundle / "install.sh"), "--root", str(root))
+    result = run(str(bundle / "install.sh"), "--root", str(root), cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert image.read_bytes() == b"prepared boot input"
     assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()
+    # Preserve the retired wheel fixture's sudo/helper byte and mode checks
+    # through the native package consumed outside the source checkout.
+    sudo = root / "assets/guest/guest-sudo"
+    assert sudo.read_bytes() == (package_inputs[0] / "guest/rootfs/safeyolo-sudo").read_bytes()
+    assert sudo.stat().st_mode & 0o777 == 0o755
+    helper = root / "assets/guest/safeyolo-guest"
+    assert helper.read_bytes() == (package_inputs[2] / "safeyolo-guest").read_bytes()
+    assert helper.stat().st_mode & 0o777 == 0o755
     # The Codex setup script loads this adjacent command at agent preparation.
     assert (root / "assets/contrib/codex-command.sh").read_bytes() == (
         REPO / "contrib/codex-command.sh"
