@@ -13,8 +13,6 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from tests.proxy_contracts.native_proposal_fixture import native_proposals as native_proposals
-
 
 @pytest.fixture
 def socket_dir():
@@ -27,6 +25,15 @@ def socket_dir():
 # Mirror that environment for TrafficMaster composition tests.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
+
+
+@pytest.fixture
+def native_proposals(tmp_path):
+    # Load the native fixture only when requested, after the repository path
+    # above is available. The other CLI consumers need no native binaries.
+    from tests.proxy_contracts.native_proposal_fixture import proposal_instance
+
+    yield from proposal_instance(tmp_path)
 
 
 # ---------- NATS runtime fixtures ----------

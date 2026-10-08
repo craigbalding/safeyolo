@@ -108,7 +108,7 @@ sha256 = "5593f0e94037afb584d9e954d7f3af0a56094f11fca233334ade2de18d56a938"
 id = "FACTORY-PROPOSAL-RESTART"
 description = "Restart does not present the same factory proposal revision again."
 node = "cli/tests/test_coord_factory_proposals.py::test_native_restart_does_not_represent_same_revision"
-sha256 = "c684bc3877f907e0bc3f176dd223fc006a0b0620276e6588dc596e4b2bba45e7"
+sha256 = "c4d8dcb74a11dbb8c118358cf7c3dccf1d7f189ec0b0b2f2dc002525277eb26c"
 
 # Python addon boundary declarations were retired with the removed runtime.
 # Native boundary checks live in proxy/tests and the selected blackbox lanes.

@@ -14,8 +14,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from tests.proxy_contracts.harness import child_process, wait_ready
 from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, DENY, NativeInstance
 
@@ -24,7 +22,7 @@ ROOM = "proposal-proof"
 
 
 class ProposalInstance(NativeInstance):
-    def command(self, *args, agent=False, check=True):
+    def command(self, *args, agent=False, check=True, input=None):
         if agent:
             command = [str(self.root / "bin/safeyolo-coord"), *args]
             environment = dict(self.environment, SAFEYOLO_COORD_SOCKET=self.paths["relay"],
@@ -34,18 +32,34 @@ class ProposalInstance(NativeInstance):
             command = [str(self.root / "bin/safeyolo"), "--root", str(self.root), "coord", *args]
             environment = self.environment
         result = subprocess.run(command, cwd=self.root.parent, env=environment, text=True,
-                                capture_output=True, timeout=15)
+                                capture_output=True, input=input, timeout=15)
         if check:
             assert result.returncode == 0, result.stderr
             return json.loads(result.stdout)
         return result
 
     def send(self, body, sender="lens", **extra):
-        return self.agent_api(sender, f"/api/coord/rooms/{ROOM}/send", method="POST",
-                              body={"body": body, "notify": "none", **extra})["envelope"]
+        result = self.agent_api(sender, f"/api/coord/rooms/{ROOM}/send", method="POST",
+                                body={"body": body, "notify": "none", **extra})
+        return self.retained(result["sequence"], result["envelope"]["msg_id"])
 
     def operator(self, body):
-        return self.command("send", ROOM, body)["envelope"]
+        result = self.command("send", ROOM, body, check=False)
+        assert result.returncode == 0, result.stderr
+        # The host CLI reports the retained sequence in human-readable output;
+        # history supplies the canonical operator attribution and sequence.
+        assert "message accepted;" in result.stdout
+        sequence = int(result.stdout.split("sequence=", 1)[1].split(";", 1)[0])
+        return self.retained(sequence)
+
+    def retained(self, sequence, msg_id=None):
+        # The send echo has no retained sequence. Resolve its canonical ID
+        # through the existing history reader before invoking ingestion.
+        messages = self.agent_api("relay", f"/api/coord/rooms/{ROOM}/messages?since={sequence - 1}&limit=1")["messages"]
+        assert len(messages) == 1 and messages[0]["sequence"] == sequence
+        if msg_id is not None:
+            assert messages[0]["msg_id"] == msg_id
+        return messages[0]
 
     def observe(self, envelope, observation, coverage=None, *, agent=True, check=True):
         verified = self.root.parent / f"verified-{envelope['sequence']}.json"
@@ -54,8 +68,7 @@ class ProposalInstance(NativeInstance):
                             "--verified", str(verified), agent=agent, check=check)
 
 
-@pytest.fixture
-def native_proposals(tmp_path):
+def proposal_instance(tmp_path):
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", REPO / "proxy/target/debug"))
     proxy = Path(os.environ.get("SAFEYOLO_TEST_PROXY", artifacts / "safeyolo-proxy"))
     root = tmp_path / "native"

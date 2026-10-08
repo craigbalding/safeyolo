@@ -846,9 +846,9 @@ def test_native_restart_does_not_represent_same_revision(native_proposals):
     # the API's unknown result; no native proposal operation sends a retry.
     asyncio.run(stream_control(native_proposals, no_ack=True))
     before = asyncio.run(stream_control(native_proposals))
-    result = native_proposals.agent_api("relay", f"/api/coord/rooms/{ROOM}/send", method="POST",
-        body={"body": selected["body"], "notify": "none"}, status=503)
-    assert result["send_outcome"] == "unknown"
+    result = native_proposals.command("call", "send", agent=True, check=False,
+        input=json.dumps({"room_name": ROOM, "body": selected["body"], "notify": "none"}))
+    assert result.returncode != 0 and "unknown" in result.stderr.lower()
     assert asyncio.run(stream_control(native_proposals)) == before + 1
     asyncio.run(stream_control(native_proposals, no_ack=False))
     reconciled = native_proposals.command("proposals", "reconcile", ROOM, agent=True)

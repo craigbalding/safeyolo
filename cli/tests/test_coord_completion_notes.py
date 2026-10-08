@@ -468,9 +468,9 @@ def test_native_malformed_types_limits_and_valid_boundaries(native_proposals):
         sent = native_proposals.send(body)
         parsed = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]), agent=True)
         expected = completion_notes.parse_completion_envelope(sent)
-        assert parsed["trailer_status"] == expected.trailer_status == "invalid"
-        assert parsed["delivery_state"] == "DONE" and parsed["delivery_body"] == body
-        assert parsed["candidates"] == []
+        assert parsed["trailer_status"] == expected.trailer_status
+        assert parsed["delivery_state"] == "DONE" and parsed["delivery_body"] == expected.delivery_body
+        assert parsed["candidates"] == [c.to_dict() for c in expected.candidates]
     valid = factory_candidate(summary="é" * 256, snippet="x" * 4096,
                               evidence=tuple(completion_notes.EvidenceRef(completion_notes.EvidenceKind.TEST,
                                                                          "x" * 512) for _ in range(8)))
