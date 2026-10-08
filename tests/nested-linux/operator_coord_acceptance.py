@@ -13,7 +13,10 @@ needs the staged native Coord executable. Permit httpbin.org/get and the
 provisioned Codex provider route in this disposable instance's policy.
 
 The driver checks room scope, real callers, history and restart, and requires
-completed MCP call results for the real session. On success or failure, the
+completed MCP call results for the real session. The selected session's prompt,
+raw output and exit result stay private in a unique directory under ROOT/logs.
+Only its completed Coord tool calls are projected for inspection there; inspect
+that projection before sharing it. On success or failure, the
 driver attempts to stop both guests, the proxy and NATS, then checks their
 owned process lifetimes. A cleanup failure fails the run. Other instances are
 outside the selected root. Run from the source checkout with its locked Python test
@@ -39,6 +42,68 @@ import termios
 import time
 import uuid
 from pathlib import Path
+
+
+def save_completed_coord_calls(output: str, room: str, path: Path) -> None:
+    """Retain selected tool operands for diagnosis; the observer still checks strictly."""
+    calls = []
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # A truncated/invalid event must not discard earlier completed calls.
+            # mcp_observation still raises on the original invalid output.
+            continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item", {})
+        if not isinstance(item, dict):
+            continue
+        arguments = item.get("arguments", {})
+        if (event.get("type") == "item.completed" and item.get("type") == "mcp_tool_call"
+                and item.get("server") == "safeyolo-coord"
+                and item.get("tool") in ("join_room", "send", "read_room", "wait_for_message")
+                and isinstance(arguments, dict) and arguments.get("room_name") == room):
+            calls.append({key: item.get(key) for key in ("tool", "arguments", "status", "result", "error")})
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as saved:
+        json.dump({"room": room, "calls": calls}, saved)
+
+
+def codex_mcp_session(root: Path, primary: str, room: str, marker: str, cursor: int) -> tuple[str, Path]:
+    """Keep the one real session's private output before checking or parsing it."""
+    prompt = (f"Use the discovered safeyolo-coord MCP tools only for this task. Join room {room}. "
+              f"Send exactly {marker} with notify={json.dumps([primary])} and declared_content_type=text/plain once. "
+              f"Read the room since_sequence={cursor}. Then call wait_for_message with room_name={room}, "
+              f"since_sequence={cursor}, include_self=true, timeout_seconds=1. "
+              "Keep that same pre-send cursor for both read and wait; do not advance it to a returned next_cursor. "
+              "Verify your exact marker in both results. End the session after these four calls. "
+              "Do not substitute shell calls, invent results, retry a send, or edit files.")
+    directory = root / "logs" / ("g4-" + uuid.uuid4().hex)
+    directory.parent.mkdir(exist_ok=True)
+    directory.mkdir(mode=0o700)
+    with os.fdopen(os.open(directory / "prompt.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as saved:
+        saved.write(prompt)
+    stdout_path = directory / "stdout.jsonl"
+    stderr_path = directory / "stderr.txt"
+    outcome = {"exit_code": None, "timed_out": False}
+    print(f"Private Codex session output: {directory}", flush=True)
+    try:
+        with os.fdopen(os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stdout:
+            with os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stderr:
+                script = "cd /workspace && /home/agent/.safeyolo-command exec --json --skip-git-repo-check " + shlex.quote(prompt)
+                result = subprocess.run([str(root / "bin/safeyolo"), "--root", str(root), "agent", "shell",
+                                         primary, "-c", script], stdout=stdout, stderr=stderr, text=True, timeout=300)
+                outcome["exit_code"] = result.returncode
+    except subprocess.TimeoutExpired:
+        outcome["timed_out"] = True
+        raise
+    finally:
+        with os.fdopen(os.open(directory / "exit.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as saved:
+            json.dump(outcome, saved)
+        if stdout_path.exists():
+            save_completed_coord_calls(stdout_path.read_text(errors="replace"), room, directory / "completed-mcp.json")
+    assert result.returncode == 0, f"Codex exited {result.returncode}; inspect private output at {directory}"
+    return stdout_path.read_text(), directory
 
 
 def mcp_observation(output: str, room: str, marker: str, agent: str) -> dict:
@@ -235,17 +300,11 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
 
     codex_marker = "G4:" + uuid.uuid4().hex
     cursor = fresh["sequence"]
-    prompt = (f"Use the discovered safeyolo-coord MCP tools only for this task. Join room {room}. "
-              f"Send exactly {codex_marker} with notify=none and declared_content_type=text/plain once. "
-              f"Read the room since_sequence={cursor}. Then call wait_for_message with room_name={room}, "
-              f"since_sequence={cursor}, include_self=true, timeout_seconds=1. "
-              "Verify your exact marker in both results. End the session after these four calls. "
-              "Do not substitute shell calls, invent results, retry a send, or edit files.")
     codex_version = shell(primary, "/home/agent/.safeyolo-command --version").strip()
     login = shell(primary, "/home/agent/.safeyolo-command login status", check=False)
     assert login.returncode == 0, "provisioned Codex login is missing"
     # Reuse the installed real-Helper's five-minute session deadline.
-    events = shell(primary, "/home/agent/.safeyolo-command exec --json --skip-git-repo-check " + shlex.quote(prompt), timeout=300)
+    events, private_output = codex_mcp_session(root, primary, room, codex_marker, cursor)
     mcp = mcp_observation(events, room, codex_marker, primary)
     observed = history(peer)
     matches = [row for row in observed if row["body"] == codex_marker]
@@ -259,7 +318,7 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
             "proxy_before": proxy_before, "proxy_after": proxy_after,
             "nats_before": nats_before, "nats_after": nats_after,
             "nats_unavailable": unavailable, "permitted_traffic_marker": traffic["args"]["g2_marker"],
-            "codex_version": codex_version, "mcp": mcp}
+            "codex_version": codex_version, "mcp": mcp, "private_session_output": str(private_output)}
 
 
 def main():
