@@ -2828,6 +2828,23 @@ impl OperatorCoord {
         )
     }
 
+    pub(crate) async fn require_send_receive(&self, room: &str) -> Result<(), OperatorCoordError> {
+        let access = self.client.sender_access(room, Sender::Operator).await
+            .map_err(|error| OperatorCoordError {
+                unavailable: matches!(error, CoordError::Unavailable),
+                detail: "configured Coord room is unavailable; create it and grant operator send+receive".into(),
+            })?;
+        if !["send", "receive"]
+            .iter()
+            .all(|p| access.permissions.iter().any(|v| v == *p))
+        {
+            return Err(OperatorCoordError::display_error(
+                "local Coord operator requires send+receive".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn read(
         &self,
         room: &str,

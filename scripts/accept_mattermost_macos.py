@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise Mattermost state/WAL/lease safety in disposable files on macOS."""
+"""Retained legacy Python state probe; does not prove native Mattermost behavior."""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ import traceback
 from contextlib import closing
 from pathlib import Path
 
-from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, MattermostState, RoomMapping
+# Load only the retained repository test fixture, never installed product code.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.legacy_mattermost.mattermost import MattermostAdapterError, MattermostConfig, MattermostState, RoomMapping
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _BOT_ID = "b" * 26
@@ -108,6 +111,7 @@ def _identity(expected_head: str, expected_tree: str, expected_base: str) -> tup
 def _silent_child(source: str, state_path: Path) -> int:
     return subprocess.run(
         [sys.executable, "-c", source, str(state_path)],
+        cwd=Path(__file__).resolve().parents[1],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -121,7 +125,7 @@ def _crash_recovery(state_path: Path) -> None:
 import os
 import sys
 from pathlib import Path
-from safeyolo.coord.mattermost import MattermostConfig, MattermostState, RoomMapping
+from tests.legacy_mattermost.mattermost import MattermostConfig, MattermostState, RoomMapping
 
 path = Path(sys.argv[1])
 config = MattermostConfig(
@@ -155,7 +159,7 @@ def _competing_lease(state: MattermostState, state_path: Path) -> None:
     child = """
 import sys
 from pathlib import Path
-from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, MattermostState, RoomMapping
+from tests.legacy_mattermost.mattermost import MattermostAdapterError, MattermostConfig, MattermostState, RoomMapping
 
 path = Path(sys.argv[1])
 config = MattermostConfig(

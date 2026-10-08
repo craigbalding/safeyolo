@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from safeyolo.coord import mattermost
+from tests.legacy_mattermost import mattermost
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -151,6 +151,20 @@ def test_structural_replacement_gate_includes_new_regular_and_hardlinked_copies(
     root = tmp_path / "safeyolo-mm-macos-accept-replacements"
     root.mkdir(mode=0o700)
     structural._replacement_guards(root)
+
+
+def test_retained_fixture_children_recover_wal_and_exclude_a_second_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    structural = load_script("accept_mattermost_macos.py")
+    monkeypatch.chdir(tmp_path)
+    state_path = tmp_path / "state.sqlite3"
+    structural._crash_recovery(state_path)
+    state = mattermost.MattermostState(structural._config(state_path))
+    try:
+        structural._competing_lease(state, state_path)
+    finally:
+        state.close()
 
 
 def test_structural_schema_probe_closes_its_sqlite_connection(tmp_path: Path) -> None:
