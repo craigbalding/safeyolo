@@ -172,6 +172,25 @@ def scoped_policy(port):
     return DENY + f'\n[agents.alice.hosts]\n"127.0.0.1:{port}" = {{egress="allow"}}\n'
 
 
+def test_installed_stop_cleanup_accepts_inactive_native_process_record(tmp_path):
+    from tests.blackbox.installed_sections import cleanup_instance
+
+    with native_instance(tmp_path) as instance:
+        record = instance.root / "data/proxy-process.json"
+        # Proxy readiness precedes the host identity receipt. Reuse the
+        # fixture's fifteen-second readiness deadline for that publication.
+        deadline = time.monotonic() + 15
+        while not record.is_file():
+            assert instance.process.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert json.loads(record.read_text())["pid"] == instance.process.pid
+        failures = cleanup_instance(instance.root / "bin/safeyolo", instance.root)
+        assert instance.process.wait(timeout=10) == 0
+        assert failures == []
+        assert record.is_file()
+
+
 @contextmanager
 def restarted_proxy(instance):
     original_pid = instance.process.pid

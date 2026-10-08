@@ -120,7 +120,9 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"proxy stop: {exc}")
     for pattern in (
-        "agents/*/container.pid", "agents/*/vm.pid", "data/proxy-process.json",
+        # Native stop retains the inactive proxy identity receipt. The owned
+        # process snapshot above checks that it stopped even if the file goes.
+        "agents/*/container.pid", "agents/*/vm.pid",
         "data/ready.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
         "data/coord/nats/process.json", "sinkhole.pid", "native-parent.pid",
     ):
