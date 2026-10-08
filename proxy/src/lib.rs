@@ -42,6 +42,7 @@ pub mod host_commands;
 mod host_events;
 mod host_lifecycle;
 mod host_runs;
+pub mod lab;
 pub mod mattermost;
 
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.

@@ -1756,6 +1756,18 @@ pub(crate) async fn spawn_guest_command(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn guest_command_output(
+    name: &str,
+    command: &str,
+    timeout: std::time::Duration,
+) -> io::Result<std::process::Output> {
+    let child = spawn_guest_command_with_output(name, command, true).await?;
+    tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "guest command timed out"))?
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn coding_agent_observation(name: &str) -> io::Result<String> {
     let child =
         spawn_guest_command_with_output(name, "/safeyolo/safeyolo-guest observe check", true)

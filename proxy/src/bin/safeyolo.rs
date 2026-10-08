@@ -241,6 +241,13 @@ async fn run() -> Result<(), Error> {
     } else {
         root.join("config.toml")
     };
+    if arguments.first().is_some_and(|value| value == "lab") {
+        let code = safeyolo_proxy::lab::run(config, &arguments[1..]).await?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == "factory")
@@ -262,6 +269,7 @@ async fn run() -> Result<(), Error> {
         [help] if matches!(help.as_str(), "--help" | "help") => {
             println!("{}", safeyolo_proxy::factory::HELP);
             println!("{}", safeyolo_proxy::operator_commands::HELP);
+            println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(

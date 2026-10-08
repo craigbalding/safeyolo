@@ -9,5 +9,6 @@ license = "MIT"
 [dependencies]
 libc = "=0.2.189"
 ring = "0.17"
+regex = "1"
 serde_json = "1"
 tempfile = "3"

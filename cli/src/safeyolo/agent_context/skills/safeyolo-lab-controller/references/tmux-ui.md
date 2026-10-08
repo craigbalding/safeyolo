@@ -38,11 +38,11 @@ tmux select-pane -t "$TMUX_PANE" -T controller
 
 ## Start through the operator handoff
 
-The controller process starts only after the operator has attached to the
-SafeYolo agent and entered tmux. Read [bootstrap.md](bootstrap.md) for the exact
-startup and reconnection sequence. The operator runs `safeyolo-lab` once from
-the pre-lab guest shell. The launcher creates the persistent shell and injects
-the controller runner. Do not require a second operator command inside tmux.
+The native `safeyolo lab` entry prepares the owned guest and checks its Codex
+authentication before opening the viewer. Read [bootstrap.md](bootstrap.md) for
+startup and reconnection. The entry invokes `safeyolo-lab` in that guest. This
+helper creates the persistent shell and injects the controller runner. Do not
+require a second operator command inside tmux.
 Do not make tmux configuration run `.safeyolo-command` automatically.
 
 ## Create persistent shells
@@ -181,85 +181,6 @@ tmux select-pane -t "$TMUX_PANE"
 Do not change focus repeatedly while the operator is selecting text or using
 copy mode. Return focus at a clear action boundary.
 
-## Use one lesson pane for structured teaching
-
-Tmux is the process substrate, not the learner's curriculum. When a lab has an
-ordered teaching flow, show the controller and one dedicated lesson pane. Keep
-worker, service, login, and diagnostic shells persistent, but do not make the
-learner visit each pane to assemble the explanation.
-
-The controller drives the lesson surface by default and returns focus to the
-controller after each action. The learner can press `F12` once to enter the
-lesson, use `Left` and `Right` to read at their own pace, and press `F12` once
-to return to the controller with a question. Do not take focus while the
-learner is reading. A new tmux user does not need to learn pane navigation or
-marker navigation before they can learn the subject.
-
-The unprefixed `F12` binding switches panes by their lab roles, not by mutable
-titles or pane IDs. It changes the window focus target, so responsive zoom
-keeps the chosen surface visible. If no lesson pane exists, it changes no
-state and reports that no lesson is open. The status line shows the available
-action. On a small screen, include the switch hint in the size warning.
-
-### Offer contextual learner questions
-
-A structured lesson can show short sample questions beneath the material that
-they concern. Give each question a stable visible ID such as `[REQUEST_ID]`.
-Keep the full ID-to-question mapping in the lesson's reviewed tab-separated
-question registry. Set the registry path in the lesson pane option
-`@safeyolo_lab_questions_file` while the renderer runs.
-
-The learner presses `q` to open a native tmux menu. Accept lowercase `q` and
-uppercase `Q`; do not make this control case-sensitive. Presenterm uses
-lowercase `q` as a default exit key, so tmux must intercept it while a reviewed
-question registry is active. Keep `C-c` as the deliberate Presenterm exit.
-Outside a registered lesson, pass both keys to the active program. The question
-helper captures only the current rendered page, finds its visible IDs, and
-resolves those IDs through the registry. A selected question is recorded with
-its ID and UTC time.
-
-A passive tmux event does not resume a coding harness after its turn ends. To
-continue the conversation, the helper submits a visible message of this form:
-
-```text
-Learner selected [REQUEST_ID] from the lesson: Why is the request ID useful?
-```
-
-Submit only while the controller runner's current process identity and start
-time prove that the harness accepts input. If that proof is absent or stale,
-retain the question ID and return focus to the controller without pressing
-Enter. Never send selected text to an ordinary shell. Question text comes only
-from the controller-reviewed registry; do not use captured pane text as the
-submitted message.
-
-Use a renderer that keeps the source as a readable artifact, such as a trusted
-Markdown lesson. Use the renderer only for short bounded cells. Keep long-lived
-or interactive commands in their own persistent panes, then bring selected
-safe evidence into the lesson. Preserve the raw panes for inspection.
-
-Use the annotation rail for one ad hoc evidence point. Do not use a sequence of
-annotations as the primary navigation method for a structured lesson.
-
-### Open a lesson's real source files
-
-A lesson can register reviewed remote source files in
-`LESSON.md.sources.tsv`. Each row contains a visible source ID, a short label,
-an absolute path, a first line, and a last line, separated by tabs:
-
-```text
-SRC_EXAMPLE<TAB>Short label<TAB>/absolute/path/file.py<TAB>40<TAB>55
-```
-
-Put `[SRC_EXAMPLE]` on the page that shows the related code. The learner
-presses unprefixed `o`. `lesson-sources.sh` resolves only IDs visible on the
-current rendered page. It opens one source directly or offers a native tmux
-menu when several are visible. The source opens read-only in a popup at the
-registered first line. The learner presses `q` to close it.
-
-This server-side viewer works when the guest is remote or tmux is nested. Do
-not use `file://` links: the outer terminal can interpret them as paths on the
-operator's device. Keep the source registry controller-reviewed and never
-register a credential file.
 
 ## Annotate ad hoc evidence where it appears
 
@@ -325,8 +246,8 @@ Clear a stale note before the pane changes purpose:
 "$annotator" --pane "$lab_pane" --clear
 ```
 
-The border and rail are concise pointers, not the full lesson. Put detailed
-reasoning in the controller or the dedicated lesson pane. Pin the shortest
+The border and rail are concise pointers, not the full explanation. Put detailed
+reasoning in the controller or an ordinary source pane. Pin the shortest
 evidence fragment that uniquely identifies the observation. Never put
 credential values or transient login material in an annotation.
 
@@ -347,7 +268,7 @@ tmux display-message -p -t "$lab_pane" '#{pane_dead} #{pane_pid} #{pane_current_
 Do not use `pane_current_command` alone to decide whether a wrapped renderer is
 alive. A cleanup helper can remain the foreground process-group leader, so
 tmux reports `bash` while its Presenterm child is visibly active. Combine the
-rendered screen, the process tree, pane-local lesson state, and an explicit run
+rendered screen, the process tree, pane-local experiment state, and an explicit run
 marker as the experiment requires.
 
 Long-running commands should remain in the target pane. Poll or capture them

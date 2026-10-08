@@ -15,7 +15,6 @@ from .commands.coord import coord_app
 from .commands.demo import demo
 from .commands.doctor import doctor
 from .commands.init import init
-from .commands.lab import lab
 from .commands.lifecycle import build, start, status, stop
 from .commands.logs import logs
 from .commands.mount import mount_app
@@ -88,7 +87,6 @@ app.command()(build)
 app.command()(logs)
 app.command()(watch)
 app.command()(demo)
-app.command()(lab)
 app.command()(check)
 app.command()(mode)
 app.command()(policies)

@@ -196,41 +196,55 @@ safeyolo doctor
 
 #### Lab
 
-```bash
-safeyolo lab                         # Ask for an objective, then propose and confirm a Lab agent
-safeyolo lab --status                 # Inspect the selected Lab agent and its guest controller
-safeyolo lab --recover                # Relaunch an owned dead controller and attach
-safeyolo lab --teardown               # Capture redacted evidence, then remove the Lab session
-safeyolo lab --teardown --keep-agent  # Retain the managed agent for later inspection
-```
+Use the [installed native CLI](../docs/native-policy.md#install-and-start) on
+its host, with a prepared guest runtime and a workspace you own. Lab retains
+that workspace, its guest home and experiment evidence. The operator supplies
+the objective and signs in to the Lab's own Codex account when needed.
 
-Lab selects only agents explicitly marked as Lab-managed. It does not adopt
-or overwrite an unrelated agent or guest tmux session. Teardown retains the
-captured evidence and Lab configuration; deleting retained artifacts is a
-separate operator choice.
-
-The Lab is an optional experiment workflow, independent of `safeyolo demo`.
-The bundled Codex setup also provides `safeyolo-lab` inside an existing running
-agent. To open a shell from the host, that agent's instance must have the
-[native host commands installed](../docs/native-policy.md#install-and-start).
-Replace both `ROOT` placeholders with that instance's absolute directory.
-Replace `AGENT` with its name. Invoke the installed executable directly; the installer does not change
-`PATH`:
+In these examples, the installed instance is `$HOME/.safeyolo-native` and
+`./experiment` is an existing directory you own. If you installed elsewhere,
+replace the instance path. Invoke its executable directly and select the same
+root for each command; the installer does not change `PATH`.
 
 ```sh
-"ROOT/bin/safeyolo" --root "ROOT" agent shell AGENT
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab --workspace ./experiment
 ```
 
-Inside that guest shell, run:
+Lab asks what you want to build, test or understand. It provisions the guest,
+checks its tools and authentication, then opens the controller. The controller
+proposes the smallest experiment for your objective. You can watch the raw
+output and intervene directly in its persistent shell panes.
+
+Exit the viewer with `Ctrl-a d`. The controller and evidence remain. Run the
+same command without the creation options to reattach:
 
 ```sh
-safeyolo-lab
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab --status
 ```
 
-The guest tmux prefix is `C-a`. Run `safeyolo-lab` again after a disconnect to
-attach to the existing Lab. It does not adopt an unrelated guest session or
-start a second controller. See the [Lab skill](../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md)
-for the experiment workflow.
+If several Labs exist, select one with `--agent NAME`. If its controller has
+exited, `safeyolo lab --recover` restarts that owned controller. Lab does not
+adopt another agent or an unrelated session. Authentication failures and
+runtime failures retain the Lab for repair; they do not report readiness.
+
+When you finish the experiment, restore its baseline before teardown:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" lab --teardown
+```
+
+Teardown captures redacted pane evidence, removes the owned session and stops
+its guest. Workspace, authentication, configuration and evidence files remain
+for inspection. `--teardown --keep-agent` retains the running guest as well.
+Deletion of retained files is a separate operator choice.
+
+Lab is independent of Demo. On Linux, Lab reuses its installed native CLI and
+proxy for an inner policy experiment. `--nested-assets` selects another set of
+prepared native Linux inputs. See the
+[nested Linux reference](../docs/nested-linux-lab.md) for the input layout and
+outer boundary. The [Lab skill](src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md)
+explains visible experiments, evidence and recovery.
 
 #### Start options
 
