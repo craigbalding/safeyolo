@@ -138,6 +138,19 @@ class CustomBuildHook(BuildHookInterface):
             raise ValueError(f"SAFEYOLO_GUEST_HELPER is not a file: {guest_binary}")
         if guest_binary.is_file():
             build_data["force_include"][str(guest_binary.resolve())] = "safeyolo/bin/safeyolo-guest"
+        # Host scripts use the same checked guest layout as the native bundle.
+        # The host Coord executable can be Mach-O; its Linux guest counterpart
+        # and build receipts are separate inputs from build_guest_command.sh.
+        selected_coord = os.environ.get("SAFEYOLO_COORD_GUEST_BINARY")
+        coord_binary = Path(selected_coord) if selected_coord else guest_binary.with_name("safeyolo-coord")
+        if selected_coord and not coord_binary.is_file():
+            raise ValueError(f"SAFEYOLO_COORD_GUEST_BINARY is not a file: {coord_binary}")
+        if coord_binary.is_file():
+            for suffix in ("", ".version", ".sha256"):
+                artifact = coord_binary.with_suffix(suffix) if suffix else coord_binary
+                if not artifact.is_file():
+                    raise ValueError(f"Native Coord guest artifact is missing: {artifact}")
+                build_data["force_include"][str(artifact.resolve())] = f"safeyolo/assets/guest/safeyolo-coord{suffix}"
 
     def include_native_proxy(self, project_root: Path, build_data: dict) -> None:
         # The installer builds the native proxy before invoking uv. Include
@@ -154,6 +167,9 @@ class CustomBuildHook(BuildHookInterface):
             raise ValueError(f"SAFEYOLO_NATIVE_BINARY is not a file: {native_binary}")
         if native_binary.is_file():
             build_data["force_include"][str(native_binary)] = "safeyolo/bin/safeyolo-proxy"
+            licenses = project_root / "proxy/licenses"
+            if licenses.is_dir():
+                build_data["force_include"][str(licenses)] = "safeyolo/licenses"
             # Python workflow callers now delegate lifecycle operations to
             # the installed native CLI; Coord staging uses its sibling.
             for name in ("safeyolo", "safeyolo-coord"):

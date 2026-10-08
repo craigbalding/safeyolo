@@ -4,7 +4,7 @@ use crate::Error;
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{Read, Write},
+    io::{BufWriter, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
@@ -26,10 +26,21 @@ pub(crate) fn payload_identity(path: &Path) -> Result<Value, Error> {
 }
 
 pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), Error> {
+    write_json_with_mode(path, value, 0o600)
+}
+
+pub(crate) fn write_json_with_mode(path: &Path, value: &Value, mode: u32) -> Result<(), Error> {
     let parent = path.parent().ok_or("state has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut temporary, value)?;
-    temporary.write_all(b"\n")?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))?;
+    {
+        let mut output = BufWriter::new(&mut temporary);
+        serde_json::to_writer(&mut output, value)?;
+        output.write_all(b"\n")?;
+        output.flush()?;
+    }
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
     fs::File::open(parent)?.sync_all()?;

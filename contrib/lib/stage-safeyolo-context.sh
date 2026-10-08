@@ -66,7 +66,7 @@ EOF
 
 _stage_safeyolo_repo_map() {
     local agent_home="$1"
-    local helper_dir repo_root source_path
+    local helper_dir repo_root
     local managed_path="$agent_home/.safeyolo/repo-map"
     local command_dir="$agent_home/.local/bin"
     local command_path="$command_dir/repo-map"
@@ -75,14 +75,8 @@ _stage_safeyolo_repo_map() {
 
     helper_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "$helper_dir/../.." && pwd)"
-    if [ -d "$repo_root/skills" ] && [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ]; then
-        source_path=
-    elif [ -f "$repo_root/repo_map.py" ]; then
-        source_path="$repo_root/repo_map.py"
-    elif [ -f "$repo_root/cli/src/safeyolo/repo_map.py" ]; then
-        source_path="$repo_root/cli/src/safeyolo/repo_map.py"
-    else
-        echo "SafeYolo repo-map source is missing from $repo_root" >&2
+    if [ ! -f "$repo_root/repo-map.toml" ]; then
+        echo "SafeYolo repo-map guidance is missing from $repo_root" >&2
         return 1
     fi
 
@@ -97,15 +91,30 @@ _stage_safeyolo_repo_map() {
         return 1
     fi
 
+    local managed_file
+    for managed_file in "$managed_path" "$agent_home/.safeyolo/repo-map.toml"; do
+        if [ -L "$managed_file" ] || { [ -e "$managed_file" ] && [ ! -f "$managed_file" ]; }; then
+            echo "Refusing unsafe managed repo-map path $managed_file" >&2
+            return 1
+        fi
+    done
+
+    # Use the same checked host/guest artifact route for ordinary and Factory
+    # setup, including operator hosts that cannot execute the Linux artifact.
+    . "$helper_dir/stage-coord-native.sh"
+    stage_coord_native "$agent_home"
     mkdir -p "$(dirname -- "$managed_path")" "$command_dir"
-    if [ -z "$source_path" ]; then
-        cat > "$managed_path" <<'NATIVE_REPO_MAP'
+    local staged_command
+    staged_command=$(mktemp "$agent_home/.safeyolo/.repo-map.XXXXXX")
+    if ! { cat > "$staged_command" <<'NATIVE_REPO_MAP'
 #!/usr/bin/env bash
 exec "$HOME/.safeyolo/safeyolo-coord" repo-map "$@"
 NATIVE_REPO_MAP
-        chmod 0755 "$managed_path"
-    else
-        install -m 0755 "$source_path" "$managed_path"
+        chmod 0755 "$staged_command" && mv -f "$staged_command" "$managed_path"
+    }; then
+        rm -f "$staged_command"
+        echo "Could not atomically publish managed repo-map command $managed_path" >&2
+        return 1
     fi
     install -m 0644 "$repo_root/repo-map.toml" "$agent_home/.safeyolo/repo-map.toml"
     if [ ! -L "$command_path" ]; then

@@ -86,7 +86,6 @@ def package_inputs(tmp_path):
     (skill / "scripts/github_checks.py").write_text("# optional checker\n")
     (skill / "scripts/__pycache__/old.pyc").write_bytes(b"old cache")
     (skill / "references/github-checks.md").write_text("optional checker instructions\n")
-    (assets / "repo_map.py").write_text("# Remaining production helper fixture\n")
     (source / "repo-map.toml").write_text("# fixture\n")
     (source / "LICENSE").write_text("fixture project notice\n")
     (source / "docs").mkdir()
@@ -220,7 +219,7 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         assert not any(name.endswith(("/github_checks.py", "/github-checks.md", ".pyc")) for name in names)
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
         assert stream.extractfile(skill_path).read() == b"fixture skill\n- Keep the next instruction.\n"
-        assert any(name.endswith("/assets/repo_map.py") for name in names)
+        assert not any(name.endswith("/repo_map.py") for name in names)
         assert any(name.endswith("/libexec/tmux") for name in names)
         assert any(name.endswith("/assets/licenses/tmux.txt") for name in names)
         assert any(name.endswith("/LICENSE") for name in names)
@@ -357,9 +356,15 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     for name, path in host_binaries.items():
         path.write_bytes(f"selected host {name} bytes".encode())
         path.chmod(0o755)
-    guest = tmp_path / "selected-guest"
+    guest_directory = tmp_path / "guest"
+    guest_directory.mkdir()
+    guest = guest_directory / "selected-guest"
     guest.write_bytes(b"selected Linux guest command bytes")
     guest.chmod(0o755)
+    coord_guest = guest_directory / "safeyolo-coord"
+    coord_guest.write_bytes(b"selected Linux Coord guest bytes")
+    coord_guest.with_suffix(".version").write_text(f"safeyolo-coord commit={REVISION} profile=debug\n")
+    coord_guest.with_suffix(".sha256").write_text(hashlib.sha256(coord_guest.read_bytes()).hexdigest() + "\n")
     native = {"commit": REVISION, "profile": "debug", "platform": consumer.host_platform()}
     metadata = tmp_path / "native.json"
     metadata.write_text(json.dumps(native))
@@ -383,11 +388,16 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
         assert not any("legacy_dispatch" in name for name in archive.namelist())
         assert "safeyolo/coord/mattermost.py" not in archive.namelist()
         assert "safeyolo/coord/mattermost_actions.py" not in archive.namelist()
+        assert "safeyolo/repo_map.py" not in archive.namelist()
         assert not any("legacy_mattermost" in name for name in archive.namelist())
         assert archive.read("safeyolo/bin/safeyolo-proxy") == binary.read_bytes()
         for name, path in host_binaries.items():
             assert archive.read(f"safeyolo/bin/{name}") == path.read_bytes()
         assert archive.read("safeyolo/bin/safeyolo-guest") == guest.read_bytes()
+        for artifact in (coord_guest, coord_guest.with_suffix(".version"), coord_guest.with_suffix(".sha256")):
+            assert archive.read(f"safeyolo/assets/guest/{artifact.name}") == artifact.read_bytes()
+        for notice in (REPO / "proxy/licenses").iterdir():
+            assert archive.read(f"safeyolo/licenses/{notice.name}") == notice.read_bytes()
         assert json.loads(archive.read("safeyolo/_native_build.json")) == native
         wheel_metadata, = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
         assert b"Root-Is-Purelib: false" in archive.read(wheel_metadata)

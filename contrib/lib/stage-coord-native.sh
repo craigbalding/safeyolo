@@ -9,6 +9,9 @@ stage_coord_native() {
         coord_host=$(dirname -- "$SAFEYOLO_EXECUTABLE")/safeyolo-coord
     fi
     if [[ -z $coord_host ]]; then coord_host=$(command -v safeyolo-coord || true); fi
+    if [[ -z $coord_host && -x $SCRIPT_DIR/../bin/safeyolo-coord ]]; then
+        coord_host=$SCRIPT_DIR/../bin/safeyolo-coord
+    fi
     if [[ -z $coord_host || ! -x $coord_host ]]; then
         echo 'Native Coord host executable is missing; install the native product or set SAFEYOLO_COORD_EXECUTABLE' >&2
         return 1

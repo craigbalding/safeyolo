@@ -1,4 +1,4 @@
-//! Native Codex state and factory-role staging. Credential bytes stay agent-local.
+//! Native harness configuration and factory-role staging.
 
 use crate::{
     Error,
@@ -330,6 +330,159 @@ pub fn stage_mcp(home: &Path, harness: &str, require_local: bool) -> Result<(), 
     }
 }
 
+/// Merge the selected operator identity and preferences into the agent's
+/// retained Claude configuration. Authentication files remain shell-staged.
+pub fn claude_state(home: &Path, operator_home: &Path) -> Result<(), Error> {
+    safe(home, true, None)?
+        .then_some(())
+        .ok_or("agent home is missing")?;
+    let claude = home.join(".claude");
+    match fs::symlink_metadata(&claude) {
+        Ok(metadata) if !metadata.is_dir() => return Err("unsafe Claude directory".into()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(&claude)?,
+        Err(error) => return Err(error.into()),
+    }
+    let config_path = home.join(".claude.json");
+    let settings_path = claude.join("settings.json");
+    safe(&config_path, false, None)?;
+    let settings_mode = match fs::symlink_metadata(&settings_path) {
+        Ok(metadata) if !metadata.is_file() => return Err("unsafe Claude settings file".into()),
+        Ok(metadata) => metadata.permissions().mode() & 0o7777,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0o600,
+        Err(error) => return Err(error.into()),
+    };
+    let mut config = if config_path.exists() {
+        serde_json::from_slice::<Value>(&fs::read(&config_path)?).map_err(|error| {
+            format!(
+                "claude-host-setup: cannot update invalid {}: {error}",
+                config_path.display()
+            )
+        })?
+    } else {
+        json!({})
+    };
+    let config = config
+        .as_object_mut()
+        .ok_or("Claude config must be an object")?;
+    if config
+        .get("mcpServers")
+        .is_some_and(|servers| !servers.is_object())
+    {
+        return Err("Claude mcpServers must be an object".into());
+    }
+    // The previous setup deliberately ignored missing, unreadable or malformed
+    // host identity metadata. Preserve that best-effort selection, including
+    // arbitrary JSON values in the selected keys.
+    if let Ok(bytes) = fs::read(operator_home.join(".claude.json"))
+        && let Ok(Value::Object(host)) = serde_json::from_slice::<Value>(&bytes)
+    {
+        for key in [
+            "userID",
+            "firstStartTime",
+            "oauthAccount",
+            "migrationVersion",
+            "opusProMigrationComplete",
+            "opus45MigrationComplete",
+            "sonnet45MigrationComplete",
+            "sonnet1m45MigrationComplete",
+            "opusPlanMigrationComplete",
+            "hasCompletedOnboarding",
+        ] {
+            if let Some(value) = host.get(key) {
+                config.insert(key.into(), value.clone());
+            }
+        }
+    }
+    config.insert("hasCompletedOnboarding".into(), json!(true));
+    let projects = config
+        .entry("projects")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("claude-host-setup: projects is not an object")?;
+    let workspace = projects
+        .entry("/workspace")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("claude-host-setup: projects./workspace is not an object")?;
+    for key in [
+        "hasTrustDialogAccepted",
+        "hasCompletedProjectOnboarding",
+        "hasClaudeMdExternalIncludesApproved",
+        "hasClaudeMdExternalIncludesWarningShown",
+    ] {
+        workspace.insert(key.into(), json!(true));
+    }
+
+    let mut settings = if settings_path.exists() {
+        // Retain recovery of malformed settings JSON. Filesystem failures
+        // still identify the path rather than claiming a successful merge.
+        serde_json::from_slice::<Value>(&fs::read(&settings_path)?).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    let host_settings_path = operator_home.join(".claude/settings.json");
+    let host_settings = if host_settings_path.is_file() {
+        serde_json::from_slice::<Value>(&fs::read(&host_settings_path)?).ok()
+    } else {
+        None
+    };
+    // Host preferences previously replaced the agent settings wholesale.
+    // A valid host object still repairs an invalid agent shape; unrelated
+    // valid agent keys now survive reapply, as the staging contract requires.
+    if host_settings.as_ref().is_some_and(Value::is_object) && !settings.is_object() {
+        settings = json!({});
+    }
+    let settings = settings
+        .as_object_mut()
+        .ok_or("Claude settings must be an object")?;
+    if host_settings.as_ref().is_some_and(Value::is_object)
+        && settings.get("permissions").is_some_and(|p| !p.is_object())
+    {
+        // A valid host object used to replace the entire agent document,
+        // repairing this field even when host preferences omit permissions.
+        // Keep that recovery while preserving unrelated valid agent keys.
+        settings.insert("permissions".into(), json!({}));
+    }
+    if let Some(host) = host_settings {
+        let host = host
+            .as_object()
+            .ok_or("Claude host settings must be an object")?;
+        for (key, value) in host {
+            if key == "permissions" && value.is_object() {
+                let permissions = settings
+                    .entry(key.clone())
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or("Claude permissions must be an object")?;
+                permissions.extend(
+                    value
+                        .as_object()
+                        .ok_or("Claude host permissions must be an object")?
+                        .clone(),
+                );
+            } else {
+                settings.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    settings.insert("skipDangerousModePermissionPrompt".into(), json!(true));
+    let permissions = settings
+        .entry("permissions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("Claude permissions must be an object")?;
+    permissions.insert("defaultMode".into(), json!("bypassPermissions"));
+    // Validate both documents before publishing either. Reuse the existing
+    // atomic JSON writer without applying checkpoint size limits to settings.
+    crate::guest_commands::write_json(&config_path, &serde_json::to_value(config)?)?;
+    crate::guest_commands::write_json_with_mode(
+        &settings_path,
+        &serde_json::to_value(settings)?,
+        settings_mode,
+    )
+}
+
 pub(crate) fn sorted_json(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -555,6 +708,7 @@ pub fn run(arguments: &[OsString]) -> Result<(), Error> {
             codex_state(&home, launcher, local, recovery)
         }
         [kind,home,source] if kind=="stage-runtime"=>stage_runtime(Path::new(home),Path::new(source)),
+        [kind,home,operator_home] if kind=="claude-state"=>claude_state(Path::new(home),Path::new(operator_home)),
         [kind,home,harness,rest @ ..] if kind=="stage-mcp"=>{
             if !rest.is_empty() && rest!=["--require-agent-local"] { return Err("unknown stage-mcp argument".into()); }
             stage_mcp(Path::new(home),argument_text(harness)?,!rest.is_empty())
@@ -562,6 +716,6 @@ pub fn run(arguments: &[OsString]) -> Result<(), Error> {
         [kind,config,instructions,agent,snapshot,role,harness] if kind=="factory-stage"=>factory_stage(Path::new(config),Path::new(instructions),argument_text(agent)?,Path::new(snapshot),argument_text(role)?,argument_text(harness)?),
         [kind,path,agent,rooms,coordinators] if kind=="ordinary-stage"=>ordinary_stage(Path::new(path),argument_text(agent)?,argument_text(rooms)?,argument_text(coordinators)?),
         [kind,path,harness] if kind=="supervised-launcher"=>supervised_launcher(Path::new(path),argument_text(harness)?),
-        _=>Err("usage: safeyolo-coord codex-state|stage-mcp|factory-stage|ordinary-stage|supervised-launcher --help".into()),
+        _=>Err("usage: safeyolo-coord codex-state|claude-state|stage-mcp|factory-stage|ordinary-stage|supervised-launcher --help".into()),
     }
 }

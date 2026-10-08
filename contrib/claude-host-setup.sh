@@ -15,11 +15,15 @@ set -euo pipefail
 : "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add/run --host-script'}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
-mkdir -p "$AGENT_HOME/.claude"
+mkdir -p "$AGENT_HOME"
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=lib/stage-safeyolo-context.sh
 . "$SCRIPT_DIR/lib/stage-safeyolo-context.sh"
+# shellcheck source=lib/stage-coord-native.sh
+. "$SCRIPT_DIR/lib/stage-coord-native.sh"
+stage_coord_native "$AGENT_HOME"
+"$coord_host" claude-state "$AGENT_HOME" "$HOME"
 
 # --- 1. Stage host Claude state (best-effort) ---------------------------------
 # Credentials + settings are the core "identity + prefs" bucket. User-authored
@@ -48,7 +52,6 @@ stage_dir() {
 }
 
 stage_file .credentials.json  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
-stage_file settings.json
 
 for d in plugins commands agents; do
     stage_dir "$d"
@@ -69,107 +72,12 @@ if [ -d "$host_claude/skills" ]; then
     done < <(find "$host_claude/skills" -mindepth 1 -maxdepth 1 -print0)
 fi
 
-# --- 2. Seed .claude.json with nag-free defaults ------------------------------
-# Minimum set of top-level keys Claude Code checks on launch. /workspace is a
-# guest-only path -- the user can't pre-trust it from the host because it
-# doesn't exist there -- so we set its entry explicitly.
-
-if command -v python3 >/dev/null 2>&1; then
-    python3 - "$AGENT_HOME/.claude.json" <<'PY'
-import json, os, sys
-path = sys.argv[1]
-data = {}
-# Preserve existing agent-side harness and MCP configuration on reapply.
-if os.path.exists(path):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"claude-host-setup: cannot update invalid {path}: {exc}")
-# Preserve identity keys from host's ~/.claude.json if present.
-host_json = os.path.expanduser("~/.claude.json")
-if os.path.exists(host_json):
-    try:
-        with open(host_json) as f:
-            host_data = json.load(f)
-        for k in (
-            "userID", "firstStartTime", "oauthAccount",
-            "migrationVersion",
-            "opusProMigrationComplete", "opus45MigrationComplete",
-            "sonnet45MigrationComplete", "sonnet1m45MigrationComplete",
-            "opusPlanMigrationComplete", "hasCompletedOnboarding",
-        ):
-            if k in host_data:
-                data[k] = host_data[k]
-    except (OSError, json.JSONDecodeError):
-        pass
-
-data["hasCompletedOnboarding"] = True
-projects = data.setdefault("projects", {})
-if not isinstance(projects, dict):
-    raise SystemExit(f"claude-host-setup: projects is not an object in {path}")
-workspace = projects.setdefault("/workspace", {})
-if not isinstance(workspace, dict):
-    raise SystemExit(
-        f"claude-host-setup: projects./workspace is not an object in {path}"
-    )
-workspace.update(
-    {
-        "hasTrustDialogAccepted": True,
-        "hasCompletedProjectOnboarding": True,
-        "hasClaudeMdExternalIncludesApproved": True,
-        "hasClaudeMdExternalIncludesWarningShown": True,
-    }
-)
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-PY
-else
-    cat > "$AGENT_HOME/.claude.json" <<'JSON'
-{
-  "hasCompletedOnboarding": true,
-  "projects": {
-    "/workspace": {
-      "hasTrustDialogAccepted": true,
-      "hasCompletedProjectOnboarding": true,
-      "hasClaudeMdExternalIncludesApproved": true,
-      "hasClaudeMdExternalIncludesWarningShown": true
-    }
-  }
-}
-JSON
-fi
-
-# --- 3. Ensure settings.json enables bypass mode ------------------------------
-# --dangerously-skip-permissions alone is no longer sufficient in Claude Code
-# 2.x; the persistent setting is permissions.defaultMode. Merge rather than
-# overwrite so user-staged settings.json keeps its other keys.
-
-if command -v python3 >/dev/null 2>&1; then
-    python3 - "$AGENT_HOME/.claude/settings.json" <<'PY'
-import json, sys, os
-path = sys.argv[1]
-data = {}
-if os.path.exists(path):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        data = {}
-data["skipDangerousModePermissionPrompt"] = True
-perms = data.setdefault("permissions", {})
-perms["defaultMode"] = "bypassPermissions"
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-PY
-fi
-
-# --- 4. Stage SafeYolo baseline + shared skill ------------------------------
+# --- 2. Stage SafeYolo baseline + shared skill ------------------------------
 # Keep SafeYolo's always-on baseline outside .claude/ so it cannot shadow the
 # user's CLAUDE.md. Link the shared on-demand skill into Claude's native path.
 stage_safeyolo_context "$AGENT_HOME" claude
 
-# --- 5. Write the foreground command -----------------------------------------
+# --- 3. Write the foreground command -----------------------------------------
 # Installs claude-code on first run and repairs an incomplete native install on
 # subsequent runs. On Alpine, Node comes from apk because mise may build Node
 # from source against musl; elsewhere we use mise. Appends the SafeYolo agent

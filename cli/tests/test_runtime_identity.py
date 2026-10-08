@@ -400,9 +400,7 @@ def test_wheel_build_rejects_a_mutable_revision_name(tmp_path):
     assert "SAFEYOLO_BUILD_REVISION must be" in result.stderr
 
 
-def test_wheel_does_not_stamp_an_unrelated_parent_checkout(tmp_path):
-    parent = tmp_path / "unrelated"
-    source = parent / "data" / "source"
+def _wheel_source(source: Path) -> Path:
     package = source / "cli" / "src" / "safeyolo"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
@@ -426,6 +424,12 @@ packages = ["cli/src/safeyolo"]
 path = "hatch_build.py"
 """
     )
+    return source
+
+
+def test_wheel_does_not_stamp_an_unrelated_parent_checkout(tmp_path):
+    parent = tmp_path / "unrelated"
+    source = _wheel_source(parent / "data" / "source")
     parent.mkdir(exist_ok=True)
     (parent / ".gitignore").write_text("data/\n")
     _git(parent, "init")
@@ -458,3 +462,35 @@ path = "hatch_build.py"
         "source_revision": None,
         "state": "unknown",
     }
+
+
+@pytest.mark.parametrize("explicit,missing", [(False, None), (True, None), (False, ".version"), (True, ".sha256")])
+def test_wheel_includes_matching_native_coord_guest_inputs(tmp_path, explicit, missing):
+    source = _wheel_source(tmp_path / "source")
+    guest = source / "guest/command/target/release/safeyolo-guest"
+    guest.parent.mkdir(parents=True)
+    guest.write_bytes(b"guest fixture")
+    coord = tmp_path / "selected-coord" if explicit else guest.with_name("safeyolo-coord")
+    artifacts = {"": b"native Coord guest fixture", ".version": b"safeyolo-coord commit=fixture profile=debug\n", ".sha256": b"fixture checksum\n"}
+    for suffix, data in artifacts.items():
+        path = coord.with_suffix(suffix) if suffix else coord
+        if suffix != missing:
+            path.write_bytes(data)
+    environment = os.environ.copy()
+    for key in ("SAFEYOLO_GUEST_HELPER", "SAFEYOLO_COORD_GUEST_BINARY", "SAFEYOLO_NATIVE_BINARY", "SAFEYOLO_NATIVE_BUILD_METADATA", "SAFEYOLO_BUILD_REVISION", "SAFEYOLO_BUILD_ID"):
+        environment.pop(key, None)
+    if explicit:
+        environment["SAFEYOLO_COORD_GUEST_BINARY"] = str(coord)
+    output = tmp_path / "dist"
+    result = subprocess.run(["uv", "build", "--wheel", "--out-dir", str(output), str(source)],
+                            env=environment, capture_output=True, text=True, check=False, timeout=60)
+    if missing:
+        assert result.returncode != 0
+        assert "Native Coord guest artifact is missing" in result.stderr
+        assert not list(output.glob("*.whl"))
+    else:
+        assert result.returncode == 0, result.stderr
+        with zipfile.ZipFile(next(output.glob("*.whl"))) as archive:
+            for suffix, data in artifacts.items():
+                assert archive.read(f"safeyolo/assets/guest/safeyolo-coord{suffix}") == data
+            assert "safeyolo/repo_map.py" not in archive.namelist()

@@ -28,7 +28,7 @@ CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex
 PI_COORD_SETUP_SOURCE = REPO_ROOT / "contrib/pi-coord-host-setup.sh"
 PI_COORD_EXTENSION_SOURCE = REPO_ROOT / "contrib/pi-coord-extension.ts"
 FACTORY_STAGE_SOURCE = REPO_ROOT / "contrib/lib/stage-coord-native.sh"
-REPO_MAP_SOURCE = REPO_ROOT / "cli/src/safeyolo/repo_map.py"
+REPO_MAP_COMMAND = '#!/usr/bin/env bash\nexec "$HOME/.safeyolo/safeyolo-coord" repo-map "$@"\n'
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
 FACTORY_SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo-factory"
@@ -176,7 +176,7 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
             expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
             repo_map = agent_home / ".safeyolo/repo-map"
-            assert repo_map.read_bytes() == REPO_MAP_SOURCE.read_bytes()
+            assert repo_map.read_text() == REPO_MAP_COMMAND
             assert repo_map.stat().st_mode & 0o111
             repo_map_command = agent_home / ".local/bin/repo-map"
             assert repo_map_command.is_symlink()
@@ -784,7 +784,7 @@ def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path
     assert not (agent_home / ".pi/agent/host-sentinel").exists()
     assert (agent_home / ".pi/agent/skills/safeyolo").is_symlink()
     repo_map = agent_home / ".safeyolo/repo-map"
-    assert repo_map.read_bytes() == REPO_MAP_SOURCE.read_bytes()
+    assert repo_map.read_text() == REPO_MAP_COMMAND
     assert repo_map.stat().st_mode & 0o111
     repo_map_command = agent_home / ".local/bin/repo-map"
     assert repo_map_command.is_symlink()
@@ -1749,7 +1749,7 @@ def test_codex_context_refuses_user_owned_repo_map_command(tmp_path: Path) -> No
     assert command.read_text() == "user-owned command\n"
 
 
-def test_codex_context_stages_standalone_repo_map(tmp_path: Path) -> None:
+def test_codex_context_stages_native_repo_map(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
     operator_home.mkdir()
@@ -1759,6 +1759,7 @@ def test_codex_context_stages_standalone_repo_map(tmp_path: Path) -> None:
     assert (agent_home / ".safeyolo/repo-map.toml").read_bytes() == (REPO_ROOT / "repo-map.toml").read_bytes()
     result = subprocess.run(
         [str(command), str(REPO_ROOT / "cli/src/safeyolo/coord")],
+        env={**os.environ, "HOME": str(agent_home)},
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
@@ -2746,3 +2747,220 @@ def test_claude_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> Non
     assert "9.9.9 is available" in result.stderr, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert not any(c.startswith("use ") for c in calls), f"a healthy install was upgraded: {calls}"
+
+
+@pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh", "claude-host-setup.sh"])
+def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script_name):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "python-invoked"
+    for name in ["python", "python3"]:
+        blocked = fake_bin / name
+        blocked.write_text('#!/bin/sh\nprintf invoked > "$PYTHON_INVOKED"\nexit 89\n')
+        blocked.chmod(0o755)
+    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "PYTHON_INVOKED": str(log)}
+    for _ in range(2):
+        _run_setup(script_name, operator_home, agent_home, tmp_path, extra_env=env)
+    assert not log.exists()
+    staged = agent_home / ".safeyolo/safeyolo-coord"
+    assert subprocess.check_output([str(staged), "--version"], text=True) == subprocess.check_output([str(COORD_NATIVE_BINARY), "--version"], text=True)
+    if script_name != "claude-host-setup.sh":
+        wrapper = agent_home / ".safeyolo/repo-map"
+        result = subprocess.run([str(wrapper), str(REPO_ROOT / "proxy/src/repo_map.rs")],
+                                env={**os.environ, **env, "HOME": str(agent_home)}, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert "scope=proxy/src/repo_map.rs mode=detail" in result.stdout
+        assert "function run()" in result.stdout
+    else:
+        settings = json.loads((agent_home / ".claude/settings.json").read_text())
+        assert settings["permissions"]["defaultMode"] == "bypassPermissions"
+        assert settings["skipDangerousModePermissionPrompt"] is True
+
+
+def test_claude_native_setup_preserves_selected_identity_settings_and_mcp_on_reapply(tmp_path):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    identity = {"userID": "fixture-user", "oauthAccount": {"emailAddress": "fixture@example.test"},
+                "migrationVersion": 23, "opusPlanMigrationComplete": ["retained-value"],
+                "hasCompletedOnboarding": False, "hostOnly": "do-not-copy", "mcpServers": {"host-only": {"command": "excluded"}}}
+    (operator_home / ".claude.json").write_text(json.dumps(identity))
+    host_settings = operator_home / ".claude/settings.json"
+    host_settings.parent.mkdir()
+    host_settings.write_text(json.dumps({"model": "operator-model", "permissions": {"allow": ["Read"], "defaultMode": "default"}, "hostPreference": 7}))
+    config_path = agent_home / ".claude.json"
+    config_path.parent.mkdir()
+    config_path.write_text(json.dumps({"custom": {"keep": True}, "mcpServers": {"unrelated": {"command": "other"}},
+                                       "projects": {"/workspace": {"customTrust": "keep"}, "/other": {"keep": True}}}))
+    settings_path = agent_home / ".claude/settings.json"
+    settings_path.parent.mkdir()
+    settings_path.write_text(json.dumps({"agentPreference": 42, "permissions": {"deny": ["Write"]}}))
+    for _ in range(2):
+        _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+    config = json.loads(config_path.read_text())
+    for key in ("userID", "oauthAccount", "migrationVersion", "opusPlanMigrationComplete"):
+        assert config[key] == identity[key]
+    assert "hostOnly" not in config and "host-only" not in config["mcpServers"]
+    assert config["custom"] == {"keep": True}
+    assert config["mcpServers"]["unrelated"] == {"command": "other"}
+    assert config["mcpServers"]["safeyolo-coord"]["command"] == "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
+    assert config["hasCompletedOnboarding"] is True
+    assert config["projects"]["/other"] == {"keep": True}
+    workspace = config["projects"]["/workspace"]
+    assert workspace["customTrust"] == "keep"
+    for key in ("hasTrustDialogAccepted", "hasCompletedProjectOnboarding", "hasClaudeMdExternalIncludesApproved", "hasClaudeMdExternalIncludesWarningShown"):
+        assert workspace[key] is True
+    settings = json.loads(settings_path.read_text())
+    assert settings["hostPreference"] == 7 and settings["agentPreference"] == 42
+    assert settings["model"] == "operator-model"
+    assert settings["permissions"] == {"allow": ["Read"], "deny": ["Write"], "defaultMode": "bypassPermissions"}
+
+
+@pytest.mark.parametrize("relative,invalid", [(".claude.json", "[]"), (".claude.json", '{"projects": []}'),
+                                                (".claude.json", '{"projects": {"/workspace": null}}'),
+                                                (".claude/settings.json", '{"permissions": []}')])
+def test_claude_native_setup_refuses_wrong_shapes_before_configuration_publication(tmp_path, relative, invalid):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    config = agent_home / ".claude.json"
+    config.parent.mkdir()
+    config.write_text('{"keep": true}')
+    settings = agent_home / ".claude/settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"keep": true}')
+    (agent_home / relative).write_text(invalid)
+    before = [p.read_bytes() for p in (config, settings)]
+    result = _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path, check=False)
+    assert result.returncode != 0 and "object" in result.stderr
+    assert [p.read_bytes() for p in (config, settings)] == before
+    assert not (agent_home / ".safeyolo-command").exists()
+
+
+def test_claude_native_setup_recovers_malformed_preferences_and_ignores_invalid_host_identity(tmp_path):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    (operator_home / ".claude.json").write_text("{broken")
+    config = agent_home / ".claude.json"
+    config.parent.mkdir()
+    config.write_text('{"userID": "agent-local", "custom": true}')
+    settings = agent_home / ".claude/settings.json"
+    settings.parent.mkdir()
+    settings.write_text("{broken")
+    _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert json.loads(config.read_text())["userID"] == "agent-local"
+    assert json.loads(settings.read_text())["permissions"]["defaultMode"] == "bypassPermissions"
+
+
+@pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh"])
+@pytest.mark.parametrize("relative", [".safeyolo/repo-map", ".safeyolo/repo-map.toml"])
+def test_native_context_refuses_redirected_managed_repo_map_files(tmp_path, script_name, relative):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    canary = tmp_path / "outside"
+    canary.write_text("operator-canary")
+    path = agent_home / relative
+    path.parent.mkdir(parents=True)
+    path.symlink_to(canary)
+    result = _run_setup(script_name, operator_home, agent_home, tmp_path, check=False)
+    assert result.returncode != 0 and "unsafe managed repo-map" in result.stderr
+    assert canary.read_text() == "operator-canary"
+
+
+@pytest.mark.parametrize("existing", ["[]", "null", '{"permissions": null}', '{"permissions": []}'])
+def test_claude_native_reapply_keeps_host_repair_of_invalid_agent_settings(tmp_path, existing):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    host = operator_home / ".claude/settings.json"
+    host.parent.mkdir(parents=True)
+    host.write_text('{"model": "host-model", "permissions": {"allow": ["Read"]}}')
+    settings = agent_home / ".claude/settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(existing)
+    settings.chmod(0o664)
+    _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+    value = json.loads(settings.read_text())
+    assert value["model"] == "host-model"
+    assert value["permissions"] == {"allow": ["Read"], "defaultMode": "bypassPermissions"}
+    assert settings.stat().st_mode & 0o777 == 0o664
+
+
+@pytest.mark.parametrize("invalid", [None, [], "wrong", False, 7])
+def test_claude_native_host_preferences_without_permissions_repair_only_invalid_agent_field(tmp_path, invalid):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    host = operator_home / ".claude/settings.json"
+    host.parent.mkdir(parents=True)
+    host.write_text('{"model": "fixture-model"}')
+    settings = agent_home / ".claude/settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": invalid, "agentPreference": {"value": 42}}))
+    for _ in range(2):
+        _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+        value = json.loads(settings.read_text())
+        assert value["model"] == "fixture-model"
+        assert value["agentPreference"] == {"value": 42}
+        assert value["permissions"] == {"defaultMode": "bypassPermissions"}
+        assert value["skipDangerousModePermissionPrompt"] is True
+        assert (agent_home / ".safeyolo-command").is_file()
+
+
+@pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh", "claude-host-setup.sh"])
+def test_packaged_native_setup_discovers_host_and_guest_artifacts_without_overrides(tmp_path, script_name):
+    package = tmp_path / "package/safeyolo"
+    scripts = package / "contrib"
+    shutil.copytree(REPO_ROOT / "contrib", scripts)
+    (package / "docs").mkdir()
+    shutil.copy2(BASELINE_SOURCE, package / "docs/AGENTS.md")
+    shutil.copy2(REPO_ROOT / "repo-map.toml", package / "repo-map.toml")
+    host = package / "bin/safeyolo-coord"
+    guest = package / "assets/guest/safeyolo-coord"
+    host.parent.mkdir()
+    guest.parent.mkdir(parents=True)
+    # The installed host and guest have separate paths. Hard links avoid
+    # duplicate test copies of these unchanged Linux bytes.
+    os.link(COORD_NATIVE_BINARY, host)
+    os.link(COORD_NATIVE_BINARY, guest)
+    for suffix in (".version", ".sha256"):
+        shutil.copy2(COORD_NATIVE_BINARY.with_suffix(suffix), guest.with_suffix(suffix))
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    env = _setup_env(operator_home, agent_home, tmp_path)
+    for key in ("SAFEYOLO_COORD_EXECUTABLE", "SAFEYOLO_COORD_GUEST_BINARY", "SAFEYOLO_EXECUTABLE"):
+        env.pop(key, None)
+    env["PATH"] = "/usr/bin:/bin"
+    try:
+        for _ in range(2):
+            result = subprocess.run([str(scripts / script_name)], env=env, capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+        staged = agent_home / ".safeyolo/safeyolo-coord"
+        assert subprocess.check_output([str(staged), "--version"], text=True) == guest.with_suffix(".version").read_text()
+        if script_name != "claude-host-setup.sh":
+            assert (agent_home / ".safeyolo/repo-map").read_text() == REPO_MAP_COMMAND
+    finally:
+        host.unlink(missing_ok=True)
+        guest.unlink(missing_ok=True)
+
+
+def test_claude_native_preferences_are_not_limited_to_checkpoint_size(tmp_path):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    settings = agent_home / ".claude/settings.json"
+    settings.parent.mkdir(parents=True)
+    large_preference = "nonsecret-fixture" * 140000
+    settings.write_text(json.dumps({"retained": large_preference}))
+    _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert json.loads(settings.read_text())["retained"] == large_preference
+
+
+@pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh"])
+def test_native_repo_map_reapply_replaces_managed_hardlink_without_truncating_target(tmp_path, script_name):
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup(script_name, operator_home, agent_home, tmp_path)
+    managed = agent_home / ".safeyolo/repo-map"
+    managed.unlink()
+    canary = tmp_path / "unrelated-command"
+    canary.write_text("retained command")
+    os.link(canary, managed)
+    _run_setup(script_name, operator_home, agent_home, tmp_path)
+    assert canary.read_text() == "retained command"
+    assert managed.read_text() == REPO_MAP_COMMAND
