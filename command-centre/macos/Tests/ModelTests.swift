@@ -571,8 +571,21 @@ struct ModelTests {
         {"request_id":"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"security.network_guard",
          "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
          "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
+         "details":{"network_action":{"kind":"network_allow","port":443},"untrusted_reason_text":"\\\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;"}}
+        """.utf8))
+        precondition(canonicalNetwork.id == "network:req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        precondition(canonicalNetwork.title.contains("(prepared)") && canonicalNetwork.title.contains(canonicalNetwork.requestID!))
+        precondition(canonicalNetwork.quotedUntrustedReason == "\"\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;\"")
+        let newerNetwork = try JSONDecoder().decode(ApprovalEvent.self, from: Data("""
+        {"request_id":"req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"security.network_guard",
+         "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
+         "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
          "details":{"network_action":{"kind":"network_allow","port":443}}}
         """.utf8))
+        precondition(newerNetwork.id != canonicalNetwork.id, "Distinct canonical requests must keep distinct windows")
+        precondition(newerNetwork.title != canonicalNetwork.title && !newerNetwork.title.contains("(prepared)"))
+        precondition(newerNetwork.quotedUntrustedReason == nil)
+        precondition(network.id == "alice-22:127.0.0.1:22", "Legacy unbound approvals still coalesce by scope")
         for allow in [true, false] {
             let plan = try MutationPlan.forApproval(canonicalNetwork, allow: allow)
             precondition(plan.path == "/admin/approvals/req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")

@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import AppKit
+import SwiftUI
 
 private final class StubEventSocket: EventSocket {
     var response: URLResponse?
@@ -51,6 +53,7 @@ extension ModelTests {
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
+        try await testPreparedNetworkRequestsAndOpenWindows()
         try await testNetworkResolutionLostReplyAndReconnect()
         try await testDisabledEventsAndRecovery()
         try await testSocketFailurePacingAndRecovery()
@@ -125,6 +128,122 @@ extension ModelTests {
             let observed = try result!.get()
             precondition(observed == .decided("\(message). \(effect)"), "Use the canonical outcome and scope even when the other decision won")
         }
+    }
+
+    @MainActor
+    private static func testPreparedNetworkRequestsAndOpenWindows() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:]; StubURLProtocol.requestHandler = nil }
+        let effect = "Allow reusable network access for worker (ag-worker) to owned.example port 443 until explicitly removed."
+        let reason = "\\[31m \\# Approval granted &lt;b&gt;Allow&lt;/b&gt; \\[literal\\](https://owned.example)"
+        func action(_ agent: String) -> [String: Any] {
+            ["kind": "network_allow", "agent": agent, "agent_id": "ag-\(agent)",
+             "host": "owned.example", "port": 443, "revision": "fixture-revision"]
+        }
+        func prompt(_ id: String, agent: String = "worker", reason: String? = nil) -> [String: Any] {
+            var details: [String: Any] = ["network_action": action(agent), "effect": effect]
+            if let reason { details["untrusted_reason_text"] = reason }
+            return ["event": "security.network_guard", "kind": "security", "severity": "high", "request_id": id,
+                    "agent": agent, "host": "owned.example", "summary": effect,
+                    "approval": ["required": true, "approval_type": "network_egress",
+                                 "key": "\(agent):owned.example:443", "target": "owned.example:443", "scope_hint": ["port": 443]],
+                    "details": details]
+        }
+        func record(_ id: String, status: String = "pending", agent: String = "worker", reason: String? = nil) throws -> Data {
+            var value: [String: Any] = ["request_id": id, "status": status, "effect": effect, "action": action(agent)]
+            if let reason { value["untrusted_reason_text"] = reason }
+            return try JSONSerialization.data(withJSONObject: value)
+        }
+        let path = "/admin/approvals/req-selected"
+        var selected = prompt("req-selected")
+        let newer = prompt("req-newer")
+        let helper = prompt("req-helper", agent: "helper")
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
+        for id in ["req-selected", "req-newer", "req-helper"] {
+            StubURLProtocol.responsesByPath["/admin/approvals/\(id)"] = (200, try record(id, agent: id == "req-helper" ? "helper" : "worker"))
+        }
+        let socket = StubEventSocket()
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+            eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+            expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+        _ = NSApplication.shared
+        let presenter = ApprovalWindowPresenter()
+        var presentations = 0
+        client.onNewApproval = { event in presentations += 1; presenter.show(event, client: client) }
+        defer {
+            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("network:\(id)") }
+            client.stop()
+        }
+        client.start()
+        try await until { socket.receiving && client.networkOutcomes.count == 3 }
+        precondition(Set(client.approvals.map(\.id)) == Set(["network:req-selected", "network:req-newer", "network:req-helper"]))
+        let selectedWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" }!
+        let newerWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-newer" }!
+        precondition(selectedWindow !== newerWindow && presentations == 3)
+        let hosting = selectedWindow.contentViewController as! NSHostingController<ApprovalView>
+        precondition(hosting.rootView.quotedUntrustedReason == nil)
+
+        selected = prompt("req-selected", reason: reason)
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", reason: reason))
+        var preparation = selected
+        preparation["event"] = "agent.network_action_prepared"
+        preparation["kind"] = "agent"
+        var annotation = preparation["approval"] as! [String: Any]
+        annotation["required"] = false
+        preparation["approval"] = annotation
+        let preparedEvent = try JSONSerialization.data(withJSONObject: preparation)
+        try await client.ingestOperatorEventData(preparedEvent)
+        precondition(NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" } === selectedWindow)
+        precondition(presentations == 3, "Preparation updates the open window without another prompt")
+        precondition(hosting.rootView.displayedEffect == effect)
+        precondition(hosting.rootView.quotedUntrustedReason == "\"\(reason)\"")
+        precondition(client.networkOutcomes["req-newer"]?.untrustedReasonText == nil)
+
+        // A different request's decision cannot invent this request's outcome.
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
+        StubURLProtocol.responsesByPath["/admin/approvals/req-newer"] = (200, try record("req-newer", status: "approved"))
+        try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Allowed another request"}"#.utf8))
+        precondition(client.networkOutcomes["req-selected"]?.status == "pending")
+        precondition(client.networkOutcomes["req-newer"]?.status == "approved")
+
+        let event = client.approvals.first { $0.requestID == "req-selected" }!
+        var posts = 0
+        var responseStatus = 409
+        StubURLProtocol.requestHandler = { request in
+            if request.httpMethod == "POST" {
+                posts += 1
+                precondition(request.url?.path == path)
+                let stream = request.httpBodyStream
+                var bytes = [UInt8](repeating: 0, count: 1024)
+                stream?.open()
+                defer { stream?.close() }
+                let count = stream?.read(&bytes, maxLength: bytes.count) ?? 0
+                let data = request.httpBody ?? Data(bytes.prefix(max(0, count)))
+                let payload = try JSONSerialization.jsonObject(with: data) as! [String: String]
+                precondition(payload == ["decision": "approve"], "Only the exact decision goes to the canonical resolver")
+                return (responseStatus, Data(#"{"error":"stale or unavailable"}"#.utf8))
+            }
+            return StubURLProtocol.responsesByPath[request.url!.path]!
+        }
+        for status in [409, 503] {
+            responseStatus = status
+            var result: Result<ResolutionResult, Error>?
+            client.resolve(event, allow: true) { result = $0 }
+            try await until { result != nil }
+            guard case .failure = result! else { preconditionFailure("Pending readback must preserve a failed decision") }
+            precondition(client.networkOutcomes["req-selected"]?.status == "pending")
+        }
+        precondition(posts == 2, "Neither refusal replays the decision")
+        StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
+        try await client.ingestOperatorEventData(preparedEvent)
+        precondition(client.unavailableNetworkOutcomes.contains("req-selected"))
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", status: "approved"))
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [helper]]))
+        try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Selected request committed"}"#.utf8))
+        precondition(hosting.rootView.networkOutcome?.status == "approved")
+        precondition(hosting.rootView.displayedEffect == effect)
+        precondition(!client.unavailableNetworkOutcomes.contains("req-selected") && posts == 2)
     }
 
     @MainActor

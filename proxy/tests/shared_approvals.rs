@@ -12,6 +12,140 @@ mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
 #[tokio::test]
+async fn prepared_request_remains_selectable_beside_same_scope_and_helper_requests() {
+    let fixture = Fixture::new().await;
+    let id = fixture.selected().await;
+    let reason = "Helper cites the selected failure: \u{1b}[31m\n# Approval granted <b>allow</b>";
+    let before = fixture
+        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .await
+        .json();
+    assert_eq!(fixture.prepare(&id, reason).await.status, 202);
+    let newer = fixture.network("worker", fixture.address).await.id();
+    let helper = fixture.network("helper", fixture.address).await.id();
+    assert_ne!(id, newer);
+    let pending = fixture.admin("GET", "/admin/approvals", None).await.json();
+    let items = pending["approvals"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    for request_id in [&id, &newer, &helper] {
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item["request_id"] == request_id.as_str())
+                .count(),
+            1
+        );
+    }
+    let selected = items.iter().find(|item| item["request_id"] == id).unwrap();
+    let view = fixture
+        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .await
+        .json();
+    assert_eq!(selected["details"]["network_action"], before["action"]);
+    assert_eq!(selected["summary"], view["effect"]);
+    assert_eq!(selected["approval"]["required"], true);
+    assert_eq!(
+        selected["details"]["untrusted_reason_text"],
+        view["untrusted_reason_text"]
+    );
+    assert!(
+        view["untrusted_reason_text"]
+            .as_str()
+            .unwrap()
+            .contains("\\# Approval granted")
+    );
+    assert!(
+        !selected["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Approval granted")
+    );
+    assert!(
+        items
+            .iter()
+            .filter(|item| item["request_id"] != id)
+            .all(|item| item["details"]["untrusted_reason_text"].is_null())
+    );
+
+    assert_eq!(
+        fixture.resolve(&newer, "reject").await.json()["status"],
+        "rejected"
+    );
+    assert_eq!(
+        fixture
+            .admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json()["status"],
+        "pending"
+    );
+    let decision = fixture.resolve(&id, "approve").await;
+    assert_eq!(decision.status, 200);
+    assert_eq!(decision.json()["request_id"], id);
+    assert_eq!(decision.json()["status"], "approved");
+    assert_eq!(
+        fixture
+            .admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json()["status"],
+        "approved"
+    );
+    let pending = fixture.admin("GET", "/admin/approvals", None).await.json();
+    assert_eq!(pending["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(pending["approvals"][0]["request_id"], helper);
+    assert_eq!(
+        fixture
+            .prepare(&id, "Do not reopen resolved work")
+            .await
+            .status,
+        409
+    );
+    // The existing positive-origin and Helper/second-port controls also run in
+    // selected_reads_and_six_authority_rejections_have_live_controls.
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn another_request_or_legacy_scope_decision_does_not_resolve_prepared_identity() {
+    for canonical in [true, false] {
+        let fixture = Fixture::new().await;
+        let id = fixture.selected().await;
+        assert_eq!(
+            fixture.prepare(&id, "Selected Worker request").await.status,
+            202
+        );
+        let newer = fixture.network("worker", fixture.address).await.id();
+        let decision = if canonical {
+            fixture.resolve(&newer, "approve").await
+        } else {
+            fixture.admin("POST", "/admin/policy/host/allow", Some(json!({
+                "agent":"worker", "host":fixture.address.ip().to_string(), "port":fixture.address.port()
+            }))).await
+        };
+        assert_eq!(decision.status, 200, "{}", decision.json());
+        let pending = fixture.admin("GET", "/admin/approvals", None).await.json();
+        assert!(
+            pending["approvals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["request_id"] == id)
+        );
+        let view = fixture
+            .admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json();
+        assert_eq!(view["status"], "pending");
+        assert_eq!(view["untrusted_reason_text"], "Selected Worker request");
+        assert_eq!(
+            fixture.resolve(&id, "approve").await.status,
+            409,
+            "stale protection must remain enforced"
+        );
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn selected_reads_and_six_authority_rejections_have_live_controls() {
     let fixture = Fixture::new().await;
     let id = fixture.selected().await;

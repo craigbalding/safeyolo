@@ -277,10 +277,12 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         let path: String?
         let reason: String?
         let networkAction: NetworkAction?
+        let untrustedReasonText: String?
 
         enum CodingKeys: String, CodingKey {
             case service, method, path, reason
             case networkAction = "network_action"
+            case untrustedReasonText = "untrusted_reason_text"
         }
     }
 
@@ -305,11 +307,23 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     }
 
     var id: String {
-        "\(approval.key):\(approval.target)"
+        if details?.networkAction?.kind == "network_allow", let requestID {
+            return "network:\(requestID)"
+        }
+        return "\(approval.key):\(approval.target)"
+    }
+
+    var quotedUntrustedReason: String? {
+        details?.untrustedReasonText.map { "\"\($0)\"" }
     }
 
     var title: String {
-        "\(agent ?? "Unknown agent"): \(approval.approvalType.replacingOccurrences(of: "_", with: " "))"
+        let title = "\(agent ?? "Unknown agent"): \(approval.approvalType.replacingOccurrences(of: "_", with: " "))"
+        if details?.networkAction?.kind == "network_allow", let requestID {
+            let prepared = details?.untrustedReasonText == nil ? "" : " (prepared)"
+            return "\(title)\(prepared): \(requestID)"
+        }
+        return title
     }
 
     var target: String {
@@ -415,14 +429,17 @@ struct NetworkApprovalResolution: Decodable, Equatable {
     let requestID: String
     let status: String
     let effect: String
+    let untrustedReasonText: String?
 
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
         case status, effect
+        case untrustedReasonText = "untrusted_reason_text"
     }
 
     var terminal: Bool { ["approved", "rejected"].contains(status) }
     var display: String { "\(status.capitalized). \(effect)" }
+    var quotedUntrustedReason: String? { untrustedReasonText.map { "\"\($0)\"" } }
 }
 
 enum ResolutionResult: Equatable {

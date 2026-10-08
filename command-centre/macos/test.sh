@@ -11,10 +11,13 @@ xcrun swiftc \
   "$ROOT/Sources/Connection.swift" \
   "$ROOT/Sources/Client.swift" \
   "$ROOT/Sources/Diagnostics.swift" \
+  "$ROOT/Sources/UI.swift" \
+  "$ROOT/Sources/Controller.swift" \
+  "$ROOT/Sources/SecurityNotifications.swift" \
   "$ROOT/Tests/ModelTests.swift" \
   "$ROOT/Tests/ConnectionTests.swift" \
   -o "$BUILD_ROOT/tests/ModelTests" \
-  -framework Security
+  -framework Security -framework SwiftUI -framework AppKit -framework UserNotifications
 "$BUILD_ROOT/tests/ModelTests"
 
 xcrun swiftc \
