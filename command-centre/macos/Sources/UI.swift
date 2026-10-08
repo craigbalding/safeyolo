@@ -38,7 +38,7 @@ final class ApprovalWindowPresenter {
         )
         let controller = NSHostingController(rootView: view)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 230),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -46,6 +46,7 @@ final class ApprovalWindowPresenter {
         window.title = "SafeYolo Approval"
         window.identifier = NSUserInterfaceItemIdentifier(event.id)
         window.contentViewController = controller
+        window.setContentSize(NSSize(width: 520, height: 420))
         window.isReleasedWhenClosed = false
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
@@ -407,6 +408,35 @@ struct ApprovalView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            ScrollView {
+                approvalDetails
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack {
+                Button("Deny") { decide(allow: false) }
+                    .disabled(busy || networkOutcome?.terminal == true)
+                    .accessibilityLabel("Deny")
+                    .accessibilityIdentifier("deny-button")
+                Spacer()
+                Button("Cancel") { close() }
+                    .disabled(busy)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("cancel-button")
+                Button("Allow") { decide(allow: true) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy || networkOutcome?.terminal == true)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityLabel("Allow")
+                    .accessibilityIdentifier("allow-button")
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 460, minHeight: 320)
+    }
+
+    private var approvalDetails: some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.shield.fill")
                     .font(.system(size: 26))
@@ -414,6 +444,7 @@ struct ApprovalView: View {
                 Text(verbatim: displayedEffect)
                     .font(.headline)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 5) {
@@ -435,8 +466,12 @@ struct ApprovalView: View {
             if evidenceUnavailable {
                 Text("Approval evidence unavailable. Direct policy controls remain available.")
                     .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if let outcome = networkOutcome, outcome.terminal {
-                Text(verbatim: outcome.display).textSelection(.enabled)
+                Text(verbatim: outcome.display)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let error {
@@ -452,28 +487,7 @@ struct ApprovalView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            Spacer(minLength: 2)
-            HStack {
-                Button("Deny") { decide(allow: false) }
-                    .disabled(busy || networkOutcome?.terminal == true)
-                    .accessibilityLabel("Deny")
-                    .accessibilityIdentifier("deny-button")
-                Spacer()
-                Button("Cancel") { close() }
-                    .disabled(busy)
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("cancel-button")
-                Button("Allow") { decide(allow: true) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(busy || networkOutcome?.terminal == true)
-                    .keyboardShortcut(.defaultAction)
-                    .accessibilityLabel("Allow")
-                    .accessibilityIdentifier("allow-button")
-            }
         }
-        .padding(20)
-        .frame(minWidth: 460, maxWidth: 460, minHeight: 205)
     }
 
     @ViewBuilder

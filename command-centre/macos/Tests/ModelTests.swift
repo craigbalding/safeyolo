@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import AppKit
+import SwiftUI
 
 private final class MemoryCredentialStore: CredentialStore {
     var values: [String: String] = [:]
@@ -65,14 +67,36 @@ final class StubURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+@MainActor
+private final class ModelTestApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setbuf(stdout, nil)
+        NSApp.setActivationPolicy(.accessory)
+        print("model-tests: AppKit event loop started")
+        Task { @MainActor in
+            do {
+                try await ModelTests.runTests()
+                NSApp.terminate(nil)
+            } catch {
+                fatalError("Model test failed: \(error)")
+            }
+        }
+    }
+}
+
 @main
-struct ModelTests {
+struct ModelTests: App {
+    @NSApplicationDelegateAdaptor(ModelTestApplicationDelegate.self) private var delegate
+
+    var body: some Scene { Settings { EmptyView() } }
+
     @MainActor
-    static func main() async throws {
+    fileprivate static func runTests() async throws {
+        print("model-tests: model checks started")
         try testMutationPlans()
         try testCredentialImportAndReload()
         try testRemoteProfileStorage()
-        try testRemoteConnectionVerification()
+        try await testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try testAgentAndSecurityModels()
         try testHarnessMarks()
@@ -690,7 +714,8 @@ struct ModelTests {
         precondition(deleted == nil)
     }
 
-    private static func testRemoteConnectionVerification() throws {
+    @MainActor
+    private static func testRemoteConnectionVerification() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         let verifier = RemoteConnectionVerifier(
@@ -714,7 +739,9 @@ struct ModelTests {
             )
         ) { result = $0 }
         let deadline = Date().addingTimeInterval(2)
-        while result == nil && RunLoop.current.run(mode: .default, before: deadline) {}
+        while result == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         guard case .success(let profile) = result else {
             preconditionFailure("remote verification did not succeed: \(String(describing: result))")
         }

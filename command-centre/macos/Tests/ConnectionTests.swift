@@ -63,10 +63,93 @@ extension ModelTests {
     }
 
     @MainActor
-    private static func until(_ condition: () -> Bool) async throws {
+    private static func until(file: StaticString = #fileID, line: UInt = #line, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(4)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        precondition(condition(), "Connection test did not reach its required state")
+        precondition(condition(), "Connection test did not reach its required state", file: file, line: line)
+    }
+
+    @MainActor
+    private static func approvalViews(_ window: NSWindow) -> [NSView] {
+        var pending = [window.contentView!]
+        var views: [NSView] = []
+        while let view = pending.popLast() {
+            views.append(view)
+            pending.append(contentsOf: view.subviews)
+        }
+        return views
+    }
+
+    @MainActor
+    private static func approvalTextField(_ window: NSWindow, _ text: String) -> NSTextField? {
+        approvalViews(window).compactMap { $0 as? NSTextField }.first { $0.stringValue.contains(text) }
+    }
+
+    @MainActor
+    private static func approvalScrollView(_ window: NSWindow) -> NSScrollView? {
+        approvalViews(window).compactMap { $0 as? NSScrollView }.first
+    }
+
+    @MainActor
+    @discardableResult
+    private static func checkApprovalLayout(_ window: NSWindow, terminal: Bool = false, text: [String]) async throws -> [NSView] {
+        let content = window.contentView!
+        try await until {
+            content.needsLayout = true
+            content.needsDisplay = true
+            content.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            guard let scroll = approvalScrollView(window) else { return false }
+            let controls = approvalViews(window).filter {
+                $0.canBecomeKeyView && $0 !== content && !$0.isDescendant(of: scroll)
+            }
+            return (terminal ? !controls.isEmpty : controls.count == 3) && controls.allSatisfy {
+                content.bounds.contains(content.convert($0.bounds, from: $0))
+            } && text.allSatisfy { approvalTextField(window, $0) != nil }
+        }
+        let scroll = approvalScrollView(window)!
+        let decisions = approvalViews(window).filter {
+            $0.canBecomeKeyView && $0 !== content && !$0.isDescendant(of: scroll)
+        }
+        precondition(terminal ? !decisions.isEmpty : decisions.count == 3, "Pending decisions or terminal Cancel must have rendered focus views")
+        for control in decisions {
+            let frame = content.convert(control.bounds, from: control)
+            precondition(frame.height > 0 && content.bounds.contains(frame), "Decision control is clipped: \(frame) in \(content.bounds)")
+        }
+        let clip = scroll.contentView
+        let document = scroll.documentView!
+        if document.bounds.height <= clip.bounds.height {
+            precondition(content.fittingSize.height <= content.bounds.height + 1, "Unscrolled approval content must fit the actual window")
+        }
+        let viewport = content.convert(clip.bounds, from: clip).insetBy(dx: -3, dy: -1)
+        precondition(content.bounds.insetBy(dx: -3, dy: -1).contains(viewport), "Approval details viewport is clipped")
+        for expected in text {
+            let field = approvalTextField(window, expected)!
+            let frame = document.convert(field.bounds, from: field)
+            let pages = frame.height <= clip.bounds.height ? [frame] : [
+                NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: 1),
+                NSRect(x: frame.minX, y: frame.maxY - 1, width: frame.width, height: 1)
+            ]
+            for page in pages {
+                document.scrollToVisible(page)
+                try await until {
+                    content.layoutSubtreeIfNeeded()
+                    return viewport.contains(content.convert(page, from: document))
+                }
+            }
+        }
+        print("approval-layout: content=\(content.bounds.height) fit=\(content.fittingSize.height) details=\(document.bounds.height) controls visible; text reachable")
+        return decisions
+    }
+
+    @MainActor
+    private static func clickApprovalControl(_ window: NSWindow, _ control: NSView) {
+        let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            NSApp.postEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!, atStart: false)
+        }
     }
 
     private static func snapshot(events: String = "") {
@@ -180,6 +263,7 @@ extension ModelTests {
         let selectedWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" }!
         let newerWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-newer" }!
         precondition(selectedWindow !== newerWindow && presentations == 3)
+        presenter.show(client.approvals.first { $0.requestID == "req-selected" }!, client: client)
         let hosting = selectedWindow.contentViewController as! NSHostingController<ApprovalView>
         precondition(hosting.rootView.quotedUntrustedReason == nil)
 
@@ -199,6 +283,7 @@ extension ModelTests {
         precondition(hosting.rootView.displayedEffect == effect)
         precondition(hosting.rootView.quotedUntrustedReason == "\"\(reason)\"")
         precondition(client.networkOutcomes["req-newer"]?.untrustedReasonText == nil)
+        try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(reason)\""])
 
         // A different request's decision cannot invent this request's outcome.
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
@@ -207,7 +292,6 @@ extension ModelTests {
         precondition(client.networkOutcomes["req-selected"]?.status == "pending")
         precondition(client.networkOutcomes["req-newer"]?.status == "approved")
 
-        let event = client.approvals.first { $0.requestID == "req-selected" }!
         var posts = 0
         var responseStatus = 409
         StubURLProtocol.requestHandler = { request in
@@ -228,22 +312,42 @@ extension ModelTests {
         }
         for status in [409, 503] {
             responseStatus = status
-            var result: Result<ResolutionResult, Error>?
-            client.resolve(event, allow: true) { result = $0 }
-            try await until { result != nil }
-            guard case .failure = result! else { preconditionFailure("Pending readback must preserve a failed decision") }
+            let expectedPosts = posts + 1
+            let decisionControls = try await checkApprovalLayout(selectedWindow, text: [effect])
+            let allow = decisionControls.max { selectedWindow.contentView!.convert($0.bounds, from: $0).midX < selectedWindow.contentView!.convert($1.bounds, from: $1).midX }!
+            clickApprovalControl(selectedWindow, allow)
+            try await until { posts == expectedPosts && approvalTextField(selectedWindow, "\(status)") != nil }
+            try await checkApprovalLayout(selectedWindow, text: [effect, "\(status)"])
             precondition(client.networkOutcomes["req-selected"]?.status == "pending")
         }
         precondition(posts == 2, "Neither refusal replays the decision")
         StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
         try await client.ingestOperatorEventData(preparedEvent)
         precondition(client.unavailableNetworkOutcomes.contains("req-selected"))
-        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", status: "approved"))
+        try await checkApprovalLayout(selectedWindow, text: ["Approval evidence unavailable"])
+
+        // Growing content must remain reachable in the existing window,
+        // with the same request and decision controls outside the scroll area.
+        let longReason = String(repeating: "Inspect only the selected Worker evidence. ", count: 20)
+        selected = prompt("req-selected", reason: longReason)
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", reason: longReason))
+        try await client.ingestOperatorEventData(preparedEvent)
+        StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
+        try await client.ingestOperatorEventData(preparedEvent)
+        try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(longReason)\"", "Approval evidence unavailable", "503"])
+        let scroll = approvalScrollView(selectedWindow)!
+        precondition(scroll.documentView!.bounds.height > scroll.contentView.bounds.height)
+        precondition(hosting.rootView.quotedUntrustedReason == "\"\(longReason)\"")
+        precondition(NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" } === selectedWindow && presentations == 3)
+
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", status: "approved", reason: longReason))
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [helper]]))
         try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Selected request committed"}"#.utf8))
         precondition(hosting.rootView.networkOutcome?.status == "approved")
         precondition(hosting.rootView.displayedEffect == effect)
         precondition(!client.unavailableNetworkOutcomes.contains("req-selected") && posts == 2)
+        try await checkApprovalLayout(selectedWindow, terminal: true, text: ["Approved"])
     }
 
     @MainActor
