@@ -27,6 +27,8 @@ def check(tmp_path, lines):
 @pytest.mark.parametrize("call", [
     'execve("/usr/bin/python3", ["arbitrary-name"], 0xabc) = -1 ENOENT',
     'execve("/home/agent/.venv/bin/python3.12", ["python3.12"], 0xabc) = 0',
+    'execve("/usr/bin/python3.13t", ["literal-argv"], 0xabc) = 0',
+    'execve("/usr/bin/python3.13t", ["literal-argv"], 0xabc) = -1 ENOENT',
     'execveat(AT_FDCWD, "/usr/local/bin/pypy3", ["pypy3"], 0xabc, 0) = 0',
     'execve("/bin/sh", ["sh", "-c", "exec /usr/bin/python3 -c pass"], 0xabc) = 0\n'
     '10 execve("/usr/bin/python3", ["python3", "-c", "pass"], 0xabc) = -1 ENOENT',
@@ -37,9 +39,10 @@ def test_detector_reports_direct_absolute_and_shell_python(tmp_path, call):
     assert len(result["python_attempts"]) == 1
 
 
-def test_detector_uses_retained_shebang_without_trusting_argv(tmp_path):
+@pytest.mark.parametrize("shebang", ['#!/usr/bin/env python3', '#!/usr/bin/python3.13t'])
+def test_detector_uses_retained_shebang_without_trusting_argv(tmp_path, shebang):
     script = tmp_path / "workload"
-    script.write_text('#!/usr/bin/env python3\npass\n')
+    script.write_text(shebang + '\npass\n')
     code, result = check(tmp_path, '10 execve("/workload", ["/bin/true"], 0xabc) = -1 ENOENT')
     assert code == 1 and result["python_attempts"][0]["reason"] == "Python shebang"
     trace = tmp_path / 'exec.log'
@@ -47,6 +50,20 @@ def test_detector_uses_retained_shebang_without_trusting_argv(tmp_path):
     assert not names_only['shebang_lookup'] and not names_only['python_attempts']
     code, result = check(tmp_path, '10 execve("/bin/true", ["python3"], 0xabc) = 0')
     assert code == 0 and not result["python_attempts"]
+
+
+@pytest.mark.parametrize("root_is_file", [False, True])
+def test_detector_refuses_invalid_filesystem_root(tmp_path, root_is_file):
+    (tmp_path / 'script').write_text('#!/usr/bin/python3\npass\n')
+    code, result = check(tmp_path, '10 execve("/script", ["/script"], 0xabc) = 0')
+    assert code == 1 and result['python_attempts'][0]['reason'] == 'Python shebang'
+    filesystem = tmp_path / 'invalid-root'
+    if root_is_file:
+        filesystem.write_text('not a directory\n')
+    result = subprocess.run([sys.executable, str(CHECKER), str(tmp_path / 'exec.log'),
+                             '--filesystem-root', str(filesystem)], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'Execution observation unavailable' in result.stdout and 'filesystem root' in result.stdout
 
 
 @pytest.mark.parametrize("line", [

@@ -17,7 +17,7 @@ from pathlib import Path
 
 STRING = r'"(?:\\.|[^"\\])*"'
 EXECUTION = re.compile(rf'\bexecve(?:\(({STRING})|at\([^,]+,\s*({STRING}))')
-PYTHON = re.compile(r"(?:python(?:w|[0-9.]+)?|pypy[0-9.]*)")
+PYTHON = re.compile(r"(?:python(?:w|[0-9.]+t?)?|pypy[0-9.]*)")
 
 
 def python_name(value: str) -> bool:
@@ -26,6 +26,8 @@ def python_name(value: str) -> bool:
 
 def inspect_trace(trace: Path, filesystem: Path | None) -> dict:
     """Unreadable, empty, truncated or unfinished observations cannot pass."""
+    if filesystem is not None and not filesystem.is_dir():
+        raise ValueError(f"filesystem root is not an available directory: {filesystem}")
     attempts = 0
     violations = []
     incomplete = []

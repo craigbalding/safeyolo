@@ -160,6 +160,7 @@ Python attempt and is required for the two product windows. Exit 2 reports
 unavailable or incomplete observation. For absolute script/shebang lookup,
 provide `--filesystem-root DIRECTORY` with the retained matching filesystem;
 without it, `shebang_lookup` is false and only executable names are checked.
+An explicitly supplied missing path or ordinary file returns exit 2.
 Do not replace an unreadable filename with `argv[0]`.
 
 Reconcile this reached path with the existing [production-use map](../../docs/native-settings.md#operator-entry-responsibilities),
