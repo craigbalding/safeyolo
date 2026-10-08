@@ -91,6 +91,13 @@ def checked(command: list[str], *, timeout: int = 60) -> str:
     return result.stdout.strip()
 
 
+def guest_coord(transport_cli: Path, name: str, operation: str, arguments: dict) -> dict:
+    """Call the native Coord executable supplied by ordinary guest staging."""
+    command = "printf %s " + shlex.quote(json.dumps(arguments)) + " | " + shlex.join(
+        ["/home/agent/.safeyolo/safeyolo-coord", "call", operation])
+    return json.loads(checked(guest_command_args(transport_cli, name, command)))
+
+
 def model_fixture_policy(root: Path, names: tuple[str, str], port: int) -> str:
     """Keep the configured model route; restrict only the two owned origins."""
     import tomlkit
@@ -197,11 +204,6 @@ def run(args: argparse.Namespace) -> None:
             command.extend(["--reason", reason])
         return json.loads(checked(guest_command_args(args.transport_cli, args.helper, shlex.join(command))))
 
-    def coord(name: str, operation: str, arguments: dict) -> dict:
-        command = "printf %s " + shlex.quote(json.dumps(arguments)) + " | " + shlex.join(
-            ["/safeyolo/safeyolo-coord", "call", operation])
-        return json.loads(checked(guest_command_args(args.transport_cli, name, command)))
-
     marker = "821-" + uuid.uuid4().hex
     hits: list[tuple[int, str]] = []
 
@@ -259,7 +261,7 @@ def run(args: argparse.Namespace) -> None:
                     "configured_reasoning_effort": model_config.get("model_reasoning_effort")}
         if args.shared_room:
             for name in names:
-                coord(name, "join_room", {"room_name": args.shared_room})
+                guest_coord(args.transport_cli, name, "join_room", {"room_name": args.shared_room})
         for _ in range(2):
             origin = HTTPServer(("127.0.0.2", 0), Origin)
             origins.append(origin)
@@ -380,10 +382,10 @@ def run(args: argparse.Namespace) -> None:
             # Notify through the existing guest Coord transport using only its
             # permitted projection. No raw audit evidence or Helper prose.
             projected = helper_native("show", identifier)
-            sent = coord(args.helper, "send", {"room_name": args.shared_room,
+            sent = guest_coord(args.transport_cli, args.helper, "send", {"room_name": args.shared_room,
                 "body": json.dumps(projected), "declared_content_type": "text/plain", "notify": [args.worker]})
             sequence = sent["sequence"]
-            received = coord(args.worker, "read_room", {"room_name": args.shared_room,
+            received = guest_coord(args.transport_cli, args.worker, "read_room", {"room_name": args.shared_room,
                 "since_sequence": sequence - 1, "limit": 1})["messages"]
             assert len(received) == 1
             message = received[0]

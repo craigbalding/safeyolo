@@ -149,8 +149,8 @@ the Admin API credential into Helper.
 the installed CLI/proxy/guest source, separately from the checkout containing
 the test driver. `ROOM` is an existing ordinary Coord room in this disposable
 instance, with Helper send/receive and Worker receive permission. Keep it
-separate from a running factory's work room. The guest's staged
-`/safeyolo/safeyolo-coord` supplies its normal Agent API identity.
+separate from a running factory's work room. Both guests use the ordinary staged
+`/home/agent/.safeyolo/safeyolo-coord` binary with their own Agent API identities.
 The real run saves raw Codex events and stderr before parsing them, including
 when the command fails. `--helper-events FILE` selects the events file in
 an existing host-owned directory outside guest writable mounts. The default

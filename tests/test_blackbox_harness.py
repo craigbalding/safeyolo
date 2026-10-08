@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import json
 import os
+import shlex
 import shutil
 import socket
 import ssl
@@ -150,6 +151,40 @@ evidence_reads=[{request_id="old-id"}]
             "127.0.0.2": {"egress": "deny"}, "127.0.0.2:49123": {"egress": "prompt"}}
     assert "evidence_reads" not in selected["agents"]["helper"]
     assert (tmp_path / "policy.toml").read_text() == policy
+
+
+def test_shared_approval_coord_uses_staged_home_binary(tmp_path, monkeypatch):
+    """The shared-room caller works with ordinary home staging alone."""
+    homes = {name: tmp_path / name / "home/agent" for name in ("helper", "worker")}
+    for name, home in homes.items():
+        executable = home / ".safeyolo/safeyolo-coord"
+        executable.parent.mkdir(parents=True)
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            f"print(json.dumps({{'agent': {name!r}, 'operation': sys.argv[1:], 'arguments': json.load(sys.stdin)}}))\n"
+        )
+        executable.chmod(0o755)
+    transport = tmp_path / "selected-safeyolo"
+
+    def guest_shell(cli, name, command):
+        assert cli == transport
+        # Map the guest's absolute home path into this isolated staging tree.
+        # No config-share Coord binary is supplied.
+        guest_executable = shlex.split(command)[4]
+        staged = homes[name] / Path(guest_executable).relative_to("/home/agent")
+        return ["sh", "-c", command.replace(guest_executable, shlex.quote(str(staged)), 1)]
+
+    monkeypatch.setattr(installed_shared_approvals, "guest_command_args", guest_shell)
+    for name, operation, arguments in (
+        ("helper", "join_room", {"room_name": "operator-821"}),
+        ("worker", "join_room", {"room_name": "operator-821"}),
+        ("helper", "send", {"room_name": "operator-821", "body": "quoted ' $(exit 7) `exit 8`", "notify": ["worker"]}),
+        ("worker", "read_room", {"room_name": "operator-821", "since_sequence": 5, "limit": 1}),
+    ):
+        assert installed_shared_approvals.guest_coord(transport, name, operation, arguments) == {
+            "agent": name, "operation": ["call", operation], "arguments": arguments,
+        }
 
 
 def test_helper_journey_waits_for_external_canonical_decision(monkeypatch):
