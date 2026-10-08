@@ -105,6 +105,31 @@ if ! command -v codex >/dev/null 2>&1 || ! codex --version >/dev/null 2>&1; then
             mise use -g --force "$sy_spec" >&2
         fi
     fi
+    sy_selected="${sy_package##*@}"
+    if [ -z "$sy_target" ] && [[ "$sy_selected" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:].-]+)?(\+[[:alnum:].-]+)?$ ]]; then
+        # An exact configured version remains known even without a lookup.
+        sy_target="$sy_selected"
+    fi
+    if [ -z "$sy_target" ]; then
+        # Lookup can fail while a cached or retried install succeeds. Bind the
+        # fallback check to the selected package, including dynamic selections.
+        if [ "$sy_alpine" = 1 ]; then
+            sy_manifest="$HOME/.local/lib/node_modules/$sy_name/package.json"
+        else
+            sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+            sy_manifest="$sy_root/node_modules/$sy_name/package.json"
+        fi
+        sy_target="$(node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (pkg.name !== process.argv[2] || typeof pkg.version !== "string" || !pkg.version)
+                process.exit(1);
+            console.log(pkg.version);' "$sy_manifest" "$sy_name" 2>/dev/null)" || {
+            echo "codex-host-setup: could not read the selected installed package version for $sy_spec;" \
+                 "check the package/native payload and installer diagnostics" >&2
+            exit 1
+        }
+    fi
     # Optional native dependencies can fail without failing npm installation.
     # Check the reached executable before either ordinary or supervised use.
     sy_repaired="$(codex --version 2>/dev/null)" || {
@@ -112,7 +137,7 @@ if ! command -v codex >/dev/null 2>&1 || ! codex --version >/dev/null 2>&1; then
              "check the package/native payload and installer diagnostics" >&2
         exit 1
     }
-    if [ -n "$sy_target" ] && [ "${sy_repaired##* }" != "$sy_target" ]; then
+    if [ "${sy_repaired##* }" != "$sy_target" ]; then
         echo "codex-host-setup: expected Codex $sy_target after installing $sy_spec," \
              "but got $sy_repaired; check the selected package/native payload and PATH" >&2
         exit 1
