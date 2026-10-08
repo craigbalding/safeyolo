@@ -15,6 +15,8 @@ provisioned Codex provider route in this disposable instance's policy.
 The driver checks room scope, real callers, history and restart, and requires
 completed MCP call results for the real session. The selected session's prompt,
 raw output and exit result stay private in a unique directory under ROOT/logs.
+The host parent streams both child pipes into separate private files and flushes
+each write before the command exits.
 Only its completed Coord tool calls are projected for inspection there; inspect
 that projection before sharing it. On success or failure, the
 driver attempts to stop both guests, the proxy and NATS, then checks their
@@ -69,6 +71,36 @@ def save_completed_coord_calls(output: str, room: str, path: Path) -> None:
         json.dump({"room": room, "calls": calls}, saved)
 
 
+def stream_codex_output(command, stdout, stderr, *, timeout=300) -> int:
+    """Keep private files in the parent; agent shell may donate its child descriptors."""
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
+        streams = {process.stdout: stdout, process.stderr: stderr}
+        deadline = time.monotonic() + timeout
+        try:
+            while streams:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                readable, _, _ = select.select(list(streams), [], [], remaining)
+                if not readable:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for stream in readable:
+                    chunk = os.read(stream.fileno(), 65536)
+                    if chunk:
+                        streams[stream].write(chunk)
+                        streams[stream].flush()
+                    else:
+                        del streams[stream]
+                        stream.close()
+            return process.wait(timeout=max(0, deadline - time.monotonic()))
+        finally:
+            # Reap the host command on every exit. A timeout must reach main's
+            # owned guest cleanup even if a guest still holds a pipe open.
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+
 def codex_mcp_session(root: Path, primary: str, room: str, marker: str, cursor: int) -> tuple[str, Path]:
     """Keep the one real session's private output before checking or parsing it."""
     prompt = (f"Use the discovered safeyolo-coord MCP tools only for this task. Join room {room}. "
@@ -85,24 +117,34 @@ def codex_mcp_session(root: Path, primary: str, room: str, marker: str, cursor: 
         saved.write(prompt)
     stdout_path = directory / "stdout.jsonl"
     stderr_path = directory / "stderr.txt"
-    outcome = {"exit_code": None, "timed_out": False}
+    outcome = {"exit_code": None, "timed_out": False, "output_complete": False}
+    command_error = None
     print(f"Private Codex session output: {directory}", flush=True)
     try:
-        with os.fdopen(os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stdout:
-            with os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stderr:
+        with os.fdopen(os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stdout:
+            with os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stderr:
                 script = "cd /workspace && /home/agent/.safeyolo-command exec --json --skip-git-repo-check " + shlex.quote(prompt)
-                result = subprocess.run([str(root / "bin/safeyolo"), "--root", str(root), "agent", "shell",
-                                         primary, "-c", script], stdout=stdout, stderr=stderr, text=True, timeout=300)
-                outcome["exit_code"] = result.returncode
-    except subprocess.TimeoutExpired:
-        outcome["timed_out"] = True
+                outcome["exit_code"] = stream_codex_output(
+                    [str(root / "bin/safeyolo"), "--root", str(root), "agent", "shell", primary, "-c", script],
+                    stdout, stderr)
+                outcome["output_complete"] = True
+        assert outcome["exit_code"] == 0, f"Codex exited {outcome['exit_code']}; inspect private output at {directory}"
+    except (OSError, subprocess.SubprocessError, AssertionError, KeyboardInterrupt, SystemExit) as error:
+        # Re-raise command failures and shutdown unchanged. Later private
+        # diagnostic errors become notes on this first failure.
+        command_error = error
+        outcome["timed_out"] = isinstance(error, subprocess.TimeoutExpired)
         raise
     finally:
-        with os.fdopen(os.open(directory / "exit.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as saved:
-            json.dump(outcome, saved)
-        if stdout_path.exists():
-            save_completed_coord_calls(stdout_path.read_text(errors="replace"), room, directory / "completed-mcp.json")
-    assert result.returncode == 0, f"Codex exited {result.returncode}; inspect private output at {directory}"
+        try:
+            with os.fdopen(os.open(directory / "exit.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as saved:
+                json.dump(outcome, saved)
+            if stdout_path.exists():
+                save_completed_coord_calls(stdout_path.read_text(errors="replace"), room, directory / "completed-mcp.json")
+        except OSError as error:
+            if command_error is None:
+                raise  # Failed diagnostics cannot turn a successful command into a passing witness.
+            command_error.add_note(f"Private session diagnostics at {directory} also failed: {error}")
     return stdout_path.read_text(), directory
 
 
