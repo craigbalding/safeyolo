@@ -22,8 +22,15 @@ fn request() -> Value {
 fn strict_config_preserves_paths_and_existing_constraints() {
     let root = tempfile::tempdir().unwrap();
     let config = configuration(root.path(), true);
-    assert_eq!(config.token, root.path().join("token"));
-    assert_eq!(config.state, root.path().join("state.sqlite3"));
+    let parent = root.path().canonicalize().unwrap();
+    assert_eq!(config.token, parent.join("token"));
+    assert_eq!(config.state, parent.join("state.sqlite3"));
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(root.path(), &alias).unwrap();
+    let through_alias = configuration(&alias, true);
+    assert_eq!(through_alias.token, config.token);
+    assert_eq!(through_alias.state, config.state);
+    assert_eq!(through_alias.id, config.id);
     assert_eq!(
         config.actions.as_ref().unwrap().callback_path(),
         "/safeyolo/mattermost/actions"
@@ -145,6 +152,55 @@ fn sqlite_ledger_reopens_with_wal_and_excludes_a_second_owner() {
     assert!(State::open(&changed).is_err());
     drop(state);
     assert!(State::open(&changed).is_err());
+}
+
+#[test]
+fn state_refuses_a_different_sqlite_connection_while_validated_files_remain_open() {
+    let root = tempfile::tempdir().unwrap();
+    let other_root = tempfile::tempdir().unwrap();
+    let mut state = State::open(&configuration(root.path(), false)).unwrap();
+    let mut other = State::open(&configuration(other_root.path(), false)).unwrap();
+    // Both original SQLite descriptors and validated anchors remain open.
+    // Matching any of them cannot authorize the selected foreign connection.
+    std::mem::swap(&mut state.db, &mut other.db);
+    assert!(
+        state
+            .query("SELECT 1 AS value", [])
+            .unwrap_err()
+            .to_string()
+            .contains("SQLite state descriptor identity changed")
+    );
+    assert!(state.execute("DELETE FROM room_state", []).is_err());
+    assert_eq!(
+        state
+            .db
+            .query_row("SELECT COUNT(*) FROM room_state", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    std::mem::swap(&mut state.db, &mut other.db);
+    assert_eq!(state.coord_cursor("backlog").unwrap(), 0);
+    assert_eq!(other.coord_cursor("backlog").unwrap(), 0);
+}
+
+#[test]
+fn parallel_ledgers_reopen_without_claiming_unrelated_descriptors() {
+    std::thread::scope(|threads| {
+        for _ in 0..4 {
+            threads.spawn(|| {
+                let root = tempfile::tempdir().unwrap();
+                let config = configuration(root.path(), false);
+                for cursor in 0..16 {
+                    let state = State::open(&config).unwrap();
+                    state.set_coord_cursor("backlog", cursor).unwrap();
+                    drop(state);
+                    let state = State::open(&config).unwrap();
+                    assert_eq!(state.coord_cursor("backlog").unwrap(), cursor);
+                }
+            });
+        }
+    });
 }
 
 #[test]
