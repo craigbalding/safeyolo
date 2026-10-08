@@ -10,18 +10,21 @@ normal.
 
 ## Consume and verify
 
-Use `safeyolo.coord.factory_proposals.FactoryProposalWorkflow` and
-`FactoryProposalLedger`:
+Use native `safeyolo-coord completion-notes ROOM SEQUENCE` and
+`safeyolo-coord proposals` through the staged Agent API connection. On the host,
+use `safeyolo --root ROOT coord` with the same command arguments. Both readers
+fetch the exact retained sequence; neither accepts an envelope file or sender override:
 
-1. Supply the complete canonical retained coord envelope. Invalid, malformed,
+1. Inspect the retained sequence with `completion-notes ROOM SEQUENCE`. Invalid, malformed,
    unknown, or non-factory trailers produce no ledger write.
 2. Treat all candidate body fields as untrusted nominations. The required
    verifier checks authoritative coord, GitHub, test, or runtime evidence and
-   returns a bounded `VerifiedFactoryObservation`. Canonical sender, message,
+   supplies bounded checked observation JSON. Canonical sender, message,
    sequence, time, and origin provenance comes only from the envelope.
-3. Supply an authoritative existing-issue checker on every accepted
-   observation. `ExistingIssueCoverage` makes the proposal `covered` and
-   suppresses a duplicate.
+3. Search authoritative existing issues before every observation. Supply an
+   explicit `coverage` result (issue reference or `null`) with the checked
+   observation. Existing coverage makes the record `covered` and suppresses
+   a duplicate; missing coverage is refused.
 4. Use one stable correlation key for the demonstrated problem and a verified
    task key for every evidence item. Two messages from one task are still one
    task. A proposal becomes ready on evidence spanning two task keys or one
@@ -31,23 +34,41 @@ Use `safeyolo.coord.factory_proposals.FactoryProposalWorkflow` and
    intervention materially changes. Canonical send time/message ID prevents an
    older replay from replacing a newer proposal.
 
+For `proposals observe ROOM SEQUENCE --verified FILE`, Relay first checks the
+facts and issue coverage. The JSON file contains exactly `observation` and
+`coverage`. `observation` requires `correlation_key`, `task_key`, `facts`,
+`inference`, `recommendation`, `recommendation_key` and `evidence`. Each evidence
+item has `kind`, `ref` and `task_key`. Optional `impact`, `confidence` and boolean
+`material` describe checked impact; materiality defaults to false. `coverage` is
+an issue reference or `null` after the authoritative search. Use `--candidate INDEX` for a zero-based candidate index. Candidate provenance is derived, never
+supplied in this file. The command does not verify the supplied facts or perform
+the issue lookup; Relay retains those responsibilities.
+
+`proposals list` inspects records, including their revision. `pending` returns
+frozen bodies. Neither operation needs a live Coord connection. Reconcile before
+sending after restart or unknown publication. Truncated retained history leaves
+the publication unknown and returns an error; inspect surviving messages before
+deciding whether to send again. `--since SEQUENCE` must include every potentially
+unrecorded presentation. `--relay NAME` on `presented` and `reconcile` selects
+an explicitly bound Relay identity when its name differs from `relay`.
+
 ## Present without assuming operator authority
 
-`ledger.pending()` returns a body with verified facts, evidence, cost/risk,
+`proposals pending` returns a body with verified facts, evidence, cost/risk,
 Relay inference, Relay recommendation, confidence, and issue coverage in
 separate sections. Relay sends that body unchanged through the existing
-operator-facing coord room as Relay. Only after a successful send, pass the
-returned canonical Relay envelope to `mark_presented`.
+operator-facing coord room as Relay. Only after a successful send, run
+`proposals presented ROOM SEQUENCE` for the actual retained Relay send.
 
 The exact body for a pending revision is frozen. A concurrent confidence,
 inference, impact, wording, or same-task nomination update cannot create a
 different body with the same revision; a material revision invalidates the old
 selection and must be rendered again.
 
-After restart, call `reconcile_presentations` on retained room history before
+After restart, run `proposals reconcile ROOM` on retained room history before
 sending pending proposals. This recognizes an exact prior Relay send if the
 process stopped between coord acceptance and the ledger update. Do not copy the
-proposal into an operator-authored message or call `mark_presented` with an
+proposal into an operator-authored message or record a presentation from an
 operator envelope.
 
 Operator decisions use an exact canonical operator body:
@@ -56,13 +77,17 @@ Operator decisions use an exact canonical operator body:
 FACTORY_PROPOSAL_OUTCOME fingerprint=<factory-fingerprint> status=<accepted|rejected|deferred|covered>
 ```
 
-Recording a decision changes only proposal status. It grants no authority to
+Run `proposals outcome ROOM SEQUENCE` for that retained operator message.
+Forged attribution in an agent body is refused. Recording a decision changes only proposal status. It grants no authority to
 apply the recommendation.
 
 ## Small ledger and statuses
 
-The mode-0600 atomic JSON ledger defaults to
-`~/.safeyolo/data/coord/factory-proposals.json`. It contains only the stable
+The mode-0600 atomic JSON ledger defaults to the host native data directory
+plus `coord/factory-proposals.json`, or guest `$SAFEYOLO_COORD_DATA_DIR` plus
+`factory-proposals.json` (otherwise `~/.safeyolo/data/coord/factory-proposals.json`).
+Use `--ledger FILE` for a disposable ledger. Native state starts fresh; no
+historical conversion is provided. It contains only the stable
 proposal/fingerprint, normalized evidence, first/last seen, status, and the
 last-presented revision. It is bounded and locked across threads/processes;
 corrupt or oversized state fails closed without replacement.

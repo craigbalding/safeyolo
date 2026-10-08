@@ -17,6 +17,17 @@ fn input() -> Result<Value, Error> {
 async fn run() -> Result<(), Error> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
+        [kind, ..] if kind == "completion-notes" || kind == "proposals" => {
+            let args = arguments
+                .iter()
+                .map(|s| {
+                    s.to_str()
+                        .map(str::to_owned)
+                        .ok_or("proposal arguments must be UTF-8")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            safeyolo_proxy::factory_proposals::run_agent(&args).await?;
+        }
         [kind, rest @ ..] if kind == "repo-map" => {
             safeyolo_proxy::repo_map::run(rest)?;
         }

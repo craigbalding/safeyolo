@@ -23,8 +23,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from safeyolo.coord import completion_notes
 from safeyolo.coord.identity import coord_data_dir
+from tests.legacy_coord import completion_notes
 
 LEDGER_VERSION = 1
 MAX_LEDGER_BYTES = 2 * 1024 * 1024

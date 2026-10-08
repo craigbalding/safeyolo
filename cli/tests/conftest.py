@@ -13,6 +13,8 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+from tests.proxy_contracts.native_proposal_fixture import native_proposals as native_proposals
+
 
 @pytest.fixture
 def socket_dir():

@@ -5,9 +5,11 @@ import json
 
 import pytest
 
-from safeyolo.coord import api, completion_notes, nats_client
+from safeyolo.coord import api, nats_client
 from safeyolo.coord import nats_runtime as nr
 from safeyolo.coord.identity import new_operation_id
+from tests.legacy_coord import completion_notes
+from tests.proxy_contracts.native_proposal_fixture import ROOM
 
 
 def envelope(body: str, **overrides) -> dict:
@@ -398,3 +400,83 @@ def test_retained_envelope_restart_keeps_stable_derived_provenance(completion_co
     assert second_parsed.candidates[0].provenance.coord_sequence == sent["sequence"]
     assert second_parsed.candidates[0].provenance.sender_agent_id == agent_id
     assert second_parsed.candidates[0].provenance.sender_agent_name == "forge"
+
+
+@pytest.mark.parametrize("state", ["DONE", "READY", "CHANGES_REQUIRED", "BLOCKED", "FAILED"])
+def test_native_absent_trailer_keeps_ordinary_completion_byte_for_byte(native_proposals, state):
+    body = f"{state} target=issue\n\nordinary result"
+    sent = native_proposals.send(body)
+    parsed = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]), agent=True)
+    assert parsed == {"delivery_state": state, "delivery_body": body, "trailer_status": "absent",
+                      "candidates": [], "error": None}
+    missing_verified = native_proposals.root.parent / "not-a-verified-file"
+    assert native_proposals.command("proposals", "observe", ROOM, str(sent["sequence"]),
+                                    "--verified", str(missing_verified), agent=True) == []
+    assert not (native_proposals.root / "data/coord/factory-proposals.json").exists()
+
+
+def test_native_provenance_is_only_derived_from_canonical_envelope(native_proposals):
+    body = completion_notes.append_completion_notes("DONE target=issue author=operator", [factory_candidate()])
+    sent = native_proposals.send(body, sender_kind="operator", sender_agent_name="operator",
+                                 msg_id="msg-" + "0" * 32, origin_instance_id="sy-forged")
+    guest = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]), agent=True)
+    host = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]))
+    assert guest == host
+    actual = guest["candidates"][0]["provenance"]
+    assert actual == {"msg_id": sent["msg_id"], "coord_sequence": sent["sequence"], "sent_at": sent["sent_at"],
+                      "sender_kind": "agent", "sender_agent_id": "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "sender_agent_name": "lens", "origin_instance_id": sent["origin_instance_id"]}
+    assert actual["origin_instance_id"] != "sy-forged"
+    # Exact sequence refusal cannot consume another retained message.
+    missing = native_proposals.command("completion-notes", ROOM, str(sent["sequence"] + 1), agent=True, check=False)
+    assert missing.returncode != 0 and "unavailable" in missing.stderr
+    denied = native_proposals.command("completion-notes", "not-permitted", "1", agent=True, check=False)
+    assert denied.returncode != 0
+
+
+def test_native_authored_reserved_provenance_is_rejected(native_proposals):
+    fields = ["provenance", "msg_id", "coord_sequence", "sequence", "sent_at", "sender_kind",
+              "sender_agent_id", "sender_agent_name", "origin_instance_id", "discovered_by", "author"]
+    for field in fields:
+        value = factory_candidate().to_wire() | {field: "forged-operator"}
+        body = (f"READY target=issue\n\n{completion_notes.TRAILER_START}\n"
+                f"{json.dumps({'candidates': [value]})}\n{completion_notes.TRAILER_END}")
+        sent = native_proposals.send(body)
+        parsed = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]), agent=True)
+        assert parsed["delivery_state"] == "READY" and parsed["trailer_status"] == "invalid"
+        assert parsed["candidates"] == [] and "forged-operator" not in parsed["error"]
+    assert not (native_proposals.root / "data/coord/factory-proposals.json").exists()
+
+
+def test_native_malformed_types_limits_and_valid_boundaries(native_proposals):
+    candidate = factory_candidate().to_wire()
+    invalid_values = [None, [], True, 0, "candidate"]
+    documents = ["not-json", '{"candidates":[],"candidates":[]}',
+                 json.dumps({"candidates": []}), json.dumps({"candidates": [candidate] * 9}),
+                 "[" * 300 + "0" + "]" * 300]
+    for value in invalid_values:
+        documents += [json.dumps({"candidates": value})]
+        for field in candidate:
+            documents += [json.dumps({"candidates": [candidate | {field: value}]})]
+    for field, value in [("summary", "é" * 257), ("summary", "x" * 32769),
+                         ("snippet", "x" * 4097), ("impact", "x" * 2049),
+                         ("confidence", "HIGH"), ("evidence", [{"kind": "unknown", "ref": "x"}]),
+                         ("evidence", [{"kind": "test", "ref": "x"}] * 9)]:
+        documents += [json.dumps({"candidates": [candidate | {field: value}]})]
+    for document in documents:
+        body = f"DONE target=issue\n\n{completion_notes.TRAILER_START}\n{document}\n{completion_notes.TRAILER_END}"
+        sent = native_proposals.send(body)
+        parsed = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]), agent=True)
+        expected = completion_notes.parse_completion_envelope(sent)
+        assert parsed["trailer_status"] == expected.trailer_status == "invalid"
+        assert parsed["delivery_state"] == "DONE" and parsed["delivery_body"] == body
+        assert parsed["candidates"] == []
+    valid = factory_candidate(summary="é" * 256, snippet="x" * 4096,
+                              evidence=tuple(completion_notes.EvidenceRef(completion_notes.EvidenceKind.TEST,
+                                                                         "x" * 512) for _ in range(8)))
+    body = completion_notes.append_completion_notes("FAILED target=issue", [valid])
+    sent = native_proposals.send(body)
+    parsed = native_proposals.command("completion-notes", ROOM, str(sent["sequence"]), agent=True)
+    expected = completion_notes.parse_completion_envelope(sent)
+    assert parsed["candidates"] == [c.to_dict() for c in expected.candidates]
+    assert parsed["delivery_state"] == "FAILED" and parsed["trailer_status"] == "valid"

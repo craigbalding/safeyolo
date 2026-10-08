@@ -277,6 +277,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::operator_commands::HELP);
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
+            println!("{}", safeyolo_proxy::factory_proposals::HELP);
             println!("{}", safeyolo_proxy::dispatch::request::HELP);
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);

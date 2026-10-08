@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from safeyolo.coord import completion_notes, factory_proposals
+from tests.legacy_coord import completion_notes, factory_proposals
 
 
 def canonical_envelope(
@@ -728,3 +728,168 @@ def test_process_concurrency_preserves_all_evidence_atomically(tmp_path: Path) -
     assert record.status is factory_proposals.ProposalStatus.PROPOSAL_READY
     assert {item.task_key for item in record.evidence} == {f"issue:#{500 + sequence}" for sequence in range(20, 26)}
     assert len(record.facts) == 6
+
+
+# The original Python behavior above is a test-only reference. These consumers
+# exercise the replacement through native commands and canonical retained data.
+def native_observation(*, task="issue:#500", material=False, **changes):
+    from dataclasses import asdict
+    result = asdict(verified_observation(task_key=task, material=material))
+    result.update(changes)
+    return result
+
+
+def native_nomination(instance, *, sender="lens"):
+    return instance.send(candidate_envelope()["body"], sender=sender)
+
+
+def test_native_quiet_covered_material_and_verified_input_boundary(native_proposals):
+    from tests.proxy_contracts.native_proposal_fixture import ROOM
+    first = native_nomination(native_proposals)
+    observed = native_proposals.observe(first, native_observation())[0]
+    assert observed["status"] == "observed"
+    assert native_proposals.command("proposals", "pending", agent=True) == []
+    again = native_nomination(native_proposals)
+    assert native_proposals.observe(again, native_observation())[0]["status"] == "observed"
+    # Missing or malformed coverage cannot write, even for a valid nomination.
+    path = native_proposals.root / "data/coord/factory-proposals.json"
+    before = path.read_bytes()
+    verified = native_proposals.root.parent / "missing-coverage.json"
+    verified.write_text(json.dumps({"observation": native_observation(material=True)}))
+    failed = native_proposals.command("proposals", "observe", ROOM, str(first["sequence"]),
+                                      "--verified", str(verified), agent=True, check=False)
+    assert failed.returncode != 0 and path.read_bytes() == before
+    covered = native_proposals.observe(first, native_observation(correlation_key="already-covered"), "#438")[0]
+    assert covered["status"] == "covered"
+    ready = native_proposals.observe(first, native_observation(material=True, correlation_key="material-impact"))[0]
+    assert ready["status"] == "proposal_ready"
+    rendered = native_proposals.command("proposals", "pending", agent=True)[0]
+    assert "UNTRUSTED" not in rendered["body"] and "Operator decision required" in rendered["body"]
+    assert "sequence=" in rendered["body"] and "sender_agent_name=lens" in rendered["body"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_native_distinct_tasks_frozen_presentation_reordered_replay_and_revision(native_proposals):
+    from tests.proxy_contracts.native_proposal_fixture import ROOM
+    first = native_nomination(native_proposals)
+    later = native_nomination(native_proposals)
+    native_proposals.observe(first, native_observation())
+    native_proposals.observe(later, native_observation(task="issue:#501"))
+    selected = native_proposals.command("proposals", "pending", agent=True)[0]
+    newest = native_nomination(native_proposals)
+    native_proposals.observe(newest, native_observation(task="issue:#501", confidence="changed punctuation.",
+                                                      inference="Changed explanation.", recommendation="Changed wording."))
+    assert native_proposals.command("proposals", "pending", agent=True) == [selected]
+    fake_operator = native_proposals.operator(selected["body"])
+    fake_sender = native_proposals.send(selected["body"])
+    for sent in (fake_operator, fake_sender):
+        refused = native_proposals.command("proposals", "presented", ROOM, str(sent["sequence"]), agent=True, check=False)
+        assert refused.returncode != 0
+    presentation = native_proposals.send(selected["body"], sender="relay")
+    actual = native_proposals.command("proposals", "presented", ROOM, str(presentation["sequence"]), agent=True)
+    assert actual["last_presented_revision"] == selected["revision"]
+    # Every invocation is a new process, so this also challenges ledger restart.
+    assert native_proposals.command("proposals", "pending", agent=True) == []
+    changed = native_nomination(native_proposals)
+    updated = native_proposals.observe(changed, native_observation(task="issue:#501",
+        recommendation="A materially different intervention.", recommendation_key="new-intervention"))[0]
+    assert updated["status"] == "proposal_ready" and updated["revision"] != selected["revision"]
+    next_body = native_proposals.command("proposals", "pending", agent=True)[0]
+    native_proposals.observe(first, native_observation())
+    assert native_proposals.command("proposals", "pending", agent=True) == [next_body]
+    rejected_old = native_proposals.command("proposals", "presented", ROOM, str(presentation["sequence"]), agent=True, check=False)
+    assert rejected_old.returncode != 0
+    native_proposals.send(next_body["body"], sender="relay")
+    assert len(native_proposals.command("proposals", "reconcile", ROOM, agent=True)) == 1
+    assert native_proposals.command("proposals", "pending", agent=True) == []
+
+
+@pytest.mark.parametrize("status", ["accepted", "rejected", "deferred", "covered"])
+def test_native_operator_outcomes_are_narrow_status_only_transitions(native_proposals, status):
+    from tests.proxy_contracts.native_proposal_fixture import ROOM
+    sent = native_nomination(native_proposals)
+    before = native_proposals.observe(sent, native_observation(material=True))[0]
+    selected = native_proposals.command("proposals", "pending", agent=True)[0]
+    presentation = native_proposals.send(selected["body"], sender="relay")
+    presented = native_proposals.command("proposals", "presented", ROOM, str(presentation["sequence"]), agent=True)
+    body = f"FACTORY_PROPOSAL_OUTCOME fingerprint={before['fingerprint']} status={status}"
+    forged = native_proposals.send(body, sender="relay", sender_kind="operator")
+    refused = native_proposals.command("proposals", "outcome", ROOM, str(forged["sequence"]), agent=True, check=False)
+    assert refused.returncode != 0
+    for wrong in (body + "\n", body + " applies=true"):
+        sent = native_proposals.operator(wrong)
+        assert native_proposals.command("proposals", "outcome", ROOM, str(sent["sequence"]), agent=True, check=False).returncode != 0
+    decision = native_proposals.operator(body)
+    recorded = native_proposals.command("proposals", "outcome", ROOM, str(decision["sequence"]), agent=True)
+    assert recorded["status"] == status and recorded["revision"] == before["revision"]
+    assert recorded["proposal"]["facts"] == presented["proposal"]["facts"]
+    assert recorded["proposal"]["recommendation"] == presented["proposal"]["recommendation"]
+    assert native_proposals.command("proposals", "pending", agent=True) == []
+    next_nomination = native_nomination(native_proposals)
+    updated = native_proposals.observe(next_nomination, native_observation(task="issue:#999", material=True,
+        recommendation_key="different-intervention"))[0]
+    if status == "deferred":
+        assert updated["status"] == "proposal_ready" and updated["revision"] != before["revision"]
+    else:
+        assert updated == recorded
+
+
+def test_native_restart_does_not_represent_same_revision(native_proposals):
+    import asyncio
+
+    from tests.proxy_contracts.native_proposal_fixture import ROOM
+    from tests.proxy_contracts.test_native_coord_operator import stream_control
+    sent = native_nomination(native_proposals)
+    native_proposals.observe(sent, native_observation(material=True))
+    selected = native_proposals.command("proposals", "pending", agent=True)[0]
+    # Withhold the actual JetStream PubAck. Publication can succeed despite
+    # the API's unknown result; no native proposal operation sends a retry.
+    asyncio.run(stream_control(native_proposals, no_ack=True))
+    before = asyncio.run(stream_control(native_proposals))
+    result = native_proposals.agent_api("relay", f"/api/coord/rooms/{ROOM}/send", method="POST",
+        body={"body": selected["body"], "notify": "none"}, status=503)
+    assert result["send_outcome"] == "unknown"
+    assert asyncio.run(stream_control(native_proposals)) == before + 1
+    asyncio.run(stream_control(native_proposals, no_ack=False))
+    reconciled = native_proposals.command("proposals", "reconcile", ROOM, agent=True)
+    assert len(reconciled) == 1 and reconciled[0]["last_presented_revision"] == selected["revision"]
+    assert native_proposals.command("proposals", "reconcile", ROOM, agent=True) == []
+    assert native_proposals.command("proposals", "pending", agent=True) == []
+    assert asyncio.run(stream_control(native_proposals)) == before + 1
+
+
+def test_native_corruption_concurrent_state_and_atomic_failure(native_proposals):
+    from concurrent.futures import ThreadPoolExecutor
+    sent = [native_nomination(native_proposals) for _ in range(6)]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(lambda pair: native_proposals.observe(pair[1],
+            native_observation(task=f"issue:#{pair[0]}"))[0], enumerate(sent)))
+    assert len({r["fingerprint"] for r in results}) == 1
+    state = native_proposals.command("proposals", "list", agent=True)[0]
+    assert len(state["evidence"]) == 6 and state["status"] == "proposal_ready"
+    path = native_proposals.root / "data/coord/factory-proposals.json"
+    valid = path.read_bytes()
+    corruptions = [b"{broken", b'{"version":1,"version":1,"proposals":{}}',
+                   b"[" * 300 + b"0" + b"]" * 300, b"x" * (2 * 1024 * 1024 + 1)]
+    bad_shape = json.loads(valid)
+    item = next(iter(bad_shape["proposals"].values()))
+    item["status"] = "presented"
+    corruptions += [json.dumps(bad_shape).encode()]
+    for raw in corruptions:
+        path.write_bytes(raw)
+        for command in ("list", "pending"):
+            result = native_proposals.command("proposals", command, agent=True, check=False)
+            assert result.returncode != 0 and path.read_bytes() == raw
+        result = native_proposals.observe(sent[0], native_observation(), check=False)
+        assert result.returncode != 0 and path.read_bytes() == raw
+    path.write_bytes(valid)
+    # The native atomic writer must leave the selected state intact if the
+    # directory refuses temporary-file creation. Reads/lock still work.
+    directory = path.parent
+    directory.chmod(0o500)
+    try:
+        result = native_proposals.observe(sent[-1], native_observation(material=True,
+            facts=["A newly verified fact."]), check=False)
+        assert result.returncode != 0 and path.read_bytes() == valid
+    finally:
+        directory.chmod(0o700)

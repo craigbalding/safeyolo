@@ -53,8 +53,8 @@ must_contain = "defaults to {memory_mb} MiB"
 
 [[assertion]]
 name = "coord-completion-trailer-size-kib"
-source = "cli/src/safeyolo/coord/completion_notes.py"
-pattern = 'MAX_TRAILER_BYTES = (?P<size_kib>\d+) \* 1024'
+source = "proxy/src/completion_notes.rs"
+pattern = 'const MAX_TRAILER_BYTES: usize = (?P<size_kib>\d+) \* 1024'
 docs = [
     "docs/coord-completion-notes.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
@@ -70,36 +70,36 @@ must_contain = "{size_kib} KiB"
 
 [[assertion]]
 name = "factory-proposal-ledger-size-mib"
-source = "cli/src/safeyolo/coord/factory_proposals.py"
-pattern = 'MAX_LEDGER_BYTES = (?P<size_mib>\d+) \* 1024 \* 1024'
+source = "proxy/src/factory_proposals.rs"
+pattern = 'const MAX_LEDGER_BYTES: usize = (?P<size_mib>\d+) \* 1024 \* 1024'
 docs = ["docs/factory-proposals.md"]
 must_contain = "{size_mib} MiB"
 
 [[assertion]]
 name = "factory-proposal-ledger-entry-count"
-source = "cli/src/safeyolo/coord/factory_proposals.py"
-pattern = 'MAX_PROPOSALS = (?P<count>\d+)'
+source = "proxy/src/factory_proposals.rs"
+pattern = 'const MAX_PROPOSALS: usize = (?P<count>\d+)'
 docs = ["docs/factory-proposals.md"]
 must_contain = "{count} proposals"
 
 [[assertion]]
 name = "factory-proposal-evidence-count"
-source = "cli/src/safeyolo/coord/factory_proposals.py"
-pattern = 'MAX_EVIDENCE = (?P<count>\d+)'
+source = "proxy/src/factory_proposals.rs"
+pattern = 'const MAX_EVIDENCE: usize = (?P<count>\d+)'
 docs = ["docs/factory-proposals.md"]
 must_contain = "{count} evidence"
 
 [[assertion]]
 name = "factory-proposal-fact-count"
-source = "cli/src/safeyolo/coord/factory_proposals.py"
-pattern = 'MAX_FACTS = (?P<count>\d+)'
+source = "proxy/src/factory_proposals.rs"
+pattern = 'const MAX_FACTS: usize = (?P<count>\d+)'
 docs = ["docs/factory-proposals.md"]
 must_contain = "{count} facts"
 
 [[assertion]]
 name = "factory-proposal-ledger-name"
-source = "cli/src/safeyolo/coord/factory_proposals.py"
-pattern = 'return coord_data_dir\(\) / "(?P<name>factory-proposals\.json)"'
+source = "proxy/src/factory_proposals.rs"
+pattern = 'const LEDGER_NAME: &str = "(?P<name>factory-proposals\.json)"'
 docs = [
     "docs/factory-proposals.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/factory-proposals.md",
@@ -108,8 +108,8 @@ must_contain = "{name}"
 
 [[assertion]]
 name = "coord-completion-candidate-count"
-source = "cli/src/safeyolo/coord/completion_notes.py"
-pattern = 'MAX_CANDIDATES = (?P<count>\d+)'
+source = "proxy/src/completion_notes.rs"
+pattern = 'const MAX_CANDIDATES: usize = (?P<count>\d+)'
 docs = [
     "docs/coord-completion-notes.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
@@ -118,8 +118,8 @@ must_contain = "{count} candidates"
 
 [[assertion]]
 name = "coord-completion-evidence-count"
-source = "cli/src/safeyolo/coord/completion_notes.py"
-pattern = 'MAX_EVIDENCE = (?P<count>\d+)'
+source = "proxy/src/completion_notes.rs"
+pattern = 'const MAX_EVIDENCE: usize = (?P<count>\d+)'
 docs = [
     "docs/coord-completion-notes.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
@@ -128,8 +128,8 @@ must_contain = "{count} evidence"
 
 [[assertion]]
 name = "coord-completion-trailer-marker"
-source = "cli/src/safeyolo/coord/completion_notes.py"
-pattern = 'TRAILER_START = "(?P<marker><<<SAFEYOLO_COMPLETION_NOTES_V\d+>>>)"'
+source = "proxy/src/completion_notes.rs"
+pattern = 'pub const TRAILER_START: &str = "(?P<marker><<<SAFEYOLO_COMPLETION_NOTES_V\d+>>>)"'
 docs = [
     "docs/coord-completion-notes.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",

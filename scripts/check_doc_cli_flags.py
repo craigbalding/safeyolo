@@ -69,6 +69,7 @@ def _native_cli_surface() -> dict[str, set[str]]:
         "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
         "proxy/src/coord_rooms.rs", "proxy/src/coord_operator.rs", "proxy/src/mattermost.rs",
         "proxy/src/dispatch.rs", "proxy/src/dispatch/request.rs",
+        "proxy/src/factory_proposals/commands.rs",
     ):
         source = (REPO_ROOT / relative).read_text()
         for literal in re.findall(r'"(safeyolo (?:[^"\\]|\\.)*)"', source):

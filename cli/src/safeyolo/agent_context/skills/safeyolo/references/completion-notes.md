@@ -46,9 +46,11 @@ invalidate the trailer if authored.
 
 ## Trusted coordinator ingestion
 
-Pass the complete canonical envelope returned by `read_room` to
-`safeyolo.coord.completion_notes.parse_completion_envelope`. For accepted
-candidates, it attaches provenance from the canonical envelope: message ID,
+On the host, run `safeyolo --root ROOT coord completion-notes ROOM SEQUENCE`.
+In a guest, run `safeyolo-coord completion-notes ROOM SEQUENCE` through the
+ordinary scoped Agent API connection. Each command reads exactly that retained
+sequence using the existing Coord reader. No envelope file or authored sender
+identity is accepted. For accepted candidates, the parser attaches canonical provenance: message ID,
 coord sequence, send time, sender kind and agent identity, and origin instance.
 Do not infer these values from message-body text.
 
@@ -65,8 +67,9 @@ private or customer data, chain-of-thought, unnecessary transcript, and
 unredacted sensitive snippets. Prefer durable authoritative evidence refs over
 copied material.
 
-That parser and its shared Factory proposal consumers remain source libraries
-owned by #818's remaining native replacement work. Native Dispatch generation
-calls neither library; give the generator only Relay's final public manifest.
+Use the native [Factory proposal operations](factory-proposals.md) for verified
+correlation and operator decisions. The replaced Python libraries remain only
+in test fixtures. Native Dispatch generation consumes neither private
+nominations nor the proposal ledger; give the generator only Relay's final public manifest.
 Do not treat a body-authored provenance field or unvalidated candidate as a
 substitute for canonical ingestion.
