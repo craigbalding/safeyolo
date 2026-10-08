@@ -662,7 +662,11 @@ impl Manifest {
 fn markdown(text: &str) -> String {
     let mut result = String::new();
     for c in text.chars() {
-        if "\\`*_[]<>#|".contains(c) {
+        if c == '&' {
+            result.push_str("&amp;");
+            continue;
+        }
+        if "\\`*_[]<>#|~".contains(c) {
             result.push('\\');
         }
         result.push(c);

@@ -2,19 +2,19 @@
   "version": 1,
   "period": {"kind": "daily", "start": "2026-08-29", "end": "2026-08-29"},
   "definitions": {
-    "liquid": "Definition {{ 17 | plus: 4 }} {% endraw %} stays literal."
+    "liquid": "Definition {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~ stays literal."
   },
   "sections": [
     {
       "kind": "shipped",
       "items": [
         {
-          "theme": "Theme {{ 17 | plus: 4 }} {% endraw %}",
-          "title": "Title {{ 17 | plus: 4 }} {% endraw %}",
-          "body": "Body liquid {{ 17 | plus: 4 }} {% endraw %} and [a](a) stay literal. Whitespace {{- 17 | plus: 4 -}} stays too.",
+          "theme": "Theme {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~",
+          "title": "Title {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~",
+          "body": "Body liquid {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~ and [a](a) stay literal. Whitespace {{- 17 | plus: 4 -}} stays too. Probe &amp; end. Probe ~~gone~~ end.",
           "attribution": "forge_implementation_discovery",
           "evidence": [
-            {"kind": "issue", "label": "Evidence {{ 17 | plus: 4 }} {% endraw %}", "url": "https://github.com/craigbalding/safeyolo/issues/437"}
+            {"kind": "issue", "label": "Evidence {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~", "url": "https://github.com/craigbalding/safeyolo/issues/437"}
           ]
         }
       ]
@@ -28,9 +28,9 @@
           "attribution": "lens_review_finding",
           "snippet": {
             "language": "text",
-            "code": "Snippet {{ 17 | plus: 4 }} {% endraw %}\n{{ '{{' }}\n{% include missing %}\n```\nafter [example](missing)"
+            "code": "Snippet {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~\n{{ '{{' }}\n{% include missing %}\n```\nafter [example](missing)"
           },
-          "lesson": "Lesson {{ 17 | plus: 4 }} {% endraw %} stays literal.",
+          "lesson": "Lesson {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~ stays literal.",
           "evidence": [{"kind": "issue", "label": "Issue #437", "url": "https://github.com/craigbalding/safeyolo/issues/437"}]
         }
       ]
@@ -39,11 +39,11 @@
   "topic_updates": [
     {
       "slug": "literal-copy",
-      "title": "Topic {{ 17 | plus: 4 }} {% endraw %}",
+      "title": "Topic {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~",
       "state_key": "literal-v1",
-      "summary": "Summary liquid {{ 17 | plus: 4 }} {% endraw %} stays literal.",
-      "current_state": ["State {{ 17 | plus: 4 }} {% endraw %} stays literal."],
-      "evidence": [{"kind": "issue", "label": "Topic evidence {{ 17 | plus: 4 }} {% endraw %}", "url": "https://github.com/craigbalding/safeyolo/issues/437"}]
+      "summary": "Summary liquid {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~ stays literal.",
+      "current_state": ["State {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~ stays literal."],
+      "evidence": [{"kind": "issue", "label": "Topic evidence {{ 17 | plus: 4 }} {% endraw %} &amp; ~~gone~~", "url": "https://github.com/craigbalding/safeyolo/issues/437"}]
     }
   ]
 }

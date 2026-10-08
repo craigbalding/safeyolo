@@ -162,7 +162,7 @@ fn liquid_copy_generates_and_checks_without_restricting_authored_examples() {
     ]) {
         for label in labels {
             let expected = format!(
-                "{label} {}",
+                "{label} {} &amp;amp; \\~\\~gone\\~\\~",
                 r"{{ '{{' }} 17 \| plus: 4 }} {{ '{%' }} endraw %}"
             );
             assert!(file.content.contains(&expected));
@@ -178,6 +178,7 @@ fn liquid_copy_generates_and_checks_without_restricting_authored_examples() {
             .content
             .contains("Snippet {{ '{{' }} 17 | plus: 4 }}")
     );
+    assert!(generated[0].content.contains(" &amp; ~~gone~~\n"));
     assert!(generated[0].content.contains("after [example](missing)"));
 }
 

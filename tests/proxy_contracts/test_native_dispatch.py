@@ -191,9 +191,10 @@ def test_installed_inert_generation_and_site_consumers(dispatch_instance, tmp_pa
     ):
         page = (root / relative).read_text()
         for label in labels:
-            assert label + " {{ '{{' }} 17 \\| plus: 4 }} {{ '{%' }} endraw %}" in page
+            assert label + " {{ '{{' }} 17 \\| plus: 4 }} {{ '{%' }} endraw %} &amp;amp; \\~\\~gone\\~\\~" in page
     dispatch = (root / "dispatch/2026-08-29.md").read_text()
     assert "Snippet {{ '{{' }} 17 | plus: 4 }}" in dispatch
+    assert " &amp; ~~gone~~\n" in dispatch
     assert "after [example](missing)" in dispatch
     original = "---\nlayout: default\npermalink: /\n---\n"
     index = root / "index.md"
