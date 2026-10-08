@@ -1,10 +1,10 @@
 //! One private adapter delivery ledger, never canonical Coord authority.
 use super::config::{Config, coord_id};
 use crate::Error;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, ffi, params};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    ffi::CStr,
     fs::{self, File, OpenOptions},
     io::Read,
     os::{
@@ -12,7 +12,6 @@ use std::{
         unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
-    sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use zeroize::Zeroizing;
@@ -61,24 +60,6 @@ fn identity(metadata: &fs::Metadata) -> (u64, u64) {
     (metadata.dev(), metadata.ino())
 }
 
-// SQLite's macOS VFS needs the real path for adjacent WAL sidecars. Validate
-// its newly opened descriptor before any schema/state write on both platforms;
-// retain that one connection and the separate lease for the entire invocation.
-fn descriptors() -> Result<BTreeSet<i32>, Error> {
-    let root = if cfg!(target_os = "macos") {
-        "/dev/fd"
-    } else {
-        "/proc/self/fd"
-    };
-    let numbers: BTreeSet<i32> = fs::read_dir(root)?
-        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
-        .collect();
-    // The enumeration's own directory fd is closed before this check.
-    Ok(numbers
-        .into_iter()
-        .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } >= 0)
-        .collect())
-}
 fn fd_identity(fd: i32) -> Option<(u64, u64)> {
     let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut metadata) } != 0
@@ -92,7 +73,65 @@ fn fd_identity(fd: i32) -> Option<(u64, u64)> {
     let device = metadata.st_dev;
     Some((device, metadata.st_ino))
 }
-static SQLITE_OPEN: Mutex<()> = Mutex::new(());
+
+// Prefix of unixFile in the existing bundled SQLite 3.53.2 (public domain),
+// sqlite3.c in libsqlite3-sys 0.38.2. Keep this prefix aligned with that source
+// when updating SQLite. FILE_POINTER names this connection's actual writer;
+// process-wide descriptor snapshots cannot identify it across FD reuse.
+#[repr(C)]
+struct SqliteUnixFile {
+    methods: *const ffi::sqlite3_io_methods,
+    vfs: *mut ffi::sqlite3_vfs,
+    inode: *mut libc::c_void,
+    descriptor: libc::c_int,
+}
+
+fn sqlite_file_identity(db: &Connection) -> Result<(u64, u64), Error> {
+    let mut vfs: *mut ffi::sqlite3_vfs = std::ptr::null_mut();
+    let mut file: *mut ffi::sqlite3_file = std::ptr::null_mut();
+    // Both outputs belong to this live connection; SQLite defines their types
+    // for these file controls. Neither pointer is retained beyond this call.
+    let (vfs_status, file_status) = unsafe {
+        (
+            ffi::sqlite3_file_control(
+                db.handle(),
+                c"main".as_ptr(),
+                ffi::SQLITE_FCNTL_VFS_POINTER,
+                std::ptr::from_mut(&mut vfs).cast(),
+            ),
+            ffi::sqlite3_file_control(
+                db.handle(),
+                c"main".as_ptr(),
+                ffi::SQLITE_FCNTL_FILE_POINTER,
+                std::ptr::from_mut(&mut file).cast(),
+            ),
+        )
+    };
+    if vfs_status != ffi::SQLITE_OK
+        || file_status != ffi::SQLITE_OK
+        || vfs.is_null()
+        || file.is_null()
+    {
+        return Err("SQLite state file identity is unavailable".into());
+    }
+    // Production uses bundled SQLite's Unix VFS on Linux and macOS. Check its
+    // name and allocation size before reading the adapted unixFile prefix.
+    let layout_matches = unsafe {
+        !(*vfs).zName.is_null()
+            && CStr::from_ptr((*vfs).zName).to_bytes().starts_with(b"unix")
+            && (*vfs).szOsFile as usize >= std::mem::size_of::<SqliteUnixFile>()
+    };
+    if !layout_matches {
+        return Err("SQLite state file layout is unavailable".into());
+    }
+    // The bundled Unix VFS allocates a unixFile; the prefix contains only
+    // native pointers and an int. Confirm the VFS association before fstat.
+    let writer = unsafe { &*file.cast::<SqliteUnixFile>() };
+    if writer.vfs != vfs {
+        return Err("SQLite state file layout changed".into());
+    }
+    fd_identity(writer.descriptor).ok_or_else(|| "SQLite state file identity is unavailable".into())
+}
 
 pub(super) struct State {
     pub db: Connection,
@@ -101,7 +140,6 @@ pub(super) struct State {
     parent: File,
     anchor: File,
     lease: File,
-    sqlite_fd: i32,
 }
 impl State {
     pub fn open(config: &Config) -> Result<Self, Error> {
@@ -123,7 +161,6 @@ impl State {
             return Err("Mattermost state parent must be owned and not writable by others".into());
         }
         let anchor = private_file(path, true)?;
-        let anchored_identity = identity(&anchor.metadata()?);
         let mut lease_name = path.as_os_str().to_owned();
         lease_name.push(".lock");
         let lease_path = PathBuf::from(lease_name);
@@ -131,30 +168,16 @@ impl State {
         if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err("another Mattermost adapter owns this state lease".into());
         }
-        let db = {
-            let _guard = SQLITE_OPEN
-                .lock()
-                .map_err(|_| "SQLite state initialization unavailable")?;
-            let previous = descriptors()?;
-            let connection = Connection::open_with_flags(
-                path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-                    | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-            )?;
-            let opened: Vec<_> = descriptors()?
-                .difference(&previous)
-                .filter(|fd| fd_identity(**fd) == Some(anchored_identity))
-                .copied()
-                .collect();
-            if opened.len() != 1 {
-                return Err("SQLite did not open the validated Mattermost state file".into());
-            }
-            (connection, opened[0])
-        };
+        // The native VFS needs the real path for adjacent WAL sidecars. Keep
+        // this connection and validate its writer before any schema/state write.
+        let db = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
         let mut state = Self {
-            db: db.0,
-            sqlite_fd: db.1,
+            db,
             path: path.clone(),
             lease_path,
             parent,
@@ -258,7 +281,7 @@ impl State {
                 return Err("Mattermost state/lease identity or permissions changed".into());
             }
         }
-        if fd_identity(self.sqlite_fd) != Some(identity(&self.anchor.metadata()?)) {
+        if sqlite_file_identity(&self.db)? != identity(&self.anchor.metadata()?) {
             return Err("SQLite state descriptor identity changed".into());
         }
         Ok(())

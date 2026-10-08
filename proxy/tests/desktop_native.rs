@@ -8,13 +8,17 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixStream},
+    net::{TcpListener, TcpStream, UnixListener, UnixStream},
 };
 
 const TOKEN: &str = "desktop-native-token";
 const ID: &str = "ag-11111111111111111111111111111111";
 
-fn fixture(root: &Path, guest_port: u16) {
+#[path = "support/owned_run.rs"]
+mod owned_run;
+use owned_run::OwnedRun;
+
+fn fixture(root: &Path) {
     fs::write(
         root.join("policy.toml"),
         format!("[agents.alice]\nagent_id = \"{ID}\"\n"),
@@ -35,9 +39,11 @@ fn fixture(root: &Path, guest_port: u16) {
 case "$3" in
   state)
     if [ -e "$SAFEYOLO_CONFIG_DIR/agent-stopped" ]; then exit 1; fi
-    printf '{"status":"running"}\n'
+    [ "$4" = "$FAKE_RUN_ID" ] || exit 2
+    printf '{"id":"%s","status":"running"}\n' "${FAKE_STATE_ID:-$FAKE_RUN_ID}"
     ;;
   exec)
+    [ "$8" = "$FAKE_RUN_ID" ] || exit 2
     case "$*" in
       *"guest-desktop status"*) [ -e "$SAFEYOLO_CONFIG_DIR/desktop-ready" ];;
       *"guest-desktop start"*)
@@ -52,11 +58,12 @@ case "$3" in
     esac
     ;;
   port-forward)
+    [ "$6" = "$FAKE_RUN_ID" ] && [ "$7" = 6080 ] || exit 2
     if [ -e "$SAFEYOLO_CONFIG_DIR/guest-port-closed" ]; then
       echo "connection was refused" >&2
       exit 1
     fi
-    /usr/bin/socat "UNIX-CONNECT:$5" "TCP:127.0.0.1:$FAKE_GUEST_PORT" </dev/null >/dev/null 2>/dev/null &
+    /usr/bin/socat "UNIX-CONNECT:$5" "UNIX-CONNECT:$SAFEYOLO_CONFIG_DIR/guest.sock" </dev/null >/dev/null 2>/dev/null &
     ;;
   *) exit 2;;
 esac
@@ -64,7 +71,6 @@ esac
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     unsafe {
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
-        std::env::set_var("FAKE_GUEST_PORT", guest_port.to_string());
         // An interpreter name is unavailable in the proxy's executable path.
         std::env::set_var("PATH", bin);
         std::env::set_var("SAFEYOLO_CLI_PYTHON", "/no/python/interpreter");
@@ -134,11 +140,43 @@ fn body(response: &[u8]) -> Value {
     serde_json::from_slice(&response[end + 4..]).unwrap()
 }
 
+fn unverified_runs(root: &Path) -> Vec<Option<Value>> {
+    let run: Value =
+        serde_json::from_slice(&fs::read(root.join("agents/alice/runtime.json")).unwrap()).unwrap();
+    let mut wrong_generation = run.clone();
+    wrong_generation["run_id"] = "99999999999999999999999999999999".into();
+    let mut wrong_birth = run.clone();
+    wrong_birth["holder_token"] = "different-birth".into();
+    wrong_birth["backend_token"] = "different-birth".into();
+    let mut unrelated = run;
+    unrelated["holder_pid"] = std::process::id().into();
+    unrelated["backend_pid"] = std::process::id().into();
+    let token = owned_run::process_token(std::process::id());
+    unrelated["holder_token"] = token.clone().into();
+    unrelated["backend_token"] = token.into();
+    vec![
+        None,
+        Some(wrong_generation),
+        Some(wrong_birth),
+        Some(unrelated),
+    ]
+}
+
+fn save_run(root: &Path, run: &Option<Value>) {
+    let path = root.join("agents/alice/runtime.json");
+    if let Some(run) = run {
+        fs::write(path, serde_json::to_vec(run).unwrap()).unwrap();
+    } else {
+        fs::remove_file(path).unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     let root = TempDir::new().unwrap();
-    let guest = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    fixture(root.path(), guest.local_addr().unwrap().port());
+    let guest = UnixListener::bind(root.path().join("guest.sock")).unwrap();
+    fixture(root.path());
+    let mut run = OwnedRun::start(root.path());
     let origin = tokio::spawn(async move {
         for attempt in 0..2 {
             let (mut stream, _) = guest.accept().await.unwrap();
@@ -172,6 +210,46 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
     let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
     let admin_headers = [("Authorization", format!("Bearer {TOKEN}"))];
+    let saved_run = Some(
+        serde_json::from_slice(&fs::read(root.path().join("agents/alice/runtime.json")).unwrap())
+            .unwrap(),
+    );
+    let refused_runs = unverified_runs(root.path());
+    for refused in &refused_runs {
+        save_run(root.path(), refused);
+        let refused = request(
+            admin_port,
+            "POST",
+            "/admin/agents/alice/desktop/present",
+            &admin_headers,
+            b"",
+        )
+        .await;
+        assert_eq!(
+            status(&refused),
+            409,
+            "{}",
+            String::from_utf8_lossy(&refused)
+        );
+        assert!(!root.path().join("desktop-ready").exists());
+        save_run(root.path(), &saved_run);
+    }
+    unsafe {
+        std::env::set_var("FAKE_STATE_ID", "safeyolo-99999999999999999999999999999999");
+    }
+    let mismatched = request(
+        admin_port,
+        "POST",
+        "/admin/agents/alice/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&mismatched), 409);
+    assert!(!root.path().join("desktop-ready").exists());
+    unsafe {
+        std::env::remove_var("FAKE_STATE_ID");
+    }
     let mut agent = UnixStream::connect(root.path().join("alice.sock"))
         .await
         .unwrap();
@@ -251,6 +329,21 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         .next()
         .unwrap()
         .to_owned();
+    // The unlocked preview still consults native ownership before opening a
+    // guest stream. No refused request should reach the two-response origin.
+    for refused in &refused_runs {
+        save_run(root.path(), refused);
+        let refused = request(
+            preview_port,
+            "GET",
+            "/vnc.html",
+            &[("Cookie", cookie.clone())],
+            b"",
+        )
+        .await;
+        assert_eq!(status(&refused), 502);
+        save_run(root.path(), &saved_run);
+    }
     let opened = request(
         preview_port,
         "GET",
@@ -317,7 +410,7 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     // even though the agent listener is named alice. Tailnet share must give
     // the remote Commander a reachable URL and own the Serve mapping.
     fs::write(
-        root.path().join("instance_id"),
+        root.path().join("data/instance_id"),
         "sy-22222222222222222222222222222222\n",
     )
     .unwrap();
@@ -352,12 +445,16 @@ fi
     )
     .unwrap();
     fs::set_permissions(&tailscale, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        root.path().join("config.toml"),
+        "[command_centre]\nshare='tailnet'\n",
+    )
+    .unwrap();
     unsafe {
         std::env::set_var(
             "SAFEYOLO_OPERATOR_INSTANCE_ID_FILE",
-            root.path().join("instance_id"),
+            root.path().join("data/instance_id"),
         );
-        std::env::set_var("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet");
         std::env::set_var("FAKE_TAILSCALE_STATE_DIR", root.path().join("tailnet"));
     }
     let installed = Proxy::start(config(root.path())).await.unwrap();
@@ -444,9 +541,9 @@ fi
     assert!(!root.path().join("desktop-ready").exists());
     assert!(!root.path().join("tailnet/8443.target").exists());
     disconnected.shutdown().await;
+    fs::remove_file(root.path().join("config.toml")).unwrap();
     unsafe {
         std::env::remove_var("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE");
-        std::env::remove_var("SAFEYOLO_COMMAND_CENTRE_SHARE");
         std::env::remove_var("FAKE_TAILSCALE_STATE_DIR");
     }
 
@@ -454,9 +551,9 @@ fi
     // that newly started desktop and leave no owned presentation behind.
     let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     fs::write(
-        root.path().join("config.yaml"),
+        root.path().join("config.toml"),
         format!(
-            "desktop:\n  present_host_port: {}\n",
+            "[desktop]\npresent_host_port = {}\n",
             occupied.local_addr().unwrap().port()
         ),
     )
@@ -478,7 +575,7 @@ fi
     assert!(root.path().join("desktop-stopped").is_file());
     assert!(!root.path().join("desktop-ready").exists());
     drop(occupied);
-    fs::remove_file(root.path().join("config.yaml")).unwrap();
+    fs::remove_file(root.path().join("config.toml")).unwrap();
 
     fs::write(root.path().join("agent-stopped"), b"").unwrap();
     let stopped = request(
@@ -502,4 +599,6 @@ fi
     .await;
     assert_eq!(status(&missing), 404);
     proxy.shutdown().await;
+    drop(run.child.stdin.take());
+    run.assert_exited();
 }
