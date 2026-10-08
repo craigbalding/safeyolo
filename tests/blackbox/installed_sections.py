@@ -120,7 +120,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"proxy stop: {exc}")
     for pattern in (
-        "agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
+        "agents/*/container.pid", "agents/*/vm.pid", "data/proxy-process.json",
         "data/ready.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
         "data/coord/nats/process.json", "sinkhole.pid", "native-parent.pid",
     ):
