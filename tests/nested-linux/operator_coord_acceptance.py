@@ -71,7 +71,7 @@ def save_completed_coord_calls(output: str, room: str, path: Path) -> None:
         json.dump({"room": room, "calls": calls}, saved)
 
 
-def stream_codex_output(command, stdout, stderr, *, timeout=300) -> int:
+def stream_codex_output(command, stdout, stderr, outcome, *, timeout=300) -> int:
     """Keep private files in the parent; agent shell may donate its child descriptors."""
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
         streams = {process.stdout: stdout, process.stderr: stderr}
@@ -96,7 +96,10 @@ def stream_codex_output(command, stdout, stderr, *, timeout=300) -> int:
         finally:
             # Reap the host command on every exit. A timeout must reach main's
             # owned guest cleanup even if a guest still holds a pipe open.
-            if process.poll() is None:
+            # Retain a completed exit even when capture fails. Never report the
+            # status caused by our cleanup kill as the command's actual exit.
+            outcome["exit_code"] = process.poll()
+            if outcome["exit_code"] is None:
                 process.kill()
             process.wait()
 
@@ -126,14 +129,20 @@ def codex_mcp_session(root: Path, primary: str, room: str, marker: str, cursor: 
                 script = "cd /workspace && /home/agent/.safeyolo-command exec --json --skip-git-repo-check " + shlex.quote(prompt)
                 outcome["exit_code"] = stream_codex_output(
                     [str(root / "bin/safeyolo"), "--root", str(root), "agent", "shell", primary, "-c", script],
-                    stdout, stderr)
+                    stdout, stderr, outcome)
                 outcome["output_complete"] = True
         assert outcome["exit_code"] == 0, f"Codex exited {outcome['exit_code']}; inspect private output at {directory}"
     except (OSError, subprocess.SubprocessError, AssertionError, KeyboardInterrupt, SystemExit) as error:
-        # Re-raise command failures and shutdown unchanged. Later private
+        outcome["timed_out"] = isinstance(error, subprocess.TimeoutExpired)
+        if outcome["exit_code"] not in (None, 0) and isinstance(error, (OSError, subprocess.SubprocessError)):
+            # A completed nonzero command remains the primary failure when a
+            # lingering writer or failed sink prevents complete capture.
+            command_error = AssertionError(f"Codex exited {outcome['exit_code']}; inspect private output at {directory}")
+            command_error.add_note(f"Private session output capture at {directory} also failed: {error}")
+            raise command_error from error
+        # Preserve other command failures and shutdown. Later private
         # diagnostic errors become notes on this first failure.
         command_error = error
-        outcome["timed_out"] = isinstance(error, subprocess.TimeoutExpired)
         raise
     finally:
         try:

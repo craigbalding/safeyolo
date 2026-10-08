@@ -249,6 +249,7 @@ def test_codex_capture_keeps_files_in_parent_and_drains_both_pipes_before_exit(t
 @pytest.mark.parametrize("failure,diagnostic_error", (
     ("nonzero", False), ("parse", False), ("observer", False), ("timeout", False),
     ("closed_timeout", False), ("launch", False), ("lingering_timeout", False),
+    ("lingering_nonzero", False), ("lingering_nonzero", True),
     ("nonzero", True), ("timeout", True), ("launch", True), ("success", True),
     ("interrupt", True), ("shutdown", True)))
 def test_failed_codex_session_keeps_private_operands_and_original_failure(tmp_path, monkeypatch, failure, diagnostic_error):
@@ -257,9 +258,11 @@ def test_failed_codex_session_keeps_private_operands_and_original_failure(tmp_pa
     rows = events()
     if failure == "observer":
         rows[-2]["item"]["result"]["structured_content"]["messages"] = []
-    timed_out = failure in ("timeout", "closed_timeout", "lingering_timeout")
+    lingering = failure in ("lingering_timeout", "lingering_nonzero")
+    timed_out = lingering or failure in ("timeout", "closed_timeout")
+    exit_code = 17 if failure == "lingering_nonzero" else 7 if failure == "nonzero" else 0
     if failure != "launch":
-        session_cli(tmp_path, rows, exit_code=7 if failure == "nonzero" else 0,
+        session_cli(tmp_path, rows, exit_code=exit_code,
                     delay=5 if failure in ("timeout", "closed_timeout") else 0)
     if failure == "parse":
         # Keep completed calls before a later malformed event.
@@ -312,7 +315,7 @@ def test_failed_codex_session_keeps_private_operands_and_original_failure(tmp_pa
         return subprocess.CompletedProcess(command, 0, output, "")
 
     def selected_popen(*args, **kwargs):
-        if failure == "lingering_timeout":
+        if lingering:
             # Another owned child holds both write ends after transport exit.
             # Only main's guest cleanup ends this writer's lifetime.
             stdout_read, stdout_write = os.pipe()
@@ -346,24 +349,30 @@ def test_failed_codex_session_keeps_private_operands_and_original_failure(tmp_pa
     expected = {"nonzero": AssertionError, "parse": json.JSONDecodeError,
                 "observer": AssertionError, "timeout": subprocess.TimeoutExpired,
                 "closed_timeout": subprocess.TimeoutExpired, "lingering_timeout": subprocess.TimeoutExpired,
+                "lingering_nonzero": AssertionError,
                 "launch": FileNotFoundError, "success": PermissionError,
                 "interrupt": KeyboardInterrupt, "shutdown": SystemExit}[failure]
     with pytest.raises(expected) as raised:
         witness["main"]()
-    if failure == "nonzero":
-        assert "Codex exited 7" in str(raised.value)
+    if failure in ("nonzero", "lingering_nonzero"):
+        assert f"Codex exited {exit_code}" in str(raised.value)
+    if failure == "lingering_nonzero":
+        assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+        assert "output capture" in raised.value.__notes__[0] and "timed out" in raised.value.__notes__[0]
     if failure == "launch":
         assert raised.value.filename == str(tmp_path / "bin/safeyolo")
     if diagnostic_error and failure != "success":
-        assert len(raised.value.__notes__) == 1
-        assert "controlled private diagnostic read failure" in raised.value.__notes__[0]
+        assert len(raised.value.__notes__) == (2 if failure == "lingering_nonzero" else 1)
+        assert "controlled private diagnostic read failure" in raised.value.__notes__[-1]
     assert all(child.poll() is not None for child in children)
-    if failure == "lingering_timeout":
-        assert children[0].returncode == 0 and writers_live_at_cleanup == [True]
+    if lingering:
+        assert children[0].returncode == exit_code and writers_live_at_cleanup == [True]
         assert all(writer.poll() is not None for writer in lingering_writers)
+    if failure in ("timeout", "closed_timeout"):
+        assert children[0].returncode < 0  # The forced kill must not become the reported command exit.
     assert stops == [("agent", "stop", "bbtest"), ("agent", "stop", "bbpeer"), ("stop",), ("coord", "stop")]
     assert survivor_checks == [[]]
-    unknown = timed_out or failure in ("launch", "interrupt", "shutdown")
+    unknown = failure in ("timeout", "closed_timeout", "launch", "interrupt", "shutdown")
     directory = retained_session(tmp_path, stderr="" if failure in ("launch", "interrupt", "shutdown")
                                  else "private stderr sentinel\n", diagnostic_error=diagnostic_error)
     if failure in ("launch", "interrupt", "shutdown"):
@@ -371,8 +380,8 @@ def test_failed_codex_session_keeps_private_operands_and_original_failure(tmp_pa
     else:
         assert "thread.started" in (directory / "stdout.jsonl").read_text()
     assert json.loads((directory / "exit.json").read_text()) == {
-        "exit_code": None if unknown else 7 if failure == "nonzero" else 0,
-        "timed_out": timed_out, "output_complete": not unknown}
+        "exit_code": None if unknown else exit_code,
+        "timed_out": timed_out, "output_complete": not (timed_out or unknown)}
     if diagnostic_error:
         return  # Raw output and the primary failure survive the failed projection.
     projected = json.loads((directory / "completed-mcp.json").read_text())["calls"]
