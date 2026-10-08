@@ -137,11 +137,19 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
     joined = {name: call(name, "join_room", {"room_name": room}) for name in (primary, peer)}
     assert joined[primary]["room_id"] == joined[peer]["room_id"]
     before = call(primary, "get_room_state", {"room_name": room})
+    sent_markers = []
     for name in (primary, peer):
-        sent = call(name, "send", {"room_name": room, "body": marker + ":" + name, "notify": "none"})
-        assert sent["envelope"]["sender_agent_id"] == grants[name]["agent_id"], sent
+        body = marker + ":" + name
+        sent = call(name, "send", {"room_name": room, "body": body, "notify": "none"})
+        envelope = sent["envelope"]
+        assert envelope["body"] == body and envelope["sender_agent_id"] == grants[name]["agent_id"], sent
+        assert envelope["sender_kind"] == "agent" and envelope["sender_agent_name"] == name, sent
+        sent_markers.append(envelope)
     initial = history(primary)
-    assert initial == history(peer) and len(initial) == 2, initial
+    assert initial == history(peer), initial
+    fields = ("msg_id", "body", "sender_kind", "sender_agent_id", "sender_agent_name")
+    assert [{key: row[key] for key in fields} for row in initial] == [
+        {key: row[key] for key in fields} for row in sent_markers], (initial, sent_markers)
 
     # Exercise spoofing at the API, beyond the MCP client's argument validator.
     forged = api(peer, "POST", f"/api/coord/rooms/{room}/send", {
@@ -184,6 +192,7 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
                 waiter.communicate(timeout=5)
 
     retained = history(primary)
+    assert retained[:len(initial)] == initial, "pre-restart history changed the validated markers"
     proxy_before = json.loads((root / "data/proxy-process.json").read_text())
     nats_before = json.loads((root / "data/coord/nats/process.json").read_text())
     command("stop")  # Native Coord lives in the proxy; this also stops its owned NATS.
@@ -244,7 +253,7 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
     assert matches[0]["sender_agent_id"] == grants[primary]["agent_id"] == mcp["sender_agent_id"]
     return {"journey": "G2/G4 Ubuntu systrap", "executable_commit": commit,
             "host_executables": host_versions, "actual_proxy_path": str(proxy_path), "guests": identities,
-            "room": room, "joined": joined, "room_before": before, "room_after": after,
+            "room": room, "joined": joined, "room_before": before, "room_after": after, "sent_markers": sent_markers,
             "history_before_restart": retained, "history_after_mcp": observed,
             "forged_sender": envelope, "nonmember_refusals": denied, "wait": waited,
             "proxy_before": proxy_before, "proxy_after": proxy_after,
