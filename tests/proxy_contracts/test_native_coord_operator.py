@@ -92,6 +92,34 @@ def agent_send(instance, body, room=ROOM, **extra):
     return json.loads(raw)
 
 
+def test_continuity_reader_uses_native_nats_and_refuses_missing_inputs(instance):
+    from tests.blackbox.installed_state_transition import PreparationError, env_for, fixture_coord
+
+    agent_send(instance, "continuity-read", notify=["bob"])
+    env = env_for(instance.root)
+    code = f"""
+import asyncio,json
+from safeyolo.coord import api
+async def read():
+    page=await api.read_room({ROOM!r},'agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+    attention=await api.wait_for_attention('ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',since_sequence=0,timeout_seconds=0.1,limit=5)
+    return {{'bodies':[m['body'] for m in page['messages']],'attention':bool(attention['edges'])}}
+print(json.dumps(asyncio.run(read())))
+"""
+    assert fixture_coord(env, code) == {"bodies": ["continuity-read"], "attention": True}
+    for name in ("process.json", "creds"):
+        path = instance.root / "data/coord/nats" / name
+        missing = path.with_name(name + ".fixture-missing")
+        path.rename(missing)
+        try:
+            with pytest.raises(PreparationError, match=name):
+                fixture_coord(env, code)
+        finally:
+            missing.rename(path)
+    assert fixture_coord(env, code) == {"bodies": ["continuity-read"], "attention": True}
+    assert json.loads(instance.cli("coord", "status").stdout)["state"] == "running"
+
+
 async def stream_control(instance, no_ack=None):
     # Only this driver reads the fixture's host-local NATS credential. Neither
     # the guest command nor test output receives it.

@@ -115,9 +115,9 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     scripts = checkout / "tests/blackbox"
     scripts.mkdir(parents=True)
     shutil.copy2(REPO / "tests/blackbox/run-lane.sh", scripts / "run-lane.sh")
-    tools, host, guest, runtime, images, root = (tmp_path / name for name in
-                                                ("tools", "host", "guest", "runtime", "images", "root"))
-    for path in (tools, host, guest, runtime, images):
+    tools, host, guest, runtime, vm, images, root = (tmp_path / name for name in
+                                                ("tools", "host", "guest", "runtime", "vm", "images", "root"))
+    for path in (tools, host, guest, runtime, vm, images):
         path.mkdir()
     for name in ("Image", "initramfs.cpio.gz", "rootfs-base.ext4"):
         (images / name).touch()
@@ -148,12 +148,16 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
                        'SAFEYOLO_NATIVE_GUEST_ARTIFACTS': guest, 'SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS': runtime,
                        'SAFEYOLO_PLATFORM_ASSETS': images}.items():
         monkeypatch.setenv(name, str(path))
+    if platform == 'Darwin':
+        monkeypatch.setenv('SAFEYOLO_NATIVE_VM_ARTIFACTS', str(vm))
     result = run(str(scripts / 'run-lane.sh'), lane, '--prepare-only', cwd=checkout)
     assert result.returncode == 0, result.stderr
     options = json.loads((root / 'native-inputs.json').read_text())
     assert Path(options['--artifacts']) == host
     assert Path(options['--guest-artifacts']) == guest
     assert Path(options['--runtime-artifacts']) == runtime
+    if platform == 'Darwin':
+        assert Path(options['--vm-artifacts']) == vm
     assert Path(options['--platform-assets']) == images
     assert 'native --root' in result.stdout and 'coord stop' in result.stdout
 

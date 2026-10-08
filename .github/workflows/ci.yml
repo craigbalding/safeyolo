@@ -177,7 +177,7 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           chmod +x guest/command/target/debug/safeyolo-guest guest/command/target/debug/safeyolo-coord
-          if [ "$RUNNER_OS" = Linux ]; then chmod +x proxy/target/debug/safeyolo proxy/target/debug/safeyolo-coord; fi
+          if [ "$RUNNER_OS" = Linux ]; then chmod +x proxy/target/debug/safeyolo proxy/target/debug/safeyolo-coord proxy/target/debug/safeyolo-proxy; fi
 
       - name: Build Mac host recovery and Coord test inputs
         if: runner.os == 'macOS' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -185,7 +185,7 @@ jobs:
           SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
           CARGO_BUILD_JOBS: "1"
         run: |
-          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
 
       - name: All retained CLI tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

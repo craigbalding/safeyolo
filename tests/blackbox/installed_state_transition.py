@@ -332,6 +332,21 @@ def fixture_python(env: dict, code: str, *args: str):
     return json.loads(result) if result.strip() else None
 
 
+def fixture_coord(env: dict, code: str):
+    """Bind the unshipped reader to NATS owned by the installed native CLI."""
+    return fixture_python(env, """
+import json,os
+from pathlib import Path
+from safeyolo.coord import nats_runtime
+nats=Path(os.environ['SAFEYOLO_COORD_DATA_DIR'])/'nats'
+process=json.loads((nats/'process.json').read_text())
+# Native startup verifies this process and publishes its endpoint. The reference
+# lifecycle's nats.pid.json/test_instance contract is not used by this driver.
+nats_runtime.client_url=lambda: f"nats://127.0.0.1:{process['client_port']}"
+nats_runtime.client_user_credentials=lambda: ('safeyolo',(nats/'creds').read_text().strip())
+""" + code)
+
+
 def ensure_nats(cli: Path, env: dict) -> dict:
     return json.loads(run([str(cli), "coord", "start"], env))
 
@@ -354,7 +369,7 @@ def native_flow(root: Path, listener: Path, token: str, flow_id: int, tag: str) 
               f"replacement changed exact persisted {side} body")
     check(any((event := json.loads(line)).get("event") == "traffic.response" and
               event.get("request_id") == flow["request_id"] and event.get("agent") == "alice"
-              for line in (root / "logs/safeyolo.jsonl").read_text().splitlines() if line.strip()),
+              for line in (root / "logs/audit.jsonl").read_text().splitlines() if line.strip()),
           "replacement lost durable audit correlation")
     return flow
 
@@ -463,7 +478,7 @@ def main() -> None:
     task_policy = {"permissions": [{"action": "network:request", "resource": f"{args.origin_host}/*",
                                     "effect": "deny", "condition": {"agent": "alice"}}]}
     package_id = installed_identity(args.cli, args.rust_revision)
-    args.native_cli = native_cli(args.native_cli or args.cli, proxy=Path(package_id["package"]) / "bin/safeyolo-proxy", revision=args.rust_revision)
+    args.native_cli = native_cli(args.native_cli or args.cli, proxy=Path(package_id["package_root"]) / "bin/safeyolo-proxy", revision=args.rust_revision)
     args.state_parent.mkdir(parents=True, exist_ok=True)
     if args.config_dir is not None:
         root = args.config_dir.resolve()
@@ -640,7 +655,7 @@ print(json.dumps({'policy':'created'}))
         stages.append(start(active, root, env, args.rust_revision))
         agent_token = (root / "data/agent_token").read_text().strip()
         alice = socket_for(root, "alice")
-        initial_coord = fixture_python(env, """
+        initial_coord = fixture_coord(env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
@@ -919,7 +934,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         status, native_tag = json_request(alice, "POST", f"/api/flows/{flow_id}/tag",
                                           agent_token, {"tag": "native", "value": "owned"})
         check(status == 200, f"native flow tag writer failed: {status} {native_tag}")
-        audit = root / "logs/safeyolo.jsonl"
+        audit = root / "logs/audit.jsonl"
         check(any((event := json.loads(line)).get("event") == "traffic.response" and
                   event.get("request_id") == flow_request_id and event.get("agent") == "alice" and
                   event.get("details", {}).get("status") == 200
@@ -1021,7 +1036,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               f"replacement native process did not use native grant/binding: {replacement_gateway_status}")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
               "replacement native process did not inject native-refreshed vault credential")
-        replacement_coord_read = fixture_python(env, """
+        replacement_coord_read = fixture_coord(env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
@@ -1091,9 +1106,15 @@ print(json.dumps({'native_grant_read':True,
         check(sha(provider_snapshot) == provider_hash,
               "replacement changed the provider-owned snapshot")
         catalog_override.unlink()
-        status, removed = admin(root, "DELETE", f"/admin/policy/host/{args.origin_host}",
-                                {"port": origin.server_port, "agent": "alice"})
-        check(status == 200, f"native scoped host removal failed: {status} {removed}")
+        # The fresh native contract applies edited policy through its existing
+        # Admin transaction; the retired host DELETE route is not a prerequisite.
+        revoked_policy = tomlkit.parse((root / "policy.toml").read_text())
+        del revoked_policy["agents"]["alice"]["hosts"][f"{args.origin_host}:{origin.server_port}"]
+        candidate = root / "revoked-host.toml"
+        candidate.write_text(tomlkit.dumps(revoked_policy))
+        removed = json.loads(run([str(args.cli), "policy", "apply", str(candidate)], env))
+        check(removed.get("status") == "active", "native scoped host removal was not activated")
+        candidate.unlink()
         host_policy = tomllib.loads((root / "policy.toml").read_text())
         check(f"{args.origin_host}:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
               "replacement native process writer did not revoke scoped host approval")
