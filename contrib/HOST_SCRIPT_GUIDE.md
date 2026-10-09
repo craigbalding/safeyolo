@@ -83,7 +83,7 @@ that agent's persistent home. After its first run installs Codex, leave it
 running and open a guest shell from a second host terminal. Replace `work` with the agent name:
 
 ```sh
-safeyolo agent shell work
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent shell work
 ```
 
 Inside the guest, log in and record that this login belongs to this agent:
