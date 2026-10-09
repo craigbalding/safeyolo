@@ -37,29 +37,36 @@ an already prepared bundle for your host and selected source. The bundle's
 version. Verify a transferred archive against its supplied SHA-256 before
 extracting it. The installer checks its internal checksums and identities.
 
-Follow [native installation](docs/native-policy.md#install-and-start).
-This arm64 Linux example uses an unpacked production bundle and a fresh root:
+Before installation, follow the [platform prerequisites and prepared guest
+inputs](docs/native-policy.md#guest-prerequisites). The package supplies native
+helpers and setup scripts; platform images/rootfs are separate. This arm64
+Linux example uses an unpacked production bundle in your current directory and
+prepared guest inputs at `$HOME/safeyolo-platform`. Replace that assets path
+with the directory you obtained during preparation.
+
+Choose a fresh root with no existing instance configuration. This example uses
+`$HOME/.safeyolo`, the CLI default. If that root already contains an installation,
+choose another path in the commands below. SafeYolo does not convert an earlier
+installation's state. Follow [installation details](docs/native-policy.md#install-and-start)
+if you need another platform or build input.
 
 ```sh
-./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo-native"
-export PATH="$HOME/.safeyolo-native/bin:$PATH"
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo-native"
+./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo" --platform-assets "$HOME/safeyolo-platform"
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
+export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo --help
 safeyolo --version
+safeyolo start
+safeyolo status
 ```
 
 Use `linux-amd64` for x86_64 Ubuntu or `darwin-arm64` for Apple Silicon.
 Installation creates configuration, trust and private tokens. It requires no
-Python, wheel, virtual environment or uv tool installation. Choose a fresh
-root; this product does not convert an earlier Python installation's state.
-If installation fails, resolve its named error before retrying.
-
-Before starting an agent, supply the
-[host runtime and prepared guest inputs](docs/native-policy.md#guest-prerequisites)
-for its platform. The package supplies native helpers and setup scripts;
-platform images/rootfs are separate. Pass their directory to installation with
-`--platform-assets DIRECTORY`. For source installation, the repository's
-`./install.sh` delegates to the same installer and accepts the same inputs.
+Python, wheel, virtual environment or uv tool installation. Status identifies
+the selected root and reports `proxy_state: running` after successful startup.
+If installation or startup fails, resolve its named error before retrying.
+For source installation, the repository's `./install.sh` delegates to the same
+installer and accepts the same inputs.
 
 ### 2. Choose your agent and workspace
 
@@ -67,29 +74,39 @@ Choose an existing project that you own. The agent can read and change that
 project through `/workspace`. Host setup scripts run with your host permissions
 and can copy selected files into its home.
 
+The example uses the existing owned directory `$HOME/code` and Claude setup,
+which copies selected host authentication and extensions. For another tool,
+choose `codex-host-setup.sh`, `pi-host-setup.sh` or `mise-shell-host-setup.sh`
+in the same installed directory before creating the agent. Ordinary Codex setup
+requires its [first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login);
+it does not copy host login credentials. The mise shell needs no model login.
+
 ```sh
 safeyolo agent create work --workspace "$HOME/code" --host-script "$SAFEYOLO_CONFIG_DIR/assets/contrib/claude-host-setup.sh"
 safeyolo agent start work
 ```
 
-Choose `codex-host-setup.sh`, `pi-host-setup.sh` or `mise-shell-host-setup.sh`
-in the same installed directory for those tools. Claude setup copies selected
-host authentication and extensions. Ordinary Codex setup requires its
-[first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login);
-it does not copy host login credentials. Ask the agent to list `/workspace`
-to check the selected project. Tools and agent state under `/home/agent` persist.
+Ask the agent to list `/workspace` to check the selected project. Tools and
+agent state under `/home/agent` persist.
 
 ### 3. Review access requests
 
-Open a second host terminal with the same instance selection:
+Open a second terminal on the same host and account. Set the same root and
+executable there; replace the root if you chose another during installation:
 
 ```sh
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
+export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo inspect
 ```
 
-Select the instance and agent, inspect the request, then make its scoped
-approval or denial. Direct `approvals` commands use the same native owners.
-See [operator commands](docs/native-operator.md) and
+Inspect lists agent names; select `work` to see its state and pending requests.
+The banner identifies the instance and selected agent. Follow the
+[inspect and approval example](docs/native-operator.md#inspect-and-decide-one-request)
+to create a network prompt, read its scope and decide it. The fresh policy
+allows network access by default, so a successful request does not create a
+pending network item. A network approval allows reusable access to its host and
+port; credential approval is separate. See [operator commands](docs/native-operator.md) and
 [policy configuration](docs/CONFIGURATION.md#policy).
 
 ## Everyday commands

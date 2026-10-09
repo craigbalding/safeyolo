@@ -45,10 +45,12 @@ The download cache under `guest/out/.download-cache/` is preserved — mise/gh
 tarballs and the trixie OCI image don't re-fetch.
 
 Artifacts land in `guest/out/`. Return to the repository root, then provide
-that directory to the native installer at a fresh installation:
+that directory to the native installer at a fresh installation. This example
+uses `$HOME/.safeyolo`; choose another explicit root if it already contains
+instance configuration. It does not change an existing installation:
 
 ```sh
-./install.sh --root "$HOME/.safeyolo-native" --runtime-artifacts /usr/bin --platform-assets "$PWD/guest/out"
+./install.sh --root "$HOME/.safeyolo" --runtime-artifacts /usr/bin --platform-assets "$PWD/guest/out"
 ```
 
 Supply matching guest/VM artifacts as described in the

@@ -6,23 +6,24 @@ A host script can install an agent harness, copy authentication or settings,
 and define the command that the sandbox executes.
 
 For the native host path, first complete the [native installation and guest prerequisites](../docs/native-policy.md#install-and-start)
-in a fresh `$HOME/.safeyolo-native` instance. Run as your ordinary host account
-from the trusted SafeYolo checkout. In these examples, `~/code` is an existing
+in the instance you installed. The commands below use `$HOME/.safeyolo`;
+replace that root if your installation uses another path. Run as your ordinary
+host account from the trusted SafeYolo checkout. In these examples, `~/code` is an existing
 workspace that you own. Replace `/absolute/path/to/my-host-setup.sh` with your
 executable script outside all agent-writable shares. Native creation runs setup
 without starting the sandbox:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create work --workspace ~/code --host-script /absolute/path/to/my-host-setup.sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent create work --workspace ~/code --host-script /absolute/path/to/my-host-setup.sh
 ```
 
 For an existing agent, stop it before reapplying or changing host setup.
 Select an executable host script outside every agent-writable share:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent stop work
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent configure work --host-script /absolute/path/to/my-host-setup.sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent start work
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent stop work
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent configure work --host-script /absolute/path/to/my-host-setup.sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent start work
 ```
 
 SafeYolo does not interpret a template, domain-specific language (DSL), or
@@ -83,7 +84,7 @@ that agent's persistent home. After its first run installs Codex, leave it
 running and open a guest shell from a second host terminal. Replace `work` with the agent name:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent shell work
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent shell work
 ```
 
 Inside the guest, log in and record that this login belongs to this agent:

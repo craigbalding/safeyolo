@@ -1,249 +1,340 @@
-# Native operator and Helper commands
+# Manage SafeYolo access and traffic
 
-Use these commands on the host of an already prepared native instance. The
-examples use the installation at `$HOME/.safeyolo-native`. Its `config.toml`
-selects the Admin API, audit log and policy. Worker and Helper must already have
-distinct durable identities and trusted agent listeners. Keep the operator
-credential on the host.
+Use SafeYolo on the host to inspect an agent's activity and decide its access
+requests. You are the operator: the person managing the installation. An
+instance is one installation's configuration and runtime state. An agent is
+a named sandbox with its own persistent home and the workspace you selected.
+You can manage an individual agent without a factory or an assistant agent.
 
-## Select once and inspect
+## Start with an installed instance
 
-For an existing Factory named `operator`, open one terminal session:
+Use your ordinary account on the Ubuntu or Apple Silicon macOS host that owns
+the instance. For a new installation, follow [install and start](native-policy.md#install-and-start),
+including its platform prerequisites and prepared guest assets. Then follow
+[configure and use an agent](native-policy.md#configure-and-use-an-agent).
+That example creates `work` and opens its guest shell. A shell is sufficient
+for the access example below; no model login is required.
+
+Open a second terminal on the same host, under the same account. Select the
+root you installed. This example uses `$HOME/.safeyolo`; if you chose another
+root, replace that path before running these commands. Existing installations
+keep their current root. Do not reinstall over their state.
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" inspect --factory operator
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
+export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
+safeyolo --version
+safeyolo status
 ```
 
-Select `worker` once. Each prompt shows the instance, workflow and selected
-agent. Factory choices come from the existing approved snapshot; live state
-comes from the host inventory. An approved snapshot does not establish readiness.
+`--version` identifies the executable's source and build profile. `status`
+reports the selected `root`, `proxy_state` and configured `agents`. Use the
+agent's `name` from that inventory. The examples below use the `work` agent
+created during setup. Check that the root and agent match the guest terminal
+you opened. A running proxy alone does not mean that the agent is running.
 
-The following lines are inputs to the `inspect>` prompt. Replace `REQUEST_ID`
-and `FLOW_ID` with IDs returned by `pending` and `traffic` in this session.
+`--root PATH` before a command overrides the environment selection. Without
+that option, the command uses `SAFEYOLO_CONFIG_DIR`, then `SAFEYOLO_HOME`, then
+`$HOME/.safeyolo`. Set the root and PATH in each new host terminal. These
+settings select this terminal's commands; they do not move an installation.
+Keep the operator credential in the instance's `data/admin_token` on the host.
+
+## Inspect and decide one request
+
+A network policy with `egress = "prompt"` creates a pending access request.
+The fresh policy permits network access by default, so a successful request
+will not appear in `pending`. If your agent already has a pending network
+request, continue with `safeyolo inspect` below.
+
+For a first example, use `work` to request `http://example.com/`. On the host,
+copy the current policy to a candidate in the instance root. This creates or
+replaces `access-example.toml`; choose another filename if you need to keep an
+existing candidate. The copy retains configured agent identities and settings.
+
+```sh
+cp "$SAFEYOLO_CONFIG_DIR/policy.toml" "$SAFEYOLO_CONFIG_DIR/access-example.toml"
+```
+
+Edit `access-example.toml` with your text editor. Add this destination entry
+under the existing `[hosts]` heading, alongside the default `"*"` entry.
+If the destination is already present, edit that entry instead of adding it
+twice. Keep all other policy entries, including the generated agent identities.
+This is the line to insert, not a complete policy:
+
+```toml
+"example.com:80" = { egress = "prompt" }
+```
+
+This example requests human approval at `example.com` port 80 for agents in
+this instance. It is a policy choice for the fresh example, not an installation
+requirement. Each resulting approval still grants access only to its requesting
+agent. In an existing instance, agent-specific overrides take precedence; use
+[per-agent policy](native-policy.md#check-show-and-apply) when you want a
+different rule for one agent.
+
+Check and apply the candidate on the host. Applying it replaces the saved
+policy and activates it in this running instance.
+
+```sh
+safeyolo policy check "$SAFEYOLO_CONFIG_DIR/access-example.toml"
+safeyolo policy apply "$SAFEYOLO_CONFIG_DIR/access-example.toml"
+safeyolo policy show
+```
+
+Check reports `Policy is valid`. Apply returns `status: active`; show lets you
+verify the effective `work` host entry. If activation fails or saved and active
+state differ, use [policy recovery](native-policy.md#check-show-and-apply)
+before continuing.
+
+Now switch to the **guest shell for `work`** from setup. The following command
+uses that guest's existing proxy route and makes a Hypertext Transfer Protocol
+(HTTP) request without credentials:
+
+```sh
+curl --proxy "$HTTP_PROXY" -i http://example.com/
+```
+
+Expect HTTP 428 and `type: egress_approval_required`. The request is waiting
+for your decision. Other 428 responses can have different causes; read the
+reported type before treating one as a network approval.
+
+Return to the **second host terminal** with the instance selection above:
+
+```sh
+safeyolo inspect
+```
+
+Inspect lists configured agent names and their durable IDs. Type `select work`
+at `inspect>`; for an existing installation, use a name from that list instead.
+`Workflow: instance agents` means all configured agents in this instance.
+The banner repeats the instance ID and selected agent on each prompt:
 
 ```text
-select worker
+Instance: sy-… | Workflow: instance agents | Agent: work
+inspect>
+```
+
+Type these inputs at the inspect prompt, not in your host shell:
+
+```text
 state
 pending
-traffic ~c 428
+```
+
+`state` reads the live agent inventory. `pending` lists requests for this agent,
+including each `request_id`, summary and target. An empty list means there is
+no pending item for the selection. Choose the request for `example.com:80`.
+Replace `REQUEST_ID` below with its full `request_id` from `pending`:
+
+```text
+approval REQUEST_ID
+```
+
+A representative network approval display follows. The IDs are abbreviated
+here; use the complete IDs from your own session.
+
+```text
+Request: req-…
+Status: pending
+SafeYolo effect: Allow reusable network access for work (ag-…) to example.com port 80 until explicitly removed.
+```
+
+Read the effect before deciding. Approval permits future requests by this
+agent to that host and port until you remove the permission. It is not limited
+to one HTTP request and does not grant credential permission. If the scope is
+what you intend, type the following input with the same full ID:
+
+```text
+approve REQUEST_ID
+```
+
+Expect `Status: approved`. To refuse the request instead, use
+`reject REQUEST_ID`; expect `Status: rejected`. Rejection records the decision
+without adding a deny rule. Exit the viewer with `quit`.
+
+After approval, return to **`work`'s guest shell** and repeat the curl command.
+The network approval should no longer block that destination. The site's
+response is separate from SafeYolo's decision; an upstream error is not an
+approval failure. After rejection, the permission remains unchanged.
+
+To remove the example's grant later, edit a copy of the current policy and set
+the `work` grant for `example.com:80` to your intended `prompt` or `deny` value,
+then check and apply it. The resolver saves this agent-specific grant in
+`agents`, separately from the instance-wide `hosts` entry. Use the current
+policy so you retain decisions made since setup.
+See [policy configuration](native-policy.md#check-show-and-apply).
+
+## Read traffic and save evidence
+
+In inspect with an agent selected, `traffic` lists its HTTP exchanges, called
+flows. `traffic ~c 428` selects flows with response code 428. Copy a full flow
+`id` from the result and replace `FLOW_ID` before entering these inputs:
+
+```text
 show FLOW_ID
 body FLOW_ID response
 logs
-approval REQUEST_ID
-share REQUEST_ID helper
-approve REQUEST_ID
-attach
-back
-quit
 ```
 
-`approval` shows the canonical action, its reusable Worker/host/port effect and
-the separate quoted Helper reason. `share` grants only that request's diagnostic
-and approval reads. It reports whether the Helper session is available or
-unverified. If Helper's model or command is unavailable, human decisions remain
-usable. `approve` and `reject` use the common resolver. A lost reply triggers a
-canonical read, without another mutation.
+`show` opens the exchange; `body` reads its retained bytes. Bodies include
+exact `data_base64` bytes and `text` when the bytes are UTF-8. JavaScript Object Notation (JSON) output escapes terminal controls. Missing or pruned bytes retain their availability and
+reason fields. `logs` reads the configured host-local audit file.
 
-`attach` delegates the selected name and instance to the native host owner's
-`agent attach` command. It requires that installed operation and an existing
-attachable terminal. At this component boundary, #817 still owns that operation
-and terminal proof. If it is unavailable, inspect reports the problem and keeps
-the selection. Returning from the terminal or using `back` preserves the target.
-Use the [native Factory entry](factories.md#fresh-setup-check-approve-and-run) to prepare and start a Factory. Inspect reads its approved roles and live state.
-
-## Direct commands and evidence
-
-Direct commands carry their own target. Changing an interactive target or
-another viewer's scope/filter cannot change a script's explicit selection.
-These examples select Worker's records and return JSON:
+For scripts or a terminal without interactive input, direct commands carry
+their own agent selection. Use the actual name from `status`; these examples
+use `work` and return JSON:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" traffic list --agent worker --filter '~c 200' --json
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" approvals list --agent worker --json
+safeyolo traffic list --agent work --filter '~c 200' --json
+safeyolo approvals list --agent work --json
 ```
 
-The `traffic` subcommands `show`, `body`, `websocket`, and `message` open a
-selected exchange, HTTP body, WebSocket transcript, or message body. Bodies
-retain exact `data_base64` bytes and add `text` when those bytes are UTF-8.
-JSON escapes terminal controls. Unavailable bytes retain their availability
-and reason fields. `message` accepts `--offset` for subsequent 64 KiB pages;
-its response reports `offset`, `total_size` and `end`.
+Interactive selection and another viewer's filter cannot change these explicit
+targets. `traffic show`, `body`, `websocket` and `message` open an exchange,
+HTTP body, WebSocket transcript or message body. `message` accepts `--offset`
+for subsequent 64 KiB pages and reports `offset`, `total_size` and `end`.
 
-After selecting `FLOW_ID`, export it to a host-local file. Replace `FLOW_ID`
-with the actual ID. This command replaces `response.raw` only after a complete
-successful download:
+To save a response, replace `FLOW_ID` with the full `id` from `traffic list`.
+Run on the host in the directory where you want the file. A complete successful
+download replaces `response.raw`; a failed download preserves an existing file.
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" traffic export FLOW_ID raw_response response.raw --agent worker
+safeyolo traffic export FLOW_ID raw_response response.raw --agent work
 ```
 
-Retain all seven formats under the #821 first-handoff decision:
+All seven export formats are supported:
 
-| Format | Operator use |
+| Format | Use |
 | --- | --- |
 | `raw`, `raw_request`, `raw_response` | Reconstructed HTTP observations and retained bytes. Combined raw can include WebSocket payloads. |
-| `curl`, `httpie` | Saved request commands for inspection. The client never executes them. |
-| `har`, `zhar` | Interoperable HTTP archives; zhar uses zlib compression. |
+| `curl`, `httpie` | Saved request commands for inspection. SafeYolo never executes them. |
+| `har`, `zhar` | HTTP archives for other tools; zhar uses zlib compression. |
 
-These commands reuse the existing native exporter. A pruned selection returns
-unavailable, including when it is pruned before the byte read. Failed downloads
-preserve the previous file. Retained bytes and exporter limits are described in
-[live traffic inspection](DEVELOPERS.md#live-traffic-inspection).
+A flow pruned before the byte read returns unavailable. Retention and exporter
+limits are described in [live traffic inspection](DEVELOPERS.md#live-traffic-inspection).
 
-If the API stops, these host-local commands still read the configured audit file
-and check the saved policy. Diagnosis labels active state as unverified:
+To return to an existing agent terminal, use `attach` in inspect. It requires
+a running, attachable command. A missing terminal produces an error and keeps
+your selection; attach does not launch another command. Returning from the
+terminal or using `back` also keeps the selected agent.
 
-```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" logs --agent worker --lines 50 --json
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" diagnose --agent worker --json
-```
+## Recover from a failed operation
 
-## Helper preparation
+If `inspect` reports `inspect requires a terminal`, open it in an interactive
+host terminal or use direct commands with `--agent` and `--json`. Inspect
+prompt inputs cannot be piped to a noninteractive process.
 
-On the host, select a pending `REQUEST_ID` and grant Helper its reads:
-
-```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" approvals share REQUEST_ID --agent worker --helper helper
-```
-
-Inside Helper, use the native client supplied by its approved installation or
-read-only fixture mount. These examples use `/safeyolo/native-operator`;
-replace that path with the supplied executable and `REQUEST_ID` with the shared
-ID. Helper's normal proxy and `/app/agent_token` supply transport and identity:
+If a decision reports `decision not confirmed`, do not assume approval or
+immediately repeat the mutation. The client already attempts one canonical
+read after a lost reply. On the host, replace `REQUEST_ID` with that request's
+ID and read it again:
 
 ```sh
-/safeyolo/native-operator helper diagnostic REQUEST_ID
-/safeyolo/native-operator helper show REQUEST_ID
-/safeyolo/native-operator helper prepare REQUEST_ID --reason 'The selected diagnostic shows Worker needs this owned origin.'
+safeyolo approvals show REQUEST_ID --agent work
 ```
 
-Preparation rereads the canonical action and sends that typed action. It does
-not copy arbitrary parameters from model prose or execute a host command.
-Helper cannot decide or grant itself reads. The host operator reads the trusted
-scope with `approvals show REQUEST_ID` and decides with `approvals approve` or
-`approvals reject`. Approval permits Worker at that one host/port until explicitly
-removed. Rejection changes the disposition without adding a deny rule.
+`approved` or `rejected` is the recorded outcome. If the item is still pending,
+restore the connection and read its current scope before deciding. A relevant
+policy change or recreated agent can make the action stale; approval returns
+409. Obtain a new request from the agent and review that new ID. You can still
+reject the stale item without changing network permission.
 
-## Bounded installed witness
-
-Run from this checkout on the existing owned Ubuntu/systrap fixture. The selected
-native proxy and two guests must already be running. The marked disposable root
-must expose each guest's existing read-only `config-share` mount. Supply the
-full candidate commit and installed matching CLI/proxy. `TRANSPORT_CLI` is the
-maintained test transport that already controls those guests; it needs `agent
-shell` and `agent stop`. Those host entries remain #817's responsibility.
-
-For the real Helper mode, Helper must already have its ordinary Codex launcher,
-model access and guest authentication. The probe imports no host credential and
-does not select another model. It preserves the configured model route and
-credential controls. Start Helper's sandbox with `agent start helper
---sandbox-only`; the probe launches its one Codex command through native `agent
-start helper --foreground`. It preserves an already active coding session by
-refusing to replace it. Before the run, verify the ordinary launcher version and
-login status inside Helper. An operator may privately copy an existing
-provisioned Codex token into this owned test home under the standing test
-authority. Keep the managed configuration and proxy/CA settings. Do not copy
-the Admin API credential into Helper.
-
-`TRANSPORT_CLI` is the installed native CLI for this root. `FULL_COMMIT` identifies
-the installed CLI/proxy/guest source, separately from the checkout containing
-the test driver. `ROOM` is an existing ordinary Coord room in this disposable
-instance, with Helper send/receive and Worker receive permission. Keep it
-separate from a running factory's work room. Both guests use the ordinary staged
-`/home/agent/.safeyolo/safeyolo-coord` binary with their own Agent API identities.
-The real run saves raw Codex events and stderr before parsing them, including
-when the command fails. `--helper-events FILE` selects the events file in
-an existing host-owned directory outside guest writable mounts. The default
-is a unique file in the root's logs directory; stderr uses `FILE.stderr`.
-Both files have private permissions. Preserve a failed run's events
-for diagnosis instead of starting another model session to recover its operands.
-
-Replace these operands before running as the disposable instance's owner.
-Connect the approved Tart Commander client to this Ubuntu instance before the
-decision. Use its existing remote connection settings and separate Admin API
-and SSH credentials. For an SSH tunnel, loopback HTTP and WebSocket endpoints
-are supported; the event path is `/admin/events`. This command changes the
-disposable policy, invokes one Codex session and waits up to 600 seconds for a
-human decision through CLI or Commander:
+The Admin API is the host's administrative application programming interface.
+If inspect cannot reach it, leave with `quit` and run these commands in the same host terminal. Logs and diagnose use the configured local
+files; missing or invalid files produce their own errors.
 
 ```sh
-uv run --frozen --no-sync python tests/blackbox/installed_shared_approvals.py \
-  --config-dir ROOT --transport-cli TRANSPORT_CLI \
-  --native-cli ROOT/bin/safeyolo --native-proxy ROOT/bin/safeyolo-proxy \
-  --commit FULL_COMMIT --interfaces --real-helper --shared-room ROOM \
-  --operator-timeout 600 --reconcile-seconds 120
+safeyolo status
+safeyolo logs --agent work --lines 50 --json
+safeyolo diagnose --agent work --json
+safeyolo agent diagnostics work
 ```
 
-The result requires native diagnostic/show/preparation commands executed by
-Codex, a canonical Helper-attributed typed preparation, unchanged network
-permission before the human decision, two exact Worker marker deliveries,
-refusal for Helper and the second port, and owned cleanup. The driver prints
-the native trusted scope and separately quoted Helper diagnosis before the
-human decides. Helper's successful native preparation does not grant network
-permission. Rejection, an expired decision window or a changed action stops
-the journey without a Worker retry. Model prose and a successful process exit
-do not establish U3.
+Diagnosis distinguishes saved policy and last recorded launch from verified
+live state. Local evidence does not confirm the active policy or a decision.
+For a stopped proxy, inspect the named startup error and
+`$SAFEYOLO_CONFIG_DIR/logs/proxy.log`; repair the named input or occupied
+endpoint, then use `safeyolo start` and `safeyolo policy show`. For agent runtime
+or shell failures, follow [agent diagnosis and recovery](native-policy.md#configure-and-use-an-agent).
+Keep the selected root and executable when retrying. Direct human decisions
+remain usable when an optional assistant's model is unavailable.
 
-The fixed disclosure inputs place a synthetic secret in selected raw evidence
-and a separate peer record outside Helper's reads. Helper responses, routine
-native logs and the shared-room notification must exclude both. A deterministic
-Helper call appends the fixed terminal-control/Markdown/HTML reason to the
-real diagnosis on the same typed action. The native display quotes that reason;
-the shared notification carries only the permitted canonical projection.
-Raw evidence remains available to its authorized owner.
+## Optional: inspect a factory
 
-When `client_reconciliation` appears, the same action has its canonical CLI
-outcome and two exact Worker marker deliveries. The proxy and guests remain
-live for the selected 120 seconds. Reconnect the other client during this window
-and observe the same terminal state and reusable Worker/host/port effect.
-Record the actual Commander display and backend/source separately. The driver
-does not infer a GUI result. Its teardown then stops both guests, proxy,
-listeners and origins, and restores the saved fixture policy after proxy exit.
-Cleanup errors remain failures.
+A factory runs agents with approved roles and declared handoffs. It is not
+the human operator. To set one up, follow [factory check, approve, prepare,
+login and run](factories.md#fresh-setup-check-approve-and-run).
 
-Omitting `--real-helper` selects deterministic preparation. Add
-`--wait-for-operator` to use the same human/client window without a model turn.
-These controls do not establish the real U3 action or isolated model failure in
-a running Helper. That U6 failure observation remains separate from tool/login
-readiness. Reuse the accepted lost-reply, authority and race controls at their
-tested revisions.
+After setup, use its configured factory name with
+`safeyolo inspect --factory NAME`. For the documented `backlog` example,
+`safeyolo inspect --factory backlog` lists only its declared agents. Roles
+come from its approved snapshot; live inventory supplies their current state.
+An approved snapshot alone does not establish readiness.
 
-For the separate U6 model failure case, use the same owned Ubuntu/systrap setup
-with both sandboxes and the proxy running. Helper's ordinary Codex command must
-be stopped before the probe. Verify its installed launcher version and login
-status. Replace `ROOT`, `TRANSPORT_CLI` and `FULL_COMMIT` with the installed
-instance operands described above. Run from the checkout containing the probe:
+## Optional: ask another agent for help
+
+A Helper is a separate agent that reads one selected network request and can
+prepare a reason for your decision. The requesting agent is called the Worker
+in the shared-approval protocol. Helper cannot approve, reject or grant itself
+reads. You can decide directly without using a Helper.
+
+First create a separate agent through [agent setup](native-policy.md#configure-and-use-an-agent).
+Use `adviser` as the new name in those setup commands and select its workspace;
+do not recreate the existing `work` agent.
+For a model-assisted diagnosis, choose its [host setup script and login](../contrib/HOST_SCRIPT_GUIDE.md#bundled-setups).
+Keep its own durable identity and authentication. This example names that agent
+`adviser`; replace it with your configured name. Sharing does not launch a model
+or send it an instruction. Tell the running assistant which shared request to
+investigate through its ordinary terminal or communication channel.
+
+The Helper commands also require a Linux `safeyolo` executable inside that
+guest. Ordinary guest staging supplies `safeyolo-guest` and `safeyolo-coord`,
+which do not implement these commands. On Ubuntu, you can stage the installed
+host executable in the Helper's read-only configuration share. Stop `adviser` first;
+these host commands replace `operator-client` in its share and then restart
+its configured command:
 
 ```sh
-uv run --frozen --no-sync python tests/blackbox/installed_shared_approvals.py \
-  --config-dir ROOT --transport-cli TRANSPORT_CLI \
-  --native-cli ROOT/bin/safeyolo --native-proxy ROOT/bin/safeyolo-proxy \
-  --commit FULL_COMMIT --interfaces --model-unavailable
+safeyolo agent stop adviser
+cp "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" "$SAFEYOLO_CONFIG_DIR/agents/adviser/config-share/operator-client"
+chmod 0755 "$SAFEYOLO_CONFIG_DIR/agents/adviser/config-share/operator-client"
+safeyolo agent start adviser
 ```
 
-The probe prepares the selected pending action with deterministic native Helper
-calls. It uses its second owned listener at `127.0.0.3` as a model endpoint
-returning HTTP 503. Only Helper receives fixture access to that listener. A
-command-scoped Codex provider override selects that endpoint without changing
-the saved model configuration or credentials. HTTP and stream retries are zero;
-no paid model request or repeat U3 witness is needed.
+On macOS, the host executable is a macOS executable and cannot run in the Linux guest.
+Supply a Linux `safeyolo` built from the selected source for the guest's
+architecture through the [Linux bundle build](native-policy.md#build-a-native-bundle),
+then copy that executable to the same stopped agent's share. A macOS bundle
+does not supply this additional Linux executable. Do not copy an Admin API credential
+into the guest. The read-only share appears at `/safeyolo` there.
 
-Before returning the 503, the endpoint records Helper's running sandbox,
-coding-agent and launch identities, the same pending action, unchanged policy
-and zero Worker deliveries. The probe requires an actual model request naming
-the selected request, an initialized Codex thread and the matching failed-turn
-diagnosis. A missing launcher, authentication failure or successful process exit
-cannot supply this result. The printed `model_unavailable` phase contains the
-diagnosis and pending action. Raw events and stderr retain private permissions.
-The native CLI then displays the trusted scope and directly approves through
-the common resolver. The final result requires the approved canonical action,
-exact Worker marker deliveries, refused Helper/second-port controls and owned
-cleanup. The model failure itself must leave the action pending and policy
-unchanged. Add `--wait-for-operator --reconcile-seconds 0` when a human should
-make the direct decision instead of the fixture's explicit operator call.
+On the host, replace `REQUEST_ID` with a pending ID obtained for `work` above
+and grant `adviser` only that request's diagnostic and approval reads:
 
-Commander can run on approved Tart against the same Ubuntu pending item.
-Physical-host GUI placement is not a prerequisite. A client source test does
-not establish the actual cross-client journey.
-See the [entry responsibility map](native-settings.md#operator-entry-responsibilities)
-for the retained component boundaries.
+```sh
+safeyolo approvals share REQUEST_ID --agent work --helper adviser
+```
+
+Sharing reports whether the Helper session is available or unverified. It
+grants no network permission. The [selected-evidence reference](native-policy.md#selected-evidence-and-network-approvals)
+describes the exact read scope, durable identities and withdrawal behavior.
+
+Inside **`adviser`'s guest**, use the staged client with the same full request
+ID. Its normal proxy and `/app/agent_token` supply transport and identity:
+
+```sh
+/safeyolo/operator-client helper diagnostic REQUEST_ID
+/safeyolo/operator-client helper show REQUEST_ID
+/safeyolo/operator-client helper prepare REQUEST_ID --reason 'The selected diagnostic identifies the destination needed by the task.'
+```
+
+Preparation rereads and submits the canonical typed action. It does not execute
+a host command or copy scope from model prose. Back on the **host**, read
+`safeyolo approvals show REQUEST_ID --agent work`. The display separates the
+trusted effect from the quoted `Helper reason (untrusted text)`. Decide with
+`approvals approve` or `approvals reject` for that ID, or return to inspect.
+If the model or client fails, the request remains subject to your direct decision.
+
+Installed contributor procedures, including real Helper/client observations,
+model failure, ownership and teardown, are in the
+[shared-approval test reference](../tests/blackbox/README.md#installed-shared-approval-witness).
