@@ -1903,6 +1903,14 @@ pub(crate) async fn guest_command_output(
     timeout: std::time::Duration,
 ) -> io::Result<std::process::Output> {
     let child = spawn_guest_command_with_output(name, command, true, false).await?;
+    wait_guest_command_output(child, timeout).await
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn wait_guest_command_output(
+    child: tokio::process::Child,
+    timeout: std::time::Duration,
+) -> io::Result<std::process::Output> {
     tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "guest command timed out"))?
@@ -1910,21 +1918,22 @@ pub(crate) async fn guest_command_output(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn coding_agent_observation(name: &str) -> io::Result<String> {
-    let child = spawn_guest_command_with_output(
+    let output = guest_command_output(
         name,
         "/safeyolo/safeyolo-guest observe check",
-        true,
-        false,
+        std::time::Duration::from_secs(5),
     )
-    .await?;
-    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
-        .await
-        .map_err(|_| {
+    .await
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
             io::Error::new(
                 io::ErrorKind::TimedOut,
                 "coding-agent observation timed out",
             )
-        })??;
+        } else {
+            error
+        }
+    })?;
     if !output.status.success() {
         return Err(io::Error::other("native coding-agent observation failed"));
     }
@@ -2087,6 +2096,46 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn guest_output_deadline_refuses_partial_output_and_stops_its_transport() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "printf 'partial running state'; exec /bin/sleep 60"])
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = i64::from(child.id().unwrap());
+        let token = crate::host_lifecycle::process_token(pid).unwrap();
+        let started = std::time::Instant::now();
+        let error = wait_guest_command_output(child, std::time::Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while crate::host_lifecycle::process_token(pid).as_deref() == Some(&token) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned transport survived its deadline"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let completed = Command::new("/bin/sh")
+            .args(["-c", "printf '{}'"])
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        assert_eq!(
+            wait_guest_command_output(completed, std::time::Duration::from_secs(1))
+                .await
+                .unwrap()
+                .stdout,
+            b"{}"
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]

@@ -14,13 +14,14 @@ import pytest
 import tomlkit
 
 from tests.proxy_contracts.harness import request
-from tests.proxy_contracts.test_native_policy_cli import native_instance
+from tests.proxy_contracts.test_native_policy_cli import DENY, native_instance
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Local native caller control selects Linux")
 
 
 def test_installed_callers_keep_unavailable_managed_state_unverified(tmp_path):
-    with native_instance(tmp_path) as instance:
+    source = DENY + '\n[agents.alice]\nagent_id="ag-11111111111111111111111111111111"\n'
+    with native_instance(tmp_path, source) as instance:
         created = instance.cli("agent", "create", "marker", "--workspace", str(tmp_path),
                                "--launcher", "supervisor")
         assert created.returncode == 0, created.stderr
@@ -45,8 +46,10 @@ def test_installed_callers_keep_unavailable_managed_state_unverified(tmp_path):
             result = instance.cli(*arguments)
             assert result.returncode == 0, result.stderr
             value = json.loads(result.stdout)
-            observations.append(value["agents"][0] if "agents" in value else value)
-        observations.extend(instance.admin("GET", "/admin/agents")["agents"])
+            observations.append(next(row for row in value["agents"] if row["name"] == "marker")
+                                if "agents" in value else value)
+        observations.extend(row for row in instance.admin("GET", "/admin/agents")["agents"]
+                            if row["name"] == "marker")
         for observed in observations:
             assert observed["agent_id"] == agent_id and observed["launch_id"] == "launch-current"
             assert observed["runtime_state"] == observed["agent_state"] == "unknown"
