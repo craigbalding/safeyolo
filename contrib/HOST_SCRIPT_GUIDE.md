@@ -31,26 +31,29 @@ you run it.
 
 ## Bundled setups
 
-The retained Python CLI accepts bundled aliases without a checkout-relative
-script path. From its source installation, use `uv run --frozen safeyolo agent add`
-in the separate Python instance. For native commands, select the corresponding
-executable file in the trusted checkout's `contrib/` directory.
+Select an executable setup file in the installed instance's `assets/contrib/`
+directory with `agent create --host-script` or, for an existing stopped agent,
+`agent configure --host-script`. A trusted checkout's `contrib/` directory can
+also supply these scripts. The native CLI does not use the retired Python
+CLI's bundled aliases.
 
 Codex, Pi and Claude setup use the installed native Coord host executable and
 its matching Linux guest artifact. Native creation and configuration select
 both inputs automatically, including on macOS. Direct script invocation uses
 `SAFEYOLO_COORD_EXECUTABLE` and `SAFEYOLO_COORD_GUEST_BINARY`, or finds
-`safeyolo-coord` on `PATH` or in the wheel's `bin/` directory. The default
+`safeyolo-coord` on `PATH` from the native instance's `bin/` directory. The default
 guest input is the host executable's sibling `../assets/guest/safeyolo-coord`.
 Missing or mismatched artifacts abort setup with a diagnostic. Setup requires
 no Python interpreter.
 
-| Alias | Setup |
+| File under `assets/contrib/` | Setup |
 | --- | --- |
-| `@claude` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
-| `@codex` | Stages SafeYolo-owned Codex settings and the coord MCP adapter, without importing host credentials or arbitrary `~/.codex` state. Launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`); SafeYolo remains the outer boundary. |
-| `@codex-coord` | Uses the Codex setup with an explicitly adopted agent-local login and supervises bounded non-interactive turns. See the [supervisor contract](../docs/codex-coord-supervisor.md). |
-| `@mise-shell` | Opens an interactive shell with mise ready for `mise use -g ...`. |
+| `claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
+| `codex-host-setup.sh` | Stages SafeYolo-owned Codex settings and the coord MCP adapter, without importing host credentials or arbitrary `~/.codex` state. Launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`); SafeYolo remains the outer boundary. |
+| `codex-coord-host-setup.sh` | Uses the Codex setup with an explicitly adopted agent-local login and supervises bounded non-interactive turns. See the [supervisor contract](../docs/codex-coord-supervisor.md). |
+| `pi-host-setup.sh` | Keeps Pi authentication and state in the agent's own home and stages native SafeYolo context. See the Pi section below. |
+| `pi-coord-host-setup.sh` | Adds the approved Factory role and native Coord extension to the Pi setup. |
+| `mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
 
 Without `--host-script`, the sandbox starts an interactive bash shell in its
 persistent home. Any executable host script can be selected by its path.
@@ -75,12 +78,12 @@ the explicit sharing path described below.
 ### First Codex login
 
 Use the installed native product and its matching Linux guest Coord assets.
-For a fresh `@codex` agent, authentication happens inside that agent's persistent
-home. After its first run installs Codex, leave it running and open a guest shell
-from a second host terminal. Replace `work` with the agent name:
+For a fresh agent using `codex-host-setup.sh`, authentication happens inside
+that agent's persistent home. After its first run installs Codex, leave it
+running and open a guest shell from a second host terminal. Replace `work` with the agent name:
 
 ```sh
-safeyolo agent shell work
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent shell work
 ```
 
 Inside the guest, log in and record that this login belongs to this agent:
@@ -92,7 +95,7 @@ codex login --device-auth
 
 Then return to the Codex terminal. Repeat the login and adoption commands after
 an explicit authentication reset. The coordinated setup requires the same agent
-to complete this normal `@codex` login before selecting `@codex-coord`.
+to complete this normal Codex login before selecting `codex-coord-host-setup.sh`.
 
 ## Why host-side
 
@@ -111,13 +114,15 @@ Your script is called with these env vars set:
 
 | Variable | Meaning |
 |---|---|
-| `SAFEYOLO_AGENT_NAME` | The instance name the user passed to `agent add`. |
+| `SAFEYOLO_AGENT_NAME` | The agent name selected by `agent create` or `agent configure`. |
 | `SAFEYOLO_AGENT_HOME` | Absolute path to the persistent host directory mounted at `/home/agent` in the sandbox. Write agent-readable files here. |
 | `SAFEYOLO_AGENT_FOLDER` | Absolute path to the workspace directory mounted at `/workspace` in the sandbox. |
 
-Exit with status `0` to proceed. Any nonzero status aborts `agent add`.
-SafeYolo prints the script's standard error and leaves the partial agent state
-in place. After you correct the script, run `agent add --force` to retry.
+Exit with status `0` to proceed. Any nonzero status aborts creation or
+configuration before the saved policy changes. The script's output remains
+visible, and files it wrote into the agent home can remain. After correcting
+the script, repeat `agent create` for a new agent or `agent configure
+--host-script` for an existing stopped agent.
 
 ## What to write
 
@@ -214,9 +219,9 @@ Use `agent attach NAME` to reconnect, or `agent shell NAME` for an independent
 guest shell. For boot-only work use `agent start NAME --sandbox-only`; it invokes
 no coding agent, host launcher, or launch hooks.
 
-The bundled `@codex-coord` and `@pi-coord` setups explicitly select the
-SafeYolo runtime supervisor. Guest PID 1 owns that supervisor, which runs the
-Coord supervisor and its bounded harness turns. Existing recovery and
+The bundled `codex-coord-host-setup.sh` and `pi-coord-host-setup.sh` setups
+explicitly select the SafeYolo runtime supervisor. Guest PID 1 owns that
+supervisor, which runs the Coord supervisor and its bounded harness turns. Existing recovery and
 intentional-stop handling remain unchanged. The setups retain a separate
 `.safeyolo-interactive-command` for Command Centre's **Debug Agent** action;
 it does not replace the configured managed mode or its checkpoints.
@@ -245,24 +250,23 @@ operator to run `safeyolo agent shell --root` for routine installs.
 ## Idempotency
 
 Native host scripts run on `agent create --host-script` and when an existing
-stopped agent is configured with `agent configure --host-script`. In the
-retained Python CLI, `agent add` and `agent add --force` also run setup.
+stopped agent is configured with `agent configure --host-script`.
 Make yours re-runnable: check before
 creating, overwrite only what you own, and don't assume a blank slate.
 
 ### Pi authentication and trust
 
-The bundled `@pi` setup keeps Pi authentication, settings, models, sessions,
-extensions, and prompts in the agent-local `~/.pi/agent/` directory. It does
-not inspect or copy host `~/.pi` state. From an interactive Pi session, use
+The bundled `pi-host-setup.sh` keeps Pi authentication, settings, models,
+sessions, extensions, and prompts in the agent-local `~/.pi/agent/` directory.
+It does not inspect or copy host `~/.pi` state. From an interactive Pi session, use
 `/login` and `/logout` for the agent's own provider session; never copy a
 credential from another agent or from the host. The launcher starts Pi with
 `--approve` and appends the SafeYolo baseline. Arguments supplied later by the
 user are forwarded unchanged and can alter Pi's trust behavior.
 
-For a factory role, `@pi-coord` adds the approved role contract and the small
-native Coord `send` and `read_room` extension, then hands Pi JSON turns to the common factory
-supervisor. The role's Pi session, Coord cursor, and pending work use the same
+For a factory role, `pi-coord-host-setup.sh` adds the approved role contract
+and the small native Coord `send` and `read_room` extension, then hands Pi JSON
+turns to the common factory supervisor. The role's Pi session, Coord cursor, and pending work use the same
 checkpoint and recovery rules as a Codex role.
 On Alpine, support is conditional on the image's native `nodejs` package
 meeting Node `>=22.19.0`; the setup does not use `nodejs-current`, mix
@@ -286,8 +290,8 @@ Ask the agent things like:
 > run, and execs it in `--yes` mode.
 
 Review the resulting script, save it to `contrib/<tool>-host-setup.sh`,
-and select its path with native `agent create --host-script` or retained Python
-`agent add --host-script`.
+and select its path with `agent create --host-script` or, for an existing
+stopped agent, `agent configure --host-script`.
 
 ## Security note
 
