@@ -230,12 +230,16 @@ def run(args: argparse.Namespace) -> None:
                     source = app_file.read(128 * 1024 + 1)
                 assert len(source) <= 128 * 1024, "app source exceeds the retained diagnostic bound"
                 assert source.strip(), "actual app source is missing"
+                # Retain the non-repeatable app observation before finish can
+                # fail and Demo removes its disposable workspace.
+                result.update({"real_model":True, "app_response":app, "fixture_records":records, "app_code_created":True, "app_source":source, "zero_preapproval_deliveries":True, "demo_finish_completed":False, "peer_after_finish_verified":False})
+                print(json.dumps(result), flush=True)
                 active.send("\n")
                 assert active.finish() == 0, active.output[-1500:]
                 stopped(name)
                 closed(port)
                 peer_survives()
-                result.update({"real_model":True, "app_response":app, "fixture_records":records, "app_code_created":True, "app_source":source, "zero_preapproval_deliveries":True})
+                result.update({"demo_finish_completed":True, "peer_after_finish_verified":True})
         finally:
             if active is not None:
                 active.cancel()
