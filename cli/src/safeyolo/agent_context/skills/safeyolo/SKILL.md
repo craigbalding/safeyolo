@@ -114,13 +114,15 @@ edge in the current one.
    `tool` trust and invocation annotation.
 3. Follow `implies` / `rules_out` edges by the evidence value.
 4. Land on a `conclusion` or `operator_ask` and stop.
-5. **Graph gap:** if the evidence I have is not covered by an outgoing
-   edge, say `Graph gap` explicitly, name the node id, edit the YAML
-   with a new node/edge, run `scripts/render_skill_graph.py`, and only
-   then continue. Do not guess and continue with an unwritten edge.
+5. **Graph gap:** if the evidence is not covered by an outgoing edge,
+   report `Graph gap`, the node id, the observed evidence and the missing
+   relationship to the operator. Keep the result unproved. Continue only
+   checks supported by the available evidence and existing authority.
 
-The graphs are mine to maintain. When I add a new symptom or find a
-missing edge during real triage, I update the YAML in the same turn.
+An installed skill does not include the repository's graph renderer. In a
+SafeYolo source checkout, an agent may contribute a missing node or edge to
+the YAML and regenerate its `.mmd` with `scripts/render_skill_graph.py`.
+Repository maintenance is optional and is not a prerequisite for diagnosis.
 
 ## Preserve the boundary
 
@@ -128,7 +130,7 @@ missing edge during real triage, I update the YAML in the same turn.
 - Read `/app/agent_token` at call time and keep it out of output and files.
 - Treat `sgw_` gateway tokens as credentials even though they are not upstream
   secrets.
-- Never request the admin token or port 9090, change addon modes, edit host
+- Never request the admin token or port 9090, change policy controls, edit host
   policy, or suggest direct network bypasses.
 - Guest `sudo` is an intended capability, not host elevation. Keep its effects
   inside the declared writable mounts and do not confuse it with permission to
