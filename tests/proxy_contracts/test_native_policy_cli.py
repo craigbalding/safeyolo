@@ -109,7 +109,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         if platform_assets is not None:
             inputs += ["--platform-assets", str(platform_assets)]
         installation = subprocess.run(
-            [str(REPO / "scripts/install_native.sh"), "--root", str(root), *inputs],
+            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), *inputs],
             capture_output=True, text=True, timeout=15,
         )
         assert installation.returncode == 0, installation.stderr

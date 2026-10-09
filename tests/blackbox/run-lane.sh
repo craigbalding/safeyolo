@@ -58,7 +58,7 @@ else
   [[ -z ${SAFEYOLO_NATIVE_VM_ARTIFACTS:-} ]] || inputs+=(--vm-artifacts "$SAFEYOLO_NATIVE_VM_ARTIFACTS")
 fi
 # This is the ordinary source entry, delegating to the accepted installer.
-"$checkout/install.sh" --root "$root" "${inputs[@]}"
+"$checkout/install.sh" --root "$root" --command-dir "$root/commands" "${inputs[@]}"
 # The separate test environment never publishes a product CLI.
 (cd -- "$repository"; uv sync --frozen --group dev)
 export SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT="$checkout"

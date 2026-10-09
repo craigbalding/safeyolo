@@ -556,7 +556,8 @@ async fn guest_preflight(role: &Role, args: &[String]) -> Result<(), Error> {
             .collect::<Vec<_>>()
             .join(" ")
     );
-    let child = host_platform::spawn_guest_command_with_output(&role.agent, &command, true).await?;
+    let child =
+        host_platform::spawn_guest_command_with_output(&role.agent, &command, true, false).await?;
     let result = tokio::time::timeout(Duration::from_secs(40), child.wait_with_output())
         .await
         .map_err(|_| "role preflight did not finish; inspect agent diagnostics")??;
@@ -709,7 +710,7 @@ async fn login(snapshot: &Snapshot, name: &str) -> Result<(), Error> {
             println!("Use Pi /login for the selected provider, then exit. Only this role's home is used.");
             format!("/home/agent/.safeyolo-interactive-command {}", role.args.as_deref().unwrap_or(&agent.user_default_args).iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" "))
         };
-        let mut child = host_platform::spawn_guest_command(&role.agent, &command).await?;
+        let mut child = host_platform::spawn_guest_command(&role.agent, &command, true).await?;
         if !child.wait().await?.success() { return Err("role login or adoption failed; agent-local files retained".into()); }
         Ok::<_,Error>(())
     }.await;

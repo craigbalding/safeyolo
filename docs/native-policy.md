@@ -11,7 +11,7 @@ draft-safe chat and room/harness-event observation.
 ## Install and start
 
 On supported Ubuntu or Apple Silicon macOS, use your ordinary host account.
-Obtain a native bundle for your host from the source build below. Public release
+Obtain a SafeYolo bundle for your host from the source build below. Public release
 publication is stopped; existing wheel downloads are earlier packages.
 A bundle's `package-info` records its source, profile, platform and actual
 minimum glibc or macOS version. Unpacking and installation need Bash, tar and
@@ -24,17 +24,22 @@ Before installation, prepare the [host runtime and guest assets](#guest-prerequi
 The commands below assume those assets are at `$HOME/safeyolo-platform`;
 replace that path with your supplied directory. Choose a root with no existing
 instance configuration. This example uses the CLI default `$HOME/.safeyolo`.
-If it is already in use, choose another explicit root and use that same path
-in the environment selection below. There is no old-state conversion.
+If it is already in use, preserve it and follow the
+[custom-instance reference](#other-installation-paths). There is no old-state conversion.
 Installation checks bundle checksums and executable identities, then creates
 configuration, trust, private tokens and runtime directories internally.
 There is no separate init, build or setup command after unpacking.
 
+The installer creates the `safeyolo` command in `$HOME/.local/bin` when that
+directory is already on your normal PATH. Otherwise it uses `/usr/local/bin`
+on Linux and Mac, and may ask for your normal sudo password to create the
+command entry. The instance files remain owned by your account. New host
+terminals can run `safeyolo` without selecting a root or changing PATH.
+An unrelated existing command is preserved and reported with its recovery.
+
 ```sh
 tar -xzf safeyolo-linux-arm64-production.tar.gz
 ./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo" --platform-assets "$HOME/safeyolo-platform"
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
-export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 ```
 
 The installer prints the full source commit and build profile. Host executables
@@ -64,7 +69,7 @@ example listeners to inspect that agent.
 From a host terminal, check the configuration and start the selected instance:
 
 ```sh
-safeyolo config check "$SAFEYOLO_CONFIG_DIR/config.toml"
+safeyolo config check "$HOME/.safeyolo/config.toml"
 safeyolo start
 safeyolo status
 safeyolo doctor
@@ -84,6 +89,39 @@ Stop each agent separately; the top-level command leaves its sandbox intact.
 ```sh
 safeyolo stop
 ```
+
+## Other installation paths
+
+The ordinary commands use `$HOME/.safeyolo`. To install a separate instance,
+choose a fresh directory with `install.sh --root PATH` and select it with
+`safeyolo --root PATH COMMAND`. For example, `safeyolo --root /path/to/instance status`
+reads that instance; replace the path with the directory you installed. These
+options do not move or convert existing state. Commands that edit files also
+need the matching paths inside that instance.
+
+Multiple instances are optional. To select an already installed second
+instance at `$HOME/.safeyolo-other` for commands in the current terminal, use:
+
+```sh
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo-other"
+safeyolo status
+```
+
+`SAFEYOLO_CONFIG_DIR` takes precedence over `SAFEYOLO_HOME`.
+`SAFEYOLO_NATIVE_CONFIG_PATH` selects a TOML configuration file and takes
+precedence over either directory variable. Explicit `--root PATH` or
+`--config FILE` overrides environment selection. Relative paths in a selected
+configuration belong to its directory. The ordinary default installation
+requires none of these settings.
+
+For a different command location, the installer accepts `--command-dir DIRECTORY`.
+Select a directory already on your normal shell PATH. Disposable test instances
+can use an owned command directory without replacing the host's command.
+If a `safeyolo` command already occupies the chosen location, the installer
+preserves it and reports the path before creating instance configuration.
+Move or rename that command only if you intend to replace it, or choose
+another command directory. An earlier command on PATH is also reported if
+it prevents discovery; the new instance files remain available for recovery.
 
 ## Guest prerequisites
 
@@ -121,8 +159,7 @@ keep that shared tree available and immutable for the instance's lifetime.
 ## Configure and use an agent
 
 Run these commands on the host as the account that owns the workspace and
-instance. They use the executable and `SAFEYOLO_CONFIG_DIR` selected during
-installation. The installed platform assets and host runtime must be ready.
+instance. They use your default installation at `$HOME/.safeyolo`. The installed platform assets and host runtime must be ready.
 
 In this example, `$HOME/work` is an existing directory owned by your account.
 The commands create a new agent named `work` and run an interactive shell in
@@ -167,13 +204,12 @@ no SSH access. Closing a terminal or Commander does not stop the background run.
 
 ## Check, show and apply
 
-In another host terminal, select the same root and executable as during
-installation. Set `SAFEYOLO_CONFIG_DIR` to that root and put its `bin` directory
-on PATH, as in the [operator guide](native-operator.md#start-with-an-installed-instance).
+Open another terminal on the same host and account. The commands use the
+default installation, as in the [operator guide](native-operator.md#start-with-an-installed-instance).
 Check the installed policy and read the effective policy from the running process:
 
 ```sh
-safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
+safeyolo policy check "$HOME/.safeyolo/policy.toml"
 safeyolo policy show
 ```
 
@@ -267,7 +303,7 @@ are `run`, `agent`, `role`, `suite`, `subject`, `step`, `test`, `intent` and
 the complete `X-SafeYolo-Test-Context` header line.
 
 ```sh
-safeyolo test-context --run local-proof --agent alice --step one --write "$SAFEYOLO_CONFIG_DIR/context"
+safeyolo test-context --run local-proof --agent alice --step one --write "$HOME/.safeyolo/context"
 ```
 
 The file and stdout contain `run=local-proof;agent=alice;step=one`. A watcher
@@ -281,9 +317,9 @@ the operator token. The following commands declare context on Alice's listener,
 read it back, then clear it:
 
 ```sh
-safeyolo test-context declare --socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --token-file "$SAFEYOLO_CONFIG_DIR/data/agent_token" --run local-proof --agent alice --ttl 60
-safeyolo test-context current --socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --token-file "$SAFEYOLO_CONFIG_DIR/data/agent_token"
-safeyolo test-context clear --socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --token-file "$SAFEYOLO_CONFIG_DIR/data/agent_token"
+safeyolo test-context declare --socket "$HOME/.safeyolo/data/alice.sock" --token-file "$HOME/.safeyolo/data/agent_token" --run local-proof --agent alice --ttl 60
+safeyolo test-context current --socket "$HOME/.safeyolo/data/alice.sock" --token-file "$HOME/.safeyolo/data/agent_token"
+safeyolo test-context clear --socket "$HOME/.safeyolo/data/alice.sock" --token-file "$HOME/.safeyolo/data/agent_token"
 ```
 
 Each command returns its Agent API JSON result. Declarations are process-local,
