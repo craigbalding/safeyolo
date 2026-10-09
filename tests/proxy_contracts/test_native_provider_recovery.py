@@ -69,6 +69,13 @@ def adopt_fixture_children():
         yield
     finally:
         assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+        # runsc's detached gofer may also have become an adopted child. The
+        # instance has stopped by now; reap exited children without signalling.
+        try:
+            while os.waitpid(-1, os.WNOHANG)[0]:
+                pass
+        except ChildProcessError:
+            pass  # All fixture children have already been reaped.
 
 
 def kill_owned_process(pid, token):
@@ -117,7 +124,7 @@ def test_authorized_provider_survives_only_its_holder_loss(tmp_path):
         # The installed fixture filters PATH to its private bin directory.
         # Make the actual native runtime tools available there, with no shell
         # wrappers or alternate forwarding route.
-        for name in ("unshare", "tail", "newuidmap", "newgidmap", "nsenter", "ip", "cp"):
+        for name in ("unshare", "tail", "newuidmap", "newgidmap", "nsenter", "ip", "cp", "setfacl"):
             executable = shutil.which(name)
             assert executable, f"missing host prerequisite: {name}"
             (instance.root / "bin" / name).symlink_to(executable)
