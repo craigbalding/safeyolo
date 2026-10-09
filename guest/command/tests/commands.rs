@@ -264,11 +264,12 @@ int clock_gettime(clockid_t id, struct timespec *value) {
         let resume = supervisor.pause();
         let mut host_timestamp = running.clone();
         host_timestamp["heartbeat_at"] = json!(host_time);
-        fs::write(&guest.state, host_timestamp.to_string()).unwrap();
+        let original = serde_json::to_vec(&host_timestamp).unwrap();
+        fs::write(&guest.state, &original).unwrap();
         let rejected = command().args(["supervise", "check"]).output().unwrap();
         assert!(!rejected.status.success());
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("heartbeat"));
-        assert_eq!(guest.read(), host_timestamp);
+        assert_eq!(fs::read(&guest.state).unwrap(), original);
         fs::write(&guest.state, running.to_string()).unwrap();
         drop(resume);
         supervisor.stop();
