@@ -124,7 +124,7 @@ the files after stopping. It is independent of Lab and needs no pane setup.
 
 ## Lab
 
-[The native Lab](../docs/agent-debugging.md) prepares and observes controlled
+[The native Lab](../docs/nested-linux-lab.md) prepares and observes controlled
 experiments in an owned agent. Use `safeyolo lab --help` for workspace,
 objective, existing-agent, status and teardown options. Guest evidence capture
 is native; selected test instruments may use Python outside the product.
