@@ -121,7 +121,8 @@ def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture)
         [
             sys.executable,
             "-c",
-            "from safeyolo.coord import api; "
+            "from proxy.tests.coord_fixture import coord_modules; "
+            "api, _, _ = coord_modules(); "
             "api.declare_capabilities("
             "'coord-rollback-room', 'ag-11111111111111111111111111111111', "
             "['rust:native', 'rust:shared'], ttl_seconds=900)",
