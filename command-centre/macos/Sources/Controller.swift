@@ -148,16 +148,43 @@ final class CommandCentreController: ObservableObject {
                 self.credentialStatus = nil
                 do {
                     let credential = try result.get()
-                    try self.connect(selection, credential: credential)
+                    let nextClient = try self.credentialClient(selection, credential: credential)
                     if credential.source == .file {
-                        // Supersede a pending native read only once the file is usable.
-                        self.connectionAttempt += 1
-                        self.importCredential(credential, attempt: self.connectionAttempt, profile: selection.remoteProfile)
+                        self.verifyCredentialFile(selection, credential: credential, client: nextClient, attempt: attempt)
+                    } else {
+                        self.connect(selection, credential: credential, client: nextClient)
                     }
                 } catch {
                     self.startupError = error.localizedDescription
                 }
             }
+        }
+    }
+
+    private func verifyCredentialFile(
+        _ selection: SelectedConnection,
+        credential: LoadedCredential,
+        client nextClient: SafeYoloClient,
+        attempt: Int
+    ) {
+        credentialStatus = "Verifying the private credential file for \(selection.instanceID)…"
+        Task { [weak self] in
+            let accepted = await nextClient.refreshInstance()
+            guard let self, self.connectionAttempt == attempt else {
+                nextClient.stop()
+                return
+            }
+            self.credentialStatus = nil
+            guard accepted else {
+                let detail = nextClient.requestErrors["Instance identity"] ?? "The backend could not be verified."
+                self.startupError = "The credential file could not connect to the selected SafeYolo instance: \(detail)"
+                nextClient.stop()
+                return
+            }
+            // Only backend acceptance supersedes legitimate Keychain access.
+            self.connectionAttempt += 1
+            self.connect(selection, credential: credential, client: nextClient)
+            self.importCredential(credential, attempt: self.connectionAttempt, profile: selection.remoteProfile)
         }
     }
 
@@ -192,7 +219,8 @@ final class CommandCentreController: ObservableObject {
                         warning: nil
                     )
                     self.selectedConnection = selection
-                    try self.connect(selection, credential: credential)
+                    let nextClient = try self.credentialClient(selection, credential: credential)
+                    self.connect(selection, credential: credential, client: nextClient)
                     self.importCredential(credential, attempt: attempt, profile: profile)
                     completion(.success(profile))
                 } catch {
@@ -283,15 +311,12 @@ final class CommandCentreController: ObservableObject {
         }
     }
 
-    private func connect(
+    private func credentialClient(
         _ selection: SelectedConnection,
         credential: LoadedCredential
-    ) throws {
+    ) throws -> SafeYoloClient {
         _ = try validatePinnedInstanceID(actual: credential.instanceID, expected: selection.instanceID)
-        client?.stop()
-        remoteTerminal = selection.remoteProfile != nil
-            || !["127.0.0.1", "localhost", "::1"].contains(URL(string: selection.adminURL)?.host ?? "")
-        let nextClient = try SafeYoloClient(
+        return try SafeYoloClient(
             adminURL: selection.adminURL,
             eventsURL: selection.eventsURL,
             token: credential.token,
@@ -299,6 +324,16 @@ final class CommandCentreController: ObservableObject {
             session: session,
             isLocalConnection: selection.isLocalConnection
         )
+    }
+
+    private func connect(
+        _ selection: SelectedConnection,
+        credential: LoadedCredential,
+        client nextClient: SafeYoloClient
+    ) {
+        client?.stop()
+        remoteTerminal = selection.remoteProfile != nil
+            || !["127.0.0.1", "localhost", "::1"].contains(URL(string: selection.adminURL)?.host ?? "")
         nextClient.onNewApproval = { [weak presenter = self.presenter, weak nextClient] approval in
             guard let presenter, let nextClient else { return }
             presenter.show(approval, client: nextClient)

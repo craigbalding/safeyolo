@@ -88,6 +88,9 @@ extension ModelTests {
         try Data("sy-file-test\n".utf8).write(to: root.appendingPathComponent("data/instance_id"))
         try Data("synthetic-file-token\n".utf8).write(to: root.appendingPathComponent("data/admin_token"))
         try await testHeldReadAndFileUse(root)
+        try await testRejectedFilePreservesKeychain(root)
+        try await testRejectedFilePreservesConnection(root)
+        try await testLateFileVerification(root)
         try await testCredentialReturnsAndMissingFile(root)
         try Data("synthetic-file-token\n".utf8).write(to: root.appendingPathComponent("data/admin_token"))
         try await testSavedProfileIdentity(root)
@@ -172,6 +175,123 @@ extension ModelTests {
         try await Task.sleep(for: .milliseconds(50))
         precondition(controller.client == nil && controller.credentialStatus == nil, "Late import must not revive a disconnected client")
         print("credential-callers: held native read/import, main heartbeat, rendered settings, matching-file connection and late disconnect PASS")
+    }
+
+    @MainActor
+    private static func testRejectedFilePreservesKeychain(_ root: URL) async throws {
+        let refusals: [(name: String, error: String, response: () throws -> (Int, Data))] = [
+            ("HTTP refusal", "403", { (403, Data()) }),
+            ("backend identity", "expected sy-file-test", {
+                (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-other-backend"}"#.utf8))
+            }),
+            ("transport error", URLError(.cannotConnectToHost).localizedDescription, {
+                throw URLError(.cannotConnectToHost)
+            }),
+        ]
+        for refusal in refusals {
+            credentialSnapshot("sy-file-test")
+            let responses = StubURLProtocol.responsesByPath
+            StubURLProtocol.requestHandler = { request in
+                if request.url!.path == "/admin/instance",
+                   request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-file-token" {
+                    return try refusal.response()
+                }
+                return responses[request.url!.path] ?? (404, Data())
+            }
+            let store = HeldCredentialStore(tokens: ["sy-file-test": "synthetic-keychain-token"], holdRead: true)
+            let controller = credentialController(root, store)
+            defer { controller.stop(); store.readGate?.signal(); StubURLProtocol.requestHandler = nil }
+            controller.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
+            try await credentialUntil { store.readAccounts == ["sy-file-test"] }
+            controller.useCredentialFile()
+            try await credentialUntil { controller.startupError?.contains(refusal.error) == true }
+            precondition(controller.client == nil && controller.credentialStatus == nil)
+            precondition(store.writeAccounts.isEmpty && store.token("sy-file-test") == "synthetic-keychain-token",
+                         "Rejected file credentials must not replace a saved token")
+            store.readGate?.signal()
+            try await credentialUntil { store.readsFinished == 1 && controller.client?.adminConnected == true }
+            precondition(controller.client?.instanceID == "sy-file-test" && controller.startupError == nil,
+                         "File verification failure must leave the pending native read usable")
+            precondition(StubURLProtocol.observedAuthorization == "Bearer synthetic-keychain-token")
+            precondition(store.writeAccounts.isEmpty && store.token("sy-file-test") == "synthetic-keychain-token")
+            controller.stop()
+            print("credential-callers: rejected file \(refusal.name), saved token and pending Keychain recovery PASS")
+        }
+    }
+
+    @MainActor
+    private static func testRejectedFilePreservesConnection(_ root: URL) async throws {
+        credentialSnapshot("sy-file-test")
+        let responses = StubURLProtocol.responsesByPath
+        StubURLProtocol.requestHandler = { request in
+            if request.url!.path == "/admin/instance",
+               request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-file-token" {
+                return (403, Data())
+            }
+            return responses[request.url!.path] ?? (404, Data())
+        }
+        let store = HeldCredentialStore(tokens: ["sy-file-test": "synthetic-keychain-token"])
+        let controller = credentialController(root, store)
+        defer { controller.stop(); StubURLProtocol.requestHandler = nil }
+        controller.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
+        try await credentialUntil { controller.client?.adminConnected == true }
+        let connected = controller.client!
+        controller.useCredentialFile()
+        try await credentialUntil { controller.startupError?.contains("403") == true }
+        precondition(controller.client === connected && connected.adminConnected && connected.connectionState != .stopped,
+                     "A rejected file must not stop an authenticated Keychain client")
+        precondition(controller.credentialStatus == nil && store.writeAccounts.isEmpty)
+        precondition(store.token("sy-file-test") == "synthetic-keychain-token")
+        let stillAuthenticated = await connected.refreshInstance()
+        precondition(stillAuthenticated, "The original client must retain its working credential")
+        precondition(StubURLProtocol.observedAuthorization == "Bearer synthetic-keychain-token")
+        print("credential-callers: rejected file preserves the authenticated client and saved token PASS")
+    }
+
+    @MainActor
+    private static func testLateFileVerification(_ root: URL) async throws {
+        for disconnect in [false, true] {
+            credentialSnapshot("sy-file-test")
+            let responses = StubURLProtocol.responsesByPath
+            let held = HeldVerification()
+            StubURLProtocol.requestHandler = { request in
+                if request.url!.path == "/admin/instance",
+                   request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-file-token" {
+                    held.hold()
+                }
+                return responses[request.url!.path] ?? (404, Data())
+            }
+            let store = HeldCredentialStore(tokens: ["sy-file-test": "synthetic-keychain-token"])
+            let profiles = MemoryConnectionProfiles()
+            let controller = credentialController(root, store, profiles)
+            defer { controller.stop(); held.gate.signal(); StubURLProtocol.requestHandler = nil }
+            controller.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
+            try await credentialUntil { controller.client?.adminConnected == true }
+            let connected = controller.client!
+            controller.useCredentialFile()
+            try await credentialUntil { held.started }
+            var heartbeat = false
+            DispatchQueue.main.async { heartbeat = true }
+            try await credentialUntil { heartbeat }
+            precondition(controller.client === connected && connected.connectionState != .stopped && store.writeAccounts.isEmpty,
+                         "An unfinished file check must preserve the working connection")
+            if disconnect {
+                controller.stop()
+            } else {
+                // A newer selection uses its own legitimate Keychain read.
+                controller.start(commandLine: CommandLineConfiguration(adminURL: "http://newer.example", eventsURL: "ws://newer.example/events"))
+                try await credentialUntil { store.readsFinished == 2 && controller.client != nil }
+            }
+            let newer = controller.client
+            held.gate.signal()
+            if !disconnect { try await credentialUntil { newer?.adminConnected == true } }
+            try await Task.sleep(for: .milliseconds(100))
+            precondition(controller.client === newer && controller.startupError == nil && controller.credentialStatus == nil,
+                         "A late verified file must not replace a newer selection or revive a disconnected client")
+            precondition(store.writeAccounts.isEmpty && profiles.saved.isEmpty)
+            precondition(store.token("sy-file-test") == "synthetic-keychain-token")
+            print("credential-callers: held file verification, main heartbeat and late \(disconnect ? "disconnect" : "selection") PASS")
+        }
     }
 
     @MainActor
