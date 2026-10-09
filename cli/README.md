@@ -1,17 +1,17 @@
-# Native SafeYolo CLI
+# SafeYolo CLI
 
-The installed `safeyolo` executable controls the native proxy, agents, policy,
-operator evidence and Coord. Select an instance with `--root ROOT` before the
-command, or set `SAFEYOLO_CONFIG_DIR`. The default root is `$HOME/.safeyolo`.
+The installed `safeyolo` command controls the proxy, agents, policy, operator
+evidence and Coord. It uses your default installation at `$HOME/.safeyolo`.
+For another instance, use the [custom-instance reference](../docs/native-policy.md#other-installation-paths).
 The configuration is `config.toml`; policy and agent settings are in
 `policy.toml`. No Python CLI, wheel or generated YAML configuration is loaded.
 
 ## Installation
 
-Use [native installation](../docs/native-policy.md#install-and-start) on a
+Use [SafeYolo installation](../docs/native-policy.md#install-and-start) on a
 supported host. The unpacked bundle and the repository's `install.sh` invoke
 the same installer. Supply a fresh root and either `--bundle UNPACKED_BUNDLE`
-or the prepared native build inputs described in the
+or the prepared build inputs described in the
 [source build instructions](../docs/native-policy.md#build-a-native-bundle).
 Prepare the [guest runtime](../docs/native-policy.md#guest-prerequisites)
 before starting an agent. There is no migration or Python-package rollback
@@ -20,13 +20,13 @@ operation in this fresh-state product.
 From a source checkout on the owning host account, this example consumes an
 unpacked bundle at `$HOME/native-bundle` and prepared guest inputs at
 `$HOME/safeyolo-platform`. Replace those two supplied paths. The example root
-`$HOME/.safeyolo` must have no existing instance configuration; choose another
-root if it is in use. Keep that same root in the environment selection.
+`$HOME/.safeyolo` must have no existing instance configuration. If it is in use,
+preserve it and follow the custom-instance reference. Installation makes
+`safeyolo` available in new terminals without per-terminal setup. It may ask
+for your normal sudo password to create the command entry.
 
 ```sh
 ./install.sh --root "$HOME/.safeyolo" --bundle "$HOME/native-bundle" --platform-assets "$HOME/safeyolo-platform"
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
-export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo start
 safeyolo status
 safeyolo doctor
@@ -44,7 +44,7 @@ Installed scripts are under `ROOT/assets/contrib`. Relative saved paths are
 resolved by the native configuration owner, not by the later shell's directory.
 
 ```sh
-safeyolo agent create work --workspace "$HOME/code" --host-script "$SAFEYOLO_CONFIG_DIR/assets/contrib/codex-host-setup.sh"
+safeyolo agent create work --workspace "$HOME/code" --host-script "$HOME/.safeyolo/assets/contrib/codex-host-setup.sh"
 safeyolo agent start work
 safeyolo agent status work
 safeyolo agent attach work
@@ -112,6 +112,15 @@ send, chat, canonical history and event observation. The installed native
 [Factories](../docs/factories.md) reuse these rooms and role contracts.
 [Mattermost](../docs/coord-mattermost.md) and [Dispatch](../docs/dispatch-generation.md)
 retain their selected native adapter paths.
+
+## Demo
+
+[Demo](../docs/demo.md) builds and runs a tiny web app in a disposable guest.
+Run `safeyolo demo` on a prepared Ubuntu host, choose the task and supply or
+reuse normal Codex authentication. Decide the real pending fixture request
+in the command, then read the independently observed app result. Demo stops
+its owned runtime and removes disposable files by default; `--keep` retains
+the files after stopping. It is independent of Lab and needs no pane setup.
 
 ## Lab
 

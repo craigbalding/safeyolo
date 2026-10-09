@@ -91,13 +91,13 @@ pub(crate) fn proxy_live() -> bool {
         })
 }
 
-async fn start_proxy() -> Result<(), Error> {
+pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
     let _lock =
         tokio::task::spawn_blocking(move || host_platform::lock_host_state(&lock_path)).await??;
     if proxy_live() {
-        return Ok(());
+        return Ok(None);
     }
     let config_path = host_platform::config_path();
     let config = crate::native_config::read(&config_path)?;
@@ -141,7 +141,9 @@ async fn start_proxy() -> Result<(), Error> {
             return Err("proxy exited during startup; inspect logs/proxy.log".into());
         }
         if Path::new(readiness).is_file() && proxy_live() {
-            return Ok(());
+            // The startup lock binds this newly created incarnation. Demo can
+            // release it only while this record and all runtimes still agree.
+            return crate::guest_commands::read_state(&process_path());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -149,7 +151,7 @@ async fn start_proxy() -> Result<(), Error> {
     Err("proxy did not publish readiness within five seconds; inspect logs/proxy.log".into())
 }
 
-async fn stop_proxy() -> Result<(), Error> {
+pub(crate) async fn stop_proxy() -> Result<(), Error> {
     // NATS has its own verified process ownership. A stop error preserves its
     // record and is reported independently of the proxy's lifecycle.
     if let Err(error) = crate::coord_rooms::stop(&host_platform::config_dir()).await {

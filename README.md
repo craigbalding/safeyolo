@@ -17,7 +17,7 @@ choose. Works with Claude Code, OpenAI Codex, Pi and other coding agents.
   and service capabilities. Sandboxes have no external network interface.
 - Host-owned service credentials and scoped credential enforcement. A network
   permission does not grant permission to send a credential.
-- Native operator commands for traffic, approvals, logs and diagnosis, with
+- Operator commands for traffic, approvals, logs and diagnosis, with
   scoped exports and capture/retention limits. Commander provides the Mac GUI.
 - Controlled labs, canonical Coord messaging and supervised factories.
 
@@ -31,7 +31,7 @@ packages describe the earlier product.
 ### 1. Install on your host
 
 Use your ordinary account on a supported Ubuntu or Apple Silicon Mac host.
-[Build a native bundle](docs/native-policy.md#build-a-native-bundle), or obtain
+[Build a SafeYolo bundle](docs/native-policy.md#build-a-native-bundle), or obtain
 an already prepared bundle for your host and selected source. The bundle's
 `package-info` states its platform, build profile and minimum glibc or macOS
 version. Verify a transferred archive against its supplied SHA-256 before
@@ -44,16 +44,19 @@ Linux example uses an unpacked production bundle in your current directory and
 prepared guest inputs at `$HOME/safeyolo-platform`. Replace that assets path
 with the directory you obtained during preparation.
 
-Choose a fresh root with no existing instance configuration. This example uses
-`$HOME/.safeyolo`, the CLI default. If that root already contains an installation,
-choose another path in the commands below. SafeYolo does not convert an earlier
-installation's state. Follow [installation details](docs/native-policy.md#install-and-start)
-if you need another platform or build input.
+Install into a fresh `$HOME/.safeyolo`, the default location. If that directory
+already contains an installation, preserve it and use the
+[custom-instance reference](docs/native-policy.md#other-installation-paths).
+SafeYolo does not convert an earlier installation's state. Follow
+[installation details](docs/native-policy.md#install-and-start) if you need
+another platform or build input.
+
+The installer may ask for your normal sudo password to create the command
+entry in a conventional bin directory. Instance files stay owned by your
+account. New terminals use the default installation automatically.
 
 ```sh
 ./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo" --platform-assets "$HOME/safeyolo-platform"
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
-export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo --help
 safeyolo --version
 safeyolo start
@@ -67,6 +70,15 @@ the selected root and reports `proxy_state: running` after successful startup.
 If installation or startup fails, resolve its named error before retrying.
 For source installation, the repository's `./install.sh` delegates to the same
 installer and accepts the same inputs.
+
+To try a small task on a prepared Ubuntu host, use the disposable
+[Demo](docs/demo.md). It uses your configured Codex login, with your agreement,
+or a stopped guest's existing login. It shows the agent build a tiny app, asks
+you to decide its real fixture request, and reads the resulting app response.
+
+```sh
+safeyolo demo
+```
 
 ### 2. Choose your agent and workspace
 
@@ -82,7 +94,7 @@ requires its [first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-c
 it does not copy host login credentials. The mise shell needs no model login.
 
 ```sh
-safeyolo agent create work --workspace "$HOME/code" --host-script "$SAFEYOLO_CONFIG_DIR/assets/contrib/claude-host-setup.sh"
+safeyolo agent create work --workspace "$HOME/code" --host-script "$HOME/.safeyolo/assets/contrib/claude-host-setup.sh"
 safeyolo agent start work
 ```
 
@@ -91,12 +103,9 @@ agent state under `/home/agent` persist.
 
 ### 3. Review access requests
 
-Open a second terminal on the same host and account. Set the same root and
-executable there; replace the root if you chose another during installation:
+Open a second terminal on the same host and account:
 
 ```sh
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
-export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo inspect
 ```
 
@@ -111,8 +120,8 @@ port; credential approval is separate. See [operator commands](docs/native-opera
 
 ## Everyday commands
 
-These commands use the root and PATH selected above. Use `--root ROOT` before
-the command to select another installed instance.
+These commands use your default installation. For another instance, use the
+[custom-instance reference](docs/native-policy.md#other-installation-paths).
 
 | Task | Command |
 | --- | --- |
@@ -135,6 +144,7 @@ command family to its current operating instructions.
 
 | Need | Documentation |
 | --- | --- |
+| Try a useful task and decide its access | [Demo](docs/demo.md) |
 | Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging](docs/agent-debugging.md) |
 | Coordinating agents | [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |

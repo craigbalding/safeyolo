@@ -30,6 +30,7 @@ mod credential_text;
 pub mod credentials;
 pub(crate) mod desktop_present;
 mod desktop_preview;
+pub mod demo;
 pub mod dispatch;
 pub mod factory;
 pub mod factory_proposals;

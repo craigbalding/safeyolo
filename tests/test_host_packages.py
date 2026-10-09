@@ -331,7 +331,7 @@ def test_missing_bundle_input_is_reported_before_fresh_root_changes(package_inpu
     bundle = build_bundle(package_inputs, tmp_path)
     (bundle / "bin/safeyolo-proxy").unlink()
     root = tmp_path / "fresh"
-    result = run(str(bundle / "install.sh"), "--root", str(root), cwd=tmp_path)
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), cwd=tmp_path)
     assert result.returncode != 0
     assert "required artifact is missing" in result.stderr and "safeyolo-proxy" in result.stderr
     assert not root.exists()
@@ -342,7 +342,7 @@ def test_installer_preserves_existing_instance(package_inputs, tmp_path):
     root = tmp_path / "existing"
     root.mkdir()
     (root / "config.toml").write_text("operator configuration\n")
-    result = run(str(bundle / "install.sh"), "--root", str(root))
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
     assert result.returncode != 0 and "fresh root" in result.stderr
     assert (root / "config.toml").read_text() == "operator configuration\n"
     assert not (root / "bin").exists()
@@ -354,7 +354,7 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     (root / "share").mkdir(parents=True)
     image = root / "share/Image"
     image.write_bytes(b"prepared boot input")
-    result = run(str(bundle / "install.sh"), "--root", str(root), cwd=tmp_path)
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert image.read_bytes() == b"prepared boot input"
     assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()
@@ -380,6 +380,77 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
         ).read_bytes()
 
 
+@pytest.mark.parametrize("from_source", [False, True], ids=["bundle", "source"])
+def test_install_discovers_command_in_fresh_shell_without_selection_overrides(package_inputs, tmp_path, from_source):
+    bundle = build_bundle(package_inputs, tmp_path)
+    home = tmp_path / "operator"
+    commands = home / ".local/bin"
+    if from_source:
+        # A conventional PATH directory may itself be an operator symlink.
+        actual_commands = tmp_path / "command-files"
+        actual_commands.mkdir()
+        commands.parent.mkdir(parents=True)
+        commands.symlink_to(actual_commands, target_is_directory=True)
+    else:
+        commands.mkdir(parents=True)
+    root = home / ".safeyolo"
+    environment = dict(os.environ, HOME=str(home), PATH=f"{commands}:/usr/local/bin:/usr/bin:/bin")
+    for key in ("SAFEYOLO_CONFIG_DIR", "SAFEYOLO_HOME", "SAFEYOLO_NATIVE_CONFIG_PATH", "BASH_ENV"):
+        environment.pop(key, None)
+    entry = bundle / "install.sh"
+    arguments = []
+    if from_source:
+        entry = package_inputs[0] / "install.sh"
+        shutil.copy2(REPO / "install.sh", entry)
+        arguments = ["--bundle", str(bundle)]
+    result = run(str(entry), "--root", str(root), *arguments, env=environment)
+    assert result.returncode == 0, result.stderr
+    assert (commands / "safeyolo").is_symlink()
+    assert (commands / "safeyolo").resolve() == root / "bin/safeyolo"
+    shell = run("/bin/bash", "--noprofile", "--norc", "-c",
+                "command -v safeyolo; safeyolo --version", env=environment)
+    assert shell.returncode == 0, shell.stderr
+    assert shell.stdout.splitlines() == [
+        str(commands / "safeyolo"),
+        f"safeyolo 0.1.0 commit={package_inputs[5]} profile=debug",
+    ]
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink", "directory"])
+def test_install_preserves_unrelated_command_and_instance_state(package_inputs, tmp_path, kind):
+    bundle = build_bundle(package_inputs, tmp_path)
+    home = tmp_path / "operator"
+    commands = home / ".local/bin"
+    commands.mkdir(parents=True)
+    unrelated = commands / "safeyolo"
+    target = tmp_path / "unrelated-command"
+    target.write_text("operator-owned command")
+    if kind == "symlink":
+        unrelated.symlink_to(target)
+    elif kind == "directory":
+        unrelated.mkdir()
+        (unrelated / "marker").write_text("operator-owned directory")
+    else:
+        unrelated.write_text("operator-owned command")
+        unrelated.chmod(0o755)
+    root = home / ".safeyolo"
+    (root / "share").mkdir(parents=True)
+    boot = root / "share/prepared-image"
+    boot.write_bytes(b"retained prepared boot input")
+    environment = dict(os.environ, HOME=str(home), PATH=f"{commands}:/usr/local/bin:/usr/bin:/bin")
+    environment.pop("BASH_ENV", None)
+    result = run(str(bundle / "install.sh"), "--root", str(root), env=environment)
+    assert result.returncode != 0
+    assert f"Existing command {unrelated} was preserved" in result.stderr
+    assert not (root / "config.toml").exists() and not (root / "bin").exists()
+    assert boot.read_bytes() == b"retained prepared boot input"
+    assert target.read_text() == "operator-owned command"
+    if kind == "directory":
+        assert (unrelated / "marker").read_text() == "operator-owned directory"
+    else:
+        assert unrelated.read_text() == "operator-owned command"
+
+
 @pytest.mark.parametrize("with_cache_paths", [False, True])
 def test_platform_install_stages_cache_paths_without_changing_prepared_tree(package_inputs, tmp_path, with_cache_paths):
     bundle = build_bundle(package_inputs, tmp_path)
@@ -391,7 +462,7 @@ def test_platform_install_stages_cache_paths_without_changing_prepared_tree(pack
     if with_cache_paths:
         (platform / "cache-paths.txt").write_text(cache_paths)
     root = tmp_path / "installed"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--platform-assets", str(platform))
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--platform-assets", str(platform))
     assert result.returncode == 0, result.stderr
     assert (root / "share/rootfs-tree").is_symlink()
     assert (root / "share/rootfs-tree").resolve() == tree.resolve()
@@ -441,7 +512,7 @@ def test_source_installer_runs_native_bundle_without_python_or_uv(tmp_path, pack
     monkeypatch.setenv('INSTALL_CANARIES', str(canaries))
     monkeypatch.setenv('PATH', f'{canaries}:{os.environ["PATH"]}')
     root = tmp_path / 'selected root'
-    result = run(str(entry), '--root', str(root), '--bundle', str(bundle), cwd=tmp_path)
+    result = run(str(entry), '--root', str(root), '--command-dir', str(root / 'commands'), '--bundle', str(bundle), cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (root / 'bin/safeyolo').read_bytes().startswith(b'\x7fELF')
     assert (root / 'package-info').read_bytes() == (bundle / 'package-info').read_bytes()
@@ -463,7 +534,7 @@ def test_source_installer_preserves_missing_artifact_error_and_fresh_root(tmp_pa
     shutil.copy2(REPO / 'install.sh', entry)
     (bundle / 'bin/safeyolo-proxy').unlink()
     root = tmp_path / 'fresh'
-    result = run(str(entry), '--root', str(root), '--bundle', str(bundle))
+    result = run(str(entry), '--root', str(root), '--command-dir', str(root / 'commands'), '--bundle', str(bundle))
     assert result.returncode != 0
     assert 'required artifact is missing' in result.stderr and 'safeyolo-proxy' in result.stderr
     assert not root.exists()

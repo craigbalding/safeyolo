@@ -66,7 +66,7 @@ cleanup() {
 }
 trap cleanup EXIT
 for selected in "$root" "$peer"; do
-  "$bundle/install.sh" --root "$selected" --platform-assets "$assets"
+  "$bundle/install.sh" --root "$selected" --command-dir "$selected/commands" --platform-assets "$assets"
   # Each disposable instance selects an available endpoint.
   sed 's/^admin_port = .*/admin_port = 0/' "$selected/config.toml" > "$state/config.new"
   mv "$state/config.new" "$selected/config.toml"
