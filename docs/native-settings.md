@@ -229,6 +229,15 @@ gateway snapshot and the guest port from the requested destination, then calls
 #818 owns guest lifecycle/port access; #819 owns service delivery. #816 checks
 binding/constraint/risk compilation and scope, without claiming those outcomes.
 
+On Linux, an unsuccessful provider connection records a bounded reason in the
+proxy process log with the request ID. The reason distinguishes a runtime that
+is not ready, unavailable namespace control or failed recovery, a runsc command,
+state or forwarding failure, a refused guest port, and a transport timeout.
+Use `safeyolo agent status NAME` or `safeyolo agent diagnostics NAME` to inspect
+the named provider. The client still receives HTTP 502 with the generic
+`Proxy request failed` error. Provider diagnostics do not include guest or tool
+standard error output.
+
 ## Named policy controls
 
 The following fields replace the effective detector settings. They use the shared

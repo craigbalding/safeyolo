@@ -48,10 +48,10 @@ class NativeInstance:
         self.port = marker["admin_port"]
         self.token = (root / "data/admin_token").read_text().strip()
 
-    def cli(self, *arguments):
+    def cli(self, *arguments, timeout=15):
         return subprocess.run(
             [str(self.root / "bin/safeyolo"), "--root", str(self.root), *arguments],
-            cwd=self.root.parent, env=self.environment, capture_output=True, text=True, timeout=15,
+            cwd=self.root.parent, env=self.environment, capture_output=True, text=True, timeout=timeout,
         )
 
     def show(self):
@@ -96,7 +96,7 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config=""):
+                    capture=False, extra_config="", platform_assets=None):
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
     root = directory / "installed"
     try:
@@ -106,6 +106,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
             "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
         ]
+        if platform_assets is not None:
+            inputs += ["--platform-assets", str(platform_assets)]
         installation = subprocess.run(
             [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), *inputs],
             capture_output=True, text=True, timeout=15,
