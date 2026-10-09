@@ -108,14 +108,18 @@ fn live_token(pid: i32) -> Result<Option<String>, Error> {
         .map(|(token, _, _)| token))
 }
 
-fn command_paths(args: &mut Vec<OsString>) -> Result<Paths, Error> {
+fn command_paths(
+    args: &mut Vec<OsString>,
+    state: Option<OsString>,
+    stop: Option<OsString>,
+) -> Result<Paths, Error> {
     let mut paths = Paths {
         context: "/safeyolo/host-launch-context.json".into(),
         records: "/safeyolo-status/guest-commands".into(),
-        state: std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STATE")
+        state: state
             .map(PathBuf::from)
             .unwrap_or_else(|| "/home/agent/.safeyolo-command-supervisor.json".into()),
-        stop: std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STOP")
+        stop: stop
             .map(PathBuf::from)
             .unwrap_or_else(|| "/home/agent/.safeyolo-command-supervisor.stop".into()),
         workspace: "/workspace".into(),
@@ -144,7 +148,11 @@ fn command_paths(args: &mut Vec<OsString>) -> Result<Paths, Error> {
 
 fn run() -> Result<i32, Error> {
     let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let paths = command_paths(&mut args)?;
+    let paths = command_paths(
+        &mut args,
+        std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STATE"),
+        std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STOP"),
+    )?;
     match args.as_slice() {
         [version] if version == "--version" => {
             println!("{}", self::version());

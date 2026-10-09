@@ -494,7 +494,21 @@ fn check_native_supervisor(paths: &Paths, pid: i32) -> Result<(), Error> {
         .skip(1)
         .map(|argument| std::ffi::OsString::from_vec(argument.to_vec()))
         .collect();
-    let owner_paths = command_paths(&mut arguments)?;
+    // Defaults are part of the owner's invocation too. Inspect only the two
+    // path settings; never use or print other process environment values.
+    let environment = fs::read(proc.join("environ"))?;
+    let setting = |prefix: &[u8]| {
+        environment.split(|byte| *byte == 0).find_map(|entry| {
+            entry
+                .strip_prefix(prefix)
+                .map(|path| std::ffi::OsString::from_vec(path.to_vec()))
+        })
+    };
+    let owner_paths = command_paths(
+        &mut arguments,
+        setting(b"SAFEYOLO_COMMAND_SUPERVISOR_STATE="),
+        setting(b"SAFEYOLO_COMMAND_SUPERVISOR_STOP="),
+    )?;
     let directory = fs::read_link(proc.join("cwd"))?;
     if arguments.len() != 1
         || arguments[0] != "supervise"

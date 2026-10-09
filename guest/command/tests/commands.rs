@@ -576,6 +576,77 @@ fn supervisor_check_accepts_native_copies_and_refuses_another_state_owner() {
 }
 
 #[test]
+fn supervisor_check_binds_the_owners_environment_selected_state() {
+    let guest = Guest::new();
+    guest.publish("exec /bin/sleep 120");
+    let invocation = |owner: &Guest| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo-guest"));
+        command
+            .arg("--context")
+            .arg(&guest.context)
+            .arg("--workspace")
+            .arg(owner.directory.path())
+            .env("SAFEYOLO_COMMAND_SUPERVISOR_STATE", &owner.state)
+            .env("SAFEYOLO_COMMAND_SUPERVISOR_STOP", &owner.stop);
+        command
+    };
+    let mut supervisor = Supervisor(
+        invocation(&guest)
+            .arg("supervise")
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+        guest.stop.clone(),
+    );
+    let running = guest.wait(|state| state["state"] == "running");
+    let check = || {
+        let mut command = guest.command();
+        command
+            .env("SAFEYOLO_COMMAND_SUPERVISOR_STATE", &guest.state)
+            .args(["supervise", "check"]);
+        command
+    };
+    assert_eq!(success(check().output().unwrap())["state"], "running");
+    let resume = supervisor.pause();
+    let foreign = Guest::new();
+    foreign.publish("exec /bin/sleep 120");
+    let mut other = Supervisor(
+        invocation(&foreign)
+            .arg("supervise")
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+        foreign.stop.clone(),
+    );
+    let other_running = foreign.wait(|state| state["state"] == "running");
+    let mut substituted = running.clone();
+    for key in [
+        "supervisor_pid",
+        "supervisor_start_token",
+        "supervisor_uid",
+        "supervisor_parent_pid",
+        "command_pid",
+        "command_start_token",
+        "heartbeat_at",
+    ] {
+        substituted[key] = other_running[key].clone();
+    }
+    let original = serde_json::to_vec(&substituted).unwrap();
+    fs::write(&guest.state, &original).unwrap();
+    let refused = check().output().unwrap();
+    let unchanged = fs::read(&guest.state).unwrap() == original;
+    let other_live = other.0.try_wait().unwrap().is_none()
+        && unsafe { libc::kill(other_running["command_pid"].as_i64().unwrap() as i32, 0) } == 0;
+    fs::write(&guest.state, running.to_string()).unwrap();
+    drop(resume);
+    supervisor.stop();
+    other.stop();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("invocation"));
+    assert!(unchanged && other_live);
+}
+
+#[test]
 fn occupied_supervisor_preserves_the_running_command() {
     let guest = Guest::new();
     guest.publish("exec sleep 60");
