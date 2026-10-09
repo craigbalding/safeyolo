@@ -79,12 +79,18 @@ fn process(pid: i32) -> Result<Option<(String, char, i32)>, Error> {
     if pid <= 0 {
         return Ok(None);
     }
-    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+    let stat = match fs::read(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (_, fields) = stat.rsplit_once(')').ok_or("invalid process stat")?;
+    // comm also permits non-UTF-8 filename bytes. Only the numeric suffix
+    // belongs to the process identity; do not decode the name.
+    let fields = std::str::from_utf8(
+        stat.rsplit(|byte| *byte == b')')
+            .next()
+            .ok_or("invalid process stat")?,
+    )?;
     let fields: Vec<_> = fields.split_whitespace().collect();
     let start = fields.get(19).ok_or("process start time is missing")?;
     let state = fields

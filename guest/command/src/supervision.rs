@@ -433,8 +433,42 @@ pub(super) fn run(paths: &Paths) -> Result<i32, Error> {
     }
 }
 
-/// Check identities in the guest PID namespace. A host transport PID or an
-/// old heartbeat cannot establish that either guest process is still running.
+fn check_process_owner(pid: i32, uid: Option<u64>, parent: i64) -> Result<(), Error> {
+    let bytes = fs::read(format!("/proc/{pid}/status"))?;
+    // Name may contain arbitrary filename bytes; only UID/PPid are compared.
+    let status = String::from_utf8_lossy(&bytes);
+    let actual_parent = status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:")?.trim().parse::<i64>().ok());
+    let actual_uid = status.lines().find_map(|line| {
+        line.strip_prefix("Uid:")?
+            .split_whitespace()
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+    });
+    if actual_parent != Some(parent)
+        || uid.is_some_and(|uid| actual_uid.as_deref() != Some(&[uid, uid, uid, uid]))
+    {
+        return Err("guest process ownership or ancestry changed; command state is unknown".into());
+    }
+    Ok(())
+}
+
+fn check_heartbeat(value: &Value, current_time: f64) -> Result<(), Error> {
+    let heartbeat = value["heartbeat_at"]
+        .as_f64()
+        .ok_or("guest command heartbeat is missing or invalid; command state is unknown")?;
+    if !(0.0..=5.0).contains(&(current_time - heartbeat)) {
+        return Err(
+            "guest command heartbeat is stale or in the future; command state is unknown".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Check identities and freshness in the guest PID and clock domains. A host
+/// transport PID or an old heartbeat cannot establish a running command.
 pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
     let value = state(paths)?;
     if value["generation"].as_str() != Some(&generation(paths)?) {
@@ -451,6 +485,9 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
         );
     }
     if matches!(value["state"].as_str(), Some("running" | "restarting")) {
+        if value["runtime_owner"] != "guest-pid1" {
+            return Err("guest supervisor owner is unverified; command state is unknown".into());
+        }
         let pid = value["supervisor_pid"]
             .as_i64()
             .and_then(|pid| i32::try_from(pid).ok())
@@ -464,6 +501,17 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
                 "guest supervisor identity is stale or missing; command state is unknown".into(),
             );
         }
+        check_process_owner(
+            pid,
+            Some(
+                value["supervisor_uid"]
+                    .as_u64()
+                    .ok_or("guest supervisor UID is missing; command state is unknown")?,
+            ),
+            value["supervisor_parent_pid"]
+                .as_i64()
+                .ok_or("guest supervisor parent is missing; command state is unknown")?,
+        )?;
     }
     if value["state"] == "running" {
         let (pid, token) = saved_command.ok_or("guest command identity is missing")?;
@@ -472,6 +520,18 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
                 "guest command identity is stale or missing; command state is unknown".into(),
             );
         }
+        check_process_owner(
+            pid,
+            // A supervised command may legitimately change UID (guest sudo).
+            // Its birth and parent bind it to the verified supervisor.
+            None,
+            value["supervisor_pid"]
+                .as_i64()
+                .ok_or("guest supervisor PID is missing")?,
+        )?;
+        // The supervisor writes this timestamp with guest SystemTime. Check
+        // its freshness here, rather than comparing it with the host clock.
+        check_heartbeat(&value, now())?;
     } else if let Some((pid, _)) = saved_command
         && group_live(pid)?
     {
@@ -483,6 +543,33 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn heartbeat_uses_only_the_writer_clock_with_the_retained_bound() {
+        use serde_json::{Value, json};
+        for guest_time in [100.0, 10_000_000_000.0] {
+            for age in [0.0, 1.0, 5.0] {
+                assert!(
+                    super::check_heartbeat(&json!({"heartbeat_at":guest_time - age}), guest_time)
+                        .is_ok()
+                );
+            }
+            for heartbeat in [
+                json!(guest_time + 0.125),
+                json!(guest_time - 5.125),
+                Value::Null,
+                json!("100"),
+                json!(false),
+                json!([]),
+                json!({}),
+            ] {
+                assert!(
+                    super::check_heartbeat(&json!({"heartbeat_at":heartbeat}), guest_time).is_err()
+                );
+            }
+            assert!(super::check_heartbeat(&json!({}), guest_time).is_err());
+        }
+    }
+
     #[test]
     fn sanitizes_terminal_controls() {
         assert_eq!(
