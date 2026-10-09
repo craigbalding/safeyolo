@@ -10,8 +10,8 @@
 set -euo pipefail
 umask 077
 
-: "${SAFEYOLO_AGENT_NAME:?must be run via 'safeyolo agent add/run --host-script'}"
-: "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add/run --host-script'}"
+: "${SAFEYOLO_AGENT_NAME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
+: "${SAFEYOLO_AGENT_HOME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"

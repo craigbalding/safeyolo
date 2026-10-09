@@ -7,26 +7,42 @@
 # in-sandbox manual setup. Idempotent — safe to re-run.
 #
 # The bundled Claude Code and Codex host scripts invoke this helper
-# automatically. It also supports an explicit retrofit mode:
-#
-#   Retrofit for an already-running agent (no reprovision needed):
-#
-#          contrib/coord-mcp-bootstrap.sh --home ~/.safeyolo/agents/<name>/home
-#          safeyolo agent stop <name> && safeyolo agent run <name>
-#
-#      Note the trailing `/home`: the agent's harness config lives in
-#      the `home/` subdir, not directly under `agents/<name>/`. See
-#      get_agent_home_dir() in cli/src/safeyolo/vm.py.
-#
-#      The stop+run is required so the harness picks up the new MCP
-#      server config; it does NOT touch the sandbox's persistent state.
+# automatically. For an existing agent, stop it before reapplying setup.
 #
 # See contrib/HOST_SCRIPT_GUIDE.md for the host-script contract.
 
 set -euo pipefail
 
 show_help() {
-    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+    cat <<'HELP'
+Usage: coord-mcp-bootstrap.sh [--home DIRECTORY] [--harness claude|codex]
+                              [--require-agent-local]
+
+Stage the native Coord Model Context Protocol (MCP) adapter and register its
+launcher in an agent's existing harness configuration. Run on the operator host.
+
+  --home DIRECTORY       Agent home; defaults to SAFEYOLO_AGENT_HOME.
+                         Use ROOT/agents/NAME/home, including the trailing /home.
+  --harness claude|codex  Harness; defaults to detection from the agent home.
+  --require-agent-local  Require an adopted agent-local Codex login.
+  -h, --help             Show this help.
+
+First run the harness host setup. Use the installed native host safeyolo-coord
+and its matching Linux guest artifact. Native agent create/configure --host-script
+selects these inputs. For direct invocation, set SAFEYOLO_COORD_EXECUTABLE and
+SAFEYOLO_COORD_GUEST_BINARY, or put the installed ROOT/bin on PATH. The default
+guest artifact is ROOT/assets/guest/safeyolo-coord with its version/checksum receipts.
+
+For an existing agent, replace ROOT and NAME with its installed root and name.
+Put ROOT/bin on PATH before invoking the bootstrap directly.
+Stop the agent before changing its home, then restart it to load the MCP settings:
+  ROOT/bin/safeyolo --root ROOT agent stop NAME
+  ROOT/assets/contrib/coord-mcp-bootstrap.sh --home ROOT/agents/NAME/home
+  ROOT/bin/safeyolo --root ROOT start
+  ROOT/bin/safeyolo --root ROOT agent start NAME
+
+See contrib/HOST_SCRIPT_GUIDE.md for native create/configure --host-script setup.
+HELP
 }
 
 AGENT_HOME=""
