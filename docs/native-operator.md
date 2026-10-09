@@ -136,25 +136,80 @@ shell` and `agent stop`. Those host entries remain #817's responsibility.
 For the real Helper mode, Helper must already have its ordinary Codex launcher,
 model access and guest authentication. The probe imports no host credential and
 does not select another model. It preserves the configured model route and
-credential controls. Replace `ROOT`, `TRANSPORT_CLI` and `FULL_COMMIT` before
-running. This command changes the disposable policy, invokes one Codex session,
-then stops both guests, the owned proxy and the two origins:
+credential controls. Start Helper's sandbox with `agent start helper
+--sandbox-only`; the probe launches its one Codex command through native `agent
+start helper --foreground`. It preserves an already active coding session by
+refusing to replace it. Before the run, verify the ordinary launcher version and
+login status inside Helper. An operator may privately copy an existing
+provisioned Codex token into this owned test home under the standing test
+authority. Keep the managed configuration and proxy/CA settings. Do not copy
+the Admin API credential into Helper.
+
+`TRANSPORT_CLI` is the installed native CLI for this root. `FULL_COMMIT` identifies
+the installed CLI/proxy/guest source, separately from the checkout containing
+the test driver. `ROOM` is an existing ordinary Coord room in this disposable
+instance, with Helper send/receive and Worker receive permission. Keep it
+separate from a running factory's work room. Both guests use the ordinary staged
+`/home/agent/.safeyolo/safeyolo-coord` binary with their own Agent API identities.
+The real run saves raw Codex events and stderr before parsing them, including
+when the command fails. `--helper-events FILE` selects the events file in
+an existing host-owned directory outside guest writable mounts. The default
+is a unique file in the root's logs directory; stderr uses `FILE.stderr`.
+Both files have private permissions. Preserve a failed run's events
+for diagnosis instead of starting another model session to recover its operands.
+
+Replace these operands before running as the disposable instance's owner.
+Connect the approved Tart Commander client to this Ubuntu instance before the
+decision. Use its existing remote connection settings and separate Admin API
+and SSH credentials. For an SSH tunnel, loopback HTTP and WebSocket endpoints
+are supported; the event path is `/admin/events`. This command changes the
+disposable policy, invokes one Codex session and waits up to 600 seconds for a
+human decision through CLI or Commander:
 
 ```sh
 uv run --frozen --no-sync python tests/blackbox/installed_shared_approvals.py \
   --config-dir ROOT --transport-cli TRANSPORT_CLI \
   --native-cli ROOT/bin/safeyolo --native-proxy ROOT/bin/safeyolo-proxy \
-  --commit FULL_COMMIT --interfaces --real-helper
+  --commit FULL_COMMIT --interfaces --real-helper --shared-room ROOM \
+  --operator-timeout 600 --reconcile-seconds 120
 ```
 
 The result requires native diagnostic/show/preparation commands executed by
 Codex, a canonical Helper-attributed typed preparation, unchanged network
 permission before the human decision, two exact Worker marker deliveries,
-refusal for Helper and the second port, and owned cleanup. Model prose and a
-successful process exit do not establish that result. Omitting `--real-helper`
-selects deterministic native preparation; it does not establish U3.
+refusal for Helper and the second port, and owned cleanup. The driver prints
+the native trusted scope and separately quoted Helper diagnosis before the
+human decides. Helper's successful native preparation does not grant network
+permission. Rejection, an expired decision window or a changed action stops
+the journey without a Worker retry. Model prose and a successful process exit
+do not establish U3.
 
-Physical Commander cross-client observation still needs the physical Mac GUI
-against this Ubuntu instance. Tart source checks do not establish that journey.
+The fixed disclosure inputs place a synthetic secret in selected raw evidence
+and a separate peer record outside Helper's reads. Helper responses, routine
+native logs and the shared-room notification must exclude both. A deterministic
+Helper call appends the fixed terminal-control/Markdown/HTML reason to the
+real diagnosis on the same typed action. The native display quotes that reason;
+the shared notification carries only the permitted canonical projection.
+Raw evidence remains available to its authorized owner.
+
+When `client_reconciliation` appears, the same action has its canonical CLI
+outcome and two exact Worker marker deliveries. The proxy and guests remain
+live for the selected 120 seconds. Reconnect the other client during this window
+and observe the same terminal state and reusable Worker/host/port effect.
+Record the actual Commander display and backend/source separately. The driver
+does not infer a GUI result. Its teardown then stops both guests, proxy,
+listeners and origins, and restores the saved fixture policy after proxy exit.
+Cleanup errors remain failures.
+
+Omitting `--real-helper` selects deterministic preparation. Add
+`--wait-for-operator` to use the same human/client window without a model turn.
+These controls do not establish the real U3 action or isolated model failure in
+a running Helper. That U6 failure observation remains separate from tool/login
+readiness. Reuse the accepted lost-reply, authority and race controls at their
+tested revisions.
+
+Commander can run on approved Tart against the same Ubuntu pending item.
+Physical-host GUI placement is not a prerequisite. A client source test does
+not establish the actual cross-client journey.
 See the [entry responsibility map](native-settings.md#operator-entry-responsibilities)
 for the retained component boundaries.

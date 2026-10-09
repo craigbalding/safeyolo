@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import AppKit
+import SwiftUI
 
 private final class MemoryCredentialStore: CredentialStore {
     var values: [String: String] = [:]
@@ -65,14 +67,36 @@ final class StubURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+@MainActor
+private final class ModelTestApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setbuf(stdout, nil)
+        NSApp.setActivationPolicy(.accessory)
+        print("model-tests: AppKit event loop started")
+        Task { @MainActor in
+            do {
+                try await ModelTests.runTests()
+                NSApp.terminate(nil)
+            } catch {
+                fatalError("Model test failed: \(error)")
+            }
+        }
+    }
+}
+
 @main
-struct ModelTests {
+struct ModelTests: App {
+    @NSApplicationDelegateAdaptor(ModelTestApplicationDelegate.self) private var delegate
+
+    var body: some Scene { Settings { EmptyView() } }
+
     @MainActor
-    static func main() async throws {
+    fileprivate static func runTests() async throws {
+        print("model-tests: model checks started")
         try testMutationPlans()
         try testCredentialImportAndReload()
         try testRemoteProfileStorage()
-        try testRemoteConnectionVerification()
+        try await testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try testAgentAndSecurityModels()
         try testHarnessMarks()
@@ -571,8 +595,21 @@ struct ModelTests {
         {"request_id":"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"security.network_guard",
          "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
          "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
+         "details":{"network_action":{"kind":"network_allow","port":443},"untrusted_reason_text":"\\\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;"}}
+        """.utf8))
+        precondition(canonicalNetwork.id == "network:req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        precondition(canonicalNetwork.title.contains("(prepared)") && canonicalNetwork.title.contains(canonicalNetwork.requestID!))
+        precondition(canonicalNetwork.quotedUntrustedReason == "\"\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;\"")
+        let newerNetwork = try JSONDecoder().decode(ApprovalEvent.self, from: Data("""
+        {"request_id":"req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"security.network_guard",
+         "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
+         "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
          "details":{"network_action":{"kind":"network_allow","port":443}}}
         """.utf8))
+        precondition(newerNetwork.id != canonicalNetwork.id, "Distinct canonical requests must keep distinct windows")
+        precondition(newerNetwork.title != canonicalNetwork.title && !newerNetwork.title.contains("(prepared)"))
+        precondition(newerNetwork.quotedUntrustedReason == nil)
+        precondition(network.id == "alice-22:127.0.0.1:22", "Legacy unbound approvals still coalesce by scope")
         for allow in [true, false] {
             let plan = try MutationPlan.forApproval(canonicalNetwork, allow: allow)
             precondition(plan.path == "/admin/approvals/req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -677,7 +714,8 @@ struct ModelTests {
         precondition(deleted == nil)
     }
 
-    private static func testRemoteConnectionVerification() throws {
+    @MainActor
+    private static func testRemoteConnectionVerification() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         let verifier = RemoteConnectionVerifier(
@@ -701,7 +739,9 @@ struct ModelTests {
             )
         ) { result = $0 }
         let deadline = Date().addingTimeInterval(2)
-        while result == nil && RunLoop.current.run(mode: .default, before: deadline) {}
+        while result == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         guard case .success(let profile) = result else {
             preconditionFailure("remote verification did not succeed: \(String(describing: result))")
         }

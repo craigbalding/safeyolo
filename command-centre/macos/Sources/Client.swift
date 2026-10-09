@@ -524,7 +524,7 @@ final class SafeYoloClient: ObservableObject {
 
     func ingestOperatorEventData(_ data: Data) async throws {
         let event = try JSONDecoder().decode(OperatorEventEnvelope.self, from: data)
-        if event.needsApproval || event.event.hasPrefix("admin.") {
+        if event.needsApproval || event.event.hasPrefix("admin.") || event.event == "agent.network_action_prepared" {
             guard await refreshApprovals() else {
                 throw ClientError.invalidResponse
             }

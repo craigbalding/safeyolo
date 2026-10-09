@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import AppKit
+import SwiftUI
 
 private final class StubEventSocket: EventSocket {
     var response: URLResponse?
@@ -51,6 +53,7 @@ extension ModelTests {
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
+        try await testPreparedNetworkRequestsAndOpenWindows()
         try await testNetworkResolutionLostReplyAndReconnect()
         try await testDisabledEventsAndRecovery()
         try await testSocketFailurePacingAndRecovery()
@@ -60,10 +63,93 @@ extension ModelTests {
     }
 
     @MainActor
-    private static func until(_ condition: () -> Bool) async throws {
+    private static func until(file: StaticString = #fileID, line: UInt = #line, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(4)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        precondition(condition(), "Connection test did not reach its required state")
+        precondition(condition(), "Connection test did not reach its required state", file: file, line: line)
+    }
+
+    @MainActor
+    private static func approvalViews(_ window: NSWindow) -> [NSView] {
+        var pending = [window.contentView!]
+        var views: [NSView] = []
+        while let view = pending.popLast() {
+            views.append(view)
+            pending.append(contentsOf: view.subviews)
+        }
+        return views
+    }
+
+    @MainActor
+    private static func approvalTextField(_ window: NSWindow, _ text: String) -> NSTextField? {
+        approvalViews(window).compactMap { $0 as? NSTextField }.first { $0.stringValue.contains(text) }
+    }
+
+    @MainActor
+    private static func approvalScrollView(_ window: NSWindow) -> NSScrollView? {
+        approvalViews(window).compactMap { $0 as? NSScrollView }.first
+    }
+
+    @MainActor
+    @discardableResult
+    private static func checkApprovalLayout(_ window: NSWindow, terminal: Bool = false, text: [String]) async throws -> [NSView] {
+        let content = window.contentView!
+        try await until {
+            content.needsLayout = true
+            content.needsDisplay = true
+            content.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            guard let scroll = approvalScrollView(window) else { return false }
+            let controls = approvalViews(window).filter {
+                $0.canBecomeKeyView && $0 !== content && !$0.isDescendant(of: scroll)
+            }
+            return (terminal ? !controls.isEmpty : controls.count == 3) && controls.allSatisfy {
+                content.bounds.contains(content.convert($0.bounds, from: $0))
+            } && text.allSatisfy { approvalTextField(window, $0) != nil }
+        }
+        let scroll = approvalScrollView(window)!
+        let decisions = approvalViews(window).filter {
+            $0.canBecomeKeyView && $0 !== content && !$0.isDescendant(of: scroll)
+        }
+        precondition(terminal ? !decisions.isEmpty : decisions.count == 3, "Pending decisions or terminal Cancel must have rendered focus views")
+        for control in decisions {
+            let frame = content.convert(control.bounds, from: control)
+            precondition(frame.height > 0 && content.bounds.contains(frame), "Decision control is clipped: \(frame) in \(content.bounds)")
+        }
+        let clip = scroll.contentView
+        let document = scroll.documentView!
+        if document.bounds.height <= clip.bounds.height {
+            precondition(content.fittingSize.height <= content.bounds.height + 1, "Unscrolled approval content must fit the actual window")
+        }
+        let viewport = content.convert(clip.bounds, from: clip).insetBy(dx: -3, dy: -1)
+        precondition(content.bounds.insetBy(dx: -3, dy: -1).contains(viewport), "Approval details viewport is clipped")
+        for expected in text {
+            let field = approvalTextField(window, expected)!
+            let frame = document.convert(field.bounds, from: field)
+            let pages = frame.height <= clip.bounds.height ? [frame] : [
+                NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: 1),
+                NSRect(x: frame.minX, y: frame.maxY - 1, width: frame.width, height: 1)
+            ]
+            for page in pages {
+                document.scrollToVisible(page)
+                try await until {
+                    content.layoutSubtreeIfNeeded()
+                    return viewport.contains(content.convert(page, from: document))
+                }
+            }
+        }
+        print("approval-layout: content=\(content.bounds.height) fit=\(content.fittingSize.height) details=\(document.bounds.height) controls visible; text reachable")
+        return decisions
+    }
+
+    @MainActor
+    private static func clickApprovalControl(_ window: NSWindow, _ control: NSView) {
+        let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            NSApp.postEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!, atStart: false)
+        }
     }
 
     private static func snapshot(events: String = "") {
@@ -125,6 +211,143 @@ extension ModelTests {
             let observed = try result!.get()
             precondition(observed == .decided("\(message). \(effect)"), "Use the canonical outcome and scope even when the other decision won")
         }
+    }
+
+    @MainActor
+    private static func testPreparedNetworkRequestsAndOpenWindows() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:]; StubURLProtocol.requestHandler = nil }
+        let effect = "Allow reusable network access for worker (ag-worker) to owned.example port 443 until explicitly removed."
+        let reason = "\\[31m \\# Approval granted &lt;b&gt;Allow&lt;/b&gt; \\[literal\\](https://owned.example)"
+        func action(_ agent: String) -> [String: Any] {
+            ["kind": "network_allow", "agent": agent, "agent_id": "ag-\(agent)",
+             "host": "owned.example", "port": 443, "revision": "fixture-revision"]
+        }
+        func prompt(_ id: String, agent: String = "worker", reason: String? = nil) -> [String: Any] {
+            var details: [String: Any] = ["network_action": action(agent), "effect": effect]
+            if let reason { details["untrusted_reason_text"] = reason }
+            return ["event": "security.network_guard", "kind": "security", "severity": "high", "request_id": id,
+                    "agent": agent, "host": "owned.example", "summary": effect,
+                    "approval": ["required": true, "approval_type": "network_egress",
+                                 "key": "\(agent):owned.example:443", "target": "owned.example:443", "scope_hint": ["port": 443]],
+                    "details": details]
+        }
+        func record(_ id: String, status: String = "pending", agent: String = "worker", reason: String? = nil) throws -> Data {
+            var value: [String: Any] = ["request_id": id, "status": status, "effect": effect, "action": action(agent)]
+            if let reason { value["untrusted_reason_text"] = reason }
+            return try JSONSerialization.data(withJSONObject: value)
+        }
+        let path = "/admin/approvals/req-selected"
+        var selected = prompt("req-selected")
+        let newer = prompt("req-newer")
+        let helper = prompt("req-helper", agent: "helper")
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
+        for id in ["req-selected", "req-newer", "req-helper"] {
+            StubURLProtocol.responsesByPath["/admin/approvals/\(id)"] = (200, try record(id, agent: id == "req-helper" ? "helper" : "worker"))
+        }
+        let socket = StubEventSocket()
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+            eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+            expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+        _ = NSApplication.shared
+        let presenter = ApprovalWindowPresenter()
+        var presentations = 0
+        client.onNewApproval = { event in presentations += 1; presenter.show(event, client: client) }
+        defer {
+            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("network:\(id)") }
+            client.stop()
+        }
+        client.start()
+        try await until { socket.receiving && client.networkOutcomes.count == 3 }
+        precondition(Set(client.approvals.map(\.id)) == Set(["network:req-selected", "network:req-newer", "network:req-helper"]))
+        let selectedWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" }!
+        let newerWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-newer" }!
+        precondition(selectedWindow !== newerWindow && presentations == 3)
+        presenter.show(client.approvals.first { $0.requestID == "req-selected" }!, client: client)
+        let hosting = selectedWindow.contentViewController as! NSHostingController<ApprovalView>
+        precondition(hosting.rootView.quotedUntrustedReason == nil)
+
+        selected = prompt("req-selected", reason: reason)
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", reason: reason))
+        var preparation = selected
+        preparation["event"] = "agent.network_action_prepared"
+        preparation["kind"] = "agent"
+        var annotation = preparation["approval"] as! [String: Any]
+        annotation["required"] = false
+        preparation["approval"] = annotation
+        let preparedEvent = try JSONSerialization.data(withJSONObject: preparation)
+        try await client.ingestOperatorEventData(preparedEvent)
+        precondition(NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" } === selectedWindow)
+        precondition(presentations == 3, "Preparation updates the open window without another prompt")
+        precondition(hosting.rootView.displayedEffect == effect)
+        precondition(hosting.rootView.quotedUntrustedReason == "\"\(reason)\"")
+        precondition(client.networkOutcomes["req-newer"]?.untrustedReasonText == nil)
+        try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(reason)\""])
+
+        // A different request's decision cannot invent this request's outcome.
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
+        StubURLProtocol.responsesByPath["/admin/approvals/req-newer"] = (200, try record("req-newer", status: "approved"))
+        try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Allowed another request"}"#.utf8))
+        precondition(client.networkOutcomes["req-selected"]?.status == "pending")
+        precondition(client.networkOutcomes["req-newer"]?.status == "approved")
+
+        var posts = 0
+        var responseStatus = 409
+        StubURLProtocol.requestHandler = { request in
+            if request.httpMethod == "POST" {
+                posts += 1
+                precondition(request.url?.path == path)
+                let stream = request.httpBodyStream
+                var bytes = [UInt8](repeating: 0, count: 1024)
+                stream?.open()
+                defer { stream?.close() }
+                let count = stream?.read(&bytes, maxLength: bytes.count) ?? 0
+                let data = request.httpBody ?? Data(bytes.prefix(max(0, count)))
+                let payload = try JSONSerialization.jsonObject(with: data) as! [String: String]
+                precondition(payload == ["decision": "approve"], "Only the exact decision goes to the canonical resolver")
+                return (responseStatus, Data(#"{"error":"stale or unavailable"}"#.utf8))
+            }
+            return StubURLProtocol.responsesByPath[request.url!.path]!
+        }
+        for status in [409, 503] {
+            responseStatus = status
+            let expectedPosts = posts + 1
+            let decisionControls = try await checkApprovalLayout(selectedWindow, text: [effect])
+            let allow = decisionControls.max { selectedWindow.contentView!.convert($0.bounds, from: $0).midX < selectedWindow.contentView!.convert($1.bounds, from: $1).midX }!
+            clickApprovalControl(selectedWindow, allow)
+            try await until { posts == expectedPosts && approvalTextField(selectedWindow, "\(status)") != nil }
+            try await checkApprovalLayout(selectedWindow, text: [effect, "\(status)"])
+            precondition(client.networkOutcomes["req-selected"]?.status == "pending")
+        }
+        precondition(posts == 2, "Neither refusal replays the decision")
+        StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
+        try await client.ingestOperatorEventData(preparedEvent)
+        precondition(client.unavailableNetworkOutcomes.contains("req-selected"))
+        try await checkApprovalLayout(selectedWindow, text: ["Approval evidence unavailable"])
+
+        // Growing content must remain reachable in the existing window,
+        // with the same request and decision controls outside the scroll area.
+        let longReason = String(repeating: "Inspect only the selected Worker evidence. ", count: 20)
+        selected = prompt("req-selected", reason: longReason)
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", reason: longReason))
+        try await client.ingestOperatorEventData(preparedEvent)
+        StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
+        try await client.ingestOperatorEventData(preparedEvent)
+        try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(longReason)\"", "Approval evidence unavailable", "503"])
+        let scroll = approvalScrollView(selectedWindow)!
+        precondition(scroll.documentView!.bounds.height > scroll.contentView.bounds.height)
+        precondition(hosting.rootView.quotedUntrustedReason == "\"\(longReason)\"")
+        precondition(NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" } === selectedWindow && presentations == 3)
+
+        StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", status: "approved", reason: longReason))
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [helper]]))
+        try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Selected request committed"}"#.utf8))
+        precondition(hosting.rootView.networkOutcome?.status == "approved")
+        precondition(hosting.rootView.displayedEffect == effect)
+        precondition(!client.unavailableNetworkOutcomes.contains("req-selected") && posts == 2)
+        try await checkApprovalLayout(selectedWindow, terminal: true, text: ["Approved"])
     }
 
     @MainActor

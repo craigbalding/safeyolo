@@ -38,13 +38,15 @@ final class ApprovalWindowPresenter {
         )
         let controller = NSHostingController(rootView: view)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 230),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "SafeYolo Approval"
+        window.identifier = NSUserInterfaceItemIdentifier(event.id)
         window.contentViewController = controller
+        window.setContentSize(NSSize(width: 520, height: 420))
         window.isReleasedWhenClosed = false
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
@@ -382,29 +384,94 @@ struct ConnectionSettingsView: View {
 
 struct ApprovalView: View {
     let event: ApprovalEvent
-    let client: SafeYoloClient
+    @ObservedObject var client: SafeYoloClient
     let close: () -> Void
 
     @State private var busy = false
     @State private var error: String?
 
+    var currentEvent: ApprovalEvent {
+        client.approvals.first { $0.id == event.id } ?? event
+    }
+
+    var networkOutcome: NetworkApprovalResolution? {
+        guard event.details?.networkAction?.kind == "network_allow", let id = event.requestID else { return nil }
+        return client.networkOutcomes[id]
+    }
+
+    var displayedEffect: String { networkOutcome?.effect ?? currentEvent.summary }
+    var quotedUntrustedReason: String? { networkOutcome?.quotedUntrustedReason ?? currentEvent.quotedUntrustedReason }
+
+    private var evidenceUnavailable: Bool {
+        event.requestID.map { client.unavailableNetworkOutcomes.contains($0) } ?? false
+    }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ScrollView {
+                approvalDetails
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack {
+                Button("Deny") { decide(allow: false) }
+                    .disabled(busy || networkOutcome?.terminal == true)
+                    .accessibilityLabel("Deny")
+                    .accessibilityIdentifier("deny-button")
+                Spacer()
+                Button("Cancel") { close() }
+                    .disabled(busy)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("cancel-button")
+                Button("Allow") { decide(allow: true) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy || networkOutcome?.terminal == true)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityLabel("Allow")
+                    .accessibilityIdentifier("allow-button")
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 460, minHeight: 320)
+    }
+
+    private var approvalDetails: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.shield.fill")
                     .font(.system(size: 26))
                     .foregroundStyle(.pink)
-                Text(event.summary)
+                Text(verbatim: displayedEffect)
                     .font(.headline)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 5) {
-                row("Agent", event.agent ?? "Unknown agent")
-                row("Action", event.approval.approvalType.replacingOccurrences(of: "_", with: " "))
-                row("Target", event.target)
-                if let method = event.details?.method { row("Method", method) }
-                if let path = event.details?.path { row("Path", path) }
+                row("Agent", currentEvent.agent ?? "Unknown agent")
+                row("Action", currentEvent.approval.approvalType.replacingOccurrences(of: "_", with: " "))
+                row("Target", currentEvent.target)
+                if currentEvent.details?.networkAction?.kind == "network_allow", let id = currentEvent.requestID { row("Request", id) }
+                if let method = currentEvent.details?.method { row("Method", method) }
+                if let path = currentEvent.details?.path { row("Path", path) }
+            }
+
+            if let reason = quotedUntrustedReason {
+                Text("Helper reason (untrusted)").foregroundStyle(.secondary)
+                Text(verbatim: reason)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if evidenceUnavailable {
+                Text("Approval evidence unavailable. Direct policy controls remain available.")
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let outcome = networkOutcome, outcome.terminal {
+                Text(verbatim: outcome.display)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let error {
@@ -420,28 +487,7 @@ struct ApprovalView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            Spacer(minLength: 2)
-            HStack {
-                Button("Deny") { decide(allow: false) }
-                    .disabled(busy)
-                    .accessibilityLabel("Deny")
-                    .accessibilityIdentifier("deny-button")
-                Spacer()
-                Button("Cancel") { close() }
-                    .disabled(busy)
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("cancel-button")
-                Button("Allow") { decide(allow: true) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(busy)
-                    .keyboardShortcut(.defaultAction)
-                    .accessibilityLabel("Allow")
-                    .accessibilityIdentifier("allow-button")
-            }
         }
-        .padding(20)
-        .frame(minWidth: 460, maxWidth: 460, minHeight: 205)
     }
 
     @ViewBuilder
@@ -457,7 +503,7 @@ struct ApprovalView: View {
     private func decide(allow: Bool) {
         busy = true
         error = nil
-        client.resolve(event, allow: allow) { result in
+        client.resolve(currentEvent, allow: allow) { result in
             switch result {
             case .success(.desktop(let presentation)):
                 NSPasteboard.general.clearContents()

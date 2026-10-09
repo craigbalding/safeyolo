@@ -746,7 +746,18 @@ fn read_audit_events(path: &Path) -> Vec<Value> {
         .collect()
 }
 
+fn network_approval_key(event: &Value) -> Option<String> {
+    if event.pointer("/details/network_action/kind")?.as_str()? != "network_allow" {
+        return None;
+    }
+    let request_id = event.get("request_id")?.as_str()?;
+    Some(format!("network:{request_id}"))
+}
+
 fn approval_key(event: &Value) -> Option<String> {
+    if let Some(key) = network_approval_key(event) {
+        return Some(key);
+    }
     let approval = event.get("approval")?.as_object()?;
     let key = approval.get("key")?.as_str()?;
     let target = approval.get("target")?.as_str()?;
@@ -846,6 +857,9 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
             }
         }
         "admin.host_allowed" | "admin.host_denied" | "admin.network_action_rejected" => {
+            if let Some(key) = network_approval_key(event) {
+                return vec![key];
+            }
             let Some(host) = details.get("host").and_then(Value::as_str) else {
                 return Vec::new();
             };
@@ -893,9 +907,8 @@ fn pending_approvals(path: &Path) -> Value {
     let mut durable_resolutions = std::collections::HashSet::new();
     let mut pending: std::collections::HashMap<String, (usize, Value)> =
         std::collections::HashMap::new();
-    // `read_audit_events` returns newest first. Walk it chronologically so the
-    // same durable-resolution semantics as the retained Python watcher apply
-    // to both an earlier prompt and a later retry.
+    // Walk newest-first audit input chronologically. Typed network requests
+    // retain their own decisions; unbound legacy prompts coalesce by scope.
     for (sequence, event) in events.iter().rev().enumerate() {
         for key in resolved_approval_keys(event) {
             let repeatable = key.starts_with("desktop.present:desktop:")
@@ -923,6 +936,19 @@ fn pending_approvals(path: &Path) -> Value {
         let Some(approval) = event.get("approval") else {
             continue;
         };
+        if event["event"] == "agent.network_action_prepared" {
+            if let Some(key) = network_approval_key(event)
+                && let Some((_, prompt)) = pending.get_mut(&key)
+                && prompt.pointer("/details/network_action")
+                    == event.pointer("/details/network_action")
+                && let Some(reason) = event.pointer("/details/untrusted_reason_text")
+            {
+                // Keep the original required prompt and immutable action. A
+                // preparation only annotates pending work, never reopens it.
+                prompt["details"]["untrusted_reason_text"] = reason.clone();
+            }
+            continue;
+        }
         if !approval
             .get("required")
             .and_then(Value::as_bool)
@@ -3334,6 +3360,35 @@ mod tests {
             })),
             vec!["alice:gmail:mail:gmail"]
         );
+    }
+
+    #[test]
+    fn preparation_annotates_only_its_existing_pending_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.jsonl");
+        let action = json!({"kind":"network_allow","agent":"worker","port":443});
+        let prompt = json!({
+            "event":"security.network_guard","request_id":"req-selected",
+            "approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},
+            "details":{"network_action":action}
+        });
+        let preparation = json!({
+            "event":"agent.network_action_prepared","request_id":"req-selected",
+            "approval":{"required":false,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},
+            "details":{"network_action":action,"untrusted_reason_text":"Helper reason"}
+        });
+        std::fs::write(&path, format!("{preparation}\n")).unwrap();
+        assert_eq!(pending_approvals(&path), json!([]));
+        std::fs::write(&path, format!("{prompt}\n{preparation}\n")).unwrap();
+        let mut annotated = prompt.clone();
+        annotated["details"]["untrusted_reason_text"] = json!("Helper reason");
+        assert_eq!(pending_approvals(&path), json!([annotated]));
+        let resolution = json!({
+            "event":"admin.network_action_rejected","request_id":"req-selected",
+            "details":{"network_action":action,"approval_request_id":"req-selected"}
+        });
+        std::fs::write(&path, format!("{prompt}\n{resolution}\n{preparation}\n")).unwrap();
+        assert_eq!(pending_approvals(&path), json!([]));
     }
 
     #[test]
