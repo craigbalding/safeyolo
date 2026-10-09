@@ -110,10 +110,10 @@ class TestAgentHomePersistence:
 
         # 3. Start a fresh sandbox for the same agent.
         start = self._safeyolo(
-            "agent", "run", agent_name, "--sandbox-only", timeout=60,
+            "agent", "start", agent_name, "--sandbox-only", timeout=60,
         )
         assert start.returncode == 0, (
-            f"agent run --sandbox-only failed: rc={start.returncode} "
+            f"agent start --sandbox-only failed: rc={start.returncode} "
             f"stderr={start.stderr!r}"
         )
         assert self._wait_for_shell(agent_name, timeout=60), (
