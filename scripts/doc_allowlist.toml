@@ -35,6 +35,7 @@ user_facing_docs = [
     "contrib/ROOTFS_SCRIPT_GUIDE.md",
     "docs/ARCHITECTURE.md",
     "docs/AGENTS.md",
+    "docs/demo.md",
     "docs/ADDONS.md",
     "docs/CONFIGURATION.md",
     "docs/native-policy.md",

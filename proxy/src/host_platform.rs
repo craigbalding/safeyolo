@@ -376,19 +376,59 @@ fn unavailable() -> io::Error {
 }
 
 #[cfg(target_os = "linux")]
+fn provider_runtime_not_ready() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "provider runtime is not ready; run agent status",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn provider_namespace_unavailable() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "provider namespace control is unavailable or recovery failed; run agent diagnostics",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn provider_runsc_failed() -> io::Error {
+    io::Error::other(
+        "provider runsc command, state or port forwarding failed; check runsc installation and agent diagnostics",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn provider_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "provider transport timed out; run agent diagnostics",
+    )
+}
+
+#[cfg(target_os = "linux")]
 async fn port_forward_failure(child: &mut tokio::process::Child) -> io::Error {
-    let mut detail = String::new();
-    if let Some(stderr) = child.stderr.take() {
-        let _ = stderr.take(4096).read_to_string(&mut detail).await;
-    }
-    if detail
-        .to_ascii_lowercase()
-        .contains("connection was refused")
-        || detail.to_ascii_lowercase().contains("connection refused")
+    let mut detail = Vec::new();
+    if let Some(stderr) = child.stderr.take()
+        && tokio::time::timeout(
+            Duration::from_secs(1),
+            stderr.take(4096).read_to_end(&mut detail),
+        )
+        .await
+        .is_err()
     {
-        io::Error::new(io::ErrorKind::ConnectionRefused, detail)
+        return provider_timeout();
+    }
+    // Stderr is used only to classify refusal. Never propagate guest/tool
+    // output, which can contain credentials or host paths, into diagnostics.
+    let detail = String::from_utf8_lossy(&detail).to_ascii_lowercase();
+    if detail.contains("connection was refused") || detail.contains("connection refused") {
+        io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "provider guest port refused the connection; check the guest listener",
+        )
     } else {
-        unavailable()
+        provider_runsc_failed()
     }
 }
 
@@ -463,9 +503,9 @@ pub(crate) fn userns_pid(name: &str) -> Option<u32> {
         .parse::<u32>()
         .ok()?;
     let run = crate::host_runs::read(name).ok()??;
+    let token = crate::host_lifecycle::process_token(i64::from(pid))?;
     if run["holder_pid"].as_u64() != Some(u64::from(pid))
-        || crate::host_lifecycle::process_token(i64::from(pid)).as_deref()
-            != run["holder_token"].as_str()
+        || Some(token.as_str()) != run["holder_token"].as_str()
         || run["run_id"].as_str().map(|id| format!("safeyolo-{id}"))
             != crate::host_runs::id(name).ok()
     {
@@ -515,9 +555,9 @@ pub(crate) fn control_pid(name: &str) -> Option<u32> {
     if let Some(pid) = userns_pid(name) {
         return Some(pid);
     }
-    // The live sentry still owns the original namespaces after holder loss.
+    // The live sentry retains the run's network namespace after holder loss.
     // Validate the incarnation, process birth, command and mapping before
-    // entering it. This is recovery of that context, never direct runsc.
+    // recovering its owning user namespace. Never use direct runsc here.
     checked_namespace(backend_pid(name)?)
 }
 
@@ -525,9 +565,8 @@ pub(crate) fn control_pid(name: &str) -> Option<u32> {
 pub(crate) fn backend_pid(name: &str) -> Option<u32> {
     let run = crate::host_runs::read(name).ok()??;
     let pid = u32::try_from(run["backend_pid"].as_u64()?).ok()?;
-    if crate::host_lifecycle::process_token(i64::from(pid)).as_deref()
-        != run["backend_token"].as_str()
-    {
+    let token = crate::host_lifecycle::process_token(i64::from(pid))?;
+    if Some(token.as_str()) != run["backend_token"].as_str() {
         return None;
     }
     let id = crate::host_runs::id(name).ok()?;
@@ -564,20 +603,8 @@ fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn runsc_command(name: &str) -> io::Result<Command> {
-    let pid = control_pid(name).ok_or_else(|| io::Error::other("sandbox namespace control is unavailable; run agent diagnostics or stop the owned backend"))?;
-    let mut command = Command::new("nsenter");
-    command.args([
-        "--user",
-        "--net",
-        "--target",
-        &pid.to_string(),
-        "--",
-        "runsc",
-    ]);
-    let root = std::env::var_os("SAFEYOLO_RUNSC_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir().join("run"));
-    command.arg("--root").arg(root);
+    let mut command = userns_command(name, "runsc")?;
+    command.arg("--root").arg(runsc_root());
     Ok(command)
 }
 
@@ -590,18 +617,67 @@ pub(crate) fn runsc_root() -> PathBuf {
 
 #[cfg(target_os = "linux")]
 fn userns_command(name: &str, program: &str) -> io::Result<Command> {
-    let pid = control_pid(name)
-        .ok_or_else(|| io::Error::other("sandbox namespace control is unavailable"))?;
     let mut command = Command::new("nsenter");
-    command.args([
-        "--user",
-        "--net",
-        "--target",
-        &pid.to_string(),
-        "--",
-        program,
-    ]);
+    if let Some(pid) = userns_pid(name) {
+        command.args(["--user", "--net", "--target", &pid.to_string(), "--"]);
+    } else {
+        pin_namespace_arguments(name, &mut command)?;
+    }
+    command.arg(program);
     Ok(command)
+}
+
+#[cfg(target_os = "linux")]
+fn pin_namespace_arguments(name: &str, command: &mut Command) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let unverified = || {
+        io::Error::other(
+            "sandbox namespace control is unavailable or changed; run agent diagnostics or stop the owned backend",
+        )
+    };
+    let run = crate::host_runs::read(name)
+        .ok()
+        .flatten()
+        .ok_or_else(unverified)?;
+    let pid = control_pid(name).ok_or_else(unverified)?;
+    let token = crate::host_lifecycle::process_token(i64::from(pid)).ok_or_else(unverified)?;
+    let net = std::fs::File::open(format!("/proc/{pid}/ns/net"))?;
+    // The sentry may inhabit a child user namespace while retaining the
+    // holder's network namespace. Enter that network namespace's owner,
+    // rather than losing entry authority in the sentry's child namespace.
+    let fd = unsafe { libc::ioctl(net.as_raw_fd(), libc::NS_GET_USERNS) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user = unsafe { std::fs::File::from_raw_fd(fd) };
+    if user.metadata()?.ino() == std::fs::metadata("/proc/self/ns/user")?.ino()
+        || net.metadata()?.ino() != std::fs::metadata(format!("/proc/{pid}/ns/net"))?.ino()
+        || crate::host_lifecycle::process_token(i64::from(pid)).as_deref() != Some(&token)
+        || control_pid(name) != Some(pid)
+        || crate::host_runs::read(name).ok().flatten().as_ref() != Some(&run)
+    {
+        return Err(unverified());
+    }
+    command.args([
+        format!("--user=/proc/self/fd/{}", user.as_raw_fd()),
+        format!("--net=/proc/self/fd/{}", net.as_raw_fd()),
+        "--".into(),
+    ]);
+    // Keep both descriptors pinned through spawn. Only this child inherits
+    // them; nsenter keeps its usual UID, GID and supplementary-group setup.
+    // No subsequent lookup of a possibly reused process PID selects entry.
+    unsafe {
+        command.as_std_mut().pre_exec(move || {
+            for fd in [user.as_raw_fd(), net.as_raw_fd()] {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1003,49 +1079,64 @@ pub(crate) async fn guest_exec_available(name: &str) -> bool {
 pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStream> {
     use tokio::net::UnixListener;
 
-    if !valid_agent_name(name)
-        || port == 0
-        || crate::host_runs::observe(name).await["port_forward"] != true
-    {
-        return Err(unavailable());
+    if !valid_agent_name(name) || port == 0 {
+        return Err(provider_runtime_not_ready());
     }
-    let directory = tempfile::Builder::new().prefix("sy-port-").tempdir()?;
+    let observed = crate::host_runs::observe(name).await;
+    if observed["port_forward"] != true {
+        return Err(
+            if observed["runtime_state"] == "stopped" || observed["runtime_state"] == "starting" {
+                provider_runtime_not_ready()
+            } else if userns_command(name, "runsc").is_err() {
+                provider_namespace_unavailable()
+            } else {
+                provider_runsc_failed()
+            },
+        );
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("sy-port-")
+        .tempdir()
+        .map_err(|_| provider_runsc_failed())?;
     let path = directory.path().join("stream.sock");
-    let listener = UnixListener::bind(&path)?;
-    let mut command = runsc_command(name)?;
+    let listener = UnixListener::bind(&path).map_err(|_| provider_runsc_failed())?;
+    let mut command = runsc_command(name).map_err(|_| provider_namespace_unavailable())?;
     let mut child = command
         .args([
             "port-forward",
             "--stream",
             path.to_str().unwrap_or_default(),
-            &crate::host_runs::id(name).map_err(io::Error::other)?,
+            &crate::host_runs::id(name).map_err(|_| provider_runtime_not_ready())?,
             &port.to_string(),
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(|_| provider_runsc_failed())?;
     // runsc donates the connected descriptor, then exits. Require success
     // before exposing the stream so a closed port remains unavailable.
     let stream = tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {
             biased;
-            accepted = listener.accept() => accepted.map(|(stream, _)| stream),
+            accepted = listener.accept() => accepted.map(|(stream, _)| stream).map_err(|_| provider_runsc_failed()),
             status = child.wait() => {
-                if !status?.success() {
+                if !status.map_err(|_| provider_runsc_failed())?.success() {
                     return Err(port_forward_failure(&mut child).await);
                 }
                 tokio::time::timeout(Duration::from_secs(1), listener.accept())
-                    .await.map_err(|_| unavailable())?
+                    .await.map_err(|_| provider_timeout())?
                     .map(|(stream, _)| stream)
+                    .map_err(|_| provider_runsc_failed())
             }
         }
     })
     .await
-    .map_err(|_| unavailable())??;
+    .map_err(|_| provider_timeout())??;
     let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
         .await
-        .map_err(|_| unavailable())??;
+        .map_err(|_| provider_timeout())?
+        .map_err(|_| provider_runsc_failed())?;
     if !status.success() {
         return Err(port_forward_failure(&mut child).await);
     }
@@ -1083,6 +1174,7 @@ pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
     command: &str,
     capture: bool,
+    inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
         return Err(unavailable());
@@ -1090,8 +1182,8 @@ pub(crate) async fn spawn_guest_command_with_output(
     let wrapped = format!(
         ". /etc/environment 2>/dev/null; if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
     );
-    runsc_command(name)?
-        .args([
+    guest_command_stdio(
+        runsc_command(name)?.args([
             "exec",
             "--user",
             "1000:1000",
@@ -1101,28 +1193,17 @@ pub(crate) async fn spawn_guest_command_with_output(
             "/bin/bash",
             "-lc",
             &wrapped,
-        ])
-        .stdin(if capture {
-            std::process::Stdio::null()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stdout(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stderr(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .kill_on_drop(capture)
-        .spawn()
+        ]),
+        capture,
+        inherit_stdin,
+    )
+    .spawn()
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1138,6 +1219,41 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
             .await
             .map_err(io::Error::other);
     }
+    let unverified = || {
+        io::Error::other(
+            "holder birth, run or namespaces changed or are unverified; no holder was signalled; state was preserved; run agent diagnostics",
+        )
+    };
+    let run = crate::host_runs::read(name)
+        .ok()
+        .flatten()
+        .ok_or_else(unverified)?;
+    let pid = userns_pid(name).ok_or_else(unverified)?;
+    // Pin the original holder before running stop commands. A reused PID or
+    // a changed incarnation cannot acquire authority during the stop.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(io::Error::other(format!(
+            "could not open the verified holder: {}; no holder was signalled; state was preserved; run agent diagnostics",
+            io::Error::last_os_error()
+        )));
+    }
+    let holder = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    let revalidate_holder = || {
+        let current = crate::host_runs::read(name)
+            .ok()
+            .flatten()
+            .ok_or_else(unverified)?;
+        if userns_pid(name) != Some(pid)
+            || run["run_id"].as_str() != Some(id.trim_start_matches("safeyolo-"))
+            || current["holder_token"] != run["holder_token"]
+            || current["run_id"] != run["run_id"]
+        {
+            return Err(unverified());
+        }
+        Ok(())
+    };
+    revalidate_holder()?;
     if guest_exec_available(name).await {
         let _ = runsc_command(name)?
             .args(["kill", &id, "SIGTERM"])
@@ -1157,10 +1273,9 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         }
     }
     if userns_pid(name).is_none() {
-        crate::host_runs::stop_without_holder(name)
+        return crate::host_runs::stop_without_holder(name)
             .await
-            .map_err(io::Error::other)?;
-        return Ok(());
+            .map_err(io::Error::other);
     }
     let status = runsc_command(name)?
         .args(["delete", "--force", &id])
@@ -1169,8 +1284,21 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     if !status.success() && guest_exec_available(name).await {
         return Err(io::Error::other("runsc could not delete the sandbox"));
     }
-    if let Some(pid) = userns_pid(name) {
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    revalidate_holder()?;
+    if unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            holder.as_raw_fd(),
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    } != 0
+    {
+        return Err(io::Error::other(format!(
+            "could not stop the verified holder: {}; state was preserved; run agent diagnostics",
+            io::Error::last_os_error()
+        )));
     }
     let directory = config_dir().join("agents").join(name);
     let _ = std::fs::remove_file(directory.join("userns.pid"));
@@ -1312,6 +1440,7 @@ pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
     command: &str,
     capture: bool,
+    inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
         return Err(unavailable());
@@ -1325,8 +1454,8 @@ pub(crate) async fn spawn_guest_command_with_output(
     let key = config_dir().join("data/vm_ssh_key");
     let socket = shell.display().to_string().replace('\'', "'\\''");
     let wrapped = macos_guest_command(command);
-    Command::new("ssh")
-        .args([
+    guest_command_stdio(
+        Command::new("ssh").args([
             "-i",
             key.to_str().unwrap_or_default(),
             "-o",
@@ -1345,27 +1474,14 @@ pub(crate) async fn spawn_guest_command_with_output(
             "ControlPath=none",
             "-o",
             &format!("ProxyCommand=nc -U '{socket}'"),
-            if capture { "-T" } else { "-t" },
+            if inherit_stdin { "-t" } else { "-T" },
             "agent@sandbox",
             &wrapped,
-        ])
-        .stdin(if capture {
-            std::process::Stdio::null()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stdout(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stderr(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .kill_on_drop(capture)
-        .spawn()
+        ]),
+        capture,
+        inherit_stdin,
+    )
+    .spawn()
 }
 
 #[cfg(target_os = "macos")]
@@ -1748,11 +1864,36 @@ pub(crate) async fn start_sandbox(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn guest_command_stdio(command: &mut Command, capture: bool, inherit_stdin: bool) -> &mut Command {
+    // runsc can set O_NONBLOCK on a donated descriptor's shared open-file
+    // description. A guest-side redirect happens too late to protect a caller
+    // that owns operator input; disconnect that input before spawning runsc.
+    command
+        .stdin(if inherit_stdin {
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(if capture {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::inherit()
+        })
+        .stderr(if capture {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::inherit()
+        })
+        .kill_on_drop(capture)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn spawn_guest_command(
     name: &str,
     command: &str,
+    inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
-    spawn_guest_command_with_output(name, command, false).await
+    spawn_guest_command_with_output(name, command, false, inherit_stdin).await
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1761,7 +1902,7 @@ pub(crate) async fn guest_command_output(
     command: &str,
     timeout: std::time::Duration,
 ) -> io::Result<std::process::Output> {
-    let child = spawn_guest_command_with_output(name, command, true).await?;
+    let child = spawn_guest_command_with_output(name, command, true, false).await?;
     tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "guest command timed out"))?
@@ -1769,9 +1910,13 @@ pub(crate) async fn guest_command_output(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn coding_agent_observation(name: &str) -> io::Result<String> {
-    let child =
-        spawn_guest_command_with_output(name, "/safeyolo/safeyolo-guest observe check", true)
-            .await?;
+    let child = spawn_guest_command_with_output(
+        name,
+        "/safeyolo/safeyolo-guest observe check",
+        true,
+        false,
+    )
+    .await?;
     let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
         .await
         .map_err(|_| {
@@ -1811,6 +1956,7 @@ pub(crate) async fn exec_guest_command(_name: &str, _command: &str) -> io::Resul
 pub(crate) async fn spawn_guest_command(
     _name: &str,
     _command: &str,
+    _inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
     Err(unavailable())
 }
@@ -1941,6 +2087,175 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn port_forward_failures_are_bounded_and_do_not_disclose_stderr() {
+        for (script, kind, reason) in [
+            (
+                "printf 'connection was refused: /private/path secret-token' >&2; exit 1",
+                io::ErrorKind::ConnectionRefused,
+                "guest port refused",
+            ),
+            (
+                "printf 'runsc failed: /private/path secret-token' >&2; exit 1",
+                io::ErrorKind::Other,
+                "runsc command, state or port forwarding failed",
+            ),
+            (
+                "exec /bin/sleep 5",
+                io::ErrorKind::TimedOut,
+                "transport timed out",
+            ),
+        ] {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", script])
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let failure = port_forward_failure(&mut child).await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            assert_eq!(failure.kind(), kind);
+            assert!(failure.to_string().contains(reason), "{failure}");
+            assert!(!failure.to_string().contains("private"));
+            assert!(!failure.to_string().contains("secret-token"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guest_stdin_flag_mutator() {
+        // Run only as a child of the descriptor regression, so the test
+        // runner's own input flags and bytes are never changed.
+        let Ok(mode) = std::env::var("SAFEYOLO_TEST_STDIN_MUTATOR") else {
+            return;
+        };
+        let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(0, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+            0
+        );
+        use std::io::Read;
+        if mode == "interactive" {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input).unwrap();
+            assert_eq!(input, "guest input\n");
+        } else if mode == "null" {
+            let mut byte = [0];
+            assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn guest_command_stdin_preserves_operator_input_and_interactive_input() {
+        use std::io::{BufRead, Read, Write};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        const TEST: &str = "host_platform::tests::guest_command_stdin_preserves_operator_input_and_interactive_input";
+        if let Ok(mode) = std::env::var("SAFEYOLO_TEST_GUEST_STDIN") {
+            let original = unsafe { libc::fcntl(0, libc::F_GETFL) };
+            assert!(original >= 0 && original & libc::O_NONBLOCK == 0);
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "host_platform::tests::guest_stdin_flag_mutator",
+                    "--nocapture",
+                ])
+                .env(
+                    "SAFEYOLO_TEST_STDIN_MUTATOR",
+                    if mode == "interactive" {
+                        "interactive"
+                    } else if mode == "inherited" {
+                        "flags"
+                    } else {
+                        "null"
+                    },
+                );
+            let mut runtime = guest_command_stdio(
+                &mut command,
+                mode != "visible",
+                matches!(mode.as_str(), "inherited" | "interactive"),
+            )
+            .spawn()
+            .unwrap();
+            assert!(runtime.wait().await.unwrap().success());
+            let observed = unsafe { libc::fcntl(0, libc::F_GETFL) };
+            if matches!(mode.as_str(), "inherited" | "interactive") {
+                assert_eq!(observed, original | libc::O_NONBLOCK);
+                if mode == "inherited" {
+                    let mut byte = [0];
+                    assert_eq!(
+                        std::io::stdin().read(&mut byte).unwrap_err().raw_os_error(),
+                        Some(libc::EAGAIN)
+                    );
+                }
+                // Only the deliberately inherited negative control needs
+                // restoration. Production noninteractive commands do not.
+                assert_eq!(unsafe { libc::fcntl(0, libc::F_SETFL, original) }, 0);
+            } else {
+                assert_eq!(observed, original);
+            }
+            if mode == "interactive" {
+                let mut remaining = String::new();
+                std::io::stdin().read_to_string(&mut remaining).unwrap();
+                assert!(remaining.is_empty());
+            } else {
+                println!("operator-input-ready");
+                std::io::stdout().flush().unwrap();
+                let mut input = std::io::stdin().lock();
+                let mut final_line = String::new();
+                input.read_line(&mut final_line).unwrap();
+                assert_eq!(final_line, "finish\n");
+                let mut remaining = String::new();
+                input.read_to_string(&mut remaining).unwrap();
+                assert_eq!(remaining, "remaining input\n");
+            }
+            return;
+        }
+        for mode in ["inherited", "visible", "captured", "interactive"] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("SAFEYOLO_TEST_GUEST_STDIN", mode)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut input = child.stdin.take().unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+            if mode == "interactive" {
+                input.write_all(b"guest input\n").await.unwrap();
+            } else {
+                loop {
+                    let line = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .expect("stdin control ended before final input");
+                    if line == "operator-input-ready" {
+                        break;
+                    }
+                }
+                input.write_all(b"finish\nremaining input\n").await.unwrap();
+            }
+            drop(input);
+            let result = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -28,6 +28,7 @@ pub mod credential_injection;
 pub mod credential_resolver;
 mod credential_text;
 pub mod credentials;
+pub mod demo;
 pub(crate) mod desktop_present;
 mod desktop_preview;
 pub mod dispatch;

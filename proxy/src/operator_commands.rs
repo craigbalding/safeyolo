@@ -190,7 +190,7 @@ async fn admin(_root: &Path, path: &str, method: Method, body: Value) -> Result<
     .await
 }
 
-async fn approval(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
+pub(crate) async fn approval(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
     if !crate::agent_api::valid_request_id(id) {
         return Err("invalid request ID".into());
     }
@@ -228,7 +228,7 @@ fn show_approval(view: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-async fn resolve(
+pub(crate) async fn resolve(
     root: &Path,
     id: &str,
     decision: &str,
@@ -277,7 +277,7 @@ async fn share(root: &Path, id: &str, helper: &str, agent: Option<&str>) -> Resu
     Ok(shared)
 }
 
-async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, Error> {
+pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, Error> {
     let mut value = admin(root, "/admin/approvals", Method::GET, Value::Null).await?;
     let approvals = value["approvals"]
         .as_array_mut()
@@ -320,7 +320,7 @@ async fn flows(root: &Path, options: &Options) -> Result<Value, Error> {
     .await
 }
 
-async fn flow(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
+pub(crate) async fn flow(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
     let value = admin(
         root,
         &format!("/admin/traffic/flows/{}", encoded(id)),

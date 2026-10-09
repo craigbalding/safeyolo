@@ -24,9 +24,9 @@ instance() {
 }
 
 if (($# == 4)); then
-  "$4" --root "$b" --bundle "$package"
+  "$4" --root "$b" --command-dir "$b/commands" --bundle "$package"
 else
-  "$package/install.sh" --root "$b"
+  "$package/install.sh" --root "$b" --command-dir "$b/commands"
 fi
 configure "$b" "$occupied_port"
 instance "$b" start
@@ -37,13 +37,13 @@ cp "$b/data/proxy-process.json" "$state/b-process-before.json"
 # A missing input is rejected before creating the instance, then the same
 # ordinary install command succeeds when that input is restored.
 mv "$package/bin/safeyolo-proxy" "$state/missing-proxy"
-if "$package/install.sh" --root "$a" > "$state/missing.stdout" 2> "$state/missing.stderr"; then
+if "$package/install.sh" --root "$a" --command-dir "$a/commands" > "$state/missing.stdout" 2> "$state/missing.stderr"; then
   echo 'Missing proxy was incorrectly accepted' >&2; exit 1
 fi
 grep 'required artifact is missing.*safeyolo-proxy' "$state/missing.stderr"
 [[ ! -e $a ]]
 mv "$state/missing-proxy" "$package/bin/safeyolo-proxy"
-"$package/install.sh" --root "$a"
+"$package/install.sh" --root "$a" --command-dir "$a/commands"
 configure "$a" "$occupied_port"
 if instance "$a" start > "$state/occupied.stdout" 2> "$state/occupied.stderr"; then
   echo 'Occupied Admin endpoint was incorrectly accepted' >&2; exit 1
