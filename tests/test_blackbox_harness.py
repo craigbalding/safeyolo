@@ -191,32 +191,150 @@ def test_shared_approval_coord_uses_staged_home_binary(tmp_path, monkeypatch):
         }
 
 
-def test_unavailable_model_policy_preserves_worker_scope_and_saved_policy(tmp_path):
-    """Only Helper can reach the owned model endpoint; no grant is inferred."""
-    original = '''budget=17
-[hosts]
-"chatgpt.com:443"={egress="allow"}
-"127.0.0.3:49124"={egress="allow"}
-[controls.credentials]
-enabled=true
-[agents.worker]
+@pytest.mark.parametrize("unavailable_model_port", [None, 49124], ids=["real-helper", "model-unavailable"])
+@pytest.mark.parametrize("agents", [
+    pytest.param('''[agents.worker]
+agent_id="worker-id"
+folder="/owned/worker"
+network_slot=1
+evidence_reads=[{request_id="worker-kept"}]
+[agents.helper]
+agent_id="helper-id"
+folder="/owned/helper"
+network_slot=2
+evidence_reads=[{request_id="helper-stale"}]
+''', id="regular-absent-hosts"),
+    pytest.param('''[agents]
+worker={agent_id="worker-id",folder="/owned/worker",network_slot=1,evidence_reads=[{request_id="worker-kept"}]}
+helper={agent_id="helper-id",folder="/owned/helper",network_slot=2,evidence_reads=[{request_id="helper-stale"}]}
+''', id="inline-agent"),
+    pytest.param('''agents={worker={agent_id="worker-id",network_slot=1},helper={agent_id="helper-id",network_slot=2}}
+''', id="inline-parent"),
+    pytest.param('''[agents]
+worker.agent_id="worker-id"
+worker.folder="/owned/worker"
+worker.network_slot=1
+helper.agent_id="helper-id"
+helper.folder="/owned/helper"
+helper.network_slot=2
+''', id="dotted-agent"),
+    pytest.param('''agents.worker.agent_id="worker-id"
+agents.worker.folder="/owned/worker"
+agents.worker.network_slot=1
+agents.helper.agent_id="helper-id"
+agents.helper.folder="/owned/helper"
+agents.helper.network_slot=2
+''', id="root-dotted-agent"),
+    pytest.param('''[agents.worker]
+agent_id="worker-id"
+hosts={}
+[agents.helper]
+agent_id="helper-id"
+hosts={}
+''', id="empty-inline-hosts"),
+    pytest.param('''[agents.worker]
 agent_id="worker-id"
 [agents.worker.hosts]
+"model.test:443"={egress="allow"}
+"127.0.0.2:49125"={egress="allow"}
 "127.0.0.3:49124"={egress="allow"}
 [agents.helper]
 agent_id="helper-id"
+[agents.helper.hosts]
+"model.test:443"={egress="allow"}
+''', id="existing-hosts"),
+    pytest.param('''[agents]
+worker={agent_id="worker-id",hosts={"model.test:443"={egress="allow"}}}
+helper={agent_id="helper-id",hosts={"model.test:443"={egress="allow"}}}
+''', id="existing-inline-hosts"),
+    pytest.param('''[agents.worker]
+agent_id="worker-id"
+[agents.helper]
+agent_id="helper-id"
+[agents.worker.hosts]
+"model.test:443"={egress="allow"}
+''', id="out-of-order-hosts"),
+])
+def test_model_fixture_policy_preserves_hierarchy_scope_and_saved_policy(tmp_path, agents, unavailable_model_port):
+    """Supported TOML forms retain identity and the exact Worker/Helper scope."""
+    original = 'budget=17\n' + agents + '''
+[hosts]
+"chatgpt.com:443"={egress="allow"}
+"127.0.0.2:49125"={egress="allow"}
+"127.0.0.3:49124"={egress="allow"}
+[controls.credentials]
+enabled=true
 '''
     (tmp_path / "policy.toml").write_text(original)
+    saved = tomllib.loads(original)
     policy = tomllib.loads(installed_shared_approvals.model_fixture_policy(
-        tmp_path, ("worker", "helper"), 49123, unavailable_model_port=49124))
-    assert policy["hosts"] == {"chatgpt.com:443": {"egress": "allow"}}
-    assert policy["controls"]["credentials"]["enabled"] is True
-    assert policy["agents"]["worker"]["hosts"] == {
-        "127.0.0.2": {"egress": "deny"}, "127.0.0.2:49123": {"egress": "prompt"},
-        "127.0.0.3": {"egress": "deny"}}
-    assert policy["agents"]["helper"]["hosts"] == {
-        **policy["agents"]["worker"]["hosts"], "127.0.0.3:49124": {"egress": "allow"}}
+        tmp_path, ("worker", "helper"), 49123, unavailable_model_port=unavailable_model_port))
+    assert set(policy) == set(saved)
+    assert policy["budget"] == saved["budget"]
+    assert policy["controls"] == saved["controls"]
+    assert policy["hosts"] == {
+        "chatgpt.com:443": {"egress": "allow"},
+        **({"127.0.0.3:49124": {"egress": "allow"}} if unavailable_model_port is None else {}),
+    }
+    assert set(policy["agents"]) == {"worker", "helper"}
+    for name in ("worker", "helper"):
+        original_agent = saved["agents"][name]
+        expected_hosts = {"127.0.0.2": {"egress": "deny"}, "127.0.0.2:49123": {"egress": "prompt"}}
+        if "model.test:443" in original_agent.get("hosts", {}):
+            expected_hosts["model.test:443"] = {"egress": "allow"}
+        if unavailable_model_port is not None:
+            expected_hosts["127.0.0.3"] = {"egress": "deny"}
+            if name == "helper":
+                expected_hosts["127.0.0.3:49124"] = {"egress": "allow"}
+        elif "127.0.0.3:49124" in original_agent.get("hosts", {}):
+            expected_hosts["127.0.0.3:49124"] = {"egress": "allow"}
+        retained = {key: value for key, value in original_agent.items()
+                    if key != "hosts" and not (name == "helper" and key == "evidence_reads")}
+        assert policy["agents"][name] == {**retained, "hosts": expected_hosts}
     assert (tmp_path / "policy.toml").read_text() == original
+
+
+def test_fixture_policy_validation_precedes_apply_without_disclosing_parser_keys():
+    """A valid prefix cannot hide an invalid tail or expose its private key."""
+    calls = []
+
+    def operator(method, path, body):
+        calls.append((method, path, body))
+        return {"status": 200}
+
+    private_key = "synthetic-private-policy-key"
+    policy = 'budget=17\n[hosts]\n"model.test:443"={egress="allow"}\n'
+    with pytest.raises(AssertionError) as failure:
+        installed_shared_approvals.apply_fixture_policy(operator, policy + f'{private_key}={{a=1,a=2}}\n')
+    assert str(failure.value) == "fixture policy is invalid TOML; baseline was not applied"
+    assert private_key not in str(failure.value)
+    assert failure.value.__suppress_context__
+    assert calls == []
+    installed_shared_approvals.apply_fixture_policy(operator, policy)
+    assert calls == [("PUT", "/admin/policy/baseline", {"source": policy})]
+
+
+@pytest.mark.parametrize("status,diagnosis", [
+    (400, "native policy request rejected"),
+    (401, "operator authentication required"),
+    (403, "operator request refused"),
+    (500, "native policy apply failed"),
+    (503, "native runtime unavailable"),
+])
+def test_fixture_policy_apply_failure_reports_status_without_private_bytes(status, diagnosis):
+    """Rejected applies identify the failing boundary without a response dump."""
+    policy = 'budget=17\nprivate="synthetic-policy-secret"\n'
+    private_response = "synthetic-response-secret\x1b[2J" * 10000
+
+    def operator(method, path, body):
+        assert (method, path, body) == ("PUT", "/admin/policy/baseline", {"source": policy})
+        return {"status": status, "body": {"error": private_response}}
+
+    with pytest.raises(AssertionError) as failure:
+        installed_shared_approvals.apply_fixture_policy(operator, policy)
+    assert str(failure.value) == (
+        f"fixture baseline apply returned HTTP {status}: {diagnosis}; inspect private native logs")
+    assert "synthetic" not in str(failure.value)
 
 
 def test_unavailable_model_origin_observes_before_returning_diagnosable_503():
