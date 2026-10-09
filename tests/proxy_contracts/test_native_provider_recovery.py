@@ -106,7 +106,9 @@ def reap_owned_process(pid):
     reason="requires the selected native bundle and an owned Linux runsc/rootfs host",
 )
 @pytest.mark.timeout(240)
-def test_authorized_provider_survives_only_its_holder_loss(tmp_path):
+def test_authorized_provider_survives_only_its_holder_loss(tmp_path, monkeypatch):
+    # This fresh instance must never use an inherited operator runsc state root.
+    monkeypatch.delenv("SAFEYOLO_RUNSC_ROOT", raising=False)
     runsc = Path(os.environ["SAFEYOLO_971_RUNSC"])
     assert runsc.is_absolute() and runsc.is_file()
     # Seed the service before startup; native install permits directories but
