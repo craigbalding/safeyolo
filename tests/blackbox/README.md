@@ -96,11 +96,16 @@ alone does not stop a guest.
 ## Native journey with Python unavailable
 
 This bounded R5 preparation exercises native installation, start/status/doctor,
-one systrap guest's helper identities and authenticated Agent API health, then
-owned stop. It also keeps a second disposable proxy live through the subject's
+the installed host Coord identity, one systrap guest's boot-helper identity and
+authenticated Agent API health, then owned stop. It also keeps a second
+disposable proxy live through the subject's
 stop and checks its process receipt, policy and native Admin response. It uses
-the ordinary bundle installer and native agent shell. It does not select final candidate F or run
-the full release lanes.
+the ordinary bundle installer and native agent shell. The ordinary guest has
+`/safeyolo/safeyolo-guest`; it does not stage `/safeyolo/safeyolo-coord`.
+Harness setup stages Coord at `/home/agent/.safeyolo/safeyolo-coord` through
+`contrib/lib/stage-coord-native.sh`. The existing installed Factory staging
+test in `tests/proxy_contracts/test_native_factory_cli.py` covers that producer.
+This journey does not select a harness, final candidate F or the full release lanes.
 
 Use an owned, isolated Ubuntu host provisioned without Python interpreters or
 embedded Python libraries, and a separate prepared guest `rootfs-tree` with the
@@ -113,12 +118,13 @@ metadata must establish the filesystem boundary; changing `PATH` or searching
 for `.py` files does not establish it. This preparation does not remove Python
 from a working host or edit the shared guest tree.
 
-The shell entry and native `strace` control execution inside that disposable
-host. Python test drivers and the trace reader run on the external harness
-host, outside both product filesystems. Host tracing follows the launched
-descendants, including installation, CLI, proxy, Coord and host launch tools.
+The shell entry runs inside that disposable host. Python test drivers and the
+trace reader run on the external harness host, outside both product filesystems.
+The runtime owner must bind a noninterfering host execution observer before
+claiming Python absence. Its scope must include the launched descendants:
+installation, CLI, proxy, Coord and host launch tools.
 The separate guest trace covers the selected native shell/helper/API lineage.
-It does not trace guest PID-1 boot, supervision/recovery, models, ordinary
+The guest trace does not cover PID-1 boot, supervision/recovery, models, ordinary
 workloads or launches delegated to an existing systemd owner. A tracer that cannot decode executable filenames is unavailable
 evidence. In particular, nested ARM64 gVisor can return an address instead of
 the `execve` filename; the reader refuses that log.
@@ -128,23 +134,35 @@ Supply the unpacked bundle at `/home/agent/r5/bundle`, prepared assets at
 `/home/agent/r5/platform`, and an absent state directory
 `/home/agent/r5/state`. Replace `FULL_SOURCE_COMMIT` with the bundle's recorded
 full source commit, which may differ from this test entry's revision. Both
-host and guest need Bash, `strace` and curl. The host also needs the Linux
-prerequisites above and noninteractive sudo for the host tracer. [Root tracing
-with `-u`](https://github.com/strace/strace/blob/master/doc/strace.1.in) preserves the ordinary product account and the namespace helpers'
-setuid execution; tracing those helpers as an unprivileged user suppresses
-their required privileges. Permit the configured pinned NATS acquisition route, or
+host and guest need Bash and curl; the guest also needs `strace`. The host needs
+the Linux prerequisites above. Permit the configured pinned NATS acquisition route, or
 set `SAFEYOLO_COORD_NATS_BINARY` to an already checked native binary. Preserve
-the proxy and certificate environment. Keep the execution logs private; they
-can contain command arguments. The log directory below must be absent;
-creation fails before tracing if earlier logs exist. The following control
-deliberately exits 97; its stderr must report `interpreter_available=0` on this host.
+the proxy and certificate environment. Keep execution logs private; they can
+contain command arguments. The following commands are the control and product
+entries to observe. The host control deliberately exits 97; its stderr must
+report `interpreter_available=0` on this host. The product entry below runs
+without host tracing unless the runtime owner has bound that observer.
+Observe the host control before the product window so its deliberate Python
+attempts remain separate. Use a fresh private log directory; retain the host
+observer's logs and matching filesystems for external inspection.
 
 ```sh
 umask 077
-mkdir -m 700 /home/agent/r5/logs
-sudo -n strace -u "$(id -un)" -f -s 4096 -e trace=execve,execveat -o /home/agent/r5/logs/control.exec ./tests/blackbox/attempt-python.sh
-sudo -n strace -u "$(id -un)" -f -s 4096 -e trace=execve,execveat -o /home/agent/r5/logs/product.exec ./tests/blackbox/native-python-journey.sh /home/agent/r5/bundle /home/agent/r5/platform /home/agent/r5/state FULL_SOURCE_COMMIT
+./tests/blackbox/attempt-python.sh
+./tests/blackbox/native-python-journey.sh /home/agent/r5/bundle /home/agent/r5/platform /home/agent/r5/state FULL_SOURCE_COMMIT
 ```
+
+On the [selected Ubuntu/gVisor setup](https://github.com/craigbalding/safeyolo/issues/822#issuecomment-6054864737),
+privileged host `strace -u` interfered with startup and cleanup. Do not reuse
+that tracing recipe for this journey. The runtime owner supplies the host
+observer through the existing owned Ubuntu route. The retained Berkeley Packet
+Filter (BPF) controls recover cold successful and failed
+`execveat` filenames and track selected descendants. They do not establish
+complete lifetime, argv, shebang, empty-path, loss/truncation handling or guest
+compatibility. Raw BPF records are not inputs to the strace-format reader below.
+The observer output/reader binding remains an execution prerequisite; do not
+convert a blank or unmatched record into a clean result. An untraced successful
+entry establishes only the reached functional path.
 
 The journey's guest control must exit 127 and retain a nonempty
 `state/instance/agents/r5check/home/r5-control.exec`. Its clean guest window is
@@ -152,12 +170,13 @@ The journey's guest control must exit 127 and retain a nonempty
 and cleanup result. Nonzero execution, failed cleanup or a missing trace is
 incomplete; retain the stopped state and private logs for diagnosis.
 
-Use the existing harness transfer to read the four traces on the external
-Python test host. There, run `python tests/blackbox/check_python_execution.py
-TRACE` for each retained trace. Exit 1 reports Python attempts and is required
-for both controls. Exit 0 requires decoded, finished observation with no named
-Python attempt and is required for the two product windows. Exit 2 reports
-unavailable or incomplete observation. For absolute script/shebang lookup,
+Use the existing harness transfer to read the two guest traces and the host
+observer results on the external Python test host. For each strace-format
+trace, run `python tests/blackbox/check_python_execution.py TRACE` there.
+Exit 1 reports Python attempts; exit 0 requires decoded, finished observation
+with no named Python attempt. Exit 2 reports unavailable or incomplete
+observation. Both controls must report the Python violation, and both product
+windows must have complete observation with no Python attempt. For absolute script/shebang lookup,
 provide `--filesystem-root DIRECTORY` with the retained matching filesystem;
 without it, `shebang_lookup` is false and only executable names are checked.
 An explicitly supplied missing path or ordinary file returns exit 2.
