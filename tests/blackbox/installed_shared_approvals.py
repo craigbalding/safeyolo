@@ -107,7 +107,8 @@ def model_fixture_policy(root: Path, names: tuple[str, str], port: int, *, unava
     import tomlkit
 
     document = tomlkit.parse((root / "policy.toml").read_text())
-    hosts_by_agent = {name: document["agents"][name].setdefault("hosts", tomlkit.table()) for name in names}
+    # Inline containers also preserve inline and dotted agent declarations.
+    hosts_by_agent = {name: document["agents"][name].setdefault("hosts", tomlkit.inline_table()) for name in names}
     # Retained fixtures can contain an earlier origin grant. Remove only this
     # owned origin's rules before binding the selected port and second-port deny.
     for hosts in (document.get("hosts", {}), *hosts_by_agent.values()):
@@ -125,6 +126,24 @@ def model_fixture_policy(root: Path, names: tuple[str, str], port: int, *, unava
         hosts_by_agent[names[1]][f"127.0.0.3:{unavailable_model_port}"] = {"egress": "allow"}
     document["agents"][names[1]].pop("evidence_reads", None)
     return tomlkit.dumps(document)
+
+
+def apply_fixture_policy(operator: Callable[[str, str, dict], dict], policy: str) -> None:
+    """Validate complete TOML before PUT and report failure without private bytes."""
+    try:
+        tomllib.loads(policy)
+    except tomllib.TOMLDecodeError:
+        # Parser details can contain policy keys. Keep those private too.
+        raise AssertionError("fixture policy is invalid TOML; baseline was not applied") from None
+    reply = operator("PUT", "/admin/policy/baseline", {"source": policy})
+    status = reply["status"]
+    diagnosis = {
+        400: "native policy request rejected",
+        401: "operator authentication required",
+        403: "operator request refused",
+        503: "native runtime unavailable",
+    }.get(status, "native policy apply failed")
+    assert status == 200, f"fixture baseline apply returned HTTP {status}: {diagnosis}; inspect private native logs"
 
 
 def wait_for_operator(read_approval: Callable[[], dict], action: dict, timeout: float) -> dict:
@@ -390,7 +409,7 @@ def run(args: argparse.Namespace) -> None:
         if model_run:
             policy = model_fixture_policy(root, names, port,
                 unavailable_model_port=second_port if args.model_unavailable else None)
-        assert operator("PUT", "/admin/policy/baseline", {"source": policy})["status"] == 200
+        apply_fixture_policy(operator, policy)
         api = "http://_safeyolo.proxy.internal"
         url = f"http://127.0.0.2:{port}/{marker}"
         blocked = guest(args.worker, "GET", url)
@@ -414,7 +433,7 @@ def run(args: argparse.Namespace) -> None:
         else:
             declaration = "evidence_reads=[{" + ",".join(json.dumps(key) + "=" + json.dumps(value) for key, value in grant.items()) + "}]\n"
             selected = policy.replace("agent_id=" + json.dumps(ids[args.helper]) + "\n", "agent_id=" + json.dumps(ids[args.helper]) + "\n" + declaration)
-            assert operator("PUT", "/admin/policy/baseline", {"source": selected})["status"] == 200
+            apply_fixture_policy(operator, selected)
         synthetic_secret = "synthetic-secret-821-" + uuid.uuid4().hex
         peer_secret = "synthetic-peer-821-out-of-scope"
         foreign = "req-" + uuid.uuid4().hex
