@@ -15,10 +15,10 @@ SafeYolo runs three separate planes. Endpoints on the Agent API are windows
 into different planes, and misreading which plane an endpoint reports on is
 the most common cause of wrong-diagnosis loops.
 
-**1. Detection plane.** Sensor addons inspect requests and attach metadata
+**1. Detection plane.** Native detectors inspect requests and attach metadata
 without making policy decisions. Examples: `test_context` looks for the
 canonical `X-SafeYolo-Test-Context` header and, if valid, tags the flow with
-`test_context`; `credential_guard` runs `analyze_headers` to identify
+`test_context`; the credentials detector identifies
 credentials in Authorization / API-key headers; scanner patterns look for
 credential leaks in bodies and URLs. Detection can be silent (no rule
 matched → no metadata attached).
@@ -35,8 +35,8 @@ only asks the `network:request` question, not the `credential:use` question.
 
 **3. Observability plane.** The `flow_recorder` writes selected requests to
 the FlowStore for later inspection. Recording is gated on detection metadata
-(specifically `test_context`), so absence of a flow means the detection
-plane did not tag it — never that policy denied it or that retention expired.
+(specifically `test_context`). An absent flow can also reflect evidence-owner
+scope or removal by the bounded store; it does not establish a policy denial.
 
 Endpoints in this reference by plane:
 
@@ -54,8 +54,8 @@ plane; a 428 with `X-Blocked-By` is a policy-plane action; a `/api/flows/search`
 
 ## Calling the API
 
-SafeYolo intercepts the virtual host `_safeyolo.proxy.internal` inside
-mitmproxy; the request never goes upstream. Always use plain HTTP and read the
+The native proxy intercepts the virtual host `_safeyolo.proxy.internal`;
+the request never goes upstream. Always use plain HTTP and read the
 agent token at request time:
 
 ```sh
@@ -73,7 +73,7 @@ sy_api /health | jq
 
 The API permits selected self-service mutations (flow tags, access requests,
 contract submissions, and plumb messages) but cannot change policy, approve
-requests, change addon modes, or reach the admin API.
+requests, change policy controls, or reach the admin API.
 
 ## Diagnostics and policy
 
@@ -86,7 +86,7 @@ requests, change addon modes, or reach the admin API.
 | `GET` | `/budgets` | Domain budget and rate usage |
 | `GET` | `/config` | Current credential rules and scan configuration |
 | `GET` | `/explain?request_id=req-...` | Recent audit events for one request ID |
-| `GET` | `/trace?request_id=req-...` | Opt-in per-addon pipeline trace for one request ID |
+| `GET` | `/trace?request_id=req-...` | Opt-in per-control pipeline trace for one request ID |
 | `GET` | `/memory` | Proxy memory, connection, and WebSocket statistics |
 | `GET` | `/agents` | Discovered agents and last-seen data |
 | `GET` | `/circuits` | Circuit-breaker state by domain |
@@ -102,7 +102,7 @@ responses and `/circuits` for circuit-breaker 503 responses.
   retention, agent-scoped, honest about incompleteness (see status
   taxonomy under "/explain response shape" below).
 - `/trace` — pipeline-execution evidence. Requires the request to have
-  carried `X-SafeYolo-Trace: 1` so the trace substrate recorded per-addon
+  carried `X-SafeYolo-Trace: 1` so the trace store recorded per-control
   steps. Answers *"which parts of the pipeline actually ran, in what
   order, with what outcome, and how long?"* Bounded short-lived store.
 
@@ -113,45 +113,52 @@ ambiguous — the two are complementary, not redundant. See
 
 ## Trace wire vocabulary
 
-`/trace` returns literal string values for `state`, `reason`, and
-per-addon `outcome`. The skill DAGs branch on these literals. Every
-value below is a **stable contract** — the drift test at
-`tests/test_trace_wire_vocabulary.py` fails if this doc goes out of
-step with the source constants in `safeyolo.core.trace` and each addon's
-`OUTCOME_*`.
+Native `/trace` identifies each step with `control` and `hook`. Branch on
+that selector and its literal `state`, `reason` and `outcome`, rather than
+on a detector name in an audit event. Named controls include `network`,
+`credentials`, `patterns`, `circuits`, `test_context` and `services`.
+The native response has no `addon` selector.
 
-### Trace states (`safeyolo.core.trace.STATE_*`)
+The implementation is in `proxy/src/trace.rs`, `proxy/src/request_trace.rs`
+and the reached HTTP hooks. `proxy/src/policy/native.rs` names controls on
+the response in `proxy/src/http.rs`. The existing native consumer
+`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_declare_injection_expiry_clear_and_evidence`
+checks named trace steps and foreign-owner refusal. These source references
+are for repository contributors; an installed agent diagnoses the returned
+envelope.
 
-| Literal | Meaning |
-|---|---|
-| `evaluated` | Addon's hook ran and reported an outcome. |
-| `bypassed` | Addon's hook was reached but short-circuited without evaluating (see `reason`). |
-| `error` | Addon's hook raised. `reason` is the exception type name. |
-| `not_loaded` | Addon expected but never ran for this request. Synthesised at read time from `EXPECTED_ADDONS` diff. |
-
-### Bypass / error reasons (`safeyolo.core.trace.REASON_*`)
+### Trace states
 
 | Literal | Meaning |
 |---|---|
-| `prior_response` | An earlier addon already set `flow.response`; this addon deferred. |
-| `policy_disabled` | `PolicyClient.is_addon_enabled()` returned False for this scope. |
-| `addon_disabled` | mitmproxy option turned the addon off globally. |
+| `evaluated` | Control's hook ran and reported an outcome. |
+| `bypassed` | Control's hook was reached but did not evaluate (see `reason`). |
+| `error` | Reached operation reported an error. `reason` names its diagnostic, such as `CredentialGuardError` or `AuditSinkUnavailable`. It does not imply a Python exception. |
+| `not_loaded` | Expected control has no retained step. Synthesised at read time into `not_loaded[]`. Absence alone does not prove a startup failure or that the control never executed. |
+
+### Bypass / error reasons
+
+| Literal | Meaning |
+|---|---|
+| `prior_response` | An earlier operation already produced a response; this control deferred. |
+| `policy_disabled` | Policy bypassed this control for the host/agent scope. Inspect the matching exceptions and effective policy. |
+| `control_disabled` | The control's runtime enable setting is off. Inspect the corresponding `controls.<name>.enabled` in `policy show` and `/config`. |
 | `probe_sink_failed` | Reserved-probe request-hook failsafe caught a missing/inert sink BEFORE transport was attempted. Client received a correlated 5xx with `X-SafeYolo-Request-Id`. |
-| `probe_reached_upstream` | Reserved-probe `server_connect` structural backstop fired — transport was attempted and refused. Audit-only diagnostic; client saw mitmproxy's generic protocol error (no correlated response — the request-hook failsafe was also absent). |
+| `probe_reached_upstream` | Reserved-probe transport backstop refused an attempted upstream connection. This is a containment diagnostic, not proof of successful transport. |
 
-### Per-addon outcomes
+### Per-control outcomes
 
-Each addon publishes its own `OUTCOME_*` constants at the top of its
-module. Only trace-participating addons appear here (defined by
-`safeyolo.core.trace.EXPECTED_ADDONS` plus `probe-sink`).
+The following common outcomes retain their detector-specific meanings.
+Other outcomes need their own observed evidence; do not infer a result from
+the control name alone.
 
-**credential-guard** (`OUTCOME_*` in `mitm_addons/credential_guard.py`):
+**credentials**:
 | Literal | Meaning |
 |---|---|
 | `no_detection` | Scanned headers; no credentials matched. |
 | `detected` | One or more credentials matched; `details.detection_count` gives the count. |
 
-**pattern-scanner** (`OUTCOME_*` in `mitm_addons/pattern_scanner.py`):
+**patterns**:
 | Literal | Meaning |
 |---|---|
 | `no_rules` | No scan rules configured. |
@@ -159,22 +166,24 @@ module. Only trace-participating addons appear here (defined by
 | `match_logged` | Rule matched in warn-only mode; logged not blocked. |
 | `match_blocked` | Rule matched and produced a block. |
 
-**network-guard** (`OUTCOME_*` in `mitm_addons/network_guard.py`):
+**network**:
 | Literal | Meaning |
 |---|---|
 | `allowed` | PDP returned ALLOW for this destination. |
+| `blocked` | Network decision produced a block response. |
+| `warned` | Network decision was enforced in warn mode. |
 
-**circuit-breaker** (`OUTCOME_*` in `mitm_addons/circuit_breaker.py`):
+**circuits**:
 | Literal | Meaning |
 |---|---|
 | `allowed` | Circuit closed; request passed the pre-request check. |
-| `excluded_domain` | Destination in the addon's exclusion list. |
+| `excluded_domain` | Destination in the circuit exclusion list. |
 | `success_recorded` | Response hook ran the success path for a 2xx (or <4xx) response. Existing circuit state is updated when present; this outcome alone does not prove a stored mutation. |
 | `failure_recorded` | Response hook recorded a 5xx or 429 failure against the circuit. |
 | `status_no_action` | Response hook saw a 4xx (non-429); circuit state unchanged. |
 | `prior_block` | Response hook saw a `blocked_by` flow (an earlier SafeYolo response). |
 
-**test-context** (`OUTCOME_*` in `mitm_addons/test_context.py`):
+**test_context**:
 | Literal | Meaning |
 |---|---|
 | `allowed` | Valid context header present and applied. |
@@ -182,7 +191,7 @@ module. Only trace-participating addons appear here (defined by
 | `response_recorded` | Response hook captured a completed context flow's response event. |
 | `not_applicable` | Response hook ran but no `test_context` was set for this flow. |
 
-**service-gateway** (`OUTCOME_*` in `mitm_addons/service_gateway.py`):
+**services**:
 | Literal | Meaning |
 |---|---|
 | `not_a_gateway_request` | Request had no `sgw_` token — passed through. |
@@ -191,34 +200,38 @@ module. Only trace-participating addons appear here (defined by
 | `grant_consumed` | Once-grant fired on a 2xx response. |
 | `grant_retained` | Gateway flow but grant not consumed (non-2xx or scope != once). |
 
-**probe-sink** (`OUTCOME_*` in `mitm_addons/probe_sink.py`):
+**probe-sink** (local pipeline probe):
 | Literal | Meaning |
 |---|---|
 | `probe_terminated` | Sink synthesised the local 200 for the doctor pipeline-probe host. |
-| `probe_preempted` | Earlier addon responded first for a probe flow; sink recorded but did not overwrite. |
+| `probe_preempted` | Earlier operation responded first for a probe flow; sink recorded but did not overwrite. |
 
 ### `/trace` response shape
 
+The example shows the fields used by the graphs. A response can contain
+additional steps and missing-control entries.
+
 ```json
 {
-  "request_id": "req-<32hex>",
-  "agent_id": "<caller-agent>",
-  "created_at": <epoch-seconds>,
+  "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "agent_id": "example-agent",
+  "created_at": 1791500000,
   "truncated": false,
   "steps": [
-    {"addon": "network-guard", "hook": "request", "state": "evaluated",
-     "outcome": "allowed", "duration_us": 340},
-    ...
+    {"control": "network", "hook": "request", "state": "evaluated",
+     "outcome": "allowed", "duration_us": 340}
   ],
   "not_loaded": [
-    {"addon": "credential-guard", "state": "not_loaded"}
+    {"control": "credentials", "state": "not_loaded"}
   ]
 }
 ```
 
-`truncated=true` means the per-record step cap was hit — an unusual
-condition on a well-behaved request (the doctor probe should never
-truncate). Treat as `fail` for automated diagnostics.
+`truncated=true` means the per-record step cap was hit. The retained steps
+are incomplete; do not use an absent step to prove that a control did not
+run. Treat truncation as `fail` for automated diagnostics. A 404 means no
+accessible retained trace; a 5xx means trace evidence is unavailable. Neither
+proves the request passed or failed a control.
 
 Agent scope: `/trace` is filtered to the caller's own trace records.
 A foreign or unknown `request_id` returns `404` with the same body as
@@ -252,16 +265,16 @@ Flow recording is **opt-in per request**, not automatic. A request is
 written to the FlowStore only when both hold:
 
 1. It carries the canonical `X-SafeYolo-Test-Context` header, parsed and accepted
-   by the `test_context` addon. The format is defined by
-   `safeyolo.test_context_contract`; presence alone is not enough.
-2. The active policy has a non-empty `test_context.target_hosts` list,
-   which is what activates the addon. On those target hosts, a missing
+   by the native test-context detector. The native contract is implemented in
+   `proxy/src/test_context.rs`; presence alone is not enough.
+2. The active policy has a non-empty `controls.test_context.target_hosts` list,
+   which activates context enforcement. On those target hosts, a missing
    or malformed header is soft-rejected with `428`. On non-target hosts,
    a valid header opts the request into recording; a missing header
    passes through and is not recorded.
 
-The FlowStore is a **permanent audit record** kept on the operator's
-host (bounded by disk, not by retention time). The agent has no
+The FlowStore is a persistent record kept on the operator's host, subject to
+the configured retention and capture bounds. The agent has no
 filesystem access to it; the only reachable interface is `/api/flows/*`
 on the Agent API. `/api/flows/search` returning `count: 0` means the
 recording preconditions were not met, the evidence is outside this agent's
@@ -286,11 +299,11 @@ Each recorded flow carries an attribution spine in addition to the legacy
 
 Trusted operator actions use `attribution_status=delegated` and
 `initiator=operator` while retaining the UDS evidence owner. The operator
-provenance marker is produced by the host-side `operator-provenance` addon;
+provenance marker is produced by the host-side operator-provenance check;
 request headers and guest metadata cannot set it. When trusted identity is
 unavailable or conflicting, the request and response remain in JSONL with
 `details.attribution.attribution_status` and bounded provenance, and FlowStore omits them because
-the records have no safe agent partition. The service-discovery addon also
+the records have no safe agent partition. Native service discovery also
 emits a dedicated operator-visible event for each unavailable or conflicting
 identity. Attribution is captured at the request boundary and reused by the
 terminal response and policy audit events. If a trusted source changes or
@@ -394,43 +407,53 @@ an agent by default. Give it only to an explicitly selected client that can
 reach the proxy. The agent token and host admin token do not grant read-all
 access.
 
-On the operator host, the following command creates or rotates a 64-character
-hex token in the default data directory. The directory must already belong to
-the operator. The command replaces the old file atomically with a private
-regular file and prints no token.
+On the operator host, use the account that owns the proxy's data directory.
+The directory must already exist and belong to that account. Supported Ubuntu
+and macOS hosts supply a shell with builtin `printf`, `mktemp`, `od`, `tr`,
+`mv`, `rm` and the operating system's `/dev/urandom`; no Python is needed.
+For a custom data directory, set `flow_data_dir` to its absolute path in the
+current shell before running the command. If unset or empty, the command uses
+`$HOME/.safeyolo/data`. `flow_read_token` must not be a directory.
+
+The command creates or rotates a 64-character cryptographically random hex
+token. It replaces the old file atomically with a private regular file and
+prints no token. A failure before replacement preserves the original file
+and removes the temporary file.
 
 ```sh
-python3 - <<'PY'
-import os
-import secrets
-import tempfile
-from pathlib import Path
-
-path = Path.home() / ".safeyolo/data/flow_read_token"
-temporary = None
-try:
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".flow_read_token.", delete=False) as stream:
-        temporary = Path(stream.name)
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(secrets.token_hex(32) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-finally:
-    if temporary is not None:
-        temporary.unlink(missing_ok=True)
-PY
+(
+  set -eu
+  umask 077
+  flow_data_dir=${flow_data_dir:-"$HOME/.safeyolo/data"}
+  [ ! -d "$flow_data_dir/flow_read_token" ] || {
+    printf '%s\n' 'flow_read_token is a directory; no token replaced' >&2
+    exit 1
+  }
+  temporary=$(mktemp "$flow_data_dir/.flow_read_token.XXXXXXXX")
+  trap 'rm -f -- "$temporary"' 0
+  trap 'exit 1' HUP INT TERM
+  random_hex=$(od -An -v -N32 -tx1 /dev/urandom)
+  random_hex=$(printf '%s' "$random_hex" | tr -d '[:space:]')
+  case "$random_hex" in
+    ''|*[!0-9a-f]*) printf '%s\n' 'Random token generation failed' >&2; exit 1 ;;
+  esac
+  [ "${#random_hex}" -eq 64 ] || {
+    printf '%s\n' 'Random token generation was incomplete' >&2
+    exit 1
+  }
+  printf '%s\n' "$random_hex" > "$temporary"
+  mv -f -- "$temporary" "$flow_data_dir/flow_read_token"
+)
 ```
 
-For a custom data directory, replace `path` in the command before running it.
 Rerun the command to rotate the token; existing clients must receive the new
 value. On the operator host, remove the file to revoke the credential:
 
 ```sh
-rm "$HOME/.safeyolo/data/flow_read_token"
+rm -- "${flow_data_dir:-"$HOME/.safeyolo/data"}/flow_read_token"
 ```
 
-For a custom data directory, remove `flow_read_token` from that directory.
+Use the same `flow_data_dir` selection for revocation.
 The proxy accepts only a private regular file, rejects symlinks, and compares
 the token in constant time. It reads the file again for every request, so
 rotation and revocation need no proxy restart.

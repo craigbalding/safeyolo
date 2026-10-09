@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 from pathlib import Path
@@ -36,7 +37,7 @@ def executable(path, identity):
 
 
 @pytest.fixture
-def package_inputs(tmp_path):
+def package_inputs(tmp_path, request):
     if os.uname().sysname != "Linux":
         pytest.skip("controlled ELF producer fixture runs on Linux; macOS uses actual Tart artifacts")
     source = tmp_path / "source"
@@ -59,15 +60,18 @@ def package_inputs(tmp_path):
     for name in ("tmux-common", "tmux-window", "tmux-pane"):
         (assets / "launchers" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     skill = assets / "agent_context/skills/safeyolo"
-    (skill / "scripts/__pycache__").mkdir(parents=True)
-    (skill / "references").mkdir()
-    (skill / "SKILL.md").write_text(
-        "fixture skill\n- Read [GitHub composite checks](references/github-checks.md)\n"
-        "  Optional repository tooling.\n- Keep the next instruction.\n",
-    )
-    (skill / "scripts/github_checks.py").write_text("# optional checker\n")
-    (skill / "scripts/__pycache__/old.pyc").write_bytes(b"old cache")
-    (skill / "references/github-checks.md").write_text("optional checker instructions\n")
+    if getattr(request, "param", None) == "shipped-skill":
+        shutil.copytree(REPO / "cli/src/safeyolo/agent_context/skills/safeyolo", skill, dirs_exist_ok=True)
+    else:
+        (skill / "scripts/__pycache__").mkdir(parents=True)
+        (skill / "references").mkdir()
+        (skill / "SKILL.md").write_text(
+            "fixture skill\n- Read [GitHub composite checks](references/github-checks.md)\n"
+            "  Optional repository tooling.\n- Keep the next instruction.\n",
+        )
+        (skill / "scripts/github_checks.py").write_text("# optional checker\n")
+        (skill / "scripts/__pycache__/old.pyc").write_bytes(b"old cache")
+        (skill / "references/github-checks.md").write_text("optional checker instructions\n")
     (source / "repo-map.toml").write_text("# fixture\n")
     (source / "LICENSE").write_text("fixture project notice\n")
     (source / "docs").mkdir()
@@ -187,6 +191,101 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         for notice in (package_inputs[0] / "proxy/licenses").iterdir():
             path, = [name for name in names if name.endswith(f"/assets/licenses/{notice.name}")]
             assert stream.extractfile(path).read() == notice.read_bytes()
+
+
+def packaged_flow_token_recipe(package_inputs, tmp_path):
+    skill = build_bundle(package_inputs, tmp_path) / "assets/skills/safeyolo"
+    source = REPO / "cli/src/safeyolo/agent_context/skills/safeyolo"
+    for relative in ("references/agent-api.md", "references/graph/triage-credential-guard.yaml",
+                     "references/graph/triage-request-failing.yaml"):
+        assert (skill / relative).read_bytes() == (source / relative).read_bytes()
+    assert not list(skill.rglob("*.py"))
+    assert not (skill / "scripts/render_skill_graph.py").exists()
+    reference = (skill / "references/agent-api.md").read_text()
+    provision = reference.split("### Provision a read-all flow token\n", 1)[1]
+    return provision.split("```sh\n", 1)[1].split("```", 1)[0]
+
+
+def flow_token_environment(tmp_path):
+    """Only host primitives are available; wrappers record real child argv."""
+    tools = tmp_path / "product-tools"
+    tools.mkdir()
+    for name in ("mktemp", "od", "tr", "mv", "rm"):
+        executable_path = shutil.which(name)
+        assert executable_path is not None
+        wrapper = tools / name
+        wrapper.write_text('#!/bin/sh\nprintf "%s\\n" "$0" "$@" >> "$FLOW_RECIPE_ARGV"\n'
+                           f'exec "{executable_path}" "$@"\n')
+        wrapper.chmod(0o755)
+    return dict(os.environ, PATH=str(tools), FLOW_RECIPE_ARGV=str(tmp_path / "argv"))
+
+
+@pytest.mark.parametrize("package_inputs", ["shipped-skill"], indirect=True)
+@pytest.mark.parametrize("custom_data", [False, True], ids=["default", "custom"])
+def test_packaged_flow_token_creation_rotation_and_revocation_without_python(package_inputs, tmp_path, custom_data):
+    recipe = packaged_flow_token_recipe(package_inputs, tmp_path)
+    environment = flow_token_environment(tmp_path)
+    environment.pop("flow_data_dir", None)
+    environment["HOME"] = str(tmp_path / "operator")
+    data = tmp_path / "custom data" if custom_data else Path(environment["HOME"]) / ".safeyolo/data"
+    data.mkdir(parents=True, mode=0o700)
+    if custom_data:
+        environment["flow_data_dir"] = str(data)
+    token = data / "flow_read_token"
+    previous = None
+    previous_inode = None
+    for _ in range(2):
+        result = run("/bin/sh", "-c", "umask 000\n" + recipe, env=environment)
+        assert result.returncode == 0, result.stderr
+        assert not result.stdout and not result.stderr
+        metadata = token.lstat()
+        assert stat.S_ISREG(metadata.st_mode) and stat.S_IMODE(metadata.st_mode) == 0o600
+        contents = token.read_bytes()
+        assert len(contents) == 65 and contents[-1:] == b"\n"
+        assert all(byte in b"0123456789abcdef" for byte in contents[:-1])
+        assert contents != previous and metadata.st_ino != previous_inode
+        assert contents[:-1] not in (tmp_path / "argv").read_bytes()
+        assert not list(data.glob(".flow_read_token.*"))
+        previous, previous_inode = contents, metadata.st_ino
+    reference = REPO / "cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md"
+    revoke = reference.read_text().split("remove the file to revoke the credential:", 1)[1]
+    revoke = revoke.split("```sh\n", 1)[1].split("```", 1)[0]
+    result = run("/bin/sh", "-c", revoke, env=environment)
+    assert result.returncode == 0 and not result.stdout and not token.exists()
+
+
+@pytest.mark.parametrize("package_inputs", ["shipped-skill"], indirect=True)
+@pytest.mark.parametrize("fault", ["random-error", "random-short", "rename-error", "directory"])
+def test_packaged_flow_token_failure_preserves_original(package_inputs, tmp_path, fault):
+    recipe = packaged_flow_token_recipe(package_inputs, tmp_path)
+    environment = flow_token_environment(tmp_path)
+    data = tmp_path / "data"
+    data.mkdir(mode=0o700)
+    environment["flow_data_dir"] = str(data)
+    token = data / "flow_read_token"
+    if fault == "directory":
+        token.mkdir()
+        original = token / "keep"
+    else:
+        original = token
+    original.write_bytes(b"a" * 64 + b"\n")
+    original.chmod(0o600)
+    inode = original.stat().st_ino
+    if fault != "directory":
+        primitive = "mv" if fault == "rename-error" else "od"
+        (Path(environment["PATH"]) / primitive).write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$0" >> "$FLOW_RECIPE_ARGV"\n'
+            + ('printf "01\\n"\n' if primitive == "od" else "")
+            + ("exit 0\n" if fault == "random-short" else "exit 73\n"),
+        )
+    result = run("/bin/sh", "-c", recipe, env=environment)
+    assert result.returncode != 0
+    assert not result.stdout
+    assert original.read_bytes() == b"a" * 64 + b"\n" and original.stat().st_ino == inode
+    assert stat.S_IMODE(original.stat().st_mode) == 0o600
+    assert not list(data.glob(".flow_read_token.*"))
+    if fault != "directory":
+        assert primitive in (tmp_path / "argv").read_text()
 
 
 @pytest.mark.parametrize("damage", ["missing", "checksum", "profile", "source", "mode"])
