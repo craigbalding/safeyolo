@@ -637,6 +637,55 @@ def test_coord_bootstrap_reports_missing_native_artifact(tmp_path):
     assert not (home / ".codex/config.toml").exists()
 
 
+def test_coord_bootstrap_help_describes_the_native_installed_workflow():
+    result = subprocess.run([str(COORD_BOOTSTRAP_SOURCE), "--help"],
+                            capture_output=True, text=True, check=True)
+    for expected in ("--home DIRECTORY", "--harness claude|codex", "--require-agent-local",
+                     "SAFEYOLO_COORD_EXECUTABLE", "SAFEYOLO_COORD_GUEST_BINARY",
+                     "ROOT/bin/safeyolo --root ROOT agent start NAME"):
+        assert expected in result.stdout
+    for obsolete in ("agent run", "agent add", "get_agent_home_dir", "vm.py", "set -euo", "while [", "show_help()"):
+        assert obsolete not in result.stdout
+
+
+@pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "claude-host-setup.sh",
+                                         "pi-host-setup.sh", "mise-shell-host-setup.sh"])
+@pytest.mark.parametrize("missing", ["SAFEYOLO_AGENT_NAME", "SAFEYOLO_AGENT_HOME"])
+def test_setup_missing_environment_names_the_native_caller(script_name, missing):
+    env = {**os.environ, "SAFEYOLO_AGENT_NAME": "fixture", "SAFEYOLO_AGENT_HOME": "/unused"}
+    env.pop(missing)
+    result = subprocess.run([str(REPO_ROOT / "contrib" / script_name)], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert missing in result.stderr and "native agent create/configure --host-script" in result.stderr
+    assert "agent add" not in result.stderr and "agent run" not in result.stderr
+
+
+def test_g7_fixture_reaches_ordinary_codex_setup_before_substituting_marker(tmp_path):
+    from tests.blackbox.installed_g7_vz import setup_observation
+
+    root = tmp_path / "installed"
+    (root / "assets/guest").mkdir(parents=True)
+    (root / "assets/contrib").symlink_to(REPO_ROOT / "contrib", target_is_directory=True)
+    (root / "assets/docs").mkdir()
+    shutil.copy2(BASELINE_SOURCE, root / "assets/docs/AGENTS.md")
+    (root / "assets/skills").symlink_to(SKILL_SOURCE.parent, target_is_directory=True)
+    shutil.copy2(REPO_ROOT / "repo-map.toml", root / "assets/repo-map.toml")
+    guest = root / "assets/guest/safeyolo-coord"
+    shutil.copy2(COORD_NATIVE_BINARY, guest)
+    for suffix in (".version", ".sha256"):
+        shutil.copy2(COORD_NATIVE_BINARY.with_suffix(suffix), guest.with_suffix(suffix))
+    operator_home, agent_home = tmp_path / "operator", root / "agents/g7/home"
+    operator_home.mkdir()
+    env = _setup_env(operator_home, agent_home, tmp_path)
+    env["SAFEYOLO_CONFIG_DIR"] = str(root)
+    fixture = REPO_ROOT / "tests/blackbox/g7-vz-host-setup.sh"
+    subprocess.run([str(fixture)], env=env, capture_output=True, text=True, check=True)
+    assert setup_observation(root)["ordinary_command_preserved"]
+    assert (agent_home / ".safeyolo-command").read_bytes() == fixture.with_name("g7-vz-marker.sh").read_bytes()
+    assert (agent_home / ".safeyolo-interactive-command").read_bytes() == (agent_home / ".g7-codex-command").read_bytes()
+
+
 @pytest.mark.parametrize(
     ("script_name", "config_relative", "invalid"),
     [

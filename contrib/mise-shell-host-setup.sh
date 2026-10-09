@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SafeYolo host setup script -- mise-powered shell for bring-your-own-agent.
 #
-# Runs on the host (macOS or Linux), as you, when `safeyolo agent add
-# <name> <folder> --host-script contrib/mise-shell-host-setup.sh` is
+# Runs on the host (macOS or Linux), as you, when native `agent create
+# <name> --workspace <folder> --host-script contrib/mise-shell-host-setup.sh` is
 # invoked. Sets the agent up as an interactive shell where you can
 # install whatever tools you want via mise.
 #
@@ -20,8 +20,8 @@
 
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_NAME:?must be run via 'safeyolo agent add --host-script'}"
-: "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add --host-script'}"
+: "${SAFEYOLO_AGENT_NAME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
+: "${SAFEYOLO_AGENT_HOME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 mkdir -p "$AGENT_HOME"

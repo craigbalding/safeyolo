@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SafeYolo host setup script for OpenAI Codex CLI.
 #
-# Runs on the host (macOS or Linux), as you, when `safeyolo agent add
-# <name> <folder> --host-script contrib/codex-host-setup.sh` is
+# Runs on the host (macOS or Linux), as you, when native `agent create
+# <name> --workspace <folder> --host-script contrib/codex-host-setup.sh` is
 # invoked. Stages SafeYolo-owned Codex settings into the agent's persistent
 # home without importing host credentials, and writes a foreground command
 # script that installs codex via mise on first boot and
@@ -13,8 +13,8 @@
 
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_NAME:?must be run via 'safeyolo agent add --host-script'}"
-: "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add --host-script'}"
+: "${SAFEYOLO_AGENT_NAME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
+: "${SAFEYOLO_AGENT_HOME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 

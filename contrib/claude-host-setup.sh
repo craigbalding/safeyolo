@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SafeYolo host setup script for Claude Code.
 #
-# Runs on the host (macOS or Linux), as you, when `safeyolo agent add
-# <name> <folder> --host-script contrib/claude-host-setup.sh` is
+# Runs on the host (macOS or Linux), as you, when native `agent create
+# <name> --workspace <folder> --host-script contrib/claude-host-setup.sh` is
 # invoked. Stages host auth + user extensions into the agent's
 # persistent home, and writes the foreground command that installs claude-code
 # on first boot and runs it nag-free thereafter.
@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_NAME:?must be run via 'safeyolo agent add/run --host-script'}"
-: "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add/run --host-script'}"
+: "${SAFEYOLO_AGENT_NAME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
+: "${SAFEYOLO_AGENT_HOME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 mkdir -p "$AGENT_HOME"
@@ -82,7 +82,7 @@ stage_safeyolo_context "$AGENT_HOME" claude
 # subsequent runs. On Alpine, Node comes from apk because mise may build Node
 # from source against musl; elsewhere we use mise. Appends the SafeYolo agent
 # baseline as system context. Detailed operations remain in the on-demand
-# safeyolo skill. Any args after `safeyolo agent run <name> -- ...`
+# safeyolo skill. Any args after `safeyolo agent start <name> -- ...`
 # come through as "$@".
 
 cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
