@@ -86,12 +86,47 @@ jobs:
           grep -F "$USER:" /etc/subuid
           grep -F "$USER:" /etc/subgid
 
-      - name: Install workload SSH fixture dependency
+      - name: Install Linux runtime and rootfs prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends openssh-server
+          sudo apt-get install -y -qq --no-install-recommends \
+            openssh-server uidmap acl util-linux iproute2 tmux skopeo umoci e2fsprogs rsync curl gnupg ca-certificates
+          # Use gVisor's signed release repository, including its runtime sidecars.
+          curl -fsSL https://gvisor.dev/archive.key | \
+            sudo gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          printf 'deb [arch=%s signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main\n' \
+            "$(dpkg --print-architecture)" | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends runsc
+          for command in runsc newuidmap newgidmap setfacl unshare tmux; do
+            command -v "$command"
+          done
+          runsc --version
+          tmux -V
+          # Native start_userns selects this retained profile on restricted hosts.
+          if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns && \
+                $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]]; then
+            sudo apt-get install -y -qq --no-install-recommends apparmor-utils
+            runsc_path=$(command -v runsc)
+            sed "s|/usr/local/bin/runsc|$runsc_path|" \
+              cli/src/safeyolo/templates/apparmor-safeyolo-runsc > "$RUNNER_TEMP/safeyolo-runsc"
+            sudo install -m 0644 "$RUNNER_TEMP/safeyolo-runsc" /etc/apparmor.d/safeyolo-runsc
+            sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
+            aa-exec -p safeyolo-runsc -- unshare -Urn true
+          fi
+
+      - name: Build matching Linux guest rootfs
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/blackbox-platform
+        run: |
+          ./guest/build-rootfs.sh
+          test -x "$OUTPUT_DIR/rootfs-tree/bin/bash"
+          test -x "$OUTPUT_DIR/rootfs-tree/usr/local/bin/safeyolo-guest-init"
+          test "$(stat -c '%u:%g' "$OUTPUT_DIR/rootfs-tree")" = 100000:100000
 
       - name: Prepare once and run independent systrap sections
+        env:
+          SAFEYOLO_PLATFORM_ASSETS: ${{ runner.temp }}/blackbox-platform
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           ./tests/blackbox/run-installed.sh systrap --install-commit "$GITHUB_SHA"

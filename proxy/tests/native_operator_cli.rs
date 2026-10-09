@@ -574,11 +574,40 @@ async fn pseudo_terminal_retains_workflow_target_through_navigation_and_unavaila
     assert_eq!(blocked.status, 428);
     let request_id = blocked.id();
     let root = fixture.root.path();
-    let factory = root.join("factories/operator/snapshots");
-    fs::create_dir_all(&factory).unwrap();
-    let snapshot = "a".repeat(64);
-    fs::write(factory.parent().unwrap().join("approved"), &snapshot).unwrap();
-    fs::write(factory.join(format!("{snapshot}.json")),json!({"schema":"safeyolo.factory/v1","name":"operator","roles":{"worker":{"agent":"worker"},"helper":{"agent":"helper"}}}).to_string()).unwrap();
+    let contract = root.join("operator-factory.toml");
+    fs::write(root.join("role.md"), "Use the selected operator fixture.\n").unwrap();
+    fs::write(
+        &contract,
+        r#"schema = "safeyolo.factory/v1"
+name = "operator"
+room = "operator-work"
+[operator_input]
+to = "worker"
+types = ["ACTIVATE"]
+[roles.worker]
+agent = "worker"
+contract = "role.md"
+[roles.helper]
+agent = "helper"
+contract = "role.md"
+[[handoffs]]
+request = "TASK"
+from = "worker"
+to = "helper"
+responses = ["DONE", "BLOCKED", "FAILED"]
+"#,
+    )
+    .unwrap();
+    let approved = cli(
+        root,
+        &["factory", "approve", contract.to_str().unwrap(), "--yes"],
+    )
+    .await;
+    assert!(
+        approved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approved.stderr)
+    );
     let path = root.to_owned();
     let output = tokio::task::spawn_blocking(move || {
         let mut master=-1;let mut slave=-1;
@@ -592,7 +621,8 @@ async fn pseudo_terminal_retains_workflow_target_through_navigation_and_unavaila
         // The owned child has a bounded external timeout in the test command.
         let mut output=Vec::new();
         loop {let mut buffer=[0;4096];match terminal.read(&mut buffer){Ok(0)=>break,Ok(n)=>output.extend_from_slice(&buffer[..n]),Err(error) if error.raw_os_error()==Some(libc::EIO)=>break,Err(error)=>panic!("pty read: {error}")}}
-        assert!(child.wait().unwrap().success());
+        let status = child.wait().unwrap();
+        assert!(status.success(), "PTY child exited {status}: {}", String::from_utf8_lossy(&output));
         String::from_utf8(output).unwrap()
     }).await.unwrap();
     assert!(output.contains("Workflow: operator | Agent: worker"));
