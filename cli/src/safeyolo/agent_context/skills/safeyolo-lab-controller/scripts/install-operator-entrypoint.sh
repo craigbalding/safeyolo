@@ -8,13 +8,15 @@ install_home=${HOME:?HOME is not set}
 install_dir="$install_home/.local/bin"
 target="$install_dir/safeyolo-lab"
 bashrc="$install_home/.bashrc"
-marker_start='# >>> safeyolo-lab PATH >>>'
-marker_end='# <<< safeyolo-lab PATH <<<'
 
 [ -x "$launcher" ] || {
   printf 'The lab launcher is not executable: %s\n' "$launcher" >&2
   exit 126
 }
+
+# shellcheck source=lab-bashrc.sh
+. "$script_dir/lab-bashrc.sh"
+_prepare_safeyolo_lab_bashrc "$bashrc" || exit 2
 
 install -d -m 0755 "$install_dir"
 
@@ -31,36 +33,8 @@ else
   ln -s "$launcher" "$target"
 fi
 
-if [ -e "$bashrc" ] && [ ! -f "$bashrc" ]; then
-  printf 'The Bash startup path is not a regular file: %s\n' "$bashrc" >&2
-  exit 2
-fi
-
-if [ ! -e "$bashrc" ]; then
-  : > "$bashrc"
-fi
-
-if ! grep -Fqx "$marker_start" "$bashrc"; then
-  cat >> "$bashrc" <<'EOF'
-
-# >>> safeyolo-lab PATH >>>
-# Make persistent user commands visible in SafeYolo interactive shells.
-if [ -d "$HOME/.local/bin" ]; then
-    case ":$PATH:" in
-        *":$HOME/.local/bin:"*) ;;
-        *) PATH="$HOME/.local/bin:$PATH" ;;
-    esac
-    export PATH
-fi
-if [ -z "${TMUX:-}" ] && [ "${PWD:-}" = "$HOME" ] && [ -x "$HOME/.local/bin/safeyolo-lab" ]; then
-    printf 'SafeYolo lab: run safeyolo-lab\n'
-fi
-# <<< safeyolo-lab PATH <<<
-EOF
-elif ! grep -Fqx "$marker_end" "$bashrc"; then
-  printf 'The safeyolo-lab PATH block is incomplete in %s\n' "$bashrc" >&2
-  exit 2
-fi
+# Write in place to retain the existing file's ownership and permissions.
+printf '%s' "$_safeyolo_lab_bashrc" > "$bashrc"
 
 printf 'Installed command: %s -> %s\n' "$target" "$launcher"
 printf 'New SafeYolo guest shells can run: safeyolo-lab\n'

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import threading
+import time
 import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1841,6 +1842,253 @@ def test_codex_context_refuses_incomplete_lab_bashrc_block(tmp_path: Path) -> No
     assert "PATH block is incomplete" in result.stderr
     assert bashrc.read_text() == "# >>> safeyolo-lab PATH >>>\nuser content\n"
     assert not (agent_home / ".local/bin/safeyolo-lab").is_symlink()
+
+
+LAB_BLOCK_START = "# >>> safeyolo-lab PATH >>>"
+LAB_BLOCK_END = "# <<< safeyolo-lab PATH <<<"
+LEGACY_LAB_BLOCK = """# >>> safeyolo-lab PATH >>>
+# Make persistent user commands visible in SafeYolo interactive shells.
+if [ -d "$HOME/.local/bin" ]; then
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) PATH="$HOME/.local/bin:$PATH" ;;
+    esac
+    export PATH
+fi
+if [ -z "${TMUX:-}" ] && [ "${PWD:-}" = "$HOME" ] && [ -x "$HOME/.local/bin/safeyolo-lab" ]; then
+    printf 'SafeYolo lab: run safeyolo-lab\\n'
+fi
+# <<< safeyolo-lab PATH <<<"""
+
+
+def _install_lab_entrypoint(writer: str, directory: Path) -> subprocess.CompletedProcess[str]:
+    home = directory / "agent home"
+    operator = directory / "operator"
+    operator.mkdir(exist_ok=True)
+    if writer == "codex":
+        return _run_setup("codex-host-setup.sh", operator, home, directory, check=False)
+    return subprocess.run(
+        [str(LAB_CONTROLLER_SOURCE / "scripts/install-operator-entrypoint.sh")],
+        env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, check=False, timeout=15,
+    )
+
+
+def _lab_shell(home: Path, command: str, *, interactive: bool = False, cwd: Path | None = None,
+               tmux: str = "") -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin", "TMUX": tmux,
+           "SSH_CLIENT": "127.0.0.1 12345 22", "SHLVL": "0"}
+    env.pop("BASH_ENV", None)
+    # Bash itself reads .bashrc on the SSH startup path. Do not source it in
+    # the machine command or use --rcfile to simulate remote startup.
+    arguments = ["bash", "--noprofile"]
+    if interactive:
+        arguments.extend(["--rcfile", str(home / ".bashrc"), "-i"])
+    return subprocess.run(
+        [*arguments, "-c", command], cwd=cwd or home, env=env, stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, check=False, timeout=15,
+    )
+
+
+@pytest.mark.parametrize("writer", ["codex", "operator"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_lab_startup_preserves_machine_output_and_refreshes_existing_block(tmp_path, writer, existing):
+    home = tmp_path / "agent home"
+    home.mkdir()
+    bashrc = home / ".bashrc"
+    before = "# opérateur: before\nexport LAB_OPERATOR_MARKER=retained\n\n"
+    # An inline lookalike is operator content, not a managed marker.
+    after = f"\n# inline {LAB_BLOCK_START}\n# operator tail without final newline"
+    bashrc.write_text(before + (LEGACY_LAB_BLOCK if existing else "") + after)
+    bashrc.chmod(0o640)
+    metadata = bashrc.stat()
+
+    for application in range(3):
+        installed = _install_lab_entrypoint(writer, tmp_path)
+        assert installed.returncode == 0, installed.stderr
+        content = bashrc.read_text()
+        if application == 0:
+            first = content
+        else:
+            assert content == first
+        assert content.startswith(before)
+        if existing:
+            assert content.endswith(after)
+        else:
+            assert content.startswith(before + after)
+        assert content.splitlines().count(LAB_BLOCK_START) == 1
+        assert content.splitlines().count(LAB_BLOCK_END) == 1
+        current = bashrc.stat()
+        assert (current.st_ino, current.st_uid, current.st_gid, current.st_mode) == (
+            metadata.st_ino, metadata.st_uid, metadata.st_gid, metadata.st_mode,
+        )
+    command = home / ".local/bin/safeyolo-lab"
+    assert command.is_symlink()
+    expected = LAB_COMMAND_TARGET if writer == "codex" else str(LAB_CONTROLLER_SOURCE / "scripts/safeyolo-lab")
+    assert os.readlink(command) == expected
+    # The hint depends only on the command being executable, not running it.
+    command.unlink()
+    command.write_text("#!/bin/sh\nexit 0\n")
+    command.chmod(0o755)
+
+    machine = _lab_shell(home, "printf 'running\\n'")
+    assert machine.returncode == 0, machine.stderr
+    assert machine.stdout == "running\n"
+    path = _lab_shell(home, '. "$HOME/.bashrc"; printf "%s\\n%s\\n" "$LAB_OPERATOR_MARKER" "$PATH"')
+    assert path.returncode == 0, path.stderr
+    marker, search_path = path.stdout.splitlines()
+    assert marker == "retained"
+    assert search_path.split(":").count(str(command.parent)) == 1
+
+    interactive = _lab_shell(home, "printf 'requested\\n'", interactive=True)
+    assert interactive.returncode == 0, interactive.stderr
+    assert interactive.stdout == "SafeYolo lab: run safeyolo-lab\nrequested\n"
+    inside_tmux = _lab_shell(home, "printf 'requested\\n'", interactive=True, tmux="owned-session")
+    assert inside_tmux.returncode == 0, inside_tmux.stderr
+    assert inside_tmux.stdout == "requested\n"
+    elsewhere = _lab_shell(home, "printf 'requested\\n'", interactive=True, cwd=tmp_path)
+    assert elsewhere.returncode == 0, elsewhere.stderr
+    assert elsewhere.stdout == "requested\n"
+    command.chmod(0o644)
+    unavailable = _lab_shell(home, "printf 'requested\\n'", interactive=True)
+    assert unavailable.returncode == 0, unavailable.stderr
+    assert unavailable.stdout == "requested\n"
+
+
+@pytest.mark.parametrize("writer", ["codex", "operator"])
+@pytest.mark.parametrize("content", [
+    LAB_BLOCK_START + "\noperator content\n",
+    LAB_BLOCK_END,
+    LAB_BLOCK_END + "\n" + LAB_BLOCK_START,
+    LAB_BLOCK_START + "\n" + LEGACY_LAB_BLOCK,
+    LEGACY_LAB_BLOCK + "\n" + LEGACY_LAB_BLOCK,
+])
+def test_lab_install_refuses_malformed_blocks_without_losing_content(tmp_path, writer, content):
+    home = tmp_path / "agent home"
+    home.mkdir()
+    bashrc = home / ".bashrc"
+    bashrc.write_text(content)
+    bashrc.chmod(0o600)
+    metadata = bashrc.stat()
+    result = _install_lab_entrypoint(writer, tmp_path)
+    assert result.returncode != 0
+    assert "PATH block is incomplete or malformed" in result.stderr
+    assert bashrc.read_text() == content
+    assert bashrc.stat().st_mode == metadata.st_mode
+    assert not (home / ".local/bin/safeyolo-lab").is_symlink()
+
+
+@pytest.mark.parametrize("writer", ["codex", "operator"])
+def test_lab_install_preserves_unrelated_command_symlink(tmp_path, writer):
+    home = tmp_path / "agent home"
+    command = home / ".local/bin/safeyolo-lab"
+    command.parent.mkdir(parents=True)
+    unrelated = tmp_path / "unrelated-command"
+    unrelated.write_text("operator-owned command\n")
+    command.symlink_to(unrelated)
+    bashrc = home / ".bashrc"
+    bashrc.write_text("# operator-owned startup\n")
+    result = _install_lab_entrypoint(writer, tmp_path)
+    assert result.returncode != 0
+    assert "Refusing to replace" in result.stderr
+    assert command.is_symlink() and command.resolve() == unrelated
+    assert unrelated.read_text() == "operator-owned command\n"
+    assert bashrc.read_text() == "# operator-owned startup\n"
+
+
+@pytest.mark.parametrize("writer", ["codex", "operator"])
+def test_lab_block_refresh_at_file_boundaries(tmp_path, writer):
+    home = tmp_path / "agent home"
+    home.mkdir()
+    bashrc = home / ".bashrc"
+    bashrc.write_text(LEGACY_LAB_BLOCK)
+    result = _install_lab_entrypoint(writer, tmp_path)
+    assert result.returncode == 0, result.stderr
+    content = bashrc.read_text()
+    assert content.startswith(LAB_BLOCK_START + "\n")
+    assert content.endswith(LAB_BLOCK_END)
+    assert _lab_shell(home, "printf 'running\\n'").stdout == "running\n"
+
+
+@pytest.mark.parametrize("writer", ["codex", "operator"])
+@pytest.mark.skipif(os.uname().sysname != "Linux", reason="Native guest observation uses Linux /proc")
+def test_lab_remote_startup_keeps_native_observation_and_supervise_json_exact(tmp_path, writer):
+    home = tmp_path / "agent home"
+    home.mkdir()
+    installed = _install_lab_entrypoint(writer, tmp_path)
+    assert installed.returncode == 0, installed.stderr
+    command = home / ".local/bin/safeyolo-lab"
+    command.unlink()
+    command.write_text("#!/bin/sh\nexit 0\n")
+    command.chmod(0o755)
+    guest = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", REPO_ROOT / "guest/command/target/debug/safeyolo-guest"))
+    assert guest.is_file(), "Build or select the existing native guest helper"
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"generation": "startup-proof"}))
+    records = tmp_path / "records"
+    state = tmp_path / "supervisor.json"
+    stop = tmp_path / "supervisor.stop"
+    arguments = [str(guest), "--context", str(context), "--records", str(records),
+                 "--state", str(state), "--stop", str(stop), "--workspace", str(home)]
+    state.write_text(json.dumps({
+        "schema_version": 1, "name": "startup-fixture", "state": "starting",
+        "runtime_owner": "guest-pid1", "generation": "startup-proof", "supervision_id": "startup-proof",
+        "started_at": str(time.time()),
+        "command": shlex.join([*arguments, "observe", "exec", "--", "/bin/sleep", "30"]),
+    }))
+    with subprocess.Popen([*arguments, "supervise"], stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                current = json.loads(state.read_text())
+                if current.get("state") == "running" and list(records.glob("*.json")):
+                    break
+                assert process.poll() is None, process.communicate()
+                time.sleep(0.02)
+            else:
+                pytest.fail(f"Native supervisor did not become observable: {current}")
+            observed = _lab_shell(home, shlex.join([*arguments, "observe", "check"]))
+            assert observed.returncode == 0, observed.stderr
+            # host_platform::coding_agent_observation accepts only the full
+            # stdout trimmed to running or stopped; it removes no banner.
+            assert observed.stdout == "running\n"
+            supervised = _lab_shell(home, shlex.join([*arguments, "supervise", "check"]))
+            assert supervised.returncode == 0, supervised.stderr
+            snapshot = json.loads(supervised.stdout)
+            assert snapshot["state"] == "running"
+            assert snapshot["supervisor_pid"] == process.pid
+            assert snapshot["command_pid"] == current["command_pid"]
+            assert snapshot["generation"] == "startup-proof"
+            context.write_text(json.dumps({"generation": ""}))
+            unverified = _lab_shell(home, shlex.join([*arguments, "observe", "check"]))
+            assert unverified.returncode != 0
+            assert unverified.stdout == ""
+            assert "generation" in unverified.stderr
+        finally:
+            stop.write_text(json.dumps({"supervision_id": "startup-proof"}))
+            process.wait(timeout=5)
+        assert process.returncode == 0, process.communicate()
+    assert json.loads(state.read_text())["state"] == "stopped"
+
+
+def test_packaged_codex_setup_reaches_shared_lab_block_writer(tmp_path):
+    assets = tmp_path / "assets"
+    shutil.copytree(REPO_ROOT / "contrib", assets / "contrib")
+    (assets / "docs").mkdir()
+    shutil.copy2(BASELINE_SOURCE, assets / "docs/AGENTS.md")
+    shutil.copy2(REPO_ROOT / "repo-map.toml", assets / "repo-map.toml")
+    shutil.copytree(LAB_CONTROLLER_SOURCE, assets / "skills/safeyolo-lab-controller")
+    home = tmp_path / "agent home"
+    operator = tmp_path / "operator"
+    operator.mkdir()
+    for _ in range(2):
+        result = subprocess.run(
+            [str(assets / "contrib/codex-host-setup.sh")],
+            env=_setup_env(operator, home, tmp_path), capture_output=True, text=True, check=False, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+    bashrc = (home / ".bashrc").read_text()
+    assert bashrc.splitlines().count(LAB_BLOCK_START) == 1
+    assert _lab_shell(home, "printf 'running\\n'").stdout == "running\n"
 
 
 def test_claude_setup_stages_personal_skills_but_reserves_safeyolo_name(
