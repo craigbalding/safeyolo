@@ -647,9 +647,31 @@ struct AllowedRequest<'a> {
     request_id: &'a str,
 }
 
+/// The target form for ordinary HTTP/1 requests on the selected stream.
+/// CONNECT establishment and HTTP/2 pseudo-headers have separate rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum H1RequestForm {
+    Origin,
+    Absolute,
+}
+
 struct Outbound {
     stream: BoxStream,
     http2: bool,
+    h1_request_form: H1RequestForm,
+}
+
+fn request_uri(
+    destination: &Destination,
+    full_uri: &str,
+    http2: bool,
+    h1_request_form: H1RequestForm,
+) -> Result<Uri, hyper::http::uri::InvalidUri> {
+    if http2 || h1_request_form == H1RequestForm::Absolute {
+        full_uri.parse()
+    } else {
+        destination.path.parse()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -807,6 +829,7 @@ where
 
 struct Connected {
     stream: BoxStream,
+    h1_request_form: H1RequestForm,
     peer: Option<std::net::Ipv4Addr>,
     observation: crate::traffic_view::UpstreamConnectionObservation,
 }
@@ -1111,6 +1134,11 @@ async fn open_egress_for_flow(
     }
     Ok(Connected {
         stream,
+        h1_request_form: if direct || tunnel {
+            H1RequestForm::Origin
+        } else {
+            H1RequestForm::Absolute
+        },
         peer,
         observation,
     })
@@ -1141,6 +1169,7 @@ async fn open_outbound(
         (None, Some(provider)) => Connected {
             stream: crate::provider_stream::open(&runtime.config, provider, destination.port)
                 .await?,
+            h1_request_form: H1RequestForm::Origin,
             peer: None,
             observation: crate::traffic_view::UpstreamConnectionObservation::new(
                 format!("upstream-{}", uuid::Uuid::new_v4().simple()),
@@ -1189,7 +1218,11 @@ async fn open_outbound(
             live.upstream_tls(crate::circuit_runtime::now());
         }
     }
-    Ok(Outbound { stream, http2 })
+    Ok(Outbound {
+        stream,
+        http2,
+        h1_request_form: connection.h1_request_form,
+    })
 }
 
 async fn decide(
@@ -1985,14 +2018,13 @@ async fn execute_refresh(
             crate::oauth::TransportFailure::Connect
         }
     })?;
-    let request_uri = if runtime.parent.is_some() && destination.scheme == "http" {
-        endpoint_uri
-    } else {
-        destination
-            .path
-            .parse::<Uri>()
-            .map_err(|_| crate::oauth::TransportFailure::Protocol)?
-    };
+    let request_uri = request_uri(
+        &destination,
+        endpoint,
+        outbound.http2,
+        outbound.h1_request_form,
+    )
+    .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
     let body = Bytes::copy_from_slice(refresh.form_body().expose_secret().as_bytes());
     let request = Request::builder()
         .method(Method::POST)
@@ -2406,6 +2438,7 @@ where
         .await?;
         let Connected {
             stream,
+            h1_request_form,
             peer,
             observation,
         } = connected;
@@ -2506,6 +2539,7 @@ where
                     destination,
                     upstream: tokio::sync::Mutex::new(Some(Connected {
                         stream: server,
+                        h1_request_form,
                         peer,
                         observation,
                     })),
@@ -3354,17 +3388,15 @@ where
         None,
     )
     .await?;
-    *request.uri_mut() = if outbound.http2
-        || (runtime.parent.is_some() && destination.scheme == "http" && tunnel.is_none())
-    {
-        format!(
+    *request.uri_mut() = request_uri(
+        destination,
+        &format!(
             "{}://{}{}",
             destination.scheme, destination.uri_authority, destination.path
-        )
-        .parse::<Uri>()?
-    } else {
-        destination.path.parse::<Uri>()?
-    };
+        ),
+        outbound.http2,
+        outbound.h1_request_form,
+    )?;
     request.extensions_mut().insert(recording.clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
@@ -4016,6 +4048,34 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream, UnixStream},
     };
+
+    #[test]
+    fn request_uri_uses_selected_form_and_preserves_http2_authority() {
+        let full_uri = "http://logical.test:8088/signed?sig=%252F&tag=a&tag=b";
+        let request = Request::builder().uri(full_uri).body(()).unwrap();
+        let destination = Destination::from_request(&request, None).unwrap();
+        for (http2, h1_request_form, expected) in [
+            (
+                false,
+                H1RequestForm::Origin,
+                "/signed?sig=%252F&tag=a&tag=b",
+            ),
+            (false, H1RequestForm::Absolute, full_uri),
+            (true, H1RequestForm::Origin, full_uri),
+            (true, H1RequestForm::Absolute, full_uri),
+        ] {
+            let uri = request_uri(&destination, full_uri, http2, h1_request_form).unwrap();
+            assert_eq!(uri, expected, "HTTP/2={http2}, {h1_request_form:?}");
+            if http2 {
+                assert_eq!(uri.scheme_str(), Some("http"));
+                assert_eq!(uri.authority().unwrap().as_str(), "logical.test:8088");
+                assert_eq!(
+                    uri.path_and_query().unwrap(),
+                    "/signed?sig=%252F&tag=a&tag=b"
+                );
+            }
+        }
+    }
 
     async fn held_callsite_timeout<T>(
         operation: impl Future<Output = Result<T, Error>>,
