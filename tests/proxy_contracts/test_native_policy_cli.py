@@ -107,7 +107,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
         ]
         installation = subprocess.run(
-            [str(REPO / "scripts/install_native.sh"), "--root", str(root), *inputs],
+            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), *inputs],
             capture_output=True, text=True, timeout=15,
         )
         assert installation.returncode == 0, installation.stderr

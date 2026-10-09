@@ -612,7 +612,7 @@ async fn run_inner(options: Options) -> Result<i32, Error> {
             ) {
                 return Err("Lab authentication is missing; rerun safeyolo lab after signing in to this guest".into());
             }
-            let mut child = host_platform::spawn_guest_command(name, "export PATH=/home/agent/.local/bin:/home/agent/.mise/shims:$PATH; exec codex login --device-auth").await?;
+            let mut child = host_platform::spawn_guest_command(name, "export PATH=/home/agent/.local/bin:/home/agent/.mise/shims:$PATH; exec codex login --device-auth", true).await?;
             if !child.wait().await?.success()
                 || host_platform::exec_guest_command(name, auth).await? != 0
             {

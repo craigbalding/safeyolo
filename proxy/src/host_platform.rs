@@ -1083,6 +1083,7 @@ pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
     command: &str,
     capture: bool,
+    inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
         return Err(unavailable());
@@ -1090,8 +1091,8 @@ pub(crate) async fn spawn_guest_command_with_output(
     let wrapped = format!(
         ". /etc/environment 2>/dev/null; if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
     );
-    runsc_command(name)?
-        .args([
+    guest_command_stdio(
+        runsc_command(name)?.args([
             "exec",
             "--user",
             "1000:1000",
@@ -1101,24 +1102,11 @@ pub(crate) async fn spawn_guest_command_with_output(
             "/bin/bash",
             "-lc",
             &wrapped,
-        ])
-        .stdin(if capture {
-            std::process::Stdio::null()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stdout(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stderr(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .kill_on_drop(capture)
-        .spawn()
+        ]),
+        capture,
+        inherit_stdin,
+    )
+    .spawn()
 }
 
 #[cfg(target_os = "linux")]
@@ -1312,6 +1300,7 @@ pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
     command: &str,
     capture: bool,
+    inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
         return Err(unavailable());
@@ -1325,8 +1314,8 @@ pub(crate) async fn spawn_guest_command_with_output(
     let key = config_dir().join("data/vm_ssh_key");
     let socket = shell.display().to_string().replace('\'', "'\\''");
     let wrapped = macos_guest_command(command);
-    Command::new("ssh")
-        .args([
+    guest_command_stdio(
+        Command::new("ssh").args([
             "-i",
             key.to_str().unwrap_or_default(),
             "-o",
@@ -1345,27 +1334,14 @@ pub(crate) async fn spawn_guest_command_with_output(
             "ControlPath=none",
             "-o",
             &format!("ProxyCommand=nc -U '{socket}'"),
-            if capture { "-T" } else { "-t" },
+            if inherit_stdin { "-t" } else { "-T" },
             "agent@sandbox",
             &wrapped,
-        ])
-        .stdin(if capture {
-            std::process::Stdio::null()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stdout(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .stderr(if capture {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::inherit()
-        })
-        .kill_on_drop(capture)
-        .spawn()
+        ]),
+        capture,
+        inherit_stdin,
+    )
+    .spawn()
 }
 
 #[cfg(target_os = "macos")]
@@ -1748,11 +1724,36 @@ pub(crate) async fn start_sandbox(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn guest_command_stdio(command: &mut Command, capture: bool, inherit_stdin: bool) -> &mut Command {
+    // runsc can set O_NONBLOCK on a donated descriptor's shared open-file
+    // description. A guest-side redirect happens too late to protect a caller
+    // that owns operator input; disconnect that input before spawning runsc.
+    command
+        .stdin(if inherit_stdin {
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(if capture {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::inherit()
+        })
+        .stderr(if capture {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::inherit()
+        })
+        .kill_on_drop(capture)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn spawn_guest_command(
     name: &str,
     command: &str,
+    inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
-    spawn_guest_command_with_output(name, command, false).await
+    spawn_guest_command_with_output(name, command, false, inherit_stdin).await
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1761,7 +1762,7 @@ pub(crate) async fn guest_command_output(
     command: &str,
     timeout: std::time::Duration,
 ) -> io::Result<std::process::Output> {
-    let child = spawn_guest_command_with_output(name, command, true).await?;
+    let child = spawn_guest_command_with_output(name, command, true, false).await?;
     tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "guest command timed out"))?
@@ -1769,9 +1770,13 @@ pub(crate) async fn guest_command_output(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn coding_agent_observation(name: &str) -> io::Result<String> {
-    let child =
-        spawn_guest_command_with_output(name, "/safeyolo/safeyolo-guest observe check", true)
-            .await?;
+    let child = spawn_guest_command_with_output(
+        name,
+        "/safeyolo/safeyolo-guest observe check",
+        true,
+        false,
+    )
+    .await?;
     let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
         .await
         .map_err(|_| {
@@ -1811,6 +1816,7 @@ pub(crate) async fn exec_guest_command(_name: &str, _command: &str) -> io::Resul
 pub(crate) async fn spawn_guest_command(
     _name: &str,
     _command: &str,
+    _inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
     Err(unavailable())
 }
@@ -1941,6 +1947,139 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guest_stdin_flag_mutator() {
+        // Run only as a child of the descriptor regression, so the test
+        // runner's own input flags and bytes are never changed.
+        let Ok(mode) = std::env::var("SAFEYOLO_TEST_STDIN_MUTATOR") else {
+            return;
+        };
+        let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(0, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+            0
+        );
+        use std::io::Read;
+        if mode == "interactive" {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input).unwrap();
+            assert_eq!(input, "guest input\n");
+        } else if mode == "null" {
+            let mut byte = [0];
+            assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn guest_command_stdin_preserves_operator_input_and_interactive_input() {
+        use std::io::{BufRead, Read, Write};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        const TEST: &str = "host_platform::tests::guest_command_stdin_preserves_operator_input_and_interactive_input";
+        if let Ok(mode) = std::env::var("SAFEYOLO_TEST_GUEST_STDIN") {
+            let original = unsafe { libc::fcntl(0, libc::F_GETFL) };
+            assert!(original >= 0 && original & libc::O_NONBLOCK == 0);
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "host_platform::tests::guest_stdin_flag_mutator",
+                    "--nocapture",
+                ])
+                .env(
+                    "SAFEYOLO_TEST_STDIN_MUTATOR",
+                    if mode == "interactive" {
+                        "interactive"
+                    } else if mode == "inherited" {
+                        "flags"
+                    } else {
+                        "null"
+                    },
+                );
+            let mut runtime = guest_command_stdio(
+                &mut command,
+                mode != "visible",
+                matches!(mode.as_str(), "inherited" | "interactive"),
+            )
+            .spawn()
+            .unwrap();
+            assert!(runtime.wait().await.unwrap().success());
+            let observed = unsafe { libc::fcntl(0, libc::F_GETFL) };
+            if matches!(mode.as_str(), "inherited" | "interactive") {
+                assert_eq!(observed, original | libc::O_NONBLOCK);
+                if mode == "inherited" {
+                    let mut byte = [0];
+                    assert_eq!(
+                        std::io::stdin().read(&mut byte).unwrap_err().raw_os_error(),
+                        Some(libc::EAGAIN)
+                    );
+                }
+                // Only the deliberately inherited negative control needs
+                // restoration. Production noninteractive commands do not.
+                assert_eq!(unsafe { libc::fcntl(0, libc::F_SETFL, original) }, 0);
+            } else {
+                assert_eq!(observed, original);
+            }
+            if mode == "interactive" {
+                let mut remaining = String::new();
+                std::io::stdin().read_to_string(&mut remaining).unwrap();
+                assert!(remaining.is_empty());
+            } else {
+                println!("operator-input-ready");
+                std::io::stdout().flush().unwrap();
+                let mut input = std::io::stdin().lock();
+                let mut final_line = String::new();
+                input.read_line(&mut final_line).unwrap();
+                assert_eq!(final_line, "finish\n");
+                let mut remaining = String::new();
+                input.read_to_string(&mut remaining).unwrap();
+                assert_eq!(remaining, "remaining input\n");
+            }
+            return;
+        }
+        for mode in ["inherited", "visible", "captured", "interactive"] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("SAFEYOLO_TEST_GUEST_STDIN", mode)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut input = child.stdin.take().unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+            if mode == "interactive" {
+                input.write_all(b"guest input\n").await.unwrap();
+            } else {
+                loop {
+                    let line = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .expect("stdin control ended before final input");
+                    if line == "operator-input-ready" {
+                        break;
+                    }
+                }
+                input.write_all(b"finish\nremaining input\n").await.unwrap();
+            }
+            drop(input);
+            let result = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

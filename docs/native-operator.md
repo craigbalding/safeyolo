@@ -15,14 +15,13 @@ including its platform prerequisites and prepared guest assets. Then follow
 That example creates `work` and opens its guest shell. A shell is sufficient
 for the access example below; no model login is required.
 
-Open a second terminal on the same host, under the same account. Select the
-root you installed. This example uses `$HOME/.safeyolo`; if you chose another
-root, replace that path before running these commands. Existing installations
-keep their current root. Do not reinstall over their state.
+Open a second terminal on the same host, under the same account. The installed
+command uses `$HOME/.safeyolo` automatically. These examples use that default
+installation. For another instance, use the
+[custom-instance reference](native-policy.md#other-installation-paths) and the
+matching file paths. Do not reinstall over existing state.
 
 ```sh
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
-export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo --version
 safeyolo status
 ```
@@ -33,10 +32,6 @@ agent's `name` from that inventory. The examples below use the `work` agent
 created during setup. Check that the root and agent match the guest terminal
 you opened. A running proxy alone does not mean that the agent is running.
 
-`--root PATH` before a command overrides the environment selection. Without
-that option, the command uses `SAFEYOLO_CONFIG_DIR`, then `SAFEYOLO_HOME`, then
-`$HOME/.safeyolo`. Set the root and PATH in each new host terminal. These
-settings select this terminal's commands; they do not move an installation.
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
 ## Inspect and decide one request
@@ -52,7 +47,7 @@ replaces `access-example.toml`; choose another filename if you need to keep an
 existing candidate. The copy retains configured agent identities and settings.
 
 ```sh
-cp "$SAFEYOLO_CONFIG_DIR/policy.toml" "$SAFEYOLO_CONFIG_DIR/access-example.toml"
+cp "$HOME/.safeyolo/policy.toml" "$HOME/.safeyolo/access-example.toml"
 ```
 
 Edit `access-example.toml` with your text editor. Add this destination entry
@@ -76,8 +71,8 @@ Check and apply the candidate on the host. Applying it replaces the saved
 policy and activates it in this running instance.
 
 ```sh
-safeyolo policy check "$SAFEYOLO_CONFIG_DIR/access-example.toml"
-safeyolo policy apply "$SAFEYOLO_CONFIG_DIR/access-example.toml"
+safeyolo policy check "$HOME/.safeyolo/access-example.toml"
+safeyolo policy apply "$HOME/.safeyolo/access-example.toml"
 safeyolo policy show
 ```
 
@@ -253,7 +248,7 @@ safeyolo agent diagnostics work
 Diagnosis distinguishes saved policy and last recorded launch from verified
 live state. Local evidence does not confirm the active policy or a decision.
 For a stopped proxy, inspect the named startup error and
-`$SAFEYOLO_CONFIG_DIR/logs/proxy.log`; repair the named input or occupied
+`$HOME/.safeyolo/logs/proxy.log`; repair the named input or occupied
 endpoint, then use `safeyolo start` and `safeyolo policy show`. For agent runtime
 or shell failures, follow [agent diagnosis and recovery](native-policy.md#configure-and-use-an-agent).
 Keep the selected root and executable when retrying. Direct human decisions
@@ -296,8 +291,8 @@ its configured command:
 
 ```sh
 safeyolo agent stop adviser
-cp "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" "$SAFEYOLO_CONFIG_DIR/agents/adviser/config-share/operator-client"
-chmod 0755 "$SAFEYOLO_CONFIG_DIR/agents/adviser/config-share/operator-client"
+cp "$HOME/.safeyolo/bin/safeyolo" "$HOME/.safeyolo/agents/adviser/config-share/operator-client"
+chmod 0755 "$HOME/.safeyolo/agents/adviser/config-share/operator-client"
 safeyolo agent start adviser
 ```
 

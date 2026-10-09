@@ -401,7 +401,7 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-    let mut child = crate::host_platform::spawn_guest_command(name, &command).await?;
+    let mut child = crate::host_platform::spawn_guest_command(name, &command, true).await?;
     let child_pid = i64::from(child.id().ok_or("guest transport has no PID")?);
     let child_token = process_token(child_pid);
     if let Err(error) = update_launch(
