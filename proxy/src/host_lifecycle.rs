@@ -10,7 +10,6 @@ use std::{
         unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value, json};
@@ -1013,6 +1012,83 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
     Ok(Some(state))
 }
 
+fn validate_supervisor_observation(
+    agent: &Agent,
+    record: &Value,
+    run_id: &Value,
+    supervisor: &Value,
+) -> Result<(), Error> {
+    if run_id.as_str().is_none_or(str::is_empty)
+        || record["agent_id"] != agent.id
+        || record["name"] != agent.name
+        || record["launch_id"].as_str().is_none_or(str::is_empty)
+        || record["command"]
+            .as_str()
+            .is_none_or(|command| command.trim().is_empty())
+        || supervisor["schema_version"] != 1
+        || supervisor["name"] != agent.name
+        || supervisor["generation"] != *run_id
+        || supervisor["supervision_id"] != record["launch_id"]
+        || supervisor["command"] != record["command"]
+        || supervisor["runtime_owner"] != "guest-pid1"
+        || !matches!(
+            supervisor["state"].as_str(),
+            Some("starting" | "running" | "restarting" | "stopped" | "failed" | "exited")
+        )
+    {
+        return Err("guest supervisor does not match the current agent, run or launch; command state is unknown".into());
+    }
+    Ok(())
+}
+
+async fn checked_supervisor_state(
+    agent: &Agent,
+    record: &Value,
+    run_id: &Value,
+) -> Result<Value, Error> {
+    let output = crate::host_platform::guest_command_output(
+        &agent.name,
+        "/safeyolo/safeyolo-guest supervise check",
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    if !output.status.success() {
+        return Err(
+            "native guest supervisor check failed; run agent diagnostics to inspect command state"
+                .into(),
+        );
+    }
+    let supervisor: Value = serde_json::from_slice(&output.stdout)?;
+    validate_supervisor_observation(agent, record, run_id, &supervisor)?;
+    let current = read_json(&launch_path(&agent.name))?
+        .ok_or("host launch disappeared during the guest check; command state is unknown")?;
+    for key in [
+        "agent_id",
+        "name",
+        "launch_id",
+        "command",
+        "launcher",
+        "state",
+    ] {
+        if current[key] != record[key] {
+            return Err(
+                "host launch changed during the guest check; command state is unknown".into(),
+            );
+        }
+    }
+    if crate::host_runs::id(&agent.name)?
+        != format!(
+            "safeyolo-{}",
+            run_id.as_str().ok_or("sandbox generation is missing")?
+        )
+    {
+        return Err(
+            "sandbox generation changed during the guest check; command state is unknown".into(),
+        );
+    }
+    Ok(supervisor)
+}
+
 pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
     let sandbox = crate::host_runs::observe(&agent.name).await;
     let proxy_attachment = match crate::native_config::read(&crate::host_platform::config_path()) {
@@ -1111,38 +1187,23 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
         } else if launcher.get("kind").and_then(Value::as_str) == Some("supervisor") {
             if recorded == "starting" {
                 state = "starting".to_owned();
-            } else if let Some(supervisor) =
-                supervisor_state(&agent.name).unwrap_or_else(|supervisor_error| {
-                    error = supervisor_error.to_string().into();
-                    Some(json!({"state":"unknown"}))
-                })
-            {
-                let current = supervisor
-                    .get("state")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                state = if matches!(
-                    current,
-                    "starting" | "restarting" | "failed" | "stopped" | "exited"
-                ) {
-                    current.to_owned()
-                } else {
-                    let heartbeat = supervisor
-                        .get("heartbeat_at")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(0.0);
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs_f64();
-                    if current == "running" && (0.0..=5.0).contains(&(now - heartbeat)) {
-                        "running"
-                    } else {
-                        "unknown"
+            } else {
+                match checked_supervisor_state(agent, record, &sandbox["run_id"]).await {
+                    Ok(supervisor) => {
+                        state = supervisor["state"]
+                            .as_str()
+                            .ok_or("guest supervisor state is missing")?
+                            .to_owned();
+                        error = supervisor
+                            .get("last_stderr")
+                            .cloned()
+                            .unwrap_or(Value::Null);
                     }
-                    .to_owned()
-                };
-                error = supervisor
-                    .get("last_stderr")
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                    Err(supervisor_error) => {
+                        state = "unknown".into();
+                        error = supervisor_error.to_string().into();
+                    }
+                }
             }
         } else {
             state = recorded.to_owned();
@@ -1168,7 +1229,13 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 && launcher.get("kind").and_then(Value::as_str) != Some("interactive");
         }
     }
-    if ready {
+    // The checked supervisor already proves its exact managed command. The
+    // generic observer still detects manual commands after a terminal launch,
+    // but cannot promote an unverified managed launch to running/observed.
+    if ready
+        && (launcher["kind"] != "supervisor"
+            || matches!(state.as_str(), "stopped" | "exited" | "failed"))
+    {
         match crate::host_platform::coding_agent_observation(&agent.name).await {
             Ok(observed) if observed == "running" => {
                 if launch_id.is_null() || matches!(state.as_str(), "stopped" | "exited" | "failed")
@@ -1190,9 +1257,9 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
             }
             _ => {}
         }
-    } else if sandbox["runtime_state"] != "stopped" {
+    } else if !ready && sandbox["runtime_state"] != "stopped" {
         state = "unknown".into();
-    } else if state != "finishing" {
+    } else if !ready && state != "finishing" {
         state = "stopped".into();
     }
     if let Some(record) = record.as_ref()
@@ -2016,6 +2083,102 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn supervisor_observation_binds_the_launch_without_comparing_host_time() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let agent = crate::host_agents::configure(
+                "marker",
+                &[("folder".into(), temp.path().to_string_lossy().into_owned())],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            let record = json!({"agent_id":agent.id,"name":agent.name,"launch_id":"launch-current",
+                "command":"exec marker","launcher":{"kind":"supervisor"},"state":"managed"});
+            let run_id = json!("0123456789abcdef0123456789abcdef");
+            let mut checked = json!({"schema_version":1,"name":agent.name,"generation":run_id,
+                "supervision_id":record["launch_id"],"command":record["command"],
+                "runtime_owner":"guest-pid1","state":"running","heartbeat_at":100.0});
+            // These timestamps represent fresh checks in guests whose clocks
+            // are far behind or ahead of this host. Guest check owns age.
+            for heartbeat in [100.0, 10_000_000_000.0] {
+                checked["heartbeat_at"] = json!(heartbeat);
+                assert!(
+                    validate_supervisor_observation(&agent, &record, &run_id, &checked).is_ok()
+                );
+                assert!(reuses_current_launch(
+                    &json!({"agent_state":checked["state"]})
+                ));
+            }
+            for (key, value) in [
+                ("schema_version", json!(2)),
+                ("name", json!("foreign")),
+                ("generation", json!("foreign-run")),
+                ("supervision_id", json!("old-launch")),
+                ("command", json!("exec another-command")),
+                ("runtime_owner", json!("host")),
+                ("state", json!("unknown")),
+            ] {
+                let mut wrong = checked.clone();
+                wrong[key] = value;
+                assert!(
+                    validate_supervisor_observation(&agent, &record, &run_id, &wrong).is_err(),
+                    "{wrong}"
+                );
+            }
+            for key in [
+                "schema_version",
+                "name",
+                "generation",
+                "supervision_id",
+                "command",
+                "runtime_owner",
+                "state",
+            ] {
+                for value in [Value::Null, json!(false), json!([]), json!({})] {
+                    let mut wrong = checked.clone();
+                    wrong[key] = value;
+                    assert!(
+                        validate_supervisor_observation(&agent, &record, &run_id, &wrong).is_err(),
+                        "{wrong}"
+                    );
+                }
+            }
+            for key in ["agent_id", "name", "launch_id", "command"] {
+                let mut wrong = record.clone();
+                wrong[key] = Value::Null;
+                assert!(
+                    validate_supervisor_observation(&agent, &wrong, &run_id, &checked).is_err()
+                );
+            }
+            // The actual common transport must refuse an unavailable sandbox;
+            // a raw shared-home state file cannot supply the checked result.
+            write_json(&supervisor_path(&agent.name), &checked).unwrap();
+            assert!(
+                checked_supervisor_state(&agent, &record, &run_id)
+                    .await
+                    .is_err()
+            );
+            let observed = runtime(&agent).await.unwrap();
+            assert_ne!(observed["agent_state"], "running");
+            assert_eq!(
+                read_json(&supervisor_path(&agent.name)).unwrap(),
+                Some(checked)
+            );
+            assert!(!reuses_current_launch(&json!({"agent_state":"unknown"})));
+            for label in ["starting", "restarting", "stopped", "failed", "exited"] {
+                let mut terminal = read_json(&supervisor_path(&agent.name)).unwrap().unwrap();
+                terminal["state"] = json!(label);
+                assert!(
+                    validate_supervisor_observation(&agent, &record, &run_id, &terminal).is_ok()
+                );
+            }
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn locked_start_keeps_the_selected_name_and_identity() {

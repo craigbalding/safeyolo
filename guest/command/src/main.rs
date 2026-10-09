@@ -79,12 +79,18 @@ fn process(pid: i32) -> Result<Option<(String, char, i32)>, Error> {
     if pid <= 0 {
         return Ok(None);
     }
-    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+    let stat = match fs::read(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (_, fields) = stat.rsplit_once(')').ok_or("invalid process stat")?;
+    // comm also permits non-UTF-8 filename bytes. Only the numeric suffix
+    // belongs to the process identity; do not decode the name.
+    let fields = std::str::from_utf8(
+        stat.rsplit(|byte| *byte == b')')
+            .next()
+            .ok_or("invalid process stat")?,
+    )?;
     let fields: Vec<_> = fields.split_whitespace().collect();
     let start = fields.get(19).ok_or("process start time is missing")?;
     let state = fields
@@ -102,19 +108,22 @@ fn live_token(pid: i32) -> Result<Option<String>, Error> {
         .map(|(token, _, _)| token))
 }
 
-fn run() -> Result<i32, Error> {
+fn command_paths(
+    args: &mut Vec<OsString>,
+    state: Option<OsString>,
+    stop: Option<OsString>,
+) -> Result<Paths, Error> {
     let mut paths = Paths {
         context: "/safeyolo/host-launch-context.json".into(),
         records: "/safeyolo-status/guest-commands".into(),
-        state: std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STATE")
+        state: state
             .map(PathBuf::from)
             .unwrap_or_else(|| "/home/agent/.safeyolo-command-supervisor.json".into()),
-        stop: std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STOP")
+        stop: stop
             .map(PathBuf::from)
             .unwrap_or_else(|| "/home/agent/.safeyolo-command-supervisor.stop".into()),
         workspace: "/workspace".into(),
     };
-    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
     while args.first().is_some_and(|arg| {
         matches!(
             arg.to_str(),
@@ -134,6 +143,16 @@ fn run() -> Result<i32, Error> {
             _ => unreachable!(),
         }
     }
+    Ok(paths)
+}
+
+fn run() -> Result<i32, Error> {
+    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let paths = command_paths(
+        &mut args,
+        std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STATE"),
+        std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STOP"),
+    )?;
     match args.as_slice() {
         [version] if version == "--version" => {
             println!("{}", self::version());
