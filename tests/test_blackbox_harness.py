@@ -17,6 +17,8 @@ import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from functools import partial
+from http.server import HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -187,6 +189,102 @@ def test_shared_approval_coord_uses_staged_home_binary(tmp_path, monkeypatch):
         assert installed_shared_approvals.guest_coord(transport, name, operation, arguments) == {
             "agent": name, "operation": ["call", operation], "arguments": arguments,
         }
+
+
+def test_unavailable_model_policy_preserves_worker_scope_and_saved_policy(tmp_path):
+    """Only Helper can reach the owned model endpoint; no grant is inferred."""
+    original = '''budget=17
+[hosts]
+"chatgpt.com:443"={egress="allow"}
+"127.0.0.3:49124"={egress="allow"}
+[controls.credentials]
+enabled=true
+[agents.worker]
+agent_id="worker-id"
+[agents.worker.hosts]
+"127.0.0.3:49124"={egress="allow"}
+[agents.helper]
+agent_id="helper-id"
+'''
+    (tmp_path / "policy.toml").write_text(original)
+    policy = tomllib.loads(installed_shared_approvals.model_fixture_policy(
+        tmp_path, ("worker", "helper"), 49123, unavailable_model_port=49124))
+    assert policy["hosts"] == {"chatgpt.com:443": {"egress": "allow"}}
+    assert policy["controls"]["credentials"]["enabled"] is True
+    assert policy["agents"]["worker"]["hosts"] == {
+        "127.0.0.2": {"egress": "deny"}, "127.0.0.2:49123": {"egress": "prompt"},
+        "127.0.0.3": {"egress": "deny"}}
+    assert policy["agents"]["helper"]["hosts"] == {
+        **policy["agents"]["worker"]["hosts"], "127.0.0.3:49124": {"egress": "allow"}}
+    assert (tmp_path / "policy.toml").read_text() == original
+
+
+def test_unavailable_model_origin_observes_before_returning_diagnosable_503():
+    """Exercise the real HTTP failure injection independently of a model run."""
+    observations = []
+    marker = "821-owned-model-control"
+    server = HTTPServer(("127.0.0.1", 0), partial(
+        installed_shared_approvals.UnavailableModelOrigin, marker=marker, observe=observations.append))
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    connection = http.client.HTTPConnection(*server.server_address, timeout=3)
+    request = {"model": "configured-model", "input": [{"role": "user", "content": "Diagnose req-selected"}]}
+    try:
+        connection.request("POST", "/v1/responses", json.dumps(request),
+            {"Content-Type": "application/json", "X-SafeYolo-U6": marker})
+        response = connection.getresponse()
+        assert response.status == 503
+        assert json.loads(response.read()) == {"error": {
+            "message": marker + ": model unavailable", "type": "server_error", "code": "model_unavailable"}}
+        assert observations == [{**request, "marker": marker, "authenticated": False}]
+        connection.request("POST", "/wrong-model-path", json.dumps(request))
+        response = connection.getresponse()
+        assert response.status == 400
+        response.read()
+        assert len(observations) == 1
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+
+
+def test_unavailable_model_command_and_capture_preserve_specific_failure(tmp_path):
+    """A failed turn needs its initialized thread and actual injected diagnosis."""
+    marker = "821-controlled"
+    arguments = installed_shared_approvals.unavailable_model_arguments(49124, marker)
+    overrides = [arguments[index + 1] for index, value in enumerate(arguments) if value == "-c"]
+    configuration = tomllib.loads("\n".join(overrides))
+    provider = configuration["model_providers"][configuration["model_provider"]]
+    assert provider["base_url"] == "http://127.0.0.3:49124/v1"
+    assert provider["requires_openai_auth"] is False and provider["supports_websockets"] is False
+    assert provider["request_max_retries"] == provider["stream_max_retries"] == 0
+    assert provider["http_headers"] == {"X-SafeYolo-U6": marker}
+    assert set(configuration) == {"model_provider", "model_providers"}
+    message = f"unexpected status 503 Service Unavailable: {marker}: model unavailable"
+    events = [
+        {"type": "thread.started", "thread_id": "owned-thread"},
+        {"type": "turn.started"}, {"type": "turn.failed", "error": {"message": message}},
+    ]
+    output = "\n".join(json.dumps(event) for event in events) + "\n"
+    path = tmp_path / "failed-model.jsonl"
+    captured = installed_shared_approvals.run_helper(
+        [sys.executable, "-c", f"import sys; sys.stdout.write({output!r}); sys.exit(1)"],
+        path, expected_exit=1)
+    assert installed_shared_approvals.model_failure_diagnosis(captured, marker) == ("owned-thread", message)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for replacement in ("missing launcher", "authentication required", "unexpected status 403", "unrelated 503 model unavailable"):
+        bad_events = [*events[:-1], {"type": "turn.failed", "error": {"message": replacement}}]
+        with pytest.raises(AssertionError, match="not the injected model failure"):
+            installed_shared_approvals.model_failure_diagnosis("\n".join(json.dumps(event) for event in bad_events), marker)
+    with pytest.raises(AssertionError, match="model turn did not start"):
+        installed_shared_approvals.model_failure_diagnosis("\n".join(json.dumps(event) for event in (events[0], events[2])), marker)
+    with pytest.raises(AssertionError, match="reported success"):
+        installed_shared_approvals.model_failure_diagnosis(output + '{"type":"turn.completed"}\n', marker)
+    with pytest.raises(AssertionError, match="Helper exited 0; expected 1"):
+        installed_shared_approvals.run_helper(
+            [sys.executable, "-c", f"print({output!r})"], tmp_path / "false-success.jsonl", expected_exit=1)
 
 
 def test_helper_journey_waits_for_external_canonical_decision(monkeypatch):

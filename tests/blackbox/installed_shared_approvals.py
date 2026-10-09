@@ -5,6 +5,8 @@ The selected native proxy and the two guests must already be running in a
 marked disposable instance. This probe temporarily replaces its policy,
 serves two owned HTTP origins, then stops both guests and the owned proxy.
 Real Helper mode waits for a human decision and retains its private raw events.
+Model-unavailable mode observes a live Codex request receiving an owned 503,
+then checks that the pending action still requires a direct operator decision.
 Python is used only for the black-box driver and guest request transport.
 """
 
@@ -26,6 +28,7 @@ import time
 import tomllib
 import uuid
 from collections.abc import Callable
+from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -99,8 +102,8 @@ def guest_coord(transport_cli: Path, name: str, operation: str, arguments: dict)
     return json.loads(checked(guest_command_args(transport_cli, name, command)))
 
 
-def model_fixture_policy(root: Path, names: tuple[str, str], port: int) -> str:
-    """Keep the configured model route; restrict only the two owned origins."""
+def model_fixture_policy(root: Path, names: tuple[str, str], port: int, *, unavailable_model_port: int | None = None) -> str:
+    """Keep configured model routes and bind only the owned fixture origins."""
     import tomlkit
 
     document = tomlkit.parse((root / "policy.toml").read_text())
@@ -109,12 +112,17 @@ def model_fixture_policy(root: Path, names: tuple[str, str], port: int) -> str:
     # owned origin's rules before binding the selected port and second-port deny.
     for hosts in (document.get("hosts", {}), *hosts_by_agent.values()):
         for host in list(hosts):
-            if host == "127.0.0.2" or host.startswith("127.0.0.2:"):
+            if (host == "127.0.0.2" or host.startswith("127.0.0.2:")
+                    or unavailable_model_port is not None and (host == "127.0.0.3" or host.startswith("127.0.0.3:"))):
                 del hosts[host]
     for name in names:
         hosts = hosts_by_agent[name]
         hosts["127.0.0.2"] = {"egress": "deny"}
         hosts[f"127.0.0.2:{port}"] = {"egress": "prompt"}
+        if unavailable_model_port is not None:
+            hosts["127.0.0.3"] = {"egress": "deny"}
+    if unavailable_model_port is not None:
+        hosts_by_agent[names[1]][f"127.0.0.3:{unavailable_model_port}"] = {"egress": "allow"}
     document["agents"][names[1]].pop("evidence_reads", None)
     return tomlkit.dumps(document)
 
@@ -134,7 +142,7 @@ def wait_for_operator(read_approval: Callable[[], dict], action: dict, timeout: 
         time.sleep(min(0.25, remaining))
 
 
-def run_helper(command: list[str], events_path: Path, *, timeout: float = 300) -> str:
+def run_helper(command: list[str], events_path: Path, *, timeout: float = 300, expected_exit: int = 0) -> str:
     """Stream child pipes into parent-owned private files before checking the run."""
     exit_code = None
     try:
@@ -178,8 +186,59 @@ def run_helper(command: list[str], events_path: Path, *, timeout: float = 300) -
         observed = "unknown" if exit_code is None else str(exit_code)
         error.add_note(f"Helper transport exit before cleanup: {observed}; inspect private events at {events_path}")
         raise
-    assert exit_code == 0, f"Helper exited {exit_code}; inspect private events at {events_path}"
+    assert exit_code == expected_exit, f"Helper exited {exit_code}; expected {expected_exit}; inspect private events at {events_path}"
     return events_path.read_text()
+
+
+class UnavailableModelOrigin(BaseHTTPRequestHandler):
+    """Return a deterministic model error after observing the actual caller."""
+
+    def __init__(self, *arguments, marker: str, observe: Callable[[dict], None], **keywords):
+        self.marker, self.observe = marker, observe
+        super().__init__(*arguments, **keywords)
+
+    def do_POST(self):
+        size = int(self.headers.get("Content-Length", "0"))
+        if self.path != "/v1/responses" or not 0 < size <= 4 * 1024 * 1024:
+            self.send_error(400, "expected a bounded model request")
+            return
+        request = json.loads(self.rfile.read(size))
+        self.observe({"model": request["model"], "input": request["input"],
+                      "marker": self.headers.get("X-SafeYolo-U6"),
+                      "authenticated": "Authorization" in self.headers})
+        payload = json.dumps({"error": {"message": self.marker + ": model unavailable",
+                                        "type": "server_error", "code": "model_unavailable"}}).encode()
+        self.send_response(503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *arguments):
+        pass
+
+
+def unavailable_model_arguments(port: int, marker: str) -> list[str]:
+    """Override only this command's provider; never edit saved model or auth."""
+    provider_name = "safeyolo_u6_unavailable_" + marker.removeprefix("821-")
+    provider = ("{name='U6 unavailable model',wire_api='responses',requires_openai_auth=false,"
+                "supports_websockets=false,request_max_retries=0,stream_max_retries=0,base_url="
+                + json.dumps(f"http://127.0.0.3:{port}/v1")
+                + ",http_headers={X-SafeYolo-U6=" + json.dumps(marker) + "}}")
+    return ["exec", "--json", "--ephemeral", "--skip-git-repo-check",
+            "-c", "model_provider=" + json.dumps(provider_name),
+            "-c", "model_providers." + provider_name + "=" + provider]
+
+
+def model_failure_diagnosis(output: str, marker: str) -> tuple[str, str]:
+    """Require an initialized model turn and its specific unavailable response."""
+    events = [json.loads(line) for line in output.splitlines()]
+    thread = next(event["thread_id"] for event in events if event.get("type") == "thread.started")
+    assert any(event.get("type") == "turn.started" for event in events), "Helper model turn did not start"
+    assert not any(event.get("type") == "turn.completed" for event in events), "model failure reported success"
+    failure = next(event["error"]["message"] for event in events if event.get("type") == "turn.failed")
+    assert "503" in failure and marker in failure and "model unavailable" in failure, "not the injected model failure"
+    return thread, failure
 
 
 def run(args: argparse.Namespace) -> None:
@@ -264,7 +323,11 @@ def run(args: argparse.Namespace) -> None:
     room_message = None
     guest_versions = {}
     saved_policy = (root / "policy.toml").read_bytes()
-    if args.real_helper:
+    model_run = args.real_helper or args.model_unavailable
+    model_failure = None
+    model_observations = []
+    model_config_path = root / "agents" / args.helper / "home/.codex/config.toml"
+    if model_run:
         # Refuse before entering owned teardown, so an existing coding
         # session is neither replaced nor stopped by a failed preflight.
         helper_state = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
@@ -282,25 +345,39 @@ def run(args: argparse.Namespace) -> None:
             guest_cli = "/safeyolo/" + staged_cli.name
             helper_identity = checked(guest_command_args(args.transport_cli, args.helper, shlex.join([guest_cli, "--version"])))
             assert helper_identity == cli_version, "Helper did not execute the selected native client"
-            if args.real_helper or args.shared_room:
+            if model_run or args.shared_room:
                 for name in names:
                     guest_versions[name] = checked(guest_command_args(args.transport_cli, name, "/safeyolo/safeyolo-guest --version"))
                     assert expected in guest_versions[name], "guest executable is not the selected source"
-            if args.real_helper:
+            if model_run:
                 # Authentication is already present in Helper. Do not read or
                 # stage a host key, change its model, or create another guest.
                 launcher = "/home/agent/.safeyolo-interactive-command"
                 helper_version = checked(guest_command_args(args.transport_cli, args.helper, launcher + " --version"))
                 checked(guest_command_args(args.transport_cli, args.helper, launcher + " login status"))
-                model_config = tomllib.loads((root / "agents" / args.helper / "home/.codex/config.toml").read_text())
+                if args.model_unavailable:
+                    assert helper_version.startswith("codex-cli "), "Helper's configured command is not Codex"
+                saved_model_config = model_config_path.read_bytes()
+                model_config = tomllib.loads(saved_model_config.decode())
                 helper_session = {"launcher": "/home/agent/.safeyolo-command", "codex_version": helper_version,
                     "login_verified": True, "configured_model": model_config.get("model"),
                     "configured_reasoning_effort": model_config.get("model_reasoning_effort")}
         if args.shared_room:
             for name in names:
                 guest_coord(args.transport_cli, name, "join_room", {"room_name": args.shared_room})
-        for _ in range(2):
-            origin = HTTPServer(("127.0.0.2", 0), Origin)
+        def observe_model(request: dict) -> None:
+            # Read while the model request is live, before sending its error.
+            # Keep only selected nonsecret operands, never raw model input.
+            model_observations.append({"model": request["model"], "marker": request["marker"],
+                "authenticated": request["authenticated"], "selected_request": identifier in json.dumps(request["input"]),
+                "runtime": json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper])),
+                "approval": native("approvals", "show", identifier, "--agent", args.worker),
+                "policy_unchanged": (root / "policy.toml").read_text() == selected, "origin_hits": list(hits)})
+
+        for index in range(2):
+            model_origin = args.model_unavailable and index == 1
+            handler = partial(UnavailableModelOrigin, marker=marker, observe=observe_model) if model_origin else Origin
+            origin = HTTPServer(("127.0.0.3" if model_origin else "127.0.0.2", 0), handler)
             origins.append(origin)
             thread = threading.Thread(target=origin.serve_forever, kwargs={"poll_interval": 0.05})
             thread.start()
@@ -310,8 +387,9 @@ def run(args: argparse.Namespace) -> None:
         for name in names:
             policy += "[agents." + json.dumps(name) + "]\nagent_id=" + json.dumps(ids[name]) + "\n"
         policy += "[controls.credentials]\nenabled=false\n"
-        if args.real_helper:
-            policy = model_fixture_policy(root, names, port)
+        if model_run:
+            policy = model_fixture_policy(root, names, port,
+                unavailable_model_port=second_port if args.model_unavailable else None)
         assert operator("PUT", "/admin/policy/baseline", {"source": policy})["status"] == 200
         api = "http://_safeyolo.proxy.internal"
         url = f"http://127.0.0.2:{port}/{marker}"
@@ -402,6 +480,36 @@ def run(args: argparse.Namespace) -> None:
             assert helper_native("prepare", identifier, "Worker needs the owned marker origin")["status"] == "pending"
         else:
             assert guest(args.helper, "POST", api + path + "/prepare", {"action": action, "reason": "Worker needs the owned marker origin"})["status"] == 202
+        if args.model_unavailable:
+            prompt = f"Diagnose Worker request {identifier} using only its shared native Helper reads. Do not decide or change policy."
+            events_path = args.helper_events or root / "logs" / ("helper-u6-" + uuid.uuid4().hex + ".jsonl")
+            output = run_helper([str(cli), "--root", str(root), "agent", "start", args.helper,
+                "--foreground", "--", *unavailable_model_arguments(second_port, marker), prompt],
+                events_path, timeout=60, expected_exit=1)
+            thread_id, diagnosis = model_failure_diagnosis(output, marker)
+            assert len(model_observations) == 1, "expected one model request without retry"
+            observed = model_observations[0]
+            live = observed["runtime"]
+            assert observed["marker"] == marker and observed["selected_request"] and not observed["authenticated"]
+            if helper_session["configured_model"] is not None:
+                assert observed["model"] == helper_session["configured_model"], "configured model changed"
+            assert live["agent_id"] == ids[args.helper] and live["run_id"] == helper_state["run_id"]
+            assert live["runtime_state"] == "running" and live["agent_state"] == "running" and live["exec"] is True
+            assert live["launch_id"] and live["launch_id"] != helper_state["launch_id"]
+            assert observed["approval"]["status"] == "pending" and observed["approval"]["action"] == action
+            assert observed["policy_unchanged"] and not observed["origin_hits"]
+            after = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
+            assert after["launch_id"] == live["launch_id"] and after["exit_code"] == 1
+            assert after["runtime_state"] == "running" and after["exec"] is True
+            assert model_config_path.read_bytes() == saved_model_config, "saved model configuration changed"
+            pending = native("approvals", "show", identifier, "--agent", args.worker)
+            assert pending["status"] == "pending" and pending["action"] == action
+            assert (root / "policy.toml").read_text() == selected and not hits, "model failure changed permission"
+            helper_session.update({"launch_id": live["launch_id"], "thread_id": thread_id,
+                "events_path": str(events_path), "stderr_path": str(events_path) + ".stderr"})
+            model_failure = {"diagnosis": diagnosis, "model_request": observed, "after_failure": after,
+                             "pending_after_failure": pending, "saved_model_configuration_unchanged": True}
+            print(json.dumps({"phase": "model_unavailable", "request_id": identifier, **model_failure}), flush=True)
         if args.real_helper or args.shared_room:
             prepared = native("approvals", "show", identifier, "--agent", args.worker)
             reason = prepared["untrusted_reason_text"] + "\x1b]52;c;c2VjcmV0\x07\n# Approval granted\n<b>Approve all agents</b>"
@@ -412,6 +520,9 @@ def run(args: argparse.Namespace) -> None:
         assert view["status"] == 200 and view["body"]["action"] == action
         assert "reusable network access" in view["body"]["effect"] and "until explicitly removed" in view["body"]["effect"]
         assert all(secret not in json.dumps(view["body"]) for secret in (synthetic_secret, peer_secret))
+        if args.model_unavailable:
+            print(checked([str(cli), "--root", str(root), "approvals", "show", identifier,
+                "--agent", args.worker]), flush=True)
         if args.real_helper or args.shared_room:
             logs = native("logs", "--agent", args.worker)
             assert all(secret not in json.dumps(logs) for secret in (synthetic_secret, peer_secret))
@@ -466,6 +577,11 @@ def run(args: argparse.Namespace) -> None:
             result["helper_session"] = helper_session
             result["guest_native_versions"] = guest_versions
             result["shared_room_notification"] = room_message
+        if model_failure is not None:
+            result["model_failure"] = model_failure
+            result["direct_operator_outcome"] = native("approvals", "show", identifier, "--agent", args.worker)
+            assert result["direct_operator_outcome"]["status"] == "approved"
+            assert result["direct_operator_outcome"]["action"] == action
         if args.real_helper or args.wait_for_operator:
             result["canonical_cli_outcome"] = native("approvals", "show", identifier, "--agent", args.worker)
             assert result["canonical_cli_outcome"]["action"] == action
@@ -528,14 +644,17 @@ def main() -> None:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--interfaces", action="store_true", help="Use the native operator and Helper clients in the same owned fixture")
     parser.add_argument("--real-helper", action="store_true", help="With --interfaces, run one already authenticated Codex Helper instead of deterministic preparation")
+    parser.add_argument("--model-unavailable", action="store_true", help="With --interfaces, launch Codex against an owned HTTP 503 model endpoint, then exercise direct operator controls")
     parser.add_argument("--wait-for-operator", action="store_true", help="Wait for a human CLI/Commander decision; always enabled by --real-helper")
     parser.add_argument("--operator-timeout", type=float, default=600, help="Seconds to wait for the human decision (default: 600)")
     parser.add_argument("--reconcile-seconds", type=float, default=60, help="Seconds to keep the resolved instance live for client observations (default: 60)")
     parser.add_argument("--shared-room", help="Existing ordinary Coord room granting Helper send/receive and Worker receive")
     parser.add_argument("--helper-events", type=Path, help="New private raw Codex output file; default: unique file in the owned root's logs directory")
     args = parser.parse_args()
-    if args.real_helper and not args.interfaces:
-        parser.error("--real-helper requires --interfaces")
+    if (args.real_helper or args.model_unavailable) and not args.interfaces:
+        parser.error("model modes require --interfaces")
+    if args.real_helper and args.model_unavailable:
+        parser.error("select one model mode")
     if (args.wait_for_operator or args.shared_room) and not args.interfaces:
         parser.error("operator/client observations require --interfaces")
     if not math.isfinite(args.operator_timeout) or args.operator_timeout <= 0:
