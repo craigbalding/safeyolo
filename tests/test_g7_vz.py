@@ -78,12 +78,16 @@ def test_initialization_and_executable_failures_are_refused(observation, name, v
         observe(**observation)
 
 
-def test_failed_setup_and_process_inspection_still_attempt_all_owned_stops(tmp_path, monkeypatch):
+def test_failed_setup_and_process_inspection_still_attempt_all_owned_stops(tmp_path_factory, monkeypatch):
     # A real executable supplies controlled host output; no guest is started.
+    tmp_path = tmp_path_factory.mktemp("g7")
     root, workspace = tmp_path / "r", tmp_path / "w"
     (root / "bin").mkdir(parents=True)
     (root / "assets/guest").mkdir(parents=True)
     workspace.mkdir()
+    nats = root / "data/coord/nats/bin/2.14.5/nats-server"
+    nats.parent.mkdir(parents=True)
+    nats.touch()
     log = tmp_path / "calls"
     for name in ("safeyolo", "safeyolo-coord", "safeyolo-proxy"):
         binary = root / "bin" / name

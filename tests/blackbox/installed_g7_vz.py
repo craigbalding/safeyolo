@@ -6,8 +6,9 @@ Python 3.11 or later. Supply a fresh, short disposable --root prepared by the
 native installer, an empty owned --workspace, matching --commit/--profile
 host and Linux guest artifacts, and owned pinned NATS inputs. No proxy or guest
 may already be running in that root. Set the approved VZ test runner/deadline,
-filtered-environment CA variables and SAFEYOLO_NATS_TEST_INSTANCE/TEST_PORTS
-before running. The root's installation and setup script must be outside its
+filtered-environment CA variables and SAFEYOLO_NATS_TEST_INSTANCE before
+running. Reserve the approved NATS client/monitor ports 46370/46372 and prepare
+the root's Admin API on 46371. The root's installation and setup script must be outside its
 guest-writable workspace. This driver creates only g7 and one private fixture
 room, boots that guest, checks actual native results, then stops and cleans
 the owned guest, proxy and Coord. It neither launches a model nor proves G1
@@ -41,13 +42,16 @@ def setup_observation(root: Path) -> dict:
     config = tomllib.loads((home / ".codex/config.toml").read_text())
     launcher = "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
     assert config["mcp_servers"]["safeyolo-coord"]["command"] == launcher
-    assert "SafeYolo" in (home / ".safeyolo/AGENTS.md").read_text()
+    assert (home / ".safeyolo/AGENTS.md").read_bytes() == (root / "assets/docs/AGENTS.md").read_bytes()
+    skill = home / ".agents/skills/safeyolo"
+    assert skill.is_symlink() and os.readlink(skill) == "/safeyolo/skills/safeyolo"
     assert (home / ".g7-codex-command").read_bytes() == (root / "assets/contrib/codex-command.sh").read_bytes()
     assert not (home / ".codex/auth.json").exists(), "fixture must remain nonsecret"
     modes = {}
     for relative, expected in ((".codex", 0o700), (".codex/config.toml", 0o600),
                                (".g7-codex-command", 0o755), (".safeyolo-command", 0o755),
-                               (".safeyolo/safeyolo-coord", 0o755)):
+                               (".safeyolo/safeyolo-coord", 0o755),
+                               (".safeyolo/safeyolo-coord-mcp-launcher", 0o755)):
         modes[relative] = (home / relative).stat().st_mode & 0o777
         assert modes[relative] == expected, (relative, modes[relative])
     staged = home / ".safeyolo/safeyolo-coord"
@@ -107,6 +111,8 @@ def run(args) -> dict:
     assert os.environ["SAFEYOLO_NATS_TEST_INSTANCE"]
     assert int(os.environ["SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS"]) > 0
     assert Path(os.environ["SAFEYOLO_VZ_TEST_RUNNER"]).is_file()
+    nats = root / "data/coord/nats/bin/2.14.5/nats-server"
+    assert nats.is_file(), "copy only the retained pinned NATS binary into the disposable root"
     os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(root / "data/coord")
     os.environ["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     cli = root / "bin/safeyolo"
@@ -133,6 +139,7 @@ def run(args) -> dict:
         command("agent", "create", "g7", "--workspace", str(workspace), "--launcher", "supervisor",
                 "--host-script", str(Path(__file__).with_name("g7-vz-host-setup.sh").resolve()))
         setup = setup_observation(root)
+        command("coord", "start", "--binary", str(nats), "--client-port", "46370", "--monitor-port", "46372")
         command("coord", "room", "create", room)
         grant = json.loads(command("coord", "grant", room, "g7"))
         command("start")
