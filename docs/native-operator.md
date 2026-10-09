@@ -208,6 +208,40 @@ a running Helper. That U6 failure observation remains separate from tool/login
 readiness. Reuse the accepted lost-reply, authority and race controls at their
 tested revisions.
 
+For the separate U6 model failure case, use the same owned Ubuntu/systrap setup
+with both sandboxes and the proxy running. Helper's ordinary Codex command must
+be stopped before the probe. Verify its installed launcher version and login
+status. Replace `ROOT`, `TRANSPORT_CLI` and `FULL_COMMIT` with the installed
+instance operands described above. Run from the checkout containing the probe:
+
+```sh
+uv run --frozen --no-sync python tests/blackbox/installed_shared_approvals.py \
+  --config-dir ROOT --transport-cli TRANSPORT_CLI \
+  --native-cli ROOT/bin/safeyolo --native-proxy ROOT/bin/safeyolo-proxy \
+  --commit FULL_COMMIT --interfaces --model-unavailable
+```
+
+The probe prepares the selected pending action with deterministic native Helper
+calls. It uses its second owned listener at `127.0.0.3` as a model endpoint
+returning HTTP 503. Only Helper receives fixture access to that listener. A
+command-scoped Codex provider override selects that endpoint without changing
+the saved model configuration or credentials. HTTP and stream retries are zero;
+no paid model request or repeat U3 witness is needed.
+
+Before returning the 503, the endpoint records Helper's running sandbox,
+coding-agent and launch identities, the same pending action, unchanged policy
+and zero Worker deliveries. The probe requires an actual model request naming
+the selected request, an initialized Codex thread and the matching failed-turn
+diagnosis. A missing launcher, authentication failure or successful process exit
+cannot supply this result. The printed `model_unavailable` phase contains the
+diagnosis and pending action. Raw events and stderr retain private permissions.
+The native CLI then displays the trusted scope and directly approves through
+the common resolver. The final result requires the approved canonical action,
+exact Worker marker deliveries, refused Helper/second-port controls and owned
+cleanup. The model failure itself must leave the action pending and policy
+unchanged. Add `--wait-for-operator --reconcile-seconds 0` when a human should
+make the direct decision instead of the fixture's explicit operator call.
+
 Commander can run on approved Tart against the same Ubuntu pending item.
 Physical-host GUI placement is not a prerequisite. A client source test does
 not establish the actual cross-client journey.
