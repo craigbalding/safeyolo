@@ -555,9 +555,9 @@ pub(crate) fn control_pid(name: &str) -> Option<u32> {
     if let Some(pid) = userns_pid(name) {
         return Some(pid);
     }
-    // The live sentry still owns the original namespaces after holder loss.
+    // The live sentry retains the run's network namespace after holder loss.
     // Validate the incarnation, process birth, command and mapping before
-    // entering it. This is recovery of that context, never direct runsc.
+    // recovering its owning user namespace. Never use direct runsc here.
     checked_namespace(backend_pid(name)?)
 }
 
@@ -603,20 +603,8 @@ fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn runsc_command(name: &str) -> io::Result<Command> {
-    let pid = control_pid(name).ok_or_else(|| io::Error::other("sandbox namespace control is unavailable; run agent diagnostics or stop the owned backend"))?;
-    let mut command = Command::new("nsenter");
-    command.args([
-        "--user",
-        "--net",
-        "--target",
-        &pid.to_string(),
-        "--",
-        "runsc",
-    ]);
-    let root = std::env::var_os("SAFEYOLO_RUNSC_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir().join("run"));
-    command.arg("--root").arg(root);
+    let mut command = userns_command(name, "runsc")?;
+    command.arg("--root").arg(runsc_root());
     Ok(command)
 }
 
@@ -629,18 +617,67 @@ pub(crate) fn runsc_root() -> PathBuf {
 
 #[cfg(target_os = "linux")]
 fn userns_command(name: &str, program: &str) -> io::Result<Command> {
-    let pid = control_pid(name)
-        .ok_or_else(|| io::Error::other("sandbox namespace control is unavailable"))?;
     let mut command = Command::new("nsenter");
-    command.args([
-        "--user",
-        "--net",
-        "--target",
-        &pid.to_string(),
-        "--",
-        program,
-    ]);
+    if let Some(pid) = userns_pid(name) {
+        command.args(["--user", "--net", "--target", &pid.to_string(), "--"]);
+    } else {
+        pin_namespace_arguments(name, &mut command)?;
+    }
+    command.arg(program);
     Ok(command)
+}
+
+#[cfg(target_os = "linux")]
+fn pin_namespace_arguments(name: &str, command: &mut Command) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let unverified = || {
+        io::Error::other(
+            "sandbox namespace control is unavailable or changed; run agent diagnostics or stop the owned backend",
+        )
+    };
+    let run = crate::host_runs::read(name)
+        .ok()
+        .flatten()
+        .ok_or_else(unverified)?;
+    let pid = control_pid(name).ok_or_else(unverified)?;
+    let token = crate::host_lifecycle::process_token(i64::from(pid)).ok_or_else(unverified)?;
+    let net = std::fs::File::open(format!("/proc/{pid}/ns/net"))?;
+    // The sentry may inhabit a child user namespace while retaining the
+    // holder's network namespace. Enter that network namespace's owner,
+    // rather than losing entry authority in the sentry's child namespace.
+    let fd = unsafe { libc::ioctl(net.as_raw_fd(), libc::NS_GET_USERNS) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user = unsafe { std::fs::File::from_raw_fd(fd) };
+    if user.metadata()?.ino() == std::fs::metadata("/proc/self/ns/user")?.ino()
+        || net.metadata()?.ino() != std::fs::metadata(format!("/proc/{pid}/ns/net"))?.ino()
+        || crate::host_lifecycle::process_token(i64::from(pid)).as_deref() != Some(&token)
+        || control_pid(name) != Some(pid)
+        || crate::host_runs::read(name).ok().flatten().as_ref() != Some(&run)
+    {
+        return Err(unverified());
+    }
+    command.args([
+        format!("--user=/proc/self/fd/{}", user.as_raw_fd()),
+        format!("--net=/proc/self/fd/{}", net.as_raw_fd()),
+        "--".into(),
+    ]);
+    // Keep both descriptors pinned through spawn. Only this child inherits
+    // them; nsenter keeps its usual UID, GID and supplementary-group setup.
+    // No subsequent lookup of a possibly reused process PID selects entry.
+    unsafe {
+        command.as_std_mut().pre_exec(move || {
+            for fd in [user.as_raw_fd(), net.as_raw_fd()] {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1050,7 +1087,7 @@ pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStre
         return Err(
             if observed["runtime_state"] == "stopped" || observed["runtime_state"] == "starting" {
                 provider_runtime_not_ready()
-            } else if control_pid(name).is_none() {
+            } else if userns_command(name, "runsc").is_err() {
                 provider_namespace_unavailable()
             } else {
                 provider_runsc_failed()
