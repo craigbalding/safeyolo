@@ -14,7 +14,7 @@ bundle=$(realpath "$1") assets=$(realpath "$2") state=$(realpath -m "$3") revisi
 [[ -x $bundle/install.sh && -d $assets/rootfs-tree ]] || {
   echo 'A checked native bundle and prepared Python-free guest rootfs-tree are required' >&2; exit 2;
 }
-for tool in strace runsc newuidmap newgidmap setfacl unshare curl; do
+for tool in runsc newuidmap newgidmap setfacl unshare curl; do
   command -v "$tool" >/dev/null || { echo "Missing prerequisite: $tool" >&2; exit 2; }
 done
 mkdir -p "$state/workspace"
@@ -75,6 +75,9 @@ for selected in "$root" "$peer"; do
   fi
 done
 "$cli" --version | tee "$state/host-identity.txt" | grep -F "commit=$revision profile="
+# Coord is installed on the host. Harness setup stages its guest executable
+# under /home/agent/.safeyolo; this ordinary agent does not select a harness.
+"$root/bin/safeyolo-coord" --version | tee "$state/coord-identity.txt" | grep -F "commit=$revision profile="
 instance "$peer" start
 cp "$peer/data/proxy-process.json" "$state/peer-process.json"
 cp "$peer/policy.toml" "$state/peer-policy.toml"
@@ -101,12 +104,11 @@ instance "$root" agent shell "$agent" -c 'exec strace -f -s 4096 -e trace=execve
   set -euo pipefail
   test "$(id -u)" = 1000
   /safeyolo/safeyolo-guest --version
-  /safeyolo/safeyolo-coord --version
   agent_token=$(cat /app/agent_token)
   printf "Authorization: Bearer %s\n" "$agent_token" |
     curl --fail --silent --show-error --header @- http://_safeyolo.proxy.internal/health
 '\''' | tee "$state/guest-api.txt"
-[[ $(grep -Fc "commit=$revision profile=" "$state/guest-api.txt") == 2 ]]
+[[ $(grep -Fc "commit=$revision profile=" "$state/guest-api.txt") == 1 ]]
 grep -q '"agent_api": *"ok"' "$state/guest-api.txt"
 test -s "$root/agents/$agent/home/r5-guest.exec"
 echo 'Completed native installation, host readiness, guest identity and authenticated API request; cleanup follows'

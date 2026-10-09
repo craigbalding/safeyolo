@@ -74,6 +74,9 @@ def test_detector_refuses_invalid_filesystem_root(tmp_path, root_is_file):
     '10 execve("/bin/true", ["true"], 0xabc <unfinished ...>',
     '10 execve("/bin/true", ["true"],',
     '11 execve("/bin/sleep", ["sleep", "60"], 0xabc) = 0',
+    'SUCCEEDED_EXEC 196480 /bin/true',
+    'EXECAT 196480 196480 fd=-100 flags=0 ',
+    'FAILED_EXEC tracepoint:syscalls:sys_exit_execveat 196482 -2 /usr/bin/python3',
 ])
 def test_incomplete_observation_cannot_claim_absence(tmp_path, line):
     code, result = check(tmp_path, line)
@@ -121,11 +124,50 @@ def controlled_journey(tmp_path, monkeypatch):
     bundle.mkdir()
     (assets / 'rootfs-tree').mkdir(parents=True)
     tools.mkdir()
-    for name in ('strace', 'runsc', 'newuidmap', 'newgidmap', 'setfacl', 'unshare', 'curl'):
+    for name in ('runsc', 'newuidmap', 'newgidmap', 'setfacl', 'unshare'):
         path = tools / name
         path.write_text('#!/bin/sh\nexit 0\n')
         path.chmod(0o755)
+    (tools / 'strace').write_text('''#!/bin/bash
+set -eu
+while [[ $1 == -* ]]; do
+  case "$1" in -f) shift;; -s|-e|-o) shift 2;; *) exit 2;; esac
+done
+exec "$@"
+''')
+    (tools / 'id').write_text('#!/bin/sh\n[ "$1" = -u ]\necho "${GUEST_UID:-1000}"\n')
+    (tools / 'curl').write_text('''#!/bin/bash
+set -eu
+[[ "$*" == '--fail --silent --show-error --header @- http://_safeyolo.proxy.internal/health' ]]
+read -r header
+[[ $header == 'Authorization: Bearer synthetic-guest-token' ]]
+printf 'authenticated health request\\n' >> "$HEALTH_CALLS"
+if [[ ${HEALTH_EXIT:-0} != 0 ]]; then exit "$HEALTH_EXIT"; fi
+printf '%s\\n' "$HEALTH_RESPONSE"
+''')
+    for name in ('strace', 'id', 'curl'):
+        (tools / name).chmod(0o755)
+    guest = bundle / 'safeyolo-guest'
+    guest.write_text('''#!/bin/bash
+set -eu
+[[ $1 == --version ]]
+echo "safeyolo-guest commit=${GUEST_REVISION:-ffffffffffffffffffffffffffffffffffffffff} profile=debug"
+''')
+    guest.chmod(0o755)
+    token = bundle / 'guest-token'
+    token.write_text('synthetic-guest-token\n')
+    coord = bundle / 'safeyolo-coord'
+    coord.write_text('''#!/bin/bash
+set -eu
+[[ $1 == --version ]]
+echo "safeyolo-coord commit=${COORD_REVISION:-ffffffffffffffffffffffffffffffffffffffff} profile=debug"
+''')
+    coord.chmod(0o755)
     monkeypatch.setenv('PATH', str(tools) + os.pathsep + os.environ['PATH'])
+    monkeypatch.setenv('GUEST_HELPER', str(guest))
+    monkeypatch.setenv('GUEST_TOKEN', str(token))
+    monkeypatch.setenv('HEALTH_CALLS', str(tmp_path / 'health-calls'))
+    monkeypatch.setenv('HEALTH_RESPONSE', '{"agent_api": "ok"}')
     monkeypatch.delenv('SAFEYOLO_COORD_NATS_BINARY', raising=False)
     cli = bundle / 'cli'
     cli.write_text('''#!/bin/bash
@@ -144,7 +186,11 @@ case "$*" in
       echo 'fixture control trace' > "$root/agents/r5check/home/r5-control.exec"; exit 127
     fi
     echo 'fixture selected trace' > "$root/agents/r5check/home/r5-guest.exec"
-    printf 'safeyolo-guest commit=ffffffffffffffffffffffffffffffffffffffff profile=debug\\nsafeyolo-coord commit=ffffffffffffffffffffffffffffffffffffffff profile=debug\\n{"agent_api": "ok"}\\n'
+    # Execute the transmitted payload with only the guest filesystem paths
+    # mapped to synthetic local inputs. No Coord executable exists there.
+    guest_command=${5//"/safeyolo/safeyolo-guest"/$GUEST_HELPER}
+    guest_command=${guest_command//"/app/agent_token"/$GUEST_TOKEN}
+    exec bash -c "$guest_command"
     ;;
   'agent stop '*) rm -f "$root/agents/r5check/running";;
   stop) rm -f "$root/running"; if [[ $root == */instance && ${FAIL_CLEANUP:-0} == 1 ]]; then exit 43; fi;;
@@ -160,6 +206,7 @@ set -eu
 root=$2
 mkdir -p "$root/bin" "$root/data"
 cp "$(dirname "$0")/cli" "$root/bin/safeyolo"
+if [[ ${MISSING_COORD:-0} != 1 ]]; then cp "$(dirname "$0")/safeyolo-coord" "$root/bin/safeyolo-coord"; fi
 echo 'admin_port = 9090' > "$root/config.toml"
 echo '# independent policy' > "$root/policy.toml"
 ''')
@@ -203,8 +250,31 @@ def test_journey_reaches_native_guest_shell_and_cleanup_outcome(controlled_journ
     shell_calls = (state.parent / 'shell-calls').read_text()
     assert '/usr/bin/env python3 -c "pass"' in shell_calls
     assert '/safeyolo/safeyolo-guest --version' in shell_calls
-    assert '/safeyolo/safeyolo-coord --version' in shell_calls
+    assert 'safeyolo-coord' not in shell_calls
+    assert 'safeyolo-coord commit=' in (state / 'coord-identity.txt').read_text()
     assert 'curl --fail --silent --show-error --header @-' in shell_calls
+    assert (state.parent / 'health-calls').read_text() == 'authenticated health request\n'
     for command in shell_calls.split('exec strace')[1:]:
         syntax = subprocess.run(['bash', '-n', '-c', 'exec strace' + command], capture_output=True, text=True)
         assert syntax.returncode == 0, syntax.stderr
+
+
+@pytest.mark.parametrize('setting,value,expected', [
+    ('HEALTH_EXIT', '22', 22),
+    ('HEALTH_RESPONSE', '{"agent_api": "unavailable"}', 1),
+    ('GUEST_REVISION', '0' * 40, 1),
+    ('GUEST_UID', '0', 1),
+    ('COORD_REVISION', '0' * 40, 1),
+    ('MISSING_COORD', '1', 1),
+])
+def test_journey_refuses_api_and_native_identity_failures(controlled_journey, monkeypatch, setting, value, expected):
+    monkeypatch.setenv('PRODUCT_EXIT', '0')
+    monkeypatch.setenv(setting, value)
+    result = subprocess.run(controlled_journey, capture_output=True, text=True)
+    state = Path(controlled_journey[3])
+    assert result.returncode == expected, result.stderr
+    assert (state / 'cleanup.txt').read_text() == f'original_exit={expected} cleanup_failed=0\n'
+    assert not (state / 'instance/running').exists() and not (state / 'peer/running').exists()
+    if setting.startswith('HEALTH_'):
+        assert (state.parent / 'health-calls').read_text() == 'authenticated health request\n'
+        assert '"running"' in (state / 'peer-after.json').read_text()
