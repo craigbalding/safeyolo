@@ -253,6 +253,66 @@ def test_failed_setup_and_process_inspection_still_attempt_all_owned_stops(insta
     assert all(record["exit_code"] == 0 for record in result["cleanup"]["commands"].values())
 
 
+@pytest.mark.parametrize("parts", [
+    ["agent", "create"], ["coord", "start"], ["coord", "grant"], ["start"], ["agent", "start"],
+])
+def test_early_checked_command_failure_retains_original_output_before_cleanup(
+    installed_fixture, monkeypatch, capsys, parts,
+):
+    monkeypatch.setattr(installed_g7_vz.sys, "platform", "darwin")
+    monkeypatch.setattr(installed_g7_vz.platform, "machine", lambda: "arm64")
+    monkeypatch.setenv("G7_FAIL_COMMAND", json.dumps(parts))
+    # A second failure must remain separate from the original command output.
+    monkeypatch.setenv("G7_FAILURE", "cleanup")
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        installed_g7_vz.run(installed_fixture)
+    result = json.loads(capsys.readouterr().out)
+    saved = result["failure"]
+    assert saved["type"] == "CalledProcessError"
+    assert saved["command"] == failed.value.cmd
+    assert saved["command"][:3] == [str(installed_fixture.root / "bin/safeyolo"),
+                                    "--root", str(installed_fixture.root)]
+    assert saved["command"][3:3 + len(parts)] == parts
+    assert saved["exit_code"] == failed.value.returncode == 23
+    assert saved["stdout"] == failed.value.stdout == "original command stdout\nretained ünicode\n"
+    assert saved["stderr"] == failed.value.stderr == "original command stderr\nretained refusal\n"
+    cleanup = result["cleanup"]
+    assert list(cleanup["commands"]) == ["agent stop g7", "stop", "coord stop", "agent cleanup g7"]
+    assert cleanup["commands"]["agent stop g7"]["exit_code"] == 9
+    assert cleanup["commands"]["agent stop g7"]["stderr"] == "fixture stop refusal\n"
+    assert cleanup["failures"] == ["agent stop g7: exit 9"]
+    assert not cleanup["survivors"] and not cleanup["remaining_runtime_paths"]
+    assert any("G7 owned cleanup also failed" in note for note in failed.value.__notes__)
+
+
+def test_early_command_timeout_retains_partial_output_and_deadline(installed_fixture, monkeypatch, capsys):
+    monkeypatch.setattr(installed_g7_vz.sys, "platform", "darwin")
+    monkeypatch.setattr(installed_g7_vz.platform, "machine", lambda: "arm64")
+    monkeypatch.setenv("G7_FAIL_COMMAND", json.dumps(["agent", "create"]))
+    monkeypatch.setenv("G7_COMMAND_TIMEOUT", "1")
+    real_run = subprocess.run
+
+    def short_create_timeout(arguments, **kwargs):
+        if arguments[3:5] == ["agent", "create"]:
+            kwargs["timeout"] = 0.5
+        return real_run(arguments, **kwargs)
+
+    monkeypatch.setattr(installed_g7_vz.subprocess, "run", short_create_timeout)
+    with pytest.raises(subprocess.TimeoutExpired) as failed:
+        installed_g7_vz.run(installed_fixture)
+    result = json.loads(capsys.readouterr().out)
+    saved = result["failure"]
+    assert saved["type"] == "TimeoutExpired" and saved["exit_code"] is None
+    assert saved["command"] == failed.value.cmd
+    assert saved["timeout"] == failed.value.timeout == 0.5
+    assert saved["stdout"] == failed.value.stdout.decode() == "original command stdout\nretained ünicode\n"
+    assert saved["stderr"] == failed.value.stderr.decode() == "original command stderr\nretained refusal\n"
+    cleanup = result["cleanup"]
+    assert list(cleanup["commands"]) == ["agent stop g7", "stop", "coord stop", "agent cleanup g7"]
+    assert all(record["exit_code"] == 0 for record in cleanup["commands"].values())
+    assert not cleanup["failures"] and not cleanup["survivors"] and not cleanup["remaining_runtime_paths"]
+
+
 @pytest.mark.parametrize("failure", ["host-state", "guest-check", "cleanup", "none"])
 def test_filtered_driver_retains_operands_and_actual_cleanup_with_failure_exit(installed_fixture, failure):
     fixture = installed_fixture
