@@ -25,8 +25,8 @@ _prepare_safeyolo_lab_bashrc() {
         return 1
     fi
 
-    block=$(cat <<'EOF'
-# >>> safeyolo-lab PATH >>>
+    # Bash 3.2 misparses this case block in a command-substitution heredoc.
+    block='# >>> safeyolo-lab PATH >>>
 # Make persistent user commands visible in SafeYolo shells.
 if [ -d "$HOME/.local/bin" ]; then
     case ":$PATH:" in
@@ -38,13 +38,11 @@ fi
 case $- in
     *i*)
         if [ -z "${TMUX:-}" ] && [ "${PWD:-}" = "$HOME" ] && [ -x "$HOME/.local/bin/safeyolo-lab" ]; then
-            printf 'SafeYolo lab: run safeyolo-lab\n'
+            printf '\''SafeYolo lab: run safeyolo-lab\n'\''
         fi
         ;;
 esac
-# <<< safeyolo-lab PATH <<<
-EOF
-    )
+# <<< safeyolo-lab PATH <<<'
     # Match whole marker lines, including a marker at either end of the file.
     padded=$'\n'"$contents"$'\n'
     if [[ "$padded" == *$'\n'"$marker_start"$'\n'* ]]; then

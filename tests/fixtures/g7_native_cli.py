@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 if sys.argv[1:] == ["--version"]:
@@ -17,6 +18,14 @@ failure = os.environ.get("G7_FAILURE")
 home = root / "agents/g7/home"
 with (root.parent / "calls").open("a") as log:
     log.write(json.dumps(parts) + "\n")
+
+failed_command = json.loads(os.environ.get("G7_FAIL_COMMAND", "[]"))
+if failed_command and parts[:len(failed_command)] == failed_command:
+    print("original command stdout\nretained ünicode", flush=True)
+    print("original command stderr\nretained refusal", file=sys.stderr, flush=True)
+    if os.environ.get("G7_COMMAND_TIMEOUT"):
+        time.sleep(5)
+    sys.exit(23)
 
 if parts[:2] == ["agent", "create"]:
     if os.environ.get("G7_FAIL_SETUP"):

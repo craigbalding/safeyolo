@@ -309,6 +309,16 @@ def run(args) -> dict:
         observe(result)
     finally:
         original_error = sys.exc_info()[1]
+        # Save checked command operands before cleanup runs other commands.
+        command_failure = {}
+        if isinstance(original_error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            command_failure.update(command=original_error.cmd,
+                                   exit_code=getattr(original_error, "returncode", None))
+            for stream in ("stdout", "stderr"):
+                output = getattr(original_error, stream) or ""
+                command_failure[stream] = output.decode(errors="replace") if isinstance(output, bytes) else output
+            if isinstance(original_error, subprocess.TimeoutExpired):
+                command_failure["timeout"] = original_error.timeout
         failures = []
         processes = []
         cleanup = result["cleanup"] = {"started_at": time.time(), "commands": {}}
@@ -336,7 +346,8 @@ def run(args) -> dict:
             else:
                 original_error.add_note(f"G7 owned cleanup also failed: {failures}")
         if original_error is not None:
-            result["failure"] = {"type": type(original_error).__name__, "message": str(original_error)}
+            result["failure"] = {"type": type(original_error).__name__, "message": str(original_error),
+                                 **command_failure}
             print(json.dumps(result))
             if sys.exc_info()[1] is None:
                 raise original_error

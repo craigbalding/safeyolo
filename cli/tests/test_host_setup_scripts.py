@@ -1891,21 +1891,22 @@ def _lab_shell(home: Path, command: str, *, interactive: bool = False, cwd: Path
 
 @pytest.mark.parametrize("writer", ["codex", "operator"])
 @pytest.mark.parametrize("existing", [False, True])
-def test_lab_startup_preserves_machine_output_and_refreshes_existing_block(tmp_path, writer, existing):
+@pytest.mark.parametrize("comment", ["# opérateur: before\n".encode(), b"# raw comment: \x80\xff\n"])
+def test_lab_startup_preserves_machine_output_and_refreshes_existing_block(tmp_path, writer, existing, comment):
     home = tmp_path / "agent home"
     home.mkdir()
     bashrc = home / ".bashrc"
-    before = "# opérateur: before\nexport LAB_OPERATOR_MARKER=retained\n\n"
+    before = comment + b"export LAB_OPERATOR_MARKER=retained\n\n"
     # An inline lookalike is operator content, not a managed marker.
-    after = f"\n# inline {LAB_BLOCK_START}\n# operator tail without final newline"
-    bashrc.write_text(before + (LEGACY_LAB_BLOCK if existing else "") + after)
+    after = f"\n# inline {LAB_BLOCK_START}\n# operator tail without final newline".encode()
+    bashrc.write_bytes(before + (LEGACY_LAB_BLOCK.encode() if existing else b"") + after)
     bashrc.chmod(0o640)
     metadata = bashrc.stat()
 
     for application in range(3):
         installed = _install_lab_entrypoint(writer, tmp_path)
         assert installed.returncode == 0, installed.stderr
-        content = bashrc.read_text()
+        content = bashrc.read_bytes()
         if application == 0:
             first = content
         else:
@@ -1915,8 +1916,8 @@ def test_lab_startup_preserves_machine_output_and_refreshes_existing_block(tmp_p
             assert content.endswith(after)
         else:
             assert content.startswith(before + after)
-        assert content.splitlines().count(LAB_BLOCK_START) == 1
-        assert content.splitlines().count(LAB_BLOCK_END) == 1
+        assert content.splitlines().count(LAB_BLOCK_START.encode()) == 1
+        assert content.splitlines().count(LAB_BLOCK_END.encode()) == 1
         current = bashrc.stat()
         assert (current.st_ino, current.st_uid, current.st_gid, current.st_mode) == (
             metadata.st_ino, metadata.st_uid, metadata.st_gid, metadata.st_mode,
@@ -1993,6 +1994,25 @@ def test_lab_install_preserves_unrelated_command_symlink(tmp_path, writer):
     assert command.is_symlink() and command.resolve() == unrelated
     assert unrelated.read_text() == "operator-owned command\n"
     assert bashrc.read_text() == "# operator-owned startup\n"
+
+
+@pytest.mark.parametrize("writer", ["codex", "operator"])
+def test_lab_install_reports_startup_write_permission_failure(tmp_path, writer):
+    home = tmp_path / "agent home"
+    home.mkdir()
+    bashrc = home / ".bashrc"
+    content = b"# raw operator comment: \x80\xff\n" + LEGACY_LAB_BLOCK.encode()
+    bashrc.write_bytes(content)
+    bashrc.chmod(0o400)
+    metadata = bashrc.stat()
+    result = _install_lab_entrypoint(writer, tmp_path)
+    assert result.returncode != 0
+    assert ".bashrc" in result.stderr
+    assert bashrc.read_bytes() == content
+    current = bashrc.stat()
+    assert (current.st_ino, current.st_uid, current.st_gid, current.st_mode) == (
+        metadata.st_ino, metadata.st_uid, metadata.st_gid, metadata.st_mode,
+    )
 
 
 @pytest.mark.parametrize("writer", ["codex", "operator"])
