@@ -376,19 +376,59 @@ fn unavailable() -> io::Error {
 }
 
 #[cfg(target_os = "linux")]
+fn provider_runtime_not_ready() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "provider runtime is not ready; run agent status",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn provider_namespace_unavailable() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "provider namespace control is unavailable or recovery failed; run agent diagnostics",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn provider_runsc_failed() -> io::Error {
+    io::Error::other(
+        "provider runsc command, state or port forwarding failed; check runsc installation and agent diagnostics",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn provider_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "provider transport timed out; run agent diagnostics",
+    )
+}
+
+#[cfg(target_os = "linux")]
 async fn port_forward_failure(child: &mut tokio::process::Child) -> io::Error {
-    let mut detail = String::new();
-    if let Some(stderr) = child.stderr.take() {
-        let _ = stderr.take(4096).read_to_string(&mut detail).await;
-    }
-    if detail
-        .to_ascii_lowercase()
-        .contains("connection was refused")
-        || detail.to_ascii_lowercase().contains("connection refused")
+    let mut detail = Vec::new();
+    if let Some(stderr) = child.stderr.take()
+        && tokio::time::timeout(
+            Duration::from_secs(1),
+            stderr.take(4096).read_to_end(&mut detail),
+        )
+        .await
+        .is_err()
     {
-        io::Error::new(io::ErrorKind::ConnectionRefused, detail)
+        return provider_timeout();
+    }
+    // Stderr is used only to classify refusal. Never propagate guest/tool
+    // output, which can contain credentials or host paths, into diagnostics.
+    let detail = String::from_utf8_lossy(&detail).to_ascii_lowercase();
+    if detail.contains("connection was refused") || detail.contains("connection refused") {
+        io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "provider guest port refused the connection; check the guest listener",
+        )
     } else {
-        unavailable()
+        provider_runsc_failed()
     }
 }
 
@@ -463,9 +503,9 @@ pub(crate) fn userns_pid(name: &str) -> Option<u32> {
         .parse::<u32>()
         .ok()?;
     let run = crate::host_runs::read(name).ok()??;
+    let token = crate::host_lifecycle::process_token(i64::from(pid))?;
     if run["holder_pid"].as_u64() != Some(u64::from(pid))
-        || crate::host_lifecycle::process_token(i64::from(pid)).as_deref()
-            != run["holder_token"].as_str()
+        || Some(token.as_str()) != run["holder_token"].as_str()
         || run["run_id"].as_str().map(|id| format!("safeyolo-{id}"))
             != crate::host_runs::id(name).ok()
     {
@@ -525,9 +565,8 @@ pub(crate) fn control_pid(name: &str) -> Option<u32> {
 pub(crate) fn backend_pid(name: &str) -> Option<u32> {
     let run = crate::host_runs::read(name).ok()??;
     let pid = u32::try_from(run["backend_pid"].as_u64()?).ok()?;
-    if crate::host_lifecycle::process_token(i64::from(pid)).as_deref()
-        != run["backend_token"].as_str()
-    {
+    let token = crate::host_lifecycle::process_token(i64::from(pid))?;
+    if Some(token.as_str()) != run["backend_token"].as_str() {
         return None;
     }
     let id = crate::host_runs::id(name).ok()?;
@@ -1003,49 +1042,64 @@ pub(crate) async fn guest_exec_available(name: &str) -> bool {
 pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStream> {
     use tokio::net::UnixListener;
 
-    if !valid_agent_name(name)
-        || port == 0
-        || crate::host_runs::observe(name).await["port_forward"] != true
-    {
-        return Err(unavailable());
+    if !valid_agent_name(name) || port == 0 {
+        return Err(provider_runtime_not_ready());
     }
-    let directory = tempfile::Builder::new().prefix("sy-port-").tempdir()?;
+    let observed = crate::host_runs::observe(name).await;
+    if observed["port_forward"] != true {
+        return Err(
+            if observed["runtime_state"] == "stopped" || observed["runtime_state"] == "starting" {
+                provider_runtime_not_ready()
+            } else if control_pid(name).is_none() {
+                provider_namespace_unavailable()
+            } else {
+                provider_runsc_failed()
+            },
+        );
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("sy-port-")
+        .tempdir()
+        .map_err(|_| provider_runsc_failed())?;
     let path = directory.path().join("stream.sock");
-    let listener = UnixListener::bind(&path)?;
-    let mut command = runsc_command(name)?;
+    let listener = UnixListener::bind(&path).map_err(|_| provider_runsc_failed())?;
+    let mut command = runsc_command(name).map_err(|_| provider_namespace_unavailable())?;
     let mut child = command
         .args([
             "port-forward",
             "--stream",
             path.to_str().unwrap_or_default(),
-            &crate::host_runs::id(name).map_err(io::Error::other)?,
+            &crate::host_runs::id(name).map_err(|_| provider_runtime_not_ready())?,
             &port.to_string(),
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(|_| provider_runsc_failed())?;
     // runsc donates the connected descriptor, then exits. Require success
     // before exposing the stream so a closed port remains unavailable.
     let stream = tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {
             biased;
-            accepted = listener.accept() => accepted.map(|(stream, _)| stream),
+            accepted = listener.accept() => accepted.map(|(stream, _)| stream).map_err(|_| provider_runsc_failed()),
             status = child.wait() => {
-                if !status?.success() {
+                if !status.map_err(|_| provider_runsc_failed())?.success() {
                     return Err(port_forward_failure(&mut child).await);
                 }
                 tokio::time::timeout(Duration::from_secs(1), listener.accept())
-                    .await.map_err(|_| unavailable())?
+                    .await.map_err(|_| provider_timeout())?
                     .map(|(stream, _)| stream)
+                    .map_err(|_| provider_runsc_failed())
             }
         }
     })
     .await
-    .map_err(|_| unavailable())??;
+    .map_err(|_| provider_timeout())??;
     let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
         .await
-        .map_err(|_| unavailable())??;
+        .map_err(|_| provider_timeout())?
+        .map_err(|_| provider_runsc_failed())?;
     if !status.success() {
         return Err(port_forward_failure(&mut child).await);
     }
@@ -1123,6 +1177,8 @@ pub(crate) async fn spawn_guest_command_with_output(
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1138,6 +1194,41 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
             .await
             .map_err(io::Error::other);
     }
+    let unverified = || {
+        io::Error::other(
+            "holder birth, run or namespaces changed or are unverified; no holder was signalled; state was preserved; run agent diagnostics",
+        )
+    };
+    let run = crate::host_runs::read(name)
+        .ok()
+        .flatten()
+        .ok_or_else(unverified)?;
+    let pid = userns_pid(name).ok_or_else(unverified)?;
+    // Pin the original holder before running stop commands. A reused PID or
+    // a changed incarnation cannot acquire authority during the stop.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(io::Error::other(format!(
+            "could not open the verified holder: {}; no holder was signalled; state was preserved; run agent diagnostics",
+            io::Error::last_os_error()
+        )));
+    }
+    let holder = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    let revalidate_holder = || {
+        let current = crate::host_runs::read(name)
+            .ok()
+            .flatten()
+            .ok_or_else(unverified)?;
+        if userns_pid(name) != Some(pid)
+            || run["run_id"].as_str() != Some(id.trim_start_matches("safeyolo-"))
+            || current["holder_token"] != run["holder_token"]
+            || current["run_id"] != run["run_id"]
+        {
+            return Err(unverified());
+        }
+        Ok(())
+    };
+    revalidate_holder()?;
     if guest_exec_available(name).await {
         let _ = runsc_command(name)?
             .args(["kill", &id, "SIGTERM"])
@@ -1160,7 +1251,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         crate::host_runs::stop_without_holder(name)
             .await
             .map_err(io::Error::other)?;
-        return Ok(());
+        return Err(unverified());
     }
     let status = runsc_command(name)?
         .args(["delete", "--force", &id])
@@ -1169,8 +1260,21 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     if !status.success() && guest_exec_available(name).await {
         return Err(io::Error::other("runsc could not delete the sandbox"));
     }
-    if let Some(pid) = userns_pid(name) {
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    revalidate_holder()?;
+    if unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            holder.as_raw_fd(),
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    } != 0
+    {
+        return Err(io::Error::other(format!(
+            "could not stop the verified holder: {}; state was preserved; run agent diagnostics",
+            io::Error::last_os_error()
+        )));
     }
     let directory = config_dir().join("agents").join(name);
     let _ = std::fs::remove_file(directory.join("userns.pid"));
@@ -1941,6 +2045,42 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn port_forward_failures_are_bounded_and_do_not_disclose_stderr() {
+        for (script, kind, reason) in [
+            (
+                "printf 'connection was refused: /private/path secret-token' >&2; exit 1",
+                io::ErrorKind::ConnectionRefused,
+                "guest port refused",
+            ),
+            (
+                "printf 'runsc failed: /private/path secret-token' >&2; exit 1",
+                io::ErrorKind::Other,
+                "runsc command, state or port forwarding failed",
+            ),
+            (
+                "exec /bin/sleep 5",
+                io::ErrorKind::TimedOut,
+                "transport timed out",
+            ),
+        ] {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", script])
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let failure = port_forward_failure(&mut child).await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            assert_eq!(failure.kind(), kind);
+            assert!(failure.to_string().contains(reason), "{failure}");
+            assert!(!failure.to_string().contains("private"));
+            assert!(!failure.to_string().contains("secret-token"));
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

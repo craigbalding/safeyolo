@@ -11,6 +11,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "linux")]
+#[path = "support/owned_run.rs"]
+mod owned_run;
+
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
         .arg("--root")
@@ -41,6 +45,381 @@ fn initialize(root: &Path) {
         root.join("bin/safeyolo-proxy"),
     )
     .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn holder_stop_pins_the_original_birth_and_run_before_delete() {
+    use owned_run::OwnedRun;
+
+    for change in ["none", "birth", "incarnation"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "alice",
+                "--workspace",
+                temp.path().to_str().unwrap(),
+            ],
+        ));
+        let mut run = OwnedRun::start(&root);
+        let path = root.join("agents/alice/runtime.json");
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let foreign_root = temp.path().join("foreign");
+        fs::create_dir_all(foreign_root.join("bin")).unwrap();
+        let mut foreign = OwnedRun::start(&foreign_root);
+        let mut changed = saved.clone();
+        if change == "birth" {
+            changed["holder_token"] = "changed-birth".into();
+        } else if change == "incarnation" {
+            changed = serde_json::from_slice(
+                &fs::read(foreign_root.join("agents/alice/runtime.json")).unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("changed.json"),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+case "$3" in
+  state) printf '{{"id":"%s","status":"stopped"}}\n' "$4";;
+  delete)
+    /bin/cp '{root}/changed.json' '{root}/agents/alice/runtime.json'
+    if [ '{change}' = incarnation ]; then
+      /bin/cp '{foreign}/agents/alice/userns.pid' '{root}/agents/alice/userns.pid'
+      /bin/cp '{foreign}/agents/alice/config-share/host-launch-context.json' '{root}/agents/alice/config-share/host-launch-context.json'
+    fi;;
+  *) exit 2;;
+esac
+"#,
+            root = root.display(),
+            foreign = foreign_root.display()
+        );
+        fs::write(root.join("bin/runsc"), script).unwrap();
+        fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args(["--root", root.to_str().unwrap(), "agent", "stop", "alice"])
+            .env("PATH", root.join("bin"))
+            .output()
+            .unwrap();
+        let holder_survived = run.child.try_wait().unwrap().is_none();
+        let foreign_survived = foreign.child.try_wait().unwrap().is_none();
+        // Reap only fixture-owned children, even when an assertion below fails.
+        let _ = run.child.kill();
+        run.assert_exited();
+        let _ = foreign.child.kill();
+        foreign.assert_exited();
+        assert!(foreign_survived, "foreign incarnation was signalled");
+        if change == "none" {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!root.join("agents/alice/userns.pid").exists());
+        } else {
+            assert!(!output.status.success());
+            assert!(
+                holder_survived,
+                "changed holder identity authorized a signal"
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("state was preserved"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+                changed
+            );
+            assert!(root.join("agents/alice/userns.pid").exists());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unverified_holders_never_authorize_nsenter_or_signal() {
+    use owned_run::OwnedRun;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "alice",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let mut run = OwnedRun::start(&root);
+    let path = root.join("agents/alice/runtime.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let foreign_root = temp.path().join("foreign");
+    fs::create_dir_all(foreign_root.join("bin")).unwrap();
+    let mut foreign = OwnedRun::start(&foreign_root);
+    fs::write(
+        root.join("bin/nsenter"),
+        format!(
+            "#!/bin/sh\nprintf attempted >> '{}'; exit 99\n",
+            root.join("nsenter-attempts").display()
+        ),
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    for case in [
+        "reused",
+        "birth",
+        "missing-token",
+        "lookup-unavailable",
+        "zombie",
+    ] {
+        let mut record = saved.clone();
+        record["backend_pid"] = Value::Null;
+        record["backend_token"] = Value::Null;
+        let pid = match case {
+            "reused" => foreign.child.id(),
+            "lookup-unavailable" => u32::MAX,
+            _ => run.child.id(),
+        };
+        record["holder_pid"] = pid.into();
+        match case {
+            "birth" => record["holder_token"] = "different-birth".into(),
+            "missing-token" | "lookup-unavailable" => record["holder_token"] = Value::Null,
+            "zombie" => {
+                run.child.kill().unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                while fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .unwrap()
+                    .rsplit_once(')')
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .next()
+                    != Some("Z")
+                {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            _ => {}
+        }
+        let bytes = serde_json::to_vec(&record).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        fs::write(root.join("agents/alice/userns.pid"), pid.to_string()).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args(["--root", root.to_str().unwrap(), "agent", "stop", "alice"])
+            .env("PATH", root.join("bin"))
+            .output()
+            .unwrap();
+        results.push((
+            case,
+            output,
+            fs::read(&path).unwrap() == bytes,
+            foreign.child.try_wait().unwrap().is_none(),
+        ));
+    }
+    run.assert_exited();
+    foreign.child.kill().unwrap();
+    foreign.assert_exited();
+    for (case, output, preserved, survived) in results {
+        assert!(!output.status.success(), "{case}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unverified"),
+            "{case}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            preserved && survived,
+            "{case}: state or foreign process changed"
+        );
+    }
+    assert!(!root.join("nsenter-attempts").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn provider_failures_have_request_correlated_reasons_and_generic_502() {
+    use owned_run::OwnedRun;
+    use std::os::unix::net::UnixStream;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "alice",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let mut run = OwnedRun::start(&root);
+    let record = root.join("agents/alice/runtime.json");
+    let saved = fs::read(&record).unwrap();
+    fs::create_dir_all(root.join("services")).unwrap();
+    fs::write(root.join("services/alice.yaml"), "schema_version: 1\nname: alice\ndefault_host: proofspot.safeyolo.internal\ncapabilities:\n  reader:\n    routes:\n      - methods: [GET]\n        path: /api/**\n").unwrap();
+    fs::write(root.join("policy.toml"), format!(
+        "[hosts.\"proofspot.safeyolo.internal\"]\nservice='alice'\negress='allow'\n[hosts.\"*\"]\negress='deny'\n[agents.alice]\nagent_id='ag-11111111111111111111111111111111'\nfolder={}\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[agents.bob.services.alice]\ncapability='reader'\n", serde_json::to_string(temp.path().to_str().unwrap()).unwrap()
+    )).unwrap();
+    let socket = root.join("bob.sock");
+    let config = root.join("config.toml");
+    fs::write(&config, format!("admin_port=0\nflow_store_enabled=false\nagent_api_enabled=true\ngateway_services_dir='services'\nreadiness_file='data/ready.json'\n[[listeners]]\nagent_id='bob'\nsocket_path={}\n", serde_json::to_string(socket.to_str().unwrap()).unwrap())).unwrap();
+    let script = root.join("bin/runsc");
+    fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+mode=$(/bin/cat '{root}/mode')
+case "$3" in
+  state)
+    [ "$mode" != state-error ] || {{ printf 'private-stderr secret-token' >&2; exit 1; }}
+    if [ "$mode" = not-ready ]; then state=stopped; else state=running; fi
+    printf '{{"id":"%s","status":"%s"}}\n' "$4" "$state";;
+  port-forward)
+    case "$mode" in
+      refused) printf 'connection was refused: /private/path secret-token' >&2; exit 1;;
+      timeout) exec /bin/sleep 30;;
+      *) printf 'private-stderr secret-token' >&2; exit 1;;
+    esac;;
+  delete) exit 0;;
+  *) exit 2;;
+esac
+"#,
+            root = root.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(root.join("mode"), "refused").unwrap();
+    let log = root.join("process.log");
+    let _stop = StopOnDrop(&config);
+    let mut proxy = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+        .args(["--config", config.to_str().unwrap()])
+        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env("PATH", root.join("bin"))
+        .stdout(fs::File::create(&log).unwrap())
+        .stderr(fs::File::options().append(true).open(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !root.join("data/ready.json").is_file() || !socket.exists() {
+        assert!(
+            proxy.try_wait().unwrap().is_none(),
+            "{}",
+            fs::read_to_string(&log).unwrap()
+        );
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let request = |url: &str, token: &str| {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(25)))
+            .unwrap();
+        let host = url
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        write!(stream, "GET {url} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n").unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        let end = bytes
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        (
+            String::from_utf8(bytes[..end].to_vec()).unwrap(),
+            bytes[end..].to_vec(),
+        )
+    };
+    let api_token = fs::read_to_string(root.join("data/agent_token")).unwrap();
+    let (_, body) = request(
+        "http://_safeyolo.proxy.internal/gateway/services",
+        api_token.trim(),
+    );
+    let services: Value = serde_json::from_slice(&body).unwrap();
+    let token = services["authorized"]["alice"]["token"].as_str().unwrap();
+    for (mode, reason) in [
+        ("not-ready", "provider runtime is not ready"),
+        (
+            "namespace",
+            "provider namespace control is unavailable or recovery failed",
+        ),
+        (
+            "state-error",
+            "provider runsc command, state or port forwarding failed",
+        ),
+        (
+            "forward-error",
+            "provider runsc command, state or port forwarding failed",
+        ),
+        ("refused", "provider guest port refused the connection"),
+        ("timeout", "provider transport timed out"),
+    ] {
+        fs::write(root.join("mode"), mode).unwrap();
+        if mode == "namespace" {
+            let mut changed: Value = serde_json::from_slice(&saved).unwrap();
+            changed["holder_token"] = "unverified-holder".into();
+            changed["backend_token"] = "unverified-backend".into();
+            fs::write(&record, serde_json::to_vec(&changed).unwrap()).unwrap();
+        } else {
+            fs::write(&record, &saved).unwrap();
+        }
+        let (head, body) = request("http://proofspot.safeyolo.internal:8764/api/ready", token);
+        assert!(head.starts_with("HTTP/1.1 502"), "{mode}: {head}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            serde_json::json!({"error":"Proxy request failed"}),
+            "{mode}"
+        );
+        let request_id = head
+            .lines()
+            .find_map(|line| line.strip_prefix("x-safeyolo-request-id: "))
+            .unwrap()
+            .trim();
+        let logs = fs::read_to_string(&log).unwrap();
+        assert!(
+            logs.contains(&format!("request {request_id} failed: {reason}")),
+            "{mode}: {logs}"
+        );
+        assert!(
+            !logs.contains("secret-token")
+                && !logs.contains("private-stderr")
+                && !logs.contains("/private/path")
+        );
+        assert!(
+            !fs::read_to_string(root.join("logs/events.jsonl"))
+                .unwrap()
+                .contains("proxy.egress")
+        );
+    }
+    fs::write(&record, saved).unwrap();
+    fs::write(root.join("mode"), "not-ready").unwrap();
+    let stopped = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args(["--root", root.to_str().unwrap(), "agent", "stop", "alice"])
+        .env("PATH", root.join("bin"))
+        .output()
+        .unwrap();
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    run.assert_exited();
+    value(cli(&root, &["stop"]));
+    proxy.wait().unwrap();
 }
 
 fn initialize_tmux_launcher(root: &Path) {
