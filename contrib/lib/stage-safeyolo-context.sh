@@ -8,23 +8,15 @@ _stage_safeyolo_codex_lab_entrypoint() {
     local command_path="$command_dir/safeyolo-lab"
     local command_target="/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
     local bashrc="$agent_home/.bashrc"
-    local marker_start='# >>> safeyolo-lab PATH >>>'
-    local marker_end='# <<< safeyolo-lab PATH <<<'
-    local current_target
+    local current_target _safeyolo_lab_bashrc
+    local lab_scripts="$2/skills/safeyolo-lab-controller/scripts"
 
-    if [ -e "$bashrc" ] && [ ! -f "$bashrc" ]; then
-        echo "Refusing to replace non-regular Bash startup path $bashrc" >&2
-        return 1
+    if [ ! -d "$lab_scripts" ]; then
+        lab_scripts="$2/cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts"
     fi
-    if grep -Fqx "$marker_start" "$bashrc" 2>/dev/null; then
-        if ! grep -Fqx "$marker_end" "$bashrc"; then
-            echo "The safeyolo-lab PATH block is incomplete in $bashrc" >&2
-            return 1
-        fi
-    elif grep -Fqx "$marker_end" "$bashrc" 2>/dev/null; then
-        echo "The safeyolo-lab PATH block is incomplete in $bashrc" >&2
-        return 1
-    fi
+    # shellcheck source=../../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-bashrc.sh
+    . "$lab_scripts/lab-bashrc.sh"
+    _prepare_safeyolo_lab_bashrc "$bashrc" || return 1
 
     if [ -L "$command_path" ]; then
         current_target="$(readlink "$command_path")"
@@ -41,27 +33,8 @@ _stage_safeyolo_codex_lab_entrypoint() {
     if [ ! -L "$command_path" ]; then
         ln -s "$command_target" "$command_path"
     fi
-    if [ ! -e "$bashrc" ]; then
-        : > "$bashrc"
-    fi
-    if ! grep -Fqx "$marker_start" "$bashrc"; then
-        cat >> "$bashrc" <<'EOF'
-
-# >>> safeyolo-lab PATH >>>
-# Make persistent user commands visible in SafeYolo interactive shells.
-if [ -d "$HOME/.local/bin" ]; then
-    case ":$PATH:" in
-        *":$HOME/.local/bin:"*) ;;
-        *) PATH="$HOME/.local/bin:$PATH" ;;
-    esac
-    export PATH
-fi
-if [ -z "${TMUX:-}" ] && [ "${PWD:-}" = "$HOME" ] && [ -x "$HOME/.local/bin/safeyolo-lab" ]; then
-    printf 'SafeYolo lab: run safeyolo-lab\n'
-fi
-# <<< safeyolo-lab PATH <<<
-EOF
-    fi
+    # Write in place to retain the existing file's ownership and permissions.
+    printf '%s' "$_safeyolo_lab_bashrc" > "$bashrc"
 }
 
 _stage_safeyolo_repo_map() {
@@ -292,7 +265,7 @@ stage_safeyolo_context() {
     fi
 
     if [ "$consumer" = "codex" ] && { [ -z "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] || [ ! -d "$repo_root/skills" ]; }; then
-        _stage_safeyolo_codex_lab_entrypoint "$agent_home"
+        _stage_safeyolo_codex_lab_entrypoint "$agent_home" "$repo_root"
     fi
     if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
         _stage_safeyolo_repo_map "$agent_home"
