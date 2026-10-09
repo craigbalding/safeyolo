@@ -101,6 +101,6 @@ guest boundary.
 
 Use the same installed native CLI for [Dispatch period requests](dispatch-publication.md)
 and [generation/site validation](dispatch-generation.md), and for
-[Mattermost exchange and semantic actions](coord-mattermost.md). Other staging dependencies and
-unfinished G2/G4/G7 proof remain in the
-[responsibility map](native-settings.md#operator-entry-responsibilities).
+[Mattermost exchange and semantic actions](coord-mattermost.md). The [responsibility map](native-settings.md#operator-entry-responsibilities)
+records the accepted Ubuntu G2/G4 exchange at its actual driver/native package
+revisions, plus remaining staging, VZ and final G7 work.
