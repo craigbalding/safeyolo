@@ -110,7 +110,11 @@ def test_current_master_state_upgrades_through_candidate(
         active["monitor_port"]
     )
     environment["PYTHONPATH"] = os.pathsep.join(
-        [str(baseline / "cli" / "src"), str(baseline)]
+        [
+            str(baseline / "tests" / "reference"),
+            str(baseline / "cli" / "src"),
+            str(baseline),
+        ]
     )
     completed = subprocess.run(
         [sys.executable, "-c", _BASELINE_SETUP],
