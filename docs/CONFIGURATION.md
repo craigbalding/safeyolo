@@ -93,7 +93,7 @@ Python desktop/web/command-centre wrappers are not installed.
 
 The host policy file contains hosts, agent settings, named lists, scoped
 credential/service grants, budgets and named controls. There is no addon model.
-[Native policy guidance](native-policy.md#host-policy-and-controls) explains
+[Policy guidance](native-policy.md#policy-and-runtime-settings) explains
 precedence, expiration, show and apply with examples.
 
 ```toml

@@ -154,6 +154,10 @@ Select an operator-authored Factory TOML and the workspaces for its roles.
 Each role keeps its own home and authentication;
 SafeYolo does not copy the host's login or credentials.
 
+The commands in this guide use the installation at `$HOME/.safeyolo`. If your
+installed instance uses another root, replace that path in both the executable
+and `--root` argument. Keep using the same host account and instance.
+
 Run the example from the SafeYolo repository root containing
 `docs/factories/backlog.toml`. The example uses that contract and three existing
 owned repository workspaces at `/work/relay`, `/work/forge` and `/work/lens`. Replace
@@ -162,10 +166,10 @@ agents' writable workspaces. The contract selects the role agents, harnesses,
 models, instructions and allowed handoffs.
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory check docs/factories/backlog.toml
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory approve docs/factories/backlog.toml
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" start
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory prepare backlog --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory check docs/factories/backlog.toml
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory approve docs/factories/backlog.toml
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" start
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory prepare backlog --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
 ```
 
 `check` validates the contract and displays each role's exact content identity.
@@ -179,10 +183,10 @@ Establish each role's own login through the native entry. For the shipped
 contract, authenticate the coordinator, owner and reviewer:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory login backlog coordinator
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory login backlog owner
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory login backlog reviewer
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory run backlog
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog coordinator
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog owner
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog reviewer
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory run backlog
 ```
 
 Codex uses its device login and explicit agent-local adoption. Pi opens its
@@ -213,15 +217,15 @@ approved `operator_input` binding. The message is canonically attributed to the
 local operator and wakes that role only:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory send backlog 'Inspect the disposable repository and repair its failing fixture test.'
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory history backlog
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory send backlog 'Inspect the disposable repository and repair its failing fixture test.'
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory history backlog
 ```
 
 For an interactive terminal conversation in the same instance, use native
 chat. The approved snapshot selects the coordinator without pane discovery:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord chat backlog
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord chat backlog
 ```
 
 History returns canonical message IDs, senders and sequences. Use
@@ -232,8 +236,8 @@ independent result, together with the changed artifact and test.
 Stop and restart the same newly created Factory:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory stop backlog
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory run backlog
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory stop backlog
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory run backlog
 ```
 
 Stop affects the selected role runtimes. It retains the approved contract,
@@ -248,8 +252,8 @@ or converted.
 Use the read-only diagnosis when readiness fails:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory doctor backlog
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent diagnostics forge
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory doctor backlog
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent diagnostics forge
 ```
 
 Doctor names the failed role or room and reports its actual runtime and
@@ -276,7 +280,7 @@ the operator wants to abandon. Stop each affected agent with `safeyolo agent
 stop NAME` first. Select the exact target URL from the retained assignment:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
 ```
 
 The command shows the selected targets and matching record counts for each

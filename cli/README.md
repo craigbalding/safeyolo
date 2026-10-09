@@ -17,10 +17,16 @@ Prepare the [guest runtime](../docs/native-policy.md#guest-prerequisites)
 before starting an agent. There is no migration or Python-package rollback
 operation in this fresh-state product.
 
+From a source checkout on the owning host account, this example consumes an
+unpacked bundle at `$HOME/native-bundle` and prepared guest inputs at
+`$HOME/safeyolo-platform`. Replace those two supplied paths. The example root
+`$HOME/.safeyolo` must have no existing instance configuration; choose another
+root if it is in use. Keep that same root in the environment selection.
+
 ```sh
-./install.sh --root "$HOME/.safeyolo-native" --bundle "$HOME/native-bundle"
-export PATH="$HOME/.safeyolo-native/bin:$PATH"
-export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo-native"
+./install.sh --root "$HOME/.safeyolo" --bundle "$HOME/native-bundle" --platform-assets "$HOME/safeyolo-platform"
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
+export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 safeyolo start
 safeyolo status
 safeyolo doctor

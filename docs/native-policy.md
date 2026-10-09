@@ -1,9 +1,9 @@
-# Native agents and policy commands
+# Install and configure SafeYolo
 
-The native CLI validates, displays and applies host-centred policy through the
-existing native proxy. It also configures agents, controls their lifecycle,
-opens terminals and reads operator evidence. Native bundles extend the same
-installation layout. Final release and whole-product Python removal remain open.
+Install SafeYolo on your host, create an agent for an owned workspace, and
+choose its access policy. The installed `safeyolo` command starts and stops the
+proxy and agents, opens terminals, and reads traffic and access requests. For
+an inspect and approval walkthrough, use the [operator guide](native-operator.md).
 
 Use [native operator communication](native-coord.md) for scripted sends,
 draft-safe chat and room/harness-event observation.
@@ -20,15 +20,21 @@ environment or uv tool installation.
 
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
-The instance directory `$HOME/.safeyolo-native` must have no existing instance
-configuration. Prepared platform assets may already be present.
+Before installation, prepare the [host runtime and guest assets](#guest-prerequisites).
+The commands below assume those assets are at `$HOME/safeyolo-platform`;
+replace that path with your supplied directory. Choose a root with no existing
+instance configuration. This example uses the CLI default `$HOME/.safeyolo`.
+If it is already in use, choose another explicit root and use that same path
+in the environment selection below. There is no old-state conversion.
 Installation checks bundle checksums and executable identities, then creates
 configuration, trust, private tokens and runtime directories internally.
 There is no separate init, build or setup command after unpacking.
 
 ```sh
 tar -xzf safeyolo-linux-arm64-production.tar.gz
-./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo-native"
+./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo" --platform-assets "$HOME/safeyolo-platform"
+export SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo"
+export PATH="$SAFEYOLO_CONFIG_DIR/bin:$PATH"
 ```
 
 The installer prints the full source commit and build profile. Host executables
@@ -50,35 +56,19 @@ credential approval prompt, global budget of 12,000 requests per minute and
 host rate of 600. Edit `policy.toml` to select policy for your agent listeners.
 
 If you need different endpoints, edit `config.toml` before startup. Relative
-paths belong to this configuration directory. The default Admin API port is
-9090; its listener binds IPv4 loopback and requires `data/admin_token`.
-Keep that token on the host. The following optional configuration illustrates
-two host-owned test listeners. An agent name supplies trusted identity;
-a request header cannot replace it.
+paths belong to this configuration directory. The administrative application programming interface
+(Admin API) defaults to IPv4 loopback port 9090 and requires `data/admin_token`. Keep that token on the host.
+An ordinary agent start creates its trusted listener; you do not need to add
+example listeners to inspect that agent.
 
-```toml
-admin_port = 9090
-
-[[listeners]]
-agent_id = "alice"
-socket_path = "data/alice.sock"
-source_id = "10.0.0.2"
-
-[[listeners]]
-agent_id = "bob"
-socket_path = "data/bob.sock"
-source_id = "10.0.0.3"
-```
-
-The `source_id` values are host-owned declaration slots for these test listeners.
 From a host terminal, check the configuration and start the selected instance:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" config check "$HOME/.safeyolo-native/config.toml"
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" start
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" status
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" doctor
-"$HOME/.safeyolo-native/bin/safeyolo" --version
+safeyolo config check "$SAFEYOLO_CONFIG_DIR/config.toml"
+safeyolo start
+safeyolo status
+safeyolo doctor
+safeyolo --version
 ```
 
 Startup runs the proxy in the background. Status reports `proxy_state` as
@@ -92,84 +82,61 @@ When you finish using the instance, stop its proxy and owned Coord runtime.
 Stop each agent separately; the top-level command leaves its sandbox intact.
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" stop
-```
-
-### Build a native bundle
-
-From a clean committed checkout on the target host, use Bash and the Rust
-toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
-ldd. macOS needs Command Line Tools and a signed VM helper build. Prepared
-runtime inputs contain the native `tmux` executable for this host. The assembler
-copies its resolved non-system libraries. This Ubuntu example selects
-`/usr/bin/tmux`, so `/usr/bin` is the runtime input directory.
-For prepared runtime inputs, keep their required notices in a `licenses`
-directory alongside `tmux`. The assembler includes those notices and the
-project's license in the bundle.
-
-```sh
-./scripts/build_host_packages.sh --output "$HOME/native-packages" --runtime-artifacts /usr/bin
-```
-
-The command builds the three host executables and matching Linux guest helpers,
-then writes one production archive. Use `--profile debug` for the debug profile.
-If matching binaries already exist, supply `--artifacts HOST_DIRECTORY` and
-`--guest-artifacts LINUX_DIRECTORY`. Each guest executable requires its
-`.version` and `.sha256` receipt from `scripts/build_guest_command.sh`.
-Host and guest source/profile identities must match the clean checkout.
-
-On macOS, also supply `--vm-artifacts DIRECTORY`. Build the signed helper with
-`make -C vm build`, then stage `safeyolo-vm`, `safeyolo-vm.dSYM` and
-`safeyolo-vm.build-info.json` in that directory. The production metadata comes
-from `vm/.build/build-info.json`. For a debug bundle, use `make -C vm debug`
-and the matching helper, symbols and metadata under `vm/.build/development`.
-Also stage the prepared Linux `vsock-term` executable there. The terminal
-helper's `.version` receipt is `vsock-term commit=FULL_SOURCE_COMMIT`; its
-`.sha256` receipt contains the built executable's SHA-256. Supply matching
-arm64 Linux guest artifacts with `--guest-artifacts`; cross-building their
-Rust target needs an explicitly prepared Linux cross toolchain. The assembler
-verifies the helper's signing posture and source before packaging. Artifact
-rebuilding is a developer operation, separate from ordinary installation.
-
-Source installation runs the same assembler and installer without retaining an
-archive. On Ubuntu with the inputs above:
-
-```sh
-./install.sh --root "$HOME/.safeyolo-native" --runtime-artifacts /usr/bin
+safeyolo stop
 ```
 
 ## Guest prerequisites
 
 Prepare the platform inputs below before creating an agent. The native package
-does not run a Python bootstrap or provision the host OS. On Ubuntu install
-runsc, uidmap, acl, iproute2 and util-linux; subordinate UID/GID ranges must
-cover 100000–165535. Where AppArmor restricts user namespaces, load the retained
-`cli/src/safeyolo/templates/apparmor-safeyolo-runsc` profile with
-`sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc`. For KVM grant
-the operator and subordinate uid 100000 read/write access to `/dev/kvm`.
-This preserves the existing namespace and hardware isolation setup.
+does not run a Python bootstrap or provision the host operating system. On
+Ubuntu, the host administrator supplies runsc, uidmap, acl, iproute2 and
+util-linux; subordinate user ID (UID) and group ID (GID) ranges must
+cover 100000–165535. Where AppArmor restricts user namespaces, the host
+administrator installs the [retained runsc profile](../cli/src/safeyolo/templates/apparmor-safeyolo-runsc).
+It permits user namespaces for runsc at `/usr/local/bin/runsc`. If your runtime
+is elsewhere, adjust that executable path in the profile before loading it.
+From a trusted SafeYolo checkout, these commands copy and load that profile on
+the host; the native installer does not perform this host administration:
+
+```sh
+sudo install -m 0644 cli/src/safeyolo/templates/apparmor-safeyolo-runsc /etc/apparmor.d/safeyolo-runsc
+sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
+```
+
+For the Kernel-based Virtual Machine (KVM) platform, the host administrator
+grants the operator and subordinate UID 100000 read/write access to `/dev/kvm`.
+These steps preserve the existing namespace and hardware isolation setup.
+
+Obtain prepared guest assets from the bundle supplier, or use the
+[guest build instructions](../guest/README.md) to produce them separately.
+Ubuntu uses `rootfs-tree`; macOS uses `Image`, `initramfs.cpio.gz` and
+`rootfs-base.ext4`. The installer places them under the instance's `share/`.
+Ubuntu needs the runsc and user-namespace setup described above.
+macOS needs the installed `bin/safeyolo-vm` and `bin/vsock-term` helpers.
+Supply their directory with `install.sh --root ROOT --platform-assets DIRECTORY`
+at the fresh installation step. macOS copies the three image files with
+Apple File System (APFS) clones. Ubuntu links the prepared `rootfs-tree`, preserving its sandbox ownership;
+keep that shared tree available and immutable for the instance's lifetime.
 
 ## Configure and use an agent
 
-Run these commands on the host as the account that owns the workspace.
-The native installation above supplies guest helpers and launchers. Before
-starting a sandbox, also install the platform's guest images: Ubuntu uses
-`share/rootfs-tree`; macOS uses `share/Image`, `share/initramfs.cpio.gz` and
-`share/rootfs-base.ext4`. Ubuntu needs the maintained runsc and user-namespace
-setup. macOS needs the installed `bin/safeyolo-vm` and `bin/vsock-term` helpers.
-See the [guest build instructions](../guest/README.md) for these prerequisites.
-Supply their directory with `install.sh --root ROOT --platform-assets DIRECTORY`
-at the fresh installation step. macOS copies the three image files with APFS
-clones. Ubuntu links the prepared `rootfs-tree`, preserving its sandbox ownership;
-keep that shared tree available and immutable for the instance's lifetime.
+Run these commands on the host as the account that owns the workspace and
+instance. They use the executable and `SAFEYOLO_CONFIG_DIR` selected during
+installation. The installed platform assets and host runtime must be ready.
 
 In this example, `$HOME/work` is an existing directory owned by your account.
-The command runs an interactive shell in the guest, using your current terminal:
+The commands create a new agent named `work` and run an interactive shell in
+its guest, using your current terminal. For an existing agent, use its actual
+name from `safeyolo status` and skip `agent create`:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create work --workspace "$HOME/work" --memory 4096
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent start work --foreground
+safeyolo agent create work --workspace "$HOME/work" --memory 4096
+safeyolo agent start work --foreground
 ```
+
+Keep this guest shell open and use a second host terminal for
+[inspection and approval](native-operator.md#start-with-an-installed-instance).
+The setup assigns a durable agent ID; you do not need to invent one.
 
 To start a persistent background command, set `--command` when creating or
 configuring the agent, then use `agent start work` without `--foreground`.
@@ -200,12 +167,14 @@ no SSH access. Closing a terminal or Commander does not stop the background run.
 
 ## Check, show and apply
 
-In another host terminal, check the installed policy and read the effective
-policy from the running process:
+In another host terminal, select the same root and executable as during
+installation. Set `SAFEYOLO_CONFIG_DIR` to that root and put its `bin` directory
+on PATH, as in the [operator guide](native-operator.md#start-with-an-installed-instance).
+Check the installed policy and read the effective policy from the running process:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy check "$HOME/.safeyolo-native/policy.toml"
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy show
+safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
+safeyolo policy show
 ```
 
 Check validates without writing the saved policy or evaluating live requests.
@@ -214,10 +183,17 @@ Show reports `active` when the saved source matches the active source.
 Activation also prepares the runtime detectors. A policy-model check does not
 guarantee that the running process can activate every detector configuration.
 
-Prepare a separate TOML candidate before applying it. For example, if Alice
-needs one host-owned HTTP origin at `127.0.0.1:8081`, the following policy allows
-that endpoint for Alice and denies other network destinations. The origin and
-port are inputs you must select for your own environment.
+Prepare a separate TOML candidate before applying it. Copy your current policy
+so the candidate retains agent identities, runtime settings and existing grants.
+For example, the following entries allow the configured `work` agent one
+host-owned HTTP origin at `127.0.0.1:8081` and deny other network destinations.
+Replace the host, port and agent name for your environment. Merge these entries
+into the candidate's existing tables; the fragment is not a complete policy.
+This fragment uses an expanded agent table. Fresh creation instead writes
+`agents = { work = { ... } }`. For that form, insert
+`hosts = { "127.0.0.1:8081" = { egress = "allow" } }` inside `work`'s braces,
+with a comma after the previous field. Keep its generated identity and other
+settings. Appending a dotted table cannot extend an inline entry.
 
 ```toml
 budget = 12000
@@ -225,7 +201,7 @@ budget = 12000
 [hosts]
 "*" = { egress = "deny", unknown_creds = "prompt" }
 
-[agents.alice.hosts]
+[agents.work.hosts]
 "127.0.0.1:8081" = { egress = "allow" }
 ```
 
@@ -233,8 +209,8 @@ Save the candidate as `candidate.toml` in your current directory. Apply it and
 read the process state back:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy apply candidate.toml
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy show
+safeyolo policy apply candidate.toml
+safeyolo policy show
 ```
 
 Apply validates the candidate, saves it atomically, and activates through the
@@ -254,6 +230,33 @@ without restarting the process. If the Admin API connection fails, the CLI
 reports that activation is unconfirmed and tells you to restore that connection
 before reading the active policy.
 
+## Optional explicit agent listeners
+
+Edit the selected instance's `config.toml` on the host only when you need these
+additional listeners. Relative socket paths belong to that configuration root.
+
+The following configuration illustrates two host-owned test listeners.
+Ordinary agent lifecycle creates its own trusted listeners; these declarations
+are for separately managed protocol clients. Here their names are `alice` and
+`bob`. An agent name supplies trusted identity; a request header cannot replace it.
+
+```toml
+admin_port = 9090
+
+[[listeners]]
+agent_id = "alice"
+socket_path = "data/alice.sock"
+source_id = "10.0.0.2"
+
+[[listeners]]
+agent_id = "bob"
+socket_path = "data/bob.sock"
+source_id = "10.0.0.3"
+```
+
+The `source_id` values are host-owned declaration slots for these test listeners.
+Restart the proxy after changing runtime listener configuration.
+
 ## Format and declare test context
 
 In a host terminal, format context or atomically replace a file watched by your
@@ -264,7 +267,7 @@ are `run`, `agent`, `role`, `suite`, `subject`, `step`, `test`, `intent` and
 the complete `X-SafeYolo-Test-Context` header line.
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" test-context --run local-proof --agent alice --step one --write "$HOME/.safeyolo-native/context"
+safeyolo test-context --run local-proof --agent alice --step one --write "$SAFEYOLO_CONFIG_DIR/context"
 ```
 
 The file and stdout contain `run=local-proof;agent=alice;step=one`. A watcher
@@ -278,9 +281,9 @@ the operator token. The following commands declare context on Alice's listener,
 read it back, then clear it:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" test-context declare --socket "$HOME/.safeyolo-native/data/alice.sock" --token-file "$HOME/.safeyolo-native/data/agent_token" --run local-proof --agent alice --ttl 60
-"$HOME/.safeyolo-native/bin/safeyolo" test-context current --socket "$HOME/.safeyolo-native/data/alice.sock" --token-file "$HOME/.safeyolo-native/data/agent_token"
-"$HOME/.safeyolo-native/bin/safeyolo" test-context clear --socket "$HOME/.safeyolo-native/data/alice.sock" --token-file "$HOME/.safeyolo-native/data/agent_token"
+safeyolo test-context declare --socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --token-file "$SAFEYOLO_CONFIG_DIR/data/agent_token" --run local-proof --agent alice --ttl 60
+safeyolo test-context current --socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --token-file "$SAFEYOLO_CONFIG_DIR/data/agent_token"
+safeyolo test-context clear --socket "$SAFEYOLO_CONFIG_DIR/data/alice.sock" --token-file "$SAFEYOLO_CONFIG_DIR/data/agent_token"
 ```
 
 Each command returns its Agent API JSON result. Declarations are process-local,
@@ -313,15 +316,18 @@ Helper can prepare that fixed action for a human decision. Approval grants
 reusable network access for Worker at the recorded host and port until explicitly
 removed. Rejection records a terminal disposition and leaves permissions unchanged.
 
-Use the running native instance and its trusted agent listeners. The operator
-assigns a durable `agent_id` in each agent's policy metadata. Keep that identity
-when editing its policy; assign a new identity when recreating the agent. Helper
-uses its normal Agent API token. Keep `data/admin_token` on the host.
+This is the optional shared-approval protocol described in the
+[Helper setup](native-operator.md#optional-ask-another-agent-for-help). Worker
+means the requesting agent; Helper means a separate assisting agent. The
+examples here use configured names `worker` and `helper`; replace them with
+your agents' names from `safeyolo status`. `agent create` assigns each durable
+`agent_id` in the policy metadata. Keep those identities when editing policy.
+Helper uses its normal Agent API token. Keep `data/admin_token` on the host.
 
 First, read Worker's pending request with the native operator client:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" approvals list --agent worker
+safeyolo approvals list --agent worker
 ```
 
 A native network prompt records `request_id` and
@@ -333,12 +339,12 @@ Replace `REQUEST_ID` with the selected pending request and grant Helper its
 diagnostic and approval reads:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" approvals share REQUEST_ID --agent worker --helper helper
+safeyolo approvals share REQUEST_ID --agent worker --helper helper
 ```
 
 The existing native policy operation records only those selected reads. It
 retains the rest of the policy and does not grant network permission. See the
-[Helper commands](native-operator.md#helper-preparation) to read the evidence,
+[Helper commands](native-operator.md#optional-ask-another-agent-for-help) to read the evidence,
 prepare the exact action, and return it to the human decision.
 
 For operators editing policy directly, the saved schema remains available. This
@@ -359,7 +365,7 @@ To use the policy-editing path, save the candidate as `selected-policy.toml` on
 the host and apply it through the existing native command:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" policy apply selected-policy.toml
+safeyolo policy apply selected-policy.toml
 ```
 
 The result reports `active`. Adding selected reads does not invalidate Worker's
@@ -438,3 +444,48 @@ Networking permission does not grant credential permission. An approved
 credential remains scoped to its destination and fingerprint; show includes
 the actual saved grant in the effective host entry. Existing service and
 approval operations retain their separate native owners.
+
+## Build a native bundle
+
+From a clean committed checkout on the target host, use Bash and the Rust
+toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
+ldd. macOS needs Command Line Tools and a signed VM helper build. Prepared
+runtime inputs contain the native `tmux` executable for this host. The assembler
+copies its resolved non-system libraries. This Ubuntu example selects
+`/usr/bin/tmux`, so `/usr/bin` is the runtime input directory.
+For prepared runtime inputs, keep their required notices in a `licenses`
+directory alongside `tmux`. The assembler includes those notices and the
+project's license in the bundle.
+
+```sh
+./scripts/build_host_packages.sh --output "$HOME/native-packages" --runtime-artifacts /usr/bin
+```
+
+The command builds the three host executables and matching Linux guest helpers,
+then writes one production archive. Use `--profile debug` for the debug profile.
+If matching binaries already exist, supply `--artifacts HOST_DIRECTORY` and
+`--guest-artifacts LINUX_DIRECTORY`. Each guest executable requires its
+`.version` and `.sha256` receipt from `scripts/build_guest_command.sh`.
+Host and guest source/profile identities must match the clean checkout.
+
+On macOS, also supply `--vm-artifacts DIRECTORY`. Build the signed helper with
+`make -C vm build`, then stage `safeyolo-vm`, `safeyolo-vm.dSYM` and
+`safeyolo-vm.build-info.json` in that directory. The production metadata comes
+from `vm/.build/build-info.json`. For a debug bundle, use `make -C vm debug`
+and the matching helper, symbols and metadata under `vm/.build/development`.
+Also stage the prepared Linux `vsock-term` executable there. The terminal
+helper's `.version` receipt is `vsock-term commit=FULL_SOURCE_COMMIT`; its
+`.sha256` receipt contains the built executable's SHA-256. Supply matching
+arm64 Linux guest artifacts with `--guest-artifacts`; cross-building their
+Rust target needs an explicitly prepared Linux cross toolchain. The assembler
+verifies the helper's signing posture and source before packaging. Artifact
+rebuilding is a developer operation, separate from ordinary installation.
+
+Source installation runs the same assembler and installer without retaining an
+archive. It requires another fresh root if you already installed the bundle.
+On Ubuntu with the inputs above and prepared guest assets at
+`$HOME/safeyolo-platform` (replace that path with your directory):
+
+```sh
+./install.sh --root "$HOME/.safeyolo" --runtime-artifacts /usr/bin --platform-assets "$HOME/safeyolo-platform"
+```
