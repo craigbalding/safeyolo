@@ -1820,6 +1820,17 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
     .unwrap();
     assert_eq!(origin_seen.lock().unwrap().len(), 1);
     assert_eq!(token_seen.lock().unwrap().len(), 1);
+    let expected_refresh_line = match route {
+        LiveRefreshRoute::ParentHttp => "POST http://provider.invalid/oauth/token HTTP/1.1",
+        LiveRefreshRoute::DirectTls | LiveRefreshRoute::ParentTls => "POST /oauth/token HTTP/1.1",
+    };
+    assert_eq!(
+        token_seen.lock().unwrap()[0]
+            .split(|byte| *byte == b'\r')
+            .next()
+            .unwrap(),
+        expected_refresh_line.as_bytes(),
+    );
     assert!(
         origin_seen.lock().unwrap()[0]
             .windows(b"Authorization: Bearer synthetic-route-result".len())

@@ -2920,6 +2920,7 @@ async fn http2_stream_lifecycle(cancel_response: bool) {
     let released = Arc::new(Mutex::new(Some(released)));
     let dropped = Arc::new(Notify::new());
     let body_dropped = dropped.clone();
+    let expected_authority = authority.clone();
     let origin = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let socket = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
@@ -2927,7 +2928,17 @@ async fn http2_stream_lifecycle(cancel_response: bool) {
             .await
             .unwrap();
         assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
-        let service = service_fn(move |_: Request<Incoming>| {
+        let service = service_fn(move |request: Request<Incoming>| {
+            assert_eq!(request.uri().scheme_str(), Some("https"));
+            assert_eq!(
+                request.uri().authority().unwrap().as_str(),
+                expected_authority
+            );
+            assert_eq!(
+                request.uri().path_and_query().unwrap(),
+                "/stream?sig=%252F&tag=a&tag=b"
+            );
+            assert!(!request.headers().contains_key("host"));
             let body = PausedBody {
                 first: false,
                 finished: false,
@@ -2966,7 +2977,7 @@ async fn http2_stream_lifecycle(cancel_response: bool) {
     let mut response = sender
         .send_request(
             Request::builder()
-                .uri(format!("https://{authority}/stream"))
+                .uri(format!("https://{authority}/stream?sig=%252F&tag=a&tag=b"))
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
         )
