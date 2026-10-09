@@ -1,5 +1,7 @@
-use crate::{Error, Paths, generation, live_token, now, process, read_json, write_json};
-use ring::digest::{Context, SHA256};
+use crate::{
+    Error, Paths, command_paths, generation, live_token, now, process, read_json, write_json,
+};
+use ring::digest::{Context, Digest, SHA256};
 use serde_json::{Value, json};
 use std::{
     fs::{self, OpenOptions},
@@ -7,7 +9,8 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            fs::OpenOptionsExt,
+            ffi::OsStringExt,
+            fs::{MetadataExt, OpenOptionsExt},
             process::{CommandExt, ExitStatusExt},
         },
     },
@@ -455,6 +458,58 @@ fn check_process_owner(pid: i32, uid: Option<u64>, parent: i64) -> Result<(), Er
     Ok(())
 }
 
+fn executable_digest(mut file: fs::File) -> Result<Digest, Error> {
+    let mut digest = Context::new(&SHA256);
+    let mut bytes = [0; 64 * 1024];
+    loop {
+        let count = file.read(&mut bytes)?;
+        if count == 0 {
+            return Ok(digest.finish());
+        }
+        digest.update(&bytes[..count]);
+    }
+}
+
+fn check_native_supervisor(paths: &Paths, pid: i32) -> Result<(), Error> {
+    let proc = std::path::PathBuf::from(format!("/proc/{pid}"));
+    let executable = fs::File::open(proc.join("exe"))?;
+    let helper = fs::File::open("/proc/self/exe")?;
+    let actual = executable.metadata()?;
+    let expected = helper.metadata()?;
+    // PID 1 can run a tmpfs copy at /run/safeyolo while the checker uses the
+    // host-staged /safeyolo helper. Compare images when file identity differs.
+    if (actual.dev(), actual.ino()) != (expected.dev(), expected.ino())
+        && (actual.len() != expected.len()
+            || executable_digest(executable)?.as_ref() != executable_digest(helper)?.as_ref())
+    {
+        return Err(
+            "guest supervisor executable is not the native helper; command state is unknown".into(),
+        );
+    }
+    let cmdline = fs::read(proc.join("cmdline"))?;
+    let mut arguments: Vec<_> = cmdline
+        .strip_suffix(&[0])
+        .ok_or("guest supervisor invocation is missing; command state is unknown")?
+        .split(|byte| *byte == 0)
+        .skip(1)
+        .map(|argument| std::ffi::OsString::from_vec(argument.to_vec()))
+        .collect();
+    let owner_paths = command_paths(&mut arguments)?;
+    let directory = fs::read_link(proc.join("cwd"))?;
+    if arguments.len() != 1
+        || arguments[0] != "supervise"
+        || fs::canonicalize(directory.join(owner_paths.state))? != fs::canonicalize(&paths.state)?
+        || fs::canonicalize(directory.join(owner_paths.context))?
+            != fs::canonicalize(&paths.context)?
+    {
+        return Err(
+            "guest supervisor invocation does not own this command state; command state is unknown"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn check_heartbeat(value: &Value, current_time: f64) -> Result<(), Error> {
     let heartbeat = value["heartbeat_at"]
         .as_f64()
@@ -512,6 +567,7 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
                 .as_i64()
                 .ok_or("guest supervisor parent is missing; command state is unknown")?,
         )?;
+        check_native_supervisor(paths, pid)?;
     }
     if value["state"] == "running" {
         let (pid, token) = saved_command.ok_or("guest command identity is missing")?;

@@ -63,6 +63,10 @@ case "$3" in
     exec)
         [ "$8" = "$FAKE_RUN_ID" ] || exit 2
         case "$*" in
+            *"safeyolo-guest supervise check"*)
+                [ ! -e "$SAFEYOLO_CONFIG_DIR/refuse-supervisor-check" ] || exit 2
+                /bin/cat "$SAFEYOLO_CONFIG_DIR/agents/alice/home/.safeyolo-command-supervisor.json"
+                ;;
             *"safeyolo-guest observe check"*)
                 if [ -e "$SAFEYOLO_CONFIG_DIR/coding-agent-running" ]; then
                     printf 'running\n'
@@ -225,6 +229,28 @@ async fn admin_lists_starts_observes_and_stops_without_python() {
     assert_eq!(reused["launch_id"], started["launch_id"]);
     assert_eq!(reused["agent_state"], "starting");
 
+    // The real guest process control covers foreign-owner refusal. Here the
+    // controlled transport returns that refusal to the actual Admin caller,
+    // while the generic observer would independently claim running.
+    let state_path = root.join("agents/alice/home/.safeyolo-command-supervisor.json");
+    let original_state = fs::read(&state_path).unwrap();
+    let original_launch = fs::read(root.join("agents/alice/current-launch.json")).unwrap();
+    fs::write(root.join("refuse-supervisor-check"), b"").unwrap();
+    fs::write(root.join("coding-agent-running"), b"").unwrap();
+    let (code, unverified) = admin(port, "GET", "/admin/agents").await;
+    assert_eq!(code, 200, "{unverified}");
+    assert_eq!(unverified["agents"][0]["agent_state"], "unknown");
+    let (code, refused) = admin(port, "POST", &format!("/admin/agents/{ID}/start")).await;
+    assert_eq!(code, 409, "{refused}");
+    assert!(refused.to_string().contains("unknown"));
+    assert_eq!(fs::read(&state_path).unwrap(), original_state);
+    assert_eq!(
+        fs::read(root.join("agents/alice/current-launch.json")).unwrap(),
+        original_launch
+    );
+    fs::remove_file(root.join("refuse-supervisor-check")).unwrap();
+    fs::remove_file(root.join("coding-agent-running")).unwrap();
+
     // Emulate the guest owner's acknowledgement of the native stop fence.
     let home = root.join("agents/alice/home");
     let acknowledgement = tokio::spawn(async move {
@@ -337,7 +363,16 @@ async fn admin_lists_starts_observes_and_stops_without_python() {
             root.join("workspace").display(), script.display(), bob.display()
         ),
     ).unwrap();
-    fs::remove_file(root.join("agents/alice/home/.safeyolo-command-supervisor.json")).unwrap();
+    // The prospective host-script check starts from a verified terminal
+    // launch in this new run, rather than missing managed-owner evidence.
+    let mut terminal: Value = serde_json::from_slice(&original_state).unwrap();
+    let context: Value = serde_json::from_slice(
+        &fs::read(root.join("agents/alice/config-share/host-launch-context.json")).unwrap(),
+    )
+    .unwrap();
+    terminal["generation"] = context["generation"].clone();
+    terminal["state"] = "failed".into();
+    fs::write(&state_path, serde_json::to_vec(&terminal).unwrap()).unwrap();
     let launch_path = root.join("agents/alice/current-launch.json");
     let mut launch: Value = serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap();
     launch["state"] = "failed".into();

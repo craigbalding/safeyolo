@@ -38,7 +38,11 @@ impl Guest {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo-guest"));
+        self.command_at(env!("CARGO_BIN_EXE_safeyolo-guest"))
+    }
+
+    fn command_at(&self, executable: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(executable);
         command
             .args(["--context"])
             .arg(&self.context)
@@ -123,6 +127,27 @@ struct ResumeSupervisor(i32);
 impl Drop for ResumeSupervisor {
     fn drop(&mut self) {
         unsafe { libc::kill(self.0, libc::SIGCONT) };
+    }
+}
+
+struct ForeignCommands(Child);
+
+impl Drop for ForeignCommands {
+    fn drop(&mut self) {
+        if !self.0.try_wait().is_ok_and(|status| status.is_none()) {
+            return;
+        }
+        // This shell traps TERM, stops its child and waits for it. The group
+        // fallback is confined to the process group created by this fixture.
+        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.0.try_wait().is_ok_and(|status| status.is_none()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if self.0.try_wait().is_ok_and(|status| status.is_none()) {
+            unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) };
+        }
+        let _ = self.0.wait();
     }
 }
 
@@ -400,6 +425,154 @@ fn supervisor_check_refuses_stale_future_foreign_and_dead_running_records() {
     fs::write(&guest.stop, "intentional-stop").unwrap();
     drop(resume);
     supervisor.stop();
+}
+
+#[test]
+fn supervisor_check_refuses_a_foreign_parent_and_its_real_child() {
+    let guest = Guest::new();
+    guest.publish("exec /bin/sleep 120");
+    let mut supervisor = Supervisor::start(&guest);
+    let running = guest.wait(|state| state["state"] == "running");
+    let resume = supervisor.pause();
+    let mut foreign = ForeignCommands(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                "trap 'kill \"$child\"; wait \"$child\"; exit 0' TERM; \
+                /bin/sleep 120 & child=$!; printf '%s' \"$child\" > foreign-child; wait \"$child\"",
+            ])
+            .current_dir(guest.directory.path())
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let child_path = guest.directory.path().join("foreign-child");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let child: i32 = loop {
+        if let Ok(value) = fs::read_to_string(&child_path)
+            && let Ok(pid) = value.parse()
+        {
+            break pid;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    };
+    let birth = |pid: i32| {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let ticks = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap();
+        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+        format!("{}:{ticks}", boot.trim())
+    };
+    let parent = foreign.0.id() as i32;
+    let mut substituted = running.clone();
+    substituted["supervisor_pid"] = json!(parent);
+    substituted["supervisor_start_token"] = json!(birth(parent));
+    substituted["supervisor_uid"] = json!(unsafe { libc::getuid() });
+    substituted["supervisor_parent_pid"] = json!(std::process::id());
+    substituted["command_pid"] = json!(child);
+    substituted["command_start_token"] = json!(birth(child));
+    substituted["heartbeat_at"] = json!(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    );
+    let original = serde_json::to_vec(&substituted).unwrap();
+    fs::write(&guest.state, &original).unwrap();
+    let refused = guest
+        .command()
+        .args(["supervise", "check"])
+        .output()
+        .unwrap();
+    let unchanged = fs::read(&guest.state).unwrap() == original;
+    let foreign_live =
+        foreign.0.try_wait().unwrap().is_none() && unsafe { libc::kill(child, 0) } == 0;
+    assert!(supervisor.0.try_wait().unwrap().is_none());
+    // Complete owned cleanup even when the checked refusal fails below.
+    drop(foreign);
+    fs::write(&guest.state, running.to_string()).unwrap();
+    drop(resume);
+    supervisor.stop();
+    assert!(
+        !refused.status.success(),
+        "accepted foreign parent/child: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(refused.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("native helper"));
+    assert!(unchanged && foreign_live);
+}
+
+#[test]
+fn supervisor_check_accepts_native_copies_and_refuses_another_state_owner() {
+    for staging in ["run/safeyolo", "safeyolo"] {
+        let guest = Guest::new();
+        let directory = guest.directory.path().join(staging);
+        fs::create_dir_all(&directory).unwrap();
+        let helper = directory.join("safeyolo-guest");
+        fs::copy(env!("CARGO_BIN_EXE_safeyolo-guest"), &helper).unwrap();
+        guest.publish("exec /bin/sleep 120");
+        let mut supervisor = Supervisor(
+            guest
+                .command_at(&helper)
+                .arg("supervise")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+            guest.stop.clone(),
+        );
+        let running = guest.wait(|state| state["state"] == "running");
+        assert_eq!(
+            success(
+                guest
+                    .command()
+                    .args(["supervise", "check"])
+                    .output()
+                    .unwrap()
+            )["state"],
+            "running"
+        );
+        let resume = supervisor.pause();
+        let foreign = Guest::new();
+        foreign.publish("exec /bin/sleep 120");
+        let mut other = Supervisor::start(&foreign);
+        let other_running = foreign.wait(|state| state["state"] == "running");
+        let mut substituted = running.clone();
+        for key in [
+            "supervisor_pid",
+            "supervisor_start_token",
+            "supervisor_uid",
+            "supervisor_parent_pid",
+            "command_pid",
+            "command_start_token",
+            "heartbeat_at",
+        ] {
+            substituted[key] = other_running[key].clone();
+        }
+        let original = serde_json::to_vec(&substituted).unwrap();
+        fs::write(&guest.state, &original).unwrap();
+        let refused = guest
+            .command()
+            .args(["supervise", "check"])
+            .output()
+            .unwrap();
+        let unchanged = fs::read(&guest.state).unwrap() == original;
+        let other_live = other.0.try_wait().unwrap().is_none()
+            && unsafe { libc::kill(other_running["command_pid"].as_i64().unwrap() as i32, 0) } == 0;
+        fs::write(&guest.state, running.to_string()).unwrap();
+        drop(resume);
+        supervisor.stop();
+        other.stop();
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("invocation"));
+        assert!(unchanged && other_live);
+    }
 }
 
 #[test]
