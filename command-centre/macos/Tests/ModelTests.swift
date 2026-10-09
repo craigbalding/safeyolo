@@ -3,19 +3,21 @@ import Foundation
 import AppKit
 import SwiftUI
 
-private final class MemoryCredentialStore: CredentialStore {
-    var values: [String: String] = [:]
+private final class MemoryCredentialStore: CredentialStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var tokens: [String: String] = [:]
+    var values: [String: String] { lock.withLock { tokens } }
 
     func load(account: String) throws -> String? {
-        values[account]
+        lock.withLock { tokens[account] }
     }
 
     func store(account: String, token: String) throws {
-        values[account] = token
+        lock.withLock { tokens[account] = token }
     }
 
     func delete(account: String) throws {
-        values.removeValue(forKey: account)
+        _ = lock.withLock { tokens.removeValue(forKey: account) }
     }
 }
 
@@ -93,11 +95,16 @@ struct ModelTests: App {
     @MainActor
     fileprivate static func runTests() async throws {
         print("model-tests: model checks started")
-        try testMutationPlans()
-        try testCredentialImportAndReload()
+        try testCredentialFileAndReload()
         try testRemoteProfileStorage()
         try await testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
+        try await testCredentialStartup()
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "credential-startup" {
+            print("credential-startup-tests: PASS")
+            return
+        }
+        try testMutationPlans()
         try testAgentAndSecurityModels()
         try testHarnessMarks()
         try testTransportURLs()
@@ -660,7 +667,7 @@ struct ModelTests: App {
         )
     }
 
-    private static func testCredentialImportAndReload() throws {
+    private static func testCredentialFileAndReload() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("safeyolo-command-centre-model-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -680,7 +687,8 @@ struct ModelTests: App {
         let imported = try loader.load()
         precondition(imported.instanceID == "sy-model-test")
         precondition(imported.source == .file)
-        precondition(store.values["sy-model-test"] == imported.token)
+        precondition(store.values["sy-model-test"] == nil, "Reading a file must not wait for a Keychain import")
+        try store.store(account: imported.instanceID, token: imported.token)
 
         try FileManager.default.removeItem(at: root.appendingPathComponent("data/admin_token"))
         let reloaded = try loader.load()

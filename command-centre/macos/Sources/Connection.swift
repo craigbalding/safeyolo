@@ -1,13 +1,13 @@
 import Foundation
 
-enum RemoteTransport: String, Codable, CaseIterable {
+enum RemoteTransport: String, Codable, CaseIterable, Sendable {
     case tailnet
     case sshTunnel = "ssh-tunnel"
 
     var label: String { self == .tailnet ? "Tailscale" : "SSH tunnel" }
 }
 
-struct RemoteConnectionProfile: Codable, Equatable {
+struct RemoteConnectionProfile: Codable, Equatable, Sendable {
     let friendlyName: String
     let adminURL: String
     let eventsURL: String

@@ -3,7 +3,7 @@ import Security
 
 private let keychainService = "io.safeyolo.command-centre"
 
-protocol CredentialStore {
+protocol CredentialStore: Sendable {
     func load(account: String) throws -> String?
     func store(account: String, token: String) throws
     func delete(account: String) throws
@@ -70,10 +70,11 @@ struct NativeKeychainStore: CredentialStore {
     }
 }
 
-struct LoadedCredential {
-    enum Source: String {
+struct LoadedCredential: Sendable {
+    enum Source: String, Sendable {
         case keychain
         case file
+        case entered
     }
 
     let instanceID: String
@@ -82,7 +83,7 @@ struct LoadedCredential {
     let warning: String?
 }
 
-struct LocalCredentialLoader {
+struct LocalCredentialLoader: Sendable {
     let configDirectory: URL
     let keychain: any CredentialStore
 
@@ -101,11 +102,15 @@ struct LocalCredentialLoader {
         )
     }
 
-    func load() throws -> LoadedCredential {
-        let instanceID = try readValue(
+    func instanceID() throws -> String {
+        try readValue(
             at: configDirectory.appendingPathComponent("data/instance_id"),
             label: "SafeYolo instance ID"
         )
+    }
+
+    func load() throws -> LoadedCredential {
+        let instanceID = try instanceID()
         var warning: String?
         do {
             if let token = try keychain.load(account: instanceID), !token.isEmpty {
@@ -120,15 +125,16 @@ struct LocalCredentialLoader {
             warning = error.localizedDescription
         }
 
+        return try loadFile(warning: warning)
+    }
+
+    // File use does not wait for native authentication or optional import.
+    func loadFile(warning: String? = nil) throws -> LoadedCredential {
+        let instanceID = try instanceID()
         let token = try readValue(
             at: configDirectory.appendingPathComponent("data/admin_token"),
             label: "local Admin API credential"
         )
-        do {
-            try keychain.store(account: instanceID, token: token)
-        } catch {
-            warning = error.localizedDescription
-        }
         return LoadedCredential(
             instanceID: instanceID,
             token: token,

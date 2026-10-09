@@ -214,6 +214,24 @@ existing Admin credential authorizes both endpoints. Keep that credential in
 the app's Keychain profile; Tailnet access alone does not authorize Admin
 requests.
 
+If macOS is waiting for Keychain authentication, Commander's menu and
+**Connection Settings…** remain usable. To use the selected instance's private
+file instead, keep that instance's `data/instance_id` and `data/admin_token`
+under the Mac's `SAFEYOLO_CONFIG_DIR` (default `~/.safeyolo`). In Connection
+Settings, select **Use Credential File for INSTANCE_ID**. Commander checks that
+the file's instance ID matches the selected connection. The backend must also
+report that identity. A missing file or a different instance reports an error
+and does not connect.
+
+Commander connects with the file credential before importing it into Keychain.
+The menu reports a pending import or a returned save error. Ordinary interactive
+Keychain access remains available. A saved remote profile reads its own
+instance's Keychain account at startup; it does not automatically use another
+instance's local file. When you enter a remote credential in Connection Settings,
+Commander verifies the backend and connects for the current session before
+saving the credential. The profile is saved only after the Keychain write
+succeeds. No credential is stored in the profile.
+
 For the initial non-Tailscale fallback, set up your own SSH forwards, select
 **SSH tunnel**, and enter their loopback Admin/events URLs. For example, forward
 local ports 19090 and 19091 to the remote host's loopback ports 9090 and 9091.

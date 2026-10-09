@@ -89,6 +89,7 @@ final class ConnectionSettingsWindowPresenter {
         )
         window.title = "SafeYolo Connection"
         window.contentViewController = hostingController
+        window.setContentSize(hostingController.view.fittingSize)
         window.isReleasedWhenClosed = false
         window.level = .floating
         self.window = window
@@ -267,7 +268,7 @@ struct ConnectionSettingsView: View {
     init(controller: CommandCentreController, close: @escaping () -> Void) {
         self.controller = controller
         self.close = close
-        let profile = controller.savedRemoteProfile
+        let profile = controller.remoteProfile
         _friendlyName = State(initialValue: profile?.friendlyName ?? "Remote SafeYolo")
         _adminURL = State(initialValue: profile?.adminURL ?? "https://")
         _eventsURL = State(initialValue: profile?.eventsURL ?? "wss://")
@@ -285,41 +286,55 @@ struct ConnectionSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
-                settingsRow("Transport") {
-                    Picker("Transport", selection: $transport) {
-                        ForEach(RemoteTransport.allCases, id: \.self) { transport in
-                            Text(transport.label).tag(transport)
-                        }
-                    }.labelsHidden()
-                }
-                settingsRow("Name") {
-                    TextField("Remote SafeYolo", text: $friendlyName)
-                }
-                settingsRow("Admin URL") {
-                    TextField("https://host.example.ts.net:9443", text: $adminURL)
-                }
-                settingsRow("Events URL") {
-                    TextField("wss://host.example.ts.net:9444/admin/events", text: $eventsURL)
-                }
-                settingsRow("Admin credential") {
-                    SecureField("Stored in Keychain", text: $token)
-                }
-                settingsRow("SSH target (optional)") {
-                    TextField("Override: user@host or SSH alias", text: $terminalTarget)
-                }
-            }
-            .textFieldStyle(.roundedBorder)
-            Text("Tailscale terminals use the connected host and its SafeYolo username automatically. Set an SSH target for a different login or an SSH tunnel. Run Agent uses the Admin API and survives disconnects.")
-                .font(.caption).foregroundStyle(.secondary)
-
-            if let error {
-                Text(error)
-                    .foregroundStyle(.red)
+            if let status = controller.credentialStatus {
+                Text(status)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let instanceID = controller.credentialFileInstanceID {
+                Button("Use Credential File for \(instanceID)") {
+                    error = nil
+                    controller.useCredentialFile()
+                }
+            }
 
-            Spacer(minLength: 0)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                        settingsRow("Transport") {
+                            Picker("Transport", selection: $transport) {
+                                ForEach(RemoteTransport.allCases, id: \.self) { transport in
+                                    Text(transport.label).tag(transport)
+                                }
+                            }.labelsHidden()
+                        }
+                        settingsRow("Name") {
+                            TextField("Remote SafeYolo", text: $friendlyName)
+                        }
+                        settingsRow("Admin URL") {
+                            TextField("https://host.example.ts.net:9443", text: $adminURL)
+                        }
+                        settingsRow("Events URL") {
+                            TextField("wss://host.example.ts.net:9444/admin/events", text: $eventsURL)
+                        }
+                        settingsRow("Admin credential") {
+                            SecureField("Stored in Keychain", text: $token)
+                        }
+                        settingsRow("SSH target (optional)") {
+                            TextField("Override: user@host or SSH alias", text: $terminalTarget)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    Text("Tailscale terminals use the connected host and its SafeYolo username automatically. Set an SSH target for a different login or an SSH tunnel. Run Agent uses the Admin API and survives disconnects.")
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    if let error = error ?? controller.startupError {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
             HStack {
                 Button("Use Local SafeYolo") { useLocal() }
                     .disabled(busy)
@@ -644,6 +659,7 @@ struct CommandCentreMenu: View {
         } else {
             Text("Not connected")
         }
+        if let status = controller.credentialStatus { Text(status) }
         Divider()
         Button("Error details…") {
             let client = controller.client
