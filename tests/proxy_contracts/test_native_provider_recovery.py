@@ -147,8 +147,9 @@ def test_authorized_provider_survives_only_its_holder_loss(tmp_path):
                     any(pair == [b"--root", root_argument] for pair in
                         (arguments[index:index + 2] for index in range(len(arguments) - 1))))
             for kind in ("user", "net"):
-                assert Path(f"/proc/{holder}/ns/{kind}").stat().st_ino == Path(f"/proc/{backend}/ns/{kind}").stat().st_ino
-                assert Path(f"/proc/{holder}/ns/{kind}").stat().st_ino != Path(f"/proc/self/ns/{kind}").stat().st_ino
+                operator_namespace = Path(f"/proc/self/ns/{kind}").stat().st_ino
+                assert Path(f"/proc/{holder}/ns/{kind}").stat().st_ino != operator_namespace
+                assert Path(f"/proc/{backend}/ns/{kind}").stat().st_ino != operator_namespace
             service = instance.cli("agent", "shell", "proofspot", "-c",
                                    "cd /workspace; python3 /workspace/service.py"
                                    " </dev/null >service.log 2>&1 &")
