@@ -9,6 +9,8 @@ W1. That path runs only W1, preserves W2 evidence, and asks the human for the ac
 guests and Demo's selected runtime. Use an instance allocated for this witness;
 its stopped test guest homes remain until the owner removes that disposable
 instance through the existing harness teardown.
+--deterministic-completion extends the no-model controls through final input
+and peer checks with a controlled guest app. That result is not a W1 model run.
 """
 
 from __future__ import annotations
@@ -27,6 +29,39 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
+
+COMPLETION_APP = '''import http.server, json, os, re, time, urllib.error, urllib.request
+from pathlib import Path
+
+url = re.search(r"http://127\\.0\\.0\\.1:\\d+/demo/[a-f0-9]+\\.json", Path("/workspace/TASK.md").read_text())[0]
+os.environ.pop("NO_PROXY", None)
+os.environ.pop("no_proxy", None)
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": os.environ["HTTP_PROXY"]}))
+deadline = time.monotonic() + 60
+while True:
+    try:
+        with opener.open(url, timeout=5) as response:
+            data = json.load(response)
+        break
+    except urllib.error.HTTPError as error:
+        if error.code != 428 or time.monotonic() >= deadline:
+            raise
+        print("controlled completion fixture: HTTP 428", flush=True)
+        time.sleep(0.2)
+summary = {"title": data["title"], "count": len(data["items"]),
+           "total_minutes": sum(item["minutes"] for item in data["items"]), "marker": data["marker"]}
+
+class App(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps(summary).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+http.server.HTTPServer(("127.0.0.1", 8000), App).serve_forever()
+'''
 
 
 class DemoProcess:
@@ -103,6 +138,7 @@ def run(args: argparse.Namespace) -> None:
     before = json.loads(cli("status"))
     owned: list[str] = []
     result = {"commit": args.commit, "native_cli": identity, "real_model": False}
+    completion_agent = args.real_agent
     with tempfile.TemporaryDirectory(prefix="demo-proof-", dir=root / "data") as temporary:
         directory = Path(temporary)
         peer_name = f"demo-peer-{uuid.uuid4().hex[:12]}"
@@ -205,17 +241,30 @@ def run(args: argparse.Namespace) -> None:
                 peer_survives()
                 result["fresh_start"] = True
 
-            if args.real_agent:
-                # W1: a single actual ordinary Codex task. Its model/provider and
-                # authentication are the selected guest's existing configuration.
-                stopped(args.real_agent)
+                if args.deterministic_completion:
+                    # Reuse this owned, stopped startup fixture and synthetic
+                    # authentication. No provisioned model login is read or changed.
+                    (binary.parent / "demo-completion-app.py").write_text(COMPLETION_APP)
+                    binary.write_text(
+                        "#!/bin/sh\n"
+                        'for arg in "$@"; do\n'
+                        '  case "$arg" in --version) echo deterministic-codex-completion-fixture; exit 0;;\n'
+                        '    login) exit 0;; exec) cp /home/agent/.local/bin/demo-completion-app.py /workspace/app.py; exec python3 /workspace/app.py;; esac\n'
+                        "done\nexit 42\n"
+                    )
+                    completion_agent = fixture_name
+
+            if completion_agent:
+                # The real-agent selection is W1. The controlled app exercises
+                # the same native input/finish/cleanup path without a model.
+                stopped(completion_agent)
                 workspace = directory / "real-app"
-                active, name, port, record = start(workspace, ["--agent", args.real_agent], select_task=True)
+                active, name, port, record = start(workspace, ["--agent", completion_agent], select_task=True)
                 active.send("\n")
                 active.until("Type approve, reject, evidence, or cancel:", timeout=600)
                 assert record.read_text() == "", "origin delivery preceded the human approval"
                 print(active.output, flush=True)
-                decision = input("Inspect the real pending evidence above. Approve the fixture request? Type approve or reject: ").strip()
+                decision = "approve" if args.deterministic_completion else input("Inspect the real pending evidence above. Approve the fixture request? Type approve or reject: ").strip()
                 assert decision in {"approve", "reject"}, "an explicit human decision is required"
                 active.send(decision + "\n")
                 assert decision == "approve", "operator rejected W1; do not count it as a pass"
@@ -232,7 +281,7 @@ def run(args: argparse.Namespace) -> None:
                 assert source.strip(), "actual app source is missing"
                 # Retain the non-repeatable app observation before finish can
                 # fail and Demo removes its disposable workspace.
-                result.update({"real_model":True, "app_response":app, "fixture_records":records, "app_code_created":True, "app_source":source, "zero_preapproval_deliveries":True, "demo_finish_completed":False, "peer_after_finish_verified":False})
+                result.update({"real_model":bool(args.real_agent), "deterministic_completion":args.deterministic_completion, "app_response":app, "fixture_records":records, "app_code_created":True, "app_source":source, "zero_preapproval_deliveries":True, "demo_finish_completed":False, "peer_after_finish_verified":False})
                 print(json.dumps(result), flush=True)
                 active.send("\n")
                 assert active.finish() == 0, active.output[-1500:]
@@ -259,7 +308,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", required=True, type=Path)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--real-agent", help="existing stopped Demo guest with its own configured Codex authentication")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--real-agent", help="existing stopped Demo guest with its own configured Codex authentication")
+    selection.add_argument("--deterministic-completion", action="store_true", help="use the owned no-model guest fixture to check final input and cleanup; does not accept W1")
     run(parser.parse_args())
 
 

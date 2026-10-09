@@ -607,7 +607,7 @@ async fn guest_status(agent: &str, command: &str) -> Result<bool, Error> {
     let command = format!(
         "export CODEX_HOME=/home/agent/.codex; export PATH=/home/agent/.local/bin:/home/agent/.mise/shims:\"$PATH\"; (\n{command}\n) < /dev/null"
     );
-    let mut child = DemoCommand(host_platform::spawn_guest_command(agent, &command).await?);
+    let mut child = DemoCommand(host_platform::spawn_guest_command(agent, &command, false).await?);
     Ok(child.0.wait().await?.success())
 }
 
@@ -787,7 +787,7 @@ async fn session(
         fixture.marker,
         safe(&fixture.record_path.to_string_lossy())
     );
-    let mut codex = DemoCommand(host_platform::spawn_guest_command(name, &command).await?);
+    let mut codex = DemoCommand(host_platform::spawn_guest_command(name, &command, false).await?);
     let mut exit = None;
     let mut approval_id = None::<String>;
     let mut approved = false;
