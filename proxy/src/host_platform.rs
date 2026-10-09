@@ -1248,10 +1248,9 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         }
     }
     if userns_pid(name).is_none() {
-        crate::host_runs::stop_without_holder(name)
+        return crate::host_runs::stop_without_holder(name)
             .await
-            .map_err(io::Error::other)?;
-        return Err(unverified());
+            .map_err(io::Error::other);
     }
     let status = runsc_command(name)?
         .args(["delete", "--force", &id])
