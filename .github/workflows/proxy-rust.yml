@@ -293,6 +293,12 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap
           sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
 
+      - name: Install macOS native terminal test dependency
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install tmux
+          tmux -V
+
       - name: Start the Python-owned Coord fixture
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture

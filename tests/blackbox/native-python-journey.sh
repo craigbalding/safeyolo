@@ -108,7 +108,7 @@ instance "$root" agent shell "$agent" -c 'exec strace -f -s 4096 -e trace=execve
   printf "Authorization: Bearer %s\n" "$agent_token" |
     curl --fail --silent --show-error --header @- http://_safeyolo.proxy.internal/health
 '\''' | tee "$state/guest-api.txt"
-[[ $(grep -Fc "commit=$revision profile=" "$state/guest-api.txt") == 1 ]]
+[[ $(grep -Fc "commit=$revision profile=" "$state/guest-api.txt") == 1 ]] || exit 1
 grep -q '"agent_api": *"ok"' "$state/guest-api.txt"
 test -s "$root/agents/$agent/home/r5-guest.exec"
 echo 'Completed native installation, host readiness, guest identity and authenticated API request; cleanup follows'

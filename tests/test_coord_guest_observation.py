@@ -71,7 +71,7 @@ def test_mcp_narration_incomplete_or_mismatched_calls_cannot_supply_observation(
         read(rows)
 
 
-@pytest.mark.parametrize("fault", (None, "body", "msg_id", "caller", "order", "send_body"))
+@pytest.mark.parametrize("fault", (None, "body", "msg_id", "caller", "order", "send_body", "executable", "birth_token", "birth_unavailable"))
 def test_guest_initial_reads_are_bound_to_both_send_envelopes(tmp_path, monkeypatch, fault):
     """Drive the actual journey with controlled identities; stop before any API send."""
     from tests.blackbox import installed_host_smoke, installed_ingress
@@ -79,10 +79,13 @@ def test_guest_initial_reads_are_bound_to_both_send_envelopes(tmp_path, monkeypa
     commit = "a" * 40
     version = f"safeyolo commit={commit} profile=debug"
     (tmp_path / "bin").mkdir()
-    (tmp_path / "bin/safeyolo-proxy").symlink_to(Path(f"/proc/{os.getpid()}/exe").resolve())
+    executable = Path("/bin/sh") if fault == "executable" else Path(sys.executable)
+    (tmp_path / "bin/safeyolo-proxy").symlink_to(executable.resolve(strict=True))
+    if fault == "birth_unavailable":
+        monkeypatch.setattr(installed_host_smoke, "_process_start_token", lambda pid: None)
     (tmp_path / "data").mkdir()
     (tmp_path / "data/proxy-process.json").write_text(json.dumps({
-        "pid": os.getpid(), "token": installed_host_smoke._process_start_token(os.getpid())}))
+        "pid": os.getpid(), "token": "stale" if fault == "birth_token" else installed_host_smoke._process_start_token(os.getpid())}))
     monkeypatch.setattr(installed_host_smoke, "_agent_map", lambda root: [
         {"agent_id": name, "path": str(root / name / "proxy.sock")} for name in ("primary", "peer")])
     monkeypatch.setattr(installed_ingress, "runsc_identity", lambda root, name, listener, **kwargs: {

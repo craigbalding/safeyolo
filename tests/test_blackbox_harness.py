@@ -457,6 +457,32 @@ def test_failed_real_helper_output_survives_before_parsing(tmp_path):
     assert events.read_text() == "unparsed failing event\n"
 
 
+PRIVATE_CAPTURE_DESCRIPTOR_CHECK = "\n".join([
+    "import os, stat, sys",
+    "assert all(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in (1, 2))",
+    "assert os.fstat(1).st_ino != os.fstat(2).st_ino",
+    "saved = [os.stat(path) for path in sys.argv[1:3]]",
+    "directory = '/proc/self/fd' if os.path.isdir('/proc/self/fd') else '/dev/fd'",
+    "for entry in os.listdir(directory):",
+    "    try: current = os.fstat(int(entry))",
+    "    except OSError: continue  # The directory enumeration FD is already closed.",
+    "    assert all((current.st_dev, current.st_ino) != (path.st_dev, path.st_ino) for path in saved), 'private capture descriptor reached child'",
+])
+
+
+def test_helper_capture_refuses_a_donated_private_file_descriptor(tmp_path):
+    events = tmp_path / "events"
+    errors = tmp_path / "errors"
+    errors.write_bytes(b"")
+    with events.open("xb") as donated:
+        result = subprocess.run(
+            [sys.executable, "-c", PRIVATE_CAPTURE_DESCRIPTOR_CHECK, str(events), str(errors)],
+            pass_fds=(donated.fileno(),), capture_output=True, timeout=5,
+        )
+    assert result.returncode != 0
+    assert b"private capture descriptor reached child" in result.stderr
+
+
 def test_helper_capture_keeps_private_files_in_parent_and_flushes_before_exit(tmp_path):
     """Actual child descriptors are pipes; both large streams are readable live."""
     events = tmp_path / "helper-events.jsonl"
@@ -471,13 +497,7 @@ def test_helper_capture_keeps_private_files_in_parent_and_flushes_before_exit(tm
         listener.settimeout(5)
         script = "\n".join([
             "import os, socket, stat, sys, threading",
-            "assert all(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in (1, 2))",
-            "assert os.fstat(1).st_ino != os.fstat(2).st_ino",
-            "saved = [os.stat(path) for path in sys.argv[1:3]]",
-            "for entry in os.listdir('/proc/self/fd'):",
-            "    try: current = os.fstat(int(entry))",
-            "    except OSError: continue  # The directory enumeration FD is already closed.",
-            "    assert all((current.st_dev, current.st_ino) != (path.st_dev, path.st_ino) for path in saved)",
+            PRIVATE_CAPTURE_DESCRIPTOR_CHECK,
             "def write(fd, data):",
             "    while data: data = data[os.write(fd, data):]",
             "outputs = [threading.Thread(target=write, args=(fd, data)) for fd, data in",
@@ -772,14 +792,16 @@ def _runner_cleanup_helpers():
     return runner[start:end]
 
 
-def _run_cleanup_probe(tmp_path, mode):
+def _run_cleanup_probe(tmp_path, mode, *, reference_path=None):
     target = tmp_path / "owned-process.py"
     target.write_text(
         "import signal\n"
         "import sys\n"
         "import time\n"
+        "from pathlib import Path\n"
         "if '--ignore-term' in sys.argv:\n"
         "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "Path(sys.argv[0] + '.ready').write_text('ready')\n"
         "time.sleep(60)\n"
     )
     probe = tmp_path / f"cleanup-{mode}.sh"
@@ -793,12 +815,19 @@ mode="$2"
 pid_file="$3"
 argv_file="$4"
 target_pid=""
+owned_pids=()
 
 cleanup_probe() {
-    if [ -n "$target_pid" ]; then
-        kill "$target_pid" 2>/dev/null || true
-        wait "$target_pid" 2>/dev/null || true
-    fi
+    local pid
+    for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+        wait "$pid" 2>/dev/null || true
+    done
 }
 trap cleanup_probe EXIT
 
@@ -821,6 +850,7 @@ case "$mode" in
     owned)
         python3 "$expected" &
         target_pid=$!
+        owned_pids+=("$target_pid")
         start="$(record_process "$target_pid" "$argv_file")"
         printf '%s\n%s\n' "$target_pid" "$start" > "$pid_file"
         stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
@@ -833,6 +863,7 @@ case "$mode" in
     ignore)
         python3 "$expected" --ignore-term &
         target_pid=$!
+        owned_pids+=("$target_pid")
         start="$(record_process "$target_pid" "$argv_file")"
         printf '%s\n%s\n' "$target_pid" "$start" > "$pid_file"
         stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
@@ -845,6 +876,7 @@ case "$mode" in
     unrelated)
         python3 -c 'import time; time.sleep(60)' "$expected" &
         target_pid=$!
+        owned_pids+=("$target_pid")
         start="$(record_process "$target_pid" "$argv_file")"
         printf '%s\n%s\n' "$target_pid" "$start" > "$pid_file"
         stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
@@ -857,9 +889,11 @@ case "$mode" in
     stale)
         python3 "$expected" &
         stale_pid=$!
+        owned_pids+=("$stale_pid")
         stale_start="$(record_process "$stale_pid" "$argv_file")"
         kill "$stale_pid"
         wait "$stale_pid" 2>/dev/null || true
+        owned_pids=()
         printf '%s\n%s\n' "$stale_pid" "$stale_start" > "$pid_file"
         stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
         echo 'result=stale_safe'
@@ -867,11 +901,14 @@ case "$mode" in
     reused)
         python3 "$expected" &
         stale_pid=$!
+        owned_pids+=("$stale_pid")
         stale_start="$(record_process "$stale_pid" "$argv_file")"
         kill "$stale_pid"
         wait "$stale_pid" 2>/dev/null || true
+        owned_pids=()
         python3 -c 'import time; time.sleep(60)' "$expected" &
         target_pid=$!
+        owned_pids+=("$target_pid")
         printf '%s\n%s\n' "$target_pid" "$stale_start" > "$pid_file"
         stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
         if ! kill -0 "$target_pid" 2>/dev/null; then
@@ -879,6 +916,19 @@ case "$mode" in
             exit 1
         fi
         echo 'result=reused_survived'
+        ;;
+    bootstrap_failure)
+        python3 "$expected" --ignore-term &
+        target_pid=$!
+        owned_pids+=("$target_pid")
+        printf '%s\n' "$target_pid" > "$pid_file"
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            [ ! -e "$expected.ready" ] || break
+            sleep 0.05
+        done
+        test -e "$expected.ready"
+        # Challenge a real failed child import before an ownership receipt.
+        python3 -c 'from safeyolo.runtime_identity import process_start_token'
         ;;
     *)
         echo "unknown mode: $mode" >&2
@@ -890,11 +940,16 @@ esac
     probe.chmod(0o755)
     result = subprocess.run(
         [str(probe), str(target), mode, str(tmp_path / "owned.pid"), str(tmp_path / "owned.argv")],
-        env={**os.environ, "SCRIPT_DIR": str(Path(__file__).parent / "blackbox")},
+        env={**os.environ, "SCRIPT_DIR": str(Path(__file__).parent / "blackbox"),
+             "PYTHONPATH": str(reference_path if reference_path is not None else Path(__file__).parent / "reference")},
         text=True,
         capture_output=True,
         check=False,
+        timeout=15,
     )
+    if mode == "bootstrap_failure":
+        assert result.returncode != 0 and "ModuleNotFoundError" in result.stderr, result.stderr + result.stdout
+        return result.stdout
     assert result.returncode == 0, result.stderr + result.stdout
     return result.stdout
 
@@ -908,6 +963,14 @@ def test_runner_cleanup_process_identity_behaves_as_owned_only(tmp_path, mode):
         assert "Escalating owned process" in output
     else:
         assert "Escalating owned process" not in output
+
+
+def test_cleanup_probe_reaps_term_ignoring_child_after_failed_bootstrap(tmp_path):
+    _run_cleanup_probe(tmp_path, "bootstrap_failure", reference_path=tmp_path / "absent-reference")
+    assert (tmp_path / "owned-process.py.ready").exists()
+    pid = int((tmp_path / "owned.pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 @pytest.mark.parametrize("forwarded", [False, True])

@@ -199,7 +199,7 @@ def mcp_observation(output: str, room: str, marker: str, agent: str) -> dict:
 
 def coordination_journey(root: Path, primary: str, peer: str, commit: str, command) -> dict:
     """Observe the missing G2/G4 guest composition without repeating G5 or Factory."""
-    from tests.blackbox.installed_host_smoke import _agent_map, _process_start_token
+    from tests.blackbox.installed_host_smoke import _agent_map, _process_executable, _process_start_token
     from tests.blackbox.installed_ingress import runsc_identity
 
     native = "/home/agent/.safeyolo/safeyolo-coord"
@@ -212,9 +212,10 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
         assert f"commit={commit} " in version, version
         host_versions[name] = version
     proxy_identity = json.loads((root / "data/proxy-process.json").read_text())
-    proxy_path = Path(f"/proc/{proxy_identity['pid']}/exe").resolve(strict=True)
-    assert proxy_path == (root / "bin/safeyolo-proxy").resolve(strict=True), proxy_path
-    assert _process_start_token(proxy_identity["pid"]) == proxy_identity["token"], proxy_identity
+    proxy_path = _process_executable(proxy_identity["pid"])
+    assert proxy_path is not None and proxy_path == (root / "bin/safeyolo-proxy").resolve(strict=True), proxy_path
+    proxy_token = _process_start_token(proxy_identity["pid"])
+    assert proxy_token is not None and proxy_token == proxy_identity["token"], proxy_identity
 
     def shell(agent, script, *, check=True, timeout=30):
         return command("agent", "shell", agent, "-c", "cd /workspace && " + script,

@@ -128,6 +128,17 @@ def controlled_journey(tmp_path, monkeypatch):
         path = tools / name
         path.write_text('#!/bin/sh\nexit 0\n')
         path.chmod(0o755)
+    # The Ubuntu journey consumes GNU realpath -m. These controlled shell
+    # tests supply that canonicalization on both supported test hosts.
+    (tools / 'realpath').write_text(f'''#!{sys.executable}
+import sys
+from pathlib import Path
+missing = sys.argv[1] == '-m'
+arguments = sys.argv[2:] if missing else sys.argv[1:]
+assert len(arguments) == 1
+print(Path(arguments[0]).resolve(strict=not missing))
+''')
+    (tools / 'realpath').chmod(0o755)
     (tools / 'strace').write_text('''#!/bin/bash
 set -eu
 while [[ $1 == -* ]]; do
@@ -188,8 +199,10 @@ case "$*" in
     echo 'fixture selected trace' > "$root/agents/r5check/home/r5-guest.exec"
     # Execute the transmitted payload with only the guest filesystem paths
     # mapped to synthetic local inputs. No Coord executable exists there.
-    guest_command=${5//"/safeyolo/safeyolo-guest"/$GUEST_HELPER}
-    guest_command=${guest_command//"/app/agent_token"/$GUEST_TOKEN}
+    guest_helper_path=/safeyolo/safeyolo-guest
+    guest_token_path=/app/agent_token
+    guest_command=${5//$guest_helper_path/$GUEST_HELPER}
+    guest_command=${guest_command//$guest_token_path/$GUEST_TOKEN}
     exec bash -c "$guest_command"
     ;;
   'agent stop '*) rm -f "$root/agents/r5check/running";;
