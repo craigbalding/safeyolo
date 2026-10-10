@@ -78,12 +78,7 @@ def package_inputs(tmp_path, request):
     (source / "docs/AGENTS.md").write_text("fixture baseline\n")
     (source / "guest/rootfs").mkdir(parents=True)
     (source / "guest/rootfs/safeyolo-sudo").write_text("#!/bin/sh\nexit 0\n")
-    (source / "contrib/lib").mkdir(parents=True)
-    for name in ("claude-host-setup", "codex-host-setup", "codex-coord-host-setup", "pi-host-setup", "pi-coord-host-setup", "mise-shell-host-setup", "coord-mcp-bootstrap", "safeyolo-coord-mcp-launcher"):
-        (source / "contrib" / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
-    shutil.copy2(REPO / "contrib/codex-command.sh", source / "contrib/codex-command.sh")
-    (source / "contrib/lib/stage-coord-native.sh").write_text("# fixture\n")
-    (source / "contrib/pi-coord-extension.ts").write_text("// fixture\n")
+    shutil.copytree(REPO / "contrib", source / "contrib")
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "package fixture"], check=True)
@@ -113,7 +108,8 @@ def build_bundle(inputs, tmp_path):
 
 
 @pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz")])
-def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane):
+@pytest.mark.parametrize("separate_checkout", [False, True])
+def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane, separate_checkout):
     """The maintained caller delegates prepared inputs to the normal installer."""
     checkout = tmp_path / "source"
     scripts = checkout / "tests/blackbox"
@@ -126,7 +122,9 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     for name in ("Image", "initramfs.cpio.gz", "rootfs-base.ext4"):
         (images / name).touch()
     (images / "rootfs-tree").mkdir()
-    installer = checkout / "install.sh"
+    selected = tmp_path / "selected" if separate_checkout else checkout
+    selected.mkdir(exist_ok=True)
+    installer = selected / "install.sh"
     fixture_cli = '#!/bin/sh\nprintf "native %s\\n" "$*"\n'
     installer.write_text(f"#!{os.sys.executable}\nimport json,pathlib,sys\n"
         "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
@@ -154,7 +152,8 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         monkeypatch.setenv(name, str(path))
     if platform == 'Darwin':
         monkeypatch.setenv('SAFEYOLO_NATIVE_VM_ARTIFACTS', str(vm))
-    result = run(str(scripts / 'run-lane.sh'), lane, '--prepare-only', cwd=checkout)
+    selection = ['--install-checkout', str(selected)] if separate_checkout else []
+    result = run(str(scripts / 'run-lane.sh'), lane, *selection, '--prepare-only', cwd=checkout)
     assert result.returncode == 0, result.stderr
     options = json.loads((root / 'native-inputs.json').read_text())
     assert Path(options['--artifacts']) == host
@@ -164,6 +163,10 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         assert Path(options['--vm-artifacts']) == vm
     assert Path(options['--platform-assets']) == images
     assert 'native --root' in result.stdout and 'coord stop' in result.stdout
+    if separate_checkout:
+        failed = run(str(scripts / 'run-lane.sh'), lane, '--install-checkout', str(tmp_path / 'missing'), cwd=checkout)
+        assert failed.returncode == 2 and 'requires a source checkout' in failed.stderr
+        assert (root / 'native-inputs.json').read_text() == json.dumps(options)
 
 
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
@@ -178,6 +181,12 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
         assert stream.extractfile(skill_path).read() == b"fixture skill\n- Keep the next instruction.\n"
         assert not any(name.endswith("/repo_map.py") for name in names)
+        for relative in ("repo-map.toml", "docs/AGENTS.md", "contrib/codex-command.sh",
+                         "contrib/coord-mcp-bootstrap.sh", "contrib/safeyolo-coord-mcp-launcher.sh",
+                         "contrib/codex-coord-host-setup.sh", "contrib/pi-host-setup.sh",
+                         "contrib/pi-coord-host-setup.sh", "contrib/pi-coord-extension.ts"):
+            path, = [name for name in names if name.endswith(f"/assets/{relative}")]
+            assert stream.extractfile(path).read() == (package_inputs[0] / relative).read_bytes()
         assert any(name.endswith("/libexec/tmux") for name in names)
         assert any(name.endswith("/assets/licenses/tmux.txt") for name in names)
         assert any(name.endswith("/LICENSE") for name in names)

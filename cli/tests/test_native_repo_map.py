@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -14,6 +15,13 @@ from hypothesis import strategies as st
 from test_repo_map import _repository
 
 BINARY = Path(__file__).resolve().parents[2] / "proxy/target/debug/safeyolo-coord"
+# Match Mac Git's composed filenames; Linux retains arbitrary pathname bytes.
+FILENAMES = (
+    st.text(alphabet=st.characters(min_codepoint=32, max_codepoint=126, exclude_characters="/") | st.sampled_from("éµ漢字́"),
+            min_size=1, max_size=12).map(lambda name: os.fsencode(unicodedata.normalize("NFC", name)))
+    if sys.platform == "darwin" else
+    st.binary(min_size=1, max_size=12).filter(lambda name: b"\0" not in name and b"/" not in name)
+)
 
 
 def _run(repository, *args, check=True):
@@ -168,11 +176,14 @@ def test_native_query_excludes_outside_broken_and_looping_links(tmp_path):
     assert "outside-only-sentinel" not in result and "escape.py" not in result
 
 
-def test_native_repository_and_file_paths_keep_unix_bytes(tmp_path):
-    repository = tmp_path / os.fsdecode(b"checkout-\xff")
+@pytest.mark.parametrize("component", [b"ascii", "caf\u00e9".encode(),
+    pytest.param(b"\x80\xff", marks=pytest.mark.skipif(sys.platform == "darwin", reason="APFS filenames require UTF-8")),
+])
+def test_native_repository_and_file_paths_keep_unix_bytes(tmp_path, component):
+    repository = tmp_path / os.fsdecode(b"checkout-" + component)
     repository.mkdir()
     _repository(repository)
-    path = repository / os.fsdecode(b"source-\x80.py")
+    path = repository / os.fsdecode(b"source-" + component + b".py")
     path.write_text("def byte_filename():\n    return 42\n")
     result = _run(repository, path)
     assert "def byte_filename() @1-2" in result.stdout
@@ -279,7 +290,7 @@ def test_native_python_names_and_async_status_survive_cache_reapply(tmp_path, mo
 
 
 @settings(max_examples=40, deadline=None, database=None)
-@given(filename=st.binary(min_size=1, max_size=12).filter(lambda name: b"\0" not in name and b"/" not in name),
+@given(filename=FILENAMES,
        asynchronous=st.booleans(), argument=st.sampled_from(["item", "item: str", "item: list[str]", "*items: str", "K: str"]),
        gap=st.sampled_from([" ", "\t", " \t", "\f"]), name=st.sampled_from(["generated_probe", "K", "ﬃ", "Ａ", "é"]))
 @example(filename=b"case", asynchronous=True, argument="item", gap="\t", name="K")

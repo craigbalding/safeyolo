@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from safeyolo.api import AdminAPI
 from safeyolo.core.audit_stream import scan_pending_approvals
-from safeyolo.core.vault import Vault, VaultCredential
 from safeyolo.operator_approvals import approve
-from tests.proxy_contracts.harness import read_events, request
+from tests.blackbox.native_credentials import native_cli, store_credential
+from tests.proxy_contracts.harness import REPO, read_events, request
 from tests.proxy_contracts.test_native_network_policy import policy_proxy
 
 AGENT_TOKEN = "fixture-gateway-agent-token"
@@ -176,10 +178,14 @@ def _gateway_files(directory):
     (services / "fixture.yaml").write_text(SERVICE_YAML)
     data = directory / "data"
     data.mkdir()
-    (data / "vault.key").write_text("fixture-vault-passphrase")
-    vault = Vault(data / "vault.yaml.enc")
-    vault.unlock("fixture-vault-passphrase")
-    vault.store(VaultCredential(name=VAULT_NAME, type="bearer", value=VAULT_VALUE))
+    proxy = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/debug/safeyolo-proxy"))
+    binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", proxy.with_name("safeyolo"))), proxy=proxy)
+    # launch_proxy's explicit data_dir selects this store, ahead of its API env.
+    store_credential(data, VAULT_NAME, VAULT_VALUE, binary=binary)
+    for name in ("credentials.enc", "credentials.key"):
+        path = data / name
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert VAULT_VALUE.encode() not in path.read_bytes()
     operator_token_file = directory / "operator-token"
     operator_token_file.write_text("fixture-operator-token\n")
     return services, builtin, operator_token_file
