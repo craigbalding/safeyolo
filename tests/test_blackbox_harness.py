@@ -18,15 +18,15 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import partial
-from http.server import HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
 
+from tests.blackbox import installed_access, installed_sections, installed_shared_approvals
 from tests.blackbox import installed_lifecycle as lifecycle
-from tests.blackbox import installed_sections, installed_shared_approvals
 from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.installed_ingress import installed_identity
@@ -1759,6 +1759,108 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     assert not list(directory.glob("*/data/proxy-process.json"))
     selected = json.loads((second / "selection.json").read_text())
     assert "--access" in selected and selected[-2:] == ["--install-commit", "a" * 40]
+    assert "--operator-journey" not in selected
+
+
+def test_installed_operator_selection_keeps_one_access_root_and_owned_cleanup(
+    tmp_path, installed_section_commands
+):
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "systrap", ("access",), installed_section_commands, "a" * 40, directory, artifacts,
+        operator_journey=True,
+    ) == 0
+    selected = json.loads((directory / "access/selection.json").read_text())
+    assert selected == ["--expect-platform", "systrap", "--proxy-impl", "rust", "--access",
+                        "--operator-journey", "--install-commit", "a" * 40]
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert len(report["sections"]) == 1 and report["sections"][0]["cleanup"] == "stopped"
+    assert not list(directory.glob("*/agents/*/container.pid"))
+
+
+@pytest.mark.parametrize("status,headers", [(200, {}), (403, {}), (403, {"x-blocked-by": "credentials"}),
+                                         (403, {"x-blocked-by": "network-guard"})])
+def test_operator_traffic_distinguishes_policy_refusal_from_an_origin_response(monkeypatch, status, headers):
+    owned = {"agent_id": "bbtest", "request_id": "req-owned", "flow_id": 7}
+    monkeypatch.setattr(guest, "seed_owned_flow", lambda agent, marker: owned)
+    requests = []
+
+    def exchange(method, target):
+        requests.append((method, target))
+        return status, headers, b"controlled response"
+
+    monkeypatch.setattr(guest, "exchange", exchange)
+    if headers.get("x-blocked-by") != "network-guard":
+        with pytest.raises(AssertionError):
+            guest.operator_traffic("bbtest", "r3-owned")
+    else:
+        assert guest.operator_traffic("bbtest", "r3-owned") == {
+            "allowed": owned, "denied_status": 403, "blocked_by": "network-guard",
+        }
+    assert requests == [("GET", "http://evil.com/installed-flow/r3-owned/bbtest")]
+
+
+@pytest.mark.parametrize("failure", [None, "no-vnc", "missing-500"])
+def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_target(monkeypatch, failure):
+    requests = []
+
+    class Page(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            requests.append((self.path, body))
+            self.send_response(303)
+            self.send_header("Set-Cookie", "fixture_preview=owned; Path=/; HttpOnly")
+            self.end_headers()
+
+        def do_GET(self):
+            requests.append((self.path, self.headers.get("Cookie")))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"<html>noVNC</html>")
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Page)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    authority = f"127.0.0.1:{server.server_port}"
+    targets = []
+
+    def present(agent_id):
+        targets.append(agent_id)
+        if agent_id != "ag-owned":
+            raise installed_access.APIError("controlled missing target", 500 if failure == "missing-500" else 404)
+        return {"agent_id": agent_id, "url": f"http://{authority}/vnc.html#autoconnect=true",
+                "unlock_code": "synthetic-only"}
+
+    @contextmanager
+    def websocket(url, **options):
+        assert url == f"ws://{authority}/websockify"
+        assert options == {"origin": f"http://{authority}",
+                           "additional_headers": {"Cookie": "fixture_preview=owned"}, "proxy": None}
+        yield SimpleNamespace(recv=lambda **_args: b"not VNC" if failure == "no-vnc" else b"RFB 003.008\n")
+
+    monkeypatch.setattr(installed_access, "connect", websocket)
+    try:
+        api = SimpleNamespace(present_desktop=present)
+        if failure:
+            with pytest.raises(AssertionError):
+                installed_access.operator_desktop(api, "ag-owned")
+        else:
+            observed = installed_access.operator_desktop(api, "ag-owned")
+            assert observed["agent_id"] == "ag-owned" and observed["missing_target_status"] == 404
+            assert observed["vnc_banner"] == "RFB 003.008\n" and "unlock_code" not in observed
+        assert requests == [("/_safeyolo_preview/unlock", b"code=synthetic-only"),
+                            ("/vnc.html", "fixture_preview=owned")]
+        assert targets[0] == "ag-owned"
+        if failure != "no-vnc":
+            assert len(targets) == 2 and targets[1] != "ag-owned"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_installed_sections_do_not_continue_across_unclean_boundary(

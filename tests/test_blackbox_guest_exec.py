@@ -108,6 +108,50 @@ def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeyp
         assert shlex.split(args[-1])[shlex.split(args[-1]).index('--marker') + 1] == literal
 
 
+@pytest.mark.parametrize('wrong_uid', [False, True])
+def test_operator_attachment_opens_independent_shell_before_detach(tmp_path, monkeypatch, wrong_uid):
+    """Reach the real PTY/subprocess boundary with a controlled guest transport."""
+    root = tmp_path / 'selected root'
+    root.mkdir()
+    calls, marker = root / 'calls', root / 'marker'
+    native = root / 'safeyolo'
+    native.write_text(f'''#!{sys.executable}
+import json, os, pathlib, sys, tty
+root = pathlib.Path({str(root)!r})
+assert sys.argv[1:3] == ['--root', str(root)], 'ambient root selected'
+arguments = sys.argv[3:]
+with (root / 'calls').open('a') as output:
+    output.write(json.dumps(arguments) + '\\n')
+operation = arguments[1]
+if operation == 'configure':
+    (root / 'marker').write_text(arguments[-1].split("'")[1].removesuffix('\\\\n'))
+elif operation == 'status':
+    print(json.dumps({{'agent_state':'running', 'agent_id':'ag-owned',
+                      'run_id':'run-owned', 'launch_id':'launch-owned'}}))
+elif operation == 'attach':
+    tty.setraw(0)
+    print((root / 'marker').read_text(), flush=True)
+    assert os.read(0, 2) == b'\\x02d'
+    assert (root / 'shell-opened').exists(), 'detached before independent shell'
+elif operation == 'shell':
+    (root / 'shell-opened').touch()
+    print(os.getpid())
+    print({'0' if wrong_uid else '1000'})
+''')
+    native.chmod(0o755)
+    monkeypatch.setenv('SAFEYOLO_CONFIG_DIR', str(tmp_path / 'unrelated root'))
+    if wrong_uid:
+        with pytest.raises(AssertionError):
+            installed_access.operator_terminal(str(native), root, 'bbtest', 'r3-marker')
+    else:
+        result = installed_access.operator_terminal(str(native), root, 'bbtest', 'r3-marker')
+        assert result['detached_command_running'] and result['shell_uid'] == 1000
+        assert result['agent_id'] == 'ag-owned' and marker.read_text() == 'r3-marker'
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert [command[1] for command in commands[:5]] == ['configure', 'start', 'status', 'attach', 'shell']
+    assert commands[4][:4] == ['agent', 'shell', 'bbtest', '-c']
+
+
 @pytest.fixture
 def lifecycle_cli_probe(tmp_path):
     """Record real subprocess operands; the guest workload remains controlled."""
