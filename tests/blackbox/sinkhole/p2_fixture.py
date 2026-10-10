@@ -135,9 +135,10 @@ class P2Fixture:
         handler.send_header("Content-Length", str(len(first) + len(last)))
         handler.end_headers()
         try:
-            handler.wfile.write(first)
-            handler.wfile.flush()
+            # State readers must wait for delivery and its successful publication.
             with self.lock:
+                handler.wfile.write(first)
+                handler.wfile.flush()
                 held["first_sent"] = True
             if held["release"].wait(15):
                 handler.wfile.write(last)
@@ -158,9 +159,10 @@ class P2Fixture:
         handler.send_header("Connection", "close")
         handler.end_headers()
         try:
-            handler.wfile.write(f"data: first:{marker}\n\n".encode())
-            handler.wfile.flush()
+            # A failed write or flush leaves first_sent false under the same lock.
             with self.lock:
+                handler.wfile.write(f"data: first:{marker}\n\n".encode())
+                handler.wfile.flush()
                 stream["first_sent"] = True
             if stream["release"].wait(15):
                 handler.wfile.write(f"data: last:{marker}\n\n".encode())

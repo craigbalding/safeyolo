@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import io
 import queue
 import shlex
 import shutil
@@ -14,6 +15,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -142,6 +144,140 @@ def test_guest_receives_first_sse_event_before_release(p2_origin, monkeypatch):
         fixture.release(marker)
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("kind", ["sse", "http"])
+def test_state_observation_waits_for_first_delivery_flush(p2_origin, monkeypatch, kind):
+    """Pause after real delivery to expose the former flush-to-state gap."""
+    fixture, _ = p2_origin
+    marker = ("p2-" if kind == "sse" else "p4-") + uuid.uuid4().hex
+    path = f"/p2/sse/{marker}" if kind == "sse" else f"/p4/hold/{marker}"
+    state = fixture.state if kind == "sse" else fixture.p4_state
+    release = fixture.release if kind == "sse" else fixture.release_p4
+    flushed = threading.Event()
+    resume = threading.Event()
+    completed = threading.Event()
+    attempts = queue.Queue()
+    observations = queue.Queue()
+    lock = fixture.lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread() is observer:
+                acquired = lock.acquire(blocking=False)
+                attempts.put(acquired)
+                if acquired:
+                    return self
+            lock.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            lock.release()
+
+    def observe():
+        observations.put(state(marker))
+
+    observer = threading.Thread(target=observe)
+    fixture.lock = ObservedLock()
+    end_headers = SinkholeHandler.end_headers
+
+    def pause_flush(handler):
+        end_headers(handler)
+        flush = handler.wfile.flush
+
+        def first_flush():
+            flush()
+            handler.wfile.flush = flush
+            flushed.set()
+            assert resume.wait(5), "first-delivery flush was not resumed"
+
+        handler.wfile.flush = first_flush
+
+    handle = fixture.handle
+
+    def finish(handler):
+        try:
+            return handle(handler)
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(SinkholeHandler, "end_headers", pause_flush)
+    monkeypatch.setattr(fixture, "handle", finish)
+    connection = http.client.HTTPConnection(*guest.PROXY, timeout=5)
+    try:
+        connection.request("GET", f"http://{guest.HOST}{path}", headers={"Host": guest.HOST})
+        response = connection.getresponse()
+        assert response.status == 200
+        first = f"data: first:{marker}\n\n".encode() if kind == "sse" else f"first:{marker}\n".encode()
+        assert response.read(len(first)) == first
+        assert flushed.wait(5)
+        observer.start()
+        assert attempts.get(timeout=5) is False, "state read entered the post-flush publication gap"
+        resume.set()
+        before = observations.get(timeout=5)
+        assert before["first_sent"] and not before["released"] and not before["finished"], before
+        assert not completed.is_set()
+        assert release(marker)
+        last = f"data: last:{marker}\n\n".encode() if kind == "sse" else f"last:{marker}\n".encode()
+        assert response.read() == last
+        assert completed.wait(5)
+        after = state(marker)
+        assert after["first_sent"] and after["released"] and after["finished"], after
+    finally:
+        resume.set()
+        release(marker)
+        connection.close()
+        if observer.ident is not None:
+            observer.join(timeout=5)
+            assert not observer.is_alive()
+
+
+def _held_response_handler(path):
+    handler = SinkholeHandler.__new__(SinkholeHandler)
+    handler.path = path
+    handler.wfile = io.BytesIO()
+    control = create_autospec(handler, spec_set=True)
+    control.path = path
+    return control
+
+
+@pytest.mark.parametrize("kind", ["sse", "http"])
+@pytest.mark.parametrize("failed_operation", ["write", "flush"])
+def test_failed_first_delivery_is_not_reported_as_sent(tmp_path, kind, failed_operation):
+    fixture = P2Fixture(tmp_path)
+    marker = ("p2-" if kind == "sse" else "p4-") + uuid.uuid4().hex
+    path = f"/p2/sse/{marker}" if kind == "sse" else f"/p4/hold/{marker}"
+    state = fixture.state if kind == "sse" else fixture.p4_state
+    handler = _held_response_handler(path)
+    getattr(handler.wfile, failed_operation).side_effect = BrokenPipeError("first delivery failed")
+
+    with pytest.raises(BrokenPipeError, match="first delivery failed"):
+        fixture.handle(handler)
+    observed = state(marker)
+    assert not observed["first_sent"] and not observed["released"] and observed["finished"], observed
+    assert handler.wfile.write.call_count == 1
+    assert handler.wfile.flush.call_count == (failed_operation == "flush")
+
+    duplicate = _held_response_handler(path)
+    assert fixture.handle(duplicate)
+    duplicate.send_error.assert_called_once_with(409, "P2 stream marker already used" if kind == "sse"
+                                                 else "P4 HTTP marker already used")
+    duplicate.wfile.write.assert_not_called()
+    assert state(marker) == observed
+
+
+@pytest.mark.parametrize("kind", ["sse", "http"])
+def test_held_fixture_refuses_invalid_marker_and_unknown_release(tmp_path, kind):
+    fixture = P2Fixture(tmp_path)
+    prefix = "/p2/sse/" if kind == "sse" else "/p4/hold/"
+    release = fixture.release if kind == "sse" else fixture.release_p4
+    handler = _held_response_handler(prefix + "invalid")
+    assert fixture.handle(handler)
+    handler.send_error.assert_called_once_with(400, "Invalid P2 marker" if kind == "sse" else "Invalid P4 marker")
+    handler.wfile.write.assert_not_called()
+    assert not fixture.streams and not fixture.held_http
+    assert not release("invalid")
+    assert not release(("p2-" if kind == "sse" else "p4-") + uuid.uuid4().hex)
 
 
 def test_wss_reaches_the_owned_tls_peer_through_connect(tmp_path, monkeypatch):
