@@ -15,10 +15,102 @@ import tomlkit
 
 from tests.blackbox import installed_host_smoke as smoke
 from tests.blackbox import installed_lifecycle as lifecycle
+from tests.proxy_contracts.harness import connection, request
+from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, native_instance
 
 BLACKBOX = Path(__file__).resolve().parents[1] / "blackbox"
 ADMIN_TOKEN = "synthetic-blackbox-admin-token"
+
+
+@pytest.mark.parametrize("change", ["watcher", "admin"])
+def test_native_lifecycle_observes_changed_policy_while_admitted_sse_stays_live(tmp_path, change):
+    with origin_server(stream_seconds=0.04) as origin:
+        host = f"127.0.0.1:{origin.server_address[1]}"
+        allowed_source = f'[hosts]\n"*"={{egress="deny"}}\n"{host}"={{egress="allow"}}\n'
+        denied_source = allowed_source.replace('egress="allow"', 'egress="deny"')
+        with native_instance(tmp_path, source=allowed_source) as instance:
+            audit = instance.root / "logs/audit.jsonl"
+            before = lifecycle.wait_policy_load(audit, 0)
+            legacy_before = sum(row["event"] == "ops.policy_reload" for row in lifecycle.event_rows(audit))
+            stream = connection(instance.paths["alice"])
+            try:
+                stream.request("GET", f"http://{host}/stream-control")
+                response = stream.getresponse()
+                assert response.status == 200
+                first = b"data: first-event\n\n"
+                assert response.read(len(first)) == first
+                assert origin.stream_initial_sent.is_set()
+                assert not origin.stream_release.is_set() and not origin.stream_finished.is_set()
+
+                if change == "watcher":
+                    instance.policy.write_text(denied_source)
+                else:
+                    instance.admin("POST", "/admin/policy/host/deny", {"host": host})
+                denied_load = lifecycle.wait_policy_load(audit, before)
+                origin_before = len(origin.requests)
+                status, headers, body = request(instance.paths["alice"], f"http://{host}/echo")
+                assert status == 403, body
+                assert headers["x-blocked-by"] == "network-guard"
+                assert len(origin.requests) == origin_before
+                assert not origin.stream_release.is_set() and not origin.stream_finished.is_set()
+
+                origin.stream_release.set()
+                assert response.read() == b"data: " + b"x" * (16384 - 8) + b"\n\n"
+                assert origin.stream_finished.wait(5)
+                assert not origin.stream_cancelled.is_set()
+                instance.admin("POST", "/admin/policy/host/allow", {"host": host, "rate": 600})
+                assert lifecycle.wait_policy_load(audit, denied_load) > denied_load
+                status, _, body = request(instance.paths["alice"], f"http://{host}/echo")
+                assert (status, body) == (200, b"hello")
+                assert len(origin.requests) == origin_before + 1
+                assert sum(row["event"] == "ops.policy_reload" for row in lifecycle.event_rows(audit)) == legacy_before
+            finally:
+                origin.stream_release.set()
+                stream.close()
+        assert instance.process.poll() is not None
+
+
+def test_native_lifecycle_load_observation_distinguishes_old_rejected_and_unapplied_policy(tmp_path):
+    with origin_server() as origin:
+        host = f"127.0.0.1:{origin.server_address[1]}"
+        source = f'[hosts]\n"*"={{egress="deny"}}\n"{host}"={{egress="allow"}}\n'
+        denied_source = source.replace('egress="allow"', 'egress="deny"')
+        with native_instance(tmp_path, source=source) as instance:
+            audit = instance.root / "logs/audit.jsonl"
+            initial_load = lifecycle.wait_policy_load(audit, 0)
+            with pytest.raises(AssertionError, match="did not load the changed policy"):
+                lifecycle.wait_policy_load(audit, initial_load, timeout=0.05)
+
+            instance.apply('[hosts\n', valid=False)
+            with pytest.raises(AssertionError, match="did not load the changed policy"):
+                lifecycle.wait_policy_load(audit, initial_load, timeout=0.05)
+
+            unapplied_source = denied_source + "\n[credential.activation_failure]\nmatch = ['\\uD800']\n"
+            failed = instance.apply(unapplied_source, valid=False)
+            assert "activation failed" in failed.stderr
+            assert instance.policy.read_text() == source
+            assert instance.show()["saved_matches_active"]
+            with pytest.raises(AssertionError, match="did not load the changed policy"):
+                lifecycle.wait_policy_load(audit, initial_load, timeout=0.05)
+
+            # The real watcher emits before Runtime preparation. The compiler
+            # accepts this string, but detector activation rejects its regex.
+            instance.policy.write_text(unapplied_source)
+            unapplied_load = lifecycle.wait_policy_load(audit, initial_load)
+            status, _, body = request(instance.paths["alice"], f"http://{host}/echo")
+            assert (status, body) == (200, b"hello")
+            assert len(origin.requests) == 1
+            assert instance.show()["status"] == "saved_differs"
+            with pytest.raises(AssertionError, match="did not load the changed policy"):
+                lifecycle.wait_policy_load(audit, unapplied_load, timeout=0.05)
+
+            instance.apply(denied_source)
+            assert instance.show()["saved_matches_active"]
+            status, _, body = request(instance.paths["alice"], f"http://{host}/echo")
+            assert status == 403, body
+            assert len(origin.requests) == 1
+        assert instance.process.poll() is not None
 
 
 @pytest.mark.parametrize("control", ["clean", "stale_receipt", "admin_operand", "agent_operand", "missing_agent_token"])
