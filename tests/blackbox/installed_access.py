@@ -385,6 +385,8 @@ def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: di
     absent = subprocess.run([*prefix, "agent", "attach", agent], capture_output=True, text=True, timeout=10)
     assert absent.returncode != 0 and "terminal" in absent.stderr.lower(), "attach hid the stopped target"
     checked([*prefix, "stop"], timeout=60)
+    if platform == "vz":
+        checked([*prefix, "coord", "start", "--client-port", "46370", "--monitor-port", "46372"])
     checked([*prefix, "start"], timeout=60)
     checked([*prefix, "agent", "start", agent], timeout=130)
     returned = json.loads(checked([*prefix, "agent", "status", agent]).stdout)

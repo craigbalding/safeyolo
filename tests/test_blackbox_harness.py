@@ -1023,6 +1023,49 @@ def test_kvm_lane_prepares_operator_and_subordinate_access_before_native_install
     assert 'safeyolo bootstrap' not in lane
 
 
+@pytest.mark.parametrize('lane,system', [('vz', 'Darwin'), ('proxy', 'Linux')])
+@pytest.mark.parametrize('start_exit', [0, 7])
+def test_lane_preparation_selects_vz_coord_ports_and_preserves_start_failure(tmp_path, lane, system, start_exit):
+    """Execute the maintained preparer with controlled installer/tool output."""
+    tools = tmp_path / 'tools'
+    checkout = tmp_path / 'checkout'
+    root = tmp_path / 'owned'
+    assets = tmp_path / 'assets'
+    for path in (tools, checkout, assets):
+        path.mkdir()
+    for name in ('Image', 'initramfs.cpio.gz', 'rootfs-base.ext4'):
+        (assets / name).touch()
+    (tools / 'uname').write_text(f'#!/bin/sh\nprintf "%s\\n" {system}\n')
+    (tools / 'uv').write_text('#!/bin/sh\nexit 0\n')
+    native = tools / 'selected-native'
+    calls = tmp_path / 'calls'
+    native.write_text(f'''#!{sys.executable}
+import json,sys
+with open({str(calls)!r}, 'a') as stream:
+    stream.write(json.dumps(sys.argv[1:])+'\\n')
+if sys.argv[4] == 'start': sys.exit({start_exit})
+''')
+    (checkout / 'install.sh').write_text(
+        f'#!/bin/sh\nmkdir -p {shlex.quote(str(root / "bin"))}\n'
+        f'cp {shlex.quote(str(native))} {shlex.quote(str(root / "bin/safeyolo"))}\n'
+    )
+    for path in (tools / 'uname', tools / 'uv', native, checkout / 'install.sh'):
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}', SAFEYOLO_CONFIG_DIR=str(root),
+               SAFEYOLO_PLATFORM_ASSETS=str(assets), SAFEYOLO_NATIVE_BUNDLE=str(tmp_path / 'bundle'),
+               SAFEYOLO_COORD_NATS_BINARY=str(tmp_path / 'pinned-nats'))
+    result = subprocess.run([str(ROOT / 'tests/blackbox/run-lane.sh'), lane,
+                             '--install-checkout', str(checkout), '--prepare-only'],
+                            env=env, capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == start_exit, result.stderr
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    expected = ['--root', str(root), 'coord', 'start', '--binary', env['SAFEYOLO_COORD_NATS_BINARY']]
+    if lane == 'vz':
+        expected += ['--client-port', '46370', '--monitor-port', '46372']
+    assert commands == [expected] + ([] if start_exit else [['--root', str(root), 'coord', 'stop']])
+    assert ('no test guest started' in result.stdout) == (start_exit == 0)
+
+
 def test_backend_selector_records_actual_rust_binary_identity(tmp_path):
     """Rust evidence comes from the executable's version and bytes."""
     binary = tmp_path / "safeyolo-proxy"

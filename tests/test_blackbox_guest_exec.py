@@ -152,8 +152,10 @@ elif operation == 'shell':
     assert commands[4][:4] == ['agent', 'shell', 'bbtest', '-c']
 
 
-@pytest.mark.parametrize('platform', ['systrap', 'vz'])
-@pytest.mark.parametrize('failure', [None, 'same-run', 'lost-origin'])
+@pytest.mark.parametrize('platform,failure', [
+    (platform, failure)
+    for platform in ('systrap', 'vz') for failure in (None, 'same-run', 'lost-origin')
+] + [('vz', 'coord-start')])
 def test_operator_restart_retains_selected_guest_transport_and_requires_fresh_run_and_delivery(
     tmp_path, monkeypatch, platform, failure
 ):
@@ -193,7 +195,12 @@ elif arguments == ['agent', 'status', 'bbtest']:
     print(json.dumps({{'runtime_state': 'stopped' if stopped else 'running', 'agent_id': 'ag-owned',
                       'run_id': {'"run-before"' if failure == 'same-run' else '"run-after"'}}}))
 else:
-    assert arguments in (['stop'], ['start']), arguments
+    allowed = [['stop'], ['start']]
+    if {platform!r} == 'vz':
+        allowed.append(['coord', 'start', '--client-port', '46370', '--monitor-port', '46372'])
+    assert arguments in allowed, arguments
+    if arguments[0] == 'coord' and {failure!r} == 'coord-start':
+        sys.exit(19)
 ''')
     native.chmod(0o755)
     monkeypatch.setenv('SAFEYOLO_CONFIG_DIR', str(root))
@@ -216,9 +223,14 @@ else:
         assert result['allowed_origin_deliveries'] == 2
     calls = [json.loads(line) for line in (root / 'calls').read_text().splitlines()]
     lifecycle = [call for call in calls if call[:2] != ['agent', 'shell']]
-    assert lifecycle == [['agent', 'stop', 'bbtest'], ['agent', 'status', 'bbtest'],
-                         ['agent', 'attach', 'bbtest'], ['stop'], ['start'],
-                         ['agent', 'start', 'bbtest'], ['agent', 'status', 'bbtest']]
+    expected = [['agent', 'stop', 'bbtest'], ['agent', 'status', 'bbtest'],
+                ['agent', 'attach', 'bbtest'], ['stop']]
+    if platform == 'vz':
+        expected.append(['coord', 'start', '--client-port', '46370', '--monitor-port', '46372'])
+    if failure == 'coord-start':
+        assert lifecycle == expected
+        return
+    assert lifecycle == [*expected, ['start'], ['agent', 'start', 'bbtest'], ['agent', 'status', 'bbtest']]
 
 
 @pytest.fixture
