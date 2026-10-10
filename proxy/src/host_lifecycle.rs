@@ -1480,20 +1480,20 @@ pub(crate) async fn start(
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
         let run_id = uuid::Uuid::new_v4().simple().to_string();
         crate::host_boot::stage(agent, &ip, &run_id).await?;
-        crate::host_runs::save(
-            &agent.name,
-            &json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"}),
-        )?;
-        crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;
-        if let Err(error) = sync_agent_listeners().await {
-            let _ = crate::host_platform::update_agent_map(&agent.name, None);
-            let _ = sync_agent_listeners().await;
+        let run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"});
+        let prepared: Result<(), Error> = async {
+            crate::host_runs::save(&agent.name, &run)?;
+            crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;
+            sync_agent_listeners().await
+        }
+        .await;
+        if let Err(error) = prepared {
+            if let Err(rollback) = rollback_preboot_start(agent, &run).await {
+                return Err(format!("{error}; preboot rollback failed: {rollback}").into());
+            }
             return Err(error);
         }
         let memory_mb = agent.memory_mb.unwrap_or(4096);
-        if memory_mb <= 0 {
-            return Err("agent memory_mb must be positive".into());
-        }
         let boot = crate::host_platform::start_sandbox(
             &agent.name,
             &ip,
@@ -1552,6 +1552,28 @@ pub(crate) async fn start(
         json!({}),
     );
     runtime(agent).await
+}
+
+// The setup lock is held, and no backend has been invoked for this record.
+// Retire it before rebuilding the map so a failed projection can be retried.
+// A changed record or generation no longer belongs to this failed start.
+async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error> {
+    let Some(saved) = crate::host_runs::read(&agent.name)? else {
+        return Ok(());
+    };
+    if saved != *run
+        || crate::host_runs::id(&agent.name)?
+            != format!(
+                "safeyolo-{}",
+                run["run_id"].as_str().ok_or("missing preboot generation")?
+            )
+        || crate::host_agents::refresh(agent)?.id != agent.id
+    {
+        return Err("preboot runtime identity changed; saved state was preserved".into());
+    }
+    std::fs::remove_file(crate::host_runs::path(&agent.name))?;
+    crate::host_platform::update_agent_map(&agent.name, None)?;
+    sync_agent_listeners().await
 }
 
 /// Reuse a live launch without selecting another launcher.
@@ -2181,6 +2203,70 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn preboot_rollback_preserves_changed_runtime_and_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let agent = crate::host_agents::configure(
+                "marker",
+                &[("folder".into(), temp.path().to_string_lossy().into_owned())],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            let run_id = "0123456789abcdef0123456789abcdef";
+            let run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":"10.200.0.1","state":"starting"});
+            let context = agent_dir(&agent.name).join("config-share/host-launch-context.json");
+            let map = temp.path().join("data/agent_map.json");
+            write_json(&map, &json!({"marker":{"ip":"10.200.0.1"},"peer":{"ip":"10.200.0.2"}})).unwrap();
+            let saved_map = std::fs::read(&map).unwrap();
+            let pid = std::process::id();
+            for (field, replacement) in [
+                ("run_id", json!("fedcba9876543210fedcba9876543210")),
+                ("agent_id", json!("foreign-agent")),
+                ("backend_pid", json!(pid)),
+                ("backend_token", json!(process_token(i64::from(pid)).unwrap())),
+                ("holder_pid", json!(pid)),
+                ("state", json!("running")),
+                ("context", json!("fedcba9876543210fedcba9876543210")),
+                ("corrupt", Value::Null),
+            ] {
+                write_json(&context, &json!({"generation":run_id})).unwrap();
+                let mut changed = run.clone();
+                if field == "context" {
+                    write_json(&context, &json!({"generation":replacement})).unwrap();
+                } else {
+                    changed[field] = replacement;
+                }
+                crate::host_runs::save(&agent.name, &changed).unwrap();
+                if field == "corrupt" {
+                    std::fs::write(crate::host_runs::path(&agent.name), b"corrupt").unwrap();
+                }
+                let saved = std::fs::read(crate::host_runs::path(&agent.name)).unwrap();
+                assert!(rollback_preboot_start(&agent, &run).await.is_err(), "{field}");
+                assert_eq!(std::fs::read(crate::host_runs::path(&agent.name)).unwrap(), saved, "{field}");
+                assert_eq!(std::fs::read(&map).unwrap(), saved_map, "{field}");
+            }
+            write_json(&context, &json!({"generation":run_id})).unwrap();
+            crate::host_runs::save(&agent.name, &run).unwrap();
+            // A failed map rollback must report failure, but must not leave
+            // this known preboot record holding status/retry indefinitely.
+            std::fs::remove_file(&map).unwrap();
+            std::fs::create_dir(&map).unwrap();
+            assert!(rollback_preboot_start(&agent, &run).await.is_err());
+            assert!(!crate::host_runs::path(&agent.name).exists());
+            assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
+            std::fs::remove_dir(&map).unwrap();
+            write_json(&map, &serde_json::from_slice::<Value>(&saved_map).unwrap()).unwrap();
+            crate::host_runs::save(&agent.name, &run).unwrap();
+            rollback_preboot_start(&agent, &run).await.unwrap();
+            assert!(!crate::host_runs::path(&agent.name).exists());
+            assert_eq!(read_json(&map).unwrap().unwrap(), json!({"peer":{"ip":"10.200.0.2"}}));
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn command_confirmation_preserves_changed_launches_and_completion() {
