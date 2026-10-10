@@ -940,6 +940,221 @@ impl Drop for StopOnDrop<'_> {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
+    use owned_run::OwnedRun;
+    use std::os::unix::net::UnixListener;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("i");
+    initialize(&root);
+    for name in ["alice", "marker"] {
+        value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                name,
+                "--workspace",
+                temp.path().to_str().unwrap(),
+                "--launcher",
+                "supervisor",
+            ],
+        ));
+    }
+    let mut config: toml_edit::DocumentMut = fs::read_to_string(root.join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    config["admin_port"] = toml_edit::value(0);
+    fs::write(root.join("config.toml"), config.to_string()).unwrap();
+    let mut policy: toml_edit::DocumentMut = fs::read_to_string(root.join("policy.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    policy["agents"]["alice"]["network_slot"] = toml_edit::value(0);
+    policy["agents"]["marker"]["network_slot"] = toml_edit::value(1);
+    fs::write(root.join("policy.toml"), policy.to_string()).unwrap();
+
+    // Reach the real preboot transaction with minimal installed-layout inputs.
+    // These staging fixtures supply no executable guest or platform proof.
+    let assets = root.join("assets/guest");
+    fs::create_dir_all(&assets).unwrap();
+    for name in [
+        "guest-init",
+        "guest-init-static",
+        "guest-init-per-run",
+        "guest-proxy-forwarder",
+        "guest-shell-bridge",
+        "guest-desktop",
+    ] {
+        fs::write(assets.join(name), b"#!/bin/sh\n").unwrap();
+    }
+    let mut header = [0_u8; 20];
+    header[..4].copy_from_slice(b"\x7fELF");
+    fs::write(assets.join("safeyolo-guest"), header).unwrap();
+    fs::create_dir_all(root.join("assets/skills/safeyolo")).unwrap();
+    fs::write(
+        root.join("assets/skills/safeyolo/SKILL.md"),
+        "staging fixture",
+    )
+    .unwrap();
+    let rootfs = root.join("share/rootfs-tree");
+    for path in [
+        "etc",
+        "workspace",
+        "safeyolo",
+        "safeyolo-status",
+        "home/agent",
+        "usr/local/share/ca-certificates",
+    ] {
+        fs::create_dir_all(rootfs.join(path)).unwrap();
+    }
+    fs::write(
+        rootfs.join("usr/local/share/ca-certificates/safeyolo.crt"),
+        b"",
+    )
+    .unwrap();
+    // The temporary parent is private. Permit owned fixture cleanup after
+    // assigning the staging directory's required subordinate root UID.
+    fs::set_permissions(&rootfs, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(
+        Command::new("sudo")
+            .args(["-n", "chown", "100000"])
+            .arg(&rootfs)
+            .status()
+            .unwrap()
+            .success(),
+        "preboot fixture requires guest sudo for subordinate root ownership"
+    );
+
+    let _peer = OwnedRun::start(&root);
+    let peer_runtime = fs::read(root.join("agents/alice/runtime.json")).unwrap();
+    let peer_launch = root.join("agents/alice/current-launch.json");
+    fs::write(
+        &peer_launch,
+        b"{\"state\":\"exited\",\"launch_id\":\"retained-peer\"}\n",
+    )
+    .unwrap();
+    let map = root.join("data/agent_map.json");
+    fs::write(&map, b"{\"alice\":{\"ip\":\"10.200.0.1\"}}\n").unwrap();
+    let config_path = root.join("config.toml");
+    let _stop = StopOnDrop(&config_path);
+    value(cli(&root, &["start"]));
+    let proxy_process = fs::read(root.join("data/proxy-process.json")).unwrap();
+    let peer_socket = root.join("data/sockets/10.200.0.1_alice/proxy.sock");
+    let peer_inode = fs::metadata(&peer_socket).unwrap();
+    let peer_launch_bytes = fs::read(&peer_launch).unwrap();
+    let marker_socket = root.join("data/sockets/10.200.0.2_marker/proxy.sock");
+    let marker_directory = marker_socket.parent().unwrap();
+    fs::write(marker_directory, b"occupied directory").unwrap();
+    let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("File exists"));
+    assert!(!root.join("agents/marker/runtime.json").exists());
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+    let saved_map = fs::read(&map).unwrap();
+    let map_lock = root.join("data/agent_map.lock");
+    fs::remove_file(&map_lock).unwrap();
+    fs::create_dir(&map_lock).unwrap();
+    let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("preboot rollback failed"));
+    assert!(!root.join("agents/marker/runtime.json").exists());
+    assert_eq!(fs::read(&map).unwrap(), saved_map);
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+    fs::remove_dir(&map_lock).unwrap();
+    fs::remove_file(marker_directory).unwrap();
+    fs::create_dir(marker_directory).unwrap();
+    let foreign_listener = UnixListener::bind(&marker_socket).unwrap();
+    let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr)
+            .contains("native listener update was not acknowledged")
+    );
+    assert!(!root.join("agents/marker/runtime.json").exists());
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "stopped"
+    );
+    // Ordinary named start uses authenticated Admin, unlike sandbox-only.
+    let failed = cli(&root, &["agent", "start", "marker"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("API 500"));
+    assert!(
+        String::from_utf8_lossy(&failed.stderr)
+            .contains("native listener update was not acknowledged")
+    );
+    assert!(!root.join("agents/marker/runtime.json").exists());
+    assert!(
+        fs::read_to_string(root.join("logs/proxy.log"))
+            .unwrap()
+            .contains("configuration reload failed: listener already active")
+    );
+    let retained_map: Value = serde_json::from_slice(&fs::read(&map).unwrap()).unwrap();
+    assert_eq!(retained_map.as_object().unwrap().len(), 1);
+    assert_eq!(retained_map["alice"]["ip"], "10.200.0.1");
+    assert_eq!(
+        fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+        peer_runtime
+    );
+    assert_eq!(fs::read(&peer_launch).unwrap(), peer_launch_bytes);
+    assert_eq!(
+        fs::read(root.join("data/proxy-process.json")).unwrap(),
+        proxy_process
+    );
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(fs::metadata(&peer_socket).unwrap().ino(), peer_inode.ino());
+    assert!(std::os::unix::net::UnixStream::connect(&peer_socket).is_ok());
+    drop(foreign_listener);
+    fs::remove_file(&marker_socket).unwrap();
+    // Restoring the listener allows the same start through to backend entry.
+    // A deliberate backend prerequisite failure must keep its uncertain run.
+    let acl = root.join("bin/setfacl");
+    fs::write(&acl, b"#!/bin/sh\nexit 17\n").unwrap();
+    fs::set_permissions(&acl, fs::Permissions::from_mode(0o755)).unwrap();
+    let retried = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args([
+            "--root",
+            root.to_str().unwrap(),
+            "agent",
+            "start",
+            "marker",
+            "--sandbox-only",
+        ])
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", root.join("bin").display()),
+        )
+        .output()
+        .unwrap();
+    assert!(!retried.status.success());
+    assert!(
+        String::from_utf8_lossy(&retried.stderr)
+            .contains("setfacl failed on runsc state directory"),
+        "{}",
+        String::from_utf8_lossy(&retried.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&retried.stderr).contains("not acknowledged"));
+    assert!(root.join("agents/marker/runtime.json").is_file());
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "unknown"
+    );
+    assert_eq!(
+        fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+        peer_runtime
+    );
+}
+
 #[test]
 fn conflicting_ids_are_reported_by_admin_without_changing_agents() {
     let temp = tempfile::tempdir().unwrap();
