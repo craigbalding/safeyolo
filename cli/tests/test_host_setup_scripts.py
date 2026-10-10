@@ -3071,7 +3071,11 @@ def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script
     assert staged.read_bytes() == COORD_GUEST_BINARY.read_bytes()
     if script_name != "claude-host-setup.sh":
         wrapper = agent_home / ".safeyolo/repo-map"
-        result = subprocess.run([str(wrapper), str(REPO_ROOT / "proxy/src/repo_map.rs")],
+        assert wrapper.read_text() == REPO_MAP_COMMAND
+        assert wrapper.stat().st_mode & 0o111
+        # Setup stages a Linux guest command; Darwin executes the verified host command.
+        command = [str(COORD_NATIVE_BINARY), "repo-map"] if sys.platform == "darwin" else [str(wrapper)]
+        result = subprocess.run([*command, str(REPO_ROOT / "proxy/src/repo_map.rs")],
                                 env={**os.environ, **env, "HOME": str(agent_home)}, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert "scope=proxy/src/repo_map.rs mode=detail" in result.stdout
