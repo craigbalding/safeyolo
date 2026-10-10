@@ -434,6 +434,298 @@ fn initialize_tmux_launcher(root: &Path) {
     symlink(fs::canonicalize(tmux).unwrap(), root.join("bin/tmux")).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn concurrent_starts_reuse_a_terminal_before_guest_command_observation() {
+    use owned_run::OwnedRun;
+    use std::process::Stdio;
+
+    for pause in ["entrypoint", "transport"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize_tmux_launcher(&root);
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let launcher = temp.path().join("launcher.sh");
+        let preset = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cli/src/safeyolo/launchers/tmux-window.sh");
+        let script = format!(
+            r#"#!/bin/bash
+case "$1" in
+  launch)
+    '{preset}' launch > "$SAFEYOLO_CONFIG_DIR/target.json" || exit
+    printf ready > "$SAFEYOLO_CONFIG_DIR/launcher-ready"
+    read -r release < "$SAFEYOLO_CONFIG_DIR/launcher-gate"
+    /bin/cat "$SAFEYOLO_CONFIG_DIR/target.json";;
+  pre_launch|post_launch|on_exit)
+    printf '%s %s\n' "$SAFEYOLO_LAUNCH_ID" "$1" >> "$SAFEYOLO_CONFIG_DIR/hooks";;
+  *) exec '{preset}' "$@";;
+esac
+"#,
+            preset = preset.display()
+        );
+        fs::write(&launcher, script).unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "alice",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--command",
+                "printf marker",
+                "--launcher",
+                launcher.to_str().unwrap(),
+            ],
+        ));
+        let mut document: toml_edit::DocumentMut = fs::read_to_string(root.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        document["admin_port"] = toml_edit::value(0);
+        fs::write(root.join("config.toml"), document.to_string()).unwrap();
+        let config = root.join("config.toml");
+        let _proxy = StopOnDrop(&config);
+        let run = OwnedRun::start(&root);
+        let path_env = format!("{}:/usr/bin:/bin", root.join("bin").display());
+        let selected_cli = |args: &[&str]| {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
+            command
+                .args(["--root", root.to_str().unwrap()])
+                .args(args)
+                .env("PATH", &path_env)
+                .env_remove("SAFEYOLO_RUNSC_ROOT");
+            command
+        };
+        for name in ["launcher-gate", "entrypoint-gate", "transport-gate"] {
+            let path = std::ffi::CString::new(root.join(name).to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        struct Gates<'a>(&'a Path);
+        impl Drop for Gates<'_> {
+            fn drop(&mut self) {
+                for name in ["launcher-gate", "entrypoint-gate", "transport-gate"] {
+                    if let Ok(mut gate) = std::fs::OpenOptions::new()
+                        .write(true)
+                        .custom_flags(libc::O_NONBLOCK)
+                        .open(self.0.join(name))
+                    {
+                        let _ = gate.write_all(b"release\n");
+                    }
+                }
+                let _ = Command::new("tmux")
+                    .arg("-S")
+                    .arg(self.0.join("data/tmux.sock"))
+                    .arg("kill-server")
+                    .output();
+            }
+        }
+        use std::os::unix::fs::OpenOptionsExt;
+        let _gates = Gates(&root);
+        // Gate the actual native entrypoint, or the controlled guest transport,
+        // while using real namespace identity checks, tmux and the Admin route.
+        // The fixture supplies no installed guest or physical-platform proof.
+        fs::remove_file(root.join("bin/safeyolo")).unwrap();
+        fs::write(
+            root.join("bin/safeyolo"),
+            format!(
+                r#"#!/bin/bash
+if [ "$4" = entrypoint ] && [ '{pause}' = entrypoint ]; then
+  printf ready > "$SAFEYOLO_CONFIG_DIR/entrypoint-ready"
+  read -r release < "$SAFEYOLO_CONFIG_DIR/entrypoint-gate"
+fi
+exec '{binary}' "$@"
+"#,
+                binary = env!("CARGO_BIN_EXE_safeyolo")
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(root.join("bin/safeyolo"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            root.join("bin/runsc"),
+            format!(
+                r#"#!/bin/bash
+case "$3" in
+  state) printf '{{"id":"%s","status":"running"}}\n' "$4";;
+  exec)
+    case "${{@: -1}}" in
+      *'observe check')
+        [ ! -e '{root}/observer-error' ] || exit 2
+        if [ -e '{root}/observed' ]; then printf running; else printf stopped; fi;;
+      *'observe exec'*)
+        printf '%s\n' "$$" >> '{root}/starts'
+        read -r release < '{root}/transport-gate'
+        printf ready > '{root}/observed'
+        exec /bin/sleep 30;;
+      *) exit 2;;
+    esac;;
+  *) exit 2;;
+esac
+"#,
+                root = root.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+        let runtime = fs::read(root.join("agents/alice/runtime.json")).unwrap();
+        let status = value(
+            selected_cli(&["agent", "status", "alice"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(status["runtime_state"], "running");
+        assert_eq!(status["agent_state"], "stopped");
+        struct Calls(Vec<std::process::Child>);
+        impl Drop for Calls {
+            fn drop(&mut self) {
+                for child in &mut self.0 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        let mut calls = Calls(vec![
+            selected_cli(&["agent", "start", "alice"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ]);
+        let wait_for = |check: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !check() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{pause}: fixture gate not reached"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let launch_path = root.join("agents/alice/current-launch.json");
+        let launch =
+            || -> Value { serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap() };
+        wait_for(&|| {
+            root.join("launcher-ready").exists()
+                && if pause == "entrypoint" {
+                    root.join("entrypoint-ready").exists()
+                } else {
+                    root.join("starts").exists() && launch()["pid"].is_u64()
+                }
+        });
+        assert!(calls.0[0].try_wait().unwrap().is_none());
+        calls.0.push(
+            selected_cli(&["agent", "start", "alice"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("launcher-gate"))
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
+        let mut results = Vec::new();
+        for child in calls.0.drain(..) {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{pause}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            results.push(serde_json::from_slice::<Value>(&output.stdout).unwrap());
+        }
+        for result in &results {
+            assert_eq!(result["agent_id"], created["configuration"]["id"]);
+            assert_eq!(result["run_id"], status["run_id"]);
+            assert_eq!(result["launch_id"], results[0]["launch_id"]);
+            assert_eq!(
+                result["agent_state"],
+                if pause == "entrypoint" {
+                    "starting"
+                } else {
+                    "launching"
+                }
+            );
+        }
+        if pause == "entrypoint" {
+            assert!(!root.join("starts").exists());
+            fs::OpenOptions::new()
+                .write(true)
+                .open(root.join("entrypoint-gate"))
+                .unwrap()
+                .write_all(b"release\n")
+                .unwrap();
+        }
+        wait_for(&|| root.join("starts").exists());
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("transport-gate"))
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
+        wait_for(&|| root.join("observed").exists());
+        let running = value(selected_cli(&["agent", "start", "alice"]).output().unwrap());
+        assert_eq!(running["agent_state"], "running");
+        assert_eq!(running["launch_id"], results[0]["launch_id"]);
+        assert_eq!(
+            fs::read_to_string(root.join("starts"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("hooks"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        assert_eq!(
+            fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+            runtime
+        );
+        assert!(Path::new(&format!("/proc/{}", run.child.id())).exists());
+        let saved_launch = fs::read(&launch_path).unwrap();
+        for failure in ["stopped", "error"] {
+            if failure == "stopped" {
+                fs::remove_file(root.join("observed")).unwrap();
+            } else {
+                fs::write(root.join("observer-error"), b"unverified guest observation").unwrap();
+            }
+            let unknown = value(
+                selected_cli(&["agent", "status", "alice"])
+                    .output()
+                    .unwrap(),
+            );
+            assert_eq!(unknown["agent_state"], "unknown", "{failure}: {unknown}");
+            let refused = selected_cli(&["agent", "start", "alice"]).output().unwrap();
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stderr)
+                    .contains("API 409 Conflict: Agent cannot start while unknown")
+            );
+            assert_eq!(fs::read(&launch_path).unwrap(), saved_launch);
+            assert_eq!(
+                fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+                runtime
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("starts"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+            fs::write(root.join("observed"), b"ready").unwrap();
+        }
+    }
+}
+
 struct StopOnDrop<'a>(&'a Path);
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
