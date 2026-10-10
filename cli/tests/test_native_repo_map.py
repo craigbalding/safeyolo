@@ -12,13 +12,13 @@ import pytest
 import repo_map_reference as reference
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from test_repo_map import _repository
+from test_repo_map import _git, _repository
 
 BINARY = Path(__file__).resolve().parents[2] / "proxy/target/debug/safeyolo-coord"
-# Match Mac Git's composed filenames; Linux retains arbitrary pathname bytes.
+# macOS accepts UTF-8 filenames; Linux also retains arbitrary pathname bytes.
 FILENAMES = (
     st.text(alphabet=st.characters(min_codepoint=32, max_codepoint=126, exclude_characters="/") | st.sampled_from("éµ漢字́"),
-            min_size=1, max_size=12).map(lambda name: os.fsencode(unicodedata.normalize("NFC", name)))
+            min_size=1, max_size=12).map(os.fsencode)
     if sys.platform == "darwin" else
     st.binary(min_size=1, max_size=12).filter(lambda name: b"\0" not in name and b"/" not in name)
 )
@@ -191,6 +191,96 @@ def test_native_repository_and_file_paths_keep_unix_bytes(tmp_path, component):
     assert "return 42" in result.stdout
 
 
+@pytest.mark.parametrize("tracked", [False, True])
+@pytest.mark.parametrize("directory", [False, True])
+def test_native_map_selects_filesystem_spelling_and_exact_boundaries(tmp_path, tracked, directory):
+    repository = _repository(tmp_path)
+    decomposed = "source-A\u0301"
+    composed = unicodedata.normalize("NFC", decomposed)
+    if directory:
+        scope = repository / decomposed
+        scope.mkdir()
+        path = scope / "app.py"
+        neighbor = repository / (decomposed + "-neighbor")
+        neighbor.mkdir()
+        neighbor = neighbor / "app.py"
+    else:
+        scope = path = repository / (decomposed + ".py")
+        neighbor = repository / (decomposed + ".py-neighbor.py")
+    path.write_text("def selected_probe():\n    return 42\n")
+    neighbor.write_text("def neighbor_probe():\n    return 99\n")
+    ignored = path.with_name("ignored.py") if directory else repository / "ignored.py"
+    ignored.write_text("def ignored_probe():\n    pass\n")
+    if tracked:
+        _git(repository, "add", ".")
+    names = subprocess.check_output(["git", "-C", str(repository), "ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    git_path = next(os.fsdecode(name) for name in names.split(b"\0")
+                    if name and (repository / os.fsdecode(name)).samefile(path))
+    selections = [scope]
+    if sys.platform == "darwin":
+        selections.append(repository / (composed if directory else composed + ".py"))
+    for selection in selections:
+        result = _run(repository, selection).stdout
+        assert "files=1 symbols=1" in result
+        assert git_path in result and "def selected_probe" in result
+        assert "neighbor_probe" not in result and "ignored_probe" not in result
+
+
+def test_native_map_preserves_distinct_spelling_and_hardlink_paths(tmp_path):
+    repository = _repository(tmp_path)
+    paths = [repository / name for name in ("source-A\u0301.py", "source-Á.py")]
+    paths[0].write_text("def distinct_0():\n    return 0\n")
+    if not paths[1].exists():
+        paths[1].write_text("def distinct_1():\n    return 1\n")
+    for path in paths:
+        index = 0 if path.samefile(paths[0]) else 1
+        result = _run(repository, path).stdout
+        assert "files=1 symbols=1" in result
+        assert f"def distinct_{index}()" in result
+        assert f"def distinct_{1 - index}()" not in result
+    paths = [repository / name for name in ("hardlink_source.py", "hardlink_alias.py")]
+    paths[0].write_text("def hardlink_probe():\n    return 42\n")
+    os.link(paths[0], paths[1])
+    assert paths[0].stat().st_ino == paths[1].stat().st_ino
+    for index, path in enumerate(paths):
+        result = _run(repository, path).stdout
+        assert "files=1 symbols=1" in result
+        assert str(path.relative_to(repository)) in result
+        assert str(paths[1 - index].relative_to(repository)) not in result
+
+
+def test_native_spelled_directory_keeps_internal_aliases_and_excludes_unsafe_links(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    repository = _repository(checkout)
+    scope = repository / "source-A\u0301"
+    scope.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("def escaped_probe():\n    return 'outside-only-sentinel'\n")
+    (scope / "local_alias.py").symlink_to("../pkg/app.py")
+    (scope / "escape.py").symlink_to(outside)
+    (scope / "broken.py").symlink_to("missing.py")
+    (scope / "loop.py").symlink_to("loop.py")
+    (repository / "alias_to_scope.py").symlink_to("source-A\u0301/local_alias.py")
+    for selection in (scope, repository / "source-Á") if sys.platform == "darwin" else (scope,):
+        result = _run(repository, selection).stdout
+        assert "files=1 symbols=2" in result and "local_alias.py" in result
+        assert all(name not in result for name in ("escape.py", "broken.py", "loop.py", "alias_to_scope.py"))
+        escaped = _run(repository, selection, "--query", "escaped_probe").stdout
+        assert "outside-only-sentinel" not in escaped and "escape.py" not in escaped
+    first = _run(repository, scope, "--query", "app.create").stdout
+    assert "DEFINITION pkg/app.py:5-6" in first
+    warm = _run(repository, scope, "--query", "app.create").stdout
+    assert "indexed=0" in warm and "DEFINITION pkg/app.py:5-6" in warm
+    (repository / "pkg/app.py").write_text("def replaced_probe():\n    return 55\n")
+    changed = _run(repository, scope, "--query", "replaced_probe").stdout
+    assert "return 55" in changed and "DEFINITION pkg/app.py:1-2" in changed
+    alias = _run(repository, scope / "local_alias.py").stdout
+    assert "files=1 symbols=1" in alias and "pkg/app.py" in alias
+    assert "local_alias.py" not in alias and "alias_to_scope.py" not in alias
+
+
 def test_native_installed_guidance_is_project_bound_and_local_guidance_wins(tmp_path):
     repository = _repository(tmp_path)
     installed = tmp_path / "installed"
@@ -295,6 +385,7 @@ def test_native_python_names_and_async_status_survive_cache_reapply(tmp_path, mo
        gap=st.sampled_from([" ", "\t", " \t", "\f"]), name=st.sampled_from(["generated_probe", "K", "ﬃ", "Ａ", "é"]))
 @example(filename=b"case", asynchronous=True, argument="item", gap="\t", name="K")
 @example(filename=b"ascii", asynchronous=True, argument="item", gap="\t", name="generated_probe")
+@example(filename="A\u0301".encode(), asynchronous=False, argument="item", gap=" ", name="generated_probe")
 def test_native_syntax_and_path_bytes_keep_ast_symbols_without_string_definitions(filename, asynchronous, argument, gap, name):
     with tempfile.TemporaryDirectory(prefix="map-generated-", dir=os.environ.get("TMPDIR")) as directory:
         repository = _repository(Path(directory))
