@@ -77,21 +77,34 @@ For example, run access on the software-isolation host:
 ./tests/blackbox/run-installed.sh systrap --section access
 ```
 
-For the continuous Ubuntu operator/guest path, select the prepared native bundle
-and a desktop-capable `SAFEYOLO_PLATFORM_ASSETS` tree. The guest must already
+For the continuous Ubuntu or physical Mac operator/guest path, select the
+prepared native bundle and a desktop-capable `SAFEYOLO_PLATFORM_ASSETS` tree. The guest must already
 contain Xvfb, x11vnc, websockify, a supported window manager and noVNC assets;
 the procedure checks these inputs and does not install guest packages. No proxy
-or guest needs to be running. From the clean test checkout, run:
+or guest needs to be running. From the clean test checkout on Ubuntu, run:
 
 ```sh
 ./tests/blackbox/run-installed.sh systrap --section access --operator-journey
 ```
 
+On a physical Apple Silicon Mac, the platform assets must include the kernel,
+initramfs and desktop-capable `rootfs-base.ext4`. Verify that the selected native
+shell works under the test account before the journey. The VZ fixture uses
+46370/46372 for owned NATS, 46371 for Admin, 46373/46374 for HTTP/HTTPS and
+46375 for desktop presentation. Those TCP ports must be permitted and free.
+From the clean test checkout on that Mac, run:
+
+```sh
+./tests/blackbox/run-installed.sh vz --section access --operator-journey
+```
+
 This selection uses one installed instance and agent for access, terminal
 attachment plus an independent shell, native Admin desktop presentation and
 missing-target reporting, then stop/restart and fresh traffic. It runs an owned
-shell marker command, with no model or simulated login. HTTP export remains
-`raw_request`. The runner stops its agents, proxy, Coord and fixture processes.
+shell marker command, with no model or simulated login. Desktop observations
+cover the unlocked noVNC page and a live VNC banner; they do not prove visual
+interaction. HTTP export remains `raw_request`. The runner stops its agents,
+proxy, Coord and fixture processes.
 `access/installed-access.json` retains reached access observations if a later
 operator step fails; `operator_incomplete` is not a completed journey. When only
 test inputs changed, use `--install-checkout` and `--install-commit` to name the

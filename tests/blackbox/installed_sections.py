@@ -241,7 +241,7 @@ def main() -> int:
     parser.add_argument("lane", choices=SECTIONS)
     parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
     parser.add_argument("--operator-journey", action="store_true",
-                        help="Extend the selected systrap access section with terminal, desktop and restart observations")
+                        help="Extend the selected systrap or VZ access section with terminal, desktop and restart observations")
     parser.add_argument("--install-commit", help="exact commit; defaults to this checkout's HEAD")
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
@@ -257,8 +257,8 @@ def main() -> int:
     sections = tuple(args.section or SECTIONS[args.lane])
     if any(section not in SECTIONS[args.lane] for section in sections) or len(set(sections)) != len(sections):
         parser.error("sections must be distinct and supported by the selected lane")
-    if args.operator_journey and (args.lane != "systrap" or sections != ("access",)):
-        parser.error("--operator-journey requires systrap --section access")
+    if args.operator_journey and (args.lane not in {"systrap", "vz"} or sections != ("access",)):
+        parser.error("--operator-journey requires systrap or vz --section access")
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
     # Short roots also keep configured UDS paths within macOS's pathname limit.

@@ -368,16 +368,17 @@ def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
     else:
         raise AssertionError("missing desktop target unexpectedly opened")
     return {"agent_id": agent_id, "url": presentation["url"], "page_status": 200,
-            "vnc_banner": banner.decode("ascii"), "missing_target_status": 404}
+            "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
+            "observation_scope": "unlocked noVNC page and live VNC banner; no visual interaction"}
 
 
 def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: dict,
-                     sinkhole: SinkholeClient) -> dict:
+                     sinkhole: SinkholeClient, *, platform: str) -> dict:
     """Return to the same installed target and observe new usable traffic."""
     prefix = [cli, "--root", str(root)]
     instance = (root / "data/instance_id").read_text()
     policy = _sha256(root / "policy.toml")
-    before = guest(cli, agent, "systrap", marker + "-before", "operator-traffic")
+    before = guest(cli, agent, platform, marker + "-before", "operator-traffic")
     checked([*prefix, "agent", "stop", agent], timeout=130)
     stopped = json.loads(checked([*prefix, "agent", "status", agent]).stdout)
     assert stopped["runtime_state"] == "stopped", stopped
@@ -390,8 +391,8 @@ def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: di
     assert returned["runtime_state"] == "running" and returned["agent_id"] == terminal["agent_id"], returned
     assert returned["run_id"] != terminal["run_id"], "restart reused the stopped guest run"
     assert (root / "data/instance_id").read_text() == instance and _sha256(root / "policy.toml") == policy
-    after = guest(cli, agent, "systrap", marker + "-after", "operator-traffic")
-    history = guest(cli, agent, "systrap", marker, "coord-read", message="p3-first:" + marker)
+    after = guest(cli, agent, platform, marker + "-after", "operator-traffic")
+    history = guest(cli, agent, platform, marker, "coord-read", message="p3-first:" + marker)
     paths = {f"/installed-flow/{marker}-{phase}/{agent}" for phase in ("before", "after")}
     requests = [row for row in sinkhole.get_requests() if row.path in paths]
     assert len(requests) == 2 and {row.host for row in requests} == {"api.github.com"}, "restart origin delivery mismatch"
@@ -414,10 +415,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--install-commit", required=True)
     parser.add_argument("--operator-journey", action="store_true",
-                        help="Observe the continuous Ubuntu terminal/desktop/restart path in this access instance")
+                        help="Observe terminal, desktop and restart in this systrap or VZ access instance")
     args = parser.parse_args()
-    if args.operator_journey and args.platform != "systrap":
-        parser.error("--operator-journey requires systrap")
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
@@ -561,7 +560,9 @@ def main() -> None:
             args.output.write_text(json.dumps(report, indent=2) + "\n")
             report["operator"]["desktop"] = operator_desktop(admin, terminal["agent_id"])
             args.output.write_text(json.dumps(report, indent=2) + "\n")
-            report["operator"]["restart"] = operator_restart(cli, config_dir, args.agent, marker, terminal, sinkhole)
+            report["operator"]["restart"] = operator_restart(
+                cli, config_dir, args.agent, marker, terminal, sinkhole, platform=args.platform,
+            )
             report["status"] = "journeys_passed"
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"{args.platform} access: six installed guest journeys and operator effects verified ({args.output})")
