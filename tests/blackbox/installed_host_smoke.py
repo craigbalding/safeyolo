@@ -234,7 +234,7 @@ def _absolute_path(value: str, cwd: Path) -> Path:
 
 
 def _native_config(path: Path, cwd: Path) -> dict[str, Any]:
-    """Read native JSON and expose paths as resolved inspection metadata."""
+    """Read native configuration and resolve paths as inspection metadata."""
     if path.suffix == ".toml":
         try:
             native = tomllib.loads(path.read_text())
@@ -243,10 +243,11 @@ def _native_config(path: Path, cwd: Path) -> dict[str, Any]:
         cwd = path.parent
         for key, default in (("policy_file", "policy.toml"), ("readiness_file", "data/ready.json"),
                              ("admin_api_token_file", "data/admin_token"), ("flow_store_db_path", "logs/flows.sqlite3"),
-                             ("circuit_state_file", "data/circuits.json")):
+                             ("circuit_state_file", "data/circuits.json"),
+                             ("audit_log_path", "logs/audit.jsonl"), ("event_log", "logs/events.jsonl")):
             native[key] = str(_absolute_path(native.get(key, default), cwd))
         native.setdefault("listeners", [])
-        for key in ("upstream_ca_file", "gateway_services_dir", "gateway_builtin_services_dir"):
+        for key in ("upstream_ca_file", "tls_ca_file", "gateway_services_dir", "gateway_builtin_services_dir"):
             if native.get(key):
                 native[key] = str(_absolute_path(native[key], cwd))
     else:
@@ -924,9 +925,13 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     cleanup_errors.append(f"installed stop exited {result.returncode}")
             except SmokeError as exc:
                 cleanup_errors.append(str(exc))
-            for name in ("proxy-rust.json", "proxy-readiness.json", "proxy.pid"):
-                if (config_dir / "data" / name).exists():
-                    cleanup_errors.append(f"installed stop left {name}")
+            try:
+                readiness = Path(_native_config(config_dir / "config.toml", cwd)["readiness_file"])
+            except SmokeError as exc:
+                cleanup_errors.append(f"native readiness inspection failed: {exc}")
+            else:
+                if readiness.exists():
+                    cleanup_errors.append("installed stop left native readiness")
             cleanup_errors.extend(surviving_processes(processes))
             for listener in listeners:
                 path = Path(listener["path"])

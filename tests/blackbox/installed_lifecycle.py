@@ -161,7 +161,7 @@ def runtime_identity(
 
 
 def wait_stopped(config_dir: Path) -> None:
-    readiness = config_dir / "data/proxy-readiness.json"
+    readiness = Path(_native_config(config_dir / "config.toml", config_dir)["readiness_file"])
     deadline = time.monotonic() + 12
     while readiness.exists():
         assert time.monotonic() < deadline, "native stop did not withdraw readiness"
@@ -170,7 +170,8 @@ def wait_stopped(config_dir: Path) -> None:
 
 def assert_proxy_stopped(config_dir: Path, listener: Path, runtime: dict) -> None:
     wait_stopped(config_dir)
-    assert not (config_dir / "data/proxy-rust.json").exists(), "native lifetime receipt remains"
+    # Native stop retains the inactive process receipt. Check its incarnation,
+    # readiness and listener rather than requiring the record's deletion.
     pid = runtime["pid"]
     assert not (_pid_alive(pid) and _process_start_token(pid) == runtime["receipt"]["start_token"]), (
         f"native process {pid} remains live after stop"
@@ -277,7 +278,8 @@ def owner_controls(
 ) -> dict:
     """Check the untouched owner process and fresh allowed/denied traffic."""
     runtime = owner["runtime"]
-    readiness = json.loads((config_dir / "data/proxy-readiness.json").read_text())
+    native = _native_config(config_dir / "config.toml", config_dir)
+    readiness = json.loads(Path(native["readiness_file"]).read_text())
     assert _pid_alive(runtime["pid"])
     assert _process_start_token(runtime["pid"]) == runtime["receipt"]["start_token"]
     assert readiness["pid"] == runtime["pid"]

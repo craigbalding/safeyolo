@@ -240,6 +240,28 @@ def test_native_receipt_is_bound_to_the_live_process_and_actual_config(tmp_path,
             observe()
 
 
+@pytest.mark.parametrize("ca_path", ["certs/signing.pem", "/configured/signing.pem", None])
+def test_native_toml_inspection_uses_instance_relative_paths_and_runtime_defaults(
+    tmp_path, smoke_module, ca_path,
+):
+    root = tmp_path / "instance"
+    root.mkdir()
+    config = root / "config.toml"
+    config.write_text('readiness_file="data/selected-ready.json"\n' + (
+        f'tls_ca_file={json.dumps(ca_path)}\n' if ca_path is not None else ""
+    ))
+    # Runtime paths belong to config.toml, even when the consumer's cwd differs.
+    observed = smoke_module._native_config(config, tmp_path)["raw"]
+    assert observed["readiness_file"] == str(root / "data/selected-ready.json")
+    assert observed["audit_log_path"] == str(root / "logs/audit.jsonl")
+    assert observed["event_log"] == str(root / "logs/events.jsonl")
+    if ca_path is None:
+        assert "tls_ca_file" not in observed
+    else:
+        assert observed["tls_ca_file"] == str((root / ca_path).resolve())
+    assert config.read_text().count("tls_ca_file") == int(ca_path is not None)
+
+
 def test_authenticated_runtime_identity_matches_readiness_and_process(tmp_path: Path, smoke_module, monkeypatch) -> None:
     token_file = tmp_path / "admin_token"
     token_file.write_text("synthetic-operator-token\n")
