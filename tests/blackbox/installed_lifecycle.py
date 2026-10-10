@@ -62,7 +62,9 @@ def checked(
     return result
 
 
-def guest_command(cli: str, agent: str, phase: str, marker: str) -> list[str]:
+def guest_command(
+    cli: str, agent: str, phase: str, marker: str, *, env: dict[str, str] | None = None
+) -> list[str]:
     request = [
         "python3",
         "-m",
@@ -76,7 +78,7 @@ def guest_command(cli: str, agent: str, phase: str, marker: str) -> list[str]:
         "--marker",
         marker,
     ]
-    return guest_command_args(cli, agent, "cd /workspace && " + shlex.join(request))
+    return guest_command_args(cli, agent, "cd /workspace && " + shlex.join(request), env=env)
 
 
 def observation(output: str, phase: str, agent: str) -> dict:
@@ -89,7 +91,7 @@ def observation(output: str, phase: str, agent: str) -> dict:
 
 
 def guest(cli: str, agent: str, phase: str, marker: str, *, env: dict[str, str] | None = None) -> dict:
-    return observation(checked(guest_command(cli, agent, phase, marker), timeout=55, env=env).stdout, phase, agent)
+    return observation(checked(guest_command(cli, agent, phase, marker, env=env), timeout=55, env=env).stdout, phase, agent)
 
 
 def held_guest(cli: str, agent: str, phase: str, marker: str) -> tuple[subprocess.Popen[str], str]:

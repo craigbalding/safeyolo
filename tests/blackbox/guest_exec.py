@@ -14,11 +14,17 @@ import shlex
 import sys
 
 
-def guest_command_args(cli: str, agent: str, command: str, *, guest_root: bool = False) -> list[str]:
-    """Invoke the installed native shell; Python remains only a test workload."""
+def guest_command_args(
+    cli: str, agent: str, command: str, *, guest_root: bool = False, env: dict[str, str] | None = None
+) -> list[str]:
+    """Invoke the installed native shell; Python remains only a test workload.
+
+    Use the supplied invocation environment, or the current environment by default.
+    """
     if guest_root:
         command = "exec sudo -n /bin/bash -lc " + shlex.quote(command)
-    root = os.environ.get("SAFEYOLO_CONFIG_DIR")
+    environment = os.environ if env is None else env
+    root = environment.get("SAFEYOLO_CONFIG_DIR")
     selected = [cli, "--root", root] if root else [cli]
     return [*selected, "agent", "shell", agent, "-c", command]
 

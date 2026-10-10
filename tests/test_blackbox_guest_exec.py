@@ -9,6 +9,7 @@ import subprocess
 import sys
 import venv
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,3 +106,87 @@ def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeyp
                  installed_lifecycle.guest_command(cli, 'marker', 'tls', literal)):
         assert args[:-1] == [cli, '--root', '/selected-root', 'agent', 'shell', 'marker', '-c']
         assert shlex.split(args[-1])[shlex.split(args[-1]).index('--marker') + 1] == literal
+
+
+@pytest.fixture
+def lifecycle_cli_probe(tmp_path):
+    """Record real subprocess operands; the guest workload remains controlled."""
+    cli = tmp_path / 'lifecycle-cli'
+    calls = tmp_path / 'guest-calls.jsonl'
+    cli.write_text(f'''#!{sys.executable}
+import json, os, shlex, sys
+arguments = sys.argv[1:]
+request = shlex.split(arguments[-1])
+phase = request[request.index('--phase') + 1]
+agent = arguments[arguments.index('shell') + 1]
+result = {{'argv': arguments, 'root': os.environ.get('SAFEYOLO_CONFIG_DIR'),
+          'platform': request[request.index('--platform') + 1],
+          'status': 200 if phase == 'echo' else 403}}
+with open({str(calls)!r}, 'a') as output:
+    output.write(json.dumps(result) + '\\n')
+print('P4_OBSERVATION=' + json.dumps({{'phase': phase, 'agent': agent,
+      'forwarder': {{'pid': os.getpid()}}, 'result': result}}))
+''')
+    cli.chmod(0o755)
+    return str(cli), calls
+
+
+@pytest.mark.parametrize('invocation', ['ambient', 'owner', 'missing-root', 'empty'])
+def test_lifecycle_guest_selects_root_from_its_subprocess_environment(tmp_path, monkeypatch,
+                                                                  lifecycle_cli_probe, invocation):
+    subject, owner = str(tmp_path / 'subject'), str(tmp_path / 'owner with spaces')
+    monkeypatch.setenv('SAFEYOLO_CONFIG_DIR', subject)
+    monkeypatch.setenv('SAFEYOLO_BLACKBOX_PLATFORM', 'systrap')
+    environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=owner)
+    expected_root = owner
+    if invocation == 'ambient':
+        environment, expected_root = None, subject
+    elif invocation == 'missing-root':
+        environment.pop('SAFEYOLO_CONFIG_DIR')
+        expected_root = None
+    elif invocation == 'empty':
+        environment, expected_root = {}, None
+    cli, _ = lifecycle_cli_probe
+
+    result = installed_lifecycle.guest(cli, 'bbowner', 'echo', 'p4-marker', env=environment)
+    selected = ['--root', expected_root] if expected_root else []
+    assert result['argv'][:-1] == [*selected, 'agent', 'shell', 'bbowner', '-c']
+    assert result['root'] == expected_root
+    assert result['platform'] == 'systrap'
+    assert os.environ['SAFEYOLO_CONFIG_DIR'] == subject
+
+
+def test_lifecycle_owner_controls_use_owner_root_for_both_guest_calls(tmp_path, monkeypatch, lifecycle_cli_probe):
+    subject = tmp_path / 'subject'
+    owner = tmp_path / 'owner'
+    owner.mkdir()
+    monkeypatch.setenv('SAFEYOLO_CONFIG_DIR', str(subject))
+    config, policy = owner / 'config.toml', owner / 'policy.toml'
+    config.write_text('readiness_file = "ready.json"\n')
+    policy.write_text('budget = 12000\n')
+    pid = os.getpid()
+    readiness = {'pid': pid, 'instance_id': 'owner-instance'}
+    (owner / 'ready.json').write_text(json.dumps(readiness))
+    runtime = {'pid': pid, 'receipt': {'start_token': installed_lifecycle._process_start_token(pid)},
+               'readiness': readiness}
+    observation = {'runtime': runtime, 'config_sha256': installed_lifecycle._sha256(config),
+                   'policy_sha256': installed_lifecycle._sha256(policy)}
+    # Process/file identity is real; guest health and origin observations are
+    # controlled so this test isolates the owner -> guest command boundary.
+    monkeypatch.setattr(installed_lifecycle, '_probe_agent_health', lambda *_args: {'status': 200})
+    marker = 'p4-owner'
+    sinkhole = SimpleNamespace(get_requests=lambda **kwargs: (
+        [SimpleNamespace(path=f'/p4/echo/{marker}')] if kwargs['host'] == installed_lifecycle.FIXTURE else []
+    ))
+    environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=str(owner))
+    cli, calls = lifecycle_cli_probe
+
+    result = installed_lifecycle.owner_controls(cli, owner, owner / 'proxy.sock', observation,
+                                              environment, marker, sinkhole)
+    assert result == {'pid': pid, 'instance_id': 'owner-instance', 'allowed': 200, 'denied': 403}
+    operands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(operands) == 2
+    for operand in operands:
+        assert operand['argv'][:-1] == ['--root', str(owner), 'agent', 'shell', 'bbowner', '-c']
+        assert operand['root'] == str(owner)
+    assert os.environ['SAFEYOLO_CONFIG_DIR'] == str(subject)
