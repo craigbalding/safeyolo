@@ -407,7 +407,9 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
         name,
         launch_id,
         &serde_json::Map::from_iter([
-            ("state".to_owned(), "running".into()),
+            // Spawning the transport precedes guest command observation.
+            // Keep this launch reusable without claiming the command is live.
+            ("state".to_owned(), "launching".into()),
             ("pid".to_owned(), child_pid.into()),
             ("process_token".to_owned(), child_token.clone().into()),
         ]),
@@ -904,6 +906,29 @@ pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Valu
     {
         return Err("tmux did not report a valid pane for this launch".into());
     }
+    // The pane can be ready before its entrypoint claims the launch. Bind it
+    // here too, so a delegating script can prove that startup is still active.
+    let identified = tmux_command()
+        .arg("-S")
+        .arg(&socket)
+        .args([
+            "set-option",
+            "-p",
+            "-t",
+            pane,
+            "@safeyolo_launch_id",
+            launch_id,
+        ])
+        .output()
+        .await?;
+    if !identified.status.success() {
+        let current = read_json(&launch_path(name))?.ok_or("launch record disappeared")?;
+        if current["launch_id"] != launch_id
+            || !matches!(current["state"].as_str(), Some("exited" | "failed"))
+        {
+            return Err("Could not identify agent tmux pane".into());
+        }
+    }
     Ok(json!({"tmux_socket":socket,"pane_id":pane}))
 }
 
@@ -1089,6 +1114,44 @@ async fn checked_supervisor_state(
     Ok(supervisor)
 }
 
+fn confirm_observed_command(agent: &Agent, record: &Value, run_id: &Value) -> Result<bool, Error> {
+    let _lock = LaunchLock::acquire(&agent.name)?;
+    let Some(mut current) = read_json(&launch_path(&agent.name))? else {
+        return Ok(false);
+    };
+    if [
+        "agent_id",
+        "name",
+        "launch_id",
+        "command",
+        "launcher",
+        "runner_pid",
+        "runner_token",
+        "pid",
+        "process_token",
+    ]
+    .iter()
+    .any(|key| current[key] != record[key])
+        || !matches!(current["state"].as_str(), Some("launching" | "running"))
+        || !process_matches(&current, "runner_pid", "runner_token")
+        || !process_matches(&current, "pid", "process_token")
+        || crate::host_runs::id(&agent.name)?
+            != format!(
+                "safeyolo-{}",
+                run_id.as_str().ok_or("sandbox generation is missing")?
+            )
+    {
+        return Ok(false);
+    }
+    if current["state"] == "launching" {
+        // Remember confirmation so a later missing observation stays unknown.
+        // Recheck under the launch lock; never rewind stop or exit completion.
+        current["state"] = "running".into();
+        write_json(&launch_path(&agent.name), &current)?;
+    }
+    Ok(true)
+}
+
 pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
     let sandbox = crate::host_runs::observe(&agent.name).await;
     let proxy_attachment = match crate::native_config::read(&crate::host_platform::config_path()) {
@@ -1153,7 +1216,6 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 .unwrap_or_else(|error| json!({"kind":"unknown","error":error.to_string()}))
         });
     let mut state = "stopped".to_owned();
-    let mut attachable = false;
     let mut launch_id = Value::Null;
     let mut exit_code = Value::Null;
     let mut error = record_error
@@ -1215,18 +1277,29 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 if error.is_null() {
                     error = "Launch process exited without recording its result".into();
                 }
-            } else if recorded == "running" {
+            } else if recorded == "running"
+                || (recorded == "launching" && record.get("pid").is_some())
+            {
                 state = if process_matches(record, "pid", "process_token") {
-                    "running"
+                    recorded
                 } else if record.get("runner_pid").is_some() {
                     "finishing"
                 } else {
                     "exited"
                 }
                 .to_owned();
+            } else if recorded == "starting"
+                && matches!(
+                    launcher.get("kind").and_then(Value::as_str),
+                    Some("tmux-window" | "tmux-pane" | "script" | "manager")
+                )
+                && !terminal_live(record).await
+            {
+                // An unclaimed terminal launch is pending only while its
+                // owned pane is live. A returned script result is not proof.
+                state = "unknown".into();
+                error = "recorded terminal is absent or belongs to another launch; command startup is unverified".into();
             }
-            attachable = state == "running"
-                && launcher.get("kind").and_then(Value::as_str) != Some("interactive");
         }
     }
     // The checked supervisor already proves its exact managed command. The
@@ -1241,10 +1314,23 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 if launch_id.is_null() || matches!(state.as_str(), "stopped" | "exited" | "failed")
                 {
                     state = "manual".into();
-                    attachable = false;
                     launcher = json!({"kind":"manual","source":"observed guest command"});
                 } else if state == "unknown" {
                     state = "observed".into();
+                } else if state == "launching"
+                    && let Some(record) = record.as_ref().filter(|record| record["pid"].is_number())
+                {
+                    match confirm_observed_command(agent, record, &sandbox["run_id"]) {
+                        Ok(true) => state = "running".into(),
+                        Ok(false) => {
+                            state = "unknown".into();
+                            error = "host launch or sandbox generation changed during the guest check; command state is unknown".into();
+                        }
+                        Err(confirmation_error) => {
+                            state = "unknown".into();
+                            error = confirmation_error.to_string().into();
+                        }
+                    }
                 }
             }
             Ok(_) if state == "running" => {
@@ -1262,11 +1348,22 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
     } else if !ready && state != "finishing" {
         state = "stopped".into();
     }
+    // Project attachment after guest confirmation, which can promote this
+    // observation from launching to running. Delegating scripts retain their
+    // hook/attach identity but expose the same recorded tmux pane facts.
+    let mut attachable = state == "running"
+        && !matches!(
+            launcher.get("kind").and_then(Value::as_str),
+            Some("interactive" | "supervisor")
+        );
     if let Some(record) = record.as_ref()
-        && matches!(
-            record.pointer("/launcher/kind").and_then(Value::as_str),
+        && (matches!(
+            launcher.get("kind").and_then(Value::as_str),
             Some("tmux-window" | "tmux-pane")
-        )
+        ) || (matches!(
+            launcher.get("kind").and_then(Value::as_str),
+            Some("script" | "manager")
+        ) && (record.get("pane_id").is_some() || record.get("tmux_socket").is_some())))
     {
         attachable = terminal_live(record).await;
     }
@@ -1882,6 +1979,7 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
             current.pointer("/launcher/kind").and_then(Value::as_str),
             Some("script" | "manager")
         )
+        && !terminal_live(&current).await
     {
         current["state"] = "unknown".into();
     }
@@ -2083,6 +2181,95 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn command_confirmation_preserves_changed_launches_and_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let agent = crate::host_agents::configure(
+                "marker",
+                &[("folder".into(), temp.path().to_string_lossy().into_owned())],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            let run_id = json!("0123456789abcdef0123456789abcdef");
+            write_json(
+                &agent_dir(&agent.name).join("config-share/host-launch-context.json"),
+                &json!({"generation":run_id}),
+            )
+            .unwrap();
+            let pid = std::process::id();
+            let token = process_token(i64::from(pid)).unwrap();
+            let record = json!({"agent_id":agent.id,"name":agent.name,
+                "launch_id":"launch-current","command":"exec marker","state":"launching",
+                "launcher":{"kind":"foreground"},"runner_pid":pid,"runner_token":token,
+                "pid":pid,"process_token":token});
+            write_json(&launch_path(&agent.name), &record).unwrap();
+            assert!(confirm_observed_command(&agent, &record, &run_id).unwrap());
+            let confirmed = std::fs::read(launch_path(&agent.name)).unwrap();
+            assert!(confirm_observed_command(&agent, &record, &run_id).unwrap());
+            assert_eq!(std::fs::read(launch_path(&agent.name)).unwrap(), confirmed);
+            for (key, value) in [
+                ("state", json!("finishing")),
+                ("state", json!("exited")),
+                ("state", json!("stopping")),
+                ("launch_id", json!("launch-replacement")),
+                ("runner_token", json!("different-birth")),
+                ("process_token", json!("different-birth")),
+                ("command", json!("exec replacement")),
+            ] {
+                let mut changed = record.clone();
+                changed[key] = value;
+                write_json(&launch_path(&agent.name), &changed).unwrap();
+                let saved = std::fs::read(launch_path(&agent.name)).unwrap();
+                assert!(!confirm_observed_command(&agent, &record, &run_id).unwrap());
+                assert_eq!(std::fs::read(launch_path(&agent.name)).unwrap(), saved);
+            }
+            write_json(&launch_path(&agent.name), &record).unwrap();
+            assert!(!confirm_observed_command(&agent, &record, &json!("another-run")).unwrap());
+            assert_eq!(
+                read_json(&launch_path(&agent.name)).unwrap().unwrap(),
+                record
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn successful_script_without_an_owned_live_terminal_remains_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let workspace = temp.path().join("workspace");
+            std::fs::create_dir(&workspace).unwrap();
+            let script = temp.path().join("launcher.sh");
+            let agent = crate::host_agents::configure(
+                "marker",
+                &[("folder".into(), workspace.to_string_lossy().into_owned())],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            for output in ["", r#"{"pane_id":"%0","tmux_socket":"/missing-817-tmux"}"#] {
+                std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' '{output}'\n")).unwrap();
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let record = json!({"agent_id":agent.id,"name":agent.name,
+                    "launch_id":"launch-noop","state":"starting",
+                    "launcher":{"kind":"script","script":script}});
+                write_json(&launch_path(&agent.name), &record).unwrap();
+                launch_script(&agent, &record).await.unwrap();
+                let saved = read_json(&launch_path(&agent.name)).unwrap().unwrap();
+                assert_eq!(saved["state"], "unknown");
+                assert!(!reuses_current_launch(
+                    &json!({"agent_state":saved["state"]})
+                ));
+                assert!(!saved["runner_pid"].is_number());
+            }
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn supervisor_observation_binds_the_launch_without_comparing_host_time() {
