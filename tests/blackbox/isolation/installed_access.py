@@ -69,6 +69,22 @@ def service_token(service: str) -> str:
     raise AssertionError(f"authorized {service} gateway token did not appear")
 
 
+def wait_for_owned_flow(agent: str, host: str, request_id: str, *, limit: int = 100) -> dict:
+    """Wait for the asynchronous store without accepting another request or owner."""
+    deadline = time.monotonic() + 7
+    while True:
+        search = api("POST", "/api/flows/search", payload={"host": host, "limit": limit})
+        assert search[0] == 200, search
+        rows = search[2]["flows"]
+        assert all(row["agent_id"] == row["evidence_owner"] == agent for row in rows), search
+        owned = [row for row in rows if row["request_id"] == request_id]
+        if owned:
+            assert len(owned) == 1, owned
+            return owned[0]
+        assert time.monotonic() < deadline, f"guest-owned flow did not persist: {request_id}"
+        time.sleep(0.1)
+
+
 def access() -> dict:
     basic = api(
         "POST",
@@ -197,17 +213,14 @@ def context_and_evidence(agent: str, marker: str) -> dict:
     request_id = headers["x-safeyolo-request-id"]
     trace = api("GET", "/trace?request_id=" + quote(request_id))
     assert trace[0] == 200 and trace[2]["agent_id"] == agent, trace
-    flows = api("POST", "/api/flows/search", payload={"host": BASIC_HOST, "limit": 30})
-    assert flows[0] == 200, flows
-    owned = [row for row in flows[2]["flows"] if row["request_id"] == request_id]
-    assert len(owned) == 1 and owned[0]["agent_id"] == agent, flows
-    detail = api("GET", f"/api/flows/{owned[0]['id']}")
+    owned = wait_for_owned_flow(agent, BASIC_HOST, request_id, limit=30)
+    detail = api("GET", f"/api/flows/{owned['id']}")
     assert detail[0] == 200 and detail[2]["request_id"] == request_id, detail
     cleared = api("DELETE", "/api/test-context/current")
     assert cleared[0] == 200, cleared
     after = api("GET", "/api/test-context/current")
     assert after[0] == 200 and after[2].get("context") is None, after
-    return {"declared_agent": agent, "trace_request_id": request_id, "flow_id": owned[0]["id"], "cleared": True}
+    return {"declared_agent": agent, "trace_request_id": request_id, "flow_id": owned["id"], "cleared": True}
 
 
 def seed_owned_flow(agent: str, marker: str) -> dict:
@@ -219,22 +232,11 @@ def seed_owned_flow(agent: str, marker: str) -> dict:
     })
     assert status == 200 and json.loads(raw)["received"] is True, (status, raw)
     request_id = headers["x-safeyolo-request-id"]
-    deadline = time.monotonic() + 7
-    while True:
-        search = api("POST", "/api/flows/search", payload={"host": FLOW_HOST, "limit": 100})
-        assert search[0] == 200, search
-        rows = search[2]["flows"]
-        assert all(row["agent_id"] == row["evidence_owner"] == agent for row in rows), search
-        owned = [row for row in rows if row["request_id"] == request_id]
-        if owned:
-            break
-        assert time.monotonic() < deadline, f"guest-owned flow did not persist: {request_id}"
-        time.sleep(0.1)
-    assert len(owned) == 1, owned
-    detail = api("GET", f"/api/flows/{owned[0]['id']}")
+    owned = wait_for_owned_flow(agent, FLOW_HOST, request_id)
+    detail = api("GET", f"/api/flows/{owned['id']}")
     assert detail[0] == 200 and detail[2]["agent_id"] == detail[2]["evidence_owner"] == agent, detail
     assert detail[2]["request_id"] == request_id, detail
-    return {"agent_id": agent, "flow_id": owned[0]["id"], "request_id": request_id}
+    return {"agent_id": agent, "flow_id": owned["id"], "request_id": request_id}
 
 
 def operator_traffic(agent: str, marker: str) -> dict:
