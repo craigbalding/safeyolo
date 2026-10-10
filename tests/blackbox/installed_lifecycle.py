@@ -312,17 +312,18 @@ def event_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def policy_reload_count(path: Path) -> int:
-    return sum(row.get("event") == "ops.policy_reload" for row in event_rows(path))
+def policy_load_count(path: Path) -> int:
+    return sum(row.get("event") == "ops.policy_loaded" for row in event_rows(path))
 
 
-def wait_policy_reload(path: Path, previous: int) -> int:
-    deadline = time.monotonic() + 10
+def wait_policy_load(path: Path, previous: int, *, timeout: float = 10) -> int:
+    """Observe a new native load; traffic must separately prove activation."""
+    deadline = time.monotonic() + timeout
     while True:
-        current = policy_reload_count(path)
+        current = policy_load_count(path)
         if current > previous:
             return current
-        assert time.monotonic() < deadline, "native policy watcher did not publish the changed policy"
+        assert time.monotonic() < deadline, "native policy watcher did not load the changed policy"
         time.sleep(0.05)
 
 
@@ -444,9 +445,9 @@ def main() -> None:
         before = control("GET", f"/p2/state/{sse_marker}")
         assert before["first_sent"] and not before["released"] and not before["finished"], before
         audit_path = Path(native["audit_log_path"])
-        reload_before = policy_reload_count(audit_path)
+        load_before = policy_load_count(audit_path)
         admin.deny_host("failing.test")
-        denied_reload = wait_policy_reload(audit_path, reload_before)
+        denied_load = wait_policy_load(audit_path, load_before)
         origin_before_denial = len(
             [row for row in sinkhole.get_requests(host=FIXTURE) if row.path == f"/p4/echo/{marker}"]
         )
@@ -456,12 +457,15 @@ def main() -> None:
             len([row for row in sinkhole.get_requests(host=FIXTURE) if row.path == f"/p4/echo/{marker}"])
             == origin_before_denial
         )
+        during_denial = control("GET", f"/p2/state/{sse_marker}")
+        assert active.poll() is None
+        assert during_denial["first_sent"] and not during_denial["released"] and not during_denial["finished"], during_denial
         assert control("POST", f"/p2/release/{sse_marker}")["status"] == "released"
         sse = finish_guest(active, first, "sse", args.agent)
         active = None
         assert control("GET", f"/p2/state/{sse_marker}")["finished"]
         admin.allow_host("failing.test", rate=600)
-        allowed_reload = wait_policy_reload(audit_path, denied_reload)
+        allowed_load = wait_policy_load(audit_path, denied_load)
         allowed = guest(cli, args.agent, "echo", marker)
         assert allowed["status"] == 200, allowed
 
@@ -590,9 +594,9 @@ def main() -> None:
             "listener": {"peer_socket": str(peer_socket), "added_used_removed": True, "primary_still_usable": True},
             "policy": {
                 "admitted_sse": sse,
-                "denied_reload": denied_reload,
+                "denied_load": denied_load,
                 "new_denied": denied,
-                "allowed_reload": allowed_reload,
+                "allowed_load": allowed_load,
                 "new_allowed": allowed,
             },
             "tls": {
