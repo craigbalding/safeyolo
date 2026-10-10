@@ -491,7 +491,8 @@ fi
 python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR"
 
 # Fixture ports, services and test context use only the native configuration/policy.
-python3 - "$SAFEYOLO_CONFIG_DIR" "$TEST_ADMIN_PORT" "$ACCESS" "$WORKLOADS" <<'PY_CONFIG'
+python3 - "$SAFEYOLO_CONFIG_DIR" "$TEST_ADMIN_PORT" "$ACCESS" "$WORKLOADS" \
+    "$EXPECTED_PLATFORM" "${#OPERATOR_JOURNEY_ARGS[@]}" <<'PY_CONFIG'
 import sys
 from pathlib import Path
 import tomlkit
@@ -500,6 +501,10 @@ config = tomlkit.parse((root / "config.toml").read_text())
 config["admin_port"] = int(sys.argv[2])
 config["gateway_builtin_services_dir"] = str(root / "assets/services")
 config["gateway_services_dir"] = str(root / "services")
+if sys.argv[5] == "vz" and sys.argv[6] == "1":
+    # The access selection has no lifecycle owner; use its permitted port
+    # for the operator's desktop instead of an ephemeral host listener.
+    config.setdefault("desktop", tomlkit.table())["present_host_port"] = 46375
 (root / "services").mkdir(exist_ok=True)
 (root / "config.toml").write_text(tomlkit.dumps(config))
 policy_path = root / "policy.toml"

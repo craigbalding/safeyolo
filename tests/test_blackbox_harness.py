@@ -1328,7 +1328,9 @@ OTHER_REVISION = "b" * 40
 SELECTED_REVISION = "a" * 40
 
 
-def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform,operator_journey", [("systrap", False), ("systrap", True),
+                                                        ("vz", False), ("vz", True)])
+def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch, platform, operator_journey):
     """Read the launcher's final native policy and capture its matching guest calls."""
     binary = os.environ.get('SAFEYOLO_TEST_NATIVE_CLI')
     if not binary:
@@ -1342,20 +1344,27 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
     environment.update(
         SAFEYOLO_CONFIG_DIR=str(source),
         SAFEYOLO_TEST_CONFIG_DIR=str(instance),
+        SAFEYOLO_NATIVE_CLI=str(binary),
         PATH=f"{tools}:{Path(sys.executable).parent}:{environment['PATH']}",
         PYTHONPATH=f"{ROOT / 'tests/reference'}:{ROOT}",
     )
     command = [
         str(ROOT / "tests/blackbox/run-tests.sh"),
         "--expect-platform",
-        "systrap",
+        platform,
         "--proxy-impl",
         "rust",
         "--access-config-only",
     ]
+    if operator_journey:
+        command.append("--operator-journey")
     prepared = subprocess.run(command, env=environment, cwd=ROOT, capture_output=True, text=True, timeout=60)
     assert prepared.returncode == 0, prepared.stdout[-1000:] + prepared.stderr[-1000:]
     assert "no proxy or guest started" in prepared.stdout
+    config = tomllib.loads((instance / "config.toml").read_text())
+    assert config.get("desktop", {}).get("present_host_port", 0) == (
+        46375 if platform == "vz" and operator_journey else 0
+    )
     targets = tomllib.loads((instance / "policy.toml").read_text())["controls"]["test_context"]["target_hosts"]
     policy = tomllib.loads((instance / "policy.toml").read_text())
     assert policy["hosts"][guest.BASIC_HOST]["service"] == "p3_basic"
@@ -1762,20 +1771,64 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     assert "--operator-journey" not in selected
 
 
+@pytest.mark.parametrize("platform", ["systrap", "vz"])
 def test_installed_operator_selection_keeps_one_access_root_and_owned_cleanup(
-    tmp_path, installed_section_commands
+    tmp_path, installed_section_commands, platform
 ):
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     assert installed_sections.run_sections(
-        "systrap", ("access",), installed_section_commands, "a" * 40, directory, artifacts,
+        platform, ("access",), installed_section_commands, "a" * 40, directory, artifacts,
         operator_journey=True,
     ) == 0
     selected = json.loads((directory / "access/selection.json").read_text())
-    assert selected == ["--expect-platform", "systrap", "--proxy-impl", "rust", "--access",
+    assert selected == ["--expect-platform", platform, "--proxy-impl", "rust", "--access",
                         "--operator-journey", "--install-commit", "a" * 40]
     report = json.loads((artifacts / "installed-sections.json").read_text())
     assert len(report["sections"]) == 1 and report["sections"][0]["cleanup"] == "stopped"
     assert not list(directory.glob("*/agents/*/container.pid"))
+
+
+@pytest.mark.parametrize("platform,sections,valid", [
+    ("systrap", ["access"], True), ("vz", ["access"], True),
+    ("kvm", ["isolation"], False), ("vz", [], False),
+    ("vz", ["access", "lifecycle"], False),
+])
+def test_operator_cli_selection_requires_one_supported_access_section(
+    tmp_path, monkeypatch, platform, sections, valid
+):
+    arguments = ["run-installed", platform, "--operator-journey"]
+    for section in sections:
+        arguments.extend(["--section", section])
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(installed_sections.subprocess, "check_output",
+                        lambda args, **kwargs: "a" * 40 if "rev-parse" in args else "")
+    calls = []
+    monkeypatch.setattr(installed_sections, "run_sections", lambda *args, **kwargs: calls.append((args, kwargs)) or 0)
+    monkeypatch.setattr(installed_sections.tempfile, "mkdtemp", lambda **kwargs: str(tmp_path))
+    if valid:
+        assert installed_sections.main() == 0
+        assert calls[0][0][:2] == (platform, ("access",))
+        assert calls[0][1] == {"operator_journey": True}
+    else:
+        with pytest.raises(SystemExit) as error:
+            installed_sections.main()
+        assert error.value.code == 2 and calls == []
+
+
+@pytest.mark.parametrize("platform", ["systrap", "vz"])
+def test_operator_access_checks_selected_source_before_runtime_setup(tmp_path, platform):
+    """Both operator paths must reach the existing installed-source refusal."""
+    result = subprocess.run([
+        sys.executable, str(ROOT / "tests/blackbox/installed_access.py"),
+        "--config-dir", str(tmp_path / "uncreated"), "--agent", "bbtest",
+        "--runtime", str(tmp_path / "unread-runtime.json"), "--platform", platform,
+        "--output", str(tmp_path / "unwritten.json"), "--install-commit", "a" * 40,
+        "--operator-journey",
+    ], env={**os.environ, "SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT": str(ROOT),
+            "PYTHONPATH": f"{ROOT / 'tests/reference'}:{ROOT}"},
+        capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1 and "expected " + "a" * 40 in result.stderr, result.stderr
+    assert not (tmp_path / "uncreated").exists() and not (tmp_path / "unwritten.json").exists()
 
 
 @pytest.mark.parametrize("status,headers", [(200, {}), (403, {}), (403, {"x-blocked-by": "credentials"}),
@@ -1851,6 +1904,7 @@ def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_tar
             observed = installed_access.operator_desktop(api, "ag-owned")
             assert observed["agent_id"] == "ag-owned" and observed["missing_target_status"] == 404
             assert observed["vnc_banner"] == "RFB 003.008\n" and "unlock_code" not in observed
+            assert observed["observation_scope"] == "unlocked noVNC page and live VNC banner; no visual interaction"
         assert requests == [("/_safeyolo_preview/unlock", b"code=synthetic-only"),
                             ("/vnc.html", "fixture_preview=owned")]
         assert targets[0] == "ag-owned"

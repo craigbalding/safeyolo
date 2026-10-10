@@ -152,6 +152,75 @@ elif operation == 'shell':
     assert commands[4][:4] == ['agent', 'shell', 'bbtest', '-c']
 
 
+@pytest.mark.parametrize('platform', ['systrap', 'vz'])
+@pytest.mark.parametrize('failure', [None, 'same-run', 'lost-origin'])
+def test_operator_restart_retains_selected_guest_transport_and_requires_fresh_run_and_delivery(
+    tmp_path, monkeypatch, platform, failure
+):
+    """Reach native lifecycle and guest-call subprocesses with a controlled transport."""
+    root = tmp_path / 'selected root'
+    (root / 'data').mkdir(parents=True)
+    (root / 'data/instance_id').write_text('sy-owned\n')
+    (root / 'policy.toml').write_text('[hosts]\n')
+    native = root / 'safeyolo'
+    native.write_text(f'''#!{sys.executable}
+import json, os, pathlib, shlex, sys
+root = pathlib.Path({str(root)!r})
+assert sys.argv[1:3] == ['--root', str(root)], 'ambient root selected'
+arguments = sys.argv[3:]
+with (root / 'calls').open('a') as output:
+    output.write(json.dumps(arguments) + '\\n')
+if arguments[:2] == ['agent', 'shell']:
+    request = shlex.split(arguments[-1])
+    assert request[request.index('--platform') + 1] == {platform!r}, 'wrong guest bridge selected'
+    phase = request[request.index('--phase') + 1]
+    marker = request[request.index('--marker') + 1]
+    result = {{'marker': marker, 'platform': {platform!r}}}
+    if phase == 'coord-read':
+        result['found'] = request[request.index('--message') + 1]
+    print('P3_OBSERVATION=' + json.dumps({{'phase': phase, 'agent': 'bbtest',
+          'forwarder': {{'pid': os.getpid()}}, 'result': result}}))
+elif arguments == ['agent', 'stop', 'bbtest']:
+    (root / 'stopped').touch()
+elif arguments == ['agent', 'attach', 'bbtest']:
+    assert (root / 'stopped').exists()
+    print('coding-agent terminal is absent', file=sys.stderr)
+    sys.exit(1)
+elif arguments == ['agent', 'start', 'bbtest']:
+    (root / 'stopped').unlink()
+elif arguments == ['agent', 'status', 'bbtest']:
+    stopped = (root / 'stopped').exists()
+    print(json.dumps({{'runtime_state': 'stopped' if stopped else 'running', 'agent_id': 'ag-owned',
+                      'run_id': {'"run-before"' if failure == 'same-run' else '"run-after"'}}}))
+else:
+    assert arguments in (['stop'], ['start']), arguments
+''')
+    native.chmod(0o755)
+    monkeypatch.setenv('SAFEYOLO_CONFIG_DIR', str(root))
+    deliveries = [SimpleNamespace(host='api.github.com', path=f'/installed-flow/r3-{phase}/bbtest')
+                  for phase in ('before', 'after')]
+    if failure == 'lost-origin':
+        deliveries.pop()
+    sinkhole = SimpleNamespace(get_requests=lambda: deliveries)
+    terminal = {'agent_id': 'ag-owned', 'run_id': 'run-before'}
+    if failure:
+        with pytest.raises(AssertionError):
+            installed_access.operator_restart(str(native), root, 'bbtest', 'r3', terminal,
+                                              sinkhole, platform=platform)
+    else:
+        result = installed_access.operator_restart(str(native), root, 'bbtest', 'r3', terminal,
+                                                  sinkhole, platform=platform)
+        assert result['before_run_id'] != result['after_run_id']
+        assert result['traffic_before']['platform'] == result['traffic_after']['platform'] == platform
+        assert result['retained_coord']['found'] == 'p3-first:r3'
+        assert result['allowed_origin_deliveries'] == 2
+    calls = [json.loads(line) for line in (root / 'calls').read_text().splitlines()]
+    lifecycle = [call for call in calls if call[:2] != ['agent', 'shell']]
+    assert lifecycle == [['agent', 'stop', 'bbtest'], ['agent', 'status', 'bbtest'],
+                         ['agent', 'attach', 'bbtest'], ['stop'], ['start'],
+                         ['agent', 'start', 'bbtest'], ['agent', 'status', 'bbtest']]
+
+
 @pytest.fixture
 def lifecycle_cli_probe(tmp_path):
     """Record real subprocess operands; the guest workload remains controlled."""
