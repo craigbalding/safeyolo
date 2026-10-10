@@ -215,9 +215,9 @@ nodes:
         - path: install.sh
           sha256: 058d024d5ecec8ad9df29c557a6fd0ee53b1ff36355db94b31b3c331d2686f58
         - path: tests/blackbox/run-lane.sh
-          sha256: 5e1d9c58f2be0aa7720299990422ce74b482e5f959d9b91ab101463c3aa24263
+          sha256: 54f5402fc6e50562a57e70e26f95ec46d5f8716d65b569d8d206c8161f1f4625
         - path: tests/blackbox/run-tests.sh
-          sha256: f364885fe603051d7fc2e437afaba1a3a69e8ddfb463b876503c05746543db2a
+          sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: uv.lock
           sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
@@ -244,11 +244,11 @@ nodes:
       obtain_from: "operator-prepared runsc from gVisor's official signed repository or verified release, plus the trusted source's shell rootfs builder and native installer"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: 5e1d9c58f2be0aa7720299990422ce74b482e5f959d9b91ab101463c3aa24263
+          sha256: 54f5402fc6e50562a57e70e26f95ec46d5f8716d65b569d8d206c8161f1f4625
         - path: tests/blackbox/run-tests.sh
-          sha256: f364885fe603051d7fc2e437afaba1a3a69e8ddfb463b876503c05746543db2a
+          sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: proxy/src/host_platform.rs
-          sha256: 72bcf38dd24d8856ee373f52a0f66f15a2770c84de920ff58ab884dfc82555d1
+          sha256: 0c64c92ab8c9baded3af14b1abd1da30c2556485470e7441749a38a216ab4b76
         - path: proxy/src/host_boot.rs
           sha256: 0e7f550e1f68fb1495cbe38751122e66030f1c13fcddf3c231d16352cc1ed129
         - path: guest/build-rootfs.sh
@@ -278,13 +278,13 @@ nodes:
       obtain_from: "safeyolo-vm built from the exact trusted-base Swift sources with the operator-approved Apple toolchain"
       sources:
         - path: vm/Makefile
-          sha256: f0eeaa0069a4b69c1a60ebcf91a6df17b23b0a23354198766214d54c2f1e2d0a
+          sha256: 91781bb6cf1531798875e30e46cd6de894cdb2e9515cb47209427369662b4403
         - path: vm/Package.swift
           sha256: cacd73db22ee6e881da5cbbcdd9de7f8d56a920951b6feca6ac65d637bcbc47b
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: 5e1d9c58f2be0aa7720299990422ce74b482e5f959d9b91ab101463c3aa24263
+          sha256: 54f5402fc6e50562a57e70e26f95ec46d5f8716d65b569d8d206c8161f1f4625
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
@@ -328,7 +328,7 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: b82a483c756acf4eb1fa7fea325fa7b528d0789d6c3d326abd791e588271d46d
+          sha256: 122aa7f8c40b01a2978ad30a871e71b84f7d743301a6792902714f6a563012de
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 23177de06bd48ab1893d19e3ede820e59fd61dfee242fe2b4dfe0f8f48e2ddaf
         - path: tests/proxy_contracts/test_native_factory_cli.py
@@ -355,9 +355,9 @@ nodes:
       obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
-          sha256: bba8e4d556fa3dac16656a89175d9d077e61f0cfd27d7b17420d8786e350557a
+          sha256: 2209225d7335edf11c0e0374a83084fa094676f3f9cd3f398af3d4c183fea135
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/capture-evidence.sh
-          sha256: 5f990bdc860c18e8c7e8312d875d767febb32dceb2ed2f5328a596703ebb3990
+          sha256: 5983a28e4a9eb1c48197c64f8511f7e18cffef001a81690e4a9c8e61e2b96c9d
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-snapshot.sh
           sha256: 83267d87867b13f82e1cc41dbc34bf081c1116cc2c54ec6d16fead857bf64b63
       setup: "Use one disposable nested factory with a single durable Forge checkout and retained evidence directory."
@@ -440,11 +440,11 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: f364885fe603051d7fc2e437afaba1a3a69e8ddfb463b876503c05746543db2a
+          sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: ae4ee4557fa9b84b43e26866d4d02f9738ade677c4b052ed211c80ec10c8f1c6
+          sha256: 43323b8590a5a8fbb65e412ca1cd8a41f5123a2fa6aa97e74ae107391674dde3
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:
