@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from argparse import Namespace
 from pathlib import Path
 
@@ -194,40 +195,52 @@ def test_live_proc_capture_uses_real_kernel_birth_and_parent(tmp_path):
 
 
 @pytest.fixture
-def installed_fixture(tmp_path_factory, observation, monkeypatch):
+def installed_fixture(observation, monkeypatch):
     """A staged native-command fixture exercises the driver without starting a guest."""
-    tmp_path = tmp_path_factory.mktemp("g7")
-    root, workspace = tmp_path / "r", tmp_path / "w"
-    (root / "bin").mkdir(parents=True)
-    (root / "assets/guest").mkdir(parents=True)
-    workspace.mkdir()
-    nats = root / "data/coord/nats/bin/2.14.5/nats-server"
-    nats.parent.mkdir(parents=True)
-    nats.touch()
-    for name in ("safeyolo-guest", "safeyolo-coord"):
-        binary = root / "assets/guest" / name
-        binary.write_bytes(b"controlled-test-artifact")
-        binary.with_suffix(".version").write_text(f"{name} 0.1.0 commit=fixture profile=debug\n")
-        binary.with_suffix(".sha256").write_text(hashlib.sha256(binary.read_bytes()).hexdigest())
-    (root / "assets/docs").mkdir()
-    (root / "assets/docs/AGENTS.md").write_text("nonsecret fixture instructions\n")
-    (root / "assets/contrib").mkdir()
-    (root / "assets/contrib/codex-command.sh").write_text("#!/bin/sh\nexit 0\n")
-    data = tmp_path / "producer.json"
-    data.write_text(json.dumps(observation))
-    script = Path(__file__).with_name("fixtures") / "g7_native_cli.py"
-    for name in ("safeyolo", "safeyolo-coord", "safeyolo-proxy"):
-        binary = root / "bin" / name
-        binary.write_text(f"#!{sys.executable}\n" + script.read_text())
-        binary.chmod(0o755)
-    monkeypatch.setenv("G7_FIXTURE", str(data))
-    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", "owned-fixture")
-    monkeypatch.setenv("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS", "60")
-    monkeypatch.setenv("SAFEYOLO_VZ_TEST_RUNNER", str(root / "bin/safeyolo"))
-    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", "restored-by-monkeypatch")
-    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", "restored-by-monkeypatch")
-    return Namespace(root=root, workspace=workspace, commit="fixture", profile="debug", data=data,
+    with tempfile.TemporaryDirectory(prefix="sy-g7-", dir="/tmp") as temporary:
+        tmp_path = Path(temporary).resolve()
+        root, workspace = tmp_path / "r", tmp_path / "w"
+        (root / "bin").mkdir(parents=True)
+        (root / "assets/guest").mkdir(parents=True)
+        workspace.mkdir()
+        nats = root / "data/coord/nats/bin/2.14.5/nats-server"
+        nats.parent.mkdir(parents=True)
+        nats.touch()
+        for name in ("safeyolo-guest", "safeyolo-coord"):
+            binary = root / "assets/guest" / name
+            binary.write_bytes(b"controlled-test-artifact")
+            binary.with_suffix(".version").write_text(f"{name} 0.1.0 commit=fixture profile=debug\n")
+            binary.with_suffix(".sha256").write_text(hashlib.sha256(binary.read_bytes()).hexdigest())
+        (root / "assets/docs").mkdir()
+        (root / "assets/docs/AGENTS.md").write_text("nonsecret fixture instructions\n")
+        (root / "assets/contrib").mkdir()
+        (root / "assets/contrib/codex-command.sh").write_text("#!/bin/sh\nexit 0\n")
+        data = tmp_path / "producer.json"
+        data.write_text(json.dumps(observation))
+        script = Path(__file__).with_name("fixtures") / "g7_native_cli.py"
+        for name in ("safeyolo", "safeyolo-coord", "safeyolo-proxy"):
+            binary = root / "bin" / name
+            binary.write_text(f"#!{sys.executable}\n" + script.read_text())
+            binary.chmod(0o755)
+        monkeypatch.setenv("G7_FIXTURE", str(data))
+        monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", "owned-fixture")
+        monkeypatch.setenv("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS", "60")
+        monkeypatch.setenv("SAFEYOLO_VZ_TEST_RUNNER", str(root / "bin/safeyolo"))
+        monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", "restored-by-monkeypatch")
+        monkeypatch.setenv("SAFEYOLO_LOGS_DIR", "restored-by-monkeypatch")
+        yield Namespace(root=root, workspace=workspace, commit="fixture", profile="debug", data=data,
                      observation=observation)
+
+
+def test_g7_driver_refuses_a_root_whose_socket_exceeds_the_byte_limit(installed_fixture, monkeypatch):
+    monkeypatch.setattr(installed_g7_vz.sys, "platform", "darwin")
+    monkeypatch.setattr(installed_g7_vz.platform, "machine", lambda: "arm64")
+    # Multibyte names challenge the byte limit even when the character count fits.
+    installed_fixture.root = installed_fixture.root / ("é" * 40)
+    socket = installed_fixture.root / "agents/g7/vm-control.sock"
+    assert len(str(socket)) < 104 and len(os.fsencode(socket)) >= 104
+    with pytest.raises(AssertionError, match="use a short owned root"):
+        installed_g7_vz.run(installed_fixture)
 
 
 def test_failed_setup_and_process_inspection_still_attempt_all_owned_stops(installed_fixture, monkeypatch, capsys):

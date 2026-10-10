@@ -490,9 +490,9 @@ def main() -> None:
             == passthrough_before
         )
 
-        admin._request("PUT", "/admin/proxy/ignore-hosts", json={"ignore_hosts": ["self-signed.test:443"]})
+        admin._request("PUT", "/admin/proxy/ignore-hosts", json={"hosts": ["self-signed.test:443"]})
         active, first = held_guest(cli, args.agent, "passthrough", marker)
-        admin._request("PUT", "/admin/proxy/ignore-hosts", json={"ignore_hosts": []})
+        admin._request("PUT", "/admin/proxy/ignore-hosts", json={"hosts": []})
         release.write_text("go\n")
         retained = finish_guest(active, first, "passthrough", args.agent)
         active = None

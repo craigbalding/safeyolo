@@ -19,6 +19,7 @@ from pathlib import Path
 
 # Load only the retained repository test fixture, never installed product code.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/reference"))
 
 from tests.legacy_mattermost.mattermost import MattermostAdapterError, MattermostConfig, MattermostState, RoomMapping
 

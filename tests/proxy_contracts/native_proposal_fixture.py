@@ -68,7 +68,7 @@ class ProposalInstance(NativeInstance):
                             "--verified", str(verified), agent=agent, check=check)
 
 
-def proposal_instance(tmp_path):
+def proposal_instance(tmp_path, *, nats_binary):
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", REPO / "proxy/target/debug"))
     proxy = Path(os.environ.get("SAFEYOLO_TEST_PROXY", artifacts / "safeyolo-proxy"))
     root = tmp_path / "native"
@@ -102,9 +102,9 @@ def proposal_instance(tmp_path):
             wait_ready(process, [ready, *map(Path, paths.values())], root / "process.log",
                        readiness_file=ready, expected_backend="rust-m2")
             instance = ProposalInstance(root, process, paths, environment)
-            binary = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
-            assert binary, "select the existing pinned NATS binary with SAFEYOLO_COORD_NATS_BINARY"
-            instance.nats = instance.command("start", "--binary", binary)
+            # The shared CLI fixture supplies its existing pinned cache. The
+            # native owner verifies these bytes again before starting NATS.
+            instance.nats = instance.command("start", "--binary", str(nats_binary))
             try:
                 instance.command("room", "create", ROOM)
                 for name in paths:

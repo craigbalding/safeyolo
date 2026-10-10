@@ -1,19 +1,16 @@
-"""Shared operator approval acceptance for both proxy backends.
+"""Shared operator approval acceptance through the native proxy.
 
 The request and the operator decision travel through the selected proxy
-process and its owned admin listener.  This closes the #621 dual-backend
-acceptance gap around a real network approval without reaching into either
-implementation's internal policy evaluator.
+process and its owned admin listener without reaching into its internal
+policy evaluator.
 """
 
 from __future__ import annotations
 
 import os
-import signal
 import socket
 import socketserver
 import subprocess
-import sys
 import threading
 import time
 import tomllib
@@ -21,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from safeyolo.operator_approvals import approve
+from tests.blackbox.native_credentials import native_cli
 from tests.proxy_contracts.harness import connection, read_events
 from tests.proxy_contracts.harness import request as send_request
 from tests.proxy_contracts.scenarios import origin_server
@@ -72,21 +70,21 @@ def _connect_response(path, authority, claimed_agent):
         raise
 
 
-def _wait_for_grant(api, request_id: str, port: int) -> None:
+def _wait_for_grant(api, request_id: str, port: int, *, native=False) -> None:
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
         baseline = api.get_policy("baseline")
+        if native:
+            host = baseline["effective"].get("agents", {}).get("alice", {}).get("hosts", {}).get(f"127.0.0.1:{port}", {})
+            granted = host.get("egress") == "allow" and host.get("rate") == 600
+        else:
+            granted = _compiled_permission(
+                baseline, action="network:request", resource="127.0.0.1/*",
+                effect="budget", budget=600, agent="alice", port=port,
+            )
         if (
             not any(row.get("request_id") == request_id for row in api.pending_approvals())
-            and _compiled_permission(
-                baseline,
-                action="network:request",
-                resource="127.0.0.1/*",
-                effect="budget",
-                budget=600,
-                agent="alice",
-                port=port,
-            )
+            and granted
         ):
             return
         time.sleep(0.02)
@@ -113,10 +111,8 @@ def _wait_for_removed_grant(api, port):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         baseline = api.get_policy("baseline")
-        if not _compiled_permission(
-            baseline, action="network:request", resource="127.0.0.1/*",
-            effect="budget", budget=600, agent="alice", port=port,
-        ):
+        hosts = baseline["effective"].get("agents", {}).get("alice", {}).get("hosts", {})
+        if f"127.0.0.1:{port}" not in hosts:
             return
         time.sleep(0.02)
     raise AssertionError("removed Alice endpoint approval was not reloaded")
@@ -135,6 +131,7 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
             PROMPT_POLICY,
             admin_port=0,
             admin_api_token_file=token_file,
+            native_product=True,
         ) as proxy:
             api = _admin_client(proxy, token_file)
             if proxy_backend == "python":
@@ -155,7 +152,7 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
             assert event["approval"]["scope_hint"]["port"] == port
 
             assert approve(event, api) == "added"
-            _wait_for_grant(api, event["request_id"], port)
+            _wait_for_grant(api, event["request_id"], port, native=True)
 
             status, _, body = send_request(proxy.paths["alice"], target)
             assert status == 200 and body == b"hello"
@@ -177,8 +174,8 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
             assert len(origin.requests) == 1
 
             # A live UDS connection must consult the current policy on each
-            # request. Removing the grant uses the documented host CLI, then
-            # the file watcher (Python) or SIGHUP reload (Rust).
+            # request. Apply the original policy through the native host CLI
+            # to remove the sole added grant without replacing the connection.
             alice = connection(proxy.paths["alice"])
             try:
                 alice_socket = alice.sock
@@ -186,15 +183,18 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
                 assert (status, body) == (200, b"hello")
                 assert alice.sock is alice_socket
                 reuse_ids = [headers["x-safeyolo-request-id"]]
+                selected_proxy = Path(proxy.process.args[0])
+                binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", selected_proxy.with_name("safeyolo"))),
+                                    proxy=selected_proxy)
+                config = directory / "config.toml"
+                candidate = directory / "without-grant.toml"
+                candidate.write_text(PROMPT_POLICY)
                 removed = subprocess.run(
-                    [str(Path(sys.executable).with_name("safeyolo")), "policy", "host", "remove",
-                     "127.0.0.1", "--port", str(port), "--agent", "alice"],
+                    [str(binary), "--config", str(config), "policy", "apply", str(candidate)],
                     env={**os.environ, "SAFEYOLO_CONFIG_DIR": str(directory)},
                     capture_output=True, text=True, timeout=10, check=False,
                 )
                 assert removed.returncode == 0, (removed.stdout, removed.stderr)
-                if proxy_backend == "rust":
-                    proxy.process.send_signal(signal.SIGHUP)
                 _wait_for_removed_grant(api, port)
 
                 before = len(origin.requests)

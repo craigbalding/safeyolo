@@ -15,6 +15,8 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+import tomlkit
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -126,7 +128,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
                  agents=("alice", "bob"), services_dir=None,
-                 connect_trace_path=None):
+                 connect_trace_path=None, native_product=False):
     """Start one native process in isolated fixture state."""
     if backend != "rust":
         raise ValueError(f"Unknown proxy backend: {backend}")
@@ -234,6 +236,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         command = [str(binary)]
         config_path = directory / "proxy.json"
         config_path.write_text(json.dumps(config))
+        if native_product:
+            # A host CLI consumer must reach the native TOML startup path;
+            # internal JSON launchers retain their historical Admin payloads.
+            for name in ("builtin-services", "services"):
+                (directory / name).mkdir(exist_ok=True)
+            config_path = directory / "config.toml"
+            config_path.write_text(tomlkit.dumps(config))
         if connect_trace_path is not None:
             tracer = shutil.which("strace")
             if sys.platform != "linux" or tracer is None:

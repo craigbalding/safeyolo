@@ -29,12 +29,12 @@ sys.path.insert(0, str(_PROJECT_ROOT / "tests/reference"))
 
 
 @pytest.fixture
-def native_proposals(tmp_path):
+def native_proposals(tmp_path, _binary_cache):
     # Load the native fixture only when requested, after the repository path
     # above is available. The other CLI consumers need no native binaries.
     from tests.proxy_contracts.native_proposal_fixture import proposal_instance
 
-    yield from proposal_instance(tmp_path)
+    yield from proposal_instance(tmp_path, nats_binary=_binary_cache)
 
 
 # ---------- NATS runtime fixtures ----------
@@ -52,17 +52,16 @@ def isolated_coord(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session")
 def _binary_cache(tmp_path_factory):
-    """Download the nats-server binary once per session."""
+    """Reuse the explicit pinned input or acquire it once per session."""
+    selected = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if selected:
+        return Path(selected).resolve()
     from safeyolo.coord import nats_runtime as nr
     cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
     orig_env = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
     os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
     try:
-        try:
-            binary = nr.ensure_binary()
-        except Exception as e:
-            pytest.skip(f"nats-server binary unavailable: {e!s}")
-        return binary
+        return nr.ensure_binary()
     finally:
         if orig_env is None:
             os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)

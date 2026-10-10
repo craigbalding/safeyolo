@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -25,6 +26,7 @@ FACTORY_SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyo
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_NATIVE_BINARY = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "proxy/target")) / "debug/safeyolo-coord"
+COORD_GUEST_BINARY = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", REPO_ROOT / "guest/command/target/debug")) / "safeyolo-coord"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 PI_COORD_SETUP_SOURCE = REPO_ROOT / "contrib/pi-coord-host-setup.sh"
 PI_COORD_EXTENSION_SOURCE = REPO_ROOT / "contrib/pi-coord-extension.ts"
@@ -42,12 +44,13 @@ REPO_MAP_COMMAND_TARGET = "/home/agent/.safeyolo/repo-map"
 def native_coord_receipts(monkeypatch, tmp_path):
     assert COORD_NATIVE_BINARY.is_file(), "Build safeyolo-coord before native staging tests"
     identity = subprocess.check_output([str(COORD_NATIVE_BINARY), "--version"], text=True)
-    COORD_NATIVE_BINARY.with_suffix(".version").write_text(identity)
-    with COORD_NATIVE_BINARY.open("rb") as handle:
+    assert COORD_GUEST_BINARY.is_file(), "Supply the matching Linux guest Coord artifact"
+    assert COORD_GUEST_BINARY.with_suffix(".version").read_text() == identity
+    with COORD_GUEST_BINARY.open("rb") as handle:
         checksum = hashlib.file_digest(handle, "sha256").hexdigest()
-    COORD_NATIVE_BINARY.with_suffix(".sha256").write_text(checksum + "\n")
+    assert COORD_GUEST_BINARY.with_suffix(".sha256").read_text().strip() == checksum
     monkeypatch.setenv("SAFEYOLO_COORD_EXECUTABLE", str(COORD_NATIVE_BINARY))
-    monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(COORD_NATIVE_BINARY))
+    monkeypatch.setenv("SAFEYOLO_COORD_GUEST_BINARY", str(COORD_GUEST_BINARY))
     try:
         yield
     finally:
@@ -62,7 +65,10 @@ def _codex_state(home, *args, check=True):
     return subprocess.run([str(COORD_NATIVE_BINARY), "codex-state", "--home", str(home), *args], capture_output=True, text=True, check=check)
 
 
-@pytest.mark.parametrize("component", [b"ascii", "caf\u00e9".encode(), b"\x80", b"\xff", b"part-\x80\xff"])
+@pytest.mark.parametrize("component", [b"ascii", "caf\u00e9".encode(), *[
+    pytest.param(value, marks=pytest.mark.skipif(sys.platform == "darwin", reason="APFS filenames require UTF-8"))
+    for value in (b"\x80", b"\xff", b"part-\x80\xff")
+]])
 def test_native_staging_preserves_unix_pathname_bytes(tmp_path, component):
     home = tmp_path / os.fsdecode(component)
     home.mkdir(mode=0o700)
@@ -74,11 +80,12 @@ def test_native_staging_preserves_unix_pathname_bytes(tmp_path, component):
     assert provenance.stat().st_mode & 0o777 == 0o600
     assert json.loads(provenance.read_text())["state"] == "fresh"
     assert not (codex / "auth.json").exists()
-    config = home / os.fsdecode(b"supervisor-\x80.json")
+    suffix = "caf\u00e9".encode() if sys.platform == "darwin" else b"\x80\xff"
+    config = home / os.fsdecode(b"supervisor-" + suffix + b".json")
     result = subprocess.run([str(COORD_NATIVE_BINARY), "ordinary-stage", str(config), "forge", "backlog", "relay"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(config.read_text())["agent_name"] == "forge"
-    launcher = home / os.fsdecode(b"launcher-\xff")
+    launcher = home / os.fsdecode(b"launcher-" + suffix)
     launcher.write_text('exec codex "${args[@]}" "$@"\n')
     launcher.chmod(0o700)
     result = subprocess.run([str(COORD_NATIVE_BINARY), "supervised-launcher", str(launcher), "codex"], capture_output=True, text=True)
@@ -429,7 +436,7 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
 
     staged_shim = agent_home / ".safeyolo/safeyolo-coord"
     staged_launcher = agent_home / ".safeyolo/safeyolo-coord-mcp-launcher"
-    assert staged_shim.read_bytes() == COORD_NATIVE_BINARY.read_bytes()
+    assert staged_shim.read_bytes() == COORD_GUEST_BINARY.read_bytes()
     assert staged_shim.stat().st_mode & 0o111
     assert staged_launcher.read_bytes() == COORD_LAUNCHER_SOURCE.read_bytes()
     assert staged_launcher.stat().st_mode & 0o111
@@ -673,9 +680,9 @@ def test_g7_fixture_reaches_ordinary_codex_setup_before_substituting_marker(tmp_
     (root / "assets/skills").symlink_to(SKILL_SOURCE.parent, target_is_directory=True)
     shutil.copy2(REPO_ROOT / "repo-map.toml", root / "assets/repo-map.toml")
     guest = root / "assets/guest/safeyolo-coord"
-    shutil.copy2(COORD_NATIVE_BINARY, guest)
+    shutil.copy2(COORD_GUEST_BINARY, guest)
     for suffix in (".version", ".sha256"):
-        shutil.copy2(COORD_NATIVE_BINARY.with_suffix(suffix), guest.with_suffix(suffix))
+        shutil.copy2(COORD_GUEST_BINARY.with_suffix(suffix), guest.with_suffix(suffix))
     operator_home, agent_home = tmp_path / "operator", root / "agents/g7/home"
     operator_home.mkdir()
     env = _setup_env(operator_home, agent_home, tmp_path)
@@ -727,28 +734,7 @@ def test_bundled_setup_reports_invalid_harness_config(
         assert "cannot update invalid" in result.stderr
 
 
-def test_wheel_manifest_includes_coord_runtime_files() -> None:
-    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    assert force_include["repo-map.toml"] == "safeyolo/repo-map.toml"
-    assert force_include["contrib/codex-command.sh"] == "safeyolo/contrib/codex-command.sh"
-
-    assert force_include["contrib/coord-mcp-bootstrap.sh"] == ("safeyolo/contrib/coord-mcp-bootstrap.sh")
-    assert force_include["contrib/safeyolo-coord-mcp-launcher.sh"] == (
-        "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"
-    )
-    assert "contrib/safeyolo-coord-mcp.py" not in force_include
-    assert "contrib/lib/stage-codex-state.py" not in force_include
-    assert force_include["contrib/codex-coord-host-setup.sh"] == ("safeyolo/contrib/codex-coord-host-setup.sh")
-    assert force_include["contrib/pi-host-setup.sh"] == ("safeyolo/contrib/pi-host-setup.sh")
-    assert force_include["contrib/pi-coord-host-setup.sh"] == ("safeyolo/contrib/pi-coord-host-setup.sh")
-    assert force_include["contrib/pi-coord-extension.ts"] == ("safeyolo/contrib/pi-coord-extension.ts")
-    assert "contrib/lib/stage-factory-supervisor.py" not in force_include
-    assert "contrib/codex-coord-supervisor.py" not in force_include
-    assert force_include["contrib/codex-coord-supervisor-fake-codex.sh"] == (
-        "safeyolo/contrib/codex-coord-supervisor-fake-codex.sh"
-    )
-    assert force_include["docs/AGENTS.md"] == "safeyolo/docs/AGENTS.md"
+def test_native_coord_setup_entrypoints_are_executable() -> None:
     assert COORD_BOOTSTRAP_SOURCE.stat().st_mode & 0o111
     assert COORD_LAUNCHER_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_FAKE_SOURCE.stat().st_mode & 0o111
@@ -2200,7 +2186,7 @@ def test_shared_skill_has_cross_agent_frontmatter_and_direct_references() -> Non
 
     desktop = (SKILL_SOURCE / "references/desktop.md").read_text()
     for expected in (
-        "safeyolo agent desktop AGENT --open",
+        "safeyolo agent present AGENT",
         "/safeyolo/guest-desktop status",
         "cannot create the host preview",
         "Do not expose guest ports 5900 or 6080 directly",
@@ -3082,7 +3068,7 @@ def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script
         _run_setup(script_name, operator_home, agent_home, tmp_path, extra_env=env)
     assert not log.exists()
     staged = agent_home / ".safeyolo/safeyolo-coord"
-    assert subprocess.check_output([str(staged), "--version"], text=True) == subprocess.check_output([str(COORD_NATIVE_BINARY), "--version"], text=True)
+    assert staged.read_bytes() == COORD_GUEST_BINARY.read_bytes()
     if script_name != "claude-host-setup.sh":
         wrapper = agent_home / ".safeyolo/repo-map"
         result = subprocess.run([str(wrapper), str(REPO_ROOT / "proxy/src/repo_map.rs")],
@@ -3228,16 +3214,17 @@ def test_packaged_native_setup_discovers_host_and_guest_artifacts_without_overri
     (package / "docs").mkdir()
     shutil.copy2(BASELINE_SOURCE, package / "docs/AGENTS.md")
     shutil.copy2(REPO_ROOT / "repo-map.toml", package / "repo-map.toml")
+    shutil.copytree(LAB_CONTROLLER_SOURCE, package / "skills/safeyolo-lab-controller")
     host = package / "bin/safeyolo-coord"
     guest = package / "assets/guest/safeyolo-coord"
     host.parent.mkdir()
     guest.parent.mkdir(parents=True)
-    # The installed host and guest have separate paths. Hard links avoid
-    # duplicate test copies of these unchanged Linux bytes.
-    os.link(COORD_NATIVE_BINARY, host)
-    os.link(COORD_NATIVE_BINARY, guest)
+    # Host staging runs on this host. The staged command is a matching Linux
+    # guest executable, inspected through its receipts on a Mac.
+    shutil.copy2(COORD_NATIVE_BINARY, host)
+    shutil.copy2(COORD_GUEST_BINARY, guest)
     for suffix in (".version", ".sha256"):
-        shutil.copy2(COORD_NATIVE_BINARY.with_suffix(suffix), guest.with_suffix(suffix))
+        shutil.copy2(COORD_GUEST_BINARY.with_suffix(suffix), guest.with_suffix(suffix))
     operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
     operator_home.mkdir()
     env = _setup_env(operator_home, agent_home, tmp_path)
@@ -3249,7 +3236,7 @@ def test_packaged_native_setup_discovers_host_and_guest_artifacts_without_overri
             result = subprocess.run([str(scripts / script_name)], env=env, capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
         staged = agent_home / ".safeyolo/safeyolo-coord"
-        assert subprocess.check_output([str(staged), "--version"], text=True) == guest.with_suffix(".version").read_text()
+        assert hashlib.sha256(staged.read_bytes()).hexdigest() == guest.with_suffix(".sha256").read_text().strip()
         if script_name != "claude-host-setup.sh":
             assert (agent_home / ".safeyolo/repo-map").read_text() == REPO_MAP_COMMAND
     finally:

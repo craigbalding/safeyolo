@@ -107,7 +107,14 @@ class CoordFixture:
 
 
 @pytest.fixture
-def fixture(tmp_path, binary):
+def fixture(request):
+    if sys.platform != "linux":
+        pytest.skip("Model-turn execution belongs to the Linux guest, including VZ guests")
+    return request.getfixturevalue("coord_fixture")
+
+
+@pytest.fixture
+def coord_fixture(tmp_path, binary):
     coord = CoordFixture()
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
@@ -134,6 +141,17 @@ args=[]
     env["SAFEYOLO_PI_BIN"] = str(harness)
     yield coord, env, config, state, harness, capture
     coord.close()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Mac host refusal")
+def test_host_supervision_refusal_does_not_launch_a_model_or_send_a_terminal(binary, coord_fixture):
+    coord, _env, _config, _state, harness, capture = coord_fixture
+    harness_script(harness, binary, capture)
+    result = run(binary, coord_fixture)
+    assert result.returncode != 0
+    assert "model-turn supervision runs inside a Linux guest" in result.stderr
+    assert coord.sends == 0
+    assert not list(capture.iterdir())
 
 
 def harness_script(path, binary, capture, *, paused=False, terminal=True, pi=False):

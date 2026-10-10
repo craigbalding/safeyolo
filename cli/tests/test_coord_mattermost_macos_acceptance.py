@@ -299,7 +299,7 @@ def test_acceptance_scripts_expose_only_bounded_arguments() -> None:
             capture_output=True,
             text=True,
             timeout=10,
-            env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "cli" / "src")},
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "tests/reference")},
         )
         assert "--expected-head" in result.stdout
         assert "--expected-tree" in result.stdout

@@ -22,11 +22,11 @@ import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
-from safeyolo.coord import api as coord_api
-
 # Load only the retained repository test fixture, never installed product code.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests/reference"))
 
+from safeyolo.coord import api as coord_api
 from tests.legacy_mattermost.mattermost import (
     HTTPMattermostAPI,
     MattermostAdapterError,

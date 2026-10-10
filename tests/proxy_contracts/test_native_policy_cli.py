@@ -306,7 +306,7 @@ def test_installed_lab_stages_skills_without_the_optional_python_checker(tmp_pat
     # or copying the two large inner inputs merely to check skill propagation.
     coord = instance.root / "assets/guest/safeyolo-coord"
     home = instance.root / "agents/lab-staging/home"
-    os.link(guest_artifacts / "safeyolo-coord", coord)
+    shutil.copy2(guest_artifacts / "safeyolo-coord", coord)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     try:

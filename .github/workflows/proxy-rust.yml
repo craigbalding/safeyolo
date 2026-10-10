@@ -43,6 +43,18 @@ concurrency:
   cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
 
 jobs:
+  guest-inputs:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [amd64, arm64]
+    uses: ./.github/workflows/guest-test-inputs.yml
+    with:
+      revision: ${{ github.event.pull_request.head.sha || github.sha }}
+      profile: debug
+      architecture: ${{ matrix.architecture }}
+
   focused-pr:
     name: Quick native checks (Ubuntu)
     if: >-
@@ -232,6 +244,7 @@ jobs:
 
   contracts:
     name: Overnight native contracts (${{ matrix.os }})
+    needs: guest-inputs
     env:
       CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -359,6 +372,7 @@ jobs:
           native_cli="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo"
           test -x "$native_cli"
           printf 'SAFEYOLO_NATIVE_CLI=%s\n' "$native_cli" >> "$GITHUB_ENV"
+          printf 'SAFEYOLO_NATIVE_ARTIFACTS=%s\n' "$(dirname "$native_cli")" >> "$GITHUB_ENV"
 
       - name: Stop the Python-owned Coord fixture
         if: always()
@@ -389,14 +403,20 @@ jobs:
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
 
+      - name: Download matching Linux guest test inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-debug
+          path: guest/command/target/debug
+
+      - name: Restore Linux guest executable permissions
+        run: chmod +x guest/command/target/debug/safeyolo-guest guest/command/target/debug/safeyolo-coord
+
       - name: Run native proxy component contracts
         env:
           PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
-        run: |
-          if [ "$RUNNER_OS" = Linux ]; then
-            SAFEYOLO_BUILD_PROFILE=debug scripts/build_guest_command.sh
-          fi
-          uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
+          SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/debug
+        run: uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
   macos-pr:
     name: Relevant macOS platform checks
