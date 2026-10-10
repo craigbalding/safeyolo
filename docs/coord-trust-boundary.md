@@ -53,9 +53,8 @@ Render them visibly rather than deleting them — an operator should be able to
 see that a body tried. Print bodies as text objects, never as console markup.
 Give the body a visual namespace (a gutter) on every *physical* line, wrapping
 explicitly rather than letting the console wrap. The native chat uses `visible()` and `chat_message()` in
-`proxy/src/coord_timeline.rs`. The remaining Python brief display uses
-`_visible_controls()` and `_render_body()` in
-`cli/src/safeyolo/commands/coord.py`.
+`proxy/src/coord_timeline.rs`. The replaced Python brief-display caller is
+removed; it is not an installed display path.
 
 **Web UI.** Provenance and body belong in separate elements. Insert body
 content as text, never as HTML — no `innerHTML`, no template interpolation
