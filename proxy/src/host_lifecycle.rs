@@ -1278,9 +1278,11 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 if error.is_null() {
                     error = "Launch process exited without recording its result".into();
                 }
-            } else if recorded == "running" {
+            } else if recorded == "running"
+                || (recorded == "launching" && record.get("pid").is_some())
+            {
                 state = if process_matches(record, "pid", "process_token") {
-                    "running"
+                    recorded
                 } else if record.get("runner_pid").is_some() {
                     "finishing"
                 } else {

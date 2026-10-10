@@ -651,6 +651,26 @@ esac
                 }
             );
         }
+        if pause == "transport" {
+            let pending = fs::read(&launch_path).unwrap();
+            let record = launch();
+            let mut wrong_birth = record.clone();
+            wrong_birth["process_token"] = "different-birth".into();
+            let changed = serde_json::to_vec(&wrong_birth).unwrap();
+            fs::write(&launch_path, &changed).unwrap();
+            let refused = selected_cli(&["agent", "start", "alice"]).output().unwrap();
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stderr)
+                    .contains("API 409 Conflict: Agent cannot start while finishing")
+            );
+            assert_eq!(fs::read(&launch_path).unwrap(), changed);
+            assert_eq!(
+                owned_run::process_token(record["pid"].as_u64().unwrap() as u32),
+                record["process_token"].as_str().unwrap()
+            );
+            fs::write(&launch_path, &pending).unwrap();
+        }
         if pause == "entrypoint" {
             assert!(!root.join("starts").exists());
             fs::OpenOptions::new()
