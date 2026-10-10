@@ -402,6 +402,22 @@ fn head(root: &Path) -> String {
         .map(|s| s.trim().into())
         .unwrap_or_else(|| "unborn".into())
 }
+fn in_scope(root: &Path, path: &Path, scope: &Path) -> bool {
+    if scope.as_os_str().is_empty() || path.starts_with(scope) {
+        return true;
+    }
+    // Git can compose macOS filenames while canonicalize retains the disk's
+    // spelling. Resolve only the corresponding prefix: an internal file alias
+    // still belongs to its containing directory, not its target's directory.
+    let prefix: PathBuf = path.components().take(scope.components().count()).collect();
+    let prefix = root.join(prefix);
+    if fs::symlink_metadata(&prefix).is_ok_and(|info| info.file_type().is_symlink()) {
+        return false;
+    }
+    prefix
+        .canonicalize()
+        .is_ok_and(|path| path == root.join(scope))
+}
 fn files(
     root: &Path,
     query: bool,
@@ -441,11 +457,7 @@ fn files(
     let mut cached_count = 0;
     for name in names {
         let path = Path::new(OsStr::from_bytes(name));
-        if !query
-            && !scopes
-                .iter()
-                .any(|(scope, _)| scope.as_os_str().is_empty() || path.starts_with(scope))
-        {
+        if !query && !scopes.iter().any(|(scope, _)| in_scope(root, path, scope)) {
             continue;
         }
         // Resolve links before opening: internal aliases remain useful; outside,
@@ -538,7 +550,7 @@ fn files(
     }
     Ok((output, indexed_count, cached_count))
 }
-fn map(scope: &Path, overview: bool, files: &[File], elapsed: u128) {
+fn map(root: &Path, scope: &Path, overview: bool, files: &[File], elapsed: u128) {
     let scope_text = if scope.as_os_str().is_empty() {
         ".".into()
     } else {
@@ -546,7 +558,7 @@ fn map(scope: &Path, overview: bool, files: &[File], elapsed: u128) {
     };
     let selected: Vec<_> = files
         .iter()
-        .filter(|f| scope.as_os_str().is_empty() || f.relative.starts_with(scope))
+        .filter(|f| in_scope(root, &f.relative, scope))
         .filter(|f| {
             !scope.as_os_str().is_empty()
                 || (category(&f.path) != "test"
@@ -1129,7 +1141,13 @@ pub fn run(args: &[OsString]) -> Result<(), Error> {
         {
             continue;
         }
-        map(scope, *overview, &files, started.elapsed().as_millis());
+        map(
+            &root,
+            scope,
+            *overview,
+            &files,
+            started.elapsed().as_millis(),
+        );
     }
     Ok(())
 }
