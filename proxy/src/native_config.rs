@@ -419,6 +419,7 @@ circuit_state_file="state/circuit-state.json"
 reload_id="owned-reload"
 agent_map_file="state/agents.json"
 parent_proxy="http://127.0.0.1:18080"
+parent_proxy_agents=["alice"]
 upstream_ca_file="certs/upstream.pem"
 tls_ca_file="certs/signing.pem"
 gateway_builtin_services_dir="builtin"
@@ -501,6 +502,7 @@ tailnet_port=8443
             config.parent_proxy.as_deref(),
             Some("http://127.0.0.1:18080")
         );
+        assert_eq!(config.parent_proxy_agents, ["alice"]);
         for (actual, expected) in [
             (&config.admin_api_token_file, "state/operator-token"),
             (&config.audit_log_path, "records/security.jsonl"),

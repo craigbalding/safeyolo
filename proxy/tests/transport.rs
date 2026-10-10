@@ -75,6 +75,7 @@ fn config(directory: &TempDir) -> Config {
         audit_log_path: Some(directory.path().join("audit.jsonl")),
         event_log: directory.path().join("events.jsonl"),
         parent_proxy: None,
+        parent_proxy_agents: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),

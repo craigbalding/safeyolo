@@ -1,9 +1,11 @@
-"""Configured parent routing at the real Python and Rust proxy boundary."""
+"""Configured parent routing at the native proxy's real transport boundary."""
 
 import socket
 import socketserver
 import threading
 from contextlib import contextmanager
+
+import pytest
 
 from tests.proxy_contracts.harness import launch_proxy, read_events, request
 from tests.proxy_contracts.scenarios import origin_server, wait_for_reserved_audit
@@ -39,15 +41,28 @@ resource = "*"
 effect = "deny"
 """
 
+MIXED_POLICY = """budget = 12000
+[[permissions]]
+action = "network:request"
+resource = "localhost/*"
+effect = "allow"
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+"""
+
 
 class Parent(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self):
+    def __init__(self, tunnel_authority=None):
         self.accepts = 0
         self.requests = []
         self.errors = []
+        self.tunnel_authority = tunnel_authority
+        self.refuse_connect = False
         super().__init__(("127.0.0.1", 0), ParentRequest)
 
     def get_request(self):
@@ -71,12 +86,23 @@ class ParentRequest(socketserver.BaseRequestHandler):
                 self.request.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nparent-http-ok"
                 )
-            elif first_line == f"CONNECT {TUNNEL_AUTHORITY} HTTP/1.1".encode():
-                assert f"Host: {TUNNEL_AUTHORITY}\r\n".encode().lower() in head.lower()
+            elif first_line in {
+                f"CONNECT {TUNNEL_AUTHORITY} HTTP/1.1".encode(),
+                f"CONNECT {self.server.tunnel_authority} HTTP/1.1".encode(),
+            }:
+                authority = first_line.split(b" ")[1]
+                assert b"host: " + authority.lower() + b"\r\n" in head.lower()
+                if self.server.refuse_connect:
+                    self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    return
                 # The status and initial tunnel bytes deliberately share one write.
                 self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n" + TUNNEL_FIRST_BYTES)
                 observation["body"] = read_exact(self.request, len(TUNNEL_PAYLOAD))
                 self.request.sendall(TUNNEL_REPLY)
+            elif first_line.startswith(b"GET http://localhost:") and first_line.endswith(b"/route HTTP/1.1"):
+                self.request.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nparent-http-ok"
+                )
             elif first_line.startswith(b"GET http://localhost:") and first_line.endswith(b"/failure HTTP/1.1"):
                 self.request.sendall(
                     b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 18\r\nConnection: close\r\n\r\nparent-http-failed"
@@ -90,8 +116,8 @@ class ParentRequest(socketserver.BaseRequestHandler):
 
 
 @contextmanager
-def configured_parent():
-    parent = Parent()
+def configured_parent(tunnel_authority=None):
+    parent = Parent(tunnel_authority)
     thread = threading.Thread(target=parent.serve_forever)
     thread.start()
     try:
@@ -104,12 +130,13 @@ def configured_parent():
         assert parent.errors == [], parent.errors
 
 
-def connect(path, authority):
+def connect(path, authority, *, headers=None):
     stream = socket.socket(socket.AF_UNIX)
     stream.settimeout(5)
     try:
         stream.connect(path)
-        stream.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
+        extra = "".join(f"{name}: {value}\r\n" for name, value in (headers or {}).items())
+        stream.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n{extra}\r\n".encode())
         return stream, read_until(stream, b"\r\n\r\n")
     except Exception:
         stream.close()
@@ -137,6 +164,7 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             directory / "parent",
             POLICY,
             parent_proxy=parent_url,
+            parent_proxy_agents=["alice"],
             ignore_hosts=[TUNNEL_AUTHORITY, direct_authority],
             eager_connect=True,
             native_policy=True,
@@ -227,3 +255,120 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             ]
             assert direct_origin.requests == [{"method": "GET", "target": "/direct"}]
             assert proxy.process.poll() is None
+
+
+def test_selected_parent_mixed_agents_http_connect_and_spoofed_headers(proxy_backend, tmp_path):
+    """Listener identity selects the shared parent or direct origin for one destination."""
+    with origin_server(capture_heads=True) as origin:
+        authority = f"localhost:{origin.server_address[1]}"
+        url = f"http://{authority}/route"
+        with configured_parent(authority) as parent, launch_proxy(
+            proxy_backend, tmp_path / "mixed", MIXED_POLICY,
+            parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+            parent_proxy_agents=["alice"], ignore_hosts=[authority], native_product=True,
+        ) as proxy:
+            for spoof in (False, True):
+                for agent, other in (("alice", "bob"), ("bob", "alice")):
+                    headers = {"X-SafeYolo-Agent": other, "X-Agent-Id": other} if spoof else {}
+                    status, _, body = request(proxy.paths[agent], url, headers=headers)
+                    assert (status, body) == (200, b"parent-http-ok" if agent == "alice" else b"hello")
+                    stream, head = connect(proxy.paths[agent], authority, headers=headers)
+                    with stream:
+                        assert head.startswith(b"HTTP/1.1 200"), head
+                        if agent == "alice":
+                            stream.sendall(TUNNEL_PAYLOAD)
+                            assert read_exact(stream, len(TUNNEL_FIRST_BYTES + TUNNEL_REPLY)) == (
+                                TUNNEL_FIRST_BYTES + TUNNEL_REPLY
+                            )
+                        else:
+                            stream.sendall(
+                                f"GET /tunnel HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode()
+                            )
+                            reply = read_all(stream)
+                            assert reply.startswith(b"HTTP/1.1 200") and reply.endswith(b"hello"), reply
+                    assert parent.accepts == 2 * (spoof + 1)
+                    assert origin.accepts == (2 * (spoof + 1) if agent == "bob" else 2 * spoof)
+
+            assert [row["method"] for row in origin.requests] == ["GET"] * 4
+            assert [row["target"] for row in origin.requests] == ["/route", "/tunnel"] * 2
+            assert all(head.startswith(b"GET /") for head in origin.request_heads)
+            assert [(row["agent"], row["route"]) for row in proxy.events("proxy.egress")] == [
+                ("alice", "parent"), ("alice", "parent"), ("bob", "direct"), ("bob", "direct"),
+            ] * 2
+
+            # The origin is known to accept this exact destination. A selected
+            # parent's refusal must not retry that direct route.
+            parent.refuse_connect = True
+            stream, head = connect(proxy.paths["alice"], authority)
+            with stream:
+                assert head.startswith(b"HTTP/1.1 502"), head
+            assert parent.accepts == 5 and origin.accepts == 4
+
+            for agent in ("alice", "bob"):
+                for method, target in (("GET", "http://denied.invalid/"), ("CONNECT", "denied.invalid:443")):
+                    status, headers, _ = request(proxy.paths[agent], target, method=method)
+                    assert status == 403
+                    assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
+                    assert parent.accepts == 5 and origin.accepts == 4
+
+
+@pytest.mark.parametrize("agents", [None, []], ids=["omitted", "empty"])
+def test_parent_agent_filter_default_keeps_global_parent(proxy_backend, tmp_path, agents):
+    """Removing the last selected name restores parent routing for every agent."""
+    with origin_server() as origin:
+        authority = f"localhost:{origin.server_address[1]}"
+        with configured_parent(authority) as parent, launch_proxy(
+            proxy_backend, tmp_path / "unfiltered", MIXED_POLICY,
+            parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+            parent_proxy_agents=agents, ignore_hosts=[authority], native_product=True,
+        ) as proxy:
+            for agent in ("alice", "bob"):
+                status, _, body = request(proxy.paths[agent], f"http://{authority}/route")
+                assert (status, body) == (200, b"parent-http-ok")
+                stream, head = connect(proxy.paths[agent], authority)
+                with stream:
+                    assert head.startswith(b"HTTP/1.1 200"), head
+                    stream.sendall(TUNNEL_PAYLOAD)
+                    assert read_exact(stream, len(TUNNEL_FIRST_BYTES + TUNNEL_REPLY)) == (
+                        TUNNEL_FIRST_BYTES + TUNNEL_REPLY
+                    )
+            assert parent.accepts == 4 and origin.accepts == 0
+
+
+@pytest.mark.parametrize("parent_configured", [False, True], ids=["no-parent", "unavailable-parent"])
+def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend, tmp_path, parent_configured):
+    """A configured but unavailable parent fails only selected routes; no parent ignores the filter."""
+    with origin_server() as origin, socket.socket() as unavailable_parent:
+        # Keep the port reserved without listening, so the parent connection
+        # fails and another fixture cannot acquire the same port.
+        unavailable_parent.bind(("127.0.0.1", 0))
+        parent_url = f"http://127.0.0.1:{unavailable_parent.getsockname()[1]}" if parent_configured else None
+        authority = f"localhost:{origin.server_address[1]}"
+        with launch_proxy(
+            proxy_backend, tmp_path / "unavailable", MIXED_POLICY,
+            parent_proxy=parent_url, parent_proxy_agents=["alice"],
+            ignore_hosts=[authority], native_product=True,
+        ) as proxy:
+            direct_accepts = 0
+            for agent in ("alice", "bob"):
+                failed = parent_configured and agent == "alice"
+                status, _, body = request(proxy.paths[agent], f"http://{authority}/route")
+                assert status == (502 if failed else 200)
+                if not failed:
+                    assert body == b"hello"
+                stream, head = connect(proxy.paths[agent], authority)
+                with stream:
+                    assert head.startswith(b"HTTP/1.1 502" if failed else b"HTTP/1.1 200"), head
+                    if not failed:
+                        stream.sendall(
+                            f"GET /tunnel HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode()
+                        )
+                        assert read_all(stream).endswith(b"hello")
+                if not failed:
+                    direct_accepts += 2
+                assert origin.accepts == direct_accepts
+            assert [(row["agent"], row["route"]) for row in proxy.events("proxy.egress")] == [
+                ("alice", "parent" if parent_configured else "direct"),
+                ("alice", "parent" if parent_configured else "direct"),
+                ("bob", "direct"), ("bob", "direct"),
+            ]

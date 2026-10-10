@@ -167,6 +167,9 @@ pub struct Config {
     /// Migration diagnostics, separate from the canonical audit stream.
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,
+    /// An empty list keeps global parent use; names match the accepted listener.
+    #[serde(default)]
+    pub parent_proxy_agents: Vec<String>,
     pub upstream_ca_file: Option<PathBuf>,
     pub tls_ca_file: Option<PathBuf>,
     /// Canonical exact entries emitted by the existing CLI's normalize_ignore_hosts.

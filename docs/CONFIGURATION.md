@@ -58,6 +58,23 @@ hostname; TLS failure cannot choose uninspected fallback. For an exact
 operator-selected TLS passthrough, use `ignore_hosts`. See
 [TLS trust and passthrough](TLS_CERTIFICATE.md).
 
+To send selected agents through one shared parent, add the following top-level
+keys to the host's `config.toml`. The operator-provided parent must be listening
+on host port 18080. Restart SafeYolo to apply the saved settings:
+
+```toml
+parent_proxy = "http://127.0.0.1:18080"
+parent_proxy_agents = ["zx"]
+```
+
+Agent `zx` uses the parent. Other agents use SafeYolo's direct upstream
+connection. Every agent still sends traffic through SafeYolo. Names match the
+host-assigned listener identity; request headers cannot select the route.
+An omitted or empty `parent_proxy_agents` list preserves global parent use.
+Removing the last name restores global use. Without `parent_proxy`, the list
+has no effect. If a selected parent fails or refuses CONNECT, the request fails
+without a direct fallback.
+
 Runtime listeners, audit, trace and capture settings take effect on restart.
 Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
