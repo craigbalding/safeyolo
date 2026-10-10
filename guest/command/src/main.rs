@@ -74,15 +74,27 @@ fn generation(paths: &Paths) -> Result<String, Error> {
         .ok_or_else(|| "host launch context has no current-run generation".into())
 }
 
+fn process_stat_read(result: std::io::Result<Vec<u8>>) -> std::io::Result<Option<Vec<u8>>> {
+    match result {
+        Ok(stat) => Ok(Some(stat)),
+        // A PID can disappear after /proc/PID/stat opens but before it reads.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ESRCH) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 // Linux comm can contain spaces and parentheses. Split after its final ')'.
 fn process(pid: i32) -> Result<Option<(String, char, i32)>, Error> {
     if pid <= 0 {
         return Ok(None);
     }
-    let stat = match fs::read(format!("/proc/{pid}/stat")) {
-        Ok(stat) => stat,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(stat) = process_stat_read(fs::read(format!("/proc/{pid}/stat")))? else {
+        return Ok(None);
     };
     // comm also permits non-UTF-8 filename bytes. Only the numeric suffix
     // belongs to the process identity; do not decode the name.
@@ -201,5 +213,37 @@ fn main() {
             eprintln!("safeyolo-guest: {error}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod process_stat_tests {
+    use super::process_stat_read;
+    use std::io;
+
+    #[test]
+    fn process_stat_disappearance_is_absent_but_other_read_errors_are_preserved() {
+        for errno in [libc::ENOENT, libc::ESRCH] {
+            assert!(
+                process_stat_read(Err(io::Error::from_raw_os_error(errno)))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for errno in [libc::EACCES, libc::EPERM, libc::EIO, libc::EINVAL] {
+            assert_eq!(
+                process_stat_read(Err(io::Error::from_raw_os_error(errno)))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+        let invalid = io::Error::new(io::ErrorKind::InvalidData, "invalid process stat");
+        assert_eq!(
+            process_stat_read(Err(invalid)).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let stat = b"unchanged stat bytes".to_vec();
+        assert_eq!(process_stat_read(Ok(stat.clone())).unwrap(), Some(stat));
     }
 }

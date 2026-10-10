@@ -986,6 +986,9 @@ fi
 # Proxy (test instance on separate ports)
 echo "Starting installed native test proxy (admin port $TEST_ADMIN_PORT)..."
 STARTED_PROXY=true
+if [ "$VZ_FIXED_PORTS" = true ]; then
+    safeyolo coord start --client-port 46370 --monitor-port 46372
+fi
 if ! safeyolo start; then
     echo "ERROR: selected test proxy failed to start" >&2
     exit 2

@@ -67,6 +67,7 @@ export PYTHONPATH="$repository/tests/reference:$repository${PYTHONPATH:+:$PYTHON
 if [[ $prepare_only == true ]]; then
   nats=()
   [[ -z ${SAFEYOLO_COORD_NATS_BINARY:-} ]] || nats+=(--binary "$SAFEYOLO_COORD_NATS_BINARY")
+  if [[ $lane == vz ]]; then nats+=(--client-port 46370 --monitor-port 46372); fi
   safeyolo --root "$root" coord start ${nats[@]+"${nats[@]}"}
   safeyolo --root "$root" coord stop
   echo "Native product and $lane inputs prepared; no test guest started"
