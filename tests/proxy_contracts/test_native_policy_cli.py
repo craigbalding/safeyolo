@@ -44,9 +44,10 @@ class NativeInstance:
         self.paths = paths
         self.environment = environment
         self.policy = root / "policy.toml"
-        marker = json.loads((root / "data/ready.json").read_text())
+        settings = tomllib.loads((root / "config.toml").read_text())
+        marker = json.loads((root / settings.get("readiness_file", "data/ready.json")).read_text())
         self.port = marker["admin_port"]
-        self.token = (root / "data/admin_token").read_text().strip()
+        self.token = (root / settings.get("admin_api_token_file", "data/admin_token")).read_text().strip()
 
     def cli(self, *arguments, timeout=15):
         return subprocess.run(
@@ -162,7 +163,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             with child_process(
                 [str(root / "bin/safeyolo-proxy"), "--config", str(root / "config.toml")], root, environment,
             ) as process:
-                readiness = root / "data/ready.json"
+                readiness = root / tomllib.loads((root / "config.toml").read_text()).get("readiness_file", "data/ready.json")
                 wait_ready(process, [readiness, *map(Path, paths.values())], root / "process.log",
                            readiness_file=readiness, expected_backend="rust-m2")
                 # Native readiness precedes the CLI's process-birth receipt.
