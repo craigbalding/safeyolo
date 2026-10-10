@@ -96,7 +96,7 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None):
+                    capture=False, extra_config="", platform_assets=None, agent_map=None):
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
     root = directory / "installed"
     try:
@@ -124,6 +124,13 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         socket_parent = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR")
         with tempfile.TemporaryDirectory(prefix="sy-native-", dir=socket_parent) as sockets:
             paths = {name: str(Path(sockets) / f"{name}.sock") for name in ("alice", "bob")}
+            if agent_map is not None:
+                from tests.blackbox.installed_host_smoke import _agent_map
+
+                (root / "data/agent_map.json").write_text(json.dumps({
+                    name: {"ip": ip} for name, ip in agent_map.items()
+                }))
+                paths = {row["agent_id"]: row["path"] for row in _agent_map(root)}
             configuration = (f'admin_port = 0\nflow_store_enabled = {str(capture).lower()}\n'
                              f'agent_api_enabled = {str(services or agent_api).lower()}\n')
             if parent_proxy:
@@ -139,7 +146,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             configuration += extra_config
             for index, (name, path) in enumerate(paths.items(), 2):
                 configuration += (f'[[listeners]]\nagent_id = "{name}"\nsocket_path = {json.dumps(path)}\n'
-                                  f'source_id = "10.0.0.{index}"\n')
+                                  f'source_id = {json.dumps(agent_map[name] if agent_map is not None else f"10.0.0.{index}")}\n')
             (root / "config.toml").write_text(configuration)
             environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
                                SAFEYOLO_CONFIG_DIR=str(root),
@@ -158,6 +165,14 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                 readiness = root / "data/ready.json"
                 wait_ready(process, [readiness, *map(Path, paths.values())], root / "process.log",
                            readiness_file=readiness, expected_backend="rust-m2")
+                # Native readiness precedes the CLI's process-birth receipt.
+                # A consumer using native stop or inspection needs both.
+                receipt = root / "data/proxy-process.json"
+                deadline = time.monotonic() + 15
+                while not receipt.is_file():
+                    assert process.poll() is None, "proxy exited before its process receipt"
+                    assert time.monotonic() < deadline, "native process receipt was not published"
+                    time.sleep(0.02)
                 yield NativeInstance(root, process, paths, environment)
     finally:
         # The process fixture stops the proxy before these owned copies are

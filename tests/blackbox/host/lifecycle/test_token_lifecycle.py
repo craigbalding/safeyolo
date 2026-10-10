@@ -20,10 +20,11 @@ import json
 import os
 import subprocess
 import sys
-import time
+from pathlib import Path
 
 import pytest
 from guest_exec import guest_command_args
+from installed_host_smoke import _agent_map, _native_config, _runtime_observation
 
 
 @pytest.mark.skipif(
@@ -88,22 +89,27 @@ class TestLiveAgentLifecycle:
         the same sandbox. File-binding the old socket inode made every
         reconnect fail even though the host pathname had been recreated.
         """
-        from pathlib import Path
         config_dir = Path(os.environ.get(
             "SAFEYOLO_CONFIG_DIR", str(Path.home() / ".safeyolo"),
         ))
         agent_name = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
-        from safeyolo.sockets import path_for
-        map_data = json.loads(
-            (config_dir / "data" / "agent_map.json").read_text()
-        )
-        socket_path = path_for(agent_name, map_data[agent_name]["ip"])
+        listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == agent_name)
+        socket_path = Path(listener["path"])
         socket_directory_inode = socket_path.parent.stat().st_ino
+        config_path = config_dir / "config.toml"
+        runtime_before = _runtime_observation(
+            config_dir, _native_config(config_path, config_dir), config_dir / "bin/safeyolo-proxy",
+            config_path=config_path, working_directory=config_dir,
+            require_running=True, require_authenticated_identity=True,
+        )
+        agent_before = self._safeyolo("agent", "status", agent_name)
+        assert agent_before.returncode == 0, agent_before.stderr
+        sandbox_before = json.loads(agent_before.stdout)
+        assert sandbox_before["runtime_state"] == "running", "selected sandbox is not running"
+        assert sandbox_before["name"] == agent_name and sandbox_before["agent_id"] and sandbox_before["run_id"]
 
         # 1. Verify sandbox is running and agent API works
         status = self._agent_api_health(agent_name)
-        if status == 0:
-            pytest.skip(f"Agent '{agent_name}' not running or agent API unreachable")
         assert status == 200, (
             f"Agent API returned {status} before proxy restart — "
             f"baseline broken, can't test lifecycle"
@@ -111,40 +117,34 @@ class TestLiveAgentLifecycle:
 
         # 2. Record current token
         token_file = config_dir / "data" / "agent_token"
-        token_before = token_file.read_text().strip() if token_file.exists() else ""
+        token_before = token_file.read_text().strip()
+        assert token_before, "selected native instance has no agent token"
 
         # 3. Restart proxy
         stopped = self._safeyolo("stop", timeout=15)
         assert stopped.returncode == 0, stopped.stderr
-        time.sleep(1)
-        start_args = (
-            ("start", "--no-wait")
-            if os.environ.get("SAFEYOLO_BLACKBOX_PROXY_BACKEND") == "rust"
-            else ("start", "--test", "--no-wait")
-        )
-        started = self._safeyolo(*start_args, timeout=15)
+        started = self._safeyolo("start", timeout=15)
         assert started.returncode == 0, started.stderr
-
-        # Wait for proxy health
-        for _ in range(15):
-            try:
-                import httpx
-                admin_url = os.environ.get("ADMIN_URL", "http://127.0.0.1:9190")
-                token_path = config_dir / "data" / "admin_token"
-                admin_token = token_path.read_text().strip() if token_path.exists() else ""
-                r = httpx.get(
-                    f"{admin_url}/health",
-                    headers={"Authorization": f"Bearer {admin_token}"},
-                    timeout=2,
-                )
-                if r.status_code == 200:
-                    break
-            except Exception:
-                pass
-            time.sleep(1)
+        # Native start waits for readiness. Authenticate the new incarnation
+        # instead of polling an inherited Admin URL from the retired launcher.
+        runtime_after = _runtime_observation(
+            config_dir, _native_config(config_path, config_dir), config_dir / "bin/safeyolo-proxy",
+            config_path=config_path, working_directory=config_dir,
+            require_running=True, require_authenticated_identity=True,
+        )
+        assert runtime_after["receipt"]["start_token"] != runtime_before["receipt"]["start_token"], (
+            "proxy restart did not replace the selected native process"
+        )
+        agent_after = self._safeyolo("agent", "status", agent_name)
+        assert agent_after.returncode == 0, agent_after.stderr
+        sandbox_after = json.loads(agent_after.stdout)
+        assert sandbox_after["runtime_state"] == "running", "selected sandbox stopped during proxy restart"
+        assert all(sandbox_after[key] == sandbox_before[key] for key in ("name", "agent_id", "run_id")), (
+            "proxy restart changed the selected sandbox identity"
+        )
 
         # 4. Check if token changed
-        token_after = token_file.read_text().strip() if token_file.exists() else ""
+        token_after = token_file.read_text().strip()
         token_changed = token_before != token_after
 
         # 5. Verify agent API still works from the SAME running sandbox
