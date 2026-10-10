@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -12,12 +13,21 @@ import shutil
 import subprocess
 from pathlib import Path
 
-try:
-    from scripts.verify_host_package import host_platform, sha256
-except ModuleNotFoundError:
-    from verify_host_package import host_platform, sha256
-
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def host_platform() -> str:
+    system = {"Darwin": "darwin", "Linux": "linux"}.get(platform.system())
+    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine())
+    result = f"{system}-{arch}"
+    if result not in {"darwin-arm64", "linux-amd64", "linux-arm64"}:
+        raise ValueError(f"unsupported host platform: {result}")
+    return result
 
 
 def output(*args: str, cwd: Path = ROOT) -> str:
