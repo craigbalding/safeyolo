@@ -1145,27 +1145,24 @@ pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStre
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<i32> {
-    if !valid_agent_name(name) || !guest_exec_available(name).await {
-        return Err(unavailable());
-    }
-    let wrapped = format!(
-        ". /etc/environment 2>/dev/null; if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
-    );
-    let status = runsc_command(name)?
-        .args([
-            "exec",
-            "--user",
-            "1000:1000",
-            "--cwd",
-            "/workspace",
-            &crate::host_runs::id(name).map_err(io::Error::other)?,
-            "/bin/bash",
-            "-lc",
-            &wrapped,
-        ])
-        .stdin(std::process::Stdio::null())
-        .status()
-        .await?;
+    // runsc changes donated stdio ownership and open-file flags. Donate
+    // pipes, then stream diagnostics to the caller's private descriptors.
+    let mut child = spawn_guest_command_with_output(name, command, true, false).await?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or(io::Error::other("guest stdout is not captured"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or(io::Error::other("guest stderr is not captured"))?;
+    let mut host_stdout = tokio::io::stdout();
+    let mut host_stderr = tokio::io::stderr();
+    let (status, _, _) = tokio::try_join!(
+        child.wait(),
+        tokio::io::copy(&mut stdout, &mut host_stdout),
+        tokio::io::copy(&mut stderr, &mut host_stderr),
+    )?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -2092,10 +2089,271 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/owned_run.rs"]
+mod guest_command_test_run;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guest_output_descriptor_mutator() {
+        use std::io::{Read, Write};
+        let Ok(command) = std::env::var("SAFEYOLO_TEST_GUEST_FD_MUTATOR") else {
+            return;
+        };
+        let mut byte = [0];
+        assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
+        for fd in [1, 2] {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+                0
+            );
+            // Emulate runsc's stdio ownership setup in the real mapped user
+            // namespace, including mutation of the shared open-file flags.
+            assert_eq!(unsafe { libc::fchown(fd, 0, 0) }, 0);
+            let mut metadata = unsafe { std::mem::zeroed::<libc::stat>() };
+            assert_eq!(unsafe { libc::fstat(fd, &mut metadata) }, 0);
+            if metadata.st_mode & libc::S_IFMT == libc::S_IFREG {
+                assert_eq!(unsafe { libc::fchmod(fd, 0o640) }, 0);
+            }
+            // Blocking writes exercise output larger than a pipe's buffer.
+            if command.contains("large-output") {
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFL, flags) }, 0);
+            }
+        }
+        if command.contains("large-output") {
+            std::io::stdout()
+                .write_all(&vec![b'O'; 128 * 1024])
+                .unwrap();
+            std::io::stderr()
+                .write_all(&vec![b'E'; 128 * 1024])
+                .unwrap();
+        } else {
+            println!("guest-output-ready");
+            std::io::stdout().flush().unwrap();
+            let root = std::env::var_os("SAFEYOLO_TEST_GUEST_STDIO_ROOT").unwrap();
+            let release = PathBuf::from(root).join("release");
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !release.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "guest output was not streamed"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            eprintln!("guest diagnostic: {command}");
+            if command.contains("cancelled-output") {
+                std::fs::write(
+                    release.with_file_name("transport.pid"),
+                    std::process::id().to_string(),
+                )
+                .unwrap();
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+        if command.contains("signal-exit") {
+            unsafe { libc::raise(libc::SIGTERM) };
+        }
+        std::process::exit(if command.contains("auth-failure") {
+            7
+        } else {
+            0
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn guest_command_preserves_private_log_and_streams_output() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::FileExt;
+        const TEST: &str =
+            "host_platform::tests::guest_command_preserves_private_log_and_streams_output";
+        if let Some(root) = std::env::var_os("SAFEYOLO_TEST_GUEST_STDIO_ROOT") {
+            let root = PathBuf::from(root);
+            std::fs::create_dir(root.join("bin")).unwrap();
+            let mut run = guest_command_test_run::OwnedRun::start(&root);
+            // Unlike the ordinary fixture, descriptor setup needs namespace
+            // root, just as runsc does. Authority remains in this owned fixture.
+            std::fs::write(
+                root.join("bin/nsenter"),
+                "#!/bin/sh\nexec /usr/bin/nsenter \"$@\"\n",
+            )
+            .unwrap();
+            let script = format!(
+                "#!/bin/sh\ncase \"$3\" in\n state) printf '{{\"id\":\"%s\",\"status\":\"running\"}}\\n' \"$4\";;\n exec) for argument; do SAFEYOLO_TEST_GUEST_FD_MUTATOR=$argument; done; export SAFEYOLO_TEST_GUEST_FD_MUTATOR; exec '{}' --exact host_platform::tests::guest_output_descriptor_mutator --nocapture;;\n *) exit 2;;\nesac\n",
+                std::env::current_exe().unwrap().display()
+            );
+            std::fs::write(root.join("bin/runsc"), script).unwrap();
+            std::fs::set_permissions(
+                root.join("bin/runsc"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            // Environment changes are confined to this test's child process.
+            unsafe {
+                std::env::set_var("PATH", root.join("bin"));
+            }
+            in_instance(root.clone(), async {
+                if std::env::var_os("SAFEYOLO_TEST_INHERITED_GUEST_OUTPUT").is_some() {
+                    assert!(
+                        runsc_command("alice")
+                            .unwrap()
+                            .args(["exec", "inherited-control"])
+                            .stdin(std::process::Stdio::null())
+                            .status()
+                            .await
+                            .unwrap()
+                            .success()
+                    );
+                } else {
+                    for (command, code) in [
+                        ("/safeyolo/guest-desktop start 1280x800", 0),
+                        ("/home/agent/.safeyolo-command --version", 0),
+                        ("codex login status # auth-failure", 7),
+                        ("large-output", 0),
+                        ("signal-exit", 1),
+                    ] {
+                        assert_eq!(exec_guest_command("alice", command).await.unwrap(), code);
+                    }
+                    assert!(
+                        exec_guest_command("../other-agent", "ignored")
+                            .await
+                            .is_err()
+                    );
+                    assert!(
+                        tokio::time::timeout(
+                            Duration::from_secs(1),
+                            exec_guest_command("alice", "cancelled-output")
+                        )
+                        .await
+                        .is_err()
+                    );
+                    let pid: i64 = std::fs::read_to_string(root.join("transport.pid"))
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                    while crate::host_lifecycle::process_token(pid).is_some() {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "cancelled guest transport survived"
+                        );
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    std::fs::remove_file(root.join("bin/runsc")).unwrap();
+                    assert!(exec_guest_command("alice", "ignored").await.is_err());
+                }
+            })
+            .await;
+            run.child.kill().unwrap();
+            run.assert_exited();
+            return;
+        }
+        for inherited in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir(root.join("logs")).unwrap();
+            std::fs::set_permissions(root.join("logs"), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let path = root.join("logs/proxy.log");
+            let log = std::fs::OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            let before = log.metadata().unwrap();
+            let flags = unsafe { libc::fcntl(log.as_raw_fd(), libc::F_GETFL) };
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", TEST, "--nocapture"])
+                .env("SAFEYOLO_TEST_GUEST_STDIO_ROOT", root)
+                .stdin(std::process::Stdio::piped())
+                .stdout(log.try_clone().unwrap())
+                .stderr(log.try_clone().unwrap())
+                .kill_on_drop(true);
+            if inherited {
+                command.env("SAFEYOLO_TEST_INHERITED_GUEST_OUTPUT", "1");
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut bytes = [0; 4096];
+                let count = log.read_at(&mut bytes, 0).unwrap();
+                if String::from_utf8_lossy(&bytes[..count]).contains("guest-output-ready") {
+                    std::fs::write(root.join("release"), "continue").unwrap();
+                    break;
+                }
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "guest transport exited before streaming output: {}",
+                    String::from_utf8_lossy(&bytes[..count])
+                );
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "guest output was not visible before completion: {}",
+                    String::from_utf8_lossy(&bytes[..count])
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            let after = log.metadata().unwrap();
+            let observed = unsafe { libc::fcntl(log.as_raw_fd(), libc::F_GETFL) };
+            if inherited {
+                assert_eq!(
+                    (after.uid(), after.gid(), after.mode() & 0o777),
+                    (100000, 100000, 0o640)
+                );
+                assert_eq!(observed, flags | libc::O_NONBLOCK);
+                assert_eq!(
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&path)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::PermissionDenied
+                );
+            } else {
+                assert_eq!(
+                    (after.uid(), after.gid(), after.mode()),
+                    (before.uid(), before.gid(), before.mode())
+                );
+                assert_eq!(observed, flags);
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap()
+                    .write_all(b"restarted\n")
+                    .unwrap();
+                let output = std::fs::read(&path).unwrap();
+                // Concurrent stdout/stderr writes may interleave in this shared sink.
+                for byte in [b'O', b'E'] {
+                    assert_eq!(
+                        output.iter().filter(|&&value| value == byte).count(),
+                        128 * 1024,
+                        "incomplete guest output for byte {byte:?}"
+                    );
+                }
+                assert!(String::from_utf8_lossy(&output).contains("guest diagnostic:"));
+            }
+            assert!(
+                status.success(),
+                "{}",
+                String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default())
+            );
+        }
+    }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
