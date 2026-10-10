@@ -92,6 +92,7 @@ LIFECYCLE=false
 ACCESS_CONFIG_ONLY=false
 INSTALL_COMMIT=""
 PYTEST_FORWARD_ARGS=()
+OPERATOR_JOURNEY_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -155,6 +156,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --access)
             ACCESS=true
+            shift
+            ;;
+        --operator-journey)
+            ACCESS=true
+            OPERATOR_JOURNEY_ARGS=(--operator-journey)
             shift
             ;;
         --lifecycle)
@@ -1110,6 +1116,7 @@ if [ "$ACCESS" = true ]; then
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
         --output "$ARTIFACTS_DIR/installed-access.json" \
+        "${OPERATOR_JOURNEY_ARGS[@]+"${OPERATOR_JOURNEY_ARGS[@]}"}" \
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi

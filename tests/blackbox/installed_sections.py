@@ -132,7 +132,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
 
 
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
-                 directory: Path, artifacts: Path) -> int:
+                 directory: Path, artifacts: Path, *, operator_journey: bool = False) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     source = directory / "prepared"
     env = os.environ.copy()
@@ -191,6 +191,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                 "--proxy-impl", "rust"]
         if section != "isolation":
             args += ["--" + section]
+        if section == "access" and operator_journey:
+            args += ["--operator-journey"]
         if section in {"ingress", "workloads", "access", "lifecycle"}:
             args += ["--install-commit", revision]
         if section == "continuity":
@@ -238,6 +240,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lane", choices=SECTIONS)
     parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
+    parser.add_argument("--operator-journey", action="store_true",
+                        help="Extend the selected systrap access section with terminal, desktop and restart observations")
     parser.add_argument("--install-commit", help="exact commit; defaults to this checkout's HEAD")
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
@@ -253,12 +257,15 @@ def main() -> int:
     sections = tuple(args.section or SECTIONS[args.lane])
     if any(section not in SECTIONS[args.lane] for section in sections) or len(set(sections)) != len(sections):
         parser.error("sections must be distinct and supported by the selected lane")
+    if args.operator_journey and (args.lane != "systrap" or sections != ("access",)):
+        parser.error("--operator-journey requires systrap --section access")
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
     # Short roots also keep configured UDS paths within macOS's pathname limit.
     directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path.home()))
     print(f"Prepared product and section state: {directory}", flush=True)
-    return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve())
+    return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
+                        operator_journey=args.operator_journey)
 
 
 if __name__ == "__main__":

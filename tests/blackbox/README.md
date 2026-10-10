@@ -77,6 +77,26 @@ For example, run access on the software-isolation host:
 ./tests/blackbox/run-installed.sh systrap --section access
 ```
 
+For the continuous Ubuntu operator/guest path, select the prepared native bundle
+and a desktop-capable `SAFEYOLO_PLATFORM_ASSETS` tree. The guest must already
+contain Xvfb, x11vnc, websockify, a supported window manager and noVNC assets;
+the procedure checks these inputs and does not install guest packages. No proxy
+or guest needs to be running. From the clean test checkout, run:
+
+```sh
+./tests/blackbox/run-installed.sh systrap --section access --operator-journey
+```
+
+This selection uses one installed instance and agent for access, terminal
+attachment plus an independent shell, native Admin desktop presentation and
+missing-target reporting, then stop/restart and fresh traffic. It runs an owned
+shell marker command, with no model or simulated login. HTTP export remains
+`raw_request`. The runner stops its agents, proxy, Coord and fixture processes.
+`access/installed-access.json` retains reached access observations if a later
+operator step fails; `operator_incomplete` is not a completed journey. When only
+test inputs changed, use `--install-checkout` and `--install-commit` to name the
+clean source of the supplied package and retain both actual source revisions.
+
 `--install-checkout PATH` uses another clean source checkout at the selected
 commit. `--artifacts PATH` changes the ordinary report directory, which defaults
 to `tests/blackbox/artifacts/`. `installed-sections.json` attributes product
