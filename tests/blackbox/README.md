@@ -490,7 +490,12 @@ decisions, use the [operator guide](../../docs/native-operator.md).
 Run from this checkout on the existing owned Ubuntu/systrap fixture. The selected
 native proxy and two guests must already be running. The marked disposable root
 must expose each guest's existing read-only `config-share` mount. Supply the
-full candidate commit and installed matching CLI/proxy. `TRANSPORT_CLI` is the
+full product commit and installed CLI/proxy/guest assets with matching source
+and build profile. Keep the installation's `package-info` beside its `bin`
+directory. The driver checks the native process receipt, kernel process birth,
+selected executable/configuration and authenticated runtime identity before
+guest work. It resolves readiness and Admin token paths from `config.toml`.
+Missing, stale or foreign ownership refuses the run. `TRANSPORT_CLI` is the
 maintained test transport that already controls those guests; it needs `agent
 shell` and `agent stop`. Those host entries remain #817's responsibility.
 
@@ -560,6 +565,8 @@ and observe the same terminal state and reusable Worker/host/port effect.
 Record the actual Commander display and backend/source separately. The driver
 does not infer a GUI result. Its teardown then stops both guests, proxy,
 listeners and origins, and restores the saved fixture policy after proxy exit.
+An inactive process receipt or an inert socket file does not fail cleanup.
+The driver checks actual process exit, withdrawn readiness and closed listeners.
 Cleanup errors remain failures.
 
 Omitting `--real-helper` selects deterministic preparation. Add

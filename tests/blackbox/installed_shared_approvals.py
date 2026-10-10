@@ -21,7 +21,6 @@ import re
 import select
 import shlex
 import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -36,28 +35,30 @@ if __package__:
     from .guest_exec import guest_command_args
     from .installed_host_smoke import (
         _agent_map,
-        _pid_alive,
-        _process_executable,
-        _process_start_token,
+        _cli_identity,
+        _native_config,
         _require_disposable,
-        _sha256,
+        _runtime_observation,
+        _rust_identity,
         _socket_accepting,
     )
     from .installed_ingress import runsc_identity
     from .installed_lifecycle import stop_guest
+    from .installed_sections import surviving_processes
 else:
     from guest_exec import guest_command_args
     from installed_host_smoke import (
         _agent_map,
-        _pid_alive,
-        _process_executable,
-        _process_start_token,
+        _cli_identity,
+        _native_config,
         _require_disposable,
-        _sha256,
+        _runtime_observation,
+        _rust_identity,
         _socket_accepting,
     )
     from installed_ingress import runsc_identity
     from installed_lifecycle import stop_guest
+    from installed_sections import surviving_processes
 
 
 # This runs inside each guest. It reads only the Agent API token. The operator
@@ -273,26 +274,29 @@ def run(args: argparse.Namespace) -> None:
     os.environ["SAFEYOLO_NATIVE_CONFIG_PATH"] = str(root / "config.toml")
     os.environ["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     cli, binary = args.native_cli.resolve(strict=True), args.native_proxy.resolve(strict=True)
-    cli_version, proxy_version = (checked([str(path), "--version"]) for path in (cli, binary))
+    cli_identity = _cli_identity(cli)
+    _, proxy_identity = _rust_identity(binary)
+    cli_version, proxy_version = cli_identity["version"], proxy_identity["version"]
     assert re.fullmatch(r"[0-9a-f]{40}", args.commit), "select a full source commit"
-    expected = f"commit={args.commit} profile="
+    expected = f"commit={args.commit} profile={cli_identity['profile']}"
     assert expected in cli_version and expected in proxy_version, "native artifacts are not the selected source"
-    settings = tomllib.loads((root / "config.toml").read_text())
-    assert settings.get("policy_file", "policy.toml") == "policy.toml", "fixture requires the root policy"
-    ready_path = root / settings.get("readiness_file", "data/ready.json")
-    ready = json.loads(ready_path.read_text())
-    pid = ready["pid"]
-    assert type(pid) is int and pid > 1 and _pid_alive(pid), "selected proxy must already be running"
-    assert _process_executable(pid) == binary, "readiness does not belong to the installed candidate"
-    start_token = _process_start_token(pid)
-    assert start_token, "proxy process ownership cannot be established"
+    config_path = root / "config.toml"
+    native_config = _native_config(config_path, root)
+    settings = native_config["raw"]
+    assert Path(native_config["policy_file"]) == root / "policy.toml", "fixture requires the root policy"
+    runtime = _runtime_observation(root, native_config, binary, config_path=config_path,
+        working_directory=root, require_running=True, require_authenticated_identity=True)
+    ready = runtime["readiness"]
+    pid, start_token = runtime["pid"], runtime["receipt"]["start_token"]
+    native_listeners = {row["agent_id"]: Path(row["path"]) for row in runtime["listeners"]}
+    assert all(native_listeners.get(name) == Path(listeners[name]["path"]) for name in names), (
+        "guest listener map differs from the selected native configuration")
     sockets = [Path(listeners[name]["path"]) for name in names]
-    assert all(_socket_accepting(path) for path in sockets), "both trusted agent listeners must accept"
     guests = {name: runsc_identity(root, name, socket, platform="systrap") for name, socket in zip(names, sockets)}
     source = tomllib.loads((root / "policy.toml").read_text())
     ids = {name: source["agents"][name]["agent_id"] for name in names}
     assert all(isinstance(value, str) and value for value in ids.values()) and len(set(ids.values())) == 2
-    token_path = root / settings.get("admin_api_token_file", "data/admin_token")
+    token_path = Path(settings["admin_api_token_file"])
 
     def operator(method: str, path: str, body: dict | None = None) -> dict:
         connection = http.client.HTTPConnection("127.0.0.1", ready["admin_port"], timeout=8)
@@ -518,7 +522,8 @@ def run(args: argparse.Namespace) -> None:
             assert observed["approval"]["status"] == "pending" and observed["approval"]["action"] == action
             assert observed["policy_unchanged"] and not observed["origin_hits"]
             after = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
-            assert after["launch_id"] == live["launch_id"] and after["exit_code"] == 1
+            assert after["launch_id"] == live["launch_id"] and after["exit_code"] == 1, (
+                "failed Helper launch does not match the observed model turn")
             assert after["runtime_state"] == "running" and after["exec"] is True
             assert model_config_path.read_bytes() == saved_model_config, "saved model configuration changed"
             pending = native("approvals", "show", identifier, "--agent", args.worker)
@@ -584,7 +589,7 @@ def run(args: argparse.Namespace) -> None:
         saved = tomllib.loads((root / "policy.toml").read_text())
         assert saved["agents"][args.worker]["hosts"][f"127.0.0.2:{port}"]["approval_request_id"] == identifier
         result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
-                  "proxy_sha256": _sha256(binary), "guests": guests, "request_id": identifier,
+                  "proxy_sha256": proxy_identity["sha256"], "runtime": runtime, "guests": guests, "request_id": identifier,
                   "action": action, "effect": view["body"]["effect"], "origin_hits": hits,
                   "scope_controls": "Helper and second port refused"}
         if args.interfaces:
@@ -623,24 +628,25 @@ def run(args: argparse.Namespace) -> None:
                 staged_cli.unlink(missing_ok=True)
             except OSError as error:
                 errors.append(f"staged native client: {error}")
-        if _pid_alive(pid) and _process_start_token(pid) == start_token:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                # The checked owned process exited before the signal.
-                pass
+        try:
+            checked([str(cli), "--root", str(root), "stop"])
+        except (AssertionError, OSError, subprocess.SubprocessError) as error:
+            errors.append(f"native proxy stop: {error}")
+        owned_proxy = [{"pid": pid, "start_token": start_token}]
         deadline = time.monotonic() + 12
-        while _pid_alive(pid) and _process_start_token(pid) == start_token and time.monotonic() < deadline:
+        while surviving_processes(owned_proxy) and time.monotonic() < deadline:
             time.sleep(0.05)
-        if _pid_alive(pid) and _process_start_token(pid) == start_token or any(_socket_accepting(path) for path in sockets):
-            errors.append("owned proxy or agent listener remains live")
+        proxy_errors = surviving_processes(owned_proxy)
+        errors.extend(proxy_errors)
+        if Path(native_config["readiness_file"]).exists() or any(_socket_accepting(path) for path in sockets):
+            errors.append("native readiness or accepting agent listener remains after stop")
         for origin, thread in zip(origins, threads):
             origin.shutdown()
             origin.server_close()
             thread.join(timeout=2)
             if thread.is_alive():
                 errors.append("owned origin did not stop")
-        if not _pid_alive(pid) or _process_start_token(pid) != start_token:
+        if not proxy_errors:
             try:
                 (root / "policy.toml").write_bytes(saved_policy)
                 assert (root / "policy.toml").read_bytes() == saved_policy
