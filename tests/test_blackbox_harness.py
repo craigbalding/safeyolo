@@ -1422,9 +1422,10 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
         return status, {"x-safeyolo-request-id": REQUEST_ID}, b'{"received":true}'
 
     declared = None
+    flow_searches = 0
 
     def api(method, path, *, payload=None):
-        nonlocal declared
+        nonlocal declared, flow_searches
         if method == "POST" and path == "/api/test-context/current":
             declared = {"run": "installed-p3", "agent": "bbtest", "test": MARKER}
             return 200, {}, {"context": declared}
@@ -1433,7 +1434,11 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
         if method == "GET" and path.startswith("/trace?"):
             return 200, {}, {"agent_id": "bbtest"}
         if method == "POST" and path == "/api/flows/search":
-            return 200, {}, {"flows": [{"id": "owned-flow", "request_id": REQUEST_ID, "agent_id": "bbtest"}]}
+            flow_searches += 1
+            if flow_searches == 1:
+                return 200, {}, {"flows": []}
+            return 200, {}, {"flows": [{"id": "owned-flow", "request_id": REQUEST_ID,
+                                       "agent_id": "bbtest", "evidence_owner": "bbtest"}]}
         if method == "GET" and path == "/api/flows/owned-flow":
             return 200, {}, {"request_id": REQUEST_ID}
         if method == "DELETE" and path == "/api/test-context/current":
@@ -1444,9 +1449,11 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
     monkeypatch.setattr(guest, "service_token", lambda _service: "sgw_fixture")
     monkeypatch.setattr(guest, "exchange", exchange)
     monkeypatch.setattr(guest, "api", api)
+    monkeypatch.setattr(guest.time, "sleep", lambda _: None)
     guest.basic_read(MARKER)
     guest.contract_prompt()
     guest.context_and_evidence("bbtest", MARKER)
+    assert flow_searches == 2
 
     assert calls == [
         ("GET", guest.BASIC_HOST, False),
@@ -1872,6 +1879,28 @@ def test_operator_access_checks_selected_source_before_runtime_setup(tmp_path, p
         capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "expected " + "a" * 40 in result.stderr, result.stderr
     assert not (tmp_path / "uncreated").exists() and not (tmp_path / "unwritten.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["missing", "foreign", "duplicate", "api_error"])
+def test_access_flow_wait_preserves_missing_identity_and_api_failures(monkeypatch, failure):
+    row = {"id": 7, "request_id": "req-owned", "agent_id": "bbtest", "evidence_owner": "bbtest"}
+    if failure == "missing":
+        row["request_id"] = "req-unrelated"
+    elif failure == "foreign":
+        row["evidence_owner"] = "bbpeer"
+    rows = [row, row] if failure == "duplicate" else [row]
+    calls = []
+
+    def api(method, path, *, payload):
+        calls.append((method, path, payload))
+        return (403 if failure == "api_error" else 200), {}, {"flows": rows}
+
+    times = iter((0, 8))
+    monkeypatch.setattr(guest.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(guest, "api", api)
+    with pytest.raises(AssertionError):
+        guest.wait_for_owned_flow("bbtest", guest.BASIC_HOST, "req-owned", limit=30)
+    assert calls == [("POST", "/api/flows/search", {"host": guest.BASIC_HOST, "limit": 30})]
 
 
 @pytest.mark.parametrize("status,headers", [(200, {}), (403, {}), (403, {"x-blocked-by": "credentials"}),
