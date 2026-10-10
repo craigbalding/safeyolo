@@ -2337,9 +2337,13 @@ mod tests {
                     .write_all(b"restarted\n")
                     .unwrap();
                 let output = std::fs::read(&path).unwrap();
+                // Concurrent stdout/stderr writes may interleave in this shared sink.
                 for byte in [b'O', b'E'] {
-                    let expected = vec![byte; 128 * 1024];
-                    assert!(output.windows(expected.len()).any(|part| part == expected));
+                    assert_eq!(
+                        output.iter().filter(|&&value| value == byte).count(),
+                        128 * 1024,
+                        "incomplete guest output for byte {byte:?}"
+                    );
                 }
                 assert!(String::from_utf8_lossy(&output).contains("guest diagnostic:"));
             }
