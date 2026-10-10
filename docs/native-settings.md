@@ -214,6 +214,7 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; `builtin-services`, `services` | Standalone init creates these directories; the native installer selects `assets/services` and `data/services`. Operator definitions override builtins by name. CLI and delivery read the same accepted catalogue. Set both together. |
 | `onepassword_executable` | Absolute host executable path; absent | Optional 1Password resolver, after service/policy/approval checks. Authentication stays in the host environment. Restart after changing it; local credentials do not need it. |
 | `parent_proxy`, `upstream_ca_file` | URL/path; absent | `proxy.upstream_proxy`, `proxy.upstream_ca_cert`; native upstream transport and trust loader. |
+| `parent_proxy_agents` | String array; `[]` | Restricts the shared parent to named host-assigned agents. Omitted/empty keeps global parent use; without `parent_proxy`, the list has no effect. See the [configuration example](CONFIGURATION.md#runtime-settings). |
 | `tls_ca_file` | Path; absent | Generated signing CA path; native TLS interception. |
 | `ignore_hosts` | String array; `[]` | `proxy.ignore_hosts`; existing exact TLS bypass entries. |
 | `via_token` | String; absent | `proxy.via_token`; existing Via-loop detection. Explicit values retain RFC-token validation. |

@@ -1070,6 +1070,54 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
 }
 
 #[tokio::test]
+async fn selected_parent_shield_does_not_block_an_unselected_direct_route() {
+    let directory = TempDir::new().unwrap();
+    let token = synthetic();
+    let mut config = config(directory.path(), &token);
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let (listener, _) = test_owned_endpoint::bind().await;
+    let peer = Peer::from_listener(listener, "");
+    let host = peer.address.to_string();
+    let target = format!("http://{host}/health");
+    config.parent_proxy = Some(format!("http://2130706433:{port}"));
+    config.parent_proxy_agents = vec!["alice".into()];
+    proxy.reload(config.clone()).await.unwrap();
+
+    assert_blocked(&agent(&config, "alice", "GET", &target, &host, None, b"").await);
+    assert_blocked(&agent(&config, "alice", "CONNECT", &host, &host, None, b"").await);
+    assert_eq!(
+        agent(&config, "bob", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        200
+    );
+    let admin_host = format!("127.0.0.1:{port}");
+    assert_blocked(
+        &agent(
+            &config,
+            "bob",
+            "GET",
+            &format!("http://{admin_host}/health"),
+            &admin_host,
+            None,
+            b"",
+        )
+        .await,
+    );
+    assert_eq!(peer.accepts.load(Ordering::SeqCst), 1);
+    let egress: Vec<_> = events(&config)
+        .into_iter()
+        .filter(|row| row["event"] == "proxy.egress")
+        .collect();
+    assert_eq!(egress.len(), 1);
+    assert_eq!(egress[0]["agent"], "bob");
+    assert_eq!(egress[0]["route"], "direct");
+    assert_shutdown(proxy, &config, port).await;
+    peer.stop().await;
+}
+
+#[tokio::test]
 async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containment() {
     let directory = TempDir::new().unwrap();
     let token = DETECTABLE_BEARER_TOKEN.to_owned();

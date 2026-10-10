@@ -910,6 +910,19 @@ fn admin_rejection() -> Response<Body> {
         .unwrap()
 }
 
+fn parent_for_agent<'a>(
+    runtime: &'a Runtime,
+    identity: &ConnectionIdentity,
+) -> Option<&'a crate::config::ParentProxy> {
+    runtime.parent.as_ref().filter(|_| {
+        runtime.config.parent_proxy_agents.is_empty()
+            || runtime
+                .config
+                .parent_proxy_agents
+                .contains(&identity.agent_id)
+    })
+}
+
 /// The only outbound DNS/socket path. Both routing modes enforce local containment.
 async fn open_egress_for_flow(
     runtime: &Runtime,
@@ -931,7 +944,8 @@ async fn open_egress_for_flow(
     if is_reserved(&destination.host) {
         return Err("reserved destination cannot egress".into());
     }
-    let (host, port, tls, route_name) = match &runtime.parent {
+    let parent = parent_for_agent(runtime, allowed.identity);
+    let (host, port, tls, route_name) = match parent {
         Some(parent) => (parent.host.as_str(), parent.port, parent.tls, "parent"),
         None => (destination.host.as_str(), destination.port, false, "direct"),
     };
@@ -945,7 +959,7 @@ async fn open_egress_for_flow(
     {
         return Err(AdminPortAccess.into());
     }
-    let direct = runtime.parent.is_none();
+    let direct = parent.is_none();
     let route = if direct {
         crate::traffic_view::UpstreamRoute::Direct
     } else {
@@ -1081,7 +1095,7 @@ async fn open_egress_for_flow(
         } else {
             socket
         };
-        if tunnel && runtime.parent.is_some() {
+        if tunnel && parent.is_some() {
             let (mut sender, connection) = refresh_connect_phase(phase_timeout, async {
                 hyper::client::conn::http1::handshake(TokioIo::new(stream))
                     .await
@@ -2204,7 +2218,7 @@ where
     }
     let traffic = (request.method() != Method::CONNECT)
         .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
-    let protected_parent = runtime.parent.as_ref().is_some_and(|parent| {
+    let protected_parent = parent_for_agent(&runtime, identity).is_some_and(|parent| {
         runtime
             .admin_shield
             .blocks_request_destination(&parent.host, parent.port)
