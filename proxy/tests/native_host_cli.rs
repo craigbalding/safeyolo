@@ -31,6 +31,45 @@ fn value(output: Output) -> Value {
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
+fn admin_post(root: &Path, id: &str, operation: &str) -> (u16, Value) {
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.join("data/ready.json")).unwrap()).unwrap();
+    let address = (
+        std::net::Ipv4Addr::LOCALHOST,
+        ready["admin_port"].as_u64().unwrap() as u16,
+    );
+    let token = fs::read_to_string(root.join("data/admin_token")).unwrap();
+    let mut stream = TcpStream::connect_timeout(&address.into(), Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "POST /admin/agents/{id}/{operation} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull",
+        token.trim()
+    ).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let header_end = response
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let status = std::str::from_utf8(&response[..header_end])
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&response[header_end..]).unwrap(),
+    )
+}
 fn initialize(root: &Path) {
     let output = cli(root, &["init"]);
     assert!(
@@ -440,7 +479,8 @@ fn concurrent_starts_reuse_a_terminal_before_guest_command_observation() {
     use owned_run::OwnedRun;
     use std::process::Stdio;
 
-    for pause in ["entrypoint", "transport"] {
+    for pause in ["transport", "entrypoint", "absent-pane"] {
+        let entrypoint_paused = pause != "transport";
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("instance");
         initialize_tmux_launcher(&root);
@@ -532,7 +572,7 @@ esac
             root.join("bin/safeyolo"),
             format!(
                 r#"#!/bin/bash
-if [ "$4" = entrypoint ] && [ '{pause}' = entrypoint ]; then
+if [ "$4" = entrypoint ] && [ '{pause}' != transport ]; then
   printf ready > "$SAFEYOLO_CONFIG_DIR/entrypoint-ready"
   read -r release < "$SAFEYOLO_CONFIG_DIR/entrypoint-gate"
 fi
@@ -608,7 +648,7 @@ esac
             || -> Value { serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap() };
         wait_for(&|| {
             root.join("launcher-ready").exists()
-                && if pause == "entrypoint" {
+                && if entrypoint_paused {
                     root.join("entrypoint-ready").exists()
                 } else {
                     root.join("starts").exists() && launch()["pid"].is_u64()
@@ -644,12 +684,102 @@ esac
             assert_eq!(result["launch_id"], results[0]["launch_id"]);
             assert_eq!(
                 result["agent_state"],
-                if pause == "entrypoint" {
+                if entrypoint_paused {
                     "starting"
                 } else {
                     "launching"
                 }
             );
+        }
+        let pending_record = launch();
+        let tmux = |args: &[&str]| {
+            Command::new("tmux")
+                .args(["-S", pending_record["tmux_socket"].as_str().unwrap()])
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let pane = pending_record["pane_id"].as_str().unwrap();
+        let pane_observation = || {
+            let output = tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{@safeyolo_launch_id}:#{pane_dead}",
+            ]);
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let live_pane = format!("{}:0", pending_record["launch_id"].as_str().unwrap());
+        assert_eq!(pane_observation(), live_pane);
+        if entrypoint_paused {
+            assert!(!root.join("starts").exists());
+            let saved_launch = fs::read(&launch_path).unwrap();
+            let change = if pause == "absent-pane" {
+                tmux(&["kill-pane", "-t", pane])
+            } else {
+                tmux(&[
+                    "set-option",
+                    "-p",
+                    "-t",
+                    pane,
+                    "@safeyolo_launch_id",
+                    "another-launch",
+                ])
+            };
+            assert!(change.status.success());
+            let unknown = value(
+                selected_cli(&["agent", "status", "alice"])
+                    .output()
+                    .unwrap(),
+            );
+            assert_eq!(unknown["agent_state"], "unknown", "{pause}: {unknown}");
+            assert_eq!(unknown["runtime_state"], "running");
+            assert_eq!(unknown["run_id"], status["run_id"]);
+            assert_eq!(unknown["terminal_state"], "absent");
+            assert_eq!(unknown["attachable"], false);
+            let refused = selected_cli(&["agent", "start", "alice"]).output().unwrap();
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stderr)
+                    .contains("API 409 Conflict: Agent cannot start while unknown")
+            );
+            let (code, refused) = admin_post(
+                &root,
+                created["configuration"]["id"].as_str().unwrap(),
+                "start",
+            );
+            assert_eq!(code, 409, "{refused}");
+            assert_eq!(refused["error"], "Agent cannot start while unknown");
+            assert_eq!(fs::read(&launch_path).unwrap(), saved_launch);
+            assert_eq!(
+                fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+                runtime
+            );
+            assert!(!root.join("starts").exists());
+            assert!(!root.join("hooks").exists());
+            assert_eq!(
+                owned_run::process_token(run.child.id()),
+                serde_json::from_slice::<Value>(&runtime).unwrap()["backend_token"]
+            );
+            if pause == "absent-pane" {
+                continue;
+            }
+            assert_eq!(pane_observation(), "another-launch:0");
+            assert!(
+                tmux(&[
+                    "set-option",
+                    "-p",
+                    "-t",
+                    pane,
+                    "@safeyolo_launch_id",
+                    pending_record["launch_id"].as_str().unwrap(),
+                ])
+                .status
+                .success()
+            );
+            assert_eq!(pane_observation(), live_pane);
         }
         if pause == "transport" {
             let pending = fs::read(&launch_path).unwrap();
@@ -671,7 +801,7 @@ esac
             );
             fs::write(&launch_path, &pending).unwrap();
         }
-        if pause == "entrypoint" {
+        if entrypoint_paused {
             assert!(!root.join("starts").exists());
             fs::OpenOptions::new()
                 .write(true)
@@ -688,9 +818,20 @@ esac
             .write_all(b"release\n")
             .unwrap();
         wait_for(&|| root.join("observed").exists());
-        let running = value(selected_cli(&["agent", "start", "alice"]).output().unwrap());
+        // Observe the first confirmation through Admin, before the CLI can
+        // mask a stale projection with its preliminary runtime observation.
+        let (code, running) = admin_post(
+            &root,
+            created["configuration"]["id"].as_str().unwrap(),
+            "start",
+        );
+        assert_eq!(code, 200, "{running}");
         assert_eq!(running["agent_state"], "running");
         assert_eq!(running["launch_id"], results[0]["launch_id"]);
+        assert_eq!(running["terminal_state"], "running");
+        assert_eq!(running["attachable"], true);
+        assert_eq!(pane_observation(), live_pane);
+        assert_eq!(launch()["state"], "running");
         assert_eq!(
             fs::read_to_string(root.join("starts"))
                 .unwrap()
@@ -723,6 +864,9 @@ esac
                     .unwrap(),
             );
             assert_eq!(unknown["agent_state"], "unknown", "{failure}: {unknown}");
+            assert_eq!(unknown["terminal_state"], "running");
+            assert_eq!(unknown["attachable"], true);
+            assert_eq!(pane_observation(), live_pane);
             let refused = selected_cli(&["agent", "start", "alice"]).output().unwrap();
             assert!(!refused.status.success());
             assert!(
@@ -743,6 +887,45 @@ esac
             );
             fs::write(root.join("observed"), b"ready").unwrap();
         }
+        // A guest command without a current managed launch is reported as
+        // manual, even if the old launch's terminal still exists.
+        fs::remove_file(root.join("observer-error")).unwrap();
+        let mut exited = launch();
+        exited["state"] = "exited".into();
+        let unclaimed = serde_json::to_vec(&exited).unwrap();
+        fs::write(&launch_path, &unclaimed).unwrap();
+        let (code, manual) = admin_post(
+            &root,
+            created["configuration"]["id"].as_str().unwrap(),
+            "start",
+        );
+        assert_eq!(code, 200, "{manual}");
+        assert_eq!(manual["agent_state"], "manual");
+        assert_eq!(manual["launcher"]["kind"], "manual");
+        assert_eq!(manual["terminal_state"], "absent");
+        assert_eq!(manual["attachable"], false);
+        assert_eq!(manual["run_id"], status["run_id"]);
+        assert_eq!(pane_observation(), live_pane);
+        assert_eq!(fs::read(&launch_path).unwrap(), unclaimed);
+        assert_eq!(
+            fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+            runtime
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("starts"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("hooks"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        fs::write(&launch_path, &saved_launch).unwrap();
     }
 }
 
@@ -813,46 +996,7 @@ fn conflicting_ids_are_reported_by_admin_without_changing_agents() {
     fs::write(&config, document.to_string()).unwrap();
     let _stop = StopOnDrop(&config);
     value(cli(&root, &["start"]));
-    let ready: Value =
-        serde_json::from_slice(&fs::read(root.join("data/ready.json")).unwrap()).unwrap();
-    let address = (
-        std::net::Ipv4Addr::LOCALHOST,
-        ready["admin_port"].as_u64().unwrap() as u16,
-    );
-    let token = fs::read_to_string(root.join("data/admin_token")).unwrap();
-    let post = |id: &str, operation: &str| -> (u16, Value) {
-        let mut stream =
-            TcpStream::connect_timeout(&address.into(), Duration::from_secs(5)).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        write!(
-            stream,
-            "POST /admin/agents/{id}/{operation} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull",
-            token.trim()
-        ).unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        let header_end = response
-            .windows(4)
-            .position(|part| part == b"\r\n\r\n")
-            .unwrap()
-            + 4;
-        let status = std::str::from_utf8(&response[..header_end])
-            .unwrap()
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .parse()
-            .unwrap();
-        (
-            status,
-            serde_json::from_slice(&response[header_end..]).unwrap(),
-        )
-    };
+    let post = |id: &str, operation: &str| admin_post(&root, id, operation);
     let policy = root.join("policy.toml");
     let mut document: toml_edit::DocumentMut =
         fs::read_to_string(&policy).unwrap().parse().unwrap();

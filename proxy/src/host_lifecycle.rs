@@ -1216,7 +1216,6 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 .unwrap_or_else(|error| json!({"kind":"unknown","error":error.to_string()}))
         });
     let mut state = "stopped".to_owned();
-    let mut attachable = false;
     let mut launch_id = Value::Null;
     let mut exit_code = Value::Null;
     let mut error = record_error
@@ -1289,9 +1288,18 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                     "exited"
                 }
                 .to_owned();
+            } else if recorded == "starting"
+                && matches!(
+                    launcher.get("kind").and_then(Value::as_str),
+                    Some("tmux-window" | "tmux-pane" | "script" | "manager")
+                )
+                && !terminal_live(record).await
+            {
+                // An unclaimed terminal launch is pending only while its
+                // owned pane is live. A returned script result is not proof.
+                state = "unknown".into();
+                error = "recorded terminal is absent or belongs to another launch; command startup is unverified".into();
             }
-            attachable = state == "running"
-                && launcher.get("kind").and_then(Value::as_str) != Some("interactive");
         }
     }
     // The checked supervisor already proves its exact managed command. The
@@ -1306,7 +1314,6 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 if launch_id.is_null() || matches!(state.as_str(), "stopped" | "exited" | "failed")
                 {
                     state = "manual".into();
-                    attachable = false;
                     launcher = json!({"kind":"manual","source":"observed guest command"});
                 } else if state == "unknown" {
                     state = "observed".into();
@@ -1341,11 +1348,22 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
     } else if !ready && state != "finishing" {
         state = "stopped".into();
     }
+    // Project attachment after guest confirmation, which can promote this
+    // observation from launching to running. Delegating scripts retain their
+    // hook/attach identity but expose the same recorded tmux pane facts.
+    let mut attachable = state == "running"
+        && !matches!(
+            launcher.get("kind").and_then(Value::as_str),
+            Some("interactive" | "supervisor")
+        );
     if let Some(record) = record.as_ref()
-        && matches!(
-            record.pointer("/launcher/kind").and_then(Value::as_str),
+        && (matches!(
+            launcher.get("kind").and_then(Value::as_str),
             Some("tmux-window" | "tmux-pane")
-        )
+        ) || (matches!(
+            launcher.get("kind").and_then(Value::as_str),
+            Some("script" | "manager")
+        ) && (record.get("pane_id").is_some() || record.get("tmux_socket").is_some())))
     {
         attachable = terminal_live(record).await;
     }
