@@ -196,7 +196,8 @@ pub async fn send_json<IO>(
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let deadline = tokio::time::Instant::now() + timeout;
+    // Keep Tokio's existing handling of durations beyond Instant's range.
+    let deadline = tokio::time::sleep(timeout).deadline();
     let (response, _connection) =
         tokio::time::timeout_at(deadline, send(socket, host, path, token, method, body)).await??;
     json(response, deadline).await

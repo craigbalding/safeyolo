@@ -747,6 +747,37 @@ async fn native_response_body_timeouts_keep_http_diagnostics_and_total_deadline(
         1,
         "timed-out write was repeated"
     );
+
+    let (port, server, requests) = response_origin(
+        "200 OK",
+        br#"{"marker":"permitted-origin"}"#,
+        None,
+        Duration::ZERO,
+        false,
+    )
+    .await;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let value = tokio::time::timeout(
+        Duration::from_secs(2),
+        safeyolo_proxy::native_client::send_json(
+            stream,
+            &format!("127.0.0.1:{port}"),
+            "/marker",
+            "fixture-token",
+            hyper::Method::GET,
+            Value::Null,
+            Duration::MAX,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    server.abort();
+    let _ = server.await;
+    assert_eq!(value["marker"], "permitted-origin");
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 async fn traffic(alice: &Client, port: u16) {
     let stream = tokio::net::UnixStream::connect(alice.socket.as_ref().unwrap())
