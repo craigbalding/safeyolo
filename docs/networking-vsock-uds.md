@@ -2,8 +2,8 @@
 
 This is the current request path for the Rust proxy. It describes the host
 transport used by Linux gVisor sandboxes and macOS Virtualization.framework
-microVMs. The physical macOS Virtualization.framework pilot and final release lanes
-remain open under [issue #640](https://github.com/craigbalding/safeyolo/issues/640).
+microVMs. Release acceptance is recorded in
+[issue #640](https://github.com/craigbalding/safeyolo/issues/640).
 
 ## Request and shell paths
 
@@ -54,12 +54,15 @@ programming interface (API) traffic uses a separate listener.
 
 When the CLI starts or stops an agent sandbox, it updates `agent_map.json` and
 reconciles its managed listener entries with the running Rust proxy.
-`rust_proxy.sync_listeners` writes the updated native configuration, sends
-SIGHUP, and waits for the matching `reload_id` and listener count in the
-readiness marker. Operator-defined listener entries remain intact. If the
-proxy does not acknowledge a written update before the timeout, the CLI logs
-a warning and leaves that configuration for the next reload or start. There is no
-`PUT /admin/proxy/mode` route or mitmproxy mode list in the current package.
+After writing the updated native configuration, the CLI signals a running
+proxy with SIGHUP. It waits up to five seconds for the matching `reload_id`
+in the readiness marker. Listener synchronization fails if the proxy does not
+acknowledge the update. If the proxy is unavailable, the CLI saves the
+configuration for its next start. Operator-defined listener entries remain intact.
+There is no `PUT /admin/proxy/mode` route or mitmproxy mode list in the current
+package.
+Built-in support for operator-created external ingress bindings is proposed in
+[issue #580](https://github.com/craigbalding/safeyolo/issues/580).
 
 ## Diagnose a broken path
 
@@ -76,21 +79,23 @@ control and tests the shell bridge for an SSH banner. On Linux, shell readiness
 uses exec control in the recorded namespaces. Inspect the failed dimension and
 its next action; a missing proxy attachment does not mean that the runtime stopped.
 
-The retained Python package's `safeyolo doctor` sends an authenticated Agent API
-health request over UDS and requires the handler marker. A generic HTTP response
-does not prove API health. See [agent debugging](agent-debugging.md)
-for the native failed-shell workflow.
+A ready proxy attachment confirms that the host can connect to the configured
+UDS. It does not verify guest egress or Agent API health. From inside the agent
+guest, use the authenticated [first health check](AGENTS.md#first-health-check)
+and require `"agent_api": "ok"` in the response. A generic HTTP response does
+not prove API health. See [agent debugging](agent-debugging.md) for the native
+failed-shell workflow.
 
 For decision and audit events on the host, run:
 
 ```sh
-safeyolo logs --tail 50
+safeyolo logs --lines 50
 ```
 
-`safeyolo logs` reads the JSON Lines audit file under `SAFEYOLO_LOGS_DIR`,
-or `$XDG_STATE_HOME/safeyolo/safeyolo.jsonl` by default. It is not a complete
-packet capture or a substitute for the diagnostic probes. On macOS, the VM
-helper's guest console and relay messages are in
+`safeyolo logs` reads the JSON Lines file selected by `audit_log_path` in the
+native configuration. The default is `logs/audit.jsonl` under the instance root.
+It is not a complete packet capture or a substitute for the diagnostic probes.
+On macOS, the VM helper's guest console and relay messages are in
 `~/.safeyolo/agents/<name>/serial.log`. On Linux, guest boot output is in
 `~/.safeyolo/agents/<name>/status/boot.log`. Setting `SAFEYOLO_VM_DEBUG=1`
 before starting the macOS helper enables its extra relay debug messages;
@@ -99,7 +104,7 @@ it does not enable tracing across every proxy stage.
 | Symptom | First check |
 | --- | --- |
 | Agent cannot connect to the proxy | Run `safeyolo agent diagnostics <name>`; inspect proxy state and the agent's proxy attachment separately from runtime state. |
-| Proxy transport passes but Agent API fails | Inspect the retained package's `safeyolo doctor` pipeline probe. A generic HTTP response does not prove API health. |
+| Proxy transport passes but Agent API fails | Run the authenticated [first health check](AGENTS.md#first-health-check) inside the agent guest and require `"agent_api": "ok"`. Socket reachability or a generic HTTP response does not prove API health. |
 | Agent request is attributed to the wrong identity | Compare the host `agent_map.json` entry with the native listener and the named socket. Do not rely on a guest-supplied header. |
 | macOS shell hangs | Run `safeyolo agent diagnostics <name>`; inspect private control and the shell SSH-banner result before choosing recovery. |
 
@@ -121,7 +126,7 @@ For the current component overview, see
 [architecture](ARCHITECTURE.md#sandbox-runtime-and-networking) and
 [developer architecture](DEVELOPERS.md#architecture-overview). For isolation
 checks, see [security verification](security-verification.md). Relevant
-sources are [socket paths](../cli/src/safeyolo/sockets.py),
-[native listener reconciliation](../cli/src/safeyolo/rust_proxy.py),
+sources are [native instance paths](../proxy/src/host_platform.rs),
+[native listener reconciliation](../proxy/src/host_lifecycle.rs),
 [Rust listener ownership](../proxy/src/lib.rs), and the
 [macOS proxy relay](../vm/Sources/SafeYoloVM/VSockProxyRelay.swift).
