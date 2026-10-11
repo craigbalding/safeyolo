@@ -156,7 +156,7 @@ async fn geometry(size: &str) -> Result<String, Error> {
     ))
 }
 
-fn stage_guest_desktop(name: &str, preferred_size: &str) -> Result<(), Error> {
+fn stage_guest_desktop(name: &str, geometry: &str) -> Result<(), Error> {
     let share = host_platform::config_dir()
         .join("agents")
         .join(name)
@@ -173,7 +173,7 @@ fn stage_guest_desktop(name: &str, preferred_size: &str) -> Result<(), Error> {
     temporary
         .persist(share.join("guest-desktop"))
         .map_err(|_| Error::Failed)?;
-    std::fs::write(share.join("desktop-size"), format!("{preferred_size}\n"))
+    std::fs::write(share.join("desktop-size"), format!("{geometry}\n"))
         .map_err(|_| Error::Failed)?;
     Ok(())
 }
@@ -217,7 +217,7 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     }
     let (preferred_size, host_port) = settings()?;
     let geometry = geometry(&preferred_size).await?;
-    stage_guest_desktop(&name, &preferred_size)?;
+    stage_guest_desktop(&name, &geometry)?;
     let tailnet = if crate::native_config::host_settings()
         .map_err(|_| Error::Failed)?
         .command_centre
