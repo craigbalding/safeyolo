@@ -215,10 +215,11 @@ def prepare_owner(
     env["SAFEYOLO_COORD_DATA_DIR"] = str(config_dir / "data/coord")
     env["SAFEYOLO_NATS_TEST_INSTANCE"] = uuid.uuid4().hex
     if __package__:
-        from .installed_sections import prepare_native_instance
+        from .installed_sections import copy_prepared_nats, prepare_native_instance
     else:
-        from installed_sections import prepare_native_instance
+        from installed_sections import copy_prepared_nats, prepare_native_instance
     prepare_native_instance(source_dir, config_dir)
+    copy_prepared_nats(source_dir, config_dir)
     env["SAFEYOLO_NATIVE_CONFIG_PATH"] = str(config_dir / "config.toml")
     source = source_dir / "share"
     assert source.is_dir(), f"owner instance needs prepared {source}"
@@ -235,6 +236,8 @@ def prepare_owner(
     policy["hosts"]["evil.com"] = {"egress": "deny"}
     policy_path.write_text(tomlkit.dumps(policy))
     checked([cli, "agent", "create", "bbowner", "--workspace", str(Path(__file__).resolve().parents[2])], timeout=120, env=env)
+    if os.environ.get("SAFEYOLO_BLACKBOX_PLATFORM") == "vz":
+        checked([cli, "coord", "start", "--client-port", "46377", "--monitor-port", "46378"], env=env)
     checked([cli, "start"], env=env)
     checked([cli, "agent", "start", "bbowner", "--sandbox-only"], timeout=120, env=env)
     checked(

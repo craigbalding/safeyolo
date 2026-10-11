@@ -202,6 +202,11 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                     "--state-parent", str(directory), "--config-dir", str(instance),
                     "--prepared-config", str(source),
                     "--output", str(section_artifacts / "installed-continuity.json")]
+            if lane == "vz":
+                args += ["--origin-bind", "127.0.0.1", "--http-port", "46373",
+                         "--https-port", "46374", "--oauth-port", "46375",
+                         "--admin-port", "46371", "--nats-client-port", "46370",
+                         "--nats-monitor-port", "46372"]
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
         try:
