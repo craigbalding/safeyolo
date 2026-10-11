@@ -2273,7 +2273,8 @@ def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_
     assert env["SAFEYOLO_NATS_TEST_INSTANCE"] != continuity.env_for(root.with_name("peer"))["SAFEYOLO_NATS_TEST_INSTANCE"]
 
 
-def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch):
+@pytest.mark.parametrize("platform", ["systrap", "vz"])
+def test_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch, platform):
     """Exercise the real owner setup while stopping before its guest boot."""
     bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
     nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
@@ -2291,13 +2292,17 @@ def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatc
     def checked(command, **kwargs):
         if command[1:3] == ["agent", "start"]:
             raise GuestBootBoundary
+        if command[1:] == ["start"] or command[1:3] == ["coord", "start"]:
+            assert (owner / "data/coord/nats/bin/2.14.5/nats-server").is_file(), (
+                "owner needs the prepared NATS binary before native startup")
         result = original_checked(command, **kwargs)
         if command[1:3] == ["coord", "start"]:
             owner_nats.append(json.loads(result.stdout))
         return result
 
-    monkeypatch.setenv("SAFEYOLO_BLACKBOX_PLATFORM", "vz")
-    monkeypatch.setenv("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "46375")
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_PLATFORM", platform)
+    monkeypatch.setenv("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "46375" if platform == "vz" else "0")
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", os.urandom(16).hex())
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(source))
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(source / "data/coord"))
     monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
@@ -2306,9 +2311,10 @@ def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatc
         original_checked([str(Path(bundle) / "install.sh"), "--root", str(source),
                           "--command-dir", str(source / "commands")])
         (source / "share").mkdir(exist_ok=True)
-        primary = original_checked([cli, "--root", str(source), "coord", "start",
-                                    "--binary", nats, "--client-port", "46370",
-                                    "--monitor-port", "46372"])
+        primary_args = [cli, "--root", str(source), "coord", "start", "--binary", nats]
+        if platform == "vz":
+            primary_args += ["--client-port", "46370", "--monitor-port", "46372"]
+        primary = original_checked(primary_args)
         before = original_checked([cli, "--root", str(source), "coord", "status"]).stdout
         upstream_ca = ssl.get_default_verify_paths().cafile
         assert upstream_ca is not None and Path(upstream_ca).is_file()
@@ -2316,10 +2322,19 @@ def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatc
             lifecycle.prepare_owner(cli, owner, source,
                                     {"parent_proxy": "", "upstream_ca_file": upstream_ca},
                                     str(source / "bin/safeyolo-proxy"), parent / "unused.json")
-        assert len(owner_nats) == 1
-        assert owner_nats[0]["client_port"] == 46377
-        assert owner_nats[0]["monitor_port"] == 46378
-        assert owner_nats[0]["pid"] != json.loads(primary.stdout)["pid"]
+        observed = json.loads(original_checked([cli, "--root", str(owner), "coord", "status"]).stdout)
+        assert observed["state"] == "running", observed
+        owner_status = observed["process"]
+        primary_status = json.loads(primary.stdout)
+        if platform == "vz":
+            assert len(owner_nats) == 1
+            assert owner_status["client_port"] == 46377
+            assert owner_status["monitor_port"] == 46378
+        else:
+            assert owner_nats == []
+        assert owner_status["pid"] != primary_status["pid"]
+        assert {owner_status["client_port"], owner_status["monitor_port"]}.isdisjoint(
+            {primary_status["client_port"], primary_status["monitor_port"]})
         binary = Path("data/coord/nats/bin/2.14.5/nats-server")
         assert (source / binary).read_bytes() == (owner / binary).read_bytes()
         assert (source / binary).stat().st_ino != (owner / binary).stat().st_ino
