@@ -338,11 +338,12 @@ def test_parent_agent_filter_default_keeps_global_parent(proxy_backend, tmp_path
 @pytest.mark.parametrize("parent_configured", [False, True], ids=["no-parent", "unavailable-parent"])
 def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend, tmp_path, parent_configured):
     """A configured but unavailable parent fails only selected routes; no parent ignores the filter."""
-    with origin_server() as origin, socket.socket() as unavailable_parent:
-        # Keep the port reserved without listening, so the parent connection
-        # fails and another fixture cannot acquire the same port.
-        unavailable_parent.bind(("127.0.0.1", 0))
-        parent_url = f"http://127.0.0.1:{unavailable_parent.getsockname()[1]}" if parent_configured else None
+    with origin_server() as origin:
+        # Darwin times out on a bound, non-listening socket. Close the chosen
+        # port before dialing to exercise connection refusal on both platforms.
+        with socket.socket() as unavailable_parent:
+            unavailable_parent.bind(("127.0.0.1", 0))
+            parent_url = f"http://127.0.0.1:{unavailable_parent.getsockname()[1]}" if parent_configured else None
         authority = f"localhost:{origin.server_address[1]}"
         with launch_proxy(
             proxy_backend, tmp_path / "unavailable", MIXED_POLICY,
