@@ -94,6 +94,529 @@ impl Drop for HostCleanup {
     }
 }
 
+#[tokio::test]
+async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
+    let temp = tempfile::Builder::new()
+        .prefix("brief-input-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path().join("missing-instance");
+    let invalid_file = temp.path().join("invalid.md");
+    fs::write(&invalid_file, [0xff]).unwrap();
+    for arguments in [
+        vec!["brief", "set", "shared", "text"],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "-1",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "18446744073709551616",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "one",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "0",
+            "--expected-revision",
+            "0",
+        ],
+        vec!["brief", "set", "shared", "--expected-revision", "0"],
+        vec!["brief", "set", "shared", " ", "--expected-revision", "0"],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--stdin",
+            "--expected-revision",
+            "0",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "--file",
+            invalid_file.to_str().unwrap(),
+            "--expected-revision",
+            "0",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "0",
+            "--to",
+            "alice",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "0",
+            "--since",
+            "0",
+        ],
+    ] {
+        let output = coord_cli(&root, &arguments).await;
+        assert!(!output.status.success(), "accepted {arguments:?}");
+        assert!(!root.exists(), "invalid input created state: {arguments:?}");
+    }
+    let help = coord_cli(&root, &["brief", "--help"]).await;
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--expected-revision"));
+    assert!(!root.exists());
+    assert!(host_cli(&root, &["init"]).await.status.success());
+    coord_rooms::bootstrap(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("data/coord/v0.db")).unwrap();
+    db.execute(
+        "INSERT INTO rooms(room_id,name,created_at) VALUES('rm-input','shared',1)",
+        [],
+    )
+    .unwrap();
+    // The retained limit counts encoded bytes rather than Unicode characters.
+    let limit = "é".repeat(32 * 1024);
+    let file = temp.path().join("limit.md");
+    fs::write(&file, &limit).unwrap();
+    let first = coord_json(
+        &root,
+        &[
+            "brief",
+            "set",
+            "shared",
+            "--file",
+            file.to_str().unwrap(),
+            "--expected-revision",
+            "0",
+        ],
+    )
+    .await;
+    assert_eq!(first["revision"], 1);
+    assert_eq!(first["attention_count"], 0);
+    assert_eq!(
+        coord_json(&root, &["brief", "show", "shared"]).await["markdown"],
+        limit
+    );
+    fs::write(&file, format!("{limit}é")).unwrap();
+    let too_large = coord_cli(
+        &root,
+        &[
+            "brief",
+            "set",
+            "shared",
+            "--file",
+            file.to_str().unwrap(),
+            "--expected-revision",
+            "1",
+        ],
+    )
+    .await;
+    assert!(!too_large.status.success());
+    assert!(String::from_utf8_lossy(&too_large.stderr).contains("65536 UTF-8 bytes"));
+    assert_eq!(
+        coord_json(&root, &["brief", "show", "shared"]).await["revision"],
+        1
+    );
+    let missing = coord_cli(&root, &["brief", "show", "unknown"]).await;
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("does not exist"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn native_brief_commands_preserve_revision_authority_attention_and_doctor_identity() {
+    let binary = PathBuf::from(
+        std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary"),
+    );
+    let temp = tempfile::Builder::new()
+        .prefix("coord513-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n[[listeners]]\nagent_id='carol'\nsocket_path='carol.sock'\n[[listeners]]\nagent_id='dave'\nsocket_path='dave.sock'\n").unwrap();
+    fs::write(root.join("policy.toml"), "[controls.network]\nenabled=false\n[agents.alice]\nagent_id='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n[agents.bob]\nagent_id='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbb'\n[agents.carol]\nagent_id='ag-cccccccccccccccccccccccccccccccc'\n[agents.dave]\nagent_id='ag-dddddddddddddddddddddddddddddddd'\n").unwrap();
+    let _cleanup = NatsCleanup(root.into());
+    let started = host_cli(
+        root,
+        &["coord", "start", "--binary", binary.to_str().unwrap()],
+    )
+    .await;
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let room = coord_json(root, &["room", "create", "shared"]).await;
+    let other_room = coord_json(root, &["room", "create", "other"]).await;
+    coord_json(root, &["grant", "shared", "alice"]).await;
+    coord_json(root, &["grant", "shared", "bob", "receive"]).await;
+    coord_json(root, &["grant", "shared", "carol", "receive"]).await;
+    coord_json(root, &["grant", "shared", "carol", "send"]).await;
+    coord_json(root, &["grant", "shared", "dave"]).await;
+    coord_json(root, &["revoke", "shared", "dave"]).await;
+    let absent = coord_json(root, &["brief", "show", "shared"]).await;
+    assert_eq!(absent["state"], "none");
+    assert_eq!(absent["revision"], 0);
+    assert!(absent["markdown"].is_null() && absent["content_hash"].is_null());
+    assert_eq!(absent["room_id"], room["room_id"]);
+
+    // The ordinary doctor reader must report identity without exposing prose.
+    fs::write(root.join("role.md"), "Fixture role contract.\n").unwrap();
+    fs::write(
+        root.join("factory.toml"),
+        r#"schema='safeyolo.factory/v1'
+name='brief-test'
+room='shared'
+[roles.coordinator]
+agent='alice'
+contract='role.md'
+[roles.owner]
+agent='bob'
+contract='role.md'
+[operator_input]
+to='coordinator'
+types=['ACTIVATE']
+[[handoffs]]
+request='TASK'
+from='coordinator'
+to='owner'
+responses=['DONE','BLOCKED','FAILED']
+"#,
+    )
+    .unwrap();
+    let approved = host_cli(
+        root,
+        &[
+            "factory",
+            "approve",
+            root.join("factory.toml").to_str().unwrap(),
+            "--yes",
+        ],
+    )
+    .await;
+    assert!(
+        approved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approved.stderr)
+    );
+    let doctor = |output: std::process::Output| -> Value {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Standing context"));
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["component"] == "room-brief")
+            .unwrap()
+            .clone()
+    };
+    let none = doctor(host_cli(root, &["factory", "doctor", "brief-test"]).await);
+    assert_eq!(none["status"], "PASS");
+    assert_eq!(none["observation"], json!({"state":"none"}));
+
+    let db = rusqlite::Connection::open(root.join("data/coord/v0.db")).unwrap();
+    let counts = || -> (i64, i64, i64, i64) {
+        db.query_row("SELECT (SELECT count(*) FROM coord_brief_revisions), (SELECT count(*) FROM coord_attention_edges), (SELECT count(*) FROM coord_outbox), (SELECT count(*) FROM coord_operations)", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap()
+    };
+    let proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    let client = |name: &str| Client {
+        socket: Some(root.join(format!("{name}.sock"))),
+        token_file: root.join("data/agent_token"),
+    };
+    let alice = client("alice");
+    let bob = client("bob");
+    let waiting = bob.clone();
+    let wait = tokio::spawn(async move {
+        waiting
+            .call(
+                "wait_for_attention",
+                &json!({"since_sequence":0,"timeout_seconds":10}),
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let markdown = "TASK target=https://example.test/context\r\n\nStanding context: π 🦀\n";
+    let input = root.join("brief.md");
+    fs::write(&input, markdown).unwrap();
+    let first = coord_json(
+        root,
+        &[
+            "brief",
+            "set",
+            "shared",
+            "--file",
+            input.to_str().unwrap(),
+            "--expected-revision",
+            "0",
+        ],
+    )
+    .await;
+    assert_eq!(first["revision"], 1);
+    assert_eq!(first["attention_count"], 2);
+    assert!(first.get("markdown").is_none());
+    let expected_hash = ring::digest::digest(&ring::digest::SHA256, markdown.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(first["content_hash"], expected_hash);
+    let present = coord_json(root, &["brief", "show", "shared"]).await;
+    assert_eq!(present["state"], "present");
+    assert_eq!(present["markdown"], markdown);
+    assert_eq!(present["content_hash"], expected_hash);
+    let page = tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(page["edges"].as_array().unwrap().len(), 1);
+    let edge = &page["edges"][0];
+    assert_eq!(edge["kind"], "brief_changed");
+    assert_eq!(edge["revision_or_sequence"], 1);
+    let object = bob
+        .call(
+            "read_attention",
+            &json!({"attention_id":edge["attention_id"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(object["object"]["markdown"], markdown);
+    assert_eq!(object["object"]["content_hash"], expected_hash);
+    assert_eq!(
+        alice
+            .call("read_brief", &json!({"room_name":"shared"}))
+            .await
+            .unwrap()["markdown"],
+        markdown
+    );
+    for name in ["carol", "dave"] {
+        let denied = client(name);
+        assert!(
+            denied
+                .call("read_brief", &json!({"room_name":"shared"}))
+                .await
+                .is_err()
+        );
+        assert!(
+            denied
+                .call(
+                    "wait_for_attention",
+                    &json!({"since_sequence":0,"timeout_seconds":0})
+                )
+                .await
+                .unwrap()["edges"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let actor: (String, String, String) = db
+        .query_row(
+            "SELECT actor_kind,actor_id,operation_id FROM coord_briefs WHERE room_id=?1",
+            [room["room_id"].as_str().unwrap()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((&*actor.0, &*actor.1), ("operator", "operator"));
+    let history_actor: (String,String,String) = db.query_row("SELECT actor_kind,actor_id,operation_id FROM coord_brief_revisions WHERE room_id=?1 AND revision=1",[room["room_id"].as_str().unwrap()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+    assert_eq!(actor, history_actor);
+    assert_eq!(counts(), (1, 2, 3, 1));
+    let payloads:Vec<String>=db.prepare("SELECT payload_json FROM coord_outbox UNION ALL SELECT outcome_json FROM coord_operations").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert!(
+        payloads
+            .iter()
+            .all(|payload| !payload.contains("Standing context"))
+    );
+    let identity = doctor(host_cli(root, &["factory", "doctor", "brief-test"]).await);
+    assert_eq!(
+        identity["observation"],
+        json!({"state":"present","revision":1,"content_hash":expected_hash})
+    );
+    assert!(!identity.to_string().contains("Standing context"));
+
+    let before = counts();
+    let stale = coord_cli(
+        root,
+        &[
+            "brief",
+            "set",
+            "shared",
+            "stale",
+            "--expected-revision",
+            "0",
+        ],
+    )
+    .await;
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("current revision is 1"));
+    assert_eq!(counts(), before);
+    assert_eq!(
+        coord_json(root, &["brief", "show", "shared"]).await,
+        present
+    );
+    for method in [hyper::Method::POST, hyper::Method::PUT] {
+        let error = alice
+            .request(
+                method,
+                "/api/coord/rooms/shared/brief",
+                json!({"markdown":"forged","expected_revision":1,"actor_kind":"operator"}),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("405"), "{error}");
+    }
+    assert_eq!(counts(), before);
+    assert!(
+        alice
+            .call("read_room", &json!({"room_name":"shared"}))
+            .await
+            .unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let other = coord_json(root, &["brief", "show", "other"]).await;
+    assert_eq!(other["room_id"], other_room["room_id"]);
+    assert_eq!(other["state"], "none");
+
+    let mut piped = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(root)
+        .args([
+            "coord",
+            "brief",
+            "set",
+            "shared",
+            "--stdin",
+            "--expected-revision",
+            "1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut stdin = piped.stdin.take().unwrap();
+    stdin.write_all(b"updated context").await.unwrap();
+    drop(stdin);
+    let output = tokio::time::timeout(Duration::from_secs(15), piped.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let second: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(second["revision"], 2);
+    assert_eq!(
+        bob.call(
+            "read_attention",
+            &json!({"attention_id":edge["attention_id"]})
+        )
+        .await
+        .unwrap()["object"]["markdown"],
+        markdown
+    );
+    // A downstream attention failure must roll back projection and history too.
+    let before = counts();
+    db.execute_batch("CREATE TRIGGER fail_brief_attention BEFORE INSERT ON coord_attention_edges BEGIN SELECT RAISE(ABORT,'fixture edge failure'); END;").unwrap();
+    let failed = coord_cli(
+        root,
+        &[
+            "brief",
+            "set",
+            "shared",
+            "must roll back",
+            "--expected-revision",
+            "2",
+        ],
+    )
+    .await;
+    assert!(!failed.status.success());
+    assert_eq!(counts(), before);
+    assert_eq!(
+        coord_json(root, &["brief", "show", "shared"]).await["markdown"],
+        "updated context"
+    );
+    db.execute_batch("DROP TRIGGER fail_brief_attention;")
+        .unwrap();
+    let (a, b) = tokio::join!(
+        coord_cli(
+            root,
+            &[
+                "brief",
+                "set",
+                "shared",
+                "race A",
+                "--expected-revision",
+                "2"
+            ]
+        ),
+        coord_cli(
+            root,
+            &[
+                "brief",
+                "set",
+                "shared",
+                "race B",
+                "--expected-revision",
+                "2"
+            ]
+        ),
+    );
+    assert_ne!(a.status.success(), b.status.success());
+    assert_eq!(
+        coord_json(root, &["brief", "show", "shared"]).await["revision"],
+        3
+    );
+    assert_eq!(counts(), (3, 6, 9, 3));
+
+    proxy.shutdown().await;
+    coord_json(root, &["stop"]).await;
+    assert_eq!(
+        coord_json(root, &["brief", "show", "shared"]).await["revision"],
+        3
+    );
+    db.execute_batch("ALTER TABLE coord_briefs RENAME TO fixture_held_briefs;")
+        .unwrap();
+    let unavailable = doctor(host_cli(root, &["factory", "doctor", "brief-test"]).await);
+    assert_eq!(unavailable["status"], "WARN");
+    assert_eq!(unavailable["observation"], json!({"state":"unavailable"}));
+    db.execute_batch("ALTER TABLE fixture_held_briefs RENAME TO coord_briefs;")
+        .unwrap();
+    assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
 async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state() {

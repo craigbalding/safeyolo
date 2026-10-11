@@ -50,6 +50,44 @@ If publication acknowledgment is lost, the command reports acceptance as
 whether to send the message again. A later independent send remains available.
 Accepted messages with pending or lost attention retain that diagnosis.
 
+## Read and update a trusted brief
+
+On the owning host account, select an existing room in the native instance.
+The following examples use `chat` from the setup above. Read its current brief:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord brief show chat
+```
+
+The JSON output contains the exact Markdown, revision and SHA-256 content hash.
+If the room has no brief, the output has `state: "none"`, revision `0`, and
+null Markdown and hash. A missing room or unavailable store produces an error;
+neither result means that a brief is absent.
+
+To create a brief after observing revision `0`, write your standing context
+in a UTF-8 file named `brief.md` in your current directory. The input must be
+nonempty and no larger than 65,536 UTF-8 bytes. This command creates revision
+`1` only if the room still has no brief:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord brief set chat --file brief.md --expected-revision 0
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord brief show chat
+```
+
+For a later update, read the current brief and use its revision as
+`--expected-revision`. Inspect the existing text before replacing it. Set accepts
+exactly one source: a Markdown argument, `--file FILE`, or `--stdin`. It preserves
+the input bytes, including trailing newlines. A stale revision fails without
+changing the brief or emitting brief-change attention. If a command's result
+is uncertain, read the canonical brief before deciding whether to write again.
+
+Successful writes report the new revision/hash and attention count. Each write
+retains operator attribution and notifies current receive-authorized members
+through `brief_changed`. Agents can read authorized briefs but cannot update
+them. A brief is optional standing context: it does not assign work, require a
+terminal response, or change workflow state. See [Factory authority and
+intake](factories.md#authority-and-intake).
+
 ## Observe messages and harness events
 
 On the same host, watch the existing room with:
