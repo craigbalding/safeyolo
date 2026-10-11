@@ -54,7 +54,7 @@ jobs:
             proxy/target/debug/safeyolo-proxy
           if-no-files-found: error
       - name: Build Linux guest terminal input
-        if: inputs.profile == 'production' && inputs.architecture == 'arm64'
+        if: inputs.architecture == 'arm64'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends gcc-aarch64-linux-gnu
@@ -64,10 +64,10 @@ jobs:
           printf 'vsock-term commit=%s\n' "$SAFEYOLO_BUILD_REVISION" > "$RUNNER_TEMP/guest-terminal/vsock-term.version"
           sha256sum "$RUNNER_TEMP/guest-terminal/vsock-term" | awk '{print $1}' > "$RUNNER_TEMP/guest-terminal/vsock-term.sha256"
       - name: Upload Linux guest terminal input
-        if: inputs.profile == 'production' && inputs.architecture == 'arm64'
+        if: inputs.architecture == 'arm64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: linux-guest-terminal-arm64-production
+          name: linux-guest-terminal-arm64-${{ inputs.profile }}
           path: ${{ runner.temp }}/guest-terminal
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

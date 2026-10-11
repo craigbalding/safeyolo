@@ -176,13 +176,14 @@ def test_start_exec_owns_the_pane_without_changing_argument_boundaries(tmp_path,
     assert query.kwargs["check"] is False
 
 
-def test_existing_private_tmux_server_receives_new_and_removed_share(tmp_path, monkeypatch):
+def test_existing_private_tmux_server_receives_new_and_removed_share(tmp_path, monkeypatch, socket_dir):
     tmux = shutil.which("tmux")
     if tmux is None:
         pytest.skip("tmux is not installed")
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(socket_dir))
     from safeyolo.traffic_session import session_process_alive, socket_path
 
+    assert len(os.fsencode(socket_path())) < 104
     socket_path().parent.mkdir(parents=True)
     base = [tmux, "-S", str(socket_path()), "-f", "/dev/null"]
     old_env = os.environ.copy() | {"SAFEYOLO_COMMAND_CENTRE_SHARE": "local"}

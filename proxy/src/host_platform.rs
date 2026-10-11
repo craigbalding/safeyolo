@@ -2105,6 +2105,8 @@ mod tests {
         let Ok(command) = std::env::var("SAFEYOLO_TEST_GUEST_FD_MUTATOR") else {
             return;
         };
+        assert_eq!(unsafe { (libc::getuid(), libc::geteuid()) }, (0, 0));
+        assert_eq!(unsafe { (libc::getgid(), libc::getegid()) }, (0, 0));
         let mut byte = [0];
         assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
         for fd in [1, 2] {
@@ -2178,11 +2180,12 @@ mod tests {
             let root = PathBuf::from(root);
             std::fs::create_dir(root.join("bin")).unwrap();
             let mut run = guest_command_test_run::OwnedRun::start(&root);
-            // Unlike the ordinary fixture, descriptor setup needs namespace
-            // root, just as runsc does. Authority remains in this owned fixture.
+            // Descriptor setup needs mapped namespace root. Select its IDs
+            // explicitly without requiring a rootless caller to clear groups
+            // after the owned fixture has disabled setgroups.
             std::fs::write(
                 root.join("bin/nsenter"),
-                "#!/bin/sh\nexec /usr/bin/nsenter \"$@\"\n",
+                "#!/bin/sh\nexec /usr/bin/nsenter --preserve-credentials --setuid=0 --setgid=0 \"$@\"\n",
             )
             .unwrap();
             let script = format!(

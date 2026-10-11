@@ -329,6 +329,14 @@ jobs:
           fixture_pid=$!
           for attempt in $(seq 1 100); do
             if test -f "$fixture_ready"; then
+              uv run --frozen python - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, "tests/reference")
+          from safeyolo.coord import nats_runtime
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write(f"SAFEYOLO_COORD_NATS_BINARY={nats_runtime.nats_binary_path()}\n")
+          PY
               exit 0
             fi
             if ! kill -0 "$fixture_pid" 2>/dev/null; then
@@ -412,10 +420,24 @@ jobs:
       - name: Restore Linux guest executable permissions
         run: chmod +x guest/command/target/debug/safeyolo-guest guest/command/target/debug/safeyolo-coord
 
+      - name: Download macOS package terminal input
+        if: matrix.os == 'macos-latest'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-terminal-arm64-debug
+          path: ${{ runner.temp }}/native-contract-vm
+
+      - name: Prepare macOS VM package inputs
+        if: matrix.os == 'macos-latest'
+        run: |
+          chmod +x "$RUNNER_TEMP/native-contract-vm/vsock-term"
+          make -C vm PROFILE=development install-helper INSTALL_DIR="$RUNNER_TEMP/native-contract-vm"
+
       - name: Run native proxy component contracts
         env:
           PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
           SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/debug
+          SAFEYOLO_NATIVE_VM_ARTIFACTS: ${{ matrix.os == 'macos-latest' && format('{0}/native-contract-vm', runner.temp) || '' }}
         run: uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
   macos-pr:
