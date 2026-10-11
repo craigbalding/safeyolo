@@ -88,11 +88,14 @@ _find_browser() {
 
 _check_capability() {
     local missing=() command_name
-    for command_name in Xvfb x11vnc websockify setsid pkill seq; do
+    for command_name in Xvfb x11vnc setsid pkill seq; do
         command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
     done
     _find_window_manager >/dev/null || missing+=("window manager (fluxbox or openbox)")
     _find_web_root >/dev/null || missing+=("noVNC web assets (vnc.html)")
+    if ! /safeyolo/safeyolo-guest desktop-bridge check >/dev/null 2>&1; then
+        missing+=("native desktop bridge (/safeyolo/safeyolo-guest); restage the installed guest assets")
+    fi
 
     if [ "${#missing[@]}" -gt 0 ]; then
         echo "desktop capability unavailable; the agent rootfs is missing:" >&2
@@ -177,7 +180,15 @@ EOF
 }
 
 _stop() {
-    pkill -f "websockify.*${NOVNC_PORT}" 2>/dev/null || true
+    local _
+    if pkill -f "^/safeyolo/safeyolo-guest desktop-bridge --web .* 127.0.0.1:${NOVNC_PORT} 127.0.0.1:${VNC_PORT}$" 2>/dev/null; then
+        # Signaling returns before the old listener closes. Let an owned bridge
+        # release its endpoint before a start immediately follows this stop.
+        for _ in $(seq 1 40); do
+            _port_open "$NOVNC_PORT" || break
+            sleep 0.25
+        done
+    fi
     pkill -f "x11vnc -display :${DISPLAY_NUM}" 2>/dev/null || true
     pkill -f "Xvfb :${DISPLAY_NUM}" 2>/dev/null || true
     pkill -x fluxbox 2>/dev/null || true
@@ -228,7 +239,7 @@ _start() {
     fi
     local geometry="${1:-${VNC_GEOMETRY:-${configured_geometry:-1280x800}}}"
     local depth="${VNC_DEPTH:-24}" width height current=""
-    local web_root window_manager agent_name managed_window_manager=""
+    local web_root window_manager agent_name bridge_pid managed_window_manager=""
 
     if [[ "$geometry" =~ ^([0-9]+)x([0-9]+)(x([0-9]+))?$ ]]; then
         width="${BASH_REMATCH[1]}"
@@ -266,6 +277,10 @@ _start() {
 
     web_root="$(_find_web_root)"
     _stop
+    if _port_open "$NOVNC_PORT"; then
+        echo "error: desktop bridge endpoint 127.0.0.1:${NOVNC_PORT} is occupied" >&2
+        return 1
+    fi
     printf '%s %s\n' "$width" "$height" >"$GEOMETRY_FILE"
     _start_dbus
 
@@ -298,16 +313,17 @@ _start() {
     _wait_for "x11vnc on 127.0.0.1:${VNC_PORT}" /tmp/x11vnc.log \
         "_port_open ${VNC_PORT}"
 
-    setsid websockify --web "$web_root" \
+    setsid /safeyolo/safeyolo-guest desktop-bridge --web "$web_root" \
         "127.0.0.1:${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" \
-        </dev/null >/tmp/websockify.log 2>&1 &
-    _wait_for "noVNC on 127.0.0.1:${NOVNC_PORT}" /tmp/websockify.log \
-        "_port_open ${NOVNC_PORT}"
+        </dev/null >/tmp/desktop-bridge.log 2>&1 &
+    bridge_pid=$!
+    _wait_for "noVNC on 127.0.0.1:${NOVNC_PORT}" /tmp/desktop-bridge.log \
+        "kill -0 ${bridge_pid} 2>/dev/null && _port_open ${NOVNC_PORT}"
 
     agent_name="$(cat /safeyolo/agent-name 2>/dev/null || echo '<name>')"
     echo "desktop ready in agent '${agent_name}' on 127.0.0.1:${NOVNC_PORT} (${width}x${height})"
     if [ "${SAFEYOLO_PREVIEW_MANAGED:-0}" != "1" ]; then
-        echo "From the host: safeyolo agent desktop ${agent_name} --open"
+        echo "From the host: safeyolo agent present ${agent_name}"
     fi
 }
 

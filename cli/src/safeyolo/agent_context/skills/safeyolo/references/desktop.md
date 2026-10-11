@@ -23,7 +23,9 @@ Inside the guest, inspect or start the desktop with:
 /safeyolo/guest-desktop start
 ```
 
-A guest-side start creates Xvfb, the window manager, x11vnc, and noVNC, but it
+A guest-side start creates Xvfb, the window manager, x11vnc, and the native
+noVNC HTTP/WebSocket bridge. The rootfs supplies the graphical packages and
+noVNC web assets; `/safeyolo/safeyolo-guest` supplies the bridge. The start
 cannot create the host preview. Ask the operator to run the host command printed
 by the launcher. Do not expose guest ports 5900 or 6080 directly.
 
@@ -60,6 +62,9 @@ workflow requires operator control.
 - `check` reports missing graphical packages or programs.
 - `status` distinguishes the Xvfb, x11vnc, and noVNC layers.
 - Browser startup errors are written to `/tmp/chrome.log` by the core launcher.
+- Bridge startup and connection errors are written to `/tmp/desktop-bridge.log`.
+- A missing native bridge indicates stale guest assets; ask the operator to
+  stop and run the agent with the current native package.
 - A missing `/safeyolo/guest-desktop` indicates stale or incomplete per-run
   guest files; ask the operator to stop and run the agent with current SafeYolo.
 

@@ -258,3 +258,10 @@ source = "pyproject.toml"
 pattern = 'requires-python = "(?P<requirement>[^"\n]+)"'
 docs = ["cli/README.md"]
 must_contain = "`{requirement}`"
+
+[[assertion]]
+name = "novnc-client-version"
+source = "guest/install-novnc-assets.sh"
+pattern = '(?m)^version=(?P<version>[0-9.]+)$'
+docs = ["contrib/ROOTFS_SCRIPT_GUIDE.md"]
+must_contain = "noVNC {version}"

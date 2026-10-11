@@ -95,8 +95,9 @@ but call the same core launcher. With automatic sizing, the CLI detects the
 host display and starts the guest noVNC desktop at a size that fits the
 operator's browser. Managed noVNC previews use
 `/vnc.html#autoconnect=true&resize=remote`, so the client connects when the
-page opens. Rootfs images supply Xvfb, x11vnc, websockify/noVNC assets, a
-window manager, and optionally Chromium; SafeYolo never installs those
+page opens. Rootfs images supply Xvfb, x11vnc, noVNC web assets, a window
+manager, and optionally Chromium. The packaged native guest helper serves
+the assets and bridges WebSocket to VNC; SafeYolo never installs graphical
 packages at runtime.
 Ordinary HTTP preview sessions do not start guest services.
 

@@ -31,7 +31,7 @@ def test_guest_desktop_reports_missing_rootfs_capabilities(tmp_path: Path) -> No
     assert "desktop capability unavailable" in result.stderr
     assert "Xvfb" in result.stderr
     assert "x11vnc" in result.stderr
-    assert "websockify" in result.stderr
+    assert "native desktop bridge (/safeyolo/safeyolo-guest)" in result.stderr
     assert "window manager" in result.stderr
     assert "noVNC web assets" in result.stderr
 
@@ -109,3 +109,18 @@ def test_graphical_rootfs_does_not_embed_desktop_orchestration() -> None:
 def test_graphical_rootfs_profiles_supply_a_terminal() -> None:
     assert "xterm" in ALPINE_BROWSER_BUILDER.read_text()
     assert "xterm" in KALI_BUILDER.read_text()
+
+
+def test_novnc_assets_reject_corrupt_cached_source(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "novnc-1.6.0.tar.gz").write_bytes(b"corrupt-archive")
+    rootfs = tmp_path / "rootfs"
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "guest/install-novnc-assets.sh"), str(rootfs), str(cache)],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert "FAILED" in result.stdout
+    assert not rootfs.exists()
