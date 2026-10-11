@@ -54,23 +54,28 @@ where
 async fn json(response: Response<Incoming>) -> Result<Value, Error> {
     let status = response.status();
     let bytes = response.into_body().collect().await?.to_bytes();
-    let value: Value = serde_json::from_slice(&bytes)?;
+    let value = serde_json::from_slice::<Value>(&bytes);
     if !status.is_success() {
-        let outcome = if value.get("send_outcome").and_then(Value::as_str) == Some("unknown") {
+        let error = value.as_ref().ok();
+        let outcome = if error
+            .and_then(|value| value.get("send_outcome"))
+            .and_then(Value::as_str)
+            == Some("unknown")
+        {
             "; send outcome unknown; inspect retained history before repeating"
         } else {
             ""
         };
         return Err(format!(
             "API {status}: {}{outcome}",
-            value
-                .get("error")
+            error
+                .and_then(|value| value.get("error"))
                 .and_then(Value::as_str)
-                .unwrap_or("request failed")
+                .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed"))
         )
         .into());
     }
-    Ok(value)
+    Ok(value?)
 }
 
 async fn operator_socket(

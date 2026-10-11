@@ -1041,7 +1041,16 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     fs::write(&map, b"{\"alice\":{\"ip\":\"10.200.0.1\"}}\n").unwrap();
     let config_path = root.join("config.toml");
     let _stop = StopOnDrop(&config_path);
-    value(cli(&root, &["start"]));
+    value(
+        Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args(["--root", root.to_str().unwrap(), "start"])
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("bin").display()),
+            )
+            .output()
+            .unwrap(),
+    );
     let proxy_process = fs::read(root.join("data/proxy-process.json")).unwrap();
     let peer_socket = root.join("data/sockets/10.200.0.1_alice/proxy.sock");
     let peer_inode = fs::metadata(&peer_socket).unwrap();
@@ -1153,6 +1162,80 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         fs::read(root.join("agents/alice/runtime.json")).unwrap(),
         peer_runtime
     );
+    // The backend prerequisite fails after the real map/listener preparation.
+    // Faults in the isolated instance challenge rollback and its CLI/Admin
+    // diagnostics without running a workload or deleting uncertain run state.
+    for fault in ["none", "map", "listener", "both"] {
+        fs::remove_file(root.join("agents/marker/runtime.json")).unwrap();
+        let mut script = String::from("#!/bin/sh\n");
+        for (kind, lock) in [
+            ("map", "agent_map.lock"),
+            ("listener", "native-listeners.lock"),
+        ] {
+            if fault == kind || fault == "both" {
+                script.push_str(&format!(
+                    "/bin/rm '{0}/data/{lock}'\n/bin/mkdir '{0}/data/{lock}'\n",
+                    root.display()
+                ));
+            }
+        }
+        script.push_str("exit 17\n");
+        fs::write(&acl, script).unwrap();
+        let mut args = vec!["--root", root.to_str().unwrap(), "agent", "start", "marker"];
+        if fault != "both" {
+            args.push("--sandbox-only");
+        }
+        let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args(args)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("bin").display()),
+            )
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&failed.stderr);
+        assert!(!failed.status.success(), "{fault}");
+        assert!(
+            error.contains("setfacl failed on runsc state directory"),
+            "{fault}: {error}"
+        );
+        assert_eq!(
+            error.contains("agent-map rollback failed"),
+            matches!(fault, "map" | "both"),
+            "{fault}: {error}"
+        );
+        assert_eq!(
+            error.contains("listener rollback failed"),
+            matches!(fault, "listener" | "both"),
+            "{fault}: {error}"
+        );
+        if fault == "both" {
+            assert!(
+                error.contains("API 500 Internal Server Error: Agent operation failed:"),
+                "{error}"
+            );
+        }
+        assert!(root.join("agents/marker/runtime.json").is_file());
+        let retained: Value = serde_json::from_slice(&fs::read(&map).unwrap()).unwrap();
+        assert_eq!(
+            retained.get("marker").is_some(),
+            matches!(fault, "map" | "both")
+        );
+        assert_eq!(retained["alice"]["ip"], "10.200.0.1");
+        assert_eq!(
+            fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+            peer_runtime
+        );
+        assert_eq!(fs::read(&peer_launch).unwrap(), peer_launch_bytes);
+        assert_eq!(fs::metadata(&peer_socket).unwrap().ino(), peer_inode.ino());
+        assert!(std::os::unix::net::UnixStream::connect(&peer_socket).is_ok());
+        for lock in ["agent_map.lock", "native-listeners.lock"] {
+            let path = root.join("data").join(lock);
+            if path.is_dir() {
+                fs::remove_dir(path).unwrap();
+            }
+        }
+    }
 }
 
 #[test]

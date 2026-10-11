@@ -490,27 +490,119 @@ async fn mcp(root: &Path, socket: &Path, requests: &str) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 async fn origin() -> (u16, tokio::task::JoinHandle<()>) {
+    let (port, task, _) = response_origin("200 OK", b"{\"marker\":\"permitted-origin\"}").await;
+    (port, task)
+}
+async fn response_origin(
+    status: &str,
+    body: &[u8],
+) -> (
+    u16,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = requests.clone();
+    let status = status.to_owned();
+    let body = body.to_vec();
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
                 break;
             };
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let status = status.clone();
+            let body = body.clone();
             tokio::spawn(async move {
                 let mut request = [0u8; 8192];
                 let _ = socket.read(&mut request).await;
-                let body = b"{\"marker\":\"permitted-origin\"}";
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = socket.write_all(head.as_bytes()).await;
-                let _ = socket.write_all(body).await;
+                let _ = socket.write_all(&body).await;
             });
         }
     });
-    (port, task)
+    (port, task, requests)
+}
+
+#[tokio::test]
+async fn native_response_failures_keep_http_diagnostics_without_repeating_writes() {
+    let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    fs::create_dir(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/agent_token"), "fixture-token").unwrap();
+    for (status, body, expected) in [
+        ("502 Bad Gateway", "", "API 502 Bad Gateway: Bad Gateway"),
+        (
+            "502 Bad Gateway",
+            "upstream unavailable",
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        (
+            "503 Service Unavailable",
+            "<html>unavailable</html>",
+            "API 503 Service Unavailable: Service Unavailable",
+        ),
+        (
+            "502 Bad Gateway",
+            "{broken",
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        (
+            "409 Conflict",
+            r#"{"error":"room is closed"}"#,
+            "API 409 Conflict: room is closed",
+        ),
+        (
+            "503 Service Unavailable",
+            r#"{"error":"publication uncertain","send_outcome":"unknown"}"#,
+            "API 503 Service Unavailable: publication uncertain; send outcome unknown; inspect retained history before repeating",
+        ),
+        (
+            "502 Bad Gateway",
+            "null",
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        ("200 OK", "{", "EOF while parsing an object"),
+    ] {
+        let (port, server, requests) = response_origin(status, body.as_bytes()).await;
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo-coord"))
+            .args(["call", "send"])
+            .env_remove("SAFEYOLO_COORD_SOCKET")
+            .env(
+                "SAFEYOLO_COORD_TOKEN_PATH",
+                root.path().join("data/agent_token"),
+            )
+            .env("HTTP_PROXY", format!("http://127.0.0.1:{port}"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(
+            br#"{"room_name":"shared","body":"fixture write","declared_content_type":"text/plain","notify":"none"}"#
+        ).await.unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let _ = server.await;
+        assert!(!output.status.success(), "{status}: {body}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{status}: {body}: {error}");
+        assert_eq!(
+            requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "failed write was repeated: {status}: {body}"
+        );
+    }
 }
 async fn traffic(alice: &Client, port: u16) {
     let stream = tokio::net::UnixStream::connect(alice.socket.as_ref().unwrap())
