@@ -4,7 +4,11 @@ use serde_json::{Value, json};
 use std::{
     ffi::OsString,
     fs,
-    os::unix::{ffi::OsStringExt, fs::PermissionsExt, process::CommandExt},
+    os::unix::{
+        ffi::OsStringExt,
+        fs::{MetadataExt, PermissionsExt},
+        process::CommandExt,
+    },
     path::PathBuf,
     process::{Child, Command, Output},
     thread,
@@ -516,7 +520,21 @@ fn supervisor_check_accepts_native_copies_and_refuses_another_state_owner() {
         let directory = guest.directory.path().join(staging);
         fs::create_dir_all(&directory).unwrap();
         let helper = directory.join("safeyolo-guest");
-        fs::copy(env!("CARGO_BIN_EXE_safeyolo-guest"), &helper).unwrap();
+        // Copy in a child so concurrent test forks cannot inherit a writable
+        // destination descriptor and keep Linux exec busy after copying returns.
+        let copied = Command::new("/bin/cp")
+            .arg(env!("CARGO_BIN_EXE_safeyolo-guest"))
+            .arg(&helper)
+            .output()
+            .unwrap();
+        assert!(
+            copied.status.success(),
+            "cannot stage native helper: {}",
+            String::from_utf8_lossy(&copied.stderr)
+        );
+        let source = fs::metadata(env!("CARGO_BIN_EXE_safeyolo-guest")).unwrap();
+        let copy = fs::metadata(&helper).unwrap();
+        assert_ne!((source.dev(), source.ino()), (copy.dev(), copy.ino()));
         guest.publish("exec /bin/sleep 120");
         let mut supervisor = Supervisor(
             guest
