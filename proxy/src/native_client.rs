@@ -51,10 +51,18 @@ where
     Ok((response, driver))
 }
 
-async fn json(response: Response<Incoming>) -> Result<Value, Error> {
+async fn json(
+    response: Response<Incoming>,
+    deadline: tokio::time::Instant,
+) -> Result<Value, Error> {
     let status = response.status();
-    let bytes = match response.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
+    let body = tokio::time::timeout_at(deadline, async {
+        Ok::<_, Error>(response.into_body().collect().await?.to_bytes())
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.into()));
+    let bytes = match body {
+        Ok(bytes) => bytes,
         Err(error) if !status.is_success() => {
             return Err(format!(
                 "API {status}: {}; could not read response body: {error}",
@@ -62,7 +70,7 @@ async fn json(response: Response<Incoming>) -> Result<Value, Error> {
             )
             .into());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
     let value = serde_json::from_slice::<Value>(&bytes);
     if !status.is_success() {
@@ -138,7 +146,7 @@ pub async fn export(config_path: &Path, path: &str, destination: &Path) -> Resul
     )
     .await??;
     if !response.status().is_success() {
-        tokio::time::timeout(TIMEOUT, json(response)).await??;
+        json(response, tokio::time::Instant::now() + TIMEOUT).await?;
         return Err("export unavailable".into());
     }
     let destination = if std::fs::symlink_metadata(destination)
@@ -188,11 +196,10 @@ pub async fn send_json<IO>(
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::time::timeout(timeout, async {
-        let (response, _connection) = send(socket, host, path, token, method, body).await?;
-        json(response).await
-    })
-    .await?
+    let deadline = tokio::time::Instant::now() + timeout;
+    let (response, _connection) =
+        tokio::time::timeout_at(deadline, send(socket, host, path, token, method, body)).await??;
+    json(response, deadline).await
 }
 
 /// Host REST requests use the configured HTTPS proxy and the same native TLS
