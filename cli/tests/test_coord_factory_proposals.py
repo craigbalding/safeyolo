@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -750,10 +751,12 @@ def test_native_file_options_accept_unix_filenames(native_proposals, agent):
 
     sent = native_nomination(native_proposals)
     parent = native_proposals.root.parent
-    def non_utf8(name):
-        return Path(os.fsdecode(os.fsencode(parent) + b"/" + name + b"-\xff.json"))
+    def unix_filename(name):
+        # Darwin requires UTF-8 filenames; Linux also accepts raw pathname bytes.
+        suffix = "é.json".encode() if sys.platform == "darwin" else b"\xff.json"
+        return Path(os.fsdecode(os.fsencode(parent) + b"/" + name + b"-" + suffix))
 
-    verified = non_utf8(b"verified")
+    verified = unix_filename(b"verified")
     control = parent / "verified-control.json"
     source = json.dumps({"observation": native_observation(material=True), "coverage": None})
     verified.write_text(source)
@@ -768,7 +771,7 @@ def test_native_file_options_accept_unix_filenames(native_proposals, agent):
     expected = invoke(control, parent / "control-ledger.json")
     actual = invoke(verified, parent / "verified-ledger.json")
     assert actual == expected and actual[0]["status"] == "proposal_ready"
-    ledger = non_utf8(b"ledger")
+    ledger = unix_filename(b"ledger")
     assert invoke(control, ledger) == expected and ledger.is_file()
     assert ledger.with_name(ledger.name + ".lock").is_file()
     copied = parent / "copied-ledger.json"

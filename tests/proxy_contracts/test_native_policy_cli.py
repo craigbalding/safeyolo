@@ -107,6 +107,10 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
             "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
         ]
+        if not bundle:
+            vm_artifacts = os.environ.get("SAFEYOLO_NATIVE_VM_ARTIFACTS")
+            if vm_artifacts:
+                inputs += ["--vm-artifacts", vm_artifacts]
         if platform_assets is not None:
             inputs += ["--platform-assets", str(platform_assets)]
         installation = subprocess.run(

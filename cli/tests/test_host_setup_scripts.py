@@ -62,6 +62,7 @@ def native_coord_receipts(monkeypatch, tmp_path):
 
 
 def _codex_state(home, *args, check=True):
+    # Setup stages a Linux guest executable; local state probes use the host build.
     return subprocess.run([str(COORD_NATIVE_BINARY), "codex-state", "--home", str(home), *args], capture_output=True, text=True, check=check)
 
 
@@ -1414,10 +1415,7 @@ def test_normal_codex_setup_does_not_import_host_subscription_state(
     auth_bytes = b'{"auth": "agent-session", "sentinel": "do-not-read"}\n'
     auth_path.write_bytes(auth_bytes)
     auth_path.chmod(0o600)
-    subprocess.run(
-        [str(agent_home / ".safeyolo/safeyolo-coord"), "codex-state", "adopt", "--home", str(agent_home)],
-        check=True,
-    )
+    _codex_state(agent_home, "adopt")
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     assert auth_path.read_bytes() == auth_bytes
 
@@ -1429,16 +1427,15 @@ def test_codex_reset_device_login_and_adopt_reapply_successfully(
     agent_home = tmp_path / "agent"
     operator_home.mkdir()
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
-    recovery = agent_home / ".safeyolo/safeyolo-coord"
     auth_path = agent_home / ".codex/auth.json"
 
     auth_bytes = b'{"auth": "first-agent-session"}\n'
     auth_path.write_bytes(auth_bytes)
     auth_path.chmod(0o600)
-    subprocess.run([str(recovery), "codex-state", "adopt", "--home", str(agent_home)], check=True)
+    _codex_state(agent_home, "adopt")
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
 
-    subprocess.run([str(recovery), "codex-state", "reset", "--home", str(agent_home)], check=True)
+    _codex_state(agent_home, "reset")
     assert not auth_path.exists()
     auth_bytes = b'{"auth": "replacement-agent-session"}\n'
     auth_path.write_bytes(auth_bytes)
@@ -1454,7 +1451,7 @@ def test_codex_reset_device_login_and_adopt_reapply_successfully(
     assert "codex login --device-auth" in blocked.stderr
     assert "/home/agent/.safeyolo/safeyolo-coord codex-state adopt" in blocked.stderr
 
-    subprocess.run([str(recovery), "codex-state", "adopt", "--home", str(agent_home)], check=True)
+    _codex_state(agent_home, "adopt")
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     assert auth_path.read_bytes() == auth_bytes
 
@@ -1558,18 +1555,12 @@ def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
         auth_path.write_bytes(b"synthetic-credential-sentinel")
         auth_path.chmod(0o644)
 
-    recovery = agent_home / ".safeyolo/safeyolo-coord"
-    reset = subprocess.run(
-        [str(recovery), "codex-state", "reset", "--home", str(agent_home)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    reset = _codex_state(agent_home, "reset", check=False)
     if unsafe_kind == "directory":
         assert reset.returncode != 0
         assert "rmdir /home/agent/.codex/auth.json" in reset.stderr
         auth_path.rmdir()
-        subprocess.run([str(recovery), "codex-state", "reset", "--home", str(agent_home)], check=True)
+        _codex_state(agent_home, "reset")
     else:
         assert reset.returncode == 0, reset.stderr
         if unsafe_kind in {"symlink", "hardlink"}:
@@ -1578,7 +1569,7 @@ def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
     replacement = b"synthetic-replacement-agent-auth"
     auth_path.write_bytes(replacement)
     auth_path.chmod(0o600)
-    subprocess.run([str(recovery), "codex-state", "adopt", "--home", str(agent_home)], check=True)
+    _codex_state(agent_home, "adopt")
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     assert auth_path.read_bytes() == replacement
 
@@ -1792,9 +1783,12 @@ def test_codex_context_stages_native_repo_map(tmp_path: Path) -> None:
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     command = agent_home / ".safeyolo/repo-map"
+    assert command.read_text() == REPO_MAP_COMMAND
     assert (agent_home / ".safeyolo/repo-map.toml").read_bytes() == (REPO_ROOT / "repo-map.toml").read_bytes()
+    # The staged wrapper runs in Linux guests; Darwin uses the host command.
+    argv = [str(COORD_NATIVE_BINARY), "repo-map"] if sys.platform == "darwin" else [str(command)]
     result = subprocess.run(
-        [str(command), str(REPO_ROOT / "proxy/src/coord_rooms.rs")],
+        [*argv, str(REPO_ROOT / "proxy/src/coord_rooms.rs")],
         env={**os.environ, "HOME": str(agent_home)},
         cwd=REPO_ROOT,
         check=False,
