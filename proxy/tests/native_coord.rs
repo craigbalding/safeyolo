@@ -490,12 +490,14 @@ async fn mcp(root: &Path, socket: &Path, requests: &str) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 async fn origin() -> (u16, tokio::task::JoinHandle<()>) {
-    let (port, task, _) = response_origin("200 OK", b"{\"marker\":\"permitted-origin\"}").await;
+    let (port, task, _) =
+        response_origin("200 OK", b"{\"marker\":\"permitted-origin\"}", None).await;
     (port, task)
 }
 async fn response_origin(
     status: &str,
     body: &[u8],
+    content_length: Option<usize>,
 ) -> (
     u16,
     tokio::task::JoinHandle<()>,
@@ -506,6 +508,7 @@ async fn response_origin(
     let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = requests.clone();
     let status = status.to_owned();
+    let content_length = content_length.unwrap_or(body.len());
     let body = body.to_vec();
     let task = tokio::spawn(async move {
         loop {
@@ -519,8 +522,7 @@ async fn response_origin(
                 let mut request = [0u8; 8192];
                 let _ = socket.read(&mut request).await;
                 let head = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
                 );
                 let _ = socket.write_all(head.as_bytes()).await;
                 let _ = socket.write_all(&body).await;
@@ -535,41 +537,71 @@ async fn native_response_failures_keep_http_diagnostics_without_repeating_writes
     let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     fs::create_dir(root.path().join("data")).unwrap();
     fs::write(root.path().join("data/agent_token"), "fixture-token").unwrap();
-    for (status, body, expected) in [
-        ("502 Bad Gateway", "", "API 502 Bad Gateway: Bad Gateway"),
+    for (status, body, content_length, expected) in [
+        (
+            "502 Bad Gateway",
+            "",
+            None,
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
         (
             "502 Bad Gateway",
             "upstream unavailable",
+            None,
             "API 502 Bad Gateway: Bad Gateway",
         ),
         (
             "503 Service Unavailable",
             "<html>unavailable</html>",
+            None,
             "API 503 Service Unavailable: Service Unavailable",
         ),
         (
             "502 Bad Gateway",
             "{broken",
+            None,
             "API 502 Bad Gateway: Bad Gateway",
         ),
         (
             "409 Conflict",
             r#"{"error":"room is closed"}"#,
+            None,
             "API 409 Conflict: room is closed",
         ),
         (
             "503 Service Unavailable",
             r#"{"error":"publication uncertain","send_outcome":"unknown"}"#,
+            None,
             "API 503 Service Unavailable: publication uncertain; send outcome unknown; inspect retained history before repeating",
         ),
         (
             "502 Bad Gateway",
             "null",
+            None,
             "API 502 Bad Gateway: Bad Gateway",
         ),
-        ("200 OK", "{", "EOF while parsing an object"),
+        ("200 OK", "{", None, "EOF while parsing an object"),
+        (
+            "502 Bad Gateway",
+            "",
+            Some(10),
+            "API 502 Bad Gateway: Bad Gateway; could not read response body: error reading a body from connection",
+        ),
+        (
+            "503 Service Unavailable",
+            r#"{"error":"#,
+            Some(100),
+            "API 503 Service Unavailable: Service Unavailable; could not read response body: error reading a body from connection",
+        ),
+        (
+            "200 OK",
+            "",
+            Some(10),
+            "safeyolo-coord: error reading a body from connection",
+        ),
     ] {
-        let (port, server, requests) = response_origin(status, body.as_bytes()).await;
+        let (port, server, requests) =
+            response_origin(status, body.as_bytes(), content_length).await;
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo-coord"))
             .args(["call", "send"])
             .env_remove("SAFEYOLO_COORD_SOCKET")

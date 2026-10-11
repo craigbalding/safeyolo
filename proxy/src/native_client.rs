@@ -53,7 +53,17 @@ where
 
 async fn json(response: Response<Incoming>) -> Result<Value, Error> {
     let status = response.status();
-    let bytes = response.into_body().collect().await?.to_bytes();
+    let bytes = match response.into_body().collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) if !status.is_success() => {
+            return Err(format!(
+                "API {status}: {}; could not read response body: {error}",
+                status.canonical_reason().unwrap_or("request failed")
+            )
+            .into());
+        }
+        Err(error) => return Err(error.into()),
+    };
     let value = serde_json::from_slice::<Value>(&bytes);
     if !status.is_success() {
         let error = value.as_ref().ok();
