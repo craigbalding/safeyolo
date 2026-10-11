@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository=$(cd -- "$script_dir/../.." && pwd)
 lane=${1:-}
-[[ -n $lane ]] || { echo "Usage: $0 {systrap|kvm|vz|proxy} [--install-checkout DIRECTORY] [--prepare-only] [run-tests.sh options]" >&2; exit 2; }
+[[ -n $lane ]] || { echo "Usage: $0 {systrap|kvm|vz|proxy} [--install-checkout DIRECTORY] [--prepare-only|--prepare-kvm-only] [run-tests.sh options]" >&2; exit 2; }
 shift
 checkout=$repository
 if [[ ${1:-} == --install-checkout ]]; then
@@ -13,11 +13,18 @@ if [[ ${1:-} == --install-checkout ]]; then
   shift 2
 fi
 prepare_only=false
-if [[ ${1:-} == --prepare-only ]]; then prepare_only=true; shift; fi
+prepare_kvm_only=false
+case ${1:-} in
+  --prepare-only) prepare_only=true; shift;;
+  --prepare-kvm-only) prepare_kvm_only=true; shift;;
+esac
 case "$lane:$(uname -s)" in
   systrap:Linux|kvm:Linux|vz:Darwin|proxy:*) ;;
   *) echo "Unsupported black-box lane/host: $lane/$(uname -s)" >&2; exit 2;;
 esac
+if [[ $prepare_kvm_only == true && $lane != kvm ]]; then
+  echo '--prepare-kvm-only requires the KVM lane' >&2; exit 2
+fi
 command -v uv >/dev/null || { echo 'uv is required for the Python test drivers' >&2; exit 2; }
 # The test host supplies runsc/user namespaces or VZ, and prepared guest images.
 # Product installation does not build or provision these platform prerequisites.
@@ -41,6 +48,10 @@ if [[ $lane != proxy ]]; then
     fi
   fi
   inputs+=(--platform-assets "$platform_assets")
+fi
+if [[ $prepare_kvm_only == true ]]; then
+  echo 'KVM access prepared; no product installation or guest started'
+  exit 0
 fi
 if [[ $lane == systrap ]]; then export SAFEYOLO_RUNSC_PLATFORM=systrap; else unset SAFEYOLO_RUNSC_PLATFORM; fi
 root=${SAFEYOLO_CONFIG_DIR:?Set SAFEYOLO_CONFIG_DIR to a fresh disposable native installation}
