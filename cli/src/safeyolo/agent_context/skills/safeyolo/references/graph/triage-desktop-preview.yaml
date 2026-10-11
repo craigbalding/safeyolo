@@ -71,7 +71,7 @@ nodes:
 
   - id: ev.desktop_check_novnc_running
     kind: evidence
-    label: "ss -ltnp | grep -E ':6080|:5901' -- noVNC websockify (6080) and the VNC server (5901) should both be listening"
+    label: "ss -ltnp | grep -E ':6080|:5900' -- native noVNC bridge (6080) and x11vnc (5900) should both be listening on guest loopback"
     source: authored
 
   - id: ev.desktop_check_display_env
@@ -101,7 +101,7 @@ nodes:
 
   - id: ev.desktop_check_novnc_logs
     kind: evidence
-    label: "Ask operator to check noVNC / websockify logs on the host side for the specific browser connection attempt"
+    label: "Read /tmp/desktop-bridge.log in the guest for the specific browser connection attempt"
     source: authored
 
   # ---- Classifications -------------------------------------------------

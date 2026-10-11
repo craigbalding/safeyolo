@@ -15,13 +15,13 @@ flowchart TD
     sym.desktop_browser_wont_start(["I asked a browser to start (headed) inside the guest but it exits immediately"])
     sym.desktop_preview_not_started(["I'm not sure the operator has actually run 'safeyolo preview' for this agent"])
     ev.desktop_check_xvfb_running["pgrep -a Xvfb -- Xvfb display should be running on :1 (or whichever DISPLAY is configured)"]
-    ev.desktop_check_novnc_running["ss -ltnp / grep -E ':6080/:5901' -- noVNC websockify (6080) and the VNC server (5901) should both be listening"]
+    ev.desktop_check_novnc_running["ss -ltnp / grep -E ':6080/:5900' -- native noVNC bridge (6080) and x11vnc (5900) should both be listening on guest loopback"]
     ev.desktop_check_display_env["echo '$DISPLAY' -- must be set (usually ':1') for X clients to reach the Xvfb server"]
     ev.desktop_check_browser_binary["which -a chromium chromium-browser google-chrome firefox -- a browser binary must be installed in the guest"]
     ev.desktop_check_preview_process["Ask operator: 'safeyolo status' -- does it list an active preview session for this agent?"]
     ev.desktop_check_preview_url_reach["Ask operator: does the preview URL match 'http://127.0.0.1:PORT/vnc.html?...' and does the port match 'safeyolo status'?"]
     ev.desktop_check_operator_ttl["Ask operator: was 'safeyolo preview --ttl' set? If yes, the session may have expired -- session close is silent from the guest side"]
-    ev.desktop_check_novnc_logs["Ask operator to check noVNC / websockify logs on the host side for the specific browser connection attempt"]
+    ev.desktop_check_novnc_logs["Read /tmp/desktop-bridge.log in the guest for the specific browser connection attempt"]
     cls.desktop_stack_not_started{{"The Xvfb + VNC + noVNC stack was never started in this agent"}}
     cls.desktop_preview_not_started{{"Operator hasn't run 'safeyolo preview' yet, or the session expired"}}
     cls.desktop_port_mismatch{{"The preview URL points at a port different from where noVNC is listening"}}

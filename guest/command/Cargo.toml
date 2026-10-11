@@ -12,3 +12,5 @@ ring = "0.17"
 regex = "1"
 serde_json = "1"
 tempfile = "3"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+data-encoding = "2.11.1"

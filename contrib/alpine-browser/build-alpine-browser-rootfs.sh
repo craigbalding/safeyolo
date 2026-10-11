@@ -65,8 +65,8 @@ echo "=== Installing Alpine packages ==="
 # as contrib/alpine-minimal), plus the headful-browser display stack:
 #   xvfb        -- virtual X server (the :99 framebuffer the browser draws on)
 #   x11vnc      -- exposes that display over VNC (localhost:5900)
-#   novnc       -- the web client assets served at /usr/share/novnc
-#   websockify  -- WebSocket<->VNC bridge that serves noVNC on :6080
+#   noVNC assets are installed below; the packaged native guest helper serves
+#   them and bridges WebSocket to VNC on loopback :6080.
 #   fluxbox/xterm -- tiny window manager plus a discoverable app menu/terminal
 #   font-noto      -- without fonts the browser renders blank/tofu text
 #   procps-ng      -- the core desktop launcher uses pkill (not in busybox)
@@ -80,8 +80,11 @@ chroot "$TREE" /sbin/apk add --no-cache \
     bash socat ca-certificates shadow openssh-server curl git jq sudo mise nodejs npm \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
-    xvfb x11vnc novnc websockify font-noto procps-ng util-linux-misc \
+    xvfb x11vnc font-noto procps-ng util-linux-misc \
     nss-tools dbus fluxbox xterm chromium
+
+bash "$SAFEYOLO_GUEST_SRC_DIR/install-novnc-assets.sh" \
+    "$TREE" "$SAFEYOLO_ROOTFS_WORK_DIR/.download-cache"
 
 # SafeYolo stages its current desktop lifecycle/browser helper at
 # /safeyolo/guest-desktop on every run. This rootfs supplies only the optional

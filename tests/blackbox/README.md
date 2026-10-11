@@ -79,7 +79,9 @@ For example, run access on the software-isolation host:
 
 For the continuous Ubuntu or physical Mac operator/guest path, select the
 prepared native bundle and a desktop-capable `SAFEYOLO_PLATFORM_ASSETS` tree. The guest must already
-contain Xvfb, x11vnc, websockify, a supported window manager and noVNC assets;
+contain Xvfb, x11vnc, a supported window manager and noVNC web assets. Use the
+graphical builders or the [desktop rootfs instructions](../../contrib/ROOTFS_SCRIPT_GUIDE.md#optional-desktop).
+The installed native guest helper supplies the HTTP/WebSocket-to-VNC bridge;
 the procedure checks these inputs and does not install guest packages. No proxy
 or guest needs to be running. From the clean test checkout on Ubuntu, run:
 

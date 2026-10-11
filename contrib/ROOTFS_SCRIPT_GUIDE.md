@@ -78,6 +78,32 @@ On macOS the existing VM owner selects `ROOT/agents/NAME/rootfs.ext4` before
 OUT_TREE and provide the matching kernel/initramfs as ordinary platform inputs.
 These paths reuse native boot selection and introduce no automatic conversion.
 
+## Optional desktop
+
+The Alpine browser and Kali builders include Xvfb, x11vnc, a window manager
+and pinned noVNC web assets. The installed `safeyolo-guest` executable supplies
+the bridge, so these builders do not install websockify or the distro noVNC
+metapackage. An operator's Python applications and OS packages remain usable.
+
+For another desktop-capable rootfs, install Xvfb, x11vnc, fluxbox or openbox,
+`setsid` and `pkill` with that distribution's package manager. Before completing
+the image, run this command from the matching source checkout on the Linux
+builder. `TREE` is the stopped image's unpacked rootfs and `CACHE` is a
+disk-backed download directory owned by the build; the command needs write
+access to both:
+
+```sh
+bash guest/install-novnc-assets.sh "$TREE" "$CACHE"
+```
+
+This verifies noVNC 1.6.0 and installs its pages, JavaScript, images and license
+notices under `/usr/share/novnc`. It excludes upstream launchers and build/test
+tools. It does not install an interpreter or start a service. Supply the finished
+image to the native installation as described above, then start the agent.
+On the host, open its authenticated desktop with `safeyolo agent present NAME`.
+Inside that guest, `/safeyolo/guest-desktop check` reports missing inputs and
+`/safeyolo/guest-desktop status` reports display, VNC and bridge readiness.
+
 ## What the rootfs must contain
 
 SafeYolo boots the rootfs without the distribution's init system. The rootfs

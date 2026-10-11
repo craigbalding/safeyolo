@@ -147,7 +147,8 @@ def test_kali_apt_phase_restores_container_runtime_environment() -> None:
     assert "APT_DPKG_BEFORE" in apt_phase
     assert "APT_DPKG_AFTER" in apt_phase
     assert "Kali apt packages ready" in apt_phase
-    assert "chromium fluxbox novnc websockify xterm python3 ffuf sqlmap" in apt_phase
+    assert "chromium fluxbox xterm python3 ffuf sqlmap" in apt_phase
+    assert "install-novnc-assets.sh" in apt_phase
 
     mount_helper = source[
         source.index("_mount_chroot_runtime()") :
