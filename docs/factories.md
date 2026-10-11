@@ -113,6 +113,8 @@ Canonical `brief_changed` attention updates every receive-authorized factory
 role's bounded checkpoint, and preflight refreshes the current brief after a
 restart. Brief updates are not handoffs: they create no in-flight request,
 need no terminal response, and cause no automatic runtime transition.
+Use [the native brief commands](native-coord.md#read-and-update-a-trusted-brief)
+to read or replace that context with an explicit expected revision.
 
 ## Authority and intake
 
@@ -131,7 +133,11 @@ An approved factory retains the following state:
   for that selection. Approval does not establish the running process's identity.
 - The canonical trusted room brief is live operator-authored state. The brief
   is not part of the snapshot and can change by revision while the snapshot
-  stays the same.
+  stays the same. `factory doctor NAME` reports `room-brief` as `none`, or
+  `present` with its exact revision and content hash. Doctor does not print
+  or interpret the Markdown. No brief is a valid state and does not prevent
+  readiness. If the store or room cannot be read, doctor reports `unavailable`
+  with a warning instead of claiming absence.
 
 The declared operator types admit messages to the coordinator. The types do
 not define a workflow. Read the exact bound coordinator contract to determine

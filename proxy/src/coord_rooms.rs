@@ -13,6 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
+pub(crate) mod brief;
 fn directory(root: &Path) -> Result<PathBuf, Error> {
     let config_path = if root == crate::host_platform::config_dir() {
         crate::host_platform::config_path()
@@ -74,10 +75,10 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
 }
 
 fn open(root: &Path) -> Result<Connection, Error> {
-    let connection = Connection::open_with_flags(
-        directory(root)?.join("v0.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-    )?;
+    open_with_flags(root, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+}
+fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection, Error> {
+    let connection = Connection::open_with_flags(directory(root)?.join("v0.db"), flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA foreign_keys=ON;")?;
     if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))? != 5 {
@@ -653,6 +654,15 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     }
     let root = config.parent().ok_or("native root is missing")?;
     let result = match arguments {
+        [kind, options @ ..]
+            if kind == "brief" && (options.is_empty() || options == ["--help"]) =>
+        {
+            println!("{}", crate::coord_operator::BRIEF_HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "brief" => {
+            crate::coord_operator::run_brief(root, arguments)?
+        }
         [kind, options @ ..] if kind == "start" => {
             let mut binary = None;
             let mut client = None;
@@ -712,6 +722,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
                 "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nNative instance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
+            println!("{}", crate::coord_operator::BRIEF_HELP);
             println!("{}", crate::factory_proposals::HELP);
             println!("{}", crate::dispatch::request::HELP);
             println!("{}", crate::mattermost::HELP);

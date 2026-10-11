@@ -2053,34 +2053,8 @@ fn read_access_as(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::Unavailable)?;
-    let brief = conn
-        .query_row(
-            "SELECT revision, markdown, content_hash, updated_at
-             FROM coord_briefs WHERE room_id = ?1",
-            params![&room_id],
-            |row| {
-                Ok(json!({
-                    "room_id": room_id,
-                    "object_id": format!("brief-{}", room_id.trim_start_matches("rm-")),
-                    "revision": row.get::<_, i64>(0)?,
-                    "markdown": row.get::<_, String>(1)?,
-                    "content_hash": row.get::<_, String>(2)?,
-                    "updated_at": row.get::<_, i64>(3)?,
-                }))
-            },
-        )
-        .optional()
-        .map_err(|_| CoordError::Data)?
-        .unwrap_or_else(|| {
-            json!({
-                "room_id": room_id,
-                "object_id": format!("brief-{}", room_id.trim_start_matches("rm-")),
-                "revision": 0,
-                "markdown": Value::Null,
-                "content_hash": Value::Null,
-                "updated_at": Value::Null,
-            })
-        });
+    let brief =
+        crate::coord_rooms::brief::current(&conn, &room_id).map_err(|_| CoordError::Data)?;
     Ok(RoomAccess {
         room_id,
         room_name,

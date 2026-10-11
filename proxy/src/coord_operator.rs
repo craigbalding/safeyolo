@@ -21,6 +21,7 @@ struct Options {
     text: Option<String>,
     file: Option<String>,
     stdin: bool,
+    expected_revision: Option<i64>,
     targets: Vec<String>,
     content_type: Option<String>,
     since: u64,
@@ -56,15 +57,26 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
                     .ok_or_else(|| format!("{option} requires a value"))
             };
             match option {
-                "--file" if command == "send" => options.file = Some(value()?.clone()),
-                "--stdin" if command == "send" => options.stdin = true,
+                "--file" if matches!(command, "send" | "brief set") => {
+                    options.file = Some(value()?.clone())
+                }
+                "--stdin" if matches!(command, "send" | "brief set") => options.stdin = true,
+                "--expected-revision" if command == "brief set" => {
+                    options.expected_revision = Some(
+                        value()?
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|revision| *revision >= 0)
+                            .ok_or("--expected-revision requires a nonnegative integer")?,
+                    );
+                }
                 "--content-type" if command == "send" => {
                     options.content_type = Some(value()?.clone())
                 }
                 "--to" if matches!(command, "send" | "chat") => {
                     options.targets.push(value()?.clone())
                 }
-                "--since" if command != "send" => {
+                "--since" if matches!(command, "chat" | "history" | "watch") => {
                     options.since = value()?
                         .parse()
                         .map_err(|_| "--since requires a nonnegative sequence")?;
@@ -97,7 +109,7 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
             }
         } else if options.room.is_none() {
             options.room = Some(arg.clone());
-        } else if command == "send" && options.text.is_none() {
+        } else if matches!(command, "send" | "brief set") && options.text.is_none() {
             options.text = Some(arg.clone());
         } else {
             return Err(format!("unexpected coord {command} argument").into());
@@ -125,7 +137,7 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
     Ok(options)
 }
 
-fn body(options: &Options) -> Result<String, Error> {
+fn body(options: &Options, kind: &str) -> Result<String, Error> {
     let selected = usize::from(options.text.is_some())
         + usize::from(options.file.is_some())
         + usize::from(options.stdin);
@@ -133,20 +145,50 @@ fn body(options: &Options) -> Result<String, Error> {
         return Err("provide exactly one of TEXT, --file, or --stdin".into());
     }
     let body = if let Some(path) = &options.file {
-        std::fs::read_to_string(path).map_err(|_| "could not read message file as UTF-8")?
+        std::fs::read_to_string(path).map_err(|_| format!("could not read {kind} file as UTF-8"))?
     } else if options.stdin {
         let mut body = String::new();
         std::io::stdin()
             .read_to_string(&mut body)
-            .map_err(|_| "could not read message from stdin as UTF-8")?;
+            .map_err(|_| format!("could not read {kind} from stdin as UTF-8"))?;
         body
     } else {
         options.text.clone().unwrap_or_default()
     };
     if body.trim().is_empty() {
-        return Err("message body must be non-empty".into());
+        return Err(format!("{kind} body must be non-empty").into());
     }
     Ok(body)
+}
+
+pub const BRIEF_HELP: &str = "safeyolo [--root ROOT] coord brief show ROOM\nsafeyolo [--root ROOT] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Stale expectations fail without changing the brief or attention. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
+
+pub(crate) fn run_brief(root: &Path, arguments: &[String]) -> Result<Value, Error> {
+    match arguments {
+        [command, room] if command == "show" => {
+            let mut brief = crate::coord_rooms::brief::read(root, room)?;
+            brief["state"] = json!(if brief["revision"] == 0 {
+                "none"
+            } else {
+                "present"
+            });
+            Ok(brief)
+        }
+        [command, arguments @ ..] if command == "set" => {
+            let options = parse("brief set", arguments)?;
+            let expected = options
+                .expected_revision
+                .ok_or("brief set requires --expected-revision; use 0 for deliberate creation")?;
+            let markdown = body(&options, "brief")?;
+            crate::coord_rooms::brief::set(
+                root,
+                options.room.as_deref().ok_or("room missing")?,
+                &markdown,
+                expected,
+            )
+        }
+        _ => Err(BRIEF_HELP.into()),
+    }
 }
 
 fn notify(targets: &[String]) -> Value {
@@ -540,7 +582,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     }
     let client = OperatorCoord::open(config)?;
     if command == "send" {
-        let body = body(&options)?;
+        let body = body(&options, "message")?;
         let result = client
             .send(
                 &room,

@@ -577,6 +577,11 @@ async fn doctor(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
     checks.push(json!({"component":"proxy","status":if crate::host_commands::proxy_live() {"PASS"} else {"FAIL"},"recovery":"safeyolo start"}));
     let nats = crate::coord_rooms::status(root).await;
     checks.push(match nats { Ok(value) => json!({"component":"coord-nats","status":if value["state"]=="running" {"PASS"} else {"FAIL"},"observation":value}), Err(error) => json!({"component":"coord-nats","status":"FAIL","error":error.to_string()}) });
+    checks.push(match crate::coord_rooms::brief::read(root, &snapshot.room) {
+        Ok(brief) if brief["revision"] == 0 => json!({"component":"room-brief","room":snapshot.room,"status":"PASS","observation":{"state":"none"}}),
+        Ok(brief) => json!({"component":"room-brief","room":snapshot.room,"status":"PASS","observation":{"state":"present","revision":brief["revision"],"content_hash":brief["content_hash"]}}),
+        Err(error) => json!({"component":"room-brief","room":snapshot.room,"status":"WARN","observation":{"state":"unavailable"},"error":error.to_string()}),
+    });
     let configured = host_agents::list()?;
     let approvals = crate::native_client::admin(
         &host_platform::config_path(),
