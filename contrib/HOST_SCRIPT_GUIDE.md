@@ -242,6 +242,15 @@ sudo -n apk add nodejs npm
 npm install --global --prefix /home/agent/.local @example/myagent@latest
 ```
 
+The bundled Codex launcher uses apk-provided Node.js and installs Codex through
+mise on Alpine, even if retained mise configuration selects another Node version.
+It applies `SAFEYOLO_MIN_RELEASE_AGE` (default `24h`) when mise
+supports `minimum_release_age`. The launcher reports when mise lacks that
+setting. `SAFEYOLO_CODEX_NPM_PACKAGE` selects the Alpine package and version;
+`SAFEYOLO_CODEX_NPM_SPEC` selects the non-Alpine mise spec. If only one is set,
+it also supplies the other platform's selection. A healthy Codex installation
+is reused. A missing or broken installation is repaired at the selected version.
+
 This `sudo` is guest-only. On rootless Linux, SafeYolo's compatibility helper
 uses `setpriv` to reach namespace uid 0, which maps to a subordinate host uid;
 on hardware microVMs it delegates to ordinary distro sudo. Host scripts should
