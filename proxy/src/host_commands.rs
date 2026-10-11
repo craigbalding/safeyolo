@@ -97,6 +97,20 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     let _lock =
         tokio::task::spawn_blocking(move || host_platform::lock_host_state(&lock_path)).await??;
     if proxy_live() {
+        // Status describes reuse; start performs the ownership/readiness checks.
+        let previous = crate::coord_rooms::status(&root).await.ok();
+        match crate::coord_rooms::start(&root, None, None, None).await {
+            Ok(current) => {
+                if previous.is_some_and(|status| status["process"] == current) {
+                    eprintln!("Coord ready: existing managed NATS is healthy.");
+                } else {
+                    eprintln!("Coord restored: managed NATS is ready.");
+                }
+            }
+            Err(error) => eprintln!(
+                "Coord unavailable: {error}. The running proxy is unchanged; run coord status and repair its prerequisite before retrying start."
+            ),
+        }
         return Ok(None);
     }
     let config_path = host_platform::config_path();
