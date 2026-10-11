@@ -1,7 +1,14 @@
 //! Real Admin desktop route through the native preview and guest transport.
 #![cfg(target_os = "linux")]
 
-use std::{fs, net::Ipv4Addr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use std::{
+    fs,
+    net::Ipv4Addr,
+    os::unix::fs::{PermissionsExt, symlink},
+    path::Path,
+    process::Command,
+    time::Duration,
+};
 
 use safeyolo_proxy::{Config, Proxy};
 use serde_json::{Value, json};
@@ -48,6 +55,7 @@ case "$3" in
       *"guest-desktop status"*) [ -e "$SAFEYOLO_CONFIG_DIR/desktop-ready" ];;
       *"guest-desktop start"*)
         if [ -e "$SAFEYOLO_CONFIG_DIR/start-fails" ]; then exit 1; fi
+        printf '%s\n' "$*" > "$SAFEYOLO_CONFIG_DIR/desktop-start-command"
         : > "$SAFEYOLO_CONFIG_DIR/desktop-ready"
         ;;
       *"guest-desktop stop"*)
@@ -171,11 +179,68 @@ fn save_run(root: &Path, run: &Option<Value>) {
     }
 }
 
+fn assert_staged_desktop_size(root: &Path, expected: &str) {
+    let share = root.join("agents/alice/config-share");
+    assert_eq!(
+        fs::read_to_string(share.join("desktop-size")).unwrap(),
+        format!("{expected}\n")
+    );
+    assert!(
+        fs::read_to_string(root.join("desktop-start-command"))
+            .unwrap()
+            .ends_with(&format!("guest-desktop start {expected}\n"))
+    );
+
+    // Relocate the guest share and observe the parsed size at the capability
+    // check, before starting graphical processes. The staged Bash consumer
+    // really reads desktop-size; explicit arguments must still take precedence.
+    let launcher = root.join("consume-guest-desktop");
+    let source = fs::read_to_string(share.join("guest-desktop")).unwrap();
+    fs::write(
+        &launcher,
+        source
+            .replace("/safeyolo/", &format!("{}/", share.display()))
+            .replace(
+                "action=\"${1:-start}\"",
+                "_check_capability() { printf '%s\\n' \"${width}x${height}x${depth}\"; exit 0; }\naction=\"${1:-start}\"",
+            ),
+    )
+    .unwrap();
+    for (args, geometry) in [
+        (vec!["start"], Some(expected)),
+        (vec!["start", "800x600"], Some("800x600")),
+        (vec!["start", "invalid"], None),
+    ] {
+        let output = Command::new("/bin/bash")
+            .arg(&launcher)
+            .args(args)
+            .env_clear()
+            .env("PATH", root.join("bin"))
+            .env("HOME", root)
+            .output()
+            .unwrap();
+        if let Some(geometry) = geometry {
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{geometry}x24\n")
+            );
+        } else {
+            assert_eq!(output.status.code(), Some(2));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("usage: guest-desktop start"));
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     let root = TempDir::new().unwrap();
     let guest = UnixListener::bind(root.path().join("guest.sock")).unwrap();
     fixture(root.path());
+    symlink("/usr/bin/head", root.path().join("bin/head")).unwrap();
+    unsafe {
+        std::env::set_var("SAFEYOLO_PREVIEW_SCREEN_SIZE", "1920x1080");
+    }
     let mut run = OwnedRun::start(root.path());
     let origin = tokio::spawn(async move {
         for attempt in 0..2 {
@@ -286,6 +351,8 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
             .join("agents/alice/config-share/guest-desktop")
             .exists()
     );
+    assert_staged_desktop_size(root.path(), "1760x900");
+    assert!(!root.path().join("config.toml").exists());
     let url = first["url"].as_str().unwrap();
     let preview_port: u16 = url
         .split(':')
@@ -447,7 +514,7 @@ fi
     fs::set_permissions(&tailscale, fs::Permissions::from_mode(0o755)).unwrap();
     fs::write(
         root.path().join("config.toml"),
-        "[command_centre]\nshare='tailnet'\n",
+        "[command_centre]\nshare='tailnet'\n[desktop]\nsize=' 1920X1080 '\n",
     )
     .unwrap();
     unsafe {
@@ -501,6 +568,12 @@ fi
         String::from_utf8_lossy(&presented)
     );
     assert_eq!(body(&presented)["agent_id"], listed_id);
+    assert_staged_desktop_size(root.path(), "1920x1080");
+    assert!(
+        fs::read_to_string(root.path().join("config.toml"))
+            .unwrap()
+            .contains("size=' 1920X1080 '")
+    );
     assert!(
         body(&presented)["url"]
             .as_str()
@@ -575,6 +648,30 @@ fi
     assert!(root.path().join("desktop-stopped").is_file());
     assert!(!root.path().join("desktop-ready").exists());
     drop(occupied);
+    fs::remove_file(root.path().join("config.toml")).unwrap();
+
+    let staged = fs::read(root.path().join("agents/alice/config-share/desktop-size")).unwrap();
+    for size in ["639x480", "640x479", "01280x800", "1280x800x24", "invalid"] {
+        fs::write(
+            root.path().join("config.toml"),
+            format!("[desktop]\nsize='{size}'\n"),
+        )
+        .unwrap();
+        let refused = request(
+            admin_port,
+            "POST",
+            "/admin/agents/alice/desktop/present",
+            &admin_headers,
+            b"",
+        )
+        .await;
+        assert_eq!(status(&refused), 409, "size={size}");
+        assert_eq!(
+            fs::read(root.path().join("agents/alice/config-share/desktop-size")).unwrap(),
+            staged
+        );
+        assert!(!root.path().join("desktop-ready").exists());
+    }
     fs::remove_file(root.path().join("config.toml")).unwrap();
 
     fs::write(root.path().join("agent-stopped"), b"").unwrap();
