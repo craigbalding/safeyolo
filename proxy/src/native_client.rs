@@ -51,26 +51,49 @@ where
     Ok((response, driver))
 }
 
-async fn json(response: Response<Incoming>) -> Result<Value, Error> {
+async fn json(
+    response: Response<Incoming>,
+    deadline: tokio::time::Instant,
+) -> Result<Value, Error> {
     let status = response.status();
-    let bytes = response.into_body().collect().await?.to_bytes();
-    let value: Value = serde_json::from_slice(&bytes)?;
+    let body = tokio::time::timeout_at(deadline, async {
+        Ok::<_, Error>(response.into_body().collect().await?.to_bytes())
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.into()));
+    let bytes = match body {
+        Ok(bytes) => bytes,
+        Err(error) if !status.is_success() => {
+            return Err(format!(
+                "API {status}: {}; could not read response body: {error}",
+                status.canonical_reason().unwrap_or("request failed")
+            )
+            .into());
+        }
+        Err(error) => return Err(error),
+    };
+    let value = serde_json::from_slice::<Value>(&bytes);
     if !status.is_success() {
-        let outcome = if value.get("send_outcome").and_then(Value::as_str) == Some("unknown") {
+        let error = value.as_ref().ok();
+        let outcome = if error
+            .and_then(|value| value.get("send_outcome"))
+            .and_then(Value::as_str)
+            == Some("unknown")
+        {
             "; send outcome unknown; inspect retained history before repeating"
         } else {
             ""
         };
         return Err(format!(
             "API {status}: {}{outcome}",
-            value
-                .get("error")
+            error
+                .and_then(|value| value.get("error"))
                 .and_then(Value::as_str)
-                .unwrap_or("request failed")
+                .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed"))
         )
         .into());
     }
-    Ok(value)
+    Ok(value?)
 }
 
 async fn operator_socket(
@@ -123,7 +146,7 @@ pub async fn export(config_path: &Path, path: &str, destination: &Path) -> Resul
     )
     .await??;
     if !response.status().is_success() {
-        tokio::time::timeout(TIMEOUT, json(response)).await??;
+        json(response, tokio::time::Instant::now() + TIMEOUT).await?;
         return Err("export unavailable".into());
     }
     let destination = if std::fs::symlink_metadata(destination)
@@ -173,11 +196,11 @@ pub async fn send_json<IO>(
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::time::timeout(timeout, async {
-        let (response, _connection) = send(socket, host, path, token, method, body).await?;
-        json(response).await
-    })
-    .await?
+    // Keep Tokio's existing handling of durations beyond Instant's range.
+    let deadline = tokio::time::sleep(timeout).deadline();
+    let (response, _connection) =
+        tokio::time::timeout_at(deadline, send(socket, host, path, token, method, body)).await??;
+    json(response, deadline).await
 }
 
 /// Host REST requests use the configured HTTPS proxy and the same native TLS

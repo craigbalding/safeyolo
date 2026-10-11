@@ -490,27 +490,294 @@ async fn mcp(root: &Path, socket: &Path, requests: &str) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 async fn origin() -> (u16, tokio::task::JoinHandle<()>) {
+    let (port, task, _) = response_origin(
+        "200 OK",
+        b"{\"marker\":\"permitted-origin\"}",
+        None,
+        Duration::ZERO,
+        false,
+    )
+    .await;
+    (port, task)
+}
+async fn response_origin(
+    status: &str,
+    body: &[u8],
+    content_length: Option<usize>,
+    header_delay: Duration,
+    stall_body: bool,
+) -> (
+    u16,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = requests.clone();
+    let status = status.to_owned();
+    let content_length = content_length.unwrap_or(body.len());
+    let body = body.to_vec();
     let task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
                 break;
             };
-            tokio::spawn(async move {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let status = status.clone();
+            let body = body.clone();
+            connections.spawn(async move {
                 let mut request = [0u8; 8192];
                 let _ = socket.read(&mut request).await;
-                let body = b"{\"marker\":\"permitted-origin\"}";
+                tokio::time::sleep(header_delay).await;
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
                 );
                 let _ = socket.write_all(head.as_bytes()).await;
-                let _ = socket.write_all(body).await;
+                let _ = socket.write_all(&body).await;
+                if stall_body {
+                    let mut remaining = [0u8; 1024];
+                    while socket.read(&mut remaining).await.is_ok_and(|read| read > 0) {}
+                }
             });
         }
     });
-    (port, task)
+    (port, task, requests)
+}
+
+#[tokio::test]
+async fn native_response_failures_keep_http_diagnostics_without_repeating_writes() {
+    let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    fs::create_dir(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/agent_token"), "fixture-token").unwrap();
+    for (status, body, content_length, expected) in [
+        (
+            "502 Bad Gateway",
+            "",
+            None,
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        (
+            "502 Bad Gateway",
+            "upstream unavailable",
+            None,
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        (
+            "503 Service Unavailable",
+            "<html>unavailable</html>",
+            None,
+            "API 503 Service Unavailable: Service Unavailable",
+        ),
+        (
+            "502 Bad Gateway",
+            "{broken",
+            None,
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        (
+            "409 Conflict",
+            r#"{"error":"room is closed"}"#,
+            None,
+            "API 409 Conflict: room is closed",
+        ),
+        (
+            "503 Service Unavailable",
+            r#"{"error":"publication uncertain","send_outcome":"unknown"}"#,
+            None,
+            "API 503 Service Unavailable: publication uncertain; send outcome unknown; inspect retained history before repeating",
+        ),
+        (
+            "502 Bad Gateway",
+            "null",
+            None,
+            "API 502 Bad Gateway: Bad Gateway",
+        ),
+        ("200 OK", "{", None, "EOF while parsing an object"),
+        (
+            "502 Bad Gateway",
+            "",
+            Some(10),
+            "API 502 Bad Gateway: Bad Gateway; could not read response body: error reading a body from connection",
+        ),
+        (
+            "503 Service Unavailable",
+            r#"{"error":"#,
+            Some(100),
+            "API 503 Service Unavailable: Service Unavailable; could not read response body: error reading a body from connection",
+        ),
+        (
+            "200 OK",
+            "",
+            Some(10),
+            "safeyolo-coord: error reading a body from connection",
+        ),
+    ] {
+        let (port, server, requests) = response_origin(
+            status,
+            body.as_bytes(),
+            content_length,
+            Duration::ZERO,
+            false,
+        )
+        .await;
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo-coord"))
+            .args(["call", "send"])
+            .env_remove("SAFEYOLO_COORD_SOCKET")
+            .env(
+                "SAFEYOLO_COORD_TOKEN_PATH",
+                root.path().join("data/agent_token"),
+            )
+            .env("HTTP_PROXY", format!("http://127.0.0.1:{port}"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(
+            br#"{"room_name":"shared","body":"fixture write","declared_content_type":"text/plain","notify":"none"}"#
+        ).await.unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let _ = server.await;
+        assert!(!output.status.success(), "{status}: {body}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{status}: {body}: {error}");
+        assert_eq!(
+            requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "failed write was repeated: {status}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_response_body_timeouts_keep_http_diagnostics_and_total_deadline() {
+    let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let token = root.path().join("agent_token");
+    fs::write(&token, "fixture-token").unwrap();
+    for (status, expected) in [
+        (
+            "502 Bad Gateway",
+            "safeyolo: API 502 Bad Gateway: Bad Gateway; could not read response body: deadline has elapsed",
+        ),
+        ("200 OK", "safeyolo: deadline has elapsed"),
+    ] {
+        let (port, server, requests) =
+            response_origin(status, b"", Some(10), Duration::from_secs(1), true).await;
+        let started = std::time::Instant::now();
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+                .args([
+                    "helper",
+                    "show",
+                    "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "--token-file",
+                ])
+                .arg(&token)
+                .env("HTTP_PROXY", format!("http://127.0.0.1:{port}"))
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let elapsed = started.elapsed();
+        server.abort();
+        let _ = server.await;
+        eprintln!(
+            "stalled {status}: {elapsed:?}; {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        assert!(!output.status.success(), "{status}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), expected);
+        assert!(
+            elapsed < Duration::from_secs(6),
+            "the five-second deadline restarted after delayed headers: {status}: {elapsed:?}"
+        );
+        assert_eq!(
+            requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "request was repeated: {status}"
+        );
+    }
+
+    let (port, server, requests) = response_origin(
+        "503 Service Unavailable",
+        br#"{"error":"#,
+        Some(100),
+        Duration::from_millis(50),
+        true,
+    )
+    .await;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        safeyolo_proxy::native_client::send_json(
+            stream,
+            &format!("127.0.0.1:{port}"),
+            "/coord/send",
+            "fixture-token",
+            hyper::Method::POST,
+            json!({"room_name":"shared","body":"fixture write"}),
+            Duration::from_millis(250),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    server.abort();
+    let _ = server.await;
+    assert_eq!(
+        error.to_string(),
+        "API 503 Service Unavailable: Service Unavailable; could not read response body: deadline has elapsed"
+    );
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "timed-out write was repeated"
+    );
+
+    let (port, server, requests) = response_origin(
+        "200 OK",
+        br#"{"marker":"permitted-origin"}"#,
+        None,
+        Duration::ZERO,
+        false,
+    )
+    .await;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let value = tokio::time::timeout(
+        Duration::from_secs(2),
+        safeyolo_proxy::native_client::send_json(
+            stream,
+            &format!("127.0.0.1:{port}"),
+            "/marker",
+            "fixture-token",
+            hyper::Method::GET,
+            Value::Null,
+            Duration::MAX,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    server.abort();
+    let _ = server.await;
+    assert_eq!(value["marker"], "permitted-origin");
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 async fn traffic(alice: &Client, port: u16) {
     let stream = tokio::net::UnixStream::connect(alice.socket.as_ref().unwrap())

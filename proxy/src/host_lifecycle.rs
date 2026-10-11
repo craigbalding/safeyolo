@@ -1502,8 +1502,16 @@ pub(crate) async fn start(
         )
         .await;
         if let Err(error) = boot {
-            let _ = crate::host_platform::update_agent_map(&agent.name, None);
-            let _ = sync_agent_listeners().await;
+            let mut failures = Vec::new();
+            if let Err(rollback) = crate::host_platform::update_agent_map(&agent.name, None) {
+                failures.push(format!("agent-map rollback failed: {rollback}"));
+            }
+            if let Err(rollback) = sync_agent_listeners().await {
+                failures.push(format!("listener rollback failed: {rollback}"));
+            }
+            if !failures.is_empty() {
+                return Err(format!("{error}; {}", failures.join("; ")).into());
+            }
             return Err(error.into());
         }
     }

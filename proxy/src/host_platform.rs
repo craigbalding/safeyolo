@@ -781,85 +781,91 @@ async fn start_userns(name: &str) -> io::Result<u32> {
     let pid = child
         .id()
         .ok_or(io::Error::other("user namespace holder has no PID"))?;
-    let parent_user = std::fs::metadata("/proc/self/ns/user")?.ino();
-    let parent_net = std::fs::metadata("/proc/self/ns/net")?.ino();
-    let entered = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if child.try_wait()?.is_some() {
-                return Err(io::Error::other(
-                    "user namespace holder exited before setup",
-                ));
+    let prepared: io::Result<()> = async {
+        let parent_user = std::fs::metadata("/proc/self/ns/user")?.ino();
+        let parent_net = std::fs::metadata("/proc/self/ns/net")?.ino();
+        let entered = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if child.try_wait()?.is_some() {
+                    return Err(io::Error::other(
+                        "user namespace holder exited before setup",
+                    ));
+                }
+                let user = std::fs::metadata(format!("/proc/{pid}/ns/user")).map(|info| info.ino());
+                let net = std::fs::metadata(format!("/proc/{pid}/ns/net")).map(|info| info.ino());
+                if user.is_ok_and(|inode| inode != parent_user)
+                    && net.is_ok_and(|inode| inode != parent_net)
+                {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            let user = std::fs::metadata(format!("/proc/{pid}/ns/user")).map(|info| info.ino());
-            let net = std::fs::metadata(format!("/proc/{pid}/ns/net")).map(|info| info.ino());
-            if user.is_ok_and(|inode| inode != parent_user)
-                && net.is_ok_and(|inode| inode != parent_net)
-            {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        })
+        .await;
+        if !matches!(entered, Ok(Ok(()))) {
+            return Err(io::Error::other(
+                "user namespace holder did not become ready",
+            ));
         }
-    })
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        let map = Command::new("newuidmap")
+            .args([
+                pid.to_string(),
+                "0".to_owned(),
+                "100000".to_owned(),
+                "1000".to_owned(),
+                "1000".to_owned(),
+                uid.to_string(),
+                "1".to_owned(),
+                "1001".to_owned(),
+                "101001".to_owned(),
+                "64534".to_owned(),
+            ])
+            .output()
+            .await?;
+        if !map.status.success() {
+            return Err(io::Error::other(format!(
+                "newuidmap failed: {}",
+                String::from_utf8_lossy(&map.stderr)
+            )));
+        }
+        let map = Command::new("newgidmap")
+            .args([
+                pid.to_string(),
+                "0".to_owned(),
+                "100000".to_owned(),
+                "1000".to_owned(),
+                "1000".to_owned(),
+                gid.to_string(),
+                "1".to_owned(),
+                "1001".to_owned(),
+                "101001".to_owned(),
+                "64534".to_owned(),
+            ])
+            .output()
+            .await?;
+        if !map.status.success() {
+            return Err(io::Error::other(format!(
+                "newgidmap failed: {}",
+                String::from_utf8_lossy(&map.stderr)
+            )));
+        }
+        std::fs::write(
+            config_dir().join("agents").join(name).join("userns.pid"),
+            pid.to_string(),
+        )?;
+        crate::host_runs::remember_process(name, "holder", pid).map_err(io::Error::other)?;
+        Ok(())
+    }
     .await;
-    if !matches!(entered, Ok(Ok(()))) {
-        let _ = child.kill().await;
-        return Err(io::Error::other(
-            "user namespace holder did not become ready",
-        ));
-    }
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
-    let map = Command::new("newuidmap")
-        .args([
-            pid.to_string(),
-            "0".to_owned(),
-            "100000".to_owned(),
-            "1000".to_owned(),
-            "1000".to_owned(),
-            uid.to_string(),
-            "1".to_owned(),
-            "1001".to_owned(),
-            "101001".to_owned(),
-            "64534".to_owned(),
-        ])
-        .output()
-        .await?;
-    if !map.status.success() {
-        let _ = child.kill().await;
-        return Err(io::Error::other(format!(
-            "newuidmap failed: {}",
-            String::from_utf8_lossy(&map.stderr)
-        )));
-    }
-    let map = Command::new("newgidmap")
-        .args([
-            pid.to_string(),
-            "0".to_owned(),
-            "100000".to_owned(),
-            "1000".to_owned(),
-            "1000".to_owned(),
-            gid.to_string(),
-            "1".to_owned(),
-            "1001".to_owned(),
-            "101001".to_owned(),
-            "64534".to_owned(),
-        ])
-        .output()
-        .await?;
-    if !map.status.success() {
-        let _ = child.kill().await;
-        return Err(io::Error::other(format!(
-            "newgidmap failed: {}",
-            String::from_utf8_lossy(&map.stderr)
-        )));
-    }
-    std::fs::write(
-        config_dir().join("agents").join(name).join("userns.pid"),
-        pid.to_string(),
-    )?;
-    if let Err(error) = crate::host_runs::remember_process(name, "holder", pid) {
-        let _ = child.kill().await;
-        return Err(io::Error::other(error));
+    if let Err(error) = prepared {
+        if let Err(cleanup) = child.kill().await {
+            return Err(io::Error::other(format!(
+                "{error}; user namespace holder cleanup failed: {cleanup}"
+            )));
+        }
+        return Err(error);
     }
     Ok(pid)
 }
@@ -1063,8 +1069,13 @@ pub(crate) async fn start_sandbox(
         Err(io::Error::other("guest did not reach per-run startup"))
     }
     .await;
-    if result.is_err() {
-        let _ = stop_sandbox(name).await;
+    if let Err(error) = result {
+        if let Err(cleanup) = stop_sandbox(name).await {
+            return Err(io::Error::other(format!(
+                "{error}; sandbox cleanup failed: {cleanup}"
+            )));
+        }
+        return Err(error);
     }
     result
 }
@@ -1660,6 +1671,27 @@ async fn stop_vz_launch_owner(child: &mut tokio::process::Child) -> io::Result<(
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
+async fn cleanup_failed_vz_start(
+    startup: io::Error,
+    sandbox_stop: io::Result<()>,
+    child: &mut tokio::process::Child,
+) -> io::Error {
+    let owner_stop = stop_vz_launch_owner(child).await;
+    match (sandbox_stop, owner_stop) {
+        (Ok(()), Ok(())) => startup,
+        (Err(sandbox), Ok(())) => io::Error::other(format!(
+            "{startup}; sandbox stop failed: {sandbox}; owned VZ launch process stopped"
+        )),
+        (Ok(()), Err(owner)) => io::Error::other(format!(
+            "{startup}; VZ launch-owner cleanup failed: {owner}"
+        )),
+        (Err(sandbox), Err(owner)) => io::Error::other(format!(
+            "{startup}; sandbox cleanup failed: {sandbox}; VZ launch-owner cleanup failed: {owner}"
+        )),
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) async fn start_sandbox(
     name: &str,
@@ -1851,11 +1883,11 @@ pub(crate) async fn start_sandbox(
         Err(io::Error::other("VM did not reach per-run startup"))
     }
     .await;
-    if started.is_err() {
+    if let Err(error) = started {
         // Stop the independently verified helper when available. Also stop
         // the owned launch process if identity persistence itself failed.
-        let _ = stop_sandbox(name).await;
-        stop_vz_launch_owner(&mut child).await?;
+        let sandbox_stop = stop_sandbox(name).await;
+        return Err(cleanup_failed_vz_start(error, sandbox_stop, &mut child).await);
     }
     started
 }
@@ -2097,6 +2129,144 @@ mod guest_command_test_run;
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn failed_linux_start_reports_workload_cleanup() {
+        const TEST: &str = "host_platform::tests::failed_linux_start_reports_workload_cleanup";
+        if let Some(root) = std::env::var_os("SAFEYOLO_TEST_FAILED_START_ROOT") {
+            let root = PathBuf::from(root);
+            let directory = root.join("agents/alice");
+            let share = directory.join("config-share");
+            std::fs::create_dir_all(&share).unwrap();
+            std::fs::create_dir(root.join("bin")).unwrap();
+            std::fs::write(share.join("guest-init"), b"fixture").unwrap();
+            std::fs::write(
+                directory.join("config.json"),
+                br#"{"linux":{"namespaces":[]}}"#,
+            )
+            .unwrap();
+            let run_id = "0123456789abcdef0123456789abcdef";
+            std::fs::write(
+                share.join("host-launch-context.json"),
+                serde_json::json!({"generation":run_id}).to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join("runtime.json"),
+                serde_json::json!({"run_id":run_id,"state":"starting"}).to_string(),
+            )
+            .unwrap();
+            for (name, script) in [
+                ("setfacl", "#!/bin/sh\nexit 0\n".to_owned()),
+                ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
+                ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
+                (
+                    "unshare",
+                    format!(
+                        "#!/bin/sh\nprintf '%s' \"$$\" > '{}/fixture-holder.pid'\nexec /usr/bin/unshare \"$@\"\n",
+                        directory.display()
+                    ),
+                ),
+                ("tail", "#!/bin/sh\nexec /usr/bin/tail \"$@\"\n".to_owned()),
+                (
+                    "nsenter",
+                    "#!/bin/sh\nexec /usr/bin/nsenter --preserve-credentials \"$@\"\n".to_owned(),
+                ),
+                (
+                    "runsc",
+                    format!(
+                        r#"#!/bin/sh
+case " $* " in
+  *" create "*)
+    /bin/cp '{0}/runtime.json' '{0}/fixture-holder.json'
+    if [ "$SAFEYOLO_TEST_FAILED_START_STOP" = failed ]; then
+      printf '{{"run_id":"changed"}}' > '{0}/runtime.json'
+    fi
+    printf 'fixture boot failure' >&2
+    exit 17;;
+  *" state "*) printf '{{"id":"safeyolo-{run_id}","status":"stopped"}}';;
+  *" delete "*) exit 0;;
+  *) exit 2;;
+esac
+"#,
+                        directory.display()
+                    ),
+                ),
+            ] {
+                let path = root.join("bin").join(name);
+                std::fs::write(&path, script).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            in_instance(root.clone(), async {
+                let result = start_sandbox("alice", "10.200.0.1", 4096, true).await;
+                let record = std::fs::read(directory.join("fixture-holder.json"))
+                    .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();
+                let run: serde_json::Value = serde_json::from_slice(&record).unwrap();
+                let stop = std::env::var("SAFEYOLO_TEST_FAILED_START_STOP").unwrap();
+                let holder_pid: i64 = std::fs::read_to_string(directory.join("fixture-holder.pid")).unwrap().parse().unwrap();
+                // A successful SIGKILL can return before process exit is visible.
+                if stop != "failed" {
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                    while crate::host_lifecycle::process_token(holder_pid).is_some() && tokio::time::Instant::now() < deadline {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+                let holder_live = run["holder_pid"].as_i64().is_some_and(|pid| {
+                    crate::host_lifecycle::process_token(pid).as_deref() == run["holder_token"].as_str()
+                });
+                // Reap only this test's identified holder before assertions,
+                // including the deliberately refused cleanup case.
+                if holder_live {
+                    unsafe { libc::kill(run["holder_pid"].as_i64().unwrap() as i32, libc::SIGKILL); }
+                }
+                let error = result.unwrap_err().to_string();
+                if stop == "missing-mapper" {
+                    assert!(error.contains("No such file or directory"), "{error}");
+                    assert!(!error.contains("cleanup failed"), "{error}");
+                    assert!(crate::host_lifecycle::process_token(holder_pid).is_none());
+                    assert!(!directory.join("userns.pid").exists());
+                    return;
+                }
+                assert!(error.contains("runsc create failed: fixture boot failure"), "{error}");
+                let failed_stop = stop == "failed";
+                assert_eq!(error.contains("sandbox cleanup failed"), failed_stop, "{error}");
+                assert_eq!(holder_live, failed_stop, "{error}");
+                if failed_stop {
+                    assert!(error.contains("backend process identity is stale or unverified; no process was signalled"), "{error}");
+                    assert_eq!(std::fs::read(directory.join("runtime.json")).unwrap(), br#"{"run_id":"changed"}"#);
+                    assert!(directory.join("userns.pid").is_file());
+                } else {
+                    assert!(!directory.join("userns.pid").exists());
+                }
+            }).await;
+            return;
+        }
+        for stop in ["succeeded", "failed", "missing-mapper"] {
+            let root = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("SAFEYOLO_TEST_FAILED_START_ROOT", root.path())
+                .env("SAFEYOLO_TEST_FAILED_START_STOP", stop)
+                .env(
+                    "PATH",
+                    if stop == "missing-mapper" {
+                        root.path().join("bin").display().to_string()
+                    } else {
+                        format!("{}:/usr/bin:/bin", root.path().join("bin").display())
+                    },
+                )
+                .env("SAFEYOLO_RUNSC_PLATFORM", "systrap")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{stop}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -2688,24 +2858,85 @@ mod tests {
 
     #[tokio::test]
     async fn failed_vz_start_allows_the_owned_runner_to_finish_cleanup() {
-        let directory = tempfile::tempdir().unwrap();
-        let marker = directory.path().join("cleaned");
-        let mut child = Command::new("/bin/sh")
+        for sandbox_stop_failed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("cleaned");
+            let mut child = Command::new("/bin/sh")
             .args(["-c", "trap 'printf cleaned > \"$1\"; exit 0' TERM; printf ready; while :; do sleep 0.02; done", "runner"])
             .arg(&marker)
             .stdout(std::process::Stdio::piped())
             .spawn().unwrap();
-        let mut ready = [0; 5];
-        tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            child.stdout.as_mut().unwrap().read_exact(&mut ready),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(&ready, b"ready");
-        stop_vz_launch_owner(&mut child).await.unwrap();
-        assert_eq!(std::fs::read(marker).unwrap(), b"cleaned");
-        assert!(child.try_wait().unwrap().is_some());
+            let mut ready = [0; 5];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                child.stdout.as_mut().unwrap().read_exact(&mut ready),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(&ready, b"ready");
+            let startup = io::Error::new(io::ErrorKind::NotFound, "fixture startup failure");
+            let stop = if sandbox_stop_failed {
+                Err(io::Error::other("helper identity is missing"))
+            } else {
+                Ok(())
+            };
+            let error = cleanup_failed_vz_start(startup, stop, &mut child).await;
+            assert!(error.to_string().starts_with("fixture startup failure"));
+            if sandbox_stop_failed {
+                assert!(error.to_string().contains("sandbox stop failed: helper identity is missing; owned VZ launch process stopped"));
+            } else {
+                assert_eq!(error.kind(), io::ErrorKind::NotFound);
+                assert_eq!(error.to_string(), "fixture startup failure");
+            }
+            assert_eq!(std::fs::read(marker).unwrap(), b"cleaned");
+            assert!(child.try_wait().unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_vz_start_preserves_the_startup_and_launch_owner_errors() {
+        for sandbox_stop_failed in [false, true] {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "trap '' TERM; printf ready; exec sleep 60"])
+                .stdout(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut ready = [0; 5];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                child.stdout.as_mut().unwrap().read_exact(&mut ready),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(&ready, b"ready");
+            let stop = if sandbox_stop_failed {
+                Err(io::Error::other("fixture sandbox stop failure"))
+            } else {
+                Ok(())
+            };
+            tokio::time::pause();
+            let error = cleanup_failed_vz_start(
+                io::Error::other("fixture startup failure"),
+                stop,
+                &mut child,
+            )
+            .await
+            .to_string();
+            tokio::time::resume();
+            let survived = child.try_wait().unwrap().is_none();
+            child.kill().await.unwrap();
+            assert!(survived);
+            assert!(error.starts_with("fixture startup failure"), "{error}");
+            assert!(error.contains("VZ launch-owner cleanup failed: VZ launch owner did not finish cleanup; preserve the disposable instance"), "{error}");
+            assert_eq!(
+                error.contains("sandbox cleanup failed: fixture sandbox stop failure"),
+                sandbox_stop_failed,
+                "{error}"
+            );
+            assert!(!error.contains("cleanup succeeded"));
+        }
     }
 }
