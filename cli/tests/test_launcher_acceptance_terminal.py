@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import pty
+import shutil
 import subprocess
 import sys
 import threading
@@ -30,6 +31,12 @@ def test_concurrent_command_creation_covers_absent_state(tmp_path, monkeypatch, 
 
     def version(command, **kwargs):
         return f"{Path(command[0]).name} 0.1.0 commit={commit} profile=production\n"
+
+    # Darwin reads the Linux guest receipts instead of executing guest bytes.
+    for name in ("safeyolo-guest", "safeyolo-coord"):
+        receipt = tmp_path / "assets/guest" / f"{name}.version"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(version([name]))
 
     def run(command, **kwargs):
         if command[0] == "tmux":
@@ -154,7 +161,32 @@ def test_wait_does_not_mistake_output_for_exit():
         process.wait(timeout=5)
 
 
-def test_probe_rejects_the_wrong_native_source_before_configuration_changes(native_agent):
+@pytest.fixture
+def probe_host_environment(tmp_path):
+    """Supply real tmux discovery without relying on the child's ambient PATH."""
+    installed_tmux = shutil.which("tmux")
+    assert installed_tmux, "install tmux before running launcher refusal fixtures"
+    tools = tmp_path / "host-tools"
+    tools.mkdir()
+    (tools / "tmux").symlink_to(installed_tmux)
+    return {**os.environ, "PATH": str(tools)}
+
+
+def test_probe_rejects_missing_tmux_before_configuration_changes(native_agent):
+    root = native_agent["root"]
+    before = {path: path.read_bytes() for path in (root / "config.toml", root / "policy.toml")}
+    result = subprocess.run(
+        [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root),
+         "--commit", "0" * 40],
+        capture_output=True, text=True, timeout=5, env={**os.environ, "PATH": ""},
+    )
+    assert result.returncode != 0 and "install tmux on the selected host" in result.stderr
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(root.glob("native-terminal-*"))
+    assert not (root / "data/proxy-process.json").exists()
+
+
+def test_probe_rejects_the_wrong_native_source_before_configuration_changes(native_agent, probe_host_environment):
     """A retained executable cannot be reported as a new journey candidate."""
     root = native_agent["root"]
     (root / "bin").mkdir()
@@ -163,7 +195,7 @@ def test_probe_rejects_the_wrong_native_source_before_configuration_changes(nati
     result = subprocess.run(
         [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root),
          "--commit", "0" * 40],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True, text=True, timeout=5, env=probe_host_environment,
     )
     assert result.returncode != 0 and "wrong installed source: bin/safeyolo" in result.stderr
     assert {path: path.read_bytes() for path in before} == before
@@ -172,7 +204,9 @@ def test_probe_rejects_the_wrong_native_source_before_configuration_changes(nati
 
 
 @pytest.mark.parametrize("different_profile", ["bin/safeyolo-proxy", "assets/guest/safeyolo-guest"])
-def test_probe_rejects_mixed_installed_profiles_before_starting_an_agent(native_agent, different_profile):
+def test_probe_rejects_mixed_installed_profiles_before_starting_an_agent(
+    native_agent, probe_host_environment, different_profile,
+):
     """Matching commits with different host/guest profiles are not one input."""
     root = native_agent["root"]
     cli = native_agent["cli"].resolve()
@@ -197,7 +231,7 @@ def test_probe_rejects_mixed_installed_profiles_before_starting_an_agent(native_
     before = {path: path.read_bytes() for path in (root / "config.toml", root / "policy.toml")}
     result = subprocess.run(
         [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root), "--commit", commit],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True, text=True, timeout=5, env=probe_host_environment,
     )
     assert result.returncode != 0 and f"installed source/profile differs: {different_profile}" in result.stderr
     assert {path: path.read_bytes() for path in before} == before
