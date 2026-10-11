@@ -14,7 +14,6 @@ import json
 import os
 import shlex
 import subprocess
-import tomllib
 import uuid
 from pathlib import Path
 
@@ -81,6 +80,38 @@ def installed_identity(runtime: dict, install_checkout: Path, *, expected_revisi
                 "source_revision": cli["source_revision"], "profile": cli["profile"]},
             "runtime": running, "native": runtime["native"],
             "cli_status": observations["status"], "cli_diagnostics": observations["doctor"]}
+
+
+def read_native_policy(cli: str, config_dir: Path) -> dict:
+    """Read the selected running instance's effective policy through its CLI."""
+    result = subprocess.run(
+        [cli, "--root", str(config_dir), "policy", "show"],
+        capture_output=True, text=True, check=False, timeout=45,
+    )
+    assert result.returncode == 0, f"installed policy show failed: {result.stderr[-700:]}"
+    try:
+        policy = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError("installed policy show returned malformed JSON") from exc
+    assert isinstance(policy, dict), "installed policy show did not return an object"
+    return policy
+
+
+def check_ingress_policy(policy: dict) -> dict:
+    """Require the effective native network control and the denied fixture host."""
+    effective = policy.get("effective")
+    assert isinstance(effective, dict), "installed policy has no effective policy object"
+    controls = effective.get("controls")
+    assert isinstance(controls, dict), "effective policy has no controls object"
+    network = controls.get("network")
+    assert isinstance(network, dict), "effective policy has no network control object"
+    assert network.get("enabled") is True, "effective network control is missing, malformed or disabled"
+    assert network.get("action") == "block", "effective network control does not block"
+    hosts = effective.get("hosts")
+    assert isinstance(hosts, dict), "effective policy has no hosts object"
+    denied = hosts.get("evil.com")
+    assert isinstance(denied, dict) and denied.get("egress") == "deny", "effective policy does not deny evil.com"
+    return network
 
 
 def guest_observation(cli: str, agent: str, marker: str) -> dict:
@@ -178,9 +209,6 @@ def main() -> None:
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     platform_evidence = json.loads((args.output.parent / "platform.json").read_text())
     assert platform_evidence["platform"] == "kvm"
-    policy = tomllib.loads((config_dir / "policy.toml").read_text())
-    assert policy["hosts"]["evil.com"]["egress"] == "deny"
-    assert policy["controls"]["network"]["mode"] == "block"
     native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     assert native.get("agent_api_enabled", True) is True
     assert native.get("temporary_policy_socket") is None
@@ -193,31 +221,38 @@ def main() -> None:
     )
     gvisor = runsc_identity(config_dir, args.agent, Path(listener["path"]))
 
+    policy = read_native_policy(identity["cli"]["path"], config_dir)
     marker = "p1-" + uuid.uuid4().hex
-    with_sinkhole = SinkholeClient("http://127.0.0.1:19999")
-    try:
-        with_sinkhole.wait_for_receiver_ready(timeout=10)
-        guest = guest_observation(identity["cli"]["path"], args.agent, marker)
-        origin = check_guest_and_origin(guest, with_sinkhole, marker, args.agent)
-    finally:
-        with_sinkhole.close()
-
     report = {
-        "status": "ingress_passed",
+        "status": "ingress_incomplete",
         "source_revision": args.install_commit,
         "installed": identity,
+        "policy": policy,
+        "marker": marker,
         "runtime_config": {
             "path": str(config_dir / "config.toml"),
             "parent_proxy": native["parent_proxy"],
             "upstream_ca_file": native["upstream_ca_file"],
-            "network_guard_block": policy["controls"]["network"]["mode"] == "block",
             "agent_api_enabled": native.get("agent_api_enabled", True),
             "policy_file": native["policy_file"],
         },
         "gvisor": gvisor,
-        "guest": guest,
-        "origin": origin,
     }
+    args.output.write_text(json.dumps(report, indent=2) + "\n")
+    network = check_ingress_policy(policy)
+    report["runtime_config"]["network_guard_block"] = network["action"] == "block"
+
+    with_sinkhole = SinkholeClient("http://127.0.0.1:19999")
+    try:
+        with_sinkhole.wait_for_receiver_ready(timeout=10)
+        guest = guest_observation(identity["cli"]["path"], args.agent, marker)
+        report["guest"] = guest
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+        report["origin"] = check_guest_and_origin(guest, with_sinkhole, marker, args.agent)
+    finally:
+        with_sinkhole.close()
+
+    report["status"] = "ingress_passed"
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(
         f"KVM ingress: selected package, authenticated native runtime, real KVM guest, "

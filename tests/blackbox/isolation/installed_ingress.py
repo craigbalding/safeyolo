@@ -131,8 +131,8 @@ def traced_request(
     trace = json.loads(bytes.fromhex(traced["body_hex"]))
     assert trace["request_id"] == identifier
     assert trace["agent_id"] == agent, f"request attributed to {trace['agent_id']!r}"
-    guard = [step for step in trace["steps"] if step.get("addon") == "network-guard" and step.get("hook") == "request"]
-    assert len(guard) == 1, f"network-guard trace missing for {identifier}"
+    guard = [step for step in trace["steps"] if step.get("control") == "network" and step.get("hook") == "request"]
+    assert len(guard) == 1, f"native network control trace missing for {identifier}"
     return {
         "status": response["status"],
         "body_hex": response["body_hex"],
