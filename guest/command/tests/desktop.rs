@@ -4,7 +4,7 @@
 use data_encoding::BASE64;
 use std::{
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     os::fd::AsRawFd,
     os::unix::fs::symlink,
@@ -52,7 +52,7 @@ impl Desktop {
             .env_clear()
             .env("PATH", "/nonexistent")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(fs::File::create(directory.path().join("bridge-stderr")).unwrap())
             .spawn()
             .unwrap();
         let mut desktop = Self {
@@ -307,18 +307,129 @@ fn disconnected_browser_retires_connection_even_when_vnc_is_not_reading() {
 
 #[test]
 fn invalid_websocket_key_and_unsupported_protocol_refuse_upgrade() {
+    fn read_closed(socket: &mut TcpStream) -> (Vec<u8>, bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut response = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "peer did not close: {response:?}");
+            socket.set_read_timeout(Some(remaining)).unwrap();
+            let mut bytes = [0; 1024];
+            match socket.read(&mut bytes) {
+                Ok(0) => return (response, false),
+                Ok(count) => {
+                    response.extend_from_slice(&bytes[..count]);
+                    assert!(response.len() <= 4096, "excess refusal bytes: {response:?}");
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    return (response, true);
+                }
+                Err(error) => panic!("peer read failed: {error}; partial bytes: {response:?}"),
+            }
+        }
+    }
+
     let desktop = Desktop::new();
-    for (key, protocol) in [
-        ("aW52YWxpZA==", "binary"),
-        ("dGhlIHNhbXBsZSBub25jZQ==", "other"),
+    desktop.vnc.set_nonblocking(true).unwrap();
+    let valid_control = || {
+        let (mut browser, mut vnc) = desktop.browser(Some("binary"));
+        vnc.write_all(b"RFB 003.008\n").unwrap();
+        assert_eq!(
+            browser.read().unwrap(),
+            Message::Binary(b"RFB 003.008\n".to_vec().into())
+        );
+        browser
+            .send(Message::Binary(b"control".to_vec().into()))
+            .unwrap();
+        let mut received = [0; 7];
+        vnc.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"control");
+        browser.close(None).unwrap();
+        assert!(matches!(browser.read().unwrap(), Message::Close(_)));
+        assert_eq!(read_closed(&mut vnc), (Vec::new(), false));
+    };
+    valid_control();
+    for (key, protocol, trailing_data, error) in [
+        (
+            "aW52YWxpZA==",
+            "binary",
+            false,
+            "WebSocket protocol error: Invalid \"Sec-WebSocket-Key\" header value",
+        ),
+        (
+            "dGhlIHNhbXBsZSBub25jZQ==",
+            "other",
+            false,
+            "HTTP error: 400 Bad Request",
+        ),
+        (
+            "aW52YWxpZA==",
+            "binary",
+            true,
+            "WebSocket protocol error: Invalid \"Sec-WebSocket-Key\" header value",
+        ),
     ] {
         let mut socket = TcpStream::connect(desktop.address).unwrap();
         socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        write!(socket, "GET /websockify HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Protocol: {protocol}\r\n\r\n").unwrap();
-        let mut response = Vec::new();
-        socket.read_to_end(&mut response).unwrap();
+        let mut request = format!("GET /websockify HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Protocol: {protocol}\r\n\r\n").into_bytes();
+        if trailing_data {
+            // Leave data beyond the handshake parser's buffer. Closing with
+            // unread TCP data can reset instead of reaching a clean EOF.
+            request.extend_from_slice(&b"owned-no-delivery-canary".repeat(2048));
+        }
+        socket.write_all(&request).unwrap();
+        let (response, reset) = read_closed(&mut socket);
+        eprintln!(
+            "key={key} protocol={protocol} trailing_data={trailing_data} \
+             reset={reset} response={response:?}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut vnc = loop {
+            match desktop.vnc.accept() {
+                Ok((vnc, _)) => break vnc,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "refusal never reached owned VNC");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("owned VNC accept failed: {error}"),
+            }
+        };
+        let (delivered, vnc_reset) = read_closed(&mut vnc);
+        assert!(
+            delivered.is_empty(),
+            "refusal delivered VNC bytes: {delivered:?}"
+        );
+        // A reset alone is not refusal evidence. Require the matching handshake
+        // error, no upgrade/application bytes, and a closed owned VNC peer.
+        let expected = format!("desktop connection failed: {error}\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let diagnosis = loop {
+            let diagnosis =
+                fs::read_to_string(desktop.directory.path().join("bridge-stderr")).unwrap();
+            let last = diagnosis.lines().last();
+            if last == Some(expected.trim_end())
+                || (trailing_data
+                    && last
+                        == Some(
+                            "desktop connection failed: WebSocket protocol error: Junk after client request",
+                        ))
+            {
+                break diagnosis;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "missing refusal cause: {diagnosis}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        eprintln!(
+            "key={key} protocol={protocol} vnc_reset={vnc_reset} \
+             vnc_bytes={delivered:?} cause={:?}",
+            diagnosis.lines().last().unwrap()
+        );
         if key == "aW52YWxpZA==" {
             assert!(
                 response.is_empty(),
@@ -326,13 +437,15 @@ fn invalid_websocket_key_and_unsupported_protocol_refuse_upgrade() {
                 String::from_utf8_lossy(&response)
             );
         } else {
-            assert!(
-                response.starts_with(b"HTTP/1.1 400"),
-                "{}",
-                String::from_utf8_lossy(&response)
+            // Match the entire refusal, so an upgrade or appended WebSocket
+            // application bytes cannot hide behind the HTTP status assertion.
+            assert_eq!(
+                response,
+                b"HTTP/1.1 400 Bad Request\r\n\r\nSupported WebSocket protocols: binary, base64"
             );
         }
     }
+    valid_control();
 }
 
 #[test]
