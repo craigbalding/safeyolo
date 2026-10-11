@@ -163,7 +163,12 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             with child_process(
                 [str(root / "bin/safeyolo-proxy"), "--config", str(root / "config.toml")], root, environment,
             ) as process:
-                readiness = root / tomllib.loads((root / "config.toml").read_text()).get("readiness_file", "data/ready.json")
+                try:
+                    settings = tomllib.loads(configuration)
+                except tomllib.TOMLDecodeError:
+                    # Malformed fixtures must reach the proxy's startup diagnosis.
+                    settings = {}
+                readiness = root / settings.get("readiness_file", "data/ready.json")
                 wait_ready(process, [readiness, *map(Path, paths.values())], root / "process.log",
                            readiness_file=readiness, expected_backend="rust-m2")
                 # Native readiness precedes the CLI's process-birth receipt.
@@ -190,10 +195,14 @@ def scoped_policy(port):
     return DENY + f'\n[agents.alice.hosts]\n"127.0.0.1:{port}" = {{egress="allow"}}\n'
 
 
-def test_installed_stop_cleanup_accepts_inactive_native_process_record(tmp_path):
+@pytest.mark.parametrize("readiness_file", [None, "data/custom-ready.json"])
+def test_installed_stop_cleanup_accepts_inactive_native_process_record(tmp_path, readiness_file):
     from tests.blackbox.installed_sections import cleanup_instance
 
-    with native_instance(tmp_path) as instance:
+    extra_config = f'readiness_file = "{readiness_file}"\n' if readiness_file else ""
+    with native_instance(tmp_path, extra_config=extra_config) as instance:
+        marker = instance.root / (readiness_file or "data/ready.json")
+        assert json.loads(marker.read_text())["pid"] == instance.process.pid
         record = instance.root / "data/proxy-process.json"
         # Proxy readiness precedes the host identity receipt. Reuse the
         # fixture's fifteen-second readiness deadline for that publication.
