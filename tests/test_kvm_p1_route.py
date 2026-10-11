@@ -1,11 +1,15 @@
 """Focused controls for the installed Linux UDS and VZ vsock guest routes."""
 
+import json
 import socket
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from tests.blackbox import installed_ingress as host_ingress
 from tests.blackbox.isolation import installed_ingress
 from tests.blackbox.isolation.installed_ingress import forwarder_identity
 
@@ -73,3 +77,66 @@ def test_linux_route_still_requires_its_mounted_agent_socket(tmp_path, monkeypat
         with socket.socket(socket.AF_UNIX) as listener:
             listener.bind(str(path))
             assert installed_ingress.bridge("systrap", tmp_path / "proc")["pid"] == 42
+
+
+@pytest.mark.parametrize("network", [None, [], {},
+    {"enabled": "true", "action": "block"}, {"enabled": 1, "action": "block"},
+    {"enabled": True}, {"enabled": True, "action": ["block"]},
+])
+def test_ingress_refuses_missing_or_malformed_effective_network(network):
+    with pytest.raises(AssertionError, match="effective.*network"):
+        host_ingress.check_ingress_policy({"effective": {
+            "hosts": {"evil.com": {"egress": "deny"}}, "controls": {"network": network},
+        }})
+
+
+@pytest.mark.parametrize("stdout, returncode, message", [
+    ("not-json", 0, "malformed JSON"), ("[]", 0, "return an object"),
+    ("", 1, "policy show failed"),
+])
+def test_ingress_policy_show_reports_failure(tmp_path, monkeypatch, stdout, returncode, message):
+    def command(argv, **kwargs):
+        assert argv == ["selected-cli", "--root", str(tmp_path), "policy", "show"]
+        assert kwargs["timeout"] == 45
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="fixture error")
+
+    monkeypatch.setattr(host_ingress.subprocess, "run", command)
+    with pytest.raises(AssertionError, match=message):
+        host_ingress.read_native_policy("selected-cli", tmp_path)
+
+
+@pytest.mark.parametrize("failure", ["policy", "origin"])
+def test_ingress_retains_inputs_and_guest_before_failed_assertion(tmp_path, monkeypatch, failure):
+    revision = "a" * 40
+    output = tmp_path / "ingress.json"
+    runtime_file = tmp_path / "runtime.json"
+    listener = {"agent_id": "alice", "path": str(tmp_path / "proxy.sock")}
+    runtime_file.write_text(json.dumps({"guest_ingress": {"agents": [listener]}, "runtime": {"listeners": [listener]}}))
+    (tmp_path / "platform.json").write_text('{"platform":"kvm"}')
+    (tmp_path / "config.toml").write_text(f'parent_proxy="http://127.0.0.1:8888"\nupstream_ca_file="{runtime_file}"\n')
+    monkeypatch.setattr(sys, "argv", ["installed_ingress", "--config-dir", str(tmp_path), "--agent", "alice",
+                                     "--runtime", str(runtime_file), "--output", str(output), "--install-commit", revision])
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT", str(tmp_path))
+    monkeypatch.setattr(host_ingress.subprocess, "check_output", lambda *args, **kwargs: revision)
+    monkeypatch.setattr(host_ingress, "installed_identity", lambda *args, **kwargs: {"cli": {"path": "selected-cli"}})
+    monkeypatch.setattr(host_ingress, "runsc_identity", lambda *args, **kwargs: {"platform": "kvm"})
+    policy = {"effective": {"hosts": {"evil.com": {"egress": "deny"}},
+                            "controls": {"network": {"enabled": failure != "policy", "action": "block"}}}}
+    monkeypatch.setattr(host_ingress, "read_native_policy", lambda *args: policy)
+    monkeypatch.setattr(host_ingress, "guest_observation", lambda *args: {"observed": True})
+    closed = []
+    monkeypatch.setattr(host_ingress.SinkholeClient, "wait_for_receiver_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_ingress.SinkholeClient, "close", lambda self: (self._client.close(), closed.append(True)))
+
+    def reject_origin(*args):
+        raise AssertionError("fixture origin assertion")
+
+    monkeypatch.setattr(host_ingress, "check_guest_and_origin", reject_origin)
+    with pytest.raises(AssertionError, match="disabled" if failure == "policy" else "fixture origin assertion"):
+        host_ingress.main()
+    report = json.loads(output.read_text())
+    assert report["status"] == "ingress_incomplete" and report["policy"] == policy
+    assert report["marker"].startswith("p1-") and report["gvisor"]["platform"] == "kvm"
+    assert "origin" not in report
+    if failure == "origin":
+        assert report["guest"] == {"observed": True} and closed == [True]
