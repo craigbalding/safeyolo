@@ -215,7 +215,7 @@ nodes:
         - path: install.sh
           sha256: 058d024d5ecec8ad9df29c557a6fd0ee53b1ff36355db94b31b3c331d2686f58
         - path: tests/blackbox/run-lane.sh
-          sha256: 54f5402fc6e50562a57e70e26f95ec46d5f8716d65b569d8d206c8161f1f4625
+          sha256: 0f43d9803554fc1af49e25184393c4883b6749c3985f9b7cc6abe04fcd036d9f
         - path: tests/blackbox/run-tests.sh
           sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: uv.lock
@@ -244,7 +244,7 @@ nodes:
       obtain_from: "operator-prepared runsc from gVisor's official signed repository or verified release, plus the trusted source's shell rootfs builder and native installer"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: 54f5402fc6e50562a57e70e26f95ec46d5f8716d65b569d8d206c8161f1f4625
+          sha256: 0f43d9803554fc1af49e25184393c4883b6749c3985f9b7cc6abe04fcd036d9f
         - path: tests/blackbox/run-tests.sh
           sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: proxy/src/host_platform.rs
@@ -284,7 +284,7 @@ nodes:
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: 54f5402fc6e50562a57e70e26f95ec46d5f8716d65b569d8d206c8161f1f4625
+          sha256: 0f43d9803554fc1af49e25184393c4883b6749c3985f9b7cc6abe04fcd036d9f
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:

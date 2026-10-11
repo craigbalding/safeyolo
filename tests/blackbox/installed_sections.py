@@ -210,6 +210,14 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
         try:
+            if lane == "kvm":
+                # Device ACLs can be replaced between sections. Reuse the
+                # existing granted UIDs without reinstalling prepared inputs.
+                subprocess.run(
+                    [str(REPOSITORY / "tests/blackbox/run-lane.sh"), lane,
+                     "--install-checkout", str(checkout), "--prepare-kvm-only"],
+                    cwd=REPOSITORY, env=section_env, check=True,
+                )
             result = subprocess.run(args, cwd=REPOSITORY, env=section_env, check=False)
             section_exit = result.returncode
         except (OSError, subprocess.SubprocessError) as exc:

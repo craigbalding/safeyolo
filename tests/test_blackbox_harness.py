@@ -1023,6 +1023,41 @@ def test_kvm_lane_prepares_operator_and_subordinate_access_before_native_install
     assert 'safeyolo bootstrap' not in lane
 
 
+@pytest.mark.parametrize("lane,acl_exit,expected", [("kvm", 0, 0), ("kvm", 7, 7), ("systrap", 0, 2)])
+def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tmp_path, lane, acl_exit, expected):
+    device = tmp_path / "kvm-device"
+    device.touch()
+    # Substitute the device path only; execute the maintained shell preparer.
+    probe = tmp_path / "run-lane.sh"
+    probe.write_text((ROOT / "tests/blackbox/run-lane.sh").read_text().replace("/dev/kvm", str(device)))
+    tools, checkout, assets = tmp_path / "tools", tmp_path / "checkout", tmp_path / "assets"
+    for path in (tools, checkout, assets / "rootfs-tree"):
+        path.mkdir(parents=True)
+    (tools / "uname").write_text('#!/bin/sh\nprintf "Linux\\n"\n')
+    calls = tmp_path / "acl-command.json"
+    (tools / "sudo").write_text(f'#!{sys.executable}\nimport json,sys\n'
+                              f'open({str(calls)!r}, "w").write(json.dumps(sys.argv[1:]))\nsys.exit({acl_exit})\n')
+    unexpected = tmp_path / "unexpected-install-or-sync"
+    failure_script = f'#!/bin/sh\ntouch {shlex.quote(str(unexpected))}\nexit 8\n'
+    (tools / "uv").write_text(failure_script)
+    (checkout / "install.sh").write_text(failure_script)
+    for name in ("runsc", "newuidmap", "newgidmap", "setfacl", "unshare"):
+        (tools / name).write_text('#!/bin/sh\nexit 0\n')
+    for path in (*tools.iterdir(), checkout / "install.sh"):
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
+               SAFEYOLO_PLATFORM_ASSETS=str(assets), SAFEYOLO_CONFIG_DIR=str(tmp_path / "prepared"))
+    result = subprocess.run(["bash", str(probe), lane, "--install-checkout", str(checkout), "--prepare-kvm-only"],
+                            env=env, capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == expected, result.stderr
+    assert not unexpected.exists() and not (tmp_path / "prepared").exists()
+    if lane == "kvm":
+        assert json.loads(calls.read_text()) == ["-n", "setfacl", "-m", f"u:{os.getuid()}:rw,u:100000:rw", str(device)]
+        assert ("KVM access prepared" in result.stdout) == (acl_exit == 0)
+    else:
+        assert not calls.exists() and "requires the KVM lane" in result.stderr
+
+
 @pytest.mark.parametrize('lane,system', [('vz', 'Darwin'), ('proxy', 'Linux')])
 @pytest.mark.parametrize('start_exit', [0, 7])
 def test_lane_preparation_selects_vz_coord_ports_and_preserves_start_failure(tmp_path, lane, system, start_exit):
@@ -1753,8 +1788,15 @@ def installed_section_commands(tmp_path, monkeypatch):
         f"#!{sys.executable}\n"
         "import os, pathlib, sys\n"
         "root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])\n"
+        "if sys.argv[-1] == '--prepare-kvm-only':\n"
+        "    assert sys.argv[1] == 'kvm' and (root / 'prepared-once').is_file()\n"
+        "    with (root / 'kvm-preparations').open('a') as stream: stream.write('prepared\\n')\n"
+        "    if os.environ.get('FAIL_KVM_RESTORATION') and (root / 'kvm-lost').exists(): sys.exit(9)\n"
+        "    (root / 'kvm-access').touch()\n"
+        "    sys.exit(0)\n"
         "root.mkdir(parents=True)\n"
         "(root / 'prepared-once').write_text('one installation')\n"
+        "if sys.argv[1] == 'kvm': (root / 'kvm-access').touch()\n"
         "assert sys.argv[-1] == '--prepare-only'\n"
         "if os.environ.get('FAIL_PREPARATION'): sys.exit(9)\n"
         "(root / 'share').mkdir()\n"
@@ -1785,12 +1827,53 @@ def installed_section_commands(tmp_path, monkeypatch):
         "    (root / name).write_text(uuid.uuid4().hex)\n"
         "(root / 'selection.json').write_text(json.dumps(sys.argv[1:]))\n"
         "(root / 'nats-instance').write_text(os.environ['SAFEYOLO_NATS_TEST_INSTANCE'])\n"
+        "if sys.argv[sys.argv.index('--expect-platform')+1] == 'kvm':\n"
+        "    actual = 'kvm' if (source / 'kvm-access').is_file() else 'systrap'\n"
+        "    if root.name == 'ingress' and os.environ.get('KVM_BACKEND_MISMATCH'): actual = 'systrap'\n"
+        "    artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])\n"
+        "    (artifacts / 'platform.json').write_text(json.dumps({'platform': actual}))\n"
+        "    (source / 'kvm-access').unlink(missing_ok=True)\n"
+        "    (source / 'kvm-lost').touch()\n"
+        "    if actual != 'kvm': sys.exit(2)\n"
         "if root.name == 'isolation': sys.exit(int(os.environ.get('FAIL_SECTION', '0')))\n"
     )
     prepare.chmod(0o755)
     section.chmod(0o755)
     monkeypatch.setattr(installed_sections, "REPOSITORY", repository)
     return repository
+
+
+@pytest.mark.parametrize("failure", [None, "restoration", "backend", "cleanup"])
+def test_installed_kvm_sections_restore_access_without_reinstalling(
+    tmp_path, monkeypatch, installed_section_commands, failure
+):
+    if failure:
+        monkeypatch.setenv({"restoration": "FAIL_KVM_RESTORATION", "backend": "KVM_BACKEND_MISMATCH",
+                            "cleanup": "FAIL_CLEANUP"}[failure], "1")
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "kvm", ("isolation", "ingress", "workloads"), installed_section_commands, "a" * 40, directory, artifacts
+    ) == (2 if failure else 0)
+    source = directory / "prepared"
+    assert (source / "prepared-once").read_text() == "one installation"
+    assert (source / "kvm-preparations").read_text().splitlines() == ["prepared"] * (1 if failure == "cleanup" else 3)
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    rows = report["sections"]
+    assert [row["section"] for row in rows] == (["isolation"] if failure == "cleanup" else ["isolation", "ingress", "workloads"])
+    assert rows[0]["result"] == ("cleanup_failure" if failure == "cleanup" else "passed")
+    if failure == "restoration":
+        assert [row["result"] for row in rows[1:]] == ["preparation_failure"] * 2
+        assert all("exit status 9" in row["error"] for row in rows[1:])
+        assert not (directory / "ingress").exists() and not (directory / "workloads").exists()
+    elif failure == "backend":
+        assert rows[1]["result"] == "preparation_failure" and rows[2]["result"] == "passed"
+        assert json.loads((artifacts / "ingress/platform.json").read_text())["platform"] == "systrap"
+    elif failure is None:
+        assert all(row["result"] == "passed" and row["cleanup"] == "stopped" for row in rows)
+        roots = [directory / row["section"] for row in rows]
+        assert len({(root / "token").read_text() for root in roots}) == 3
+        assert len({(root / "nats-instance").read_text() for root in roots}) == 3
+        assert len({(root / "share/kernel").stat().st_ino for root in roots}) == 1
 
 
 @pytest.mark.parametrize("failure,expected", [(0, 0), (1, 1), (2, 2)])
