@@ -4,7 +4,7 @@ set -e
 export CODEX_HOME=/home/agent/.codex
 : "${SAFEYOLO_CODEX_NODE_SPEC:=node@22}"
 # Either override supplies the default for the other platform. If both are
-# supplied, retain the operator's separate mise and Alpine npm selections.
+# supplied, retain the operator's separate non-Alpine and Alpine selections.
 : "${SAFEYOLO_CODEX_NPM_SPEC:=npm:${SAFEYOLO_CODEX_NPM_PACKAGE:-@openai/codex@latest}}"
 : "${SAFEYOLO_CODEX_NPM_PACKAGE:=${SAFEYOLO_CODEX_NPM_SPEC#npm:}}"
 # Do not rely on a login shell or BASH_ENV here. Linux launches this file
@@ -22,14 +22,16 @@ export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 # Delayed deployment: do not pick up a release published minutes ago. Newer
 # mise applies minimum_release_age to transitive npm dependencies too.
 # Probe with the requested value: an unset supported setting also makes
-# `settings get` fail. Alpine's direct npm path does not apply this setting.
+# `settings get` fail.
 : "${SAFEYOLO_MIN_RELEASE_AGE:=24h}"
 sy_alpine=0
 if [ -f /etc/alpine-release ]; then sy_alpine=1; fi
 if [ "$sy_alpine" = 1 ]; then
-    echo "codex-host-setup: direct Alpine npm installation does not apply" \
-         "SAFEYOLO_MIN_RELEASE_AGE; no delayed-deployment protection on this path" >&2
-elif MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE" \
+    # Retained mise config may still select a downloadable Node. Use apk's
+    # runtime for this launch and its npm backend without changing that config.
+    export MISE_DISABLE_TOOLS="${MISE_DISABLE_TOOLS:+$MISE_DISABLE_TOOLS,}node" # DOC: contrib/HOST_SCRIPT_GUIDE.md
+fi
+if MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE" \
      mise settings get minimum_release_age >/dev/null 2>&1; then
     export MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE"
 else
@@ -44,18 +46,6 @@ fi
 # `latest` and do nothing, leaving the agent unable to launch. Resolve the
 # remote version explicitly and install that exact value.
 sy_remote_version() { mise latest "$1" 2>/dev/null | tail -1; }
-sy_npm_version() {
-    npm view "$1" version --json 2>/dev/null | node -e '
-        let text = "";
-        process.stdin.on("data", chunk => text += chunk);
-        process.stdin.on("end", () => {
-            if (!text.trim()) process.exit(1);
-            const versions = JSON.parse(text);
-            const version = Array.isArray(versions) ? versions.at(-1) : versions;
-            if (typeof version !== "string" || !version) process.exit(1);
-            console.log(version);
-        });' 2>/dev/null
-}
 
 sy_spec="$SAFEYOLO_CODEX_NPM_SPEC"
 if [ "$sy_alpine" = 1 ]; then sy_spec="npm:$SAFEYOLO_CODEX_NPM_PACKAGE"; fi
@@ -78,32 +68,22 @@ if ! command -v codex >/dev/null 2>&1 || ! codex --version >/dev/null 2>&1; then
         if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
             sudo -n apk add nodejs npm >&2
         fi
-        sy_target="$(sy_npm_version "$sy_package")" || sy_target=""
-        sy_install="$sy_package"
-        if [ -n "$sy_target" ]; then
-            sy_install="${sy_name}@${sy_target}"
-        else
-            echo "codex-host-setup: could not resolve a remote version for" \
-                 "$sy_package; falling back to the configured npm selection" >&2
-        fi
-        # npm checks registry tarballs against their published integrity and
-        # reinstalls the selected global package, including its native payload.
-        npm install --global --prefix "$HOME/.local" "$sy_install" >&2
     else
         mise use -g "$SAFEYOLO_CODEX_NODE_SPEC" >&2
-        sy_target="$(sy_remote_version "$sy_spec")"
-        if [ -n "$sy_target" ]; then
-            # The npm backend verifies registry package integrity. An exact
-            # selection is per repair, not a permanent update policy or a
-            # claim that the registry/publisher is independently trusted.
-            mise use -g --force "${sy_tool}@${sy_target}" >&2
-        else
-            # Remote lookup failed (offline, registry down). Fall back to the
-            # configured spec rather than refusing to start.
-            echo "codex-host-setup: could not resolve a remote version for" \
-                 "$sy_spec; falling back to $sy_spec" >&2
-            mise use -g --force "$sy_spec" >&2
-        fi
+    fi
+    # Both platforms use mise's release-age-aware npm backend.
+    sy_target="$(sy_remote_version "$sy_spec")"
+    if [ -n "$sy_target" ]; then
+        # The npm backend verifies registry package integrity. An exact
+        # selection is per repair, not a permanent update policy or a
+        # claim that the registry/publisher is independently trusted.
+        mise use -g --force "${sy_tool}@${sy_target}" >&2
+    else
+        # Remote lookup failed (offline, registry down). Fall back to the
+        # configured spec rather than refusing to start.
+        echo "codex-host-setup: could not resolve a remote version for" \
+             "$sy_spec; falling back to $sy_spec" >&2
+        mise use -g --force "$sy_spec" >&2
     fi
     sy_selected="${sy_package##*@}"
     if [ -z "$sy_target" ] && [[ "$sy_selected" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:].-]+)?(\+[[:alnum:].-]+)?$ ]]; then
@@ -113,12 +93,8 @@ if ! command -v codex >/dev/null 2>&1 || ! codex --version >/dev/null 2>&1; then
     if [ -z "$sy_target" ]; then
         # Lookup can fail while a cached or retried install succeeds. Bind the
         # fallback check to the selected package, including dynamic selections.
-        if [ "$sy_alpine" = 1 ]; then
-            sy_manifest="$HOME/.local/lib/node_modules/$sy_name/package.json"
-        else
-            sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
-            sy_manifest="$sy_root/node_modules/$sy_name/package.json"
-        fi
+        sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+        sy_manifest="$sy_root/node_modules/$sy_name/package.json"
         sy_target="$(node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -151,13 +127,8 @@ sy_running="$(codex --version 2>/dev/null)"
 sy_running="${sy_running##* }"
 if [ -n "$sy_running" ]; then
     echo "codex-host-setup: codex $sy_running" >&2
-    if [ "$sy_alpine" = 1 ]; then
-        sy_available="$(sy_npm_version "$sy_name")" || sy_available=""
-        sy_update="npm install --global --prefix $HOME/.local ${sy_name}"
-    else
-        sy_available="$(sy_remote_version "$sy_tool")"
-        sy_update="mise use -g ${sy_tool}"
-    fi
+    sy_available="$(sy_remote_version "$sy_tool")"
+    sy_update="mise use -g ${sy_tool}"
     if [ -n "$sy_available" ] && [ "$sy_available" != "$sy_running" ]; then
         echo "codex-host-setup: codex $sy_available is available; not upgrading" \
              "automatically (run: ${sy_update}@${sy_available})" >&2

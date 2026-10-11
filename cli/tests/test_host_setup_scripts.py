@@ -2518,8 +2518,9 @@ def test_codex_bootstrap_repairs_a_wrapper_whose_native_binary_is_gone(
     assert "danger-full-access" in args
 
 
+@pytest.mark.parametrize("alpine", [False, True])
 def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
-    tmp_path: Path,
+    tmp_path: Path, alpine: bool,
 ) -> None:
     """The guard must stay a repair path, not an every-run reinstall."""
     operator_home = tmp_path / "operator"
@@ -2529,6 +2530,11 @@ def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
     fake_bin.mkdir()
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    if alpine:
+        marker = tmp_path / "alpine-release"
+        marker.touch()
+        command = agent_home / ".safeyolo-command"
+        command.write_text(command.read_text().replace("/etc/alpine-release", str(marker)))
 
     healthy = fake_bin / "codex"
     healthy.write_text(_HEALTHY_CODEX)
@@ -2538,6 +2544,7 @@ def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
 
     env = _codex_command_env(agent_home, fake_bin, tmp_path)
     env["TEST_HEALTHY_CODEX"] = _HEALTHY_CODEX
+    Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
@@ -2551,6 +2558,7 @@ def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert not any(c.startswith("use ") for c in calls), f"healthy wrapper triggered an install: {calls}"
     assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
+    assert "run: mise use -g npm:@openai/codex@9.9.9" in result.stderr
 
 
 def test_codex_repair_installs_an_explicitly_resolved_remote_version(
@@ -2598,13 +2606,21 @@ def test_codex_repair_installs_an_explicitly_resolved_remote_version(
     )
 
 
+@pytest.mark.parametrize("alpine", [False, True])
 @pytest.mark.parametrize("selection", ["@openai/codex@0.130.0", "@openai/codex@0.130", "@openai/codex"])
 @pytest.mark.parametrize("override", ["SAFEYOLO_CODEX_NPM_SPEC", "SAFEYOLO_CODEX_NPM_PACKAGE"])
-def test_codex_repair_preserves_operator_selection(tmp_path, selection, override):
+def test_codex_repair_preserves_operator_selection(tmp_path, selection, override, alpine):
     operator, home, tools = tmp_path / "operator", tmp_path / "agent", tmp_path / "bin"
     operator.mkdir()
     tools.mkdir()
     _run_setup("codex-host-setup.sh", operator, home, tmp_path)
+    command = home / ".safeyolo-command"
+    if alpine:
+        marker = tmp_path / "alpine-release"
+        marker.touch()
+        command.write_text(command.read_text().replace("/etc/alpine-release", str(marker)))
+        (tools / "npm").write_text("#!/bin/sh\nexit 1\n")
+        (tools / "npm").chmod(0o755)
     for name, source in [("codex", _BROKEN_CODEX), ("mise", _FAKE_MISE)]:
         (tools / name).write_text(source)
         (tools / name).chmod(0o755)
@@ -2616,6 +2632,35 @@ def test_codex_repair_preserves_operator_selection(tmp_path, selection, override
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert f"latest npm:{selection}" in calls
     assert "use -g --force npm:@openai/codex@0.130.0" in calls
+    assert any(c == "use -g node@22" for c in calls) is not alpine
+    assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_text().split("\0")
+
+
+@pytest.mark.parametrize("alpine", [False, True])
+def test_codex_repair_preserves_separate_platform_overrides(tmp_path, alpine):
+    operator, home, tools = tmp_path / "operator", tmp_path / "agent", tmp_path / "bin"
+    operator.mkdir()
+    tools.mkdir()
+    _run_setup("codex-host-setup.sh", operator, home, tmp_path)
+    command = home / ".safeyolo-command"
+    if alpine:
+        marker = tmp_path / "alpine-release"
+        marker.touch()
+        command.write_text(command.read_text().replace("/etc/alpine-release", str(marker)))
+        (tools / "npm").write_text("#!/bin/sh\nexit 1\n")
+        (tools / "npm").chmod(0o755)
+    for name, source in [("codex", _BROKEN_CODEX), ("mise", _FAKE_MISE)]:
+        (tools / name).write_text(source)
+        (tools / name).chmod(0o755)
+    name, version = ("@example/codex", "0.131.0") if alpine else ("@openai/codex", "0.130.0")
+    env = _codex_command_env(home, tools, tmp_path)
+    env.update({"SAFEYOLO_CODEX_NPM_SPEC": "npm:@openai/codex@0.130.0",
+                "SAFEYOLO_CODEX_NPM_PACKAGE": "@example/codex@0.131.0", "TEST_REMOTE_VERSION": version})
+    result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert f"latest npm:{name}@{version}" in calls
+    assert f"use -g --force npm:{name}@{version}" in calls
     assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_text().split("\0")
 
 
@@ -2646,28 +2691,38 @@ def test_codex_refuses_missing_or_wrong_selected_payload(tmp_path, payload, entr
     assert not Path(env["TEST_EXEC_LOG"]).exists()
 
 
-@pytest.mark.parametrize("installer", ["npm", "mise"])
+@pytest.mark.parametrize("platform", ["alpine", "mise-node", pytest.param(
+    "alpine-rootfs", marks=pytest.mark.skipif(
+        not os.environ.get("SAFEYOLO_CODEX_ALPINE_ROOTFS"), reason="Supply an owned Alpine rootfs for real musl probes"))])
 @pytest.mark.parametrize(("failure", "selection", "lookup_failure"), [
-    (failure, "latest" if failure == "young-latest" else "9.9.9", False)
-    for failure in [None, "wrapper-integrity", "native-integrity", "missing-native", "wrong-native", "young-latest"]
+    (failure, "latest" if failure in {"young-latest", "age-override"} else "9.9.9", False)
+    for failure in [None, "wrapper-integrity", "native-integrity", "missing-native", "wrong-native", "young-latest", "age-override"]
 ] + [
     (failure, selection, True)
     for failure in [None, "wrong-native"]
     for selection in ["9.9.9", "9.9", "latest"]
 ] + [("wrong-wrapper-version", "9.9.9", True)])
-def test_codex_repair_with_real_registry_installers(tmp_path, installer, failure, selection, lookup_failure):
+def test_codex_repair_with_real_registry_installers(tmp_path, platform, failure, selection, lookup_failure):
     """Real installers consume selected tarballs; registry digests are challenged.
 
-    The Alpine branch uses real npm on this host, not an Alpine guest. Both
+    The Alpine condition uses system Node on this host, not an Alpine guest. Both
     payloads are small synthetic packages, so this runs without a model or a
     native build and does not claim publisher authenticity or a locked tree.
+    SAFEYOLO_CODEX_ALPINE_ROOTFS adds real Alpine execution through guest chroot.
+    That rootfs needs Bash, apk Node/npm, musl mise, and the configured public CA.
+    Quiet probes write to a finite fixture log; device mounts are not required.
     """
+    rootfs = None
+    if platform == "alpine-rootfs":
+        rootfs = Path(os.environ["SAFEYOLO_CODEX_ALPINE_ROOTFS"]).resolve()
+        assert (rootfs / "etc/alpine-release").is_file()
+        assert tmp_path.is_relative_to(rootfs), "Use --basetemp inside the owned Alpine rootfs"
     npm, node, mise = (shutil.which(name) for name in ["npm", "node", "mise"])
-    if not npm or not node or (installer == "mise" and not mise):
-        pytest.skip("Real npm/Node and, for the mise path, mise are required")
+    if not rootfs and (not npm or not node or not mise):
+        pytest.skip("Real npm/Node and mise are required")
     # mise shims select from the caller's home; resolve their actual commands
     # before giving the launcher a fresh home without installed tool state.
-    if mise:
+    if not rootfs:
         for name in ["node", "npm"]:
             executable = shutil.which(name)
             if Path(executable).resolve() == Path(mise).resolve():
@@ -2743,8 +2798,8 @@ def test_codex_repair_with_real_registry_installers(tmp_path, installer, failure
                                        "integrity": "sha512-" + base64.b64encode(digest).decode()}
                     versions[published] = package
                 times = dict.fromkeys(versions, "2020-01-01T00:00:00Z")
-                if failure == "young-latest":
-                    times["10.0.0"] = "2099-01-01T00:00:00Z"
+                if failure in {"young-latest", "age-override"}:
+                    times["10.0.0"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7200))
                 data = json.dumps({"name": path, "dist-tags": {"latest": "10.0.0"}, "versions": versions,
                                    "time": times}).encode()
             else:
@@ -2762,20 +2817,26 @@ def test_codex_repair_with_real_registry_installers(tmp_path, installer, failure
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        for name, executable in [("node", node), ("mise", mise)]:
-            if executable:
+        if not rootfs:
+            for name, executable in [("node", node), ("mise", mise)]:
                 (tools / name).symlink_to(Path(executable).resolve())
-        # Invoke npm at its own path: mise's npm wrapper locates npm-cli.js
-        # relative to the script and cannot itself be moved into the fixture.
-        (tools / "npm").write_text(f'#!/bin/sh\nexec {shlex.quote(npm)} "$@"\n')
-        (tools / "npm").chmod(0o755)
+            # Invoke npm at its own path: mise's npm wrapper locates npm-cli.js
+            # relative to the script and cannot itself be moved into the fixture.
+            (tools / "npm").write_text(f'#!/bin/sh\nexec {shlex.quote(npm)} "$@"\n')
+            (tools / "npm").chmod(0o755)
         command = home / ".safeyolo-command"
-        if installer == "npm":
-            # Select the existing Alpine branch without changing this machine.
+        if platform in {"alpine", "alpine-rootfs"}:
+            # A retained Node selection must not trigger a musl source build.
+            (home / ".mise").mkdir()
+            (home / ".mise/config.toml").write_text('[tools]\nnode = "22.0.0"\n')
+            (home / ".mise/shims").mkdir()
+            (home / ".mise/shims/node").symlink_to("/usr/local/bin/mise" if rootfs else Path(mise).resolve())
+        if platform == "alpine":
+            # Exercise system Node without pretending this host is Alpine.
             marker = tmp_path / "alpine-release"
             marker.touch()
             command.write_text(command.read_text().replace("/etc/alpine-release", str(marker)))
-        else:
+        elif not rootfs:
             # Use the already installed runtime; no toolchain download is part
             # of this boundary. mise still performs the real npm installation.
             node_root = subprocess.check_output([mise, "where", "node@22"], text=True).strip()
@@ -2787,19 +2848,35 @@ def test_codex_repair_with_real_registry_installers(tmp_path, installer, failure
                     "NPM_CONFIG_REGISTRY": f"http://127.0.0.1:{server.server_port}",
                     "NPM_CONFIG_CACHE": str(tmp_path / "npm-cache"), "NPM_CONFIG_FETCH_RETRIES": "0",
                     "NPM_CONFIG_USERCONFIG": str(tmp_path / "empty-npmrc")})
-        result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=45)
+        if failure == "age-override":
+            env["SAFEYOLO_MIN_RELEASE_AGE"] = "1h"
+        invocation = [str(command), "--probe"]
+        if rootfs:
+            # Only the output sink changes in the staged command. Platform,
+            # package selection, installer, and payload checks run unmodified.
+            command.write_text(command.read_text().replace('/dev/null', '"$HOME/.install-probe.log"'))
+            guest_env = {key: env[key].replace(str(rootfs), "") for key in (
+                "HOME", "TEST_EXEC_LOG", "SAFEYOLO_CODEX_NODE_SPEC", "SAFEYOLO_CODEX_NPM_PACKAGE",
+                "NPM_CONFIG_REGISTRY", "NPM_CONFIG_CACHE", "NPM_CONFIG_FETCH_RETRIES", "NPM_CONFIG_USERCONFIG")}
+            guest_env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+            if "SAFEYOLO_MIN_RELEASE_AGE" in env:
+                guest_env["SAFEYOLO_MIN_RELEASE_AGE"] = env["SAFEYOLO_MIN_RELEASE_AGE"]
+            invocation = [shutil.which("sudo"), "-n", "chroot", f"--userspec={os.getuid()}:{os.getgid()}", str(rootfs),
+                          "/usr/bin/env", *(f"{key}={value}" for key, value in guest_env.items()),
+                          str(command).replace(str(rootfs), ""), "--probe"]
+        result = subprocess.run(invocation, env=env, capture_output=True, text=True, timeout=45)
         marker = Path(env["TEST_EXEC_LOG"])
         if lookup_failure:
             assert "could not resolve a remote version" in result.stderr
             assert wrapper_requests >= 2, "fallback installation must retry the real registry"
-        if failure and failure != "young-latest":
+        if failure and failure not in {"young-latest", "age-override"}:
             assert result.returncode != 0, (result.stdout, result.stderr)
             assert not marker.exists(), "the wrong or unavailable payload must not launch"
             assert f"codex-cli {version}" not in result.stdout
             if failure.endswith("integrity"):
                 assert "integrity" in result.stderr.lower() or "checksum" in result.stderr.lower() or (
                     "package/native payload" in result.stderr)
-            elif failure == "wrong-wrapper-version" and installer == "mise":
+            elif failure == "wrong-wrapper-version":
                 assert "mismatch" in result.stderr.lower(), result.stderr
                 assert "9.9.9" in result.stderr and "8.8.8" in result.stderr
             else:
@@ -2811,10 +2888,11 @@ def test_codex_repair_with_real_registry_installers(tmp_path, installer, failure
         else:
             assert result.returncode == 0, result.stderr
             assert marker.read_text() == "launched"
-            expected = "10.0.0" if selection == "latest" and (lookup_failure or installer == "npm") else version
+            expected = "10.0.0" if selection == "latest" and (lookup_failure or failure == "age-override") else version
             assert result.stdout.strip() == f"codex-cli {expected}"
-            if installer == "npm":
-                assert "no delayed-deployment protection on this path" in result.stderr
+            assert "no delayed-deployment protection" not in result.stderr
+        if platform in {"alpine", "alpine-rootfs"}:
+            assert not (home / ".mise/installs/node").exists()
     finally:
         server.shutdown()
         thread.join(timeout=5)
