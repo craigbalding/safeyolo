@@ -66,6 +66,320 @@ impl Drop for RestoreNatsRecord {
     }
 }
 
+async fn host_cli(root: &Path, arguments: &[&str]) -> std::process::Output {
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(root)
+            .args(arguments)
+            .env("SAFEYOLO_NATS_TEST_INSTANCE", root)
+            .env_remove("SAFEYOLO_NATS_TEST_PORTS")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+struct HostCleanup(PathBuf);
+impl Drop for HostCleanup {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(&self.0)
+            .arg("stop")
+            .output();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state() {
+    let binary = PathBuf::from(
+        std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary"),
+    );
+    let temp = tempfile::Builder::new()
+        .prefix("coord509-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::create_dir(root.join("bin")).unwrap();
+    std::os::unix::fs::symlink(
+        env!("CARGO_BIN_EXE_safeyolo-proxy"),
+        root.join("bin/safeyolo-proxy"),
+    )
+    .unwrap();
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n").unwrap();
+    fs::write(root.join("policy.toml"), "[controls.network]\nenabled=false\n[agents.alice]\nagent_id='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n[agents.bob]\nagent_id='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'\n[[permissions]]\naction='network:request'\nresource='*'\neffect='allow'\n").unwrap();
+    let _nats_cleanup = NatsCleanup(root.into());
+    let _host_cleanup = HostCleanup(root.into());
+    // Acquire and verify the supplied pin once, then use only ordinary start.
+    let seeded = host_cli(
+        root,
+        &["coord", "start", "--binary", binary.to_str().unwrap()],
+    )
+    .await;
+    assert!(
+        seeded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seeded.stderr)
+    );
+    coord_json(root, &["stop"]).await;
+    let started = host_cli(root, &["start"]).await;
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&started.stdout).unwrap()["proxy_state"],
+        "running"
+    );
+    let proxy_path = root.join("data/proxy-process.json");
+    let proxy_record = fs::read(&proxy_path).unwrap();
+    let nats_path = root.join("data/coord/nats/process.json");
+    let first_nats = coord_json(root, &["status"]).await["process"].clone();
+    let room = coord_json(root, &["room", "create", "shared"]).await;
+    for name in ["alice", "bob"] {
+        coord_json(root, &["grant", "shared", name]).await;
+    }
+    let alice = Client {
+        socket: Some(root.join("alice.sock")),
+        token_file: root.join("data/agent_token"),
+    };
+    let bob = Client {
+        socket: Some(root.join("bob.sock")),
+        ..alice.clone()
+    };
+    let mut joined = alice
+        .call("join_room", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    assert_eq!(joined["room_id"], room["room_id"]);
+    // The observation timestamp changes; the durable room and member state must not.
+    joined["state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("generated_at");
+    alice
+        .call(
+            "send",
+            &json!({"room_name":"shared","body":"before-recovery","notify":["bob"]}),
+        )
+        .await
+        .unwrap();
+    let mut history = alice
+        .call("read_room", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    let attention = bob
+        .call(
+            "wait_for_attention",
+            &json!({"since_sequence":0,"timeout_seconds":0}),
+        )
+        .await
+        .unwrap();
+    let attention_id = attention["edges"][0]["attention_id"].as_str().unwrap();
+    let object = bob
+        .call("read_attention", &json!({"attention_id":attention_id}))
+        .await
+        .unwrap();
+    assert_eq!(object["object"]["body"], "before-recovery");
+    safeyolo_proxy::credentials::open(&root.join("data"))
+        .unwrap()
+        .store(safeyolo_proxy::credentials::Credential::new(
+            "retained",
+            "api_key",
+            safeyolo_proxy::credentials::Secret::new("fixture-secret"),
+        ))
+        .unwrap();
+    let credential_paths = [
+        "data/instance_id",
+        "data/admin_token",
+        "data/agent_token",
+        "data/credentials.key",
+        "data/credentials.enc",
+        "data/coord/instance_id",
+        "data/coord/nats/creds",
+    ];
+    let credentials: Vec<_> = credential_paths
+        .iter()
+        .map(|path| fs::read(root.join(path)).unwrap())
+        .collect();
+    let (port, origin_task) = origin().await;
+    traffic(&alice, port).await;
+    for _ in 0..2 {
+        let healthy = host_cli(root, &["start"]).await;
+        assert!(healthy.status.success());
+        assert!(
+            String::from_utf8_lossy(&healthy.stderr)
+                .contains("Coord ready: existing managed NATS is healthy")
+        );
+        assert_eq!(fs::read(&proxy_path).unwrap(), proxy_record);
+        assert_eq!(coord_json(root, &["status"]).await["process"], first_nats);
+    }
+    // Stop the dependency independently of the healthy proxy, twice.
+    for _ in 0..2 {
+        coord_json(root, &["stop"]).await;
+        let repaired = host_cli(root, &["start"]).await;
+        assert!(
+            repaired.status.success(),
+            "{}",
+            String::from_utf8_lossy(&repaired.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&repaired.stderr)
+                .contains("Coord restored: managed NATS is ready")
+        );
+        assert_eq!(fs::read(&proxy_path).unwrap(), proxy_record);
+        let status = coord_json(root, &["status"]).await;
+        assert_eq!(status["state"], "running");
+        assert_ne!(status["process"], first_nats);
+        let mut rejoined = alice
+            .call("join_room", &json!({"room_name":"shared"}))
+            .await
+            .unwrap();
+        rejoined["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("generated_at");
+        assert_eq!(rejoined, joined);
+        assert_eq!(
+            alice
+                .call("read_room", &json!({"room_name":"shared"}))
+                .await
+                .unwrap(),
+            history
+        );
+        assert_eq!(
+            bob.call(
+                "wait_for_attention",
+                &json!({"since_sequence":0,"timeout_seconds":0})
+            )
+            .await
+            .unwrap(),
+            attention
+        );
+        assert_eq!(
+            bob.call("read_attention", &json!({"attention_id":attention_id}))
+                .await
+                .unwrap(),
+            object
+        );
+        for (path, saved) in credential_paths.iter().zip(&credentials) {
+            assert!(
+                fs::read(root.join(path)).unwrap() == *saved,
+                "{path} changed"
+            );
+        }
+        traffic(&alice, port).await;
+    }
+    let fresh = alice
+        .call(
+            "send",
+            &json!({"room_name":"shared","body":"after-recovery"}),
+        )
+        .await
+        .unwrap();
+    assert!(fresh["sequence"].as_u64().unwrap() > history["next_cursor"].as_u64().unwrap());
+    let retained = alice
+        .call("read_room", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    assert_eq!(retained["messages"][0], history["messages"][0]);
+    assert_eq!(retained["messages"][1]["body"], "after-recovery");
+    history = retained;
+    // An unusable prerequisite must not turn proxy health into Coord success.
+    coord_json(root, &["stop"]).await;
+    {
+        let path = root.join("data/coord/nats/creds");
+        let _restore = RestoreNatsRecord(path.clone(), fs::read(&path).unwrap());
+        fs::write(&path, "").unwrap();
+        for _ in 0..2 {
+            let failed = host_cli(root, &["start"]).await;
+            assert!(failed.status.success());
+            let diagnostics = String::from_utf8_lossy(&failed.stderr);
+            assert!(
+                diagnostics.contains("Coord unavailable: NATS credential file is empty"),
+                "{diagnostics}"
+            );
+            assert!(diagnostics.contains("run coord status"));
+            assert!(
+                !diagnostics.contains("Coord ready") && !diagnostics.contains("Coord restored")
+            );
+            assert_eq!(fs::read(&proxy_path).unwrap(), proxy_record);
+            assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
+            let error = alice
+                .call("send", &json!({"room_name":"shared","body":"unavailable"}))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unavailable"), "{error}");
+            traffic(&alice, port).await;
+        }
+    }
+    assert!(host_cli(root, &["start"]).await.status.success());
+    let verified_nats = coord_json(root, &["status"]).await["process"].clone();
+    {
+        let _restore = RestoreNatsRecord(nats_path.clone(), fs::read(&nats_path).unwrap());
+        let mut unverified = verified_nats.clone();
+        unverified["server_name"] = "unverified-owner".into();
+        let bytes = serde_json::to_vec(&unverified).unwrap();
+        fs::write(&nats_path, &bytes).unwrap();
+        let refused = host_cli(root, &["start"]).await;
+        assert!(refused.status.success());
+        let diagnostics = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            diagnostics.contains("Coord unavailable")
+                && diagnostics.contains("ownership is unverified"),
+            "{diagnostics}"
+        );
+        assert_eq!(fs::read(&nats_path).unwrap(), bytes);
+        assert_eq!(coord_json(root, &["status"]).await["state"], "unknown");
+        assert_eq!(fs::read(&proxy_path).unwrap(), proxy_record);
+        traffic(&alice, port).await;
+    }
+    assert_eq!(
+        coord_json(root, &["status"]).await["process"],
+        verified_nats
+    );
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&host_cli(root, &["status"]).await.stdout).unwrap()["proxy_state"],
+        "unavailable"
+    );
+    assert!(host_cli(root, &["start"]).await.status.success());
+    assert_ne!(fs::read(&proxy_path).unwrap(), proxy_record);
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert_eq!(
+        alice
+            .call("read_room", &json!({"room_name":"shared"}))
+            .await
+            .unwrap(),
+        history
+    );
+    let final_nats = coord_json(root, &["status"]).await["process"].clone();
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
+    for key in ["client_port", "monitor_port"] {
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", final_nats[key].as_u64().unwrap() as u16))
+                .await
+                .is_err()
+        );
+    }
+    assert!(!root.join("alice.sock").exists());
+    assert!(!root.join("bob.sock").exists());
+    origin_task.abort();
+    println!(
+        "ordinary native start: healthy reuse, repeated NATS recovery, retained history/identity/credentials/membership/attention, failed recovery, live unverified ownership, full startup and owned cleanup observed"
+    );
+}
+
 #[tokio::test]
 async fn malformed_listener_options_fail_before_creating_coord_state() {
     let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
