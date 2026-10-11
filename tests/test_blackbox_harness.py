@@ -2310,9 +2310,11 @@ def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatc
                                     "--binary", nats, "--client-port", "46370",
                                     "--monitor-port", "46372"])
         before = original_checked([cli, "--root", str(source), "coord", "status"]).stdout
+        upstream_ca = ssl.get_default_verify_paths().cafile
+        assert upstream_ca is not None and Path(upstream_ca).is_file()
         with pytest.raises(GuestBootBoundary):
             lifecycle.prepare_owner(cli, owner, source,
-                                    {"parent_proxy": "", "upstream_ca_file": ""},
+                                    {"parent_proxy": "", "upstream_ca_file": upstream_ca},
                                     str(source / "bin/safeyolo-proxy"), parent / "unused.json")
         assert len(owner_nats) == 1
         assert owner_nats[0]["client_port"] == 46377
@@ -2329,9 +2331,8 @@ def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatc
         for root, is_owner in ((owner, True), (source, False)):
             if root.exists():
                 failures += installed_sections.cleanup_instance(Path(cli), root, owner=is_owner)
-        if not failures:
-            shutil.rmtree(parent)
         assert not failures, failures
+    shutil.rmtree(parent)
 
 
 @pytest.mark.parametrize("host,bind_host", [
