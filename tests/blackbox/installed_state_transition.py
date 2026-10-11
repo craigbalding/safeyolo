@@ -347,8 +347,13 @@ nats_runtime.client_user_credentials=lambda: ('safeyolo',(nats/'creds').read_tex
 """ + code)
 
 
-def ensure_nats(cli: Path, env: dict) -> dict:
-    return json.loads(run([str(cli), "coord", "start"], env))
+def ensure_nats(cli: Path, env: dict, client_port: int | None = None,
+                monitor_port: int | None = None) -> dict:
+    command = [str(cli), "coord", "start"]
+    for option, port in (("--client-port", client_port), ("--monitor-port", monitor_port)):
+        if port is not None:
+            command += [option, str(port)]
+    return json.loads(run(command, env))
 
 
 def summary_value(value: bytes) -> dict:
@@ -472,6 +477,8 @@ def main() -> None:
     parser.add_argument("--https-port", type=int, default=0, help="TLS fixture port (default: ephemeral)")
     parser.add_argument("--oauth-port", type=int, default=0, help="OAuth fixture port (default: ephemeral)")
     parser.add_argument("--admin-port", type=int, default=0, help="Installed admin listener port (default: ephemeral)")
+    parser.add_argument("--nats-client-port", type=int, help="Native Coord client listener port")
+    parser.add_argument("--nats-monitor-port", type=int, help="Native Coord monitor listener port")
     parser.add_argument("--native-cli", type=Path, help="Matching native credential CLI (defaults to installed bin/safeyolo)")
     args = parser.parse_args()
     origin_bind = args.origin_bind or args.origin_host
@@ -651,6 +658,8 @@ print(json.dumps({'policy':'created'}))
         }]}))
         provider_hash = sha(provider_snapshot)
         print(json.dumps({"state": str(root), "installed_package": package_id}), flush=True)
+        ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
+        nats_started = True
         active = args.cli
         stages.append(start(active, root, env, args.rust_revision))
         agent_token = (root / "data/agent_token").read_text().strip()
@@ -705,8 +714,7 @@ print(json.dumps(asyncio.run(exercise())))
                           "denied_status": status, "coord": initial_coord,
                           "plumb_request_id": plumb_request_id, "trusted_tls": initial_tls}),
               flush=True)
-        nats_identity = ensure_nats(args.cli, env)
-        nats_started = True
+        nats_identity = ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         print(json.dumps({"nats": nats_identity}), flush=True)
         active = args.cli
         stages.append(start(active, root, env, args.rust_revision))
@@ -968,6 +976,8 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         stop(active, root, env)
         check((root / "data/circuit_breaker_state.json").is_file(),
               "native open circuit was not persisted on close")
+        active = None
+        ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         active = args.cli
         stages.append(start(active, root, env, args.rust_revision))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
@@ -1139,7 +1149,7 @@ print(json.dumps({'native_grant_read':True,
               "replacement task activation changed durable policy")
         stop(active, root, env)
         active = None
-        ensure_nats(args.cli, env)
+        ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         active = args.cli
         stages.append(start(active, root, env, args.rust_revision))
         check(stages[-1]["pid"] != stages[1]["pid"], "return reused the first Rust process")

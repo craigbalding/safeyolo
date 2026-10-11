@@ -1838,6 +1838,41 @@ def test_installed_operator_selection_keeps_one_access_root_and_owned_cleanup(
     assert not list(directory.glob("*/agents/*/container.pid"))
 
 
+@pytest.mark.parametrize("platform", ["systrap", "vz"])
+def test_installed_continuity_passes_only_vz_fixed_ports(
+    tmp_path, installed_section_commands, platform
+):
+    repository = installed_section_commands
+    (repository / ".venv/bin").mkdir(parents=True)
+    (repository / ".venv/bin/python").symlink_to(sys.executable)
+    driver = repository / "tests/blackbox/installed_state_transition.py"
+    driver.write_text(
+        "import json, pathlib, sys\n"
+        "args = dict(zip(sys.argv[2::2], sys.argv[3::2], strict=True))\n"
+        "root = pathlib.Path(args['--config-dir'])\n"
+        "root.mkdir(parents=True)\n"
+        "(root / 'selection.json').write_text(json.dumps(args))\n"
+    )
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        platform, ("continuity",), repository, "a" * 40, directory, artifacts
+    ) == 0
+    selected = json.loads((directory / "continuity/selection.json").read_text())
+    expected = {"--cli": str(directory / "prepared/bin/safeyolo"),
+                "--install-commit": "a" * 40, "--state-parent": str(directory),
+                "--config-dir": str(directory / "continuity"),
+                "--prepared-config": str(directory / "prepared"),
+                "--output": str(artifacts / "continuity/installed-continuity.json")}
+    if platform == "vz":
+        expected.update({"--origin-bind": "127.0.0.1", "--http-port": "46373",
+                         "--https-port": "46374", "--oauth-port": "46375",
+                         "--admin-port": "46371", "--nats-client-port": "46370",
+                         "--nats-monitor-port": "46372"})
+    assert selected == expected
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert report["sections"][0]["cleanup"] == "stopped"
+
+
 @pytest.mark.parametrize("platform,sections,valid", [
     ("systrap", ["access"], True), ("vz", ["access"], True),
     ("kvm", ["isolation"], False), ("vz", [], False),
@@ -2236,6 +2271,67 @@ def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_
         monkeypatch.setenv(key, env[key])
     assert nats_runtime.nats_root() == root / "data/coord/nats"
     assert env["SAFEYOLO_NATS_TEST_INSTANCE"] != continuity.env_for(root.with_name("peer"))["SAFEYOLO_NATS_TEST_INSTANCE"]
+
+
+def test_vz_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch):
+    """Exercise the real owner setup while stopping before its guest boot."""
+    bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
+    nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if not bundle or not nats:
+        pytest.skip("requires a native host bundle and pinned NATS binary")
+    parent = Path(tempfile.mkdtemp(prefix="syv-", dir=Path.home()))
+    source, owner = parent / "p", parent / "o"
+    cli = str(source / "bin/safeyolo")
+    original_checked = lifecycle.checked
+    owner_nats = []
+
+    class GuestBootBoundary(Exception):
+        pass
+
+    def checked(command, **kwargs):
+        if command[1:3] == ["agent", "start"]:
+            raise GuestBootBoundary
+        result = original_checked(command, **kwargs)
+        if command[1:3] == ["coord", "start"]:
+            owner_nats.append(json.loads(result.stdout))
+        return result
+
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_PLATFORM", "vz")
+    monkeypatch.setenv("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "46375")
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(source))
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(source / "data/coord"))
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(lifecycle, "checked", checked)
+    try:
+        original_checked([str(Path(bundle) / "install.sh"), "--root", str(source),
+                          "--command-dir", str(source / "commands")])
+        (source / "share").mkdir(exist_ok=True)
+        primary = original_checked([cli, "--root", str(source), "coord", "start",
+                                    "--binary", nats, "--client-port", "46370",
+                                    "--monitor-port", "46372"])
+        before = original_checked([cli, "--root", str(source), "coord", "status"]).stdout
+        with pytest.raises(GuestBootBoundary):
+            lifecycle.prepare_owner(cli, owner, source,
+                                    {"parent_proxy": "", "upstream_ca_file": ""},
+                                    str(source / "bin/safeyolo-proxy"), parent / "unused.json")
+        assert len(owner_nats) == 1
+        assert owner_nats[0]["client_port"] == 46377
+        assert owner_nats[0]["monitor_port"] == 46378
+        assert owner_nats[0]["pid"] != json.loads(primary.stdout)["pid"]
+        binary = Path("data/coord/nats/bin/2.14.5/nats-server")
+        assert (source / binary).read_bytes() == (owner / binary).read_bytes()
+        assert (source / binary).stat().st_ino != (owner / binary).stat().st_ino
+        assert original_checked([cli, "--root", str(source), "coord", "status"]).stdout == before
+        assert installed_sections.cleanup_instance(Path(cli), owner, owner=True) == []
+        assert original_checked([cli, "--root", str(source), "coord", "status"]).stdout == before
+    finally:
+        failures = []
+        for root, is_owner in ((owner, True), (source, False)):
+            if root.exists():
+                failures += installed_sections.cleanup_instance(Path(cli), root, owner=is_owner)
+        if not failures:
+            shutil.rmtree(parent)
+        assert not failures, failures
 
 
 @pytest.mark.parametrize("host,bind_host", [
