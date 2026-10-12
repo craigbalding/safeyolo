@@ -38,7 +38,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep scheduled and manual contracts independent of quick branch/PR updates.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # A feature PR's ready transition has no job; keep its in-flight focused check.
   cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
 

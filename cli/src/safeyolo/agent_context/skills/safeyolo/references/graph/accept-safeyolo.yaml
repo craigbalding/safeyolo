@@ -248,7 +248,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: proxy/src/host_platform.rs
-          sha256: 40e7a5f6534968429901979891b2425eab9dba5f6fa42bf6a40f2136aee94c1f
+          sha256: b1ff92589bf3e909996a056ce7cd1e8782d9640597f51ef7bf9a7112cc6c9051
         - path: proxy/src/host_boot.rs
           sha256: 0e7f550e1f68fb1495cbe38751122e66030f1c13fcddf3c231d16352cc1ed129
         - path: guest/build-rootfs.sh

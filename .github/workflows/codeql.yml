@@ -8,9 +8,10 @@ on:
   schedule:
     - cron: "0 0 * * 0"
 
-# Cancel in-progress runs when PR is updated.
+# Keep scheduled analysis independent of quick branch/PR updates.
+# Superseded runs of the same event on the same branch/PR still cancel.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
