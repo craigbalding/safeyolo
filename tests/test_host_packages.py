@@ -126,10 +126,12 @@ def build_bundle(inputs, tmp_path):
     return directory
 
 
-@pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz")])
+@pytest.mark.parametrize("bundle", [False, True], ids=["source", "bundle"])
+@pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz"),
+                                          ("Linux", "proxy"), ("Darwin", "proxy")])
 @pytest.mark.parametrize("separate_checkout", [False, True])
-def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane, separate_checkout):
-    """The maintained caller delegates prepared inputs to the normal installer."""
+def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane, separate_checkout, bundle):
+    """Guest lanes retain prepared inputs; proxy lanes opt out of acquisition."""
     checkout = tmp_path / "source"
     scripts = checkout / "tests/blackbox"
     scripts.mkdir(parents=True)
@@ -146,7 +148,9 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     installer = selected / "install.sh"
     fixture_cli = '#!/bin/sh\nprintf "native %s\\n" "$*"\n'
     installer.write_text(f"#!{os.sys.executable}\nimport json,pathlib,sys\n"
-        "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
+        "arguments = [arg for arg in sys.argv[1:] if arg != '--no-guest-download']\n"
+        "options = dict(zip(arguments[::2], arguments[1::2]))\n"
+        "if '--no-guest-download' in sys.argv: options['--no-guest-download'] = True\n"
         "root = pathlib.Path(options['--root']); (root / 'bin').mkdir(parents=True)\n"
         "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
         "cli = root / 'bin/safeyolo'\n"
@@ -171,21 +175,69 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         monkeypatch.setenv(name, str(path))
     if platform == 'Darwin':
         monkeypatch.setenv('SAFEYOLO_NATIVE_VM_ARTIFACTS', str(vm))
+    if bundle:
+        monkeypatch.setenv('SAFEYOLO_NATIVE_BUNDLE', str(tmp_path / 'bundle'))
     selection = ['--install-checkout', str(selected)] if separate_checkout else []
     result = run(str(scripts / 'run-lane.sh'), lane, *selection, '--prepare-only', cwd=checkout)
     assert result.returncode == 0, result.stderr
     options = json.loads((root / 'native-inputs.json').read_text())
-    assert Path(options['--artifacts']) == host
-    assert Path(options['--guest-artifacts']) == guest
-    assert Path(options['--runtime-artifacts']) == runtime
-    if platform == 'Darwin':
-        assert Path(options['--vm-artifacts']) == vm
-    assert Path(options['--platform-assets']) == images
+    if bundle:
+        assert Path(options['--bundle']) == tmp_path / 'bundle'
+        assert not {'--artifacts', '--guest-artifacts', '--runtime-artifacts', '--vm-artifacts'} & options.keys()
+    else:
+        assert Path(options['--artifacts']) == host
+        assert Path(options['--guest-artifacts']) == guest
+        assert Path(options['--runtime-artifacts']) == runtime
+        if platform == 'Darwin':
+            assert Path(options['--vm-artifacts']) == vm
+    if lane == 'proxy':
+        assert options['--no-guest-download'] is True
+        assert '--platform-assets' not in options
+    else:
+        assert Path(options['--platform-assets']) == images
+        assert '--no-guest-download' not in options
     assert 'native --root' in result.stdout and 'coord stop' in result.stdout
     if separate_checkout:
         failed = run(str(scripts / 'run-lane.sh'), lane, '--install-checkout', str(tmp_path / 'missing'), cwd=checkout)
         assert failed.returncode == 2 and 'requires a source checkout' in failed.stderr
         assert (root / 'native-inputs.json').read_text() == json.dumps(options)
+
+
+@pytest.mark.parametrize("bundle", [False, True], ids=["source", "bundle"])
+@pytest.mark.parametrize("prepared", [False, True], ids=["proxy-only", "prepared-assets"])
+def test_native_policy_instance_selects_required_guest_inputs(tmp_path, monkeypatch, bundle, prepared):
+    from tests.proxy_contracts import test_native_policy_cli as native_policy
+
+    class InstallationBoundary(Exception):
+        pass
+
+    bundle_path = tmp_path / "bundle"
+    if bundle:
+        monkeypatch.setenv("SAFEYOLO_NATIVE_BUNDLE", str(bundle_path))
+    else:
+        monkeypatch.delenv("SAFEYOLO_NATIVE_BUNDLE", raising=False)
+    assets = tmp_path / "prepared" if prepared else None
+    observed = []
+
+    def install(command, **kwargs):
+        observed.append(command)
+        assert command[0] == str(REPO / "scripts/install_native.sh")
+        if bundle:
+            assert command[command.index("--bundle") + 1] == str(bundle_path)
+            assert "--artifacts" not in command
+        else:
+            assert "--artifacts" in command and "--bundle" not in command
+        if prepared:
+            assert command[command.index("--platform-assets") + 1] == str(assets)
+            assert "--no-guest-download" not in command
+        else:
+            assert "--no-guest-download" in command and "--platform-assets" not in command
+        raise InstallationBoundary
+
+    monkeypatch.setattr(native_policy.subprocess, "run", install)
+    with pytest.raises(InstallationBoundary), native_policy.native_instance(tmp_path, platform_assets=assets):
+        pytest.fail("argv control must stop at installation")
+    assert len(observed) == 1
 
 
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):

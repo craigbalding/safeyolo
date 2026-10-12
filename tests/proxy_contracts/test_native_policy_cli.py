@@ -113,6 +113,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                 inputs += ["--vm-artifacts", vm_artifacts]
         if platform_assets is not None:
             inputs += ["--platform-assets", str(platform_assets)]
+        else:
+            inputs += ["--no-guest-download"]
         installation = subprocess.run(
             [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), *inputs],
             capture_output=True, text=True, timeout=15,
