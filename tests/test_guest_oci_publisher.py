@@ -11,6 +11,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -322,18 +323,197 @@ def test_invalid_release_refused_before_upload(tmp_path, artifacts, publisher_to
     assert not registry[4]
 
 
-def test_workflow_keeps_publication_held_and_token_narrow():
+@pytest.fixture
+def initial_publisher():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    return workflow["jobs"]["publish"]
+
+
+@pytest.mark.parametrize("event", ["workflow_dispatch", "push", "release", "schedule", "pull_request"])
+@pytest.mark.parametrize("initial", [None, False, True])
+def test_workflow_initial_publication_routing(event, initial):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["publish_initial_g1"] == {
+        "description": "Publish only the retained original guest-2026-10-12.1 after host publication",
+        "required": False, "default": False, "type": "boolean",
+    }
+    context = {"__builtins__": {}, "github": SimpleNamespace(event_name=event),
+               "inputs": SimpleNamespace(publish_initial_g1=initial)}
+    jobs = workflow["jobs"]
+    # These conditions use only boolean operations and string equality. Evaluate
+    # both branches, then check dependencies so skipped preparation cannot hold G1.
+    publish_condition = jobs["publish"]["if"].removeprefix("${{").removesuffix("}}").strip()
+    build_condition = jobs["build"]["if"].removeprefix("${{").removesuffix("}}").strip()
+    assert bool(eval(publish_condition.replace("&&", " and "), context)) == (
+        event == "workflow_dispatch" and initial is True
+    )
+    assert bool(eval(build_condition.replace("!", "not "), context)) == (initial is not True)
+    # GitHub skips prepare when its build dependency is skipped. Publication
+    # must have no such dependency, including when preparation fails.
+    assert jobs["prepare"]["needs"] == "build" and "if" not in jobs["prepare"]
+    assert "needs" not in jobs["publish"]
+
+
+def test_workflow_initial_source_artifacts_and_token_narrow(initial_publisher):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     # PyYAML's YAML1.1 loader maps the Actions 'on' key to boolean True.
     assert set(workflow.get("on", workflow.get(True))) == {"workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["jobs"]["publish"]["if"] == "${{ false }}"
-    assert workflow["jobs"]["publish"]["permissions"] == {"contents": "read", "packages": "write"}
+    for name, job in workflow["jobs"].items():
+        assert job.get("permissions", workflow["permissions"]) == (
+            {"actions": "read", "contents": "read", "packages": "write"}
+            if name == "publish" else {"contents": "read"}
+        )
     assert workflow["concurrency"] == {"group": "default-guest-publication", "cancel-in-progress": False}
+    assert initial_publisher["env"] == {
+        "GUEST_VERSION": "guest-2026-10-12.1", "GUEST_COMPATIBILITY": "v1",
+        "GUEST_REVISION": "8234a047d810d543d8c4d1cb1fa9859987be035b",
+        "GUEST_INDEX": "sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e",
+    }
+    steps = initial_publisher["steps"]
+    assert steps[0]["name"] == "Refuse conflicting initial guest inputs"
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == initial_publisher["env"]["GUEST_REVISION"]
+    downloads = [step for step in steps if step.get("uses", "").startswith("actions/download-artifact@")]
+    assert len(downloads) == 2
+    for download, ids, path in zip(downloads, ["11748025327,11746464998", "11747551391"],
+                                   ["archives", "retained-guest-oci"]):
+        assert download["uses"] == "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        assert download["with"] == {
+            "artifact-ids": ids, "run-id": 38248401312, "repository": "craigbalding/safeyolo",
+            "github-token": "${{ secrets.GITHUB_TOKEN }}", "merge-multiple": True,
+            "path": "${{ runner.temp }}/" + path,
+        }
+    build = next(step for step in steps if step.get("name") == "Build the shared native OCI verifier")
+    assert build["env"]["SAFEYOLO_BUILD_REVISION"] == initial_publisher["env"]["GUEST_REVISION"]
+    assert build["env"]["CARGO_BUILD_JOBS"] == "1"
+    assert build["run"] == "scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci"
+    assert not any("guest/build" in step.get("run", "") for step in steps)
+    authenticate = next(step for step in steps if step.get("name") == "Authenticate with the linked repository token")
+    assert authenticate["env"] == {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
+    assert authenticate["run"] == 'printf \'%s\' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin'
+    names = [step.get("name") for step in steps]
+    assert names.index("Verify original retained inputs before registry authentication") < names.index(
+        "Authenticate with the linked repository token"
+    ) < names.index("Upload, verify and promote the complete guest release")
     text = json.dumps(workflow)
     assert "secrets.GITHUB_TOKEN" in text
     assert "--password-stdin" in text
     assert "sbom" not in text.lower()
+
+
+@pytest.mark.parametrize("version,compatibility", [
+    ("guest-2026-10-12.2", "v1"), ("guest-2026-10-12.1", "v2"),
+    ("", "v1"), ("guest-2026-10-12.1", ""),
+    ("$(touch forbidden-write)", "v1"),
+])
+def test_initial_workflow_refuses_conflicting_inputs(tmp_path, initial_publisher, version, compatibility):
+    step = initial_publisher["steps"][0]
+    assert step["env"] == {"REQUESTED_VERSION": "${{ inputs.version }}",
+                           "REQUESTED_COMPATIBILITY": "${{ inputs.compatibility }}"}
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
+        **os.environ, **initial_publisher["env"], "REQUESTED_VERSION": version,
+        "REQUESTED_COMPATIBILITY": compatibility,
+    })
+    assert result.returncode != 0 and "Initial G1 publication requires" in result.stderr
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("defect", [None, "missing-layout", "wrong-index", "missing-blob",
+                                  "corrupt-index", "corrupt-child", "corrupt-config", "corrupt-archive",
+                                  "missing-archive", "changed-archive", "changed-provenance"])
+def test_initial_workflow_verifies_retained_inputs_before_authentication(
+    tmp_path, artifacts, publisher_tools, initial_publisher, defect,
+):
+    oras, verifier = publisher_tools
+    source = tmp_path / "source"
+    scripts = source / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copyfile(ROOT / "scripts/publish_guest_oci.sh", scripts / "publish_guest_oci.sh")
+    (scripts / "publish_guest_oci.sh").chmod(0o755)
+    examples = source / "proxy/target/debug/examples"
+    examples.mkdir(parents=True)
+    (examples / "verify_guest_oci").symlink_to(Path(verifier).resolve())
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "oras").symlink_to(Path(oras).resolve())
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    shutil.move(artifacts, runner / "archives")
+    retained = runner / "retained-guest-oci"
+    env = {**os.environ, **initial_publisher["env"], "RUNNER_TEMP": str(runner), "ORAS": oras,
+           "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
+    prepared = run(str(scripts / "publish_guest_oci.sh"), "--artifacts", str(runner / "archives"),
+                   "--layout", str(retained), "--version", env["GUEST_VERSION"],
+                   "--compatibility", env["GUEST_COMPATIBILITY"], "--revision", env["GUEST_REVISION"],
+                   "--verifier", verifier, env=env)
+    assert prepared.returncode == 0, prepared.stderr
+    digest = run(oras, "resolve", "--oci-layout", f"{retained}:{env['GUEST_VERSION']}")
+    assert digest.returncode == 0, digest.stderr
+    # The small native-verified fixture substitutes only the expected content
+    # digest. The preceding control binds the production digest and all inputs.
+    env["GUEST_INDEX"] = digest.stdout.strip()
+    if defect == "missing-layout":
+        shutil.rmtree(retained)
+    elif defect == "wrong-index":
+        env["GUEST_INDEX"] = initial_publisher["env"]["GUEST_INDEX"]
+    elif defect in {"missing-blob", "corrupt-index", "corrupt-child", "corrupt-config", "corrupt-archive"}:
+        blobs = retained / "blobs/sha256"
+        index_path = blobs / env["GUEST_INDEX"].removeprefix("sha256:")
+        index = json.loads(index_path.read_text())
+        child_path = blobs / index["manifests"][0]["digest"].removeprefix("sha256:")
+        child = json.loads(child_path.read_text())
+        paths = {
+            "corrupt-index": index_path, "corrupt-child": child_path,
+            "corrupt-config": blobs / child["config"]["digest"].removeprefix("sha256:"),
+            "corrupt-archive": blobs / child["layers"][0]["digest"].removeprefix("sha256:"),
+            "missing-blob": blobs / child["layers"][0]["digest"].removeprefix("sha256:"),
+        }
+        blob = paths[defect]
+        if defect == "missing-blob":
+            blob.unlink()
+        else:
+            blob.chmod(0o644)
+            blob.write_bytes(b"corrupt")
+    elif defect == "missing-archive":
+        (runner / "archives/linux-amd64/guest.tar.zst").unlink()
+    elif defect == "changed-archive":
+        with (runner / "archives/linux-amd64/guest.tar.zst").open("ab") as archive_file:
+            archive_file.write(b"different archive bytes")
+    elif defect == "changed-provenance":
+        (runner / "archives/linux-amd64/build-base.txt").write_text(
+            "docker.io/library/debian@sha256:" + "c" * 64 + "\n"
+        )
+    step = next(step for step in initial_publisher["steps"] if step.get("name") ==
+                "Verify original retained inputs before registry authentication")
+    reached_auth = runner / "authentication-reached"
+    result = run("bash", "-euo", "pipefail", "-c",
+                 step["run"] + '\ntouch "$RUNNER_TEMP/authentication-reached"', cwd=source, env=env)
+    if defect:
+        assert result.returncode != 0, result.stdout
+        assert not reached_auth.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "verified darwin/arm64" in result.stdout
+        assert "verified linux/amd64" in result.stdout
+        assert "verified linux/arm64" in result.stdout
+        args_file = tmp_path / "publisher-args.json"
+        (scripts / "publish_guest_oci.sh").write_text(
+            "#!/usr/bin/env python3\nimport json, os, sys\n"
+            "with open(os.environ['PUBLISHER_ARGS'], 'w') as output:\n    json.dump(sys.argv[1:], output)\n"
+        )
+        upload = next(step for step in initial_publisher["steps"] if step.get("name") ==
+                      "Upload, verify and promote the complete guest release")
+        invoked = run("bash", "-euo", "pipefail", "-c", upload["run"], cwd=source,
+                      env={**env, "PUBLISHER_ARGS": str(args_file)})
+        assert invoked.returncode == 0, invoked.stderr
+        assert json.loads(args_file.read_text()) == [
+            "--artifacts", str(runner / "archives"), "--layout", str(runner / "guest-oci"),
+            "--version", env["GUEST_VERSION"], "--compatibility", "v1", "--revision", env["GUEST_REVISION"],
+            "--verifier", "proxy/target/debug/examples/verify_guest_oci",
+            "--publish", "ghcr.io/craigbalding/safeyolo-guest",
+        ]
 
 
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])

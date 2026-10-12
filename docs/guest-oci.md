@@ -243,16 +243,19 @@ remain under #239.
 
 ## Prepare and publish a default guest release
 
-Public GHCR uploads and compatibility promotion remain held under #1003.
 The [manual repository workflow](../.github/workflows/guest-oci.yml) prepares
-the release with registry writes disabled. Its `publish` job has a constant
-false condition. Enabling that job requires the operator's separate publication
-direction. Preparation does not restart automatic host releases or change Latest.
+releases without registry writes by default. Current operator direction
+authorizes one updated native host release (H) followed by publication of the
+already prepared initial guest (G1).
+The workflow's explicit `publish_initial_g1` mode supports only that original
+G1 and identical recovery retries. Automatic and later publication remain held
+under #1003. Preparation does not restart automatic host releases or change Latest.
 
 For a maintainer with repository Actions access, select the approved source
 revision in **Prepare default guest OCI release**, and enter a new guest version
-and its compatibility identifier. The workflow builds amd64 and arm64 outputs
-with the maintained builders. The arm64 build also supplies the Mac kernel,
+and its compatibility identifier. Leave `publish_initial_g1` disabled. The
+workflow builds amd64 and arm64 outputs with the maintained builders. The
+arm64 build also supplies the Mac kernel,
 initramfs and ext4 image. The builders use architecture-specific Debian manifest
 digests and write the actual preserved manifest identity to `build-base.txt`.
 That small build file becomes the child's build-base annotation; it is not a
@@ -299,8 +302,40 @@ claiming sparse preservation. Missing `cache-paths.txt`, backend files or pinned
 build provenance stop preparation. An older cached build without provenance
 must be rebuilt; do not infer its input from the current Debian tag.
 
-When public publication is authorized, use the linked workflow's held `publish`
-job with its automatic `GITHUB_TOKEN` and job-only `packages: write` permission.
+For initial G1 publication, use an authenticated release maintainer account with
+repository Actions access. First integrate the independently accepted workflow
+control into `master`, complete H's final package checks, and publish H. The
+initial G1 run then uses the repository-owned `GITHUB_TOKEN` with job-only
+`actions: read` for retained downloads and `packages: write` for publication.
+Package access and public anonymous retrieval still need verification during
+that execution.
+
+From a terminal with authenticated `gh`, dispatch the integrated workflow:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f version=guest-2026-10-12.1 -f compatibility=v1 -F publish_initial_g1=true
+```
+
+This run skips guest builds and preparation. It downloads only the retained
+artifacts from [run 38248401312](https://github.com/craigbalding/safeyolo/actions/runs/38248401312):
+archive artifacts `11748025327` and `11746464998`, and verified layout
+`11747551391`. They expire on 10 January 2027. The publisher, ORAS 1.3.4 installer
+and native verifier come from checked source
+`8234a047d810d543d8c4d1cb1fa9859987be035b`. Only the verifier is compiled; no guest
+payload is rebuilt or assigned the workflow control's newer revision.
+
+Before registry authentication, the workflow rejects conflicting version or
+compatibility inputs. It verifies the retained layout's complete descriptor
+chain, reconstructs the layout from the retained archives with the accepted
+publisher, and requires both layouts to resolve to
+`sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e`.
+Missing or corrupt inputs stop before uploads. Successful publication prints
+`Published ghcr.io/craigbalding/safeyolo-guest:guest-2026-10-12.1` with
+`compat-v1` pointing to that exact index. A failed run must be diagnosed before
+an identical recovery retry; the mode cannot select another version, run or
+registry repository.
+
 The shared concurrency group serializes all versions and generations, with
 cancellation disabled. Direct publisher invocations must use the same exclusive
 publication window; OCI tags do not provide compare-and-swap.
@@ -323,8 +358,10 @@ package public in its settings and verify all three targets anonymously with
 an empty ORAS registry configuration. Ordinary native consumers require no
 personal token or registry account. See GitHub's
 [package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
-Anonymous GHCR retrieval, real compressed default-guest sizes, native filesystem
-sparsity and installed platform evidence remain pending until those runs occur.
+The retained run reported compressed default archives of 229,345,953 bytes for
+darwin/arm64, 233,300,853 bytes for linux/amd64 and 223,000,369 bytes for
+linux/arm64. Anonymous GHCR retrieval, native filesystem sparsity and installed
+platform evidence remain pending until those runs occur.
 Keep supported versions and rollback content out of registry cleanup jobs.
 GHCR's documented blob limit or timeout must be observed with an actual default
 payload before considering another distribution scheme.
@@ -341,8 +378,10 @@ ORAS="$HOME/.local/bin/oras" GUEST_OCI_VERIFIER="$PWD/proxy/target/debug/example
 
 The tests check archive metadata, real OCI creation, upload/readback ordering,
 immutable-version conflicts/retries, incomplete and corrupt content refusal,
-older-channel retention and the workflow publication hold. The sparse-map test
-reports a skip if the filesystem cannot supply its required sparse fixture.
+older-channel retention and default-off initial-G1 workflow controls. The
+workflow controls also execute pre-authentication validation with native-verified
+fixtures and challenge missing, corrupt and mismatched retained inputs. The
+sparse-map test reports a skip if the filesystem cannot supply its required sparse fixture.
 The metadata test stages only a few KiB on the guest filesystem to exercise
 numeric ownership; archives and registry data use the disk-backed basetemp.
 These are source/local observations, not public or booted-platform acceptance.
