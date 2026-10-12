@@ -1,3 +1,5 @@
-# Runtime paths are relative to this file. Policy choices belong in policy.toml.
+# Runtime paths are relative to this file.
+# Host directory protection belongs here.
+# Agent settings and request policy belong in policy.toml.
 admin_port = 9090
 listeners = []

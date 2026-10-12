@@ -2368,6 +2368,418 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
 }
 
 #[test]
+fn protected_directories_persist_resolved_paths_and_allow_removal() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let future = temp.path().join("future/private");
+    let alias = temp.path().join("alias");
+    symlink("future", &alias).unwrap();
+    let config = root.join("config.toml");
+    let initial = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("# retain this comment\n{initial}")).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o640)).unwrap();
+    let designated = value(
+        Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args([
+                "--root",
+                root.to_str().unwrap(),
+                "mount",
+                "protect",
+                "alias/child/../private",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap(),
+    );
+    let resolved = temp.path().canonicalize().unwrap().join("future/private");
+    assert_eq!(
+        designated["protected_host_directories"],
+        serde_json::json!([resolved])
+    );
+    assert!(!future.exists());
+    let saved = fs::read(&config).unwrap();
+    assert!(String::from_utf8_lossy(&saved).contains("# retain this comment"));
+    assert_eq!(
+        fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    value(cli(&root, &["mount", "protect", future.to_str().unwrap()]));
+    assert_eq!(
+        fs::read(&config).unwrap(),
+        saved,
+        "duplicate designation rewrote config"
+    );
+    assert_eq!(
+        value(cli(&root, &["mount", "list"]))["protected_host_directories"],
+        designated["protected_host_directories"]
+    );
+    let other = temp.path().join("other-instance");
+    initialize(&other);
+    assert_eq!(
+        value(cli(&other, &["mount", "list"]))["protected_host_directories"],
+        serde_json::json!([])
+    );
+    fs::create_dir_all(&future).unwrap();
+    let removed = value(cli(
+        &root,
+        &[
+            "mount",
+            "unprotect",
+            alias.join("private").to_str().unwrap(),
+        ],
+    ));
+    assert_eq!(removed["protected_host_directories"], serde_json::json!([]));
+    assert_eq!(
+        value(cli(&root, &["mount", "list"]))["protected_host_directories"],
+        serde_json::json!([])
+    );
+    for arguments in [
+        vec!["mount", "protect", ""],
+        vec!["mount", "protect"],
+        vec!["mount", "list", "extra"],
+    ] {
+        let saved = fs::read(&config).unwrap();
+        assert!(!cli(&root, &arguments).status.success());
+        assert_eq!(fs::read(&config).unwrap(), saved);
+    }
+    for target in ["loop", "missing/../loop"] {
+        let loop_link = temp.path().join("loop");
+        symlink(target, &loop_link).unwrap();
+        let saved = fs::read(&config).unwrap();
+        assert!(
+            !cli(&root, &["mount", "protect", loop_link.to_str().unwrap()])
+                .status
+                .success()
+        );
+        assert_eq!(fs::read(&config).unwrap(), saved);
+        fs::remove_file(&loop_link).unwrap();
+    }
+}
+
+#[test]
+fn protected_directory_settings_use_the_selected_config_and_reject_invalid_types() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let selected = root.join("selected.toml");
+    fs::write(&selected, "protected_host_directories = ['reference']\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args(["--config", selected.to_str().unwrap(), "mount", "list"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        value(output)["protected_host_directories"],
+        serde_json::json!([root.canonicalize().unwrap().join("reference")])
+    );
+    value(
+        Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args([
+                "--config",
+                selected.to_str().unwrap(),
+                "mount",
+                "protect",
+                temp.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        value(cli(&root, &["mount", "list"]))["protected_host_directories"],
+        serde_json::json!([])
+    );
+    for setting in ["17", "'directory'", "[true]", "[17]", "['']"] {
+        let source = format!("protected_host_directories = {setting}\n");
+        fs::write(&selected, &source).unwrap();
+        let checked = cli(&root, &["config", "check", selected.to_str().unwrap()]);
+        assert!(!checked.status.success(), "accepted {setting}");
+        let error = String::from_utf8_lossy(&checked.stderr);
+        assert!(
+            error.contains("config.toml settings") || error.contains("protected_host_directories"),
+            "{setting}: {error}"
+        );
+        let rejected = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args([
+                "--config",
+                selected.to_str().unwrap(),
+                "mount",
+                "unprotect",
+                temp.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert_eq!(fs::read_to_string(&selected).unwrap(), source);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let directory = temp.path().join(OsStr::from_bytes(b"reference-\xff"));
+        fs::create_dir(&directory).unwrap();
+        symlink(&directory, root.join("alias")).unwrap();
+        fs::write(&selected, "protected_host_directories = ['alias']\n").unwrap();
+        let saved = fs::read(&selected).unwrap();
+        let listed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args(["--config", selected.to_str().unwrap(), "mount", "list"])
+            .output()
+            .unwrap();
+        assert!(!listed.status.success());
+        let error = String::from_utf8_lossy(&listed.stderr);
+        assert!(
+            error.contains("UTF-8") && !error.contains("panicked"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&selected).unwrap(), saved);
+    }
+}
+
+#[test]
+fn protected_mount_rejection_preserves_native_configuration_and_read_only_controls() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let protected = temp.path().join("reference");
+    let child = protected.join("child");
+    let sibling = temp.path().join("reference-backup");
+    fs::create_dir_all(&child).unwrap();
+    fs::create_dir(&sibling).unwrap();
+    let alias = temp.path().join("alias");
+    symlink(&protected, &alias).unwrap();
+    let colon_directory = protected.join("with:colon");
+    fs::create_dir(&colon_directory).unwrap();
+    let colon_alias = temp.path().join("colon-alias");
+    symlink(&colon_directory, &colon_alias).unwrap();
+    value(cli(&root, &["mount", "protect", alias.to_str().unwrap()]));
+    let read_only = format!("{}:/opt/reference:ro", alias.join("child").display());
+    let writable = format!("{}:/opt/sibling", sibling.display());
+    let ancestor = format!("{}:/opt/parent", temp.path().display());
+    // Protection applies to extra mounts, even when the selected workspace
+    // itself belongs to the protected directory.
+    let created = value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            protected.to_str().unwrap(),
+            "--mount",
+            &read_only,
+            "--mount",
+            &writable,
+            "--mount",
+            &ancestor,
+        ],
+    ));
+    assert_eq!(
+        created["configuration"]["mounts"],
+        serde_json::json!([read_only, writable, ancestor])
+    );
+    let runtime = root.join("agents/marker/runtime.json");
+    let current = br#"{"state":"running","run_id":"0123456789abcdef0123456789abcdef"}"#;
+    fs::write(&runtime, current).unwrap();
+    let policy = fs::read(root.join("policy.toml")).unwrap();
+    let config = fs::read(root.join("config.toml")).unwrap();
+    for source in [
+        &protected,
+        &child,
+        &alias,
+        &alias.join("child/../child"),
+        &colon_alias,
+    ] {
+        let spec = format!("{}:/opt/writable", source.display());
+        for (operation, name) in [("create", "new"), ("configure", "marker")] {
+            let rejected = cli(
+                &root,
+                &[
+                    "agent",
+                    operation,
+                    name,
+                    "--workspace",
+                    protected.to_str().unwrap(),
+                    "--memory",
+                    "768",
+                    "--mount",
+                    &writable,
+                    "--mount",
+                    &spec,
+                ],
+            );
+            assert!(!rejected.status.success());
+            let error = String::from_utf8_lossy(&rejected.stderr);
+            for expected in [
+                source.canonicalize().unwrap().to_str().unwrap(),
+                protected.canonicalize().unwrap().to_str().unwrap(),
+                "explicit :ro mount",
+            ] {
+                assert!(error.contains(expected), "{error}");
+            }
+            assert!(
+                error.contains(&format!("explicit :ro mount: {spec}:ro")),
+                "{error}"
+            );
+            assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+            assert_eq!(fs::read(root.join("config.toml")).unwrap(), config);
+            assert_eq!(fs::read(&runtime).unwrap(), current);
+        }
+    }
+    let reserved = format!("{}:/safeyolo/settings:ro", protected.display());
+    assert!(
+        !cli(
+            &root,
+            &["agent", "configure", "marker", "--mount", &reserved]
+        )
+        .status
+        .success()
+    );
+    assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+    let requested = format!("{}:/opt/colon", colon_alias.display());
+    let rejected = cli(
+        &root,
+        &["agent", "configure", "marker", "--mount", &requested],
+    );
+    let error = String::from_utf8_lossy(&rejected.stderr);
+    let remedy = error.split("explicit :ro mount: ").nth(1).unwrap().trim();
+    value(cli(
+        &root,
+        &["agent", "configure", "marker", "--mount", remedy],
+    ));
+    assert_eq!(fs::read(&runtime).unwrap(), current);
+    value(cli(
+        &root,
+        &["mount", "unprotect", protected.to_str().unwrap()],
+    ));
+    let allowed = format!("{}:/opt/now-writable", alias.display());
+    value(cli(
+        &root,
+        &["agent", "configure", "marker", "--mount", &allowed],
+    ));
+    assert_eq!(fs::read(&runtime).unwrap(), current);
+}
+
+#[test]
+fn protected_saved_mounts_refuse_native_and_admin_start_before_guest_effects() {
+    for scenario in ["new-protection", "retargeted-symlink", "future-directory"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        let workspace = temp.path().join("workspace");
+        let source = temp.path().join("source");
+        let protected = temp.path().join("protected");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&source).unwrap();
+        if scenario != "future-directory" {
+            fs::create_dir(&protected).unwrap();
+        }
+        let alias = temp.path().join("alias");
+        symlink(&source, &alias).unwrap();
+        let spec = format!("{}:/opt/reference", alias.display());
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "marker",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--mount",
+                &spec,
+            ],
+        ));
+        let policy_path = root.join("policy.toml");
+        let actual = if scenario == "new-protection" {
+            &source
+        } else {
+            &protected
+        };
+        value(cli(&root, &["mount", "protect", actual.to_str().unwrap()]));
+        if scenario != "new-protection" {
+            fs::create_dir_all(&protected).unwrap();
+            fs::remove_file(&alias).unwrap();
+            symlink(&protected, &alias).unwrap();
+        }
+        let policy = fs::read(&policy_path).unwrap();
+        let config_path = root.join("config.toml");
+        let config = fs::read(&config_path).unwrap();
+        // Revalidating an existing configuration also refuses a saved
+        // writable mount after the operator designates its source.
+        assert!(
+            !cli(&root, &["agent", "configure", "marker", "--memory", "768"])
+                .status
+                .success()
+        );
+        assert_eq!(fs::read(&policy_path).unwrap(), policy);
+        for options in [vec![], vec!["--sandbox-only"], vec!["--foreground"]] {
+            let mut args = vec!["agent", "start", "marker"];
+            args.extend(options);
+            let rejected = cli(&root, &args);
+            assert!(!rejected.status.success());
+            let error = String::from_utf8_lossy(&rejected.stderr);
+            assert!(
+                error.contains(actual.canonicalize().unwrap().to_str().unwrap())
+                    && error.contains("explicit :ro mount"),
+                "{scenario}: {error}"
+            );
+            assert_eq!(fs::read(&config_path).unwrap(), config);
+            assert_eq!(fs::read(&policy_path).unwrap(), policy);
+            for path in [
+                "logs/proxy.log",
+                "data/proxy-process.json",
+                "data/agent-map.json",
+                "agents/marker/runtime.json",
+                "agents/marker/config-share",
+            ] {
+                assert!(
+                    !root.join(path).exists(),
+                    "{scenario}: rejected start created {path}"
+                );
+            }
+        }
+        let mut config: toml_edit::DocumentMut =
+            fs::read_to_string(&config_path).unwrap().parse().unwrap();
+        config["admin_port"] = toml_edit::value(0);
+        fs::write(&config_path, config.to_string()).unwrap();
+        let _stop = StopOnDrop(&config_path);
+        value(cli(&root, &["start"]));
+        // The running Admin caller reads subsequent protection changes from
+        // the same file, without requiring a proxy restart.
+        value(cli(
+            &root,
+            &["mount", "unprotect", actual.to_str().unwrap()],
+        ));
+        value(cli(&root, &["mount", "protect", actual.to_str().unwrap()]));
+        for operation in ["start", "start-interactive"] {
+            let (status, rejected) = admin_post(
+                &root,
+                created["configuration"]["id"].as_str().unwrap(),
+                operation,
+            );
+            assert_eq!(status, 500, "{scenario}: {rejected}");
+            let error = rejected["error"].as_str().unwrap();
+            assert!(
+                error.contains(actual.canonicalize().unwrap().to_str().unwrap())
+                    && error.contains("explicit :ro mount"),
+                "{scenario}: {error}"
+            );
+            assert_eq!(fs::read(&policy_path).unwrap(), policy);
+            for path in [
+                "agents/marker/runtime.json",
+                "agents/marker/config-share",
+                "data/agent-map.json",
+            ] {
+                assert!(
+                    !root.join(path).exists(),
+                    "{scenario}: Admin start created {path}"
+                );
+            }
+        }
+        value(cli(&root, &["stop"]));
+        assert!(!root.join("data/ready.json").exists());
+    }
+}
+
+#[test]
 fn mount_source_rejection_preserves_native_configuration() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");

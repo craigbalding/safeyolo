@@ -191,6 +191,12 @@ configuration and startup reject non-directory sources. Read-only shares reject
 guest writes. An unowned workspace requires the existing explicit
 `--dangerously-allow-unowned` override.
 
+Use `mount protect PATH` to persist read-only protection for extra mounts of a
+host directory and its descendants. Designation can precede directory creation.
+`mount list` shows the resolved paths; `mount unprotect PATH` removes a selection.
+See [protected host directories](CONFIGURATION.md#protected-host-directories)
+for the explicit `:ro` mount and handling of saved writable mounts.
+
 If a shell fails, run `agent diagnostics work`. The result names runtime and
 control failures independently of proxy availability. On macOS it also checks
 the private helper control and the SSH banner. A connection without a banner

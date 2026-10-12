@@ -11,6 +11,7 @@ use crate::{Config, Error};
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub onepassword_executable: Option<PathBuf>,
+    pub protected_host_directories: Vec<PathBuf>,
     pub capture: Capture,
     pub trace: Trace,
     pub audit: Audit,
@@ -230,13 +231,25 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         "command_centre",
         "web",
         "onepassword_executable",
+        "protected_host_directories",
     ] {
         if let Some(value) = fields.shift_remove(key) {
             settings.insert(key.into(), value);
         }
     }
-    let settings: Settings = serde_json::from_value(Value::Object(settings))
+    let mut settings: Settings = serde_json::from_value(Value::Object(settings))
         .map_err(|error| format!("config.toml settings: {error}"))?;
+    for directory in &mut settings.protected_host_directories {
+        let path = if directory.is_absolute() {
+            directory.clone()
+        } else {
+            root.join(&*directory)
+        };
+        if directory.as_os_str().is_empty() {
+            return Err("protected_host_directories must contain nonempty paths".into());
+        }
+        *directory = resolve_protected_directory(&path)?;
+    }
     if settings
         .onepassword_executable
         .as_ref()
@@ -306,6 +319,104 @@ fn resolve_path(value: &mut Value, root: &Path, field: &str) -> Result<(), Error
         }
     }
     Ok(())
+}
+
+/// Resolve existing symlinks without requiring the designated directory to
+/// exist. Missing components still obey parent-directory path semantics.
+pub(crate) fn resolve_protected_directory(path: &Path) -> Result<PathBuf, Error> {
+    fn resolve(path: &Path, symlinks: &mut usize) -> std::io::Result<PathBuf> {
+        use std::{fs, path::Component};
+        let mut resolved = if path.is_absolute() {
+            PathBuf::new()
+        } else {
+            std::env::current_dir()?.canonicalize()?
+        };
+        for component in path.components() {
+            match component {
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::CurDir => {}
+                _ => {
+                    resolved.push(component);
+                    match resolved.canonicalize() {
+                        Ok(path) => resolved = path,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            match fs::symlink_metadata(&resolved) {
+                                Ok(metadata) if metadata.is_symlink() => {
+                                    *symlinks += 1;
+                                    if *symlinks > 40 {
+                                        return Err(std::io::Error::from_raw_os_error(libc::ELOOP));
+                                    }
+                                    let target = fs::read_link(&resolved)?;
+                                    resolved.pop();
+                                    resolved = resolve(&resolved.join(target), symlinks)?;
+                                }
+                                Ok(_) => return Err(error),
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+        Ok(resolved)
+    }
+    if path.as_os_str().is_empty() {
+        return Err("protected directory path must not be empty".into());
+    }
+    resolve(path, &mut 0).map_err(|error| {
+        format!(
+            "cannot resolve protected host directory {}: {error}",
+            path.display()
+        )
+        .into()
+    })
+}
+
+/// Publish only the operator's selected extra-mount protection. The listener
+/// lock serializes this edit with the existing native configuration writer.
+pub(crate) async fn protect_directory(path: &Path, protect: bool) -> Result<Vec<PathBuf>, Error> {
+    use std::{fs, io::Write};
+    let lock = crate::host_platform::config_dir().join("data/native-listeners.lock");
+    let _lock =
+        tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock)).await??;
+    let config = crate::host_platform::config_path();
+    let mut directories = host_settings()?.protected_host_directories;
+    let path = resolve_protected_directory(path)?;
+    if protect {
+        if directories.contains(&path) {
+            return Ok(directories);
+        }
+        directories.push(path);
+    } else {
+        directories.retain(|directory| directory != &path);
+    }
+    let mut document: toml_edit::DocumentMut = fs::read_to_string(&config)?.parse()?;
+    let mut array = toml_edit::Array::new();
+    for directory in &directories {
+        array.push(
+            directory
+                .to_str()
+                .ok_or("protected directory path must be UTF-8")?,
+        );
+    }
+    document["protected_host_directories"] = toml_edit::value(array);
+    let parent = config.parent().ok_or("configuration has no parent")?;
+    let mut temporary = tempfile::Builder::new()
+        .suffix(".toml")
+        .tempfile_in(parent)?;
+    temporary.write_all(document.to_string().as_bytes())?;
+    read(temporary.path())?;
+    temporary
+        .as_file()
+        .set_permissions(fs::metadata(&config)?.permissions())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&config)?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(directories)
 }
 
 /// Native host readers share the same file and type checks as proxy startup.

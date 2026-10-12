@@ -61,6 +61,18 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
     {
         return Err("mount destination is invalid or reserved".into());
     }
+    let read_only = parts.len() == 3;
+    if !read_only
+        && let Some(protected) = crate::native_config::host_settings()?
+            .protected_host_directories
+            .iter()
+            .find(|directory| host.starts_with(directory))
+    {
+        return Err(format!(
+            "mount source {} is protected by {}; writable extra mounts are refused. Use an explicit :ro mount: {spec}:ro",
+            host.display(), protected.display()
+        ).into());
+    }
     Ok((
         host,
         guest
@@ -68,7 +80,7 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
             .collect::<PathBuf>()
             .to_string_lossy()
             .into_owned(),
-        parts.len() == 3,
+        read_only,
     ))
 }
 
