@@ -106,6 +106,52 @@ listener/share settings stay in the same native config. Their authenticated
 Admin owners and Commander make the existing operator changes; the retired
 Python desktop/web/command-centre wrappers are not installed.
 
+## Protected host directories
+
+Run these commands on the host as the account that owns the instance. They use
+the default instance at `$HOME/.safeyolo`; use `--root ROOT` for another instance.
+To require read-only extra mounts of `$HOME/reference` and its descendants:
+
+```sh
+safeyolo mount protect "$HOME/reference"
+safeyolo mount list
+```
+
+The output lists the resolved protected directory. Designation persists in
+`config.toml`, including when the directory does not exist yet. Command paths
+are relative to the host's current directory. Existing symlinks resolve to
+their targets.
+
+If the directory exists and agent `work` is already configured, add an explicit
+read-only extra mount:
+
+```sh
+safeyolo agent configure work --mount "$HOME/reference:/reference:ro"
+```
+
+Writable extra mounts of a protected directory or descendant are refused
+before configuration is saved and before guest startup. The error names the
+resolved source and protection and gives an explicit `:ro` remedy. Unrelated
+sibling directories keep their requested access. If an agent already has a
+saved writable mount of a newly protected directory, add `:ro` to that entry
+in its `mounts` array in `policy.toml`, or remove the entry, before starting it.
+Rejected mount configuration is not saved.
+
+Protection affects extra mounts. It does not change workspace sharing or
+access in an already running sandbox. Stop and start that sandbox after
+correcting its saved mounts to apply the new access.
+
+To remove a designation:
+
+```sh
+safeyolo mount unprotect "$HOME/reference"
+```
+
+The native setting is the top-level `protected_host_directories` path array
+in `config.toml`; it defaults to `[]`. The commands save resolved absolute
+paths. If you edit the array directly, relative paths resolve from the selected
+configuration file's directory.
+
 ## Policy
 
 The host policy file contains hosts, agent settings, named lists, scoped

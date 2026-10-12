@@ -15,7 +15,7 @@ pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "agent" | "start" | "stop" | "status" | "doctor"
+            "agent" | "mount" | "start" | "stop" | "status" | "doctor"
         )
     })
 }
@@ -375,6 +375,28 @@ fn inherited_setup_lock(
 async fn run_inner(args: &[String]) -> Result<i32, Error> {
     let root = host_platform::config_dir();
     match args {
+        [kind, help] if kind == "mount" && help == "--help" => println!(
+            "safeyolo [--root ROOT | --config FILE] mount protect PATH\nsafeyolo [--root ROOT | --config FILE] mount unprotect PATH\nsafeyolo [--root ROOT | --config FILE] mount list\nProtection is saved in config.toml for extra mounts of the resolved path and its descendants. PATH may not exist yet. Protected mounts require explicit :ro. Workspace sharing and current sandboxes are unchanged."
+        ),
+        [kind, operation] if kind == "mount" && operation == "list" => {
+            let directories = serde_json::to_value(
+                crate::native_config::host_settings()?.protected_host_directories,
+            )?;
+            print(&json!({"protected_host_directories":directories}))?;
+        }
+        [kind, operation, path]
+            if kind == "mount" && matches!(operation.as_str(), "protect" | "unprotect") =>
+        {
+            let directories =
+                crate::native_config::protect_directory(Path::new(path), operation == "protect")
+                    .await?;
+            print(
+                &json!({"protected_host_directories":directories,"scope":"extra mount configuration and next sandbox start; current sandboxes are unchanged"}),
+            )?;
+        }
+        [kind, ..] if kind == "mount" => {
+            return Err("use mount protect PATH, mount unprotect PATH, or mount list".into());
+        }
         [kind, operation, name, id] if kind == "agent" && operation == "launcher-session" => {
             print(&host_lifecycle::launcher_session(name, id).await?)?;
         }
