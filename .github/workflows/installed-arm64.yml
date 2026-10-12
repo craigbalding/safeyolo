@@ -1,0 +1,170 @@
+name: Installed Linux ARM64 archive smoke
+
+# Explicit pre-promotion qualification of the retained production H and G1.
+# Ordinary native/source workflows and all publication controls stay separate.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-arm64:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SAFEYOLO_CARGO_RESERVE_GIB: "10"
+      SAFEYOLO_RUNSC_DEBUG: "1"
+      HOST_RELEASE_ID: "410991309"
+      HOST_ARCHIVE_ASSET_ID: "634976985"
+      HOST_CHECKSUM_ASSET_ID: "634976991"
+      HOST_REVISION: 7a38dff14e7e4eacb4095da732ffe06d7c7c5796
+      HOST_SHA256: 8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f
+      HOST_BYTES: "36529500"
+      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
+      GUEST_VERSION: guest-2026-10-12.1
+      GUEST_COMPATIBILITY: v1
+      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
+      GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
+      GUEST_ARCHIVE_BYTES: "223000369"
+    steps:
+      - name: Select the owned report directory
+        run: printf 'SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=%s/installed-arm64-reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read and verify the retained host archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/retained-host" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
+          host="$RUNNER_TEMP/retained-host"
+          if ! gh api "repos/craigbalding/safeyolo/releases/$HOST_RELEASE_ID" > "$host/release.json"; then
+            echo 'The job read token cannot access the selected draft release. Supply the actual accessible draft inputs; no promotion was attempted.' >&2
+            exit 1
+          fi
+          jq -e --arg id "$HOST_RELEASE_ID" --arg source "$HOST_REVISION" '
+            .id == ($id | tonumber) and .draft == true and
+            .tag_name == ("host-" + $source) and .target_commitish == $source
+          ' "$host/release.json" >/dev/null || {
+            echo 'Selected release must be the retained host source and tag, still in draft.' >&2
+            exit 1
+          }
+          for name in safeyolo-linux-arm64-production.tar.gz SHA256SUMS; do
+            if [[ $name == SHA256SUMS ]]; then id=$HOST_CHECKSUM_ASSET_ID; else id=$HOST_ARCHIVE_ASSET_ID; fi
+            jq -e --argjson id "$id" --arg name "$name" '
+              [.assets[] | select(.id == $id and .name == $name and .state == "uploaded")] | length == 1
+            ' "$host/release.json" >/dev/null || { echo "Missing retained asset $name (ID $id)." >&2; exit 1; }
+            if ! gh api --header 'Accept: application/octet-stream' \
+                "repos/craigbalding/safeyolo/releases/assets/$id" > "$host/$name"; then
+              echo "The job read token cannot download retained asset $name (ID $id)." >&2
+              exit 1
+            fi
+          done
+          grep -Fx "$HOST_SHA256  safeyolo-linux-arm64-production.tar.gz" "$host/SHA256SUMS" || {
+            echo 'SHA256SUMS does not contain the retained ARM64 production checksum.' >&2
+            exit 1
+          }
+          archive="$host/safeyolo-linux-arm64-production.tar.gz"
+          [[ $(stat -c %s "$archive") == "$HOST_BYTES" ]] || { echo 'Retained host archive size differs.' >&2; exit 1; }
+          [[ $(sha256sum "$archive" | cut -d ' ' -f 1) == "$HOST_SHA256" ]] || { echo 'Retained host archive checksum differs.' >&2; exit 1; }
+          tar -xOzf "$archive" safeyolo-linux-arm64-production/package-info > "$host/package-info"
+          for field in "source_commit=$HOST_REVISION" profile=production platform=linux-arm64 "guest_compatibility=$GUEST_COMPATIBILITY"; do
+            grep -Fx "$field" "$host/package-info" || { echo "Host package must contain $field." >&2; exit 1; }
+          done
+          printf 'Draft release=%s host_source=%s platform=linux-arm64 profile=production sha256=%s bytes=%s\n' \
+            "$HOST_RELEASE_ID" "$HOST_REVISION" "$HOST_SHA256" "$HOST_BYTES" | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/host-input.txt"
+      # The retained complete layout already contains the exact archive blobs.
+      # Download it once; do not rebuild or repackage the original G1.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: '11747551391'
+          run-id: 38248401312
+          repository: craigbalding/safeyolo
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/retained-guest-oci
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: proxy -> target
+          cache-bin: false
+          cache-on-failure: true
+      - name: Build only the native OCI verification tool
+        env:
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/proxy/target
+        run: |
+          mkdir -p "$CARGO_TARGET_DIR"
+          df -h "$CARGO_TARGET_DIR"
+          du -sh "$CARGO_TARGET_DIR"
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+      - name: Verify the logical G1 index and extract Linux ARM64 assets
+        shell: bash
+        run: |
+          layout="$RUNNER_TEMP/retained-guest-oci"
+          index="$layout/blobs/sha256/${GUEST_INDEX#sha256:}"
+          # index.json is ORAS's catalogue; GUEST_INDEX names the logical release.
+          proxy/target/debug/examples/verify_guest_oci "$layout" "$GUEST_INDEX" "$GUEST_COMPATIBILITY" 2>&1 \
+            | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/guest-verification.txt"
+          jq -e --arg source "$GUEST_REVISION" --arg version "$GUEST_VERSION" '
+            .annotations["org.opencontainers.image.revision"] == $source and
+            .annotations["org.opencontainers.image.version"] == $version
+          ' "$index" >/dev/null || { echo 'Guest source/version differs from original G1.' >&2; exit 1; }
+          child=$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] |
+            if length == 1 then .[0].digest else error("expected one linux/arm64 child") end' "$index")
+          archive=$(jq -er '.layers[0].digest' "$layout/blobs/sha256/${child#sha256:}")
+          [[ $archive == "sha256:$GUEST_ARCHIVE_SHA256" ]] || { echo 'Selected guest archive differs from original Linux ARM64 G1.' >&2; exit 1; }
+          blob="$layout/blobs/sha256/${archive#sha256:}"
+          [[ $(stat -c %s "$blob") == "$GUEST_ARCHIVE_BYTES" ]] || { echo 'Retained guest archive size differs.' >&2; exit 1; }
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y -qq --no-install-recommends zstd
+          mkdir "$RUNNER_TEMP/verified-extracted-assets"
+          sudo -n tar --zstd --numeric-owner --same-owner --same-permissions --sparse \
+            --acls --xattrs --xattrs-include='*' -xf "$blob" -C "$RUNNER_TEMP/verified-extracted-assets"
+          assets="$RUNNER_TEMP/verified-extracted-assets"
+          test -x "$assets/rootfs-tree/bin/bash"
+          test -x "$assets/rootfs-tree/usr/local/bin/safeyolo-guest-init"
+          test -f "$assets/cache-paths.txt"
+          test "$(stat -c '%u:%g' "$assets/rootfs-tree")" = 100000:100000
+          stat -c '%n uid=%u gid=%g mode=%a bytes=%s' "$assets/rootfs-tree" "$assets/cache-paths.txt" \
+            | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/guest-metadata.txt"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+      - name: Prepare the separate Python test observers
+        run: |
+          uv python install 3.13
+          uv sync --frozen --python 3.13
+      - name: Prepare the supported systrap host
+        run: tests/blackbox/prepare-systrap-host.sh
+      - name: Run the installed production archive smoke
+        run: |
+          set -o pipefail
+          {
+            uname -a
+            id
+            getconf GNU_LIBC_VERSION
+            printf 'Test tooling=%s; product source=%s; guest source=%s\n' "$GITHUB_SHA" "$HOST_REVISION" "$GUEST_REVISION"
+            ./tests/blackbox/run-installed-package.sh \
+              --package "$RUNNER_TEMP/retained-host/safeyolo-linux-arm64-production.tar.gz" \
+              --sha256 "$HOST_SHA256" --platform-assets "$RUNNER_TEMP/verified-extracted-assets" --lane systrap
+          } 2>&1 | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/installed-smoke.txt"
+      - name: Upload reports and individual suite outcomes
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installed-arm64-${{ github.run_id }}
+          path: ${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}
+          retention-days: 30
+          if-no-files-found: warn
