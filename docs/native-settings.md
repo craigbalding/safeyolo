@@ -72,9 +72,11 @@ build/uv-wheel layout and did not provide native packages. The CI-only
 locally; the maintained native contract workflow still retains verified debug
 runtimes. The shell package producer and installer are unchanged. Public
 release publication remains stopped; this removal adds no replacement publisher.
-The separate `release.yml` SBOM workflow is repository tooling outside the
-native product path. Its stale requirement inputs remain the deferred #920
-repair, not a final native installation dependency or a claimed recovered check.
+The obsolete Python software bill of materials (SBOM) workflow `release.yml`
+and the root `sbom` dependency group are retired. A unified SBOM does not yet
+exist. Native SBOM generation, release attachment and attestation remain deferred
+to v1 release preparation in [#920](https://github.com/craigbalding/safeyolo/issues/920).
+Retirement does not restore release SBOM generation or attestation.
 
 The raw formats retain forensic observations, command formats retain displayed
 requests, and HAR/ZHAR retain interoperable archives. The existing native exporter

@@ -148,7 +148,7 @@ nodes:
 
   - id: sym.accept_dependency_security
     kind: symptom
-    label: "The exact locked Python runtime dependency closure needs vulnerability review"
+    label: "The exact locked Python test and development dependencies need vulnerability review"
     keywords: [dependency, vulnerability, advisory, pip-audit, lockfile]
     source: authored
 
@@ -181,9 +181,9 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 950c2ce6f0e6f6c59487a3d1b0b9fde76144be027d56dc85afaebd7415b939df
+          sha256: 966b6ec261f6aae8a39c1e9e3d4b8cbdd98cc80924fd3a4cd0fcac577e9dcc09
         - path: uv.lock
-          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
+          sha256: 0315c2d9f851fe0445a8809944f79cb1bd676261f7fc2635c1f77f10fcc911fb
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -219,7 +219,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: uv.lock
-          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
+          sha256: 0315c2d9f851fe0445a8809944f79cb1bd676261f7fc2635c1f77f10fcc911fb
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
@@ -469,7 +469,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 2a9be72ad47afcd4b9674af9b3ffd0d2b15a1877c24fe01d566c76565b2d3798
         - path: uv.lock
-          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
+          sha256: 0315c2d9f851fe0445a8809944f79cb1bd676261f7fc2635c1f77f10fcc911fb
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -521,9 +521,9 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 950c2ce6f0e6f6c59487a3d1b0b9fde76144be027d56dc85afaebd7415b939df
+          sha256: 966b6ec261f6aae8a39c1e9e3d4b8cbdd98cc80924fd3a4cd0fcac577e9dcc09
         - path: uv.lock
-          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
+          sha256: 0315c2d9f851fe0445a8809944f79cb1bd676261f7fc2635c1f77f10fcc911fb
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -563,11 +563,13 @@ nodes:
 
   - id: ev.accept_dependency_audit_lane
     kind: evidence
-    label: "Use pip-audit on an exact hash-bearing export of runtime dependencies"
+    label: "Use pip-audit on a locked export of Python test and development dependencies"
     detail: |
-      Export only the locked product runtime closure, excluding developer and
-      acceptance tools, then query the selected vulnerability service. The
-      lock establishes package identity; the feed is time-varying evidence, so
+      From the repository root, export the locked Python test and development
+      dependencies in the dev group with package hashes. Then query the selected
+      vulnerability service. This recipe does not cover native Rust dependencies
+      or the isolated acceptance-tool environment. The lock establishes package
+      identity; the feed is time-varying evidence, so
       retain service and observation time. Reuse Lens's persistent audit cache
       rather than repeating dozens of unchanged package lookups.
     source: uv.lock
@@ -575,9 +577,9 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 950c2ce6f0e6f6c59487a3d1b0b9fde76144be027d56dc85afaebd7415b939df
+          sha256: 966b6ec261f6aae8a39c1e9e3d4b8cbdd98cc80924fd3a4cd0fcac577e9dcc09
         - path: uv.lock
-          sha256: a3e4429caa51efad98fd4ff4c5409f92baf07d7300ebb95fbd9d2c45dfc3c731
+          sha256: 0315c2d9f851fe0445a8809944f79cb1bd676261f7fc2635c1f77f10fcc911fb
         - path: tools/acceptance/pyproject.toml
           sha256: 95d5d041dea3951f039ad4ffeebf8fb2897dd216df6ddf2bd1da0e03e7804d2c
         - path: tools/acceptance/uv.lock
@@ -585,8 +587,8 @@ nodes:
       setup: "uv sync --project tools/acceptance --frozen --only-group static; retain /home/agent/.cache/pip-audit across tasks"
       verify: "sha256sum pyproject.toml uv.lock tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync pip-audit --version"
       run:
-        export_runtime: "uv export --quiet --frozen --no-dev --no-emit-project --format requirements.txt --output-file /tmp/safeyolo-runtime-requirements.txt"
-        audit_runtime: "uv run --project tools/acceptance --frozen --no-sync pip-audit --requirement /tmp/safeyolo-runtime-requirements.txt --require-hashes --disable-pip --cache-dir /home/agent/.cache/pip-audit --timeout 30 --progress-spinner off --format json"
+        export_tooling: "uv export --quiet --frozen --only-group dev --no-emit-project --format requirements.txt --output-file /tmp/safeyolo-tooling-requirements.txt"
+        audit_tooling: "uv run --project tools/acceptance --frozen --no-sync pip-audit --requirement /tmp/safeyolo-tooling-requirements.txt --require-hashes --disable-pip --cache-dir /home/agent/.cache/pip-audit --timeout 30 --progress-spinner off --format json"
       capture: [trusted revision, pyproject and lock hashes, exported closure hash, pip-audit version, vulnerability service, observation time, advisories or infrastructure failure, exit status]
 
   - id: ev.accept_radon_lane
@@ -742,7 +744,7 @@ edges:
   - {from: ev.accept_select_boundary, to: ev.accept_mypy_lane, kind: next_check, when: "state shape, optionality, or interface contracts are material"}
   - {from: ev.accept_select_boundary, to: ev.accept_concurrency_stress_lane, kind: next_check, when: "ordering, cleanup, shared resources, or intermittent behavior are material"}
   - {from: ev.accept_select_boundary, to: ev.accept_semgrep_lane, kind: next_check, when: "a local high-signal security invariant is material"}
-  - {from: ev.accept_select_boundary, to: ev.accept_dependency_audit_lane, kind: next_check, when: "the exact runtime dependency closure needs current vulnerability evidence"}
+  - {from: ev.accept_select_boundary, to: ev.accept_dependency_audit_lane, kind: next_check, when: "the exact locked Python test and development dependencies need current vulnerability evidence"}
   - {from: ev.accept_select_boundary, to: ev.accept_radon_lane, kind: next_check, when: "structural complexity or maintainability regression is material"}
   - {from: ev.accept_select_boundary, to: ev.accept_codeql_lane, kind: next_check, when: "security, taint, or data-flow analysis is material"}
 
@@ -769,14 +771,14 @@ edges:
   - {from: sym.accept_static_quality, to: cls.accept_coverage_gap, kind: implies, when: "the needed architecture fitness rule is not configured"}
   - {from: sym.accept_security_analysis, to: ev.accept_codeql_lane, kind: next_check, when: "the changed code is production Python on a supported CodeQL platform"}
   - {from: sym.accept_security_analysis, to: ev.accept_semgrep_lane, kind: next_check, when: "the trusted local rules cover the changed security boundary"}
-  - {from: sym.accept_security_analysis, to: ev.accept_dependency_audit_lane, kind: next_check, when: "the risk is in the locked runtime dependency closure"}
+  - {from: sym.accept_security_analysis, to: ev.accept_dependency_audit_lane, kind: next_check, when: "the risk is in the locked Python test and development dependencies"}
   - {from: sym.accept_security_analysis, to: cls.accept_resource_missing, kind: implies, when: "only a platform without a pinned native CodeQL bundle is available"}
   - {from: sym.accept_state_integrity, to: ev.accept_mypy_lane, kind: next_check, when: "challenge impossible or confused states at Python interfaces"}
   - {from: sym.accept_state_integrity, to: cls.accept_coverage_gap, kind: implies, when: "generated native state transitions are needed and no bound tool exercises them"}
   - {from: sym.accept_state_integrity, to: ev.accept_python_lane, kind: next_check, when: "a focused state-transition regression can be exercised directly"}
   - {from: sym.accept_race_risk, to: ev.accept_concurrency_stress_lane, kind: next_check, when: "bounded repeated or multi-process stress can expose the suspected coupling"}
   - {from: sym.accept_race_risk, to: cls.accept_coverage_gap, kind: implies, when: "native policy transaction interleavings or crash stages need a new probe"}
-  - {from: sym.accept_dependency_security, to: ev.accept_dependency_audit_lane, kind: next_check, when: "audit the exact locked product runtime closure"}
+  - {from: sym.accept_dependency_security, to: ev.accept_dependency_audit_lane, kind: next_check, when: "audit the exact locked Python test and development dependencies"}
 
   - {from: ev.accept_python_lane, to: ev.accept_classify_result, kind: next_check, when: "focused tests complete or fail"}
   - {from: ev.accept_proxy_lane, to: ev.accept_classify_result, kind: next_check, when: "the real proxy lane completes or fails"}
