@@ -23,17 +23,39 @@ Agent API and its own token; it receives no NATS or operator credentials.
 Old-product rooms and checkpoints are not converted. These commands prepare
 new native state and do not switch an existing running factory.
 
+Before the first supervised start, use a fresh agent identity or fresh room
+memberships that have never received targeted attention in any configured
+room. Migration of an existing Coord identity with retained attention is
+unsupported. Retained room messages and the identity-wide attention feed are
+separate. Clearing room messages does not reset attention.
+
 Configure the rooms that the worker must receive from and the agent names that
 the operator designated as coordinators. Run from a trusted SafeYolo checkout
 outside the worker's writable shares. Stop the worker before applying setup:
+
+The first start below confirms the fresh identity or membership and creates
+the initial cursor-zero checkpoint. Put `--confirm-fresh-identity` first among
+the launch arguments. Put any harness options after it.
 
 ```bash
 safeyolo agent stop worker
 SAFEYOLO_CODEX_COORD_ROOMS=backlog \
 SAFEYOLO_CODEX_COORDINATORS=relay \
   safeyolo agent configure worker --host-script "$PWD/contrib/codex-coord-host-setup.sh"
-safeyolo agent start worker
+safeyolo agent start worker -- --confirm-fresh-identity
 ```
+
+Without confirmation, a missing checkpoint causes refusal before supervisor
+Coord calls, model work or checkpoint creation. A refused start leaves no
+checkpoint, so retry still requires confirmation.
+
+After supervised activation, send the first targeted task. Keep confirmation
+out of saved harness arguments: use it only for that first launch. For a
+normal restart with a valid checkpoint, run `safeyolo agent start worker`
+without confirmation. Setup reapplication retains the checkpoint. If an
+established worker loses its checkpoint, do not confirm it as fresh; preserve
+its work and inspect retained attention and history. There is no cursor
+migration or automatic start-from-now operation.
 
 Each supervised setup uses its normal harness setup first and preserves that
 agent's own subscription login, SafeYolo instructions, proxy, and TLS
@@ -347,7 +369,8 @@ read the bounded checkpoint summary. This command does not change state or
 release work. `supervise --once` runs one external-wait cycle and at most one
 model invocation. A successful process exit does not establish task completion.
 
-For a nested lab, `contrib/codex-coord-supervisor-fake-codex.sh` can replace
+After confirmed activation of a disposable nested worker, use its retained
+checkpoint for the commands below. `contrib/codex-coord-supervisor-fake-codex.sh` can replace
 Codex through `SAFEYOLO_CODEX_BIN`. It satisfies the subscription-login
 preflight, captures each invocation's argv and stdin prompt, and emits minimal
 valid Codex JSONL without making a model request:

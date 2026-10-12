@@ -91,7 +91,7 @@ def test_native_staging_preserves_unix_pathname_bytes(tmp_path, component):
     launcher.chmod(0o700)
     result = subprocess.run([str(COORD_NATIVE_BINARY), "supervised-launcher", str(launcher), "codex"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert 'safeyolo-coord" supervise --' in launcher.read_text()
+    assert 'safeyolo-coord" supervise "${supervisor_args[@]}" --' in launcher.read_text()
     assert launcher.stat().st_mode & 0o777 == 0o700
 
 
@@ -1229,6 +1229,13 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     first_command = (agent_home / ".safeyolo-command").read_bytes()
     first_interactive_command = (agent_home / ".safeyolo-interactive-command").read_bytes()
     first_config = (agent_home / ".safeyolo/coord-supervisor.json").read_bytes()
+    checkpoint = agent_home / ".safeyolo/coord-supervisor-state.json"
+    state_output = subprocess.run([str(COORD_NATIVE_BINARY), "read-state", str(checkpoint)], check=True, capture_output=True, text=True)
+    saved = json.loads(state_output.stdout)
+    saved["safe_cursor"] = 91
+    saved["thread_id"] = "retained-session"
+    subprocess.run([str(COORD_NATIVE_BINARY), "write-state", str(checkpoint)], input=json.dumps(saved), text=True, check=True)
+    first_checkpoint = checkpoint.read_bytes()
     _run_setup(
         "codex-coord-host-setup.sh",
         operator_home,
@@ -1245,6 +1252,7 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     assert first_interactive_command != first_command
     assert b"safeyolo-coord" not in first_interactive_command
     assert first_config == config_path.read_bytes()
+    assert checkpoint.read_bytes() == first_checkpoint
     assert {key: config[key] for key in ("agent_name", "coordinators", "rooms", "workspace")} == {
         "agent_name": "test-agent", "coordinators": ["relay"],
         "rooms": ["backlog", "releases"], "workspace": "/workspace",

@@ -156,7 +156,7 @@ def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp
             payload = home / ".safeyolo-command.payload"
             if not payload.exists():
                 payload = home / ".safeyolo-command"
-            assert 'exec "$HOME/.safeyolo/safeyolo-coord" supervise --' in payload.read_text()
+            assert 'exec "$HOME/.safeyolo/safeyolo-coord" supervise "${supervisor_args[@]}" --' in payload.read_text()
             runtime = home / ".safeyolo/safeyolo-coord"
             with runtime.open("rb") as handle:
                 assert hashlib.file_digest(handle, "sha256").hexdigest() == (instance.root / "assets/guest/safeyolo-coord.sha256").read_text().strip()
@@ -260,7 +260,7 @@ def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_pat
             inert = b'#!/bin/sh\n# exec "$HOME/.safeyolo/safeyolo-coord" supervise --\nexit 0\n'
             mutations = (inert, b"#!/bin/sh\nexit 0\n" + expected,
                          originals["reviewer" if role == "owner" else "owner"],
-                         expected.replace(b" supervise -- ", b" supervise "))
+                         expected.replace(b' supervise "${supervisor_args[@]}" -- ', b" supervise "))
             diagnosis(role, valid=True)
             for changed in mutations:
                 entry.write_bytes(changed)
@@ -437,6 +437,33 @@ def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(tmp_path
         assert result.returncode != 0 and "fixture room provisioning unavailable" in result.stderr, (result.stdout, result.stderr)
         assert "Started Factory" not in result.stdout
         assert_no_role_launch(instance)
+
+
+def test_factory_run_requires_confirmation_before_any_role_starts(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, _):
+        adopt_source_login(instance)
+        for _ in range(2):
+            result = instance.cli("factory", "run", "fixture")
+            assert result.returncode != 0, (result.stdout, result.stderr)
+            assert "factory run fixture --confirm-fresh-identity" in result.stderr
+            assert "Started Factory" not in result.stdout
+            assert_no_role_launch(instance)
+        # A valid earlier role must not start before a later unconfirmed role.
+        checkpoint = instance.root / "agents/fixture-relay/home/.safeyolo/coord-supervisor-state.json"
+        executable = instance.root / "bin/safeyolo-coord"
+        state = json.loads(subprocess.check_output([str(executable), "read-state", str(checkpoint)]))
+        state["safe_cursor"] = 91
+        state["recent_attention_ids"] = ["attn-" + "c" * 32]
+        subprocess.run([str(executable), "write-state", str(checkpoint)], input=json.dumps(state), text=True, check=True)
+        saved = checkpoint.read_bytes()
+        result = instance.cli("factory", "run", "fixture")
+        assert result.returncode != 0 and "role owner:" in result.stderr, result.stderr
+        assert checkpoint.read_bytes() == saved  # Run reapplied setup first.
+        for name in ("fixture-relay", "fixture-forge", "fixture-lens"):
+            directory = instance.root / "agents" / name
+            assert not list(directory.glob("runtime*"))
+            if name != "fixture-relay":
+                assert not (directory / "home/.safeyolo/coord-supervisor-state.json").exists()
 
 
 def test_factory_run_executes_staged_worker_commands():

@@ -412,15 +412,29 @@ impl Default for State {
     }
 }
 impl State {
-    pub fn load(path: &Path) -> Result<Self, Error> {
+    /// Missing state is supported only for an explicitly confirmed fresh
+    /// identity or membership. Check before recovery or any checkpoint save.
+    pub fn load_for_start(path: &Path, confirm_fresh_identity: bool) -> Result<Self, Error> {
         match fs::symlink_metadata(path) {
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if !confirm_fresh_identity {
+                    return Err(format!(
+                        "supervisor checkpoint is missing: {}; existing Coord identity migration is unsupported. If the configured identity or membership is fresh and has never received targeted attention in any configured room, launch once with --confirm-fresh-identity. Clearing room messages does not reset attention",
+                        path.display()
+                    ).into());
+                }
+                return Ok(Self::default());
+            }
             Err(e) => return Err(e.into()),
         }
         let state: Self = serde_json::from_value(read(path)?)?;
         state.validate()?;
         Ok(state)
+    }
+
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        Self::load_for_start(path, true)
     }
     fn validate(&self) -> Result<(), Error> {
         if self.schema != STATE_SCHEMA
@@ -1270,10 +1284,11 @@ pub async fn run(
     state_path: &Path,
     args: Vec<OsString>,
     once: bool,
+    confirm_fresh_identity: bool,
 ) -> Result<(), Error> {
     let config = Config::load(config_path)?;
     let _lock = process::lock(state_path)?;
-    let mut state = State::load(state_path)?;
+    let mut state = State::load_for_start(state_path, confirm_fresh_identity)?;
     process::recover(&mut state, state_path, config.terminate_grace_seconds).await?;
     if state.harness != config.harness {
         state.harness = config.harness.clone();
