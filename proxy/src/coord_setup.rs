@@ -660,18 +660,19 @@ pub(crate) fn supervised_launcher_source(source: &str, harness: &str) -> Result<
     let (anchor, replacement) = match harness {
         "codex" => (
             "exec codex \"${args[@]}\" \"$@\"\n",
-            "exec \"$HOME/.safeyolo/safeyolo-coord\" supervise -- \"${supervised_args[@]}\" \"$@\"\n",
+            "exec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${supervised_args[@]}\" \"$@\"\n",
         ),
         "pi" => (
             "exec \"$pi_bin\" \"${args[@]}\" \"$@\"\n",
-            "export SAFEYOLO_PI_BIN=\"$pi_bin\"\nexec \"$HOME/.safeyolo/safeyolo-coord\" supervise -- \"${args[@]}\" \"$@\"\n",
+            "export SAFEYOLO_PI_BIN=\"$pi_bin\"\nexec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${args[@]}\" \"$@\"\n",
         ),
         _ => return Err("unknown supervised harness".into()),
     };
     if source.matches(anchor).count() != 1 {
         return Err("cannot locate the harness foreground command".into());
     }
-    Ok(source.replace(anchor, replacement))
+    let confirmation = "supervisor_args=()\nif [ \"${1:-}\" = \"--confirm-fresh-identity\" ]; then\n    supervisor_args+=(--confirm-fresh-identity)\n    shift\nfi\n";
+    Ok(source.replace(anchor, &format!("{confirmation}{replacement}")))
 }
 
 fn argument_text(argument: &std::ffi::OsStr) -> Result<&str, Error> {

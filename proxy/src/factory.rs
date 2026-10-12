@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-pub const HELP: &str = "safeyolo [--root ROOT] factory check FILE\nsafeyolo [--root ROOT] factory approve FILE [--yes]\nsafeyolo [--root ROOT] factory prepare NAME --workspace ROLE=PATH [--workspace ROLE=PATH ...] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] factory login NAME ROLE\nsafeyolo [--root ROOT] factory run NAME [--workspace ROLE=PATH ...]\nsafeyolo [--root ROOT] factory doctor|stop NAME\nsafeyolo [--root ROOT] factory send NAME TEXT\nsafeyolo [--root ROOT] factory history NAME [--since SEQUENCE]\nsafeyolo [--root ROOT] factory release NAME --target URL [--target URL ...] [--room ROOM] [--yes]\n\ncheck validates the contract. approve selects its immutable content; it does not start roles.\nprepare provisions declared agents, rooms and staging without starting a model. Each harness needs its own agent-local login.\nrun starts the approved roles and verifies their actual readiness. stop preserves identities, checkpoints and messages; run restarts that same state.\ndoctor is read-only and names the failed role or room. send targets the approved operator-input role. Direct agent diagnosis and recovery remain available.";
+pub const HELP: &str = "safeyolo [--root ROOT] factory check FILE\nsafeyolo [--root ROOT] factory approve FILE [--yes]\nsafeyolo [--root ROOT] factory prepare NAME --workspace ROLE=PATH [--workspace ROLE=PATH ...] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] factory login NAME ROLE\nsafeyolo [--root ROOT] factory run NAME [--workspace ROLE=PATH ...] [--confirm-fresh-identity]\nsafeyolo [--root ROOT] factory doctor|stop NAME\nsafeyolo [--root ROOT] factory send NAME TEXT\nsafeyolo [--root ROOT] factory history NAME [--since SEQUENCE]\nsafeyolo [--root ROOT] factory release NAME --target URL [--target URL ...] [--room ROOM] [--yes]\n\ncheck validates the contract. approve selects its immutable content; it does not start roles.\nprepare provisions declared agents, rooms and staging without starting a model. Each harness needs its own agent-local login.\nrun starts the approved roles and verifies their actual readiness. Missing checkpoints require --confirm-fresh-identity once, only when those roles' configured identities or memberships have never received targeted attention in any configured room. Clearing room messages does not reset attention.\nstop preserves identities, checkpoints and messages; run restarts that same state without confirmation.\ndoctor is read-only and names the failed role or room. send targets the approved operator-input role. Direct agent diagnosis and recovery remain available.";
 
 fn codex() -> String {
     "codex".into()
@@ -636,7 +636,11 @@ fn role_lifecycle_error(observation: &Value) -> Option<&Value> {
         .filter(|error| !error.is_null() && error.as_str() != Some(""))
 }
 
-async fn start_roles(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
+async fn start_roles(
+    root: &Path,
+    snapshot: &Snapshot,
+    confirm_fresh_identity: bool,
+) -> Result<Value, Error> {
     let agents = host_agents::list()?;
     for (name, role) in &snapshot.roles {
         let agent = agents
@@ -646,14 +650,26 @@ async fn start_roles(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
         staged(root, snapshot, name, role)?;
         crate::coord_rooms::factory_access(root, &snapshot.room, &agent.id)?;
         crate::coord_rooms::factory_access(root, &format!("{}-agent", role.agent), &agent.id)?;
+        coord_supervisor::State::load_for_start(
+            &home(root, role).join(".safeyolo/coord-supervisor-state.json"),
+            confirm_fresh_identity,
+        )
+        .map_err(|error| format!("role {name}: {error}; for fresh roles, use factory run {} --confirm-fresh-identity", snapshot.name))?;
     }
     for (name, role) in &snapshot.roles {
         let agent = agents
             .iter()
             .find(|a| a.name == role.agent)
             .ok_or("required role is missing")?;
-        let observation =
-            host_lifecycle::start(agent, "start", None, role.args.as_deref(), false).await?;
+        let mut args = role
+            .args
+            .as_deref()
+            .unwrap_or(&agent.user_default_args)
+            .to_vec();
+        if confirm_fresh_identity {
+            args.insert(0, "--confirm-fresh-identity".into());
+        }
+        let observation = host_lifecycle::start(agent, "start", None, Some(&args), false).await?;
         if let Some(error) = role_lifecycle_error(&observation) {
             return Err(
                 format!("role {name} start failed: {error}; existing role state retained").into(),
@@ -883,7 +899,9 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
             }
             [kind,name,options @ ..] if kind=="prepare" || kind=="run" => {
                 let (snapshot,path) = approved(&root,name)?;
-                let choices = preparation(&snapshot,options)?;
+                let confirm_fresh_identity = kind=="run" && options.iter().any(|option| option=="--confirm-fresh-identity");
+                let options:Vec<_> = options.iter().filter(|option| !confirm_fresh_identity || *option!="--confirm-fresh-identity").cloned().collect();
+                let choices = preparation(&snapshot,&options)?;
                 if kind=="prepare" {
                     prepare_roles(&root,&snapshot,&path,&choices,false).await?;
                     println!("Prepared Factory {}; no models started. Establish each role's own authentication: factory login {} ROLE. Then factory run {}",name,name,name);
@@ -894,7 +912,7 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
                         if !options.is_empty() { return Err("stop the Factory roles before changing preparation choices".into()); }
                         for (role_name,role) in &snapshot.roles { staged(&root,&snapshot,role_name,role)?; }
                     } else { prepare_roles(&root,&snapshot,&path,&choices,true).await?; }
-                    let report=start_roles(&root,&snapshot).await?;
+                    let report=start_roles(&root,&snapshot,confirm_fresh_identity).await?;
                     println!("{}",serde_json::to_string_pretty(&report)?);
                     println!("Started Factory {name}; observed all approved roles ready");
                 }

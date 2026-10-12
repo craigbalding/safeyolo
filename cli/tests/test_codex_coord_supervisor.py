@@ -15,7 +15,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -38,6 +38,7 @@ class CoordFixture:
     def __init__(self):
         self.messages = []
         self.sends = 0
+        self.requests = []
         self.agent_name = "forge"
         self.unknown_send = False
         self.page = {"edges": [EDGE], "next_cursor": 7}
@@ -50,6 +51,7 @@ class CoordFixture:
                 pass
 
             def do_GET(self):
+                owner.requests.append(("GET", self.path))
                 path = urlsplit(self.path).path
                 if path == "/health":
                     result = {"agent_api": "ok"}
@@ -68,6 +70,7 @@ class CoordFixture:
                 self.reply(200, result)
 
             def do_POST(self):
+                owner.requests.append(("POST", self.path))
                 args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 path = urlsplit(self.path).path
                 if path.endswith("/join"):
@@ -193,9 +196,113 @@ if result.returncode==0:
     path.chmod(0o755)
 
 
-def run(binary, fixture, *args):
+def run(binary, fixture, *args, confirm_fresh_identity=True):
     _coord, env, config, state, _harness, _capture = fixture
-    return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", "--", *args], env=env, capture_output=True, text=True, timeout=12)
+    confirmation = ["--confirm-fresh-identity"] if confirm_fresh_identity else []
+    return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", *confirmation, "--", *args], env=env, capture_output=True, text=True, timeout=12)
+
+
+@pytest.mark.parametrize("harness_name", ["codex", "pi"])
+@pytest.mark.parametrize("factory", [False, True])
+def test_missing_checkpoint_refuses_before_coord_model_or_save_on_every_retry(binary, fixture, harness_name, factory):
+    coord, _env, config, state, harness, capture = fixture
+    if factory:
+        factory_configuration(config)
+    settings = json.loads(config.read_text())
+    settings["harness"] = harness_name
+    config.write_text(json.dumps(settings))
+    # Even a version or login probe would leave a marker at the model seam.
+    harness.write_text(f"#!/bin/sh\ntouch '{capture}/unexpected-model'\nexit 1\n")
+    harness.chmod(0o755)
+    for _ in range(2):
+        result = run(binary, fixture, confirm_fresh_identity=False)
+        assert result.returncode != 0
+        assert "--confirm-fresh-identity" in result.stderr
+        assert "Clearing room messages does not reset attention" in result.stderr
+        assert not state.exists()
+        assert coord.requests == []
+        assert not list(capture.iterdir())
+
+
+@pytest.mark.parametrize("harness_name", ["codex", "pi"])
+def test_confirmed_first_start_uses_cursor_zero_and_existing_state_needs_no_confirmation(binary, fixture, harness_name):
+    coord, _env, config, state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings["harness"] = harness_name
+    config.write_text(json.dumps(settings))
+    harness_script(harness, binary, capture, pi=harness_name == "pi")
+    args = ["--provider", "fixture", "--model", "fixture"] if harness_name == "pi" else []
+    result = run(binary, fixture, *args)
+    assert result.returncode == 0, result.stderr
+    waits = [parse_qs(urlsplit(path).query)["since"] for _, path in coord.requests
+             if urlsplit(path).path == "/api/coord/attention/wait"]
+    assert waits == [["0"]]
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 7
+    assert saved["harness"] == harness_name
+    assert coord.sends == 1
+    result = run(binary, fixture, *args, confirm_fresh_identity=False)
+    assert result.returncode == 0, result.stderr
+    # Ordinary idle restart retires a completed session; retained attention
+    # and all other checkpoint state stay intact.
+    assert json.loads(state.read_text()) == {**saved, "thread_id": None}
+    assert len(list(capture.glob("prompt-*"))) == 1
+    assert coord.sends == 1
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_invalid_checkpoint_is_not_reinitialized_by_confirmation(binary, fixture, confirmed):
+    coord, _env, _config, state, harness, capture = fixture
+    invalid = json.loads(subprocess.check_output([str(binary), "read-state", str(state)]))
+    invalid["schema"] = "unsupported"
+    state.write_text(json.dumps(invalid))
+    saved = state.read_bytes()
+    harness_script(harness, binary, capture)
+    result = run(binary, fixture, confirm_fresh_identity=confirmed)
+    assert result.returncode != 0
+    assert "invalid native Coord checkpoint" in result.stderr
+    assert state.read_bytes() == saved
+    assert coord.requests == []
+    assert not list(capture.iterdir())
+
+
+@pytest.mark.parametrize("harness_name", ["codex", "pi"])
+def test_staged_launcher_carries_confirmation_without_forwarding_it_to_the_model(binary, fixture, harness_name):
+    coord, env, config, state, harness, capture = fixture
+    home = Path(env["HOME"])
+    directory = home / ".safeyolo"
+    directory.mkdir()
+    (directory / "safeyolo-coord").symlink_to(binary)
+    config.rename(directory / "coord-supervisor.json")
+    settings = json.loads((directory / "coord-supervisor.json").read_text())
+    settings["harness"] = harness_name
+    (directory / "coord-supervisor.json").write_text(json.dumps(settings))
+    state = directory / "coord-supervisor-state.json"
+    harness_script(harness, binary, capture, pi=harness_name == "pi")
+    launcher = home / ".safeyolo-command"
+    # Stage the same foreground anchors used by the ordinary host setups.
+    source = ('supervised_args=()\nargs=()\nexec codex "${args[@]}" "$@"\n'
+              if harness_name == "codex" else
+              f'args=(--provider fixture --model fixture)\npi_bin={str(harness)!r}\nexec "$pi_bin" "${{args[@]}}" "$@"\n')
+    launcher.write_text("#!/usr/bin/env bash\nset -e\n" + source)
+    launcher.chmod(0o755)
+    subprocess.run([str(binary), "supervised-launcher", str(launcher), harness_name], check=True, capture_output=True)
+    refused = subprocess.run([str(launcher)], env=env, capture_output=True, text=True, timeout=5)
+    assert refused.returncode != 0 and "--confirm-fresh-identity" in refused.stderr
+    assert not state.exists() and coord.requests == [] and not list(capture.iterdir())
+    process = subprocess.Popen([str(launcher), "--confirm-fresh-identity", "--model", "fixture"],
+                               env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        until(lambda: state.exists() and ATTENTION in json.loads(state.read_text())["recent_attention_ids"])
+        prompt = prompt_checkpoint(capture)
+        assert prompt["in_flight"][0]["attention_id"] == ATTENTION
+        arguments = json.loads(next(capture.glob("argv-*")).read_text())
+        assert "--confirm-fresh-identity" not in arguments
+        assert "--model" in arguments and "fixture" in arguments
+        assert coord.sends == 1
+    finally:
+        process.terminate()
+        process.communicate(timeout=5)
 
 
 def until(predicate):
@@ -229,7 +336,7 @@ def test_structured_wait_checkpoints_task_before_terminal(binary, fixture):
 def test_interrupted_turn_recovers_uncertain_checkpoint(binary, fixture):
     _coord, env, config, state, harness, capture = fixture
     harness_script(harness, binary, capture, paused=True)
-    proc = subprocess.Popen([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", "--confirm-fresh-identity"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     owned = None
     try:
         def started():

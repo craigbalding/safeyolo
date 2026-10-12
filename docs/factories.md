@@ -160,6 +160,13 @@ Select an operator-authored Factory TOML and the workspaces for its roles.
 Each role keeps its own home and authentication;
 SafeYolo does not copy the host's login or credentials.
 
+For a first supervised start, each role with a missing checkpoint must use a
+fresh agent identity or fresh room memberships that have never received
+targeted attention in any configured room. Existing-identity migration is
+unsupported. Prepare and activate supervision before sending the first
+targeted task or operator direction. Clearing room messages does not reset
+the identity-wide attention feed.
+
 The commands in this guide use the installation at `$HOME/.safeyolo`. If your
 installed instance uses another root, replace that path in both the executable
 and `--root` argument. Keep using the same host account and instance.
@@ -192,7 +199,6 @@ contract, authenticate the coordinator, owner and reviewer:
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog coordinator
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog owner
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog reviewer
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory run backlog
 ```
 
 Codex uses its device login and explicit agent-local adoption. Pi opens its
@@ -201,6 +207,20 @@ The entry stops the login sandbox afterward and keeps that role's installed
 tools and login. Provider configuration remains an operator choice. An
 existing supported external-provider configuration can supply authentication
 without another login.
+
+For the first run, explicitly confirm that the roles with missing checkpoints
+are fresh as described above. On the same host account and instance, run:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory run backlog --confirm-fresh-identity
+```
+
+The confirmation applies only to this launch; it is not stored in the
+contract or supervisor configuration. Without confirmation, a missing
+checkpoint refuses startup before any role starts, makes supervisor Coord
+calls, performs model work or saves an initial checkpoint. Refusal leaves no
+checkpoint that could bypass confirmation on retry. Valid checkpoints resume
+without this option, and preparation reapplication preserves their state.
 
 `run` stages the approved supervised roles, provisions missing declared room
 access and starts them through the existing native agent lifecycle. It reports

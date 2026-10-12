@@ -96,6 +96,7 @@ async fn run() -> Result<(), Error> {
             let mut config = home.join(".safeyolo/coord-supervisor.json");
             let mut state = home.join(".safeyolo/coord-supervisor-state.json");
             let mut once = false;
+            let mut confirm_fresh_identity = false;
             let mut position = 0;
             while position < rest.len() {
                 match rest[position]
@@ -107,6 +108,7 @@ async fn run() -> Result<(), Error> {
                         break;
                     }
                     "--once" => once = true,
+                    "--confirm-fresh-identity" => confirm_fresh_identity = true,
                     "--config" | "--state" => {
                         let field = &rest[position];
                         position += 1;
@@ -126,11 +128,12 @@ async fn run() -> Result<(), Error> {
                 &state,
                 rest[position..].to_vec(),
                 once,
+                confirm_fresh_identity,
             )
             .await;
         }
         [kind] if kind == "--help" || kind == "help" => println!(
-            "safeyolo-coord mcp\nsafeyolo-coord call TOOL < ARGUMENTS_JSON\nsafeyolo-coord supervise [--config FILE] [--state FILE] [--once] [-- HARNESS_ARGS...]\nsafeyolo-coord inspect-state FILE\nsafeyolo-coord stage-runtime HOME LINUX_EXECUTABLE\nsafeyolo-coord claude-state HOME OPERATOR_HOME\nsafeyolo-coord stage-mcp HOME codex|claude [--require-agent-local]\nsafeyolo-coord codex-state [--home HOME] [--mcp-launcher COMMAND] [--require-agent-local] [adopt|reset]\nsafeyolo-coord factory-stage CONFIG INSTRUCTIONS AGENT SNAPSHOT ROLE codex|pi\nsafeyolo-coord ordinary-stage CONFIG AGENT ROOMS COORDINATORS\nRuns tools and supervision inside the guest through its proxy and Agent API token. Staging runs on the operator host. Fresh native checkpoints only; uncertain work requires retained-history and working-tree inspection before repeated writes."
+            "safeyolo-coord mcp\nsafeyolo-coord call TOOL < ARGUMENTS_JSON\nsafeyolo-coord supervise [--config FILE] [--state FILE] [--once] [--confirm-fresh-identity] [-- HARNESS_ARGS...]\nsafeyolo-coord inspect-state FILE\nsafeyolo-coord stage-runtime HOME LINUX_EXECUTABLE\nsafeyolo-coord claude-state HOME OPERATOR_HOME\nsafeyolo-coord stage-mcp HOME codex|claude [--require-agent-local]\nsafeyolo-coord codex-state [--home HOME] [--mcp-launcher COMMAND] [--require-agent-local] [adopt|reset]\nsafeyolo-coord factory-stage CONFIG INSTRUCTIONS AGENT SNAPSHOT ROLE codex|pi\nsafeyolo-coord ordinary-stage CONFIG AGENT ROOMS COORDINATORS\nMissing supervisor state requires --confirm-fresh-identity once, only when the configured identity or membership has never received targeted attention in any configured room. Valid checkpoints resume without confirmation. Clearing room messages does not reset attention.\nRuns tools and supervision inside the guest through its proxy and Agent API token. Staging runs on the operator host. Fresh native checkpoints only; uncertain work requires retained-history and working-tree inspection before repeated writes."
         ),
         _ => return safeyolo_proxy::coord_setup::run(&arguments),
     }
