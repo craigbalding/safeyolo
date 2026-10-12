@@ -12,6 +12,11 @@ on:
         required: true
         default: v1
         type: string
+      publish_initial_g1:
+        description: Publish only the retained original guest-2026-10-12.1 after host publication
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ !inputs.publish_initial_g1 }}
     strategy:
       fail-fast: false
       matrix:
@@ -100,21 +106,48 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # Public publication is held under #1003. Only a separate operator decision
-    # may enable this job; preparation never enables publication implicitly.
-    if: ${{ false }}
-    needs: prepare
+    # Craig authorized the initial H then G1 sequence. Relay dispatches this
+    # fixed G1 only after H publication; other publication remains held.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_initial_g1 }}
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
       packages: write
+    env:
+      GUEST_VERSION: guest-2026-10-12.1
+      GUEST_COMPATIBILITY: v1
+      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
+      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
     steps:
+      - name: Refuse conflicting initial guest inputs
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_COMPATIBILITY: ${{ inputs.compatibility }}
+        run: |
+          if [[ "$REQUESTED_VERSION" != "$GUEST_VERSION" || "$REQUESTED_COMPATIBILITY" != "$GUEST_COMPATIBILITY" ]]; then
+            echo 'Initial G1 publication requires version guest-2026-10-12.1 and compatibility v1.' >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 8234a047d810d543d8c4d1cb1fa9859987be035b
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: guest-archives-*
+          artifact-ids: 11748025327,11746464998
+          run-id: 38248401312
+          repository: craigbalding/safeyolo
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: true
           path: ${{ runner.temp }}/archives
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: '11747551391'
+          run-id: 38248401312
+          repository: craigbalding/safeyolo
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/retained-guest-oci
       - name: Install pinned ORAS
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
@@ -122,17 +155,22 @@ jobs:
       - name: Build the shared native OCI verifier
         env:
           CARGO_BUILD_JOBS: "1"
-          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+          SAFEYOLO_BUILD_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
         run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+      - name: Verify original retained inputs before registry authentication
+        run: |
+          [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
+          proxy/target/debug/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
+          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
+            --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
+            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
+            --verifier proxy/target/debug/examples/verify_guest_oci
+          [[ $(oras resolve --oci-layout "$RUNNER_TEMP/guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
       - name: Authenticate with the linked repository token
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Upload, verify and promote the complete guest release
-        env:
-          GUEST_VERSION: ${{ inputs.version }}
-          GUEST_COMPATIBILITY: ${{ inputs.compatibility }}
-          GUEST_REVISION: ${{ github.sha }}
         run: |
           scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
