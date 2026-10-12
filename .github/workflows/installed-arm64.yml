@@ -32,8 +32,9 @@ jobs:
       GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
       GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
       GUEST_ARCHIVE_BYTES: "223000369"
-      SAFEYOLO_BLACKBOX_ARTIFACTS_DIR: ${{ runner.temp }}/installed-arm64-reports
     steps:
+      - name: Select the owned report directory
+        run: printf 'SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=%s/installed-arm64-reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -108,11 +109,12 @@ jobs:
           du -sh "$CARGO_TARGET_DIR"
           scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
       - name: Verify the logical G1 index and extract Linux ARM64 assets
+        shell: bash
         run: |
           layout="$RUNNER_TEMP/retained-guest-oci"
           index="$layout/blobs/sha256/${GUEST_INDEX#sha256:}"
           # index.json is ORAS's catalogue; GUEST_INDEX names the logical release.
-          proxy/target/debug/examples/verify_guest_oci "$layout" "$GUEST_INDEX" "$GUEST_COMPATIBILITY" \
+          proxy/target/debug/examples/verify_guest_oci "$layout" "$GUEST_INDEX" "$GUEST_COMPATIBILITY" 2>&1 \
             | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/guest-verification.txt"
           jq -e --arg source "$GUEST_REVISION" --arg version "$GUEST_VERSION" '
             .annotations["org.opencontainers.image.revision"] == $source and
@@ -163,6 +165,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: installed-arm64-${{ github.run_id }}
-          path: ${{ runner.temp }}/installed-arm64-reports
+          path: ${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}
           retention-days: 30
           if-no-files-found: warn

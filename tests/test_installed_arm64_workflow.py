@@ -26,9 +26,31 @@ def step(name):
 
 
 def execute(name, cwd, env):
-    return subprocess.run(["bash", "-euo", "pipefail", "-c", step(name)["run"]],
+    selected = step(name)
+    workflow_shell = WORKFLOW.get("defaults", {}).get("run", {}).get("shell")
+    job_shell = JOB.get("defaults", {}).get("run", {}).get("shell", workflow_shell)
+    shell = selected.get("shell", job_shell)
+    # Match GitHub's Ubuntu shell templates. An unspecified shell lacks
+    # pipefail; explicit Bash uses --noprofile --norc -eo pipefail.
+    command = ["bash", "-e"] if shell is None else ["bash", "--noprofile", "--norc", "-eo", "pipefail"]
+    if shell not in {None, "bash"}:
+        raise ValueError(f"unsupported workflow shell: {shell}")
+    script = cwd / "workflow-step.sh"
+    script.write_text(selected["run"])
+    return subprocess.run([*command, str(script)],
                           cwd=cwd, env={**os.environ, **JOB["env"], **env},
                           text=True, capture_output=True, check=False, timeout=20)
+
+
+@pytest.mark.parametrize("shell", [None, "bash"])
+def test_step_executor_preserves_github_default_and_explicit_bash_semantics(tmp_path, monkeypatch, shell):
+    selected = {"name": "shell control", "run": "false | tee verifier.txt\nprintf after > after.txt\n"}
+    if shell is not None:
+        selected["shell"] = shell
+    monkeypatch.setitem(JOB, "steps", [selected])
+    result = execute("shell control", tmp_path, {})
+    assert (result.returncode == 0) == (shell is None), result.stdout + result.stderr
+    assert (tmp_path / "after.txt").exists() == (shell is None)
 
 
 def test_manual_route_preserves_source_jobs_and_pins_read_only_inputs():
@@ -58,7 +80,7 @@ def test_manual_route_preserves_source_jobs_and_pins_read_only_inputs():
     assert "guest/build" not in commands and "publish_guest" not in commands
     assert "--lane systrap" in commands and "--platform-assets" in commands
     upload = JOB["steps"][-1]
-    assert upload["if"] == "always()" and upload["with"]["path"] == "${{ runner.temp }}/installed-arm64-reports"
+    assert upload["if"] == "always()" and upload["with"]["path"] == "${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}"
     nightly = yaml.safe_load((ROOT / ".github/workflows/blackbox.yml").read_text())
     assert nightly.get("on", nightly.get(True))["workflow_dispatch"] is None
     assert set(nightly["jobs"]) == {"guest-inputs", "systrap", "macos-package"}
@@ -110,6 +132,31 @@ sys.stdout.buffer.write(Path(os.environ[files[endpoint]]).read_bytes())
            "RELEASE_JSON": str(tmp_path / "release.json"), "HOST_FILE": str(archive),
            "SUMS_FILE": str(sums), "API_CALLS": str(tmp_path / "api-calls")}
     return metadata, env
+
+
+def test_report_binding_uses_admitted_context_and_reaches_writer_and_upload(tmp_path, host_inputs):
+    # runner is unavailable in job.env. Runtime paths belong to a run step,
+    # whose GITHUB_ENV assignment is supplied to subsequent steps by Actions.
+    assert "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR" not in JOB["env"]
+    assert "${{ runner." not in json.dumps(JOB["env"])
+    metadata, env = host_inputs
+    runner_temp = tmp_path / "runner temp $(unused)"
+    runner_temp.mkdir()
+    env_file = tmp_path / "github-env"
+    result = execute("Select the owned report directory", tmp_path, {
+        "RUNNER_TEMP": str(runner_temp), "GITHUB_ENV": str(env_file),
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    key, value = env_file.read_text().strip().split("=", 1)
+    assert key == "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
+    assert value == str(runner_temp / "installed-arm64-reports")
+    Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
+    result = execute("Read and verify the retained host archive", tmp_path, {
+        **env, "RUNNER_TEMP": str(runner_temp), key: value,
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (Path(value) / "host-input.txt").is_file()
+    assert JOB["steps"][-1]["with"]["path"] == "${{ env." + key + " }}"
 
 
 @pytest.mark.parametrize("defect", [None, "release-denied", "asset-denied", "public", "tag", "source",
@@ -256,7 +303,7 @@ def guest_inputs(tmp_path):
                 subprocess.run([real_sudo, "-n", "chown", "-Rh", f"{os.getuid()}:{os.getgid()}", str(extracted)], check=True)
 
 
-@pytest.mark.parametrize("defect", [None, "index", "child", "config", "blob", "missing-blob",
+@pytest.mark.parametrize("defect", [None, "index", "child", "config", "blob", "missing-blob", "missing-mac-archive",
                                   "source", "version", "compatibility", "selected-digest", "size"])
 def test_logical_index_native_verification_and_actual_extraction(tmp_path, guest_inputs, defect):
     layout, env = guest_inputs
@@ -271,6 +318,10 @@ def test_logical_index_native_verification_and_actual_extraction(tmp_path, guest
             output.write(b"changed")
     elif defect == "missing-blob":
         (blobs / manifest["layers"][0]["digest"][7:]).unlink()
+    elif defect == "missing-mac-archive":
+        mac = next(item for item in index["manifests"] if item["platform"]["os"] == "darwin")
+        mac_manifest = json.loads((blobs / mac["digest"][7:]).read_bytes())
+        (blobs / mac_manifest["layers"][0]["digest"][7:]).unlink()
     elif defect in {"source", "version", "compatibility", "selected-digest", "size"}:
         env[{"source": "GUEST_REVISION", "version": "GUEST_VERSION", "compatibility": "GUEST_COMPATIBILITY",
              "selected-digest": "GUEST_ARCHIVE_SHA256", "size": "GUEST_ARCHIVE_BYTES"}[defect]] = "wrong"
@@ -279,6 +330,9 @@ def test_logical_index_native_verification_and_actual_extraction(tmp_path, guest
     extracted = tmp_path / "verified-extracted-assets"
     if defect is not None:
         assert not extracted.exists()
+        if defect in {"config", "missing-mac-archive"}:
+            verification = (tmp_path / "reports/guest-verification.txt").read_text()
+            assert ("guest descriptor size mismatch" if defect == "config" else "No such file or directory") in verification
         return
     assert "verified linux/arm64" in result.stdout and "verified index=" in result.stdout
     tree = extracted / "rootfs-tree"
