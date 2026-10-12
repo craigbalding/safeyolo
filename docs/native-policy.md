@@ -160,7 +160,10 @@ Keep that directory: installed Linux instances reference its trees.
 consumer platform and selected index, child-manifest and archive descriptors.
 Normal startup and restart use that selection without advancing a tag.
 A failed pull, verification or extraction stops installation before initialization.
-Explicit guest upgrade remains work under issue #238.
+Use `safeyolo guest upgrade` to explicitly select a newer compatible default
+guest, and `safeyolo guest rollback` to restore its previous selection. See the
+[guest upgrade workflow](guest-oci.md#upgrade-or-roll-back-the-installed-default-guest)
+for effects on running agents, pinned targets and recovery.
 
 For explicit offline or contributor inputs, obtain prepared assets from the bundle supplier, or use the
 [guest build instructions](../guest/README.md) to produce them separately.

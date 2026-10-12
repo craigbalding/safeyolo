@@ -202,6 +202,7 @@ pub(crate) async fn setup(
 pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value, Error> {
     validate_sandbox(agent)?;
     let root = config_dir();
+    let guest_inputs = crate::guest_acquisition::selected_inputs(&root)?;
     let directory = root.join("agents").join(&agent.name);
     let home = directory.join("home");
     let share = directory.join("config-share");
@@ -244,6 +245,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
     let previous = crate::guest_commands::read_state(&share.join("host-launch-context.json"))?
         .unwrap_or(Value::Null);
     let context = json!({"generation":run_id,"agent_id":agent.id,"ip":ip,"workspace":workspace,"memory_mb":agent.memory_mb.unwrap_or(4096),
+        "guest_inputs":guest_inputs,
         "extra_shares":shares.iter().map(|(host,_,ro)| json!({"host_path":host,"read_only":ro})).collect::<Vec<_>>(),
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});
@@ -299,7 +301,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         let rootfs = if directory.join("rootfs").is_dir() {
             directory.join("rootfs")
         } else {
-            root.join("share/rootfs-tree")
+            guest_inputs.join("rootfs-tree")
         };
         if !rootfs.is_dir() {
             return Err(format!("installed rootfs tree is missing: {}", rootfs.display()).into());
@@ -333,9 +335,9 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
             &root,
             &directory,
             &rootfs,
+            &guest_inputs,
             &workspace,
             ip,
-            &agent.name,
             &shares,
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
@@ -384,11 +386,15 @@ fn oci(
     root: &Path,
     directory: &Path,
     rootfs: &Path,
+    guest_inputs: &Path,
     workspace: &Path,
     ip: &str,
-    name: &str,
     shares: &[(PathBuf, String, bool)],
 ) -> Result<Value, Error> {
+    let name = directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("agent directory has no name")?;
     let bind = |host: &Path, guest: &str, ro: bool| json!({"destination":guest,"type":"bind","source":host,"options":if ro {vec!["rbind","ro","nosuid","nodev"]} else {vec!["rbind","rw","nosuid","nodev","dcache=0"]}});
     let mut mounts = vec![
         json!({"destination":"/proc","type":"proc","source":"proc"}),
@@ -420,7 +426,7 @@ fn oci(
     let caches = if caches.is_file() {
         caches
     } else {
-        root.join("share/cache-paths.txt")
+        guest_inputs.join("cache-paths.txt")
     };
     if caches.is_file() {
         for guest in fs::read_to_string(caches)?
@@ -565,6 +571,160 @@ mod mount_tests {
 #[cfg(test)]
 mod package_tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn boot_stages_selected_rootfs_and_caches_together_without_discovery() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        fs::write(root.join("config.toml"), "").unwrap();
+        let platform = if std::env::consts::ARCH == "aarch64" {
+            "arm64"
+        } else {
+            "amd64"
+        };
+        fs::write(root.join("package-info"), format!(
+            "source_commit={}\nprofile=debug\nplatform=linux-{platform}\nminimum_runtime=2.34\nguest_compatibility=v1\nguest_repository={}\nguest_discovery_tag=compat-v1\n",
+            "a".repeat(40), crate::guest_oci::REPOSITORY,
+        )).unwrap();
+        fs::create_dir_all(root.join("assets/guest")).unwrap();
+        for name in [
+            "guest-init",
+            "guest-init-static",
+            "guest-init-per-run",
+            "guest-proxy-forwarder",
+            "guest-shell-bridge",
+            "guest-desktop",
+        ] {
+            fs::write(root.join("assets/guest").join(name), "#!/bin/sh\n").unwrap();
+        }
+        fs::write(
+            root.join("assets/guest/safeyolo-guest"),
+            b"\x7fELF0000000000000000",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("assets/skills/safeyolo")).unwrap();
+        fs::write(root.join("assets/skills/safeyolo/SKILL.md"), "fixture").unwrap();
+        fs::create_dir(root.join("certs")).unwrap();
+        fs::write(root.join("certs/mitmproxy-ca-cert.pem"), "fixture CA").unwrap();
+        for version in ["g1", "g2"] {
+            let inputs = root.join(version);
+            for path in [
+                "etc",
+                "workspace",
+                "safeyolo",
+                "safeyolo-status",
+                "home/agent",
+                "usr/local/share/ca-certificates",
+            ] {
+                fs::create_dir_all(inputs.join("rootfs-tree").join(path)).unwrap();
+            }
+            fs::write(
+                inputs.join("rootfs-tree/usr/local/share/ca-certificates/safeyolo.crt"),
+                "",
+            )
+            .unwrap();
+            fs::write(
+                inputs.join("cache-paths.txt"),
+                format!("/var/cache/{version}\n"),
+            )
+            .unwrap();
+            // Synthetic staging inputs, not an archive-ownership witness.
+            let tree = inputs.join("rootfs-tree");
+            fs::set_permissions(&tree, fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(
+                std::process::Command::new("sudo")
+                    .args(["-n", "chown", "100000:100000"])
+                    .arg(&tree)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::create_dir(root.join("share")).unwrap();
+        std::os::unix::fs::symlink(root.join("g1/rootfs-tree"), root.join("share/rootfs-tree"))
+            .unwrap();
+        fs::copy(
+            root.join("g1/cache-paths.txt"),
+            root.join("share/cache-paths.txt"),
+        )
+        .unwrap();
+        let selection = |version: &str, hex: &str| {
+            json!({
+                "version":"guest-2026-10-12.1", "repository":crate::guest_oci::REPOSITORY,
+                "compatibility":"v1", "platform":format!("linux/{platform}"),
+                "index":{"digest":format!("sha256:{}", hex.repeat(64)),"size":1},
+                "manifest":{"digest":format!("sha256:{}", hex.repeat(64)),"size":1},
+                "archive":{"digest":format!("sha256:{}", hex.repeat(64)),"size":1},
+                "assets":root.join(version),
+            })
+        };
+        let g1 = selection("g1", "a");
+        let mut g2 = selection("g2", "b");
+        g2["installed_assets"] = json!(root.join("g2"));
+        g2["previous"] = g1.clone();
+        let path = root.join("share/guest-selection.json");
+        crate::coord_supervisor::atomic_write(&path, &serde_json::to_vec(&g1).unwrap(), 0o600)
+            .unwrap();
+        let agent = Agent {
+            name: "alice".into(),
+            id: uuid::Uuid::new_v4().to_string(),
+            folder: Some(root.display().to_string()),
+            launcher: None,
+            host_script: None,
+            memory_mb: None,
+            rootfs_overlay: None,
+            user_default_args: vec![],
+            mounts: vec![],
+            dangerously_allow_unowned: false,
+        };
+        crate::host_platform::in_instance(root.to_owned(), async {
+            let old_context = stage(&agent, "10.200.0.1", &"1".repeat(32)).await.unwrap();
+            let config = root.join("agents/alice/config.json");
+            let old_spec: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            crate::coord_supervisor::atomic_write(&path, &serde_json::to_vec(&g2).unwrap(), 0o600)
+                .unwrap();
+            assert_eq!(old_context["guest_inputs"], json!(root.join("share")));
+            assert_eq!(old_spec["root"]["path"], json!(root.join("g1/rootfs-tree")));
+            let new_context = stage(&agent, "10.200.0.1", &"2".repeat(32)).await.unwrap();
+            let new_spec: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            assert_eq!(new_context["guest_inputs"], json!(root.join("g2")));
+            assert_eq!(new_spec["root"]["path"], json!(root.join("g2/rootfs-tree")));
+            for (spec, expected, rejected) in [
+                (&old_spec, "/var/cache/g1", "/var/cache/g2"),
+                (&new_spec, "/var/cache/g2", "/var/cache/g1"),
+            ] {
+                let mounts = spec["mounts"].as_array().unwrap();
+                assert!(mounts.iter().any(|mount| mount["destination"] == expected));
+                assert!(mounts.iter().all(|mount| mount["destination"] != rejected));
+            }
+            // A custom profile with explicit inputs does not consume the default.
+            let directory = root.join("agents/alice");
+            std::os::unix::fs::symlink(root.join("g1/rootfs-tree"), directory.join("rootfs"))
+                .unwrap();
+            fs::write(directory.join("cache-paths.txt"), "/var/cache/custom\n").unwrap();
+            fs::rename(root.join("g2"), root.join("unused-g2")).unwrap();
+            stage(&agent, "10.200.0.1", &"4".repeat(32)).await.unwrap();
+            let custom: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            assert_eq!(custom["root"]["path"], json!(root.join("g1/rootfs-tree")));
+            assert!(
+                custom["mounts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|mount| mount["destination"] == "/var/cache/custom")
+            );
+            fs::rename(root.join("unused-g2"), root.join("g2")).unwrap();
+            fs::remove_file(directory.join("rootfs")).unwrap();
+            fs::remove_file(directory.join("cache-paths.txt")).unwrap();
+            crate::coord_supervisor::atomic_write(&path, &serde_json::to_vec(&g1).unwrap(), 0o600)
+                .unwrap();
+            stage(&agent, "10.200.0.1", &"3".repeat(32)).await.unwrap();
+            let restored: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            assert_eq!(restored["root"]["path"], old_spec["root"]["path"]);
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn installed_skills_replace_stale_files_and_survive_missing_input() {

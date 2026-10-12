@@ -137,7 +137,8 @@ def registry(tmp_path):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(pem)
     contents, requests = {}, []
-    faults = {"partial": None, "advance": None}
+    faults = {"partial": None, "advance": None, "pause": None,
+              "entered": threading.Event(), "resume": threading.Event()}
 
     class RegistryRequest(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -172,6 +173,9 @@ def registry(tmp_path):
             if key == "manifests/compat-v1" and faults["advance"] is not None:
                 contents.update(faults["advance"])
                 faults["advance"] = None
+            if key is not None and key == faults["pause"]:
+                faults["entered"].set()
+                faults["resume"].wait(timeout=10)
             try:
                 self.wfile.write(data[:len(data) // 2] if key == faults["partial"] else data)
             except (BrokenPipeError, ConnectionResetError):
@@ -197,6 +201,7 @@ def registry(tmp_path):
     try:
         yield contents, requests, faults, environment
     finally:
+        faults["resume"].set()
         for fixture in (parent, server):
             fixture.shutdown()
             fixture.server_close()

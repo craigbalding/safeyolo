@@ -25,8 +25,10 @@ use crate::{
 
 #[path = "guest_acquisition/archive.rs"]
 mod archive;
+#[path = "guest_acquisition/upgrade.rs"]
+mod upgrade;
 
-pub const HELP: &str = "safeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY]\nPrepare the compatible default guest for the verified native installer.\nPrint the prepared asset directory and write its OCI selection as JSON. Existing installed selections are retained.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: Linux installations reference its trees. --store selects another persistent directory.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
+pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY]\nPrepare the compatible default guest for the verified native installer.\nPrint the prepared asset directory and write its OCI selection as JSON. Existing installed selections are retained.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
 struct PackageGuest {
@@ -173,7 +175,7 @@ fn registry_client() -> Result<Client, Error> {
 }
 
 /// The installed selection records standard OCI identities, independently of host source.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GuestSelection {
     version: String,
@@ -184,6 +186,12 @@ struct GuestSelection {
     manifest: Descriptor,
     archive: Descriptor,
     assets: PathBuf,
+    // Initial installations use share/. Upgrades retain a separate backend
+    // installation, so an existing sandbox can keep using its original files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    installed_assets: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<Box<GuestSelection>>,
 }
 
 async fn blob(
@@ -236,9 +244,16 @@ async fn acquire(
     client: &Client,
     package: &PackageGuest,
     store: &Path,
+    index_digest: Option<&str>,
+    retained: Option<&GuestSelection>,
 ) -> Result<GuestSelection, Error> {
-    let reference: Reference =
-        format!("{}:{}", package.repository, package.discovery_tag).parse()?;
+    let reference: Reference = match index_digest {
+        Some(digest) => {
+            guest_oci::sha256_hex(digest)?;
+            format!("{}@{digest}", package.repository).parse()?
+        }
+        None => format!("{}:{}", package.repository, package.discovery_tag).parse()?,
+    };
     let (bytes, digest) = client
         .pull_manifest_raw(
             &reference,
@@ -246,7 +261,11 @@ async fn acquire(
             &[guest_oci::INDEX_MEDIA_TYPE],
         )
         .await?;
-    let index = GuestIndex::parse(&bytes, &digest, &package.compatibility)?;
+    let index = GuestIndex::parse(
+        &bytes,
+        index_digest.unwrap_or(&digest),
+        &package.compatibility,
+    )?;
     let manifest = index.manifest(package.platform).clone();
     let pinned: Reference = format!("{}@{}", package.repository, manifest.digest).parse()?;
     let (bytes, _) = client
@@ -261,11 +280,24 @@ async fn acquire(
     child.validate_config(&fs::read(config)?)?;
     let trees = store.join("trees/sha256");
     fs::create_dir_all(&trees)?;
-    let assets = trees.join(guest_oci::sha256_hex(&child.archive.digest)?);
+    let retained = retained.filter(|selected| selected.archive.digest == child.archive.digest);
+    let assets = if let Some(selected) = retained {
+        child.archive.check_size(selected.archive.size)?;
+        selected.assets.clone()
+    } else {
+        trees.join(guest_oci::sha256_hex(&child.archive.digest)?)
+    };
+    // Verify a reusable archive's descriptor too. A changed index can declare
+    // a wrong size even when its tree already exists from an earlier operation.
+    let input = if retained.is_none() {
+        Some(blob(client, &pinned, &child.archive, store).await?)
+    } else {
+        None
+    };
     if assets.try_exists()? {
         archive::validate_assets(&assets, package.platform)?;
     } else {
-        let input = blob(client, &pinned, &child.archive, store).await?;
+        let input = input.ok_or("retained guest inputs disappeared during acquisition")?;
         let destination = assets.clone();
         let platform = package.platform;
         tokio::task::spawn_blocking(move || archive::prepare(&input, &destination, platform))
@@ -281,6 +313,8 @@ async fn acquire(
         manifest,
         archive: child.archive,
         assets,
+        installed_assets: None,
+        previous: None,
     })
 }
 
@@ -290,25 +324,58 @@ fn installed(root: &Path, package: &PackageGuest) -> Result<Option<GuestSelectio
         return Ok(None);
     }
     let selection: GuestSelection = serde_json::from_slice(&fs::read(path)?)?;
-    let (os, architecture) = package.platform.os_architecture();
-    if selection.repository != package.repository
-        || selection.compatibility != package.compatibility
-        || selection.platform != format!("{os}/{architecture}")
-    {
-        return Err("installed guest selection differs from the host package; use the explicit upgrade path".into());
-    }
-    for descriptor in [&selection.index, &selection.manifest, &selection.archive] {
-        guest_oci::sha256_hex(&descriptor.digest)?;
-    }
-    archive::validate_assets(&selection.assets, package.platform)?;
-    archive::validate_assets(&root.join("share"), package.platform)?;
-    #[cfg(target_os = "linux")]
-    if root.join("share/rootfs-tree").canonicalize()?
-        != selection.assets.join("rootfs-tree").canonicalize()?
-    {
-        return Err("installed rootfs tree differs from the retained guest selection".into());
-    }
+    selection.validate(package)?;
+    selection.validate_inputs(root, package.platform)?;
     Ok(Some(selection))
+}
+
+impl GuestSelection {
+    fn validate(&self, package: &PackageGuest) -> Result<(), Error> {
+        let (os, architecture) = package.platform.os_architecture();
+        if self.repository != package.repository
+            || self.compatibility != package.compatibility
+            || self.platform != format!("{os}/{architecture}")
+        {
+            return Err("installed guest selection differs from the host package's compatibility, repository or platform; selection was preserved".into());
+        }
+        for descriptor in [&self.index, &self.manifest, &self.archive] {
+            guest_oci::sha256_hex(&descriptor.digest)?;
+        }
+        Ok(())
+    }
+
+    fn inputs(&self, root: &Path) -> PathBuf {
+        self.installed_assets
+            .clone()
+            .unwrap_or_else(|| root.join("share"))
+    }
+
+    fn validate_inputs(&self, root: &Path, platform: ConsumerPlatform) -> Result<(), Error> {
+        archive::validate_assets(&self.assets, platform)?;
+        let inputs = self.inputs(root);
+        archive::validate_assets(&inputs, platform)?;
+        if platform != ConsumerPlatform::DarwinArm64
+            && inputs.join("rootfs-tree").canonicalize()?
+                != self.assets.join("rootfs-tree").canonicalize()?
+        {
+            return Err("installed rootfs tree differs from the retained guest selection".into());
+        }
+        Ok(())
+    }
+}
+
+/// Read one complete local selection. Boot never performs registry discovery.
+pub(crate) fn selected_inputs(root: &Path) -> Result<PathBuf, Error> {
+    if !root.join("share/guest-selection.json").try_exists()? {
+        return Ok(root.join("share"));
+    }
+    let package = PackageGuest::read(&root.join("package-info"))?;
+    let selection: GuestSelection =
+        serde_json::from_slice(&fs::read(root.join("share/guest-selection.json"))?)?;
+    selection.validate(&package)?;
+    // Boot validates the inputs it consumes. Explicit per-agent files may
+    // replace default files, and do not require unused cached inputs.
+    Ok(selection.inputs(root))
 }
 
 fn write_selection(selection: &GuestSelection, path: &Path) -> Result<(), Error> {
@@ -323,10 +390,16 @@ fn write_selection(selection: &GuestSelection, path: &Path) -> Result<(), Error>
 
 pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     if matches!(arguments, [help] if help == "--help")
-        || matches!(arguments, [acquire, help] if acquire == "acquire" && help == "--help")
+        || matches!(arguments, [command, help] if matches!(command.to_str(), Some("acquire" | "upgrade" | "rollback")) && help == "--help")
     {
         println!("{HELP}");
         return Ok(());
+    }
+    if arguments
+        .first()
+        .is_some_and(|value| value == "upgrade" || value == "rollback")
+    {
+        return upgrade::run(root, arguments).await;
     }
     if arguments.first().is_none_or(|value| value != "acquire") {
         return Err(format!("unknown guest command\n{HELP}").into());
@@ -378,7 +451,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     fs::create_dir_all(&store)?;
     let store = store.canonicalize()?;
     let _store_lock = crate::host_platform::lock_host_state(&store.join("acquire.lock"))?;
-    let selection = acquire(&registry_client()?, &package, &store).await?;
+    let selection = acquire(&registry_client()?, &package, &store, None, None).await?;
     // Acquisition can take time. Preserve an instance initialized meanwhile.
     if root.join("config.toml").try_exists()?
         || root.join("policy.toml").try_exists()?
