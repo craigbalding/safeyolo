@@ -106,6 +106,119 @@ listener/share settings stay in the same native config. Their authenticated
 Admin owners and Commander make the existing operator changes; the retired
 Python desktop/web/command-centre wrappers are not installed.
 
+## Shared working folder (optional)
+
+Use an ordinary writable directory mount at `/dropbox` for drafts and selected
+outputs that the operator and agent edit in turn. An agent dropbox is a shared
+working folder, unrelated to the Dropbox service. The files stay on the
+SafeYolo host. Local use needs no Tailscale setup.
+
+On the host, use the account that owns the selected native instance. The example
+assumes a configured disposable agent named `dropbox-trial` with no existing
+`/dropbox` mount. Keep the output parent outside the instance's runtime state
+and outside every agent workspace. Give each agent only its own child directory.
+These commands add a writable mount and restart that agent:
+
+```sh
+mkdir -p "$HOME/agent-dropboxes/dropbox-trial"
+safeyolo agent configure dropbox-trial --mount "$HOME/agent-dropboxes/dropbox-trial:/dropbox"
+safeyolo agent stop dropbox-trial
+safeyolo agent start dropbox-trial --sandbox-only
+safeyolo agent status dropbox-trial
+safeyolo agent shell dropbox-trial
+```
+
+Inspect `effective_configuration.extra_shares` in the host status result for
+the running source directory and its `read_only: false` access.
+`next_start_configuration.mounts` shows the saved mount destinations.
+Configuration appends each `--mount` and preserves other entries and their
+access modes. Inspect the
+saved entries before repeating setup; do not append the same mount again.
+
+In the guest shell, check the supplied mount information before saving:
+
+```sh
+cat /safeyolo/host-mounts
+findmnt --mountpoint /dropbox
+```
+
+The supplied list must include a destination of `/dropbox`, and `findmnt` must
+show that mount as writable. Directory existence alone does not establish a
+host-backed mount. If the selected mount is absent or a save fails, report the
+failure. Do not create a guest-local replacement or silently save elsewhere.
+With no shared folder selected, keep the existing workspace workflow.
+
+Save the working draft at the shared path and report that path immediately.
+Before each later revision, reread the same file and preserve the operator's
+saved edits. Use one writer at a time. The other party must reopen or refresh
+the file to see saved changes; simultaneous saves can overwrite work.
+
+### Optional remote access from a Mac
+
+The Linux SafeYolo host and the operator Mac must already belong to the same
+tailnet. Tailscale runs on those hosts. The guest receives only its directory
+mount, with no Tailscale credentials, daemon socket or tailnet route.
+[Taildrive setup](https://tailscale.com/docs/features/taildrive?tab=linux)
+requires `drive:share` on the serving host, `drive:access` on the Mac, and an
+operator-authorized `tailscale.com/cap/drive` grant with `access: "rw"` for the
+`agent_dropbox` share. For a tagged host, select its existing tag as `dst` and
+the intended operator identity or devices as `src`;
+[`autogroup:self`](https://tailscale.com/docs/reference/syntax/policy-file)
+does not select a tagged host. Preserve unrelated policy entries. A tailnet
+administrator owns any required policy change. Taildrive is alpha; retain the
+originals.
+
+With those permissions in place, list the shares on the Linux host:
+
+```sh
+tailscale drive list
+```
+
+Check that `agent_dropbox` is unused or already names this output parent. If
+the share is unused, add it and check the list again:
+
+```sh
+tailscale drive share agent_dropbox "$HOME/agent-dropboxes"
+tailscale drive list
+```
+
+The final list must show the selected parent. On the Mac, follow the
+[Finder connection steps](https://tailscale.com/docs/features/taildrive?tab=macos):
+connect to `http://100.100.100.100:8080` and choose Guest. Browse the tailnet,
+host, `agent_dropbox` share and `dropbox-trial` child. Open the actual shared
+`.txt` draft in the intended editor and save back to that path. Confirm the
+save from the host and the agent before handing editing back to the agent.
+Record the editor's actual reopen or refresh behavior during the trial.
+
+Taildrive exposes the host file; it does not make an independent copy. Agent
+edits through the local mount can continue while the Mac is disconnected.
+After reconnecting, reopen the shared file and check the saved change.
+
+For a requested archive, select the files and pause their writers. Create the
+archive with an existing tool such as `tar`, using a temporary filename in the
+shared directory. Rename it to a dated final filename only after creation
+succeeds. On failure, report the incomplete archive and leave it uncollected.
+Copy the completed archive through Finder to a separate dated Mac directory
+outside agents' write access. Compare the source's `sha256sum` with the copy's
+`shasum -a 256`, then inspect the copy with `tar -tzf`. Keep earlier dated
+copies and the source; report an off-host copy only after verification.
+
+### Stop sharing and retain files
+
+To remove the mount, stop the fixture agent. Remove only the `/dropbox` entry
+from that agent's `mounts` array in the selected `policy.toml`; preserve the
+other entries. Start the agent again to apply the change. To stop exporting
+the output parent, run on the serving Linux host:
+
+```sh
+tailscale drive unshare agent_dropbox
+tailscale drive list
+```
+
+Keep the operator-owned output directory when stopping or cleaning up the agent,
+removing its mount or disabling the share. Deleting those files is a separate
+explicit operator action.
+
 ## Protected host directories
 
 Run these commands on the host as the account that owns the instance. They use
