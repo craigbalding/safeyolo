@@ -2002,7 +2002,7 @@ def test_operator_cli_selection_requires_one_supported_access_section(
     if valid:
         assert installed_sections.main() == 0
         assert calls[0][0][:2] == (platform, ("access",))
-        assert calls[0][1] == {"operator_journey": True}
+        assert calls[0][1] == {"operator_journey": True, "prepared_config": None}
     else:
         with pytest.raises(SystemExit) as error:
             installed_sections.main()
@@ -2022,6 +2022,34 @@ def test_operator_access_checks_selected_source_before_runtime_setup(tmp_path, p
             "PYTHONPATH": f"{ROOT / 'tests/reference'}:{ROOT}"},
         capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "expected " + "a" * 40 in result.stderr, result.stderr
+    assert not (tmp_path / "uncreated").exists() and not (tmp_path / "unwritten.json").exists()
+
+
+@pytest.mark.parametrize("section,platform", [
+    ("workloads", "systrap"), ("workloads", "kvm"), ("ingress", None),
+    ("lifecycle", "systrap"), ("lifecycle", "vz"),
+])
+@pytest.mark.parametrize("artifact_install", [False, True], ids=["source", "package"])
+def test_installed_sections_check_source_before_runtime_setup(tmp_path, section, platform, artifact_install):
+    arguments = [
+        sys.executable, str(ROOT / f"tests/blackbox/installed_{section}.py"),
+        "--config-dir", str(tmp_path / "uncreated"), "--agent", "bbtest",
+        "--runtime", str(tmp_path / "unread-runtime.json"),
+        "--output", str(tmp_path / "unwritten.json"), "--install-commit", "a" * 40,
+    ]
+    if platform is not None:
+        arguments.extend(["--platform", platform])
+    environment = {**os.environ, "PYTHONPATH": f"{ROOT / 'tests/reference'}:{ROOT}"}
+    if artifact_install:
+        environment.pop("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT", None)
+    else:
+        environment["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(ROOT)
+    result = subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1, result.stderr
+    if artifact_install:
+        assert "FileNotFoundError" in result.stderr and "unread-runtime.json" in result.stderr, result.stderr
+    else:
+        assert "expected " + "a" * 40 in result.stderr and "FileNotFoundError" not in result.stderr, result.stderr
     assert not (tmp_path / "uncreated").exists() and not (tmp_path / "unwritten.json").exists()
 
 

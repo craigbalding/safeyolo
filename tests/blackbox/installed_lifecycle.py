@@ -384,6 +384,9 @@ def main() -> None:
     config_dir = args.config_dir.resolve()
     selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
     checkout = Path(selected_checkout).resolve() if selected_checkout else None
+    if checkout is not None:
+        revision = checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip()
+        assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     first_runtime = json.loads(args.runtime.read_text())
     first_identity = installed_identity(first_runtime, checkout, expected_revision=args.install_commit)
     native = _native_config(config_dir / "config.toml", config_dir)["raw"]
