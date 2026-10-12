@@ -92,7 +92,7 @@ host revision.
 
 The build-base annotation records the actual architecture-specific Debian
 manifest used by the producer. For example, its shape can be
-`docker.io/library/debian:trixie@sha256:<selected-architecture-digest>`.
+`docker.io/library/debian@sha256:<selected-architecture-digest>`.
 The validator checks qualification and the digest; #211 must demonstrate that
 the producer actually used that pinned input. Do not use OCI's standard
 `image.base.*` annotations for this opaque archive: those describe an immediate
@@ -254,8 +254,8 @@ Keep supported versions and rollback content out of registry cleanup jobs.
 GHCR's documented blob limit or timeout must be observed with an actual default
 payload before considering another distribution scheme.
 
-The focused producer/publisher tests use real ORAS 1.3.4 and a disposable local
-Distribution API fixture. From the source checkout with the frozen test
+The focused producer/publisher tests use real ORAS 1.3.4, skopeo's reference
+parser and a disposable local Distribution API fixture. From the source checkout with the frozen test
 environment, the installed ORAS and compiled native example above, run:
 
 ```sh

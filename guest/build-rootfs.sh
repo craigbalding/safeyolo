@@ -78,7 +78,7 @@ case "$DEB_ARCH" in
     amd64) DEBIAN_DIGEST=bcf83fd8af414eda0c0a99d25a4e61dedd88e7aac7f7bc519d04555ff0c40ec5 ;;
     arm64) DEBIAN_DIGEST=b55910b579d6eb05ebd79fbc8468b974fa39bb0610d52e1f1390bb2177ab7614 ;;
 esac
-DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://docker.io/library/debian:trixie@sha256:$DEBIAN_DIGEST}"  # DOC: guest/README.md, contrib/ROOTFS_SCRIPT_GUIDE.md
+DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://docker.io/library/debian@sha256:$DEBIAN_DIGEST}"  # DOC: guest/README.md, contrib/ROOTFS_SCRIPT_GUIDE.md
 
 # --- Helper: `command -v` that also probes /usr/sbin / /sbin --------------
 # Debian packages these binaries into system sbin dirs that aren't on

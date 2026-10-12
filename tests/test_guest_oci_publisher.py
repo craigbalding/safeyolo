@@ -339,7 +339,11 @@ def test_workflow_keeps_publication_held_and_token_narrow():
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])
 def test_rootfs_uses_pinned_input_and_records_copied_manifest(tmp_path, architecture):
     # Drive the real builder's input/output wiring without building another
-    # Debian filesystem. Controlled build tools make no package/network calls.
+    # Debian filesystem. Real skopeo parses each source before a deliberately
+    # invalid destination stops the command without a package/network call.
+    real_skopeo = shutil.which("skopeo")
+    if not real_skopeo:
+        pytest.skip("skopeo is required to exercise the actual OCI reference parser")
     tools = tmp_path / "tools"
     tools.mkdir()
     builder = tmp_path / "guest"
@@ -347,7 +351,7 @@ def test_rootfs_uses_pinned_input_and_records_copied_manifest(tmp_path, architec
     shutil.copyfile(ROOT / "guest/build-rootfs.sh", builder / "build-rootfs.sh")
     (builder / "rootfs-customize-hook.sh").write_text("#!/bin/bash\nset -eu\nmkdir -p \"$1/etc\"\n")
     script = """#!/usr/bin/env python3
-import json, os, pathlib, shutil, sys
+import json, os, pathlib, shutil, subprocess, sys
 name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 with open(os.environ['BUILD_CALLS'], 'a') as calls:
@@ -356,6 +360,12 @@ if name=='sudo':
     while args[0].startswith('-'): args.pop(0)
     os.execvp(args[0],args)
 elif name=='skopeo':
+    reference=args[-2] if 'copy' in args else args[-1]
+    parsed=subprocess.run([os.environ['SKOPEO_PARSER'], 'copy', reference, 'safeyolo-parser-test:destination'],
+                          capture_output=True, text=True, timeout=10)
+    if 'Invalid destination name' not in parsed.stderr:
+        sys.stderr.write(parsed.stderr)
+        sys.exit(parsed.returncode or 1)
     if 'copy' in args:
         _,directory,ref=args[-1].split(':')
         path=pathlib.Path(directory)
@@ -383,6 +393,7 @@ elif name=='rsync':
     digest = hashlib.sha256(b"fixture").hexdigest()
     env = {**os.environ, "PATH": f"{tools}:{Path(os.sys.executable).parent}:{os.environ['PATH']}",
            "ARCH": architecture, "OUTPUT_DIR": str(output), "TMPDIR": str(work), "BUILD_CALLS": str(calls_path),
+           "SKOPEO_PARSER": real_skopeo,
            "MISE_SHA256_AMD64": digest, "MISE_SHA256_ARM64": digest,
            "GH_SHA256_AMD64": digest, "GH_SHA256_ARM64": digest, "ROOTFS_SIZE_MB": "1"}
     env.pop("DEBIAN_IMAGE", None)
@@ -393,7 +404,7 @@ elif name=='rsync':
     assert len(copies) == 1
     assert "--preserve-digests" in copies[0]
     assert f"--override-arch={architecture}" in copies[0]
-    assert any(arg.startswith("docker://docker.io/library/debian:trixie@sha256:") for arg in copies[0])
+    assert any(arg.startswith("docker://docker.io/library/debian@sha256:") for arg in copies[0])
     assert (output / "build-base.txt").read_text() == "docker.io/library/debian@sha256:" + "d" * 64 + "\n"
     assert (output / "rootfs-tree").is_dir()
     assert (output / "rootfs-base.ext4").is_file()
@@ -404,3 +415,14 @@ elif name=='rsync':
     assert cached.returncode == 0 and "Rootfs already present" in cached.stdout
     assert calls_path.read_bytes() == before
     assert (output / "build-base.txt").read_text().endswith("d" * 64 + "\n")
+
+    # Restore the rejected default in the disposable builder. The same real
+    # input parser must fail before copy rather than let the controlled tools
+    # hide the regression again. Neither run builds or downloads Debian.
+    script_path = builder / "build-rootfs.sh"
+    script_path.write_text(script_path.read_text().replace("/debian@sha256:", "/debian:trixie@sha256:"))
+    env.pop("DEBIAN_IMAGE")
+    env["OUTPUT_DIR"] = str(tmp_path / "rejected-output")
+    rejected = run("bash", str(script_path), env=env, timeout=30)
+    assert rejected.returncode != 0
+    assert "Docker references with both a tag and digest" in rejected.stderr

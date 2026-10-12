@@ -21,6 +21,8 @@ The kernel uses the native cross-compiler. The builder runs on Linux
 (Fedora, Arch, Alpine, Debian or Ubuntu), without mmdebstrap or debootstrap.
 The digest pins the OCI build input; packages installed later still use
 Debian's signed repositories, rather than a fixed package snapshot.
+The skopeo reference uses `docker://docker.io/library/debian@sha256:<digest>`;
+combining the `trixie` tag with the digest is not supported by skopeo 1.18.0.
 
 The default Debian rootfs intentionally keeps language ecosystems out of the
 base image. Agents pull those in via `mise`. What is baked in are the things
