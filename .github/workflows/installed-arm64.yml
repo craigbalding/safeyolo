@@ -2,50 +2,43 @@ name: Installed Linux ARM64 archive smoke
 
 # Explicit pre-promotion qualification of the retained production H and G1.
 # Ordinary native/source workflows and all publication controls stay separate.
+# The draft-access permission increase is held for Craig's merge/dispatch decision.
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  HOST_RELEASE_ID: "410991309"
+  HOST_ARCHIVE_ASSET_ID: "634976985"
+  HOST_CHECKSUM_ASSET_ID: "634976991"
+  HOST_REVISION: 7a38dff14e7e4eacb4095da732ffe06d7c7c5796
+  HOST_SHA256: 8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f
+  HOST_BYTES: "36529500"
+  GUEST_COMPATIBILITY: v1
+
 jobs:
-  installed-arm64:
+  acquire-host:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # GitHub draft visibility requires push access. Only fixed GETs run here;
+    # no checkout, product, verifier, guest or publication command uses this token.
     permissions:
-      contents: read
-      actions: read
-    env:
-      CARGO_BUILD_JOBS: "1"
-      SAFEYOLO_CARGO_RESERVE_GIB: "10"
-      SAFEYOLO_RUNSC_DEBUG: "1"
-      HOST_RELEASE_ID: "410991309"
-      HOST_ARCHIVE_ASSET_ID: "634976985"
-      HOST_CHECKSUM_ASSET_ID: "634976991"
-      HOST_REVISION: 7a38dff14e7e4eacb4095da732ffe06d7c7c5796
-      HOST_SHA256: 8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f
-      HOST_BYTES: "36529500"
-      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
-      GUEST_VERSION: guest-2026-10-12.1
-      GUEST_COMPATIBILITY: v1
-      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
-      GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
-      GUEST_ARCHIVE_BYTES: "223000369"
+      contents: write
+    outputs:
+      artifact-id: ${{ steps.host-inputs.outputs.artifact-id }}
     steps:
-      - name: Select the owned report directory
-        run: printf 'SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=%s/installed-arm64-reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Read and verify the retained host archive
+      - name: Read and bind the retained draft host inputs
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p "$RUNNER_TEMP/retained-host" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
+          mkdir -p "$RUNNER_TEMP/retained-host"
           host="$RUNNER_TEMP/retained-host"
           if ! gh api "repos/craigbalding/safeyolo/releases/$HOST_RELEASE_ID" > "$host/release.json"; then
-            echo 'The job read token cannot access the selected draft release. Supply the actual accessible draft inputs; no promotion was attempted.' >&2
+            echo 'The acquisition job token cannot access the retained draft release.' >&2
             exit 1
           fi
           jq -e --arg id "$HOST_RELEASE_ID" --arg source "$HOST_REVISION" '
@@ -62,7 +55,7 @@ jobs:
             ' "$host/release.json" >/dev/null || { echo "Missing retained asset $name (ID $id)." >&2; exit 1; }
             if ! gh api --header 'Accept: application/octet-stream' \
                 "repos/craigbalding/safeyolo/releases/assets/$id" > "$host/$name"; then
-              echo "The job read token cannot download retained asset $name (ID $id)." >&2
+              echo "The acquisition job token cannot download retained asset $name (ID $id)." >&2
               exit 1
             fi
           done
@@ -73,6 +66,73 @@ jobs:
           archive="$host/safeyolo-linux-arm64-production.tar.gz"
           [[ $(stat -c %s "$archive") == "$HOST_BYTES" ]] || { echo 'Retained host archive size differs.' >&2; exit 1; }
           [[ $(sha256sum "$archive" | cut -d ' ' -f 1) == "$HOST_SHA256" ]] || { echo 'Retained host archive checksum differs.' >&2; exit 1; }
+      - name: Transfer only bound host inputs
+        id: host-inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: retained-arm64-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/retained-host/safeyolo-linux-arm64-production.tar.gz
+            ${{ runner.temp }}/retained-host/SHA256SUMS
+            ${{ runner.temp }}/retained-host/release.json
+          retention-days: 30
+          if-no-files-found: error
+
+  installed-arm64:
+    if: github.event_name == 'workflow_dispatch'
+    needs: acquire-host
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SAFEYOLO_CARGO_RESERVE_GIB: "10"
+      SAFEYOLO_RUNSC_DEBUG: "1"
+      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
+      GUEST_VERSION: guest-2026-10-12.1
+      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
+      GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
+      GUEST_ARCHIVE_BYTES: "223000369"
+    steps:
+      - name: Select the owned report directory
+        run: printf 'SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=%s/installed-arm64-reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the bound host inputs from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.acquire-host.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/retained-host
+      - name: Recheck the transferred host inputs before installation
+        shell: bash
+        run: |
+          mkdir -p "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
+          host="$RUNNER_TEMP/retained-host"
+          jq -e --arg id "$HOST_RELEASE_ID" --arg source "$HOST_REVISION" '
+            .id == ($id | tonumber) and .draft == true and
+            .tag_name == ("host-" + $source) and .target_commitish == $source
+          ' "$host/release.json" >/dev/null || {
+            echo 'Transferred release must be the retained host source and tag, still in draft.' >&2
+            exit 1
+          }
+          for name in safeyolo-linux-arm64-production.tar.gz SHA256SUMS; do
+            if [[ $name == SHA256SUMS ]]; then id=$HOST_CHECKSUM_ASSET_ID; else id=$HOST_ARCHIVE_ASSET_ID; fi
+            jq -e --argjson id "$id" --arg name "$name" '
+              [.assets[] | select(.id == $id and .name == $name and .state == "uploaded")] | length == 1
+            ' "$host/release.json" >/dev/null || { echo "Missing retained asset $name (ID $id)." >&2; exit 1; }
+            test -s "$host/$name" || { echo "Missing transferred asset $name." >&2; exit 1; }
+          done
+          grep -Fx "$HOST_SHA256  safeyolo-linux-arm64-production.tar.gz" "$host/SHA256SUMS" || {
+            echo 'Transferred SHA256SUMS does not contain the retained ARM64 production checksum.' >&2
+            exit 1
+          }
+          archive="$host/safeyolo-linux-arm64-production.tar.gz"
+          [[ $(stat -c %s "$archive") == "$HOST_BYTES" ]] || { echo 'Transferred host archive size differs.' >&2; exit 1; }
+          [[ $(sha256sum "$archive" | cut -d ' ' -f 1) == "$HOST_SHA256" ]] || { echo 'Transferred host archive checksum differs.' >&2; exit 1; }
           tar -xOzf "$archive" safeyolo-linux-arm64-production/package-info > "$host/package-info"
           for field in "source_commit=$HOST_REVISION" profile=production platform=linux-arm64 "guest_compatibility=$GUEST_COMPATIBILITY"; do
             grep -Fx "$field" "$host/package-info" || { echo "Host package must contain $field." >&2; exit 1; }
