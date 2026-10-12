@@ -68,8 +68,11 @@ OCI filesystem layers.
 
 ## Annotations and compatibility
 
-Index and child annotations are string-to-string maps. Unknown string
-annotations are allowed. Required values must satisfy these rules:
+Index, child and optional descriptor annotations are string-to-string maps.
+Keys must be unique within each map. Unknown string annotations are allowed.
+The validator checks annotation entries before insertion and decodes required
+scalar fields from their actual JSON types. Object wrappers cannot stand in
+for strings or integers. Required values must satisfy these rules:
 
 | Annotation | Location and rule |
 | --- | --- |

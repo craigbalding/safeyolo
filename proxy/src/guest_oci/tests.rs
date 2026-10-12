@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn encode(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
@@ -78,6 +78,269 @@ impl Release {
         self.parse()?
             .validate_child(ConsumerPlatform::DarwinArm64, &encode(&self.children[0]))
     }
+
+    fn raw_child(&self, bytes: &[u8]) -> Result<GuestChild, Error> {
+        let mut index = self.index.clone();
+        index["manifests"][0]["digest"] = json!(digest(bytes));
+        index["manifests"][0]["size"] = json!(bytes.len());
+        raw_index(&encode(&index))?.validate_child(ConsumerPlatform::DarwinArm64, bytes)
+    }
+}
+
+fn raw_index(bytes: &[u8]) -> Result<GuestIndex, Error> {
+    GuestIndex::parse(bytes, &digest(bytes), "v1")
+}
+
+// Splice the field into raw JSON after serialization so duplicate entries and
+// library-private object shapes reach the real parser unchanged.
+fn wire_field(value: &Value, pointer: &str, raw: &str) -> Vec<u8> {
+    let mut value = value.clone();
+    let (parent, name) = pointer.rsplit_once('/').unwrap();
+    let name = name.replace("~1", "/").replace("~0", "~");
+    let marker = "guest OCI regression raw field";
+    value
+        .pointer_mut(parent)
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(name, json!(marker));
+    String::from_utf8(encode(&value))
+        .unwrap()
+        .replacen(&serde_json::to_string(marker).unwrap(), raw, 1)
+        .into_bytes()
+}
+
+#[test]
+fn rejects_duplicate_raw_annotations_at_every_consumed_location() {
+    let release = Release::new();
+    for (is_index, pointer) in [
+        (true, "/annotations"),
+        (true, "/manifests/0/annotations"),
+        (false, "/annotations"),
+        (false, "/config/annotations"),
+        (false, "/layers/0/annotations"),
+    ] {
+        for first in [r#""discarded""#, "123", r#""last""#] {
+            let original = if is_index {
+                &release.index
+            } else {
+                &release.children[0]
+            };
+            let mut annotations = original
+                .pointer(pointer)
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            annotations["example.org/duplicate"] = json!("last");
+            let encoded = serde_json::to_string(&annotations).unwrap();
+            let raw = encoded.replacen(
+                r#""example.org/duplicate":"last""#,
+                &format!(r#""example.org/duplicate":{first},"example.org/duplicate":"last""#),
+                1,
+            );
+            let bytes = wire_field(original, pointer, &raw);
+            let error = if is_index {
+                raw_index(&bytes).map(|_| ())
+            } else {
+                release.raw_child(&bytes).map(|_| ())
+            }
+            .expect_err(&format!("accepted duplicate at {pointer}"));
+            let diagnosis = if first == "123" {
+                "string"
+            } else {
+                "duplicate"
+            };
+            assert!(error.to_string().contains(diagnosis), "{pointer}: {error}");
+        }
+    }
+    let raw = String::from_utf8(encode(&release.index)).unwrap().replacen(
+        r#""dev.safeyolo.guest.compatibility":"v1""#,
+        r#""dev.safeyolo.guest.compatibility":"v2","dev.safeyolo.guest.compatibility":"v1""#,
+        1,
+    );
+    assert!(raw_index(raw.as_bytes()).is_err());
+    let escaped = wire_field(
+        &release.index,
+        "/manifests/0/annotations",
+        r#"{"example.org/a":"first","example.org/\u0061":"last"}"#,
+    );
+    assert!(
+        raw_index(&escaped)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate")
+    );
+}
+
+#[test]
+fn rejects_private_token_objects_in_raw_required_scalar_fields() {
+    let release = Release::new();
+    let index_fields = [
+        "/schemaVersion",
+        "/mediaType",
+        "/artifactType",
+        "/annotations/org.opencontainers.image.version",
+        "/annotations/org.opencontainers.image.source",
+        "/annotations/org.opencontainers.image.revision",
+        "/annotations/dev.safeyolo.guest.compatibility",
+        "/annotations/example.org~1extra",
+        "/manifests/0/mediaType",
+        "/manifests/0/digest",
+        "/manifests/0/size",
+        "/manifests/0/platform/os",
+        "/manifests/0/platform/architecture",
+    ];
+    let child_fields = [
+        "/schemaVersion",
+        "/mediaType",
+        "/artifactType",
+        "/annotations/org.opencontainers.image.version",
+        "/annotations/org.opencontainers.image.source",
+        "/annotations/org.opencontainers.image.revision",
+        "/annotations/dev.safeyolo.guest.compatibility",
+        "/annotations/dev.safeyolo.guest.build-base",
+        "/annotations/example.org~1extra",
+        "/config/mediaType",
+        "/config/digest",
+        "/config/size",
+        "/layers/0/mediaType",
+        "/layers/0/digest",
+        "/layers/0/size",
+    ];
+    for token in [
+        "$serde_json::private::Number",
+        "$serde_json::private::RawValue",
+    ] {
+        for (is_index, fields) in [
+            (true, index_fields.as_slice()),
+            (false, child_fields.as_slice()),
+        ] {
+            let original = if is_index {
+                &release.index
+            } else {
+                &release.children[0]
+            };
+            for pointer in fields {
+                let scalar = original.pointer(pointer).unwrap();
+                let payload = if token.ends_with("Number") {
+                    scalar
+                        .as_str()
+                        .map_or_else(|| serde_json::to_string(scalar).unwrap(), str::to_owned)
+                } else {
+                    serde_json::to_string(scalar).unwrap()
+                };
+                let raw = format!(
+                    "{{{}:{}}}",
+                    serde_json::to_string(token).unwrap(),
+                    serde_json::to_string(&payload).unwrap()
+                );
+                let bytes = wire_field(original, pointer, &raw);
+                let result = if is_index {
+                    raw_index(&bytes).map(|_| ())
+                } else {
+                    release.raw_child(&bytes).map(|_| ())
+                };
+                assert!(result.is_err(), "accepted {token} object at {pointer}");
+            }
+        }
+        for pointer in ["/os", "/architecture"] {
+            let mut release = Release::new();
+            let config: Value = serde_json::from_slice(&release.configs[0]).unwrap();
+            let scalar = config.pointer(pointer).unwrap();
+            let payload = if token.ends_with("Number") {
+                scalar.as_str().unwrap().to_owned()
+            } else {
+                serde_json::to_string(scalar).unwrap()
+            };
+            let raw = format!(
+                "{{{}:{}}}",
+                serde_json::to_string(token).unwrap(),
+                serde_json::to_string(&payload).unwrap()
+            );
+            let config_bytes = wire_field(&config, pointer, &raw);
+            release.children[0]["config"] = descriptor(CONFIG_MEDIA_TYPE, &config_bytes);
+            release.refresh_children();
+            assert!(
+                release
+                    .selected_child()
+                    .unwrap()
+                    .validate_config(&config_bytes)
+                    .is_err(),
+                "accepted {token} object at config {pointer}"
+            );
+        }
+        for (is_index, pointer) in [
+            (true, "/manifests/0/annotations"),
+            (false, "/config/annotations"),
+            (false, "/layers/0/annotations"),
+        ] {
+            let original = if is_index {
+                &release.index
+            } else {
+                &release.children[0]
+            };
+            let payload = if token.ends_with("Number") {
+                "2"
+            } else {
+                r#""value""#
+            };
+            let raw = format!(
+                r#"{{"example.org/value":{{{}:{}}}}}"#,
+                serde_json::to_string(token).unwrap(),
+                serde_json::to_string(payload).unwrap()
+            );
+            let bytes = wire_field(original, pointer, &raw);
+            let result = if is_index {
+                raw_index(&bytes).map(|_| ())
+            } else {
+                release.raw_child(&bytes).map(|_| ())
+            };
+            assert!(
+                result.is_err(),
+                "accepted {token} annotation object at {pointer}"
+            );
+        }
+    }
+}
+
+#[test]
+fn keeps_unknown_string_annotations_and_unconsumed_object_fields() {
+    let mut release = Release::new();
+    for object in [&mut release.index, &mut release.children[0]] {
+        object["annotations"]["$serde_json::private::Number"] = json!("123");
+        object["annotations"]["$serde_json::private::RawValue"] = json!(r#""v1""#);
+        object["annotations"]["例/キー"] = json!("été 💫");
+        object["annotations"]["example.org/empty"] = json!("");
+        object["example.org/extension"] = json!({"$serde_json::private::Number": "2"});
+    }
+    release.refresh_children();
+    let index = release.parse().unwrap();
+    let child = index
+        .validate_child(ConsumerPlatform::DarwinArm64, &encode(&release.children[0]))
+        .unwrap();
+    child.validate_config(&release.configs[0]).unwrap();
+    for key in [
+        "$serde_json::private::Number",
+        "$serde_json::private::RawValue",
+    ] {
+        for (is_index, pointer) in [
+            (true, "/manifests/0/annotations"),
+            (false, "/config/annotations"),
+            (false, "/layers/0/annotations"),
+        ] {
+            let original = if is_index {
+                &release.index
+            } else {
+                &release.children[0]
+            };
+            let raw = serde_json::to_string(&json!({key: "123"})).unwrap();
+            let bytes = wire_field(original, pointer, &raw);
+            if is_index {
+                raw_index(&bytes).unwrap();
+            } else {
+                release.raw_child(&bytes).unwrap();
+            }
+        }
+    }
 }
 
 #[test]
@@ -124,7 +387,11 @@ fn validates_actual_oras_1_3_4_layout_with_inferred_consumer_platforms() {
             entry["annotations"]["org.opencontainers.image.ref.name"] == "guest-2026-10-12.1"
         })
         .unwrap();
-    let descriptor = Descriptor::parse(release, INDEX_MEDIA_TYPE).unwrap();
+    let descriptor = Descriptor::parse(
+        &serde_json::from_slice(&encode(release)).unwrap(),
+        INDEX_MEDIA_TYPE,
+    )
+    .unwrap();
     let bytes = read(&descriptor.digest);
     descriptor.verify(bytes.as_slice()).unwrap();
     let index = GuestIndex::parse(&bytes, &descriptor.digest, "v1").unwrap();

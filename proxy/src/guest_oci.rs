@@ -1,9 +1,10 @@
 //! Shared OCI guest source contract. Registry transport and installation are separate.
 
-use std::io::Read;
+use std::{collections::BTreeMap, io::Read};
 
 use ring::digest::{Context, SHA256};
-use serde_json::{Map, Value};
+use serde::de::{self, DeserializeOwned, MapAccess, Visitor};
+use serde_json::value::RawValue;
 
 use crate::Error;
 
@@ -19,6 +20,11 @@ pub const SOURCE_ANNOTATION: &str = "org.opencontainers.image.source";
 pub const REVISION: &str = "org.opencontainers.image.revision";
 pub const COMPATIBILITY: &str = "dev.safeyolo.guest.compatibility";
 pub const BUILD_BASE: &str = "dev.safeyolo.guest.build-base";
+
+// Keep fields as raw JSON until their declared OCI type is decoded. Value's
+// private Number/RawValue representations must not reinterpret authored objects.
+type JsonObject = BTreeMap<String, Box<RawValue>>;
+type AnnotationMap = BTreeMap<String, String>;
 
 /// The archive's consumer host, including the distinction between both arm64 payloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,21 +72,21 @@ pub struct Descriptor {
 }
 
 impl Descriptor {
-    fn parse(value: &Value, media_type: &str) -> Result<Self, Error> {
-        if text(value, "mediaType")? != media_type {
+    fn parse(value: &JsonObject, media_type: &str) -> Result<Self, Error> {
+        if read_field::<String>(value, "mediaType")? != media_type {
             return Err("wrong guest descriptor mediaType".into());
         }
-        let digest = text(value, "digest")?;
-        sha256_hex(digest)?;
-        let size = value["size"]
-            .as_i64()
-            .filter(|size| *size >= 0)
-            .ok_or("guest descriptor size must be a nonnegative int64")?;
+        let digest: String = read_field(value, "digest")?;
+        sha256_hex(&digest)?;
+        let size = integer_field(value, "size")?;
+        if size < 0 {
+            return Err("guest descriptor size must be a nonnegative int64".into());
+        }
         if let Some(annotations) = value.get("annotations") {
             annotation_map(annotations)?;
         }
         Ok(Self {
-            digest: digest.into(),
+            digest,
             size: size as u64,
         })
     }
@@ -149,35 +155,75 @@ fn sha256_string(bytes: &[u8]) -> String {
     hex
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
+fn raw_field<'a>(value: &'a JsonObject, key: &str) -> Result<&'a RawValue, Error> {
     value
         .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("guest {key} must be a string").into())
+        .map(Box::as_ref)
+        .ok_or_else(|| format!("missing guest {key}").into())
 }
 
-fn annotation_map(value: &Value) -> Result<&Map<String, Value>, Error> {
-    let annotations = value
-        .as_object()
-        .ok_or("guest annotations must be an object")?;
-    if !annotations.values().all(Value::is_string) {
-        return Err("guest annotation values must be strings".into());
+fn read_field<T: DeserializeOwned>(value: &JsonObject, key: &str) -> Result<T, Error> {
+    serde_json::from_str(raw_field(value, key)?.get())
+        .map_err(|error| format!("guest {key}: {error}").into())
+}
+
+fn integer_field(value: &JsonObject, key: &str) -> Result<i64, Error> {
+    // The enclosing JSON decoder has already checked token syntax. Parse the
+    // actual integer token, including -0, without Value's object coercion.
+    raw_field(value, key)?
+        .get()
+        .trim()
+        .parse()
+        .map_err(|_| format!("guest {key} must be an int64 integer").into())
+}
+
+fn annotation_map(raw: &RawValue) -> Result<AnnotationMap, Error> {
+    struct Annotations;
+    impl<'de> Visitor<'de> for Annotations {
+        type Value = AnnotationMap;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("guest annotations with unique string keys and string values")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<AnnotationMap, A::Error> {
+            let mut annotations = AnnotationMap::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if annotations.contains_key(&key) {
+                    return Err(de::Error::custom("duplicate guest annotation key"));
+                }
+                annotations.insert(key, map.next_value::<String>()?);
+            }
+            Ok(annotations)
+        }
     }
+    let mut decoder = serde_json::Deserializer::from_str(raw.get());
+    let annotations = serde::Deserializer::deserialize_map(&mut decoder, Annotations)?;
+    decoder.end()?;
     Ok(annotations)
 }
 
-fn document(bytes: &[u8], media_type: &str) -> Result<Value, Error> {
-    let value: Value = serde_json::from_slice(bytes)?;
-    if value["schemaVersion"].as_i64() != Some(2) || text(&value, "mediaType")? != media_type {
+fn annotation<'a>(annotations: &'a AnnotationMap, key: &str) -> Result<&'a str, Error> {
+    annotations
+        .get(key)
+        .map(String::as_str)
+        .ok_or_else(|| format!("missing guest annotation {key}").into())
+}
+
+fn document(bytes: &[u8], media_type: &str) -> Result<(JsonObject, AnnotationMap), Error> {
+    let value: JsonObject = serde_json::from_slice(bytes)?;
+    if integer_field(&value, "schemaVersion")? != 2
+        || read_field::<String>(&value, "mediaType")? != media_type
+    {
         return Err(
             "guest OCI document must have schemaVersion 2 and the required mediaType".into(),
         );
     }
-    if text(&value, "artifactType")? != ARTIFACT_TYPE {
+    if read_field::<String>(&value, "artifactType")? != ARTIFACT_TYPE {
         return Err("wrong guest artifactType".into());
     }
-    annotation_map(&value["annotations"])?;
-    Ok(value)
+    let annotations = annotation_map(raw_field(&value, "annotations")?)?;
+    Ok((value, annotations))
 }
 
 /// Independent guest release identity shared by the index and children.
@@ -189,8 +235,8 @@ pub struct GuestAnnotations {
 }
 
 impl GuestAnnotations {
-    fn parse(value: &Value) -> Result<Self, Error> {
-        let version = text(value, VERSION)?;
+    fn parse(value: &AnnotationMap) -> Result<Self, Error> {
+        let version = annotation(value, VERSION)?;
         let (date, number) = version
             .strip_prefix("guest-")
             .and_then(|v| v.split_once('.'))
@@ -213,14 +259,14 @@ impl GuestAnnotations {
             time::Month::try_from(date[5..7].parse::<u8>()?)?,
             date[8..].parse()?,
         )?;
-        if text(value, SOURCE_ANNOTATION)? != SOURCE {
+        if annotation(value, SOURCE_ANNOTATION)? != SOURCE {
             return Err("wrong guest source repository".into());
         }
-        let revision = text(value, REVISION)?;
+        let revision = annotation(value, REVISION)?;
         if !matches!(revision.len(), 40 | 64) || !lower_hex(revision) {
             return Err("guest revision must be a full lowercase Git object ID".into());
         }
-        let compatibility = text(value, COMPATIBILITY)?;
+        let compatibility = annotation(value, COMPATIBILITY)?;
         // compat- plus this identifier must be a standard OCI distribution tag.
         if compatibility.is_empty()
             || compatibility.len() > 121
@@ -258,25 +304,24 @@ impl GuestIndex {
             size: bytes.len() as u64,
         };
         identity.verify(bytes)?;
-        let value = document(bytes, INDEX_MEDIA_TYPE)?;
-        let annotations = GuestAnnotations::parse(&value["annotations"])?;
+        let (value, annotation_values) = document(bytes, INDEX_MEDIA_TYPE)?;
+        let annotations = GuestAnnotations::parse(&annotation_values)?;
         if annotations.compatibility != host_compatibility {
             return Err("guest compatibility does not match the host".into());
         }
-        let manifests = value["manifests"]
-            .as_array()
-            .ok_or("guest index manifests must be an array")?;
+        let manifests: Vec<JsonObject> = read_field(&value, "manifests")?;
         let mut children = [None, None, None];
         for manifest in manifests {
+            let consumer: JsonObject = read_field(&manifest, "platform")?;
             let platform = ConsumerPlatform::from_oci(
-                text(&manifest["platform"], "os")?,
-                text(&manifest["platform"], "architecture")?,
+                &read_field::<String>(&consumer, "os")?,
+                &read_field::<String>(&consumer, "architecture")?,
             )?;
             let slot = &mut children[platform.position()];
             if slot.is_some() {
                 return Err("duplicate guest consumer platform".into());
             }
-            *slot = Some(Descriptor::parse(manifest, MANIFEST_MEDIA_TYPE)?);
+            *slot = Some(Descriptor::parse(&manifest, MANIFEST_MEDIA_TYPE)?);
         }
         let children = [
             children[0].take().ok_or("missing darwin/arm64 guest")?,
@@ -301,11 +346,11 @@ impl GuestIndex {
         bytes: &[u8],
     ) -> Result<GuestChild, Error> {
         self.manifest(platform).verify(bytes)?;
-        let value = document(bytes, MANIFEST_MEDIA_TYPE)?;
-        if GuestAnnotations::parse(&value["annotations"])? != self.annotations {
+        let (value, annotations) = document(bytes, MANIFEST_MEDIA_TYPE)?;
+        if GuestAnnotations::parse(&annotations)? != self.annotations {
             return Err("guest child annotations do not agree with the index".into());
         }
-        let build_base = text(&value["annotations"], BUILD_BASE)?;
+        let build_base = annotation(&annotations, BUILD_BASE)?;
         let (name, digest) = build_base
             .split_once('@')
             .ok_or("guest build-base must be pinned by SHA-256")?;
@@ -327,15 +372,13 @@ impl GuestIndex {
         {
             return Err("guest build-base must name a fully qualified pinned build input".into());
         }
-        let layers = value["layers"]
-            .as_array()
-            .ok_or("guest layers must be an array")?;
+        let layers: Vec<JsonObject> = read_field(&value, "layers")?;
         if layers.len() != 1 {
             return Err("guest child must have exactly one opaque archive layer".into());
         }
         Ok(GuestChild {
             platform,
-            config: Descriptor::parse(&value["config"], CONFIG_MEDIA_TYPE)?,
+            config: Descriptor::parse(&read_field(&value, "config")?, CONFIG_MEDIA_TYPE)?,
             archive: Descriptor::parse(&layers[0], ARCHIVE_MEDIA_TYPE)?,
             build_base: build_base.into(),
         })
@@ -367,13 +410,12 @@ pub struct GuestChild {
 impl GuestChild {
     pub fn validate_config(&self, bytes: &[u8]) -> Result<(), Error> {
         self.config.verify(bytes)?;
-        let value: Value = serde_json::from_slice(bytes)?;
-        let fields = value
-            .as_object()
-            .ok_or("guest platform config must be an object")?;
-        if fields.len() != 2
-            || ConsumerPlatform::from_oci(text(&value, "os")?, text(&value, "architecture")?)?
-                != self.platform
+        let value: JsonObject = serde_json::from_slice(bytes)?;
+        if value.len() != 2
+            || ConsumerPlatform::from_oci(
+                &read_field::<String>(&value, "os")?,
+                &read_field::<String>(&value, "architecture")?,
+            )? != self.platform
         {
             return Err(
                 "guest config must contain only the selected consumer os and architecture".into(),
