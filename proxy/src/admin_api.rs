@@ -2407,7 +2407,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         || path == "/admin/gateway/contract-binding"
         || path.starts_with("/admin/gateway/grants/")
     {
-        return gateway::respond(request, &path, service_audit.as_ref()).await;
+        return gateway::respond(request, &path, policy, service_audit.as_ref()).await;
     }
     if path.starts_with("/admin/traffic/") {
         let path = path.to_owned();

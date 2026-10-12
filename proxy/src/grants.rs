@@ -24,7 +24,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Tab
 
 use crate::{
     approvals::{ApprovalError, ErrorKind, update_policy},
-    contracts::ContractBinding,
+    contracts::{ContractBinding, ContractTemplate},
     policy::{
         LargeIntegerContext, large_integer_marker_value, parse_expiry,
         parse_toml_document_with_context,
@@ -639,6 +639,7 @@ impl Store {
     pub fn approve_binding(
         &self,
         mut binding: ContractBinding,
+        contract: &ContractTemplate,
         now: OffsetDateTime,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<BindingAddition> {
@@ -646,8 +647,11 @@ impl Store {
         if binding.bound_values.is_empty() {
             return Err(invalid("bindings must be a nonempty object"));
         }
-        // Admin approval supplies values and operation names; the service compiler
-        // remains responsible for template, declared-tier and resolution checks.
+        contract
+            .validate_grant_operations(&binding.grantable_operations)
+            .map_err(|error| invalid(error.to_string()))?;
+        // The service compiler still owns template, declared-tier and value
+        // resolution checks. Unsupported selected operations cannot be saved.
         binding.binding_id = identifier("cbs");
         let record = StoredBinding {
             binding,

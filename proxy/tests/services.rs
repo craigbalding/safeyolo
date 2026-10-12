@@ -427,6 +427,45 @@ fn compiled_contract_scope_preserves_names_values_templates_and_agent() {
 }
 
 #[test]
+fn retained_stateful_names_never_compile_routes_in_a_mixed_contract() {
+    let service = ServiceDefinition::from_value(json!({
+        "schema_version":1,"name":"mixed","capabilities":{"test":{
+            "routes":[{"methods":"*","path":"/**"}],
+            "contract":{
+                "template":"mixed.test.v1",
+                "operations":[
+                    {"name":"read","request":{"path":"/read"}},
+                    {"name":"path_state","request":{"path":"/path/{id}","path_params":{"id":{"in_state_set":"ids"}}}},
+                    {"name":"query_state","request":{"path":"/query","query":{"allow":{"id":{"in_state_set":"ids"}}}}},
+                    {"name":"body_state","request":{"method":"POST","path":"/body","body":{"allow":{"id":{"in_state_set":"ids"}}}}},
+                    {"name":"capture","requires_enforcement":"state_capture","request":{"path":"/capture"}},
+                    {"name":"enforce","requires_enforcement":"state_enforcement","request":{"path":"/enforce"}}
+                ],
+                "enforcement":{"request_shape":"enforced","state_capture":"enforced","state_enforcement":"enforced"}
+            }
+        }}
+    })).unwrap();
+    let token = token("mixed", "test");
+    let mut retained = binding("mixed", "test");
+    retained.grantable_operations = [
+        "read",
+        "path_state",
+        "query_state",
+        "body_state",
+        "capture",
+        "enforce",
+    ]
+    .map(str::to_owned)
+    .into();
+    for bindings in [&[][..], std::slice::from_ref(&retained)] {
+        let routes = compile_routes(&service, &token, bindings);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].path, "/read");
+        assert_eq!(routes[0].methods, ["GET"]);
+    }
+}
+
+#[test]
 fn path_matching_preserves_source_case_and_wildcard_behavior() {
     assert!(!resource_matches(
         "/api/chat.postMessage",

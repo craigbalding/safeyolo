@@ -92,7 +92,27 @@ impl ContractTemplate {
             self.enforcement
                 .get(tier)
                 .is_some_and(|status| status == "enforced")
+                && operation.unsupported_grant_reason().is_none()
         })
+    }
+
+    pub fn validate_grant_operations(&self, names: &[String]) -> Result<(), Error> {
+        for name in names {
+            // Preserve selection of a supported same-named definition, as in
+            // the route compiler. Retained unsupported names never add routes.
+            if self
+                .grantable_operations()
+                .any(|operation| &operation.name == name)
+            {
+                continue;
+            }
+            if let Some(operation) = self.operations.iter().rev().find(|op| &op.name == name)
+                && let Some(reason) = operation.unsupported_grant_reason()
+            {
+                return Err(format!("Operation '{name}' cannot be granted: {reason}").into());
+            }
+        }
+        Ok(())
     }
 
     pub fn is_grantable(&self) -> bool {
@@ -239,7 +259,20 @@ impl ContractOperation {
         self.request
             .path_params
             .values()
+            .chain(self.request.query.allow.values())
+            .chain(self.request.body.allow.values())
             .any(|constraint| !constraint.in_state_set.is_empty())
+    }
+    pub fn unsupported_grant_reason(&self) -> Option<&'static str> {
+        if self.has_state_reference() {
+            Some("in_state_set requires runtime state enforcement, which is not supported")
+        } else {
+            match self.requires_enforcement.as_str() {
+                "state_capture" => Some("runtime state capture is not supported"),
+                "state_enforcement" => Some("runtime state enforcement is not supported"),
+                _ => None,
+            }
+        }
     }
     pub fn is_prebinding_grantable(&self) -> bool {
         self.bound_value_references().is_empty()

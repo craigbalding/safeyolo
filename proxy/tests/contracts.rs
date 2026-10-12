@@ -220,6 +220,71 @@ fn only_value_free_operations_work_before_binding_and_declared_state_stays_ungra
 }
 
 #[test]
+fn state_constraints_are_not_executable_even_with_enforced_markers() {
+    for tier in ["request_shape", "transport_hygiene", "state_enforcement"] {
+        for location in ["path_params", "query", "body"] {
+            let mut document = contract_document(Value::Null);
+            let template = &mut document["capabilities"]["test"]["contract"];
+            template["enforcement"]["state_enforcement"] = json!("enforced");
+            let operation = &mut template["operations"][2];
+            operation["requires_enforcement"] = json!(tier);
+            operation["request"] = json!({"method":"GET", "path":"/state"});
+            let constraint = json!({"id":{"in_state_set":"ids", "equals_var":"approved"}});
+            operation["request"][location] = if location == "path_params" {
+                constraint
+            } else {
+                json!({"allow":constraint})
+            };
+            let service = ServiceDefinition::from_value(document).unwrap();
+            let contract = service.capabilities["test"].contract.as_ref().unwrap();
+            assert_eq!(
+                contract
+                    .grantable_operations()
+                    .map(|op| op.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["write", "discover"],
+                "{tier}/{location}"
+            );
+            let stateful = &contract.operations[2];
+            assert!(stateful.has_state_reference());
+            assert!(stateful.resolved_path(&binding().bound_values).is_none());
+            assert!(contract.match_operation("GET", "/state").is_none());
+            let error = contract
+                .validate_grant_operations(&["stateful".into()])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("stateful") && error.contains("in_state_set"));
+            assert!(
+                contract
+                    .validate_grant_operations(&["write".into(), "discover".into()])
+                    .is_ok()
+            );
+        }
+    }
+    for tier in ["state_capture", "state_enforcement"] {
+        for status in ["declared", "enforced"] {
+            let mut document = contract_document(Value::Null);
+            let template = &mut document["capabilities"]["test"]["contract"];
+            template["enforcement"][tier] = json!(status);
+            template["operations"][2]["requires_enforcement"] = json!(tier);
+            template["operations"][2]["request"] = json!({"path":"/state"});
+            let service = ServiceDefinition::from_value(document).unwrap();
+            let contract = service.capabilities["test"].contract.as_ref().unwrap();
+            assert!(
+                !contract
+                    .grantable_operations()
+                    .any(|op| op.name == "stateful")
+            );
+            let error = contract
+                .validate_grant_operations(&["stateful".into()])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("stateful") && error.contains("not supported"));
+        }
+    }
+}
+
+#[test]
 fn types_are_declared_and_missing_fields_are_not_made_required() {
     let document = contract_document(Value::Null);
     // Python only validates supplied values and equals_var/range constraints.
