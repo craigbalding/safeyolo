@@ -100,13 +100,13 @@ prepare_native_instance(source, root)
 copy_prepared_nats(source, root)
 PY
 touch "$SAFEYOLO_CONFIG_DIR/.safeyolo-platform-smoke"
-python3 - "$SAFEYOLO_CONFIG_DIR/config.toml" <<'PY_CONFIG'
+python3 - "$SAFEYOLO_CONFIG_DIR/config.toml" "$LANE" <<'PY_CONFIG'
 import sys
 from pathlib import Path
 import tomlkit
 path = Path(sys.argv[1])
 config = tomlkit.parse(path.read_text())
-config['admin_port'] = 0
+config['admin_port'] = 46371 if sys.argv[2] == 'vz' else 0
 config['parent_proxy'] = ''
 config['listeners'] = [{'agent_id': 'bbpackage', 'socket_path': str(path.parent / 'data/bbpackage.sock')}]
 path.write_text(tomlkit.dumps(config))

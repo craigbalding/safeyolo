@@ -1015,6 +1015,83 @@ def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_pa
     assert not sentinel.exists()
 
 
+@pytest.mark.parametrize("lane,host", [
+    ("vz", "Darwin"), ("systrap", "Linux"), ("kvm", "Linux"),
+    ("", "Linux"), ("", "Darwin"), ("vz", "Linux"), ("systrap", "Darwin"),
+])
+def test_installed_package_smoke_selects_admin_binding_with_lane(tmp_path, lane, host):
+    """Run the wrapper's selection, config writer and callers with controlled consumers."""
+    runner = (Path(__file__).parent / "blackbox/run-installed-package.sh").read_text()
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    for name in ("safeyolo", "safeyolo-proxy"):
+        binary = commands / name
+        binary.touch()
+        binary.chmod(0o755)
+    config = tmp_path / "config.toml"
+    config.write_text("admin_port=9090\nparent_proxy='inherited'\nretained='owned'\n")
+    capture = '''import json, sys, tomllib
+from pathlib import Path
+def _installed_rust_binary(cli):
+    return Path(cli).with_name('safeyolo-proxy'), {}
+if __name__ == '__main__':
+    args = sys.argv[1:]
+    report = {'arguments': args}
+    if '--rust-config' in args:
+        path = Path(args[args.index('--rust-config') + 1])
+        report['config'] = tomllib.loads(path.read_text())
+    Path(args[args.index('--output') + 1]).write_text(json.dumps(report))
+'''
+    for name in ("installed_host_smoke.py", "installed_state_transition.py"):
+        (commands / name).write_text(capture)
+    probe = tmp_path / "package-smoke.sh"
+    probe.write_text(
+        f"uname() {{ printf '%s\\n' {shlex.quote(host)}; }}\n"
+        # Keep the actual --lane parser and host validation. Installation and
+        # guest boot are outside this fixture-config regression.
+        + runner[:runner.index('PACKAGE_DIR=')]
+        + f'\nSCRIPT_DIR={shlex.quote(str(commands))}\n'
+        + f'REPO_ROOT={shlex.quote(str(tmp_path))}\n'
+        + 'PACKAGE_DIR="$REPO_ROOT"\nARTIFACTS="$REPO_ROOT"\n'
+        + 'export SAFEYOLO_CONFIG_DIR="$REPO_ROOT"\n'
+        + f'export PATH="$SCRIPT_DIR:{shlex.quote(str(Path(sys.executable).parent))}:$PATH"\n'
+        + 'REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+        + f'python3() {{ if [[ "$1" != -m ]]; then {shlex.quote(sys.executable)} "$@"; fi; }}\n'
+        + runner[runner.index('python3 - "$SAFEYOLO_CONFIG_DIR/config.toml"'):]
+    )
+    archive = tmp_path / "host.tar.gz"
+    archive.touch()
+    args = ["--package", str(archive), "--sha256", "a" * 64]
+    if lane:
+        args += ["--lane", lane]
+    result = subprocess.run(["/bin/bash", str(probe), *args], capture_output=True, text=True, timeout=10)
+    output = tmp_path / "host-package.json"
+    if (lane, host) in {("vz", "Linux"), ("systrap", "Darwin")}:
+        assert result.returncode == 2 and "Unsupported lane/host" in result.stderr
+        assert not output.exists()
+        assert tomllib.loads(config.read_text())["admin_port"] == 9090
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    smoke = json.loads(output.read_text())
+    assert smoke["config"]["admin_port"] == (46371 if lane == "vz" else 0)
+    assert smoke["config"]["parent_proxy"] == ""
+    assert smoke["config"]["retained"] == "owned"
+    assert smoke["config"]["listeners"] == [
+        {"agent_id": "bbpackage", "socket_path": str(tmp_path / "data/bbpackage.sock")},
+    ]
+    continuity_args = json.loads((tmp_path / "installed-continuity.json").read_text())["arguments"]
+    for arguments, ports in (
+        (smoke["arguments"], {"--http-port": "46373", "--nats-client-port": "46370", "--nats-monitor-port": "46372"}),
+        (continuity_args, {"--admin-port": "46371", "--http-port": "46373", "--https-port": "46374",
+                           "--oauth-port": "46375", "--nats-client-port": "46370", "--nats-monitor-port": "46372"}),
+    ):
+        for option, value in ports.items():
+            if lane == "vz":
+                assert arguments[arguments.index(option) + 1] == value
+            else:
+                assert option not in arguments
+
+
 def test_kvm_lane_prepares_operator_and_subordinate_access_before_native_installation():
     lane = (Path(__file__).parent / "blackbox/run-lane.sh").read_text()
     acl = 'sudo -n setfacl -m "u:$(id -u):rw,u:100000:rw" /dev/kvm'
