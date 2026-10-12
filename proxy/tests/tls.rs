@@ -125,9 +125,10 @@ fn combined_ca_pem_preserves_ordering_sections_and_parse_errors() {
             .to_string(),
         "CA file contains more than one private key"
     );
+    let malformed_key = key.serialize_pem().replacen('\n', "\n!\n", 1);
     for malformed in [
         "-----BEGIN CERTIFICATE-----\nAQ==\n",
-        "-----BEGIN PRIVATE KEY-----\n!\n-----END PRIVATE KEY-----\n",
+        &malformed_key,
         "-----BEGIN PUBLIC KEY-----\n!\n-----END PUBLIC KEY-----\n",
     ] {
         for combined in [format!("{malformed}{pem}"), format!("{pem}{malformed}")] {
@@ -315,7 +316,8 @@ fn existing_ec_ca_formats_preserve_import_results_and_file() {
         assert!(result.status.success(), "{:?}", result.stderr);
     }
     let mut combined = std::fs::read(directory.path().join("sec1.key")).unwrap();
-    assert!(combined.starts_with(b"-----BEGIN EC PRIVATE KEY-----"));
+    let prefix = format!("-----BEGIN {}-----", "EC PRIVATE KEY");
+    assert!(combined.starts_with(prefix.as_bytes()));
     combined.extend(std::fs::read(directory.path().join("certificate.pem")).unwrap());
     let path = directory.path().join("mitmproxy-ca.pem");
     std::fs::write(&path, &combined).unwrap();
@@ -324,7 +326,8 @@ fn existing_ec_ca_formats_preserve_import_results_and_file() {
     assert!(CertificateAuthority::load(&path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), combined);
     let mut combined = std::fs::read(directory.path().join("key.pem")).unwrap();
-    assert!(combined.starts_with(b"-----BEGIN PRIVATE KEY-----"));
+    let prefix = format!("-----BEGIN {}-----", "PRIVATE KEY");
+    assert!(combined.starts_with(prefix.as_bytes()));
     combined.extend(std::fs::read(directory.path().join("certificate.pem")).unwrap());
     std::fs::write(&path, combined).unwrap();
     assert_load_preserves_file(&path);

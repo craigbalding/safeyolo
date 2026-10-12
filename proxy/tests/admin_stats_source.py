@@ -35,6 +35,7 @@ def policy_client():
     """Run the real stats chain with only the reached in-memory fields installed."""
     from pdp.client import LocalPolicyClient
     from pdp.core import PDPCore
+
     from safeyolo.policy.budget_tracker import BudgetState, GCRABudgetTracker
     from safeyolo.policy.engine import PolicyEngine
     from safeyolo.policy.models import UnifiedPolicy
@@ -210,9 +211,9 @@ def run():
         os.environ["SAFEYOLO_LOG_PATH"] = directory + "/unused-audit.jsonl"
         os.environ["MITMPROXY_LOG_PATH"] = directory + "/unused-diagnostic.log"
         os.environ["SAFEYOLO_DATA_DIR"] = directory
+        import pdp
         from mitmproxy import ctx
 
-        import pdp
         from safeyolo.core import audit_writer, config_cache, flow_writer
         from safeyolo.mitm_addons import (
             ADDON_CHAIN,

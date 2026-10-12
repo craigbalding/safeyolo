@@ -22,6 +22,7 @@ REPO = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().pare
 sys.path[:0] = [str(REPO), str(REPO / "cli/src")]
 
 from pdp.client import LocalPolicyClient, PolicyClientConfig  # noqa: E402
+
 from safeyolo.core import audit_writer, utils  # noqa: E402
 from safeyolo.core.audit_schema import sanitize_for_log  # noqa: E402
 from safeyolo.mitm_addons import admin_api  # noqa: E402

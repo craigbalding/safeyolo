@@ -118,6 +118,7 @@ def test_agent_metadata_save_remove_and_admin_service_changes(tmp_path: Path, mo
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
 
     from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
+
     from safeyolo import agents_store
     from safeyolo.mitm_addons.admin_api import AdminRequestHandler
     from safeyolo.policy import toml_roundtrip

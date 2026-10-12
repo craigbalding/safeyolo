@@ -48,6 +48,7 @@ def _writer(kind: str, path_text: str, key: str, ready, release, result) -> None
             save_agent(key, {"egress": "deny", "folder": f"/workspace/{key}"})
         elif kind == "admin":
             from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
+
             from safeyolo.mitm_addons.admin_api import AdminRequestHandler
 
             configure_policy_client(PolicyClientConfig(baseline_path=path))

@@ -13,6 +13,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from pdp.client import LocalPolicyClient, PolicyClientConfig
+
 from safeyolo.policy import engine as engine_module
 from safeyolo.policy import loader as loader_module
 
