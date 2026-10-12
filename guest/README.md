@@ -11,10 +11,16 @@ Builds the artifacts SafeYolo needs to run agent sandboxes:
 - `out/rootfs-base.ext4` — Debian trixie rootfs image (macOS VZ mounts this as /dev/vda)
 - `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; files are owned by uid 100000, the subuid-root for rootless userns)
 - `out/cache-paths.txt` — absolute in-rootfs paths SafeYolo bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
+- `out/build-base.txt` — the actual digest-pinned Debian manifest used for OCI publication provenance
 
 Every `build-rootfs.sh` run produces **both** the ext4 image and the tree on Linux (natively or inside the Lima VM on macOS). The tree is what gVisor uses on Linux hosts; without it, `safeyolo agent start` fails with a "Rootfs tree not found" error.
 
-No Docker. Uses `skopeo` + `umoci` to pull + unpack the official `debian:trixie` OCI image for the rootfs, and native cross-compile for the kernel/initramfs. Works on any Linux distro (Fedora, Arch, Alpine, Debian, Ubuntu) — no mmdebstrap/debootstrap on the build host.
+Uses `skopeo` and `umoci` to pull and unpack an architecture-specific,
+digest-pinned official Debian trixie manifest. Docker is not required.
+The kernel uses the native cross-compiler. The builder runs on Linux
+(Fedora, Arch, Alpine, Debian or Ubuntu), without mmdebstrap or debootstrap.
+The digest pins the OCI build input; packages installed later still use
+Debian's signed repositories, rather than a fixed package snapshot.
 
 The default Debian rootfs intentionally keeps language ecosystems out of the
 base image. Agents pull those in via `mise`. What is baked in are the things
@@ -38,7 +44,7 @@ auto-shells into a Lima VM (see below).
 "Rootfs already present. Delete them to rebuild." when both
 `out/rootfs-base.ext4` and `out/rootfs-tree/` exist. Wipe them first:
 ```bash
-sudo rm -rf guest/out/rootfs-base.ext4 guest/out/rootfs-tree guest/out/cache-paths.txt
+sudo rm -rf out/rootfs-base.ext4 out/rootfs-tree out/cache-paths.txt out/build-base.txt
 ./build-all.sh
 ```
 The download cache under `guest/out/.download-cache/` is preserved — mise/gh
@@ -105,23 +111,24 @@ Install the build dependencies. `skopeo` + `umoci` pull and unpack the Debian OC
 
 ```bash
 # Debian/Ubuntu:
-sudo apt-get install skopeo umoci e2fsprogs curl
+sudo apt-get install skopeo umoci e2fsprogs curl jq rsync
 
 # Fedora/RHEL:
-sudo dnf install skopeo umoci e2fsprogs curl
+sudo dnf install skopeo umoci e2fsprogs curl jq rsync
 
 # Arch (umoci via AUR):
-sudo pacman -S skopeo e2fsprogs curl && yay -S umoci
+sudo pacman -S skopeo e2fsprogs curl jq rsync
+yay -S umoci
 
 # Alpine:
-apk add skopeo umoci e2fsprogs curl
+apk add skopeo umoci e2fsprogs curl jq rsync
 ```
 
 For a full kernel + initramfs build (`BUILD_KERNEL=1`, or when producing artifacts for macOS consumers), add the kernel toolchain. On Debian/Ubuntu:
 
 ```bash
 sudo apt-get install \
-    skopeo umoci e2fsprogs curl \
+    skopeo umoci e2fsprogs curl jq rsync \
     build-essential \
     bc \
     flex \
@@ -161,7 +168,8 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 ## Individual scripts
 
-- `build-rootfs.sh` — Debian trixie rootfs via `skopeo` (pulls `docker://debian:trixie` OCI image) + `umoci` (unpacks to tree) + chroot apt-get (extras) + `rootfs-customize-hook.sh` (SafeYolo-specific bits); writes `out/rootfs-base.ext4` (for macOS VZ), `out/rootfs-tree/` (the unpacked directory for Linux gVisor, chowned to uid 100000), and `out/cache-paths.txt`.
+- `build-rootfs.sh` — digest-pinned Debian trixie via `skopeo`, `umoci`, chroot apt and `rootfs-customize-hook.sh`; writes the ext4 image, UID 100000 tree, cache paths and actual build-base reference. `DEBIAN_IMAGE` overrides remain available for contributor builds. Floating tags and non-registry transports do not emit publication provenance. A cached pre-change build needs a rebuild before it can be published.
+- `archive-default.sh` — on a Linux builder with GNU tar, zstd and guest sudo, archives finished backend files with numeric owners, modes, links, extended attributes and sparse-image handling. See the [OCI publication instructions](../docs/guest-oci.md#prepare-and-publish-a-default-guest-release).
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
 - `build-all.sh` — platform-aware driver; calls the above three. Must be executed (`./build-all.sh`), not sourced.
@@ -181,7 +189,7 @@ This produces `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-tree/` (for 
 
 The build scripts keep a persistent cache of upstream downloads under `out/.download-cache/` so rebuilds don't re-fetch:
 
-- `out/.download-cache/oci/` — skopeo OCI image layout for `docker://debian:trixie`. Re-using this on subsequent builds avoids the ~60-70 MiB re-pull.
+- `out/.download-cache/oci/` — skopeo OCI image layout for the pinned Debian trixie input. Reusing the layout avoids downloading unchanged blobs.
 - `out/.download-cache/linux-<ver>.tar.xz` — kernel source tarball
 - `out/.download-cache/mise-v<ver>-linux-<arch>.tar.gz` — pinned mise release
 - `out/.download-cache/gh_<ver>_linux_<arch>.tar.gz` — pinned gh CLI release
@@ -192,7 +200,9 @@ To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush arti
 
 ## Why sudo?
 
-`build-rootfs.sh` uses `sudo` for five operations, all operating on a scratch directory under `/tmp/safeyolo-rootfs.*`:
+`build-rootfs.sh` uses `sudo` for these operations in its owned scratch
+directory under `TMPDIR` (or `/tmp` by default) and its selected output directory.
+The publication workflow sets `TMPDIR` to disk-backed runner storage:
 
 1. `umoci unpack` — preserves real uid/gid ownership in the unpacked tree, which `mkfs.ext4 -d` needs to read back cleanly at packaging time.
 2. `chroot ... apt-get install` — installs extras (socat, openssh-server, python3-pip, ripgrep, etc.) inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
@@ -200,7 +210,9 @@ To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush arti
 4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt-proxy config) — also needs root-in-chroot for the same reasons as (2).
 5. `chown -R 100000:100000` on the emitted `out/rootfs-tree/` — the tree ships pre-owned by the subuid-root so SafeYolo's rootless gVisor sandbox-root can write to tree paths via the overlay.
 
-No persistent host state is modified. Once `out/rootfs-base.ext4` is built (and `chown`'d back to you), the tree is `chown`'d to 100000, and the `/tmp` scratch dir is cleaned up.
+The selected output directory retains the finished artifacts and download
+cache. The ext4 image is owned by the builder user, and the tree is owned by
+UID/GID 100000. The temporary rootfs directory is removed on exit.
 
 Eliminating sudo entirely would require either a user-namespace chroot (rootless unshare, blocked on Ubuntu 24.04 by `kernel.apparmor_restrict_unprivileged_userns=1`) or `umoci --rootless` + xattr-aware packaging — the former needs a sysctl flip or an AppArmor profile, the latter isn't yet proven against our packaging step. We may add a rootless mode as a flag if there's demand.
 

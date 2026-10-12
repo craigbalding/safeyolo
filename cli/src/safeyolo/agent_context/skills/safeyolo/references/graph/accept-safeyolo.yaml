@@ -252,7 +252,7 @@ nodes:
         - path: proxy/src/host_boot.rs
           sha256: 0e7f550e1f68fb1495cbe38751122e66030f1c13fcddf3c231d16352cc1ed129
         - path: guest/build-rootfs.sh
-          sha256: 980493b29cc05dfde8c1e6632c1b8c3c8b274f2bbd9c8e16f736255bcfd830fa
+          sha256: d01e656f49ba23dca4091b7e56996476729a7feff31ac58ee589659104b37bae
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/native-policy.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && runsc --version && safeyolo doctor"
       run:
@@ -401,8 +401,9 @@ nodes:
       This is the primary rootfs construction probe: skopeo acquires the OCI
       base, umoci preserves ownership and xattrs, the rootfs's signed package
       sources install declared packages, and e2fsprogs emits the VZ image.
-      Record the resolved OCI digest because the current default Debian tag is
-      not pinned; that is a reproducibility gap, not permission to conceal it.
+      Check the default's architecture-specific Debian digest pin and compare
+      build-base.txt with the OCI manifest actually unpacked. Later apt packages
+      use signed repositories rather than a fixed package snapshot.
       Write focused image checks for the changed claim: inspect file ownership,
       executable modes, package versions, or contents in the built filesystem.
       When the claim concerns guest behavior, boot the image through the
@@ -414,7 +415,7 @@ nodes:
         - path: guest/build-all.sh
           sha256: 49f6de7f07ca960f79b04758ba88f37e7fc91fd318ae08d4117e8e4b967e6d3f
         - path: guest/build-rootfs.sh
-          sha256: 980493b29cc05dfde8c1e6632c1b8c3c8b274f2bbd9c8e16f736255bcfd830fa
+          sha256: d01e656f49ba23dca4091b7e56996476729a7feff31ac58ee589659104b37bae
         - path: guest/rootfs-customize-hook.sh
           sha256: 2c48131abab82e6b38f50c404da187be15ec6f4f5cc4d1173ebc98e860ab4dfa
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."

@@ -9,8 +9,9 @@ artifacts use `ghcr.io/craigbalding/safeyolo-guest` in GitHub Container Registry
 This document defines the source contract for publication, native acquisition
 and explicit guest upgrades. The [native Rust validator](../proxy/src/guest_oci.rs)
 and its [focused tests](../proxy/src/guest_oci/tests.rs) implement the shared
-rules. The production publisher, registry client, installed selection and
-upgrade path still require integration under issues #211, #237 and #238.
+rules. The default-guest archive producer and ORAS publisher are described
+below. The native registry client, installed selection and upgrade path still
+require integration under issues #237 and #238.
 Issue #239 owns installed-platform and independent-update proof. The source
 contract does not establish those outcomes or authorize public publication.
 
@@ -34,7 +35,8 @@ uses another channel and preserves discovery for supported older hosts.
 The publisher owns serialization of promotion, conflicting-version refusal
 and retention of supported releases and rollback content. OCI tagging alone
 does not enforce immutability or compare-and-swap promotion. These publication
-controls belong to #211 and remain pending under the publication hold.
+controls are implemented by the #211 publisher. Actual public publication
+and retention observations remain pending under the publication hold.
 
 ## OCI objects
 
@@ -163,6 +165,112 @@ platform assets. A failed pull, compatibility check, verification or extraction
 must leave the prior selection active, without an implicit local build.
 Atomic activation and rollback must preserve policy, credentials and agent state.
 These installation/upgrade behaviors remain work for #237/#238 and #239 proof.
+
+## Prepare and publish a default guest release
+
+Public GHCR uploads and compatibility promotion remain held under #1003.
+The [manual repository workflow](../.github/workflows/guest-oci.yml) prepares
+the release with registry writes disabled. Its `publish` job has a constant
+false condition. Enabling that job requires the operator's separate publication
+direction. Preparation does not restart automatic host releases or change Latest.
+
+For a maintainer with repository Actions access, select the approved source
+revision in **Prepare default guest OCI release**, and enter a new guest version
+and its compatibility identifier. The workflow builds amd64 and arm64 outputs
+with the maintained builders. The arm64 build also supplies the Mac kernel,
+initramfs and ext4 image. The builders use architecture-specific Debian manifest
+digests and write the actual preserved manifest identity to `build-base.txt`.
+That small build file becomes the child's build-base annotation; it is not a
+published catalogue or a file in the backend archive. Host-shipped executable
+source/profile receipts remain separate and unchanged.
+
+Each successful archive step prints its actual compressed byte size. The
+workflow returns `verified-guest-oci-layout`, containing standard OCI objects
+and all three opaque archives. The verifier checks every advertised child,
+config and blob, including distinct Mac/Linux arm64 archive identities.
+Preparation does not prove public retrieval, bootable platform content, native
+acquisition or the installed independent-update scenario.
+
+For local preparation, use native Linux builders for each guest architecture.
+Install the [builder prerequisites](../guest/README.md#linux-setup), plus GNU
+tar and zstd. Use a clean source checkout and its pinned Rust toolchain.
+Prepare amd64 outputs at `guest-build-amd64/` and arm64 outputs, including kernel
+and initramfs, at `guest-build-arm64/`, using `OUTPUT_DIR` with
+`guest/build-all.sh`. Set `ARCH` to the native architecture; set `BUILD_KERNEL=1`
+for the arm64 build. Do not archive an active or unfinished build. From the
+repository root, these commands write `guest-archives/` and `guest-oci/`, then
+validate the complete release without registry writes. Replace the example
+version and compatibility with the intended guest release values.
+
+```sh
+guest/archive-default.sh linux/amd64 guest-build-amd64 guest-archives/linux-amd64
+guest/archive-default.sh linux/arm64 guest-build-arm64 guest-archives/linux-arm64
+guest/archive-default.sh darwin/arm64 guest-build-arm64 guest-archives/darwin-arm64
+scripts/install_oras.sh "$HOME/.local/bin"
+cargo build --locked --manifest-path proxy/Cargo.toml --example verify_guest_oci
+ORAS="$HOME/.local/bin/oras" scripts/publish_guest_oci.sh \
+  --artifacts guest-archives --layout guest-oci --version guest-2026-10-12.1 \
+  --compatibility v1 --revision "$(git rev-parse HEAD)" \
+  --verifier proxy/target/debug/examples/verify_guest_oci
+```
+
+Success prints each platform's verified identities and size, followed by the
+complete index digest. GNU tar preserves Linux numeric owners, modes, links,
+access control lists and extended attributes. Sparse ext4 data uses GNU pax
+sparse metadata when the build filesystem reports holes. A matching GNU tar
+extraction restores that format. Filesystems that report a fully allocated
+source do not provide a sparse-map witness; test on a native filesystem before
+claiming sparse preservation. Missing `cache-paths.txt`, backend files or pinned
+build provenance stop preparation. An older cached build without provenance
+must be rebuilt; do not infer its input from the current Debian tag.
+
+When public publication is authorized, use the linked workflow's held `publish`
+job with its automatic `GITHUB_TOKEN` and job-only `packages: write` permission.
+The shared concurrency group serializes all versions and generations, with
+cancellation disabled. Direct publisher invocations must use the same exclusive
+publication window; OCI tags do not provide compare-and-swap.
+`--publish ghcr.io/craigbalding/safeyolo-guest` enables remote writes.
+`--plain-http` exists for disposable local registry tests; public GHCR uses TLS.
+
+The publisher uploads every child and its content by digest. It rejects
+conflicting guest-version reuse. It fetches all uploaded child/config/blob bytes
+into fresh storage and runs the native validator before uploading the full
+index. After index readback succeeds, it assigns the guest version and advances
+`compat-<C>`. Repeating identical input is allowed; conflicting reuse of a guest
+version fails. ORAS's creation annotation is fixed to the version date so retries
+do not change content identity. Any failed verification stops before promotion.
+An interrupted upload can leave untagged content; retry with the same source
+and artifacts. The publisher never deletes prior version tags, indexes,
+manifests or blobs. It leaves other compatibility generations unchanged.
+
+After the first authorized publication, the package owner must make the GHCR
+package public in its settings and verify all three targets anonymously with
+an empty ORAS registry configuration. Ordinary native consumers require no
+personal token or registry account. See GitHub's
+[package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+Anonymous GHCR retrieval, real compressed default-guest sizes, native filesystem
+sparsity and installed platform evidence remain pending until those runs occur.
+Keep supported versions and rollback content out of registry cleanup jobs.
+GHCR's documented blob limit or timeout must be observed with an actual default
+payload before considering another distribution scheme.
+
+The focused producer/publisher tests use real ORAS 1.3.4 and a disposable local
+Distribution API fixture. From the source checkout with the frozen test
+environment, the installed ORAS and compiled native example above, run:
+
+```sh
+ORAS="$HOME/.local/bin/oras" GUEST_OCI_VERIFIER="$PWD/proxy/target/debug/examples/verify_guest_oci" \
+  uv run --frozen --no-sync pytest -q tests/test_guest_oci_publisher.py \
+  --basetemp="$HOME/guest-oci-tests"
+```
+
+The tests check archive metadata, real OCI creation, upload/readback ordering,
+immutable-version conflicts/retries, incomplete and corrupt content refusal,
+older-channel retention and the workflow publication hold. The sparse-map test
+reports a skip if the filesystem cannot supply its required sparse fixture.
+The metadata test stages only a few KiB on the guest filesystem to exercise
+numeric ownership; archives and registry data use the disk-backed basetemp.
+These are source/local observations, not public or booted-platform acceptance.
 
 ## Local contract check
 
