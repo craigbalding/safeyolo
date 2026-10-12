@@ -65,7 +65,8 @@ impl ConsumerPlatform {
 }
 
 /// Standard OCI content identity and raw byte size, not a separate checksum record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Descriptor {
     pub digest: String,
     pub size: u64,

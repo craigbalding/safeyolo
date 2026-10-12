@@ -48,6 +48,8 @@ if [[ $lane != proxy ]]; then
     fi
   fi
   inputs+=(--platform-assets "$platform_assets")
+else
+  inputs+=(--no-guest-download)
 fi
 if [[ $prepare_kvm_only == true ]]; then
   echo 'KVM access prepared; no product installation or guest started'

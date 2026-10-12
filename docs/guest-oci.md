@@ -10,8 +10,9 @@ This document defines the source contract for publication, native acquisition
 and explicit guest upgrades. The [native Rust validator](../proxy/src/guest_oci.rs)
 and its [focused tests](../proxy/src/guest_oci/tests.rs) implement the shared
 rules. The default-guest archive producer and ORAS publisher are described
-below. The native registry client, installed selection and upgrade path still
-require integration under issues #237 and #238.
+below. [Native acquisition](../proxy/src/guest_acquisition.rs) and the
+[existing installer](../scripts/install_native.sh) obtain and install the
+selected guest. Explicit upgrade remains work under issue #238.
 Issue #239 owns installed-platform and independent-update proof. The source
 contract does not establish those outcomes or authorize public publication.
 
@@ -24,8 +25,8 @@ at most 121 ASCII letters, digits, underscores, dots or hyphens. Its discovery
 tag is `compat-<C>`, for example `compat-v1` for identifier `v1`.
 
 The host package must carry `guest_compatibility`, `guest_repository` and
-`guest_discovery_tag`. Those three fields belong in the existing strict
-package metadata writer/reader when acquisition is integrated. They must not
+`guest_discovery_tag`. Those three fields are emitted and checked by the existing
+strict package metadata writer/reader. They must not
 include a fixed guest index or archive digest. Host version, source, profile,
 platform and runtime requirements remain separate.
 
@@ -133,16 +134,15 @@ platform config and typed archive, then `manifest index create` from exact
 child digests. Set the required index annotations and artifact type explicitly.
 Do not combine `--config` with the mutually exclusive `--artifact-platform`.
 
-Native acquisition will use `oci-client` 0.18.0. Integrate the current ring TLS
-provider, proxy and certificate authority (CA) paths with fallible
-`Client::try_from(ClientConfig)`. Resolve once with `pull_manifest_raw`, use
-`Reference::clone_with_digest` for subsequent requests, and select the consumer
-platform explicitly with `platform_resolver: None`. Do not use implicit
-`pull_image_manifest` selection or the buffering whole-image `pull` path.
-Stream `pull_blob` to a staging file, use the library's hash check, and check
-the actual file size against the descriptor. Raw child length also needs its
-descriptor-size check. This network/TLS integration belongs to #237; the
-contract adds no registry dependency or alternate integrity catalogue.
+Native acquisition uses pinned `oci-client` 0.18.0 with the existing ring TLS
+provider, system/configured certificate authority (CA) roots and proxy route.
+Client construction uses fallible `Client::try_from(ClientConfig)`.
+`pull_manifest_raw` resolves discovery once; subsequent references pin the
+child digest. `platform_resolver: None` prevents implicit client selection.
+`pull_blob_stream` verifies the archive incrementally while it is written to a
+temporary file. The consumer checks descriptor size before retaining that file.
+The raw index, child and config are checked by the shared contract validator.
+Acquisition adds no alternate catalogue or user-installed registry tooling.
 
 ## Installed selection and backend preservation
 
@@ -164,7 +164,20 @@ handling, including the existing clone/copy behavior. Retain explicit offline
 platform assets. A failed pull, compatibility check, verification or extraction
 must leave the prior selection active, without an implicit local build.
 Atomic activation and rollback must preserve policy, credentials and agent state.
-These installation/upgrade behaviors remain work for #237/#238 and #239 proof.
+The installer feeds the verified prepared directory into its existing
+`platform_assets` path. It stages backend files and `guest-selection.json`
+together before initializing the fresh instance. The default persistent store
+is `HOME/.local/share/safeyolo/guests`, with `blobs/sha256` and `trees/sha256`
+directories. Completed trees are renamed into their digest-addressed location;
+failed extraction removes its owned staging directory. The host's maintained
+tar extracts the selected backend members, preserving its path/link safeguards;
+Linux extraction uses sudo for numeric ownership and the host find command
+checks the prepared tree ownership. Native zstd decoding needs
+no separately installed zstd program. Explicit/offline inputs remain available
+with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.
+The installed selection is reused without resolving discovery again.
+Upgrade/rollback execution remains work under #238; installed/public proof and
+the unchanged-host/new-guest journey remain under #239.
 
 ## Prepare and publish a default guest release
 

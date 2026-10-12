@@ -163,7 +163,7 @@ if [[ $platform == darwin-arm64 ]]; then
 else
   minimum=$(readelf --version-info "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord} "${runtime_binaries[@]}" | sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -1)
 fi
-printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\n' "$revision" "$profile" "$platform" "$minimum" > "$directory/package-info"
+printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n' "$revision" "$profile" "$platform" "$minimum" > "$directory/package-info"
 (cd "$directory"; find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s  %s\n' "$(file_sha256 "$file")" "$file"; done > SHA256SUMS)
 verify_native_package "$directory"
 if [[ -n $output ]]; then

@@ -3,6 +3,7 @@
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root= bundle= platform_assets= command_dir=
+download_guest=true
 build_arguments=()
 while (($#)); do
   case "$1" in
@@ -16,11 +17,12 @@ while (($#)); do
       esac
       shift 2;;
     --help)
-      echo 'Usage: install_native.sh --root ROOT [--bundle UNPACKED_BUNDLE] [--platform-assets DIRECTORY] [--command-dir DIRECTORY]'
+      echo 'Usage: install_native.sh --root ROOT [--bundle UNPACKED_BUNDLE] [--platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY]'
       echo 'From source: scripts/install_native.sh --root ROOT --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
-      echo 'Installation checks the native bundle and creates configuration, trust and tokens internally. ROOT must have no existing instance configuration. Prepared guest images are optional for proxy startup and required before agent start.'
+      echo 'Installation checks the native bundle, acquires its compatible default guest and creates configuration, trust and tokens internally. ROOT must have no existing instance configuration. --platform-assets uses explicit prepared/offline guest inputs; --no-guest-download keeps a contributor or proxy-only installation without acquisition.'
       echo 'Installs the safeyolo command in HOME/.local/bin when that directory is already on PATH, otherwise /usr/local/bin (using sudo if needed). --command-dir selects another command location. Existing unrelated commands are preserved.'
       exit 0;;
+    --no-guest-download) download_guest=false; shift;;
     *) echo "Unknown argument: $1" >&2; exit 2;;
   esac
 done
@@ -28,11 +30,15 @@ done
 if [[ ( -e $root && ! -d $root ) || -e $root/config.toml || -e $root/policy.toml || -e $root/data/admin_token ]]; then
   echo 'Instance already has configuration or is not a directory; choose a fresh root' >&2; exit 1
 fi
-temporary=
+temporary= guest_staging=
+cleanup_install() {
+  if [[ -n $temporary ]]; then rm -rf -- "$temporary"; fi
+  if [[ -n $guest_staging ]]; then rm -rf -- "$guest_staging"; fi
+}
+trap cleanup_install EXIT
 if [[ -z $bundle ]]; then
   mkdir -p "$(dirname -- "$root")"
   temporary=$(mktemp -d "$(dirname -- "$root")/native-install.XXXXXX")
-  trap 'rm -rf -- "$temporary"' EXIT
   "$script_dir/build_host_packages.sh" --directory "$temporary/bundle" ${build_arguments[@]+"${build_arguments[@]}"}
   bundle=$temporary/bundle
 else
@@ -80,22 +86,20 @@ if [[ -e $command_entry || -L $command_entry ]]; then
     exit 1
   fi
 fi
+if [[ -z $platform_assets ]] && $download_guest; then
+  guest_staging=$(mktemp -d "$root/guest-install.XXXXXX")
+  platform_assets=$("$bundle/bin/safeyolo" --root "$root" guest acquire --package-info "$bundle/package-info" --write-selection "$guest_staging/guest-selection.json")
+  if [[ ! -f $root/share/guest-selection.json ]]; then
+    install_platform_assets "$platform_assets" "$guest_staging/share"
+    mv "$guest_staging/guest-selection.json" "$guest_staging/share/guest-selection.json"
+    mv "$guest_staging/share" "$root/share"
+  fi
+fi
 cp -R "$bundle/bin" "$bundle/libexec" "$bundle/assets" "$root/"
 if [[ -d $bundle/lib ]]; then cp -R "$bundle/lib" "$root/"; fi
 cp "$bundle/package-info" "$bundle/SHA256SUMS" "$bundle/LICENSE" "$root/"
-if [[ -n $platform_assets ]]; then
-  mkdir -p "$root/share"
-  if [[ $(uname -s) == Darwin ]]; then
-    # APFS clones retain separate writable file identities without full copies.
-    for asset in Image initramfs.cpio.gz rootfs-base.ext4; do cp -c "$platform_assets/$asset" "$root/share/$asset"; done
-  else
-    # The prepared tree retains its sandbox UID/GID ownership. The operator
-    # supplies a reusable immutable tree; per-agent writable state is separate.
-    ln -s "$(cd "$platform_assets/rootfs-tree" && pwd)" "$root/share/rootfs-tree"
-    if [[ -f $platform_assets/cache-paths.txt ]]; then
-      cp "$platform_assets/cache-paths.txt" "$root/share/cache-paths.txt"
-    fi
-  fi
+if [[ -n $platform_assets && -z $guest_staging ]]; then
+  install_platform_assets "$platform_assets" "$root/share"
 fi
 "$root/bin/safeyolo" --root "$root" init
 cat >> "$root/config.toml" <<'EOF'
@@ -117,4 +121,4 @@ fi
 echo "Installed SafeYolo: $root"
 echo "Command: $command_entry"
 "$root/bin/safeyolo" --version
-echo 'With prepared guest inputs and normal Codex authentication, try a tiny app task: safeyolo demo'
+echo 'With guest inputs and normal Codex authentication, try a tiny app task: safeyolo demo'

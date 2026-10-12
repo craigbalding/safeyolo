@@ -266,6 +266,9 @@ async fn run() -> Result<(), Error> {
     };
     // Proposal file options retain Unix filename bytes through the shared
     // parser, as do the native guest CLI's existing path-taking commands.
+    if arguments.first().is_some_and(|value| value == "guest") {
+        return safeyolo_proxy::guest_acquisition::run(&root, &arguments[1..]).await;
+    }
     if matches!(arguments.as_slice(), [coord, kind, ..] if coord == "coord" && (kind == "completion-notes" || kind == "proposals"))
     {
         return safeyolo_proxy::factory_proposals::run_operator(&config, &arguments[1..]).await;
@@ -327,6 +330,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::ssh_proxy::HELP);
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::demo::HELP);
+            println!("{}", safeyolo_proxy::guest_acquisition::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
             println!("{}", safeyolo_proxy::factory_proposals::HELP);
             println!("{}", safeyolo_proxy::dispatch::request::HELP);

@@ -2392,7 +2392,7 @@ def test_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch, 
     monkeypatch.setattr(lifecycle, "checked", checked)
     try:
         original_checked([str(Path(bundle) / "install.sh"), "--root", str(source),
-                          "--command-dir", str(source / "commands")])
+                          "--command-dir", str(source / "commands"), "--no-guest-download"])
         (source / "share").mkdir(exist_ok=True)
         primary_args = [cli, "--root", str(source), "coord", "start", "--binary", nats]
         if platform == "vz":

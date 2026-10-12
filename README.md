@@ -37,12 +37,13 @@ an already prepared bundle for your host and selected source. The bundle's
 version. Verify a transferred archive against its supplied SHA-256 before
 extracting it. The installer checks its internal checksums and identities.
 
-Before installation, follow the [platform prerequisites and prepared guest
-inputs](docs/native-policy.md#guest-prerequisites). The package supplies native
-helpers and setup scripts; platform images/rootfs are separate. This arm64
-Linux example uses an unpacked production bundle in your current directory and
-prepared guest inputs at `$HOME/safeyolo-platform`. Replace that assets path
-with the directory you obtained during preparation.
+Before installation, follow the [platform prerequisites](docs/native-policy.md#guest-prerequisites).
+Bundles built from this source acquire their compatible default guest from
+public GitHub Container Registry (GHCR). Initial public guest publication is
+pending. Until that publication, supply prepared assets with `--platform-assets`
+as described in the linked prerequisites. The automatic path below requires a
+bundle with guest discovery metadata and its published public guest release.
+This arm64 Linux example uses an unpacked production bundle in your current directory.
 
 Install into a fresh `$HOME/.safeyolo`, the default location. If that directory
 already contains an installation, preserve it and use the
@@ -52,11 +53,11 @@ SafeYolo does not convert an earlier installation's state. Follow
 another platform or build input.
 
 The installer may ask for your normal sudo password to create the command
-entry in a conventional bin directory. Instance files stay owned by your
-account. New terminals use the default installation automatically.
+entry or preserve Linux guest ownership during extraction. Instance files
+stay owned by your account. New terminals use the default installation automatically.
 
 ```sh
-./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo" --platform-assets "$HOME/safeyolo-platform"
+./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo"
 safeyolo --help
 safeyolo --version
 safeyolo start
@@ -68,6 +69,8 @@ Installation creates configuration, trust and private tokens. It requires no
 Python, wheel, virtual environment or uv tool installation. Status identifies
 the selected root and reports `proxy_state: running` after successful startup.
 If installation or startup fails, resolve its named error before retrying.
+Keep `$HOME/.local/share/safeyolo/guests`: Linux installations reference its
+prepared trees. Startup and restart retain the installed guest selection.
 For source installation, the repository's `./install.sh` delegates to the same
 installer and accepts the same inputs.
 

@@ -27,10 +27,25 @@ def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
 
-def executable(path, identity):
+def executable(path, identity, guest_exit=None, guest_assets=None):
     # Real ELF header/architecture, controlled identity; never a runtime witness.
     source = path.with_suffix(".c")
-    source.write_text(f'#include <stdio.h>\nint main(void){{puts("{identity}");return 0;}}\n')
+    guest_command = ""
+    if guest_exit is not None or guest_assets is not None:
+        guest_command = ('if(argc>3 && strcmp(argv[3],"guest")==0){'
+                         'char *marker=getenv("PACKAGE_GUEST_CALLS");'
+                         'if(marker){FILE *out=fopen(marker,"w");if(!out)return 90;'
+                         'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+                         )
+        if guest_exit is not None:
+            guest_command += f'fprintf(stderr,"controlled guest acquisition refusal\\n");return {guest_exit};'
+        else:
+            guest_command += ('for(int i=1;i+1<argc;i++){if(strcmp(argv[i],"--write-selection")==0){'
+                              'FILE *out=fopen(argv[i+1],"w");if(!out)return 91;fputs("{}",out);fclose(out);}}'
+                              f'puts("{guest_assets}");return 0;')
+        guest_command += '}'
+    source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
+                      f'int main(int argc,char **argv){{{guest_command}puts("{identity}");return 0;}}\n')
     subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 
@@ -86,8 +101,12 @@ def package_inputs(tmp_path, request):
     host, guest, runtime = (tmp_path / name for name in ("host", "guest", "runtime"))
     for directory in (host, guest, runtime):
         directory.mkdir()
+    prepared = tmp_path / "prepared-guest"
+    (prepared / "rootfs-tree").mkdir(parents=True)
+    (prepared / "cache-paths.txt").write_text("/var/cache/apt\n")
     for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
-        executable(host / name, f"{name} 0.1.0 commit={revision} profile=debug")
+        executable(host / name, f"{name} 0.1.0 commit={revision} profile=debug",
+                   guest_assets=str(prepared) if name == "safeyolo" else None)
     for name in ("safeyolo-guest", "safeyolo-coord"):
         identity = f"{name} 0.1.0 commit={revision} profile=debug"
         executable(guest / name, identity)
@@ -107,10 +126,12 @@ def build_bundle(inputs, tmp_path):
     return directory
 
 
-@pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz")])
+@pytest.mark.parametrize("bundle", [False, True], ids=["source", "bundle"])
+@pytest.mark.parametrize("platform,lane", [("Linux", "systrap"), ("Darwin", "vz"),
+                                          ("Linux", "proxy"), ("Darwin", "proxy")])
 @pytest.mark.parametrize("separate_checkout", [False, True])
-def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane, separate_checkout):
-    """The maintained caller delegates prepared inputs to the normal installer."""
+def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatch, platform, lane, separate_checkout, bundle):
+    """Guest lanes retain prepared inputs; proxy lanes opt out of acquisition."""
     checkout = tmp_path / "source"
     scripts = checkout / "tests/blackbox"
     scripts.mkdir(parents=True)
@@ -127,7 +148,9 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     installer = selected / "install.sh"
     fixture_cli = '#!/bin/sh\nprintf "native %s\\n" "$*"\n'
     installer.write_text(f"#!{os.sys.executable}\nimport json,pathlib,sys\n"
-        "options = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
+        "arguments = [arg for arg in sys.argv[1:] if arg != '--no-guest-download']\n"
+        "options = dict(zip(arguments[::2], arguments[1::2]))\n"
+        "if '--no-guest-download' in sys.argv: options['--no-guest-download'] = True\n"
         "root = pathlib.Path(options['--root']); (root / 'bin').mkdir(parents=True)\n"
         "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
         "cli = root / 'bin/safeyolo'\n"
@@ -152,21 +175,69 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         monkeypatch.setenv(name, str(path))
     if platform == 'Darwin':
         monkeypatch.setenv('SAFEYOLO_NATIVE_VM_ARTIFACTS', str(vm))
+    if bundle:
+        monkeypatch.setenv('SAFEYOLO_NATIVE_BUNDLE', str(tmp_path / 'bundle'))
     selection = ['--install-checkout', str(selected)] if separate_checkout else []
     result = run(str(scripts / 'run-lane.sh'), lane, *selection, '--prepare-only', cwd=checkout)
     assert result.returncode == 0, result.stderr
     options = json.loads((root / 'native-inputs.json').read_text())
-    assert Path(options['--artifacts']) == host
-    assert Path(options['--guest-artifacts']) == guest
-    assert Path(options['--runtime-artifacts']) == runtime
-    if platform == 'Darwin':
-        assert Path(options['--vm-artifacts']) == vm
-    assert Path(options['--platform-assets']) == images
+    if bundle:
+        assert Path(options['--bundle']) == tmp_path / 'bundle'
+        assert not {'--artifacts', '--guest-artifacts', '--runtime-artifacts', '--vm-artifacts'} & options.keys()
+    else:
+        assert Path(options['--artifacts']) == host
+        assert Path(options['--guest-artifacts']) == guest
+        assert Path(options['--runtime-artifacts']) == runtime
+        if platform == 'Darwin':
+            assert Path(options['--vm-artifacts']) == vm
+    if lane == 'proxy':
+        assert options['--no-guest-download'] is True
+        assert '--platform-assets' not in options
+    else:
+        assert Path(options['--platform-assets']) == images
+        assert '--no-guest-download' not in options
     assert 'native --root' in result.stdout and 'coord stop' in result.stdout
     if separate_checkout:
         failed = run(str(scripts / 'run-lane.sh'), lane, '--install-checkout', str(tmp_path / 'missing'), cwd=checkout)
         assert failed.returncode == 2 and 'requires a source checkout' in failed.stderr
         assert (root / 'native-inputs.json').read_text() == json.dumps(options)
+
+
+@pytest.mark.parametrize("bundle", [False, True], ids=["source", "bundle"])
+@pytest.mark.parametrize("prepared", [False, True], ids=["proxy-only", "prepared-assets"])
+def test_native_policy_instance_selects_required_guest_inputs(tmp_path, monkeypatch, bundle, prepared):
+    from tests.proxy_contracts import test_native_policy_cli as native_policy
+
+    class InstallationBoundary(Exception):
+        pass
+
+    bundle_path = tmp_path / "bundle"
+    if bundle:
+        monkeypatch.setenv("SAFEYOLO_NATIVE_BUNDLE", str(bundle_path))
+    else:
+        monkeypatch.delenv("SAFEYOLO_NATIVE_BUNDLE", raising=False)
+    assets = tmp_path / "prepared" if prepared else None
+    observed = []
+
+    def install(command, **kwargs):
+        observed.append(command)
+        assert command[0] == str(REPO / "scripts/install_native.sh")
+        if bundle:
+            assert command[command.index("--bundle") + 1] == str(bundle_path)
+            assert "--artifacts" not in command
+        else:
+            assert "--artifacts" in command and "--bundle" not in command
+        if prepared:
+            assert command[command.index("--platform-assets") + 1] == str(assets)
+            assert "--no-guest-download" not in command
+        else:
+            assert "--no-guest-download" in command and "--platform-assets" not in command
+        raise InstallationBoundary
+
+    monkeypatch.setattr(native_policy.subprocess, "run", install)
+    with pytest.raises(InstallationBoundary), native_policy.native_instance(tmp_path, platform_assets=assets):
+        pytest.fail("argv control must stop at installation")
+    assert len(observed) == 1
 
 
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
@@ -200,6 +271,57 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         for notice in (package_inputs[0] / "proxy/licenses").iterdir():
             path, = [name for name in names if name.endswith(f"/assets/licenses/{notice.name}")]
             assert stream.extractfile(path).read() == notice.read_bytes()
+
+
+def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archive(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    fields = dict(line.split("=", 1) for line in (bundle / "package-info").read_text().splitlines())
+    assert set(fields) == {"source_commit", "profile", "platform", "minimum_runtime",
+                           "guest_compatibility", "guest_repository", "guest_discovery_tag"}
+    assert fields["guest_compatibility"] == "v1"
+    assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"
+    assert fields["guest_discovery_tag"] == "compat-v1"
+
+
+@pytest.mark.parametrize("change,diagnosis", [
+    (lambda text: text.replace("guest_compatibility=v1\n", ""), "compatibility/discovery"),
+    (lambda text: text.replace("guest_compatibility=v1", "guest_compatibility=../v1"), "compatibility/discovery"),
+    (lambda text: text.replace("compat-v1", "compat-v2"), "compatibility/discovery"),
+    (lambda text: text.replace("ghcr.io/craigbalding/safeyolo-guest", "example.test/guest"), "untrusted guest repository"),
+    (lambda text: text + "guest_repository=ghcr.io/craigbalding/safeyolo-guest\n", "duplicate package field"),
+    (lambda text: text + "source_commit=" + "b" * 40 + "\n", "duplicate package field"),
+    (lambda text: text + "unknown=field", "unknown package field"),
+])
+def test_package_reader_refuses_invalid_guest_metadata_before_installation(package_inputs, tmp_path, change, diagnosis):
+    bundle = build_bundle(package_inputs, tmp_path)
+    metadata = bundle / "package-info"
+    metadata.write_text(change(metadata.read_text()))
+    root = tmp_path / "refused"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    assert result.returncode != 0 and diagnosis in result.stderr
+    assert not root.exists()
+
+
+def test_default_installer_calls_native_guest_before_creating_configuration(package_inputs, tmp_path):
+    executable(package_inputs[1] / "safeyolo", f"safeyolo 0.1.0 commit={package_inputs[5]} profile=debug", guest_exit=31)
+    bundle = build_bundle(package_inputs, tmp_path)
+    root, marker = tmp_path / "fresh", tmp_path / "guest-argv"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
+                 env=dict(os.environ, PACKAGE_GUEST_CALLS=str(marker)))
+    assert result.returncode == 31 and "controlled guest acquisition refusal" in result.stderr
+    assert marker.read_text().splitlines() == ["--root", str(root), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", marker.read_text().splitlines()[-1]]
+    assert not (root / "config.toml").exists()
+    assert not (root / "bin").exists()
+    assert not (root / "data").exists()
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--no-guest-download")
+    assert result.returncode == 0, result.stderr
+    platform = tmp_path / "explicit"
+    (platform / "rootfs-tree").mkdir(parents=True)
+    supplied = tmp_path / "supplied"
+    result = run(str(bundle / "install.sh"), "--root", str(supplied), "--command-dir", str(supplied / "commands"),
+                 "--platform-assets", str(platform))
+    assert result.returncode == 0, result.stderr
+    assert (supplied / "share/rootfs-tree").resolve() == (platform / "rootfs-tree").resolve()
 
 
 def packaged_flow_token_recipe(package_inputs, tmp_path):
@@ -363,7 +485,7 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     (root / "share").mkdir(parents=True)
     image = root / "share/Image"
     image.write_bytes(b"prepared boot input")
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), cwd=tmp_path)
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--no-guest-download", cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert image.read_bytes() == b"prepared boot input"
     assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()
