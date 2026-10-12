@@ -4,7 +4,7 @@ use crate::{Error, host_agents::Agent, host_platform::config_dir};
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -26,6 +26,27 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
         return Err("mount requires /host/path:/guest/path[:ro]".into());
     }
     let host = Path::new(parts[0]).canonicalize()?;
+    let source_type = host.metadata()?.file_type();
+    if !source_type.is_dir() {
+        let kind = if source_type.is_file() {
+            "regular file"
+        } else if source_type.is_fifo() {
+            "FIFO"
+        } else if source_type.is_socket() {
+            "socket"
+        } else if source_type.is_char_device() {
+            "character device"
+        } else if source_type.is_block_device() {
+            "block device"
+        } else {
+            "non-directory filesystem entry"
+        };
+        return Err(format!(
+            "mount source {} is a {kind}; host mounts require a directory. Put files in a dedicated directory and mount that directory instead.",
+            host.display()
+        )
+        .into());
+    }
     let guest = Path::new(parts[1]);
     if !guest.is_absolute()
         || guest
@@ -435,6 +456,98 @@ fn oci(
             "capabilities":{"bounding":caps,"effective":caps,"permitted":caps,"ambient":caps},"rlimits":[{"type":"RLIMIT_NOFILE","hard":65536,"soft":65536}],"noNewPrivileges":false},
         "mounts":mounts,"linux":{"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","architectures":["SCMP_ARCH_X86_64","SCMP_ARCH_AARCH64"],"syscalls":[{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}]}}}),
     )
+}
+
+#[cfg(test)]
+mod mount_tests {
+    use super::*;
+    use std::{ffi::CString, os::unix::fs::symlink, os::unix::net::UnixListener};
+
+    #[test]
+    fn non_directory_sources_report_the_resolved_path_and_type() {
+        let fixture = tempfile::tempdir().unwrap();
+        let file = fixture.path().join("settings.json");
+        fs::write(&file, "{}").unwrap();
+        let link = fixture.path().join("file-link");
+        symlink(&file, &link).unwrap();
+        let fifo = fixture.path().join("fifo");
+        let name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let socket = fixture.path().join("socket");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        for (source, kind) in [
+            (file, "regular file"),
+            (link, "regular file"),
+            (fifo, "FIFO"),
+            (socket, "socket"),
+            (PathBuf::from("/dev/null"), "character device"),
+        ] {
+            let error = mount(&format!("{}:/opt/settings:ro", source.display()))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(source.canonicalize().unwrap().to_str().unwrap()),
+                "{error}"
+            );
+            for expected in [kind, "directory", "dedicated directory"] {
+                assert!(error.contains(expected), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn directories_and_directory_symlinks_preserve_read_only_and_destination_rules() {
+        let fixture = tempfile::tempdir().unwrap();
+        let link = fixture.path().join("directory-link");
+        symlink(fixture.path(), &link).unwrap();
+        for source in [fixture.path(), link.as_path()] {
+            for (suffix, read_only) in [("", false), (":ro", true)] {
+                let parsed = mount(&format!(
+                    "{}:/opt//settings/./config{suffix}",
+                    source.display()
+                ))
+                .unwrap();
+                assert_eq!(
+                    parsed,
+                    (
+                        fixture.path().canonicalize().unwrap(),
+                        "/opt/settings/config".into(),
+                        read_only
+                    )
+                );
+            }
+        }
+        for guest in [
+            "relative",
+            "/",
+            "/home/agent",
+            "/workspace",
+            "/dev/file",
+            "/proc/file",
+            "/sys/file",
+            "/safeyolo/file",
+            "/safeyolo-status/file",
+            "/opt/../etc",
+        ] {
+            assert!(
+                mount(&format!("{}:{guest}:ro", fixture.path().display()))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("mount destination is invalid or reserved")
+            );
+        }
+        for suffix in [":rw", ":ro:ro"] {
+            assert!(
+                mount(&format!(
+                    "{}:/opt/settings{suffix}",
+                    fixture.path().display()
+                ))
+                .unwrap_err()
+                .to_string()
+                .contains("mount requires")
+            );
+        }
+    }
 }
 
 #[cfg(test)]

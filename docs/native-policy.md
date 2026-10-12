@@ -184,8 +184,11 @@ it does not launch a replacement. `agent shell work` opens an independent shell.
 Use `agent configure work --workspace PATH --memory MB` to change settings.
 The output identifies next-start scope. The current sandbox keeps its existing
 workspace and memory until one `agent stop work` / `agent start work` cycle.
-Repeat `--mount HOST:GUEST[:ro]` for explicit shares. Read-only shares reject guest
-writes. An unowned workspace requires the existing explicit
+For explicit shares, the host source must be a directory. Symlinks to directories
+are accepted. Repeat `--mount HOST:GUEST[:ro]` to add shares. To share a file, put
+it in a dedicated directory and mount that directory. Agent creation,
+configuration and startup reject non-directory sources. Read-only shares reject
+guest writes. An unowned workspace requires the existing explicit
 `--dangerously-allow-unowned` override.
 
 If a shell fails, run `agent diagnostics work`. The result names runtime and
