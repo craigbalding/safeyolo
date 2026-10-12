@@ -6,6 +6,12 @@ image or a rootfs tarball. Prepare the custom image on a Linux builder with the 
 then supply the result to an installed native instance. The native CLI does
 not run a Python rootfs builder or accept the retired --rootfs-script flag.
 Existing shell builders and guest support files remain usable.
+The default builder pins the architecture-specific official Debian trixie
+manifest by digest. Its `DEBIAN_IMAGE` override remains available for
+contributor builds. Only a digest-pinned registry input emits `build-base.txt`
+for default-guest OCI publication; custom profiles keep their existing contract.
+Use a digest-only Docker reference for a pinned override: skopeo 1.18.0 rejects
+references that combine a tag and digest.
 
 ## Why this is safe to skip for most users
 

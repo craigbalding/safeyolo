@@ -2,7 +2,7 @@
 #
 # Build the SafeYolo base rootfs from the official Debian trixie OCI image.
 #
-# Pulls docker://debian:trixie via skopeo, unpacks with umoci, apt-installs
+# Pulls a digest-pinned Debian trixie image via skopeo, unpacks with umoci, apt-installs
 # our baseline toolkit inside a chroot, runs rootfs-customize-hook.sh to
 # stamp SafeYolo-specific bits (mise, gh, init stub, sshd config, agent
 # user, package-manager proxy/cache support), then writes two artifacts:
@@ -24,7 +24,7 @@
 # constraint, so Linux now gets the same persistence model as macOS.
 #
 # Dependencies (install via the host's package manager):
-#   skopeo umoci e2fsprogs curl
+#   skopeo umoci e2fsprogs curl jq rsync
 #
 set -euo pipefail
 
@@ -71,11 +71,14 @@ GH_SHA256_ARM64="${GH_SHA256_ARM64:-cf689084f3a3618f7eae4a2420d335d74626d65f5e59
 GH_SHA256_AMD64="${GH_SHA256_AMD64:-3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de}"
 
 # --- Debian source image ----------------------------------------------------
-# TODO: replace with `docker://debian:trixie@sha256:<digest>` once we pick a
-# canonical digest to pin. Floating tag is no worse than mmdebstrap's
-# "whatever deb.debian.org has today" — reproducibility has always been
-# a future-work item — but pinning by digest is a strict improvement.
-DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://debian:trixie}"  # DOC: guest/README.md, contrib/ROOTFS_SCRIPT_GUIDE.md
+# Architecture-specific manifests from the official trixie index. These pin
+# the actual input, rather than an index or the moving tag. apt still uses the
+# base's signed repositories; this is build provenance, not a package snapshot.
+case "$DEB_ARCH" in
+    amd64) DEBIAN_DIGEST=bcf83fd8af414eda0c0a99d25a4e61dedd88e7aac7f7bc519d04555ff0c40ec5 ;;
+    arm64) DEBIAN_DIGEST=b55910b579d6eb05ebd79fbc8468b974fa39bb0610d52e1f1390bb2177ab7614 ;;
+esac
+DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://docker.io/library/debian@sha256:$DEBIAN_DIGEST}"  # DOC: guest/README.md, contrib/ROOTFS_SCRIPT_GUIDE.md
 
 # --- Helper: `command -v` that also probes /usr/sbin / /sbin --------------
 # Debian packages these binaries into system sbin dirs that aren't on
@@ -90,6 +93,7 @@ command_x() {
 }
 
 # --- Dependency check -------------------------------------------------------
+command_x jq || { echo "Error: jq not installed (required for OCI build provenance)." >&2; exit 1; }
 command_x skopeo || {
     echo "Error: skopeo not installed." >&2
     echo "  Debian/Ubuntu: sudo apt-get install skopeo" >&2
@@ -197,10 +201,27 @@ MISE_SHA256="$_MISE_SHA"
 GH_SHA256="$_GH_SHA"
 
 # --- Pull the Debian OCI image ---------------------------------------------
+rm -f "$OUTPUT_DIR/build-base.txt"
 OCI_REF="debian-trixie-${DEB_ARCH}"
 echo "=== Pulling $DEBIAN_IMAGE ($DEB_ARCH) via skopeo ==="
+copy_options=()
+if [[ "$DEBIAN_IMAGE" == docker://*@sha256:* ]]; then
+    copy_options+=(--preserve-digests)
+    skopeo --override-arch="$DEB_ARCH" --override-os=linux inspect --config "$DEBIAN_IMAGE" | jq -e --arg arch "$DEB_ARCH" \
+        '.os == "linux" and .architecture == $arch' >/dev/null
+fi
 skopeo --override-arch="$DEB_ARCH" --override-os=linux \
-    copy "$DEBIAN_IMAGE" "oci:$OCI_CACHE:$OCI_REF"
+    copy "${copy_options[@]}" "$DEBIAN_IMAGE" "oci:$OCI_CACHE:$OCI_REF"
+# Record the manifest actually unpacked. Keep contributor transport overrides;
+# only registry inputs can supply the qualified build-base for OCI publication.
+BUILD_BASE=""
+if [[ "$DEBIAN_IMAGE" == docker://*@sha256:* ]]; then
+    base_name=$(skopeo inspect --no-tags --format '{{.Name}}' "$DEBIAN_IMAGE")
+    base_digest=$(jq -er --arg ref "$OCI_REF" \
+        '.manifests[] | select(.annotations["org.opencontainers.image.ref.name"] == $ref) | .digest' \
+        "$OCI_CACHE/index.json")
+    BUILD_BASE="$base_name@$base_digest"
+fi
 
 # --- Unpack ----------------------------------------------------------------
 # umoci layout: bundle/{rootfs,config.json,umoci.json}. We only want rootfs.
@@ -392,5 +413,9 @@ cat > "$OUTPUT_DIR/cache-paths.txt" <<'CACHE_PATHS'
 /var/lib/apt/lists
 CACHE_PATHS
 echo "cache-paths: $OUTPUT_DIR/cache-paths.txt"
+if [[ -n "$BUILD_BASE" ]]; then
+    printf '%s\n' "$BUILD_BASE" > "$OUTPUT_DIR/build-base.txt"
+    echo "build-base: $BUILD_BASE"
+fi
 
 echo "=== Rootfs build complete ==="

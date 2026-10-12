@@ -114,6 +114,8 @@ provision:
         erofs-utils \
         skopeo \
         umoci \
+        jq \
+        rsync \
         unzip \
         build-essential \
         bc \

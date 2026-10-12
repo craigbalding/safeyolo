@@ -1,0 +1,141 @@
+name: Prepare default guest OCI release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable guest version (guest-YYYY-MM-DD.N)
+        required: true
+        type: string
+      compatibility:
+        description: Guest compatibility identifier
+        required: true
+        default: v1
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize the repository's guest version/channel writes, including retries.
+concurrency:
+  group: default-guest-publication
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [amd64, arm64]
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install maintained builder and archive prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            skopeo umoci e2fsprogs rsync curl jq zstd
+      - name: Install ARM kernel and initramfs prerequisites
+        if: matrix.architecture == 'arm64'
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential bc flex bison libelf-dev libssl-dev \
+            gcc-aarch64-linux-gnu busybox-static pax-utils cpio pkg-config
+      - name: Build the finished default guest outputs
+        env:
+          ARCH: ${{ matrix.architecture }}
+          BUILD_KERNEL: ${{ matrix.architecture == 'arm64' && '1' || '0' }}
+          OUTPUT_DIR: ${{ runner.temp }}/guest-build
+          TMPDIR: ${{ runner.temp }}/guest-work
+        run: |
+          mkdir -p "$TMPDIR"
+          ./guest/build-all.sh
+      - name: Archive backend files and report compressed sizes
+        env:
+          ARCH: ${{ matrix.architecture }}
+        run: |
+          ./guest/archive-default.sh "linux/$ARCH" "$RUNNER_TEMP/guest-build" "$RUNNER_TEMP/archives/linux-$ARCH"
+          if [[ "$ARCH" == arm64 ]]; then
+            ./guest/archive-default.sh darwin/arm64 "$RUNNER_TEMP/guest-build" "$RUNNER_TEMP/archives/darwin-arm64"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: guest-archives-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/archives
+          if-no-files-found: error
+
+  prepare:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: guest-archives-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/archives
+      - name: Install pinned ORAS
+        run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build the shared native OCI verifier
+        env:
+          CARGO_BUILD_JOBS: "1"
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+      - name: Prepare and verify the complete release without registry writes
+        env:
+          GUEST_VERSION: ${{ inputs.version }}
+          GUEST_COMPATIBILITY: ${{ inputs.compatibility }}
+          GUEST_REVISION: ${{ github.sha }}
+        run: |
+          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
+            --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
+            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
+            --verifier proxy/target/debug/examples/verify_guest_oci
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-guest-oci-layout
+          path: ${{ runner.temp }}/guest-oci
+          if-no-files-found: error
+
+  publish:
+    # Public publication is held under #1003. Only a separate operator decision
+    # may enable this job; preparation never enables publication implicitly.
+    if: ${{ false }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: guest-archives-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/archives
+      - name: Install pinned ORAS
+        run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build the shared native OCI verifier
+        env:
+          CARGO_BUILD_JOBS: "1"
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+      - name: Authenticate with the linked repository token
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Upload, verify and promote the complete guest release
+        env:
+          GUEST_VERSION: ${{ inputs.version }}
+          GUEST_COMPATIBILITY: ${{ inputs.compatibility }}
+          GUEST_REVISION: ${{ github.sha }}
+        run: |
+          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
+            --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
+            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
+            --verifier proxy/target/debug/examples/verify_guest_oci \
+            --publish ghcr.io/craigbalding/safeyolo-guest
