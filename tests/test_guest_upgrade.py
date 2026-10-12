@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,8 @@ def preserved(root):
 
 
 def assert_preserved(root, original):
-    assert all((root / name).read_bytes() == data for name, data in original.items())
+    changed = [name for name, data in original.items() if (root / name).read_bytes() != data]
+    assert not changed, f"modified installed files: {', '.join(changed)}"
 
 
 def test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_state(
@@ -304,6 +306,9 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
     (root / "agents/retained/home/keep").write_bytes(b"persistent agent home")
     (root / "logs/audit-canary").write_bytes(b"persistent audit data")
     original = preserved(root)
+    # Ordinary startup rewrites reload_id and omits an empty listener table.
+    # Guest commands preserve bytes; restarts preserve all operator values.
+    configured = tomllib.loads(original.pop("config.toml").decode())
     g1 = json.loads((root / "share/guest-selection.json").read_bytes())
 
     def host_digests():
@@ -330,6 +335,7 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
         result = command(cli, root, environment, "start")
         assert result.returncode == 0, result.stderr
         proxy_record = (root / "data/proxy-process.json").read_bytes()
+        before_upgrade = preserved(root)
         result = command(cli, root, environment, "guest", "upgrade")
         assert result.returncode == 0, result.stderr
         g2 = json.loads(result.stdout)
@@ -337,6 +343,7 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
         assert (root / "data/proxy-process.json").read_bytes() == proxy_record
         assert json.loads(command(cli, root, environment, "status").stdout)["proxy_state"] == "running"
         assert host_digests() == host
+        assert_preserved(root, before_upgrade)
         assert_preserved(root, original)
         before = len(requests)
         again = command(cli, root, environment, "guest", "upgrade")
@@ -347,14 +354,20 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
         before = len(requests)
         assert command(cli, root, environment, "start").returncode == 0
         assert json.loads((root / "share/guest-selection.json").read_bytes()) == g2
+        before_rollback = preserved(root)
         result = command(cli, root, environment, "guest", "rollback")
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == g1
+        assert_preserved(root, before_rollback)
         assert command(cli, root, environment, "stop").returncode == 0
         assert command(cli, root, environment, "start").returncode == 0
         assert json.loads((root / "share/guest-selection.json").read_bytes()) == g1
         assert len(requests) == before
         assert_preserved(root, original)
+        restarted = tomllib.loads(config.read_text())
+        restarted.pop("reload_id", None)
+        restarted.setdefault("listeners", [])
+        assert restarted == configured
         assert host_digests() == host
     finally:
         assert command(cli, root, environment, "stop").returncode == 0
