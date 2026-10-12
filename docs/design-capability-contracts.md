@@ -224,6 +224,17 @@ semantics are active. The rule:
 > **A contract is grantable when every included operation's
 > `requires_enforcement` tier (or `request_shape` by default) is `enforced`.**
 
+The native runtime also checks whether it supports the operation's required
+behavior. Runtime state capture and state enforcement are unsupported.
+Operations that require either tier, or use `in_state_set` in path, query, or
+body constraints, are excluded from executable grants even if a service file
+marks their tier `enforced`. Selecting one for binding approval returns an
+error that names the operation and explains the unsupported behavior.
+The rejected binding does not replace a saved or active binding.
+Retained binding names for these operations produce no executable permissions.
+Their definitions remain loadable, and supported operations in the same
+contract remain available.
+
 This prevents a situation where a category-scoped `read_messages` grant
 implies containment that doesn't actually exist at runtime — e.g., the
 operator thinks the agent can only read discovered message IDs, but

@@ -921,6 +921,186 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
 }
 
 #[tokio::test]
+async fn unsupported_selected_grants_are_refused_and_retained_names_stay_inert() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for dir in ["data", "builtin", "services"] {
+        fs::create_dir_all(root_path.join(dir)).unwrap();
+    }
+    fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
+    let mut service = safeyolo_proxy::services::ServiceDefinition::from_yaml(SERVICE)
+        .unwrap()
+        .raw;
+    let template = &mut service["capabilities"]["writer"]["contract"];
+    template["enforcement"]["state_capture"] = serde_json::json!("enforced");
+    template["enforcement"]["state_enforcement"] = serde_json::json!("enforced");
+    template["operations"].as_array_mut().unwrap().extend([
+        serde_json::json!({"name":"path_state","request":{"path":"/v1/state/{id}","path_params":{"id":{"in_state_set":"0","equals_var":"project"}}}}),
+        serde_json::json!({"name":"query_state","request":{"path":"/v1/query","query":{"allow":{"id":{"in_state_set":"0","equals_var":"project"}}}}}),
+        serde_json::json!({"name":"body_state","request":{"method":"POST","path":"/v1/body","body":{"allow":{"id":{"in_state_set":"0","equals_var":"project"}}}}}),
+        serde_json::json!({"name":"capture","requires_enforcement":"state_capture","request":{"path":"/v1/capture"}}),
+        serde_json::json!({"name":"enforce","requires_enforcement":"state_enforcement","request":{"path":"/v1/enforce"}}),
+    ]);
+    let operations = template["operations"].as_array_mut().unwrap();
+    let unsupported = operations[2..].to_vec();
+    for operation in unsupported {
+        let name = operation["name"].as_str().unwrap();
+        operations.push(serde_json::json!({"name":name,"requires_enforcement":"response_validators","request":{"path":"/shadow"}}));
+        let reversed_name = format!("{name}_reversed");
+        operations.push(serde_json::json!({"name":reversed_name,"requires_enforcement":"response_validators","request":{"path":"/shadow"}}));
+        let mut reversed = operation;
+        reversed["name"] = serde_json::json!(reversed_name);
+        operations.push(reversed);
+    }
+    // Keep executable same-named operations available with an unsupported
+    // declaration both before and after the supported definition.
+    operations.insert(0, serde_json::json!({"name":"write","request":{"path":"/duplicate-write","query":{"allow":{"id":{"in_state_set":"0"}}}}}));
+    operations.push(serde_json::json!({"name":"read","request":{"path":"/duplicate-read","body":{"allow":{"id":{"in_state_set":"0"}}}}}));
+    fs::write(
+        root_path.join("services/contract.yaml"),
+        service.to_string(),
+    )
+    .unwrap();
+    let vault = Vault::unlock(root_path.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
+    vault
+        .store(Credential::new(
+            "contract-secret",
+            "bearer",
+            Secret::new("exact-contract-origin-secret"),
+        ))
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let policy_path = root_path.join("policy.toml");
+    fs::write(&policy_path, format!("{}\n[[agents.alice.contract_bindings]]\nservice = 'contract'\ncapability = 'writer'\ntemplate = 'contract.write.v1'\nbound_values = {{project='alpha',ticket='T-1'}}\ngrantable_operations = ['read','path_state','query_state','body_state','capture','enforce']\n", policy(port))).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(
+        listener,
+        seen.clone(),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    ));
+    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root_path.join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let socket = root_path.join("alice.sock");
+    let challenge = raw(
+        &socket,
+        &agent_api(
+            "/gateway/request-access",
+            br#"{"service":"contract","capability":"writer"}"#,
+        ),
+    )
+    .await;
+    status(&challenge, 200);
+    let challenge: Value = serde_json::from_slice(body(&challenge)).unwrap();
+    assert_eq!(challenge["decision"], "needs_contract_binding");
+    assert_eq!(
+        challenge["grantable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|op| op["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["write", "read"]
+    );
+    let snapshot = fs::read(&policy_path).unwrap();
+    let token = current_gateway_token(&socket).await;
+    let allowed = gateway_call(&socket, port, &token, "GET", "/v1/write", b"").await;
+    status(&allowed, 200);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    for (name, method, target, payload) in [
+        ("path_state", "GET", "/v1/state/42", &b""[..]),
+        ("query_state", "GET", "/v1/query?id=42", &b""[..]),
+        ("body_state", "POST", "/v1/body", &br#"{"id":42}"#[..]),
+        ("capture", "GET", "/v1/capture", &b""[..]),
+        ("enforce", "GET", "/v1/enforce", &b""[..]),
+    ] {
+        for name in [name.to_owned(), format!("{name}_reversed")] {
+            let selected = serde_json::json!({"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["read",name]});
+            let refused = admin(
+                admin_port,
+                &admin_request(
+                    "/admin/gateway/contract-binding",
+                    selected.to_string().as_bytes(),
+                ),
+            )
+            .await;
+            status(&refused, 400);
+            let refusal: Value = serde_json::from_slice(body(&refused)).unwrap();
+            let error = refusal["error"].as_str().unwrap();
+            assert!(
+                error.contains(&name) && error.contains("not supported"),
+                "{error}"
+            );
+            if name.contains("_state") {
+                assert!(error.contains("in_state_set"), "{error}");
+            }
+            assert_eq!(fs::read(&policy_path).unwrap(), snapshot);
+            let denied = gateway_call(&socket, port, &token, method, target, payload).await;
+            status(&denied, 403);
+            assert_eq!(
+                seen.lock().unwrap().len(),
+                1,
+                "unsupported {name} reached origin"
+            );
+        }
+    }
+    let supported = br#"{"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["write","read"]}"#;
+    let approved = admin(
+        admin_port,
+        &admin_request("/admin/gateway/contract-binding", supported),
+    )
+    .await;
+    status(&approved, 200);
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let token = current_gateway_token(&socket).await;
+    let allowed = gateway_call(&socket, port, &token, "GET", "/v1/write", b"").await;
+    status(&allowed, 200);
+    let grant = br#"{"agent":"alice","service":"contract","method":"POST","path":"/v1/write","lifetime":"once"}"#;
+    let granted = admin(admin_port, &admin_request("/admin/gateway/grant", grant)).await;
+    status(&granted, 200);
+    let wrong_value = gateway_call(
+        &socket,
+        port,
+        &token,
+        "POST",
+        "/v1/write?ticket=T-2",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&wrong_value, 403);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let allowed = gateway_call(
+        &socket,
+        port,
+        &token,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&allowed, 200);
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    for target in ["/duplicate-read", "/duplicate-write", "/shadow"] {
+        status(
+            &gateway_call(&socket, port, &token, "GET", target, b"").await,
+            403,
+        );
+    }
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    let saved = fs::read_to_string(&policy_path).unwrap();
+    assert!(!saved.contains("query_state"));
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
+#[tokio::test]
 async fn contract_binding_body_query_and_risk_grant_are_live() {
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();

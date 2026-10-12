@@ -12,6 +12,7 @@ use super::{Error, Json, Outcome, ParsedBody, ServiceAudit, read_json, response}
 pub(super) async fn respond<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
+    policy: Option<&crate::policy::Policy>,
     audit: Option<&ServiceAudit<'_>>,
 ) -> Result<Outcome, Error> {
     let Some(audit) = audit else {
@@ -214,6 +215,33 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             bound_values: bindings.clone(),
             grantable_operations: operations,
         };
+        let Some(registry) = policy
+            .and_then(crate::policy::Policy::gateway)
+            .and_then(crate::services::GatewaySnapshot::registry)
+        else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"service catalogue is unavailable"}),
+            ));
+        };
+        let Some(contract) = registry
+            .services
+            .get(service)
+            .and_then(|definition| definition.capabilities.get(capability))
+            .and_then(|capability| capability.contract.as_ref())
+            .cloned()
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"capability has no loaded contract to bind"}),
+            ));
+        };
+        if let Err(error) = contract.validate_grant_operations(&binding.grantable_operations) {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":error.to_string()}),
+            ));
+        }
         let agent = agent.to_owned();
         let service = service.to_owned();
         let capability = capability.to_owned();
@@ -224,7 +252,9 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         let store = store.clone();
         return run_mutation(owner, move || {
             let addition = store
-                .approve_binding(binding, time::OffsetDateTime::now_utc(), |_| Ok(()))
+                .approve_binding(binding, &contract, time::OffsetDateTime::now_utc(), |_| {
+                    Ok(())
+                })
                 .map_err(|_| Error::ServiceMutation)?;
             let binding_id = addition.binding.binding.binding_id.clone();
             emit_writer(
@@ -311,6 +341,20 @@ mod tests {
     use http_body_util::{BodyExt, Full};
     use std::sync::Arc;
 
+    fn binding_policy() -> crate::policy::Policy {
+        let source = "schema_version: 1\nname: mail\ncapabilities:\n  send:\n    routes: []\n    contract:\n      template: mail.v1\n      operations:\n        - name: send\n          request: {method: POST, path: /v1/send}\n      enforcement: {request_shape: enforced}\n";
+        let registry =
+            crate::services::Registry::from_sources(&[("mail.yaml".into(), source.into())], &[])
+                .unwrap();
+        crate::policy::Policy::parse_with_registry_at(
+            "[hosts]\n[agents.alice]\n",
+            crate::policy::Format::Toml,
+            Some(Arc::new(registry)),
+            1000.,
+        )
+        .unwrap()
+    }
+
     async fn call(
         store: &crate::grants::Store,
         writer: &Arc<crate::audit::Writer>,
@@ -332,7 +376,9 @@ mod tests {
             .header("Content-Length", body.len())
             .body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
             .unwrap();
-        let outcome = respond(request, path, Some(&audit)).await.unwrap();
+        let outcome = respond(request, path, Some(&binding_policy()), Some(&audit))
+            .await
+            .unwrap();
         let status = outcome.status();
         let body = outcome
             .into_response()
@@ -544,7 +590,13 @@ mod tests {
                 mutation_owner: &owner,
                 gateway_store: Some(&store),
             };
-            respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+            respond(
+                request,
+                "/admin/gateway/contract-binding",
+                Some(&binding_policy()),
+                Some(&audit),
+            )
+            .await
         };
         assert!(matches!(outcome, Ok(response) if response.status() == StatusCode::OK));
         let large_integer: serde_json::Value =
@@ -595,7 +647,13 @@ mod tests {
                 mutation_owner: &owner,
                 gateway_store: Some(&store),
             };
-            respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+            respond(
+                request,
+                "/admin/gateway/contract-binding",
+                Some(&binding_policy()),
+                Some(&audit),
+            )
+            .await
         };
         assert!(matches!(outcome, Err(Error::ServiceMutation)));
         assert_eq!(std::fs::read_to_string(&policy).unwrap(), saved_large);
@@ -658,7 +716,7 @@ mod tests {
                 mutation_owner: &request_owner,
                 gateway_store: Some(request_store.as_ref()),
             };
-            respond(request, "/admin/gateway/grant", Some(&audit)).await
+            respond(request, "/admin/gateway/grant", None, Some(&audit)).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while Arc::strong_count(&writer) < 3 {
@@ -712,7 +770,7 @@ mod tests {
                 mutation_owner: &owner,
                 gateway_store: Some(&store),
             };
-            respond(request, "/admin/gateway/grant", Some(&audit)).await
+            respond(request, "/admin/gateway/grant", None, Some(&audit)).await
         };
         assert!(matches!(outcome, Err(Error::ServiceMutation)));
         assert!(
@@ -737,7 +795,7 @@ mod tests {
                 mutation_owner: &owner,
                 gateway_store: Some(&store),
             };
-            respond(request, "/admin/gateway/grant", Some(&audit)).await
+            respond(request, "/admin/gateway/grant", None, Some(&audit)).await
         };
         assert!(matches!(outcome, Err(Error::Audit(_))));
         assert_eq!(

@@ -1,5 +1,9 @@
 use ring::digest::{SHA256, digest};
-use safeyolo_proxy::{approvals::ErrorKind, contracts::ContractBinding, grants::*};
+use safeyolo_proxy::{
+    approvals::ErrorKind,
+    contracts::{ContractBinding, ContractTemplate},
+    grants::*,
+};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -67,8 +71,88 @@ fn scope(agent: &str) -> RequestScope<'_> {
         path: "/messages/42",
     }
 }
+fn contract() -> ContractTemplate {
+    serde_json::from_value(json!({
+        "operations": [{"name":"list_messages", "request":{"path":"/messages"}}],
+        "enforcement": {"request_shape":"enforced"}
+    }))
+    .unwrap()
+}
 fn binding(agent: &str) -> ContractBinding {
     serde_json::from_value(json!({"agent":agent,"service":"gmail","capability":"read_messages","template":"gmail.read_messages.v1","bound_values":{"approved_category":"CATEGORY_PROMOTIONS"},"grantable_operations":["list_messages"]})).unwrap()
+}
+
+#[test]
+fn unsupported_binding_selection_does_not_replace_saved_or_live_binding() {
+    let (_directory, path, store) = setup(SOURCE);
+    let original = store
+        .approve_binding(binding("alice"), &contract(), now(), validate)
+        .unwrap();
+    let source = fs::read(&path).unwrap();
+    let mut selected = binding("alice");
+    selected.grantable_operations.push("stateful".into());
+    for location in ["path_params", "query", "body"] {
+        for unsupported_first in [true, false] {
+            let mut template = contract();
+            template
+                .enforcement
+                .insert("response_validators".into(), "declared".into());
+            let constraint = json!({"id":{"in_state_set":"0", "equals_var":"approved_category"}});
+            let mut request = json!({"path":"/messages/{id}"});
+            request[location] = if location == "path_params" {
+                constraint
+            } else {
+                json!({"allow":constraint})
+            };
+            let unsupported =
+                serde_json::from_value(json!({"name":"stateful", "request":request})).unwrap();
+            let declared = serde_json::from_value(json!({"name":"stateful", "requires_enforcement":"response_validators", "request":{"path":"/shadow"}})).unwrap();
+            template.operations.extend(if unsupported_first {
+                [unsupported, declared]
+            } else {
+                [declared, unsupported]
+            });
+            let mut activated = false;
+            let error = store
+                .approve_binding(selected.clone(), &template, now(), |_| {
+                    activated = true;
+                    Ok(())
+                })
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Invalid);
+            assert!(error.message.contains("stateful") && error.message.contains("in_state_set"));
+            assert!(!activated);
+            assert_eq!(fs::read(&path).unwrap(), source);
+            assert_eq!(
+                store
+                    .binding_for_agent("alice", "gmail", "read_messages")
+                    .unwrap()
+                    .unwrap()
+                    .binding
+                    .binding_id,
+                original.binding.binding.binding_id
+            );
+
+            // A supported same-named definition keeps the existing selection
+            // semantics in either order; the declared shadow adds no scope.
+            let supported =
+                serde_json::from_value(json!({"name":"stateful", "request":{"path":"/supported"}}))
+                    .unwrap();
+            if unsupported_first {
+                template.operations.insert(0, supported);
+            } else {
+                template.operations.push(supported);
+            }
+            let (_supported_directory, _supported_path, supported_store) = setup(SOURCE);
+            let accepted = supported_store
+                .approve_binding(selected.clone(), &template, now(), validate)
+                .unwrap();
+            assert_eq!(
+                accepted.binding.binding.grantable_operations,
+                selected.grantable_operations
+            );
+        }
+    }
 }
 
 #[test]
@@ -635,7 +719,7 @@ fn binding_numbers_keep_types_and_large_toml_integers_round_trip_losslessly() {
         json!("123")
     );
     store
-        .approve_binding(input.clone(), now(), validate)
+        .approve_binding(input.clone(), &contract(), now(), validate)
         .unwrap();
     let saved = fs::read_to_string(&path).unwrap();
     assert!(saved.contains("integer = 137"));
@@ -665,7 +749,7 @@ fn binding_numbers_keep_types_and_large_toml_integers_round_trip_losslessly() {
             .bound_values
             .insert("integer".into(), integer.clone());
         store
-            .approve_binding(too_big.clone(), now(), |_| Ok(()))
+            .approve_binding(too_big.clone(), &contract(), now(), |_| Ok(()))
             .unwrap();
         let expected_values = too_big.bound_values.clone();
         let persisted = fs::read_to_string(&path).unwrap();
@@ -701,7 +785,7 @@ fn binding_numbers_keep_types_and_large_toml_integers_round_trip_losslessly() {
     null.bound_values.insert("invalid".into(), Value::Null);
     assert_eq!(
         store
-            .approve_binding(null, now(), validate)
+            .approve_binding(null, &contract(), now(), validate)
             .unwrap_err()
             .kind,
         ErrorKind::Invalid
@@ -718,7 +802,9 @@ fn multiline_nested_large_binding_round_trips_after_external_reload() {
         .as_object()
         .unwrap()
         .clone();
-    store.approve_binding(input, now(), |_| Ok(())).unwrap();
+    store
+        .approve_binding(input, &contract(), now(), |_| Ok(()))
+        .unwrap();
     let persisted = fs::read_to_string(&path).unwrap();
     let compact = "values = [[18446744073709551617]]";
     assert!(persisted.contains(compact));
@@ -753,7 +839,9 @@ fn escaped_multiline_string_survives_store_edit_and_reload() {
     let (_directory, path, store) = setup(SOURCE);
     let mut input = binding("alice");
     input.bound_values = json!({"text":"placeholder"}).as_object().unwrap().clone();
-    store.approve_binding(input, now(), |_| Ok(())).unwrap();
+    store
+        .approve_binding(input, &contract(), now(), |_| Ok(()))
+        .unwrap();
     let persisted = fs::read_to_string(&path).unwrap();
     let compact = "text = \"placeholder\"";
     assert!(persisted.contains(compact));
@@ -800,7 +888,7 @@ fn escaped_multiline_string_survives_store_edit_and_reload() {
 fn binding_upsert_revoke_reload_and_comments_remain_scoped() {
     let (_directory, path, store) = setup(SOURCE);
     let first = store
-        .approve_binding(binding("alice"), now(), validate)
+        .approve_binding(binding("alice"), &contract(), now(), validate)
         .unwrap();
     assert_eq!(first.persistence, Persistence::Durable);
     assert!(
@@ -825,7 +913,9 @@ fn binding_upsert_revoke_reload_and_comments_remain_scoped() {
     changed
         .bound_values
         .insert("approved_category".into(), json!("CATEGORY_SOCIAL"));
-    let replacement = store.approve_binding(changed, now(), validate).unwrap();
+    let replacement = store
+        .approve_binding(changed, &contract(), now(), validate)
+        .unwrap();
     assert_ne!(
         first.binding.binding.binding_id,
         replacement.binding.binding.binding_id
@@ -875,7 +965,7 @@ fn binding_upsert_revoke_reload_and_comments_remain_scoped() {
 fn invalid_binding_reload_and_activation_do_not_publish_partial_state() {
     let (_directory, path, store) = setup(SOURCE);
     let original = store
-        .approve_binding(binding("alice"), now(), validate)
+        .approve_binding(binding("alice"), &contract(), now(), validate)
         .unwrap();
     let before = fs::read_to_string(&path).unwrap();
     let mut changed = binding("alice");
@@ -885,7 +975,7 @@ fn invalid_binding_reload_and_activation_do_not_publish_partial_state() {
     let mut calls = 0;
     assert!(
         store
-            .approve_binding(changed, now(), |_| {
+            .approve_binding(changed, &contract(), now(), |_| {
                 calls += 1;
                 if calls == 1 {
                     Err("bad candidate".into())
@@ -917,7 +1007,7 @@ fn inline_tables_and_concurrent_writers_preserve_unrelated_edits() {
         .add_grant(request("alice", GrantScope::Once), now(), validate)
         .unwrap();
     store
-        .approve_binding(binding("alice"), now(), validate)
+        .approve_binding(binding("alice"), &contract(), now(), validate)
         .unwrap();
     assert_eq!(
         Store::open(&path, now())
@@ -1242,7 +1332,9 @@ json.dump(out,sys.stdout)
     for (agent, number) in [("alice", 137), ("alice", 138), ("bob", 139)] {
         let mut value = binding(agent);
         value.bound_values = serde_json::from_value(json!({"number":number})).unwrap();
-        store.approve_binding(value, now(), validate).unwrap();
+        store
+            .approve_binding(value, &contract(), now(), validate)
+            .unwrap();
     }
     let fresh = Store::open(&path, now()).unwrap();
     let mut scopes: Vec<_> = fresh
