@@ -75,16 +75,24 @@ verify_native_artifacts() {
 
 verify_native_package() {
   local package=$1 key value source= profile= platform= minimum= identity binary
+  local compatibility= repository= discovery= seen=$'\n'
   require_file "$package/package-info" && require_file "$package/SHA256SUMS" || return
-  while IFS='=' read -r key value; do
+  while IFS='=' read -r key value || [[ -n $key ]]; do
+    case "$seen" in *$'\n'"$key"$'\n'*) package_error "duplicate package field: $key"; return 1;; esac
+    seen+="$key"$'\n'
     case "$key" in
       source_commit) source=$value;; profile) profile=$value;; platform) platform=$value;; minimum_runtime) minimum=$value;;
+      guest_compatibility) compatibility=$value;; guest_repository) repository=$value;; guest_discovery_tag) discovery=$value;;
       *) package_error "unknown package field: $key"; return 1;;
     esac
   done < "$package/package-info"
   [[ $source =~ ^[0-9a-f]{40}$ && $profile =~ ^(production|debug)$ ]] || { package_error 'invalid source/profile metadata'; return 1; }
   [[ $platform == "$(host_platform)" ]] || { package_error "package platform $platform differs from this host"; return 1; }
   [[ $minimum =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { package_error 'invalid minimum runtime'; return 1; }
+  [[ $compatibility =~ ^[A-Za-z0-9_.-]{1,121}$ && $discovery == "compat-$compatibility" ]] || {
+    package_error 'invalid guest compatibility/discovery metadata'; return 1;
+  }
+  [[ $repository == ghcr.io/craigbalding/safeyolo-guest ]] || { package_error 'untrusted guest repository'; return 1; }
   if [[ $platform == darwin-arm64 ]]; then
     version_at_least "$(sw_vers -productVersion)" "$minimum" || { package_error "requires macOS $minimum"; return 1; }
   else
@@ -121,4 +129,18 @@ verify_native_package() {
     "$package/bin/safeyolo-vm" verify --profile "$helper_profile" --source "$source" || return
   fi
   echo "Verified native package: $source $platform $profile"
+}
+
+# Both acquired and explicitly supplied inputs use the maintained backend layout.
+install_platform_assets() {
+  local assets=$1 share=$2 asset
+  mkdir -p "$share" || return
+  if [[ $(uname -s) == Darwin ]]; then
+    # APFS clones retain separate writable file identities without full copies.
+    for asset in Image initramfs.cpio.gz rootfs-base.ext4; do cp -c "$assets/$asset" "$share/$asset" || return; done
+  else
+    # Keep sandbox numeric ownership on the persistent prepared tree.
+    ln -s "$(cd "$assets/rootfs-tree" && pwd)" "$share/rootfs-tree" || return
+    if [[ -f $assets/cache-paths.txt ]]; then cp "$assets/cache-paths.txt" "$share/cache-paths.txt" || return; fi
+  fi
 }

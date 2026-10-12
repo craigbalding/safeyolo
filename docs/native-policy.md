@@ -20,26 +20,32 @@ environment or uv tool installation.
 
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
-Before installation, prepare the [host runtime and guest assets](#guest-prerequisites).
-The commands below assume those assets are at `$HOME/safeyolo-platform`;
-replace that path with your supplied directory. Choose a root with no existing
+Before installation, prepare the [host runtime](#guest-prerequisites).
+Bundles from this source obtain the compatible default guest anonymously from
+GitHub Container Registry (GHCR), using their guest discovery metadata.
+The automatic path below requires initial public guest publication, which is
+pending. Until publication, obtain prepared assets as described in the
+prerequisites and add `--platform-assets DIRECTORY` to the install command.
+Choose a root with no existing
 instance configuration. This example uses the CLI default `$HOME/.safeyolo`.
 If it is already in use, preserve it and follow the
 [custom-instance reference](#other-installation-paths). There is no old-state conversion.
-Installation checks bundle checksums and executable identities, then creates
+Installation checks bundle checksums and executable identities, obtains and
+verifies the default guest, then creates
 configuration, trust, private tokens and runtime directories internally.
 There is no separate init, build or setup command after unpacking.
 
 The installer creates the `safeyolo` command in `$HOME/.local/bin` when that
 directory is already on your normal PATH. Otherwise it uses `/usr/local/bin`
 on Linux and Mac, and may ask for your normal sudo password to create the
-command entry. The instance files remain owned by your account. New host
+command entry. Linux guest extraction can also require sudo to preserve numeric
+ownership. The instance files remain owned by your account. New host
 terminals can run `safeyolo` without selecting a root or changing PATH.
 An unrelated existing command is preserved and reported with its recovery.
 
 ```sh
 tar -xzf safeyolo-linux-arm64-production.tar.gz
-./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo" --platform-assets "$HOME/safeyolo-platform"
+./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo"
 ```
 
 The installer prints the full source commit and build profile. Host executables
@@ -145,7 +151,18 @@ For the Kernel-based Virtual Machine (KVM) platform, the host administrator
 grants the operator and subordinate UID 100000 read/write access to `/dev/kvm`.
 These steps preserve the existing namespace and hardware isolation setup.
 
-Obtain prepared guest assets from the bundle supplier, or use the
+Automatic acquisition uses the [OCI guest contract](guest-oci.md) and the native
+registry client. No registry account, Docker, ORAS or local guest build is
+needed. The installer stores verified blobs and prepared trees in
+`$HOME/.local/share/safeyolo/guests`, addressed by their archive digest.
+Keep that directory: installed Linux instances reference its trees.
+`share/guest-selection.json` records the version, repository, compatibility,
+consumer platform and selected index, child-manifest and archive descriptors.
+Normal startup and restart use that selection without advancing a tag.
+A failed pull, verification or extraction stops installation before initialization.
+Explicit guest upgrade remains work under issue #238.
+
+For explicit offline or contributor inputs, obtain prepared assets from the bundle supplier, or use the
 [guest build instructions](../guest/README.md) to produce them separately.
 Ubuntu uses `rootfs-tree`; macOS uses `Image`, `initramfs.cpio.gz` and
 `rootfs-base.ext4`. The installer places them under the instance's `share/`.
@@ -155,6 +172,9 @@ Supply their directory with `install.sh --root ROOT --platform-assets DIRECTORY`
 at the fresh installation step. macOS copies the three image files with
 Apple File System (APFS) clones. Ubuntu links the prepared `rootfs-tree`, preserving its sandbox ownership;
 keep that shared tree available and immutable for the instance's lifetime.
+Use `--no-guest-download` for a contributor or proxy-only installation that
+will receive guest assets separately. That option preserves already prepared
+inputs. It does not build a guest or fall back after a failed pull.
 
 ## Configure and use an agent
 
