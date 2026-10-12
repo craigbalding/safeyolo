@@ -47,7 +47,7 @@ leave attention waiting to the supervisor outside the turn.
 | `read_brief` | Read the operator-authored brief and its revision. |
 | `get_room_state` | Read attributed membership, capability, and lease state. |
 | `declare_capabilities` | Replace this agent's expiring capability claims. |
-| `send` | Append a retained message and choose who to notify. |
+| `send` | Append a retained message with `notify=none`, `notify=room`, or an agent-name list. |
 | `send_task` | Build one exact task header and notify its exact assignee. |
 | `wait_for_coord` | Wait for and resolve a complete attention page. |
 | `wait_for_attention` | Wait on the lower-level attention feed. |
@@ -69,6 +69,38 @@ normal second half of a targeted notification.
 Set `notify` explicitly when using raw `send`. The MCP adapter defaults it to
 `none`; omitting it through an older or raw caller preserves legacy room-wake
 compatibility and is not the recommended targeted workflow.
+
+| `notify` value for MCP or raw Agent API `send` | Attention recipients |
+|---|---|
+| `"none"` | None. The message is still retained. |
+| `"room"` | All current receive-authorized agents in the room, except the sender. |
+| `["alice", "bob"]` | Only the named active, receive-authorized agents in that room. |
+
+For an agent using the MCP adapter, the following examples are separate `send`
+calls. Replace `work` with a room where the sender has send permission. Replace
+`alice` and `bob` with active agent names that have receive permission in that
+room.
+
+```text
+send(room_name="work", body="Notes retained.", notify="none")
+send(room_name="work", body="Room action needed.", notify="room")
+send(room_name="work", body="Review needed.", notify=["alice", "bob"])
+```
+
+On the owning host account, the native operator CLI uses `--to` to select
+agents. With the installed `safeyolo` on PATH, these examples send to `work`
+in the default instance. Use the same room and agent-name replacements as the
+MCP examples.
+
+```sh
+safeyolo coord send work 'Room action needed.'
+safeyolo coord send work 'Review needed.' --to alice --to bob
+```
+
+The first native command notifies the room; the second notifies only the named
+agents. For `notify=none`, use MCP or the raw Agent API. Notification does not
+change retained-message visibility; room receive permissions control who can
+read the message.
 
 For a routine assignment, prefer `send_task(room_name, assignee, target,
 body)`. It emits exactly `TASK target=<absolute-url> assignee=<agent>` followed
