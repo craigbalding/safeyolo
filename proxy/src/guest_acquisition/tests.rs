@@ -266,7 +266,9 @@ mod linux {
         let registry = Registry::new(&release);
         let package = registry.package();
         let store = temp.path().join("store");
-        let selection = acquire(&registry.client(), &package, &store).await.unwrap();
+        let selection = acquire(&registry.client(), &package, &store, None, None)
+            .await
+            .unwrap();
         assert_eq!(selection.archive, release.archive);
         let tree = selection.assets.join("rootfs-tree");
         assert_eq!(tree.metadata().unwrap().uid(), 100000);
@@ -285,7 +287,9 @@ mod linux {
         );
         let tree_identity = selection.assets.metadata().unwrap().ino();
         let requests = registry.requests.lock().unwrap().len();
-        let again = acquire(&registry.client(), &package, &store).await.unwrap();
+        let again = acquire(&registry.client(), &package, &store, None, None)
+            .await
+            .unwrap();
         assert_eq!(again.assets.metadata().unwrap().ino(), tree_identity);
         let seen = registry.requests.lock().unwrap();
         assert!(
@@ -312,7 +316,7 @@ mod linux {
         *registry.truncated.lock().unwrap() = Some(key.clone());
         let store = temp.path().join("store");
         assert!(
-            acquire(&registry.client(), &registry.package(), &store)
+            acquire(&registry.client(), &registry.package(), &store, None, None)
                 .await
                 .is_err()
         );
@@ -334,7 +338,7 @@ mod linux {
         *registry.truncated.lock().unwrap() = None;
         registry.contents.lock().unwrap().get_mut(&key).unwrap()[0] ^= 1;
         assert!(
-            acquire(&registry.client(), &registry.package(), &store)
+            acquire(&registry.client(), &registry.package(), &store, None, None)
                 .await
                 .is_err()
         );

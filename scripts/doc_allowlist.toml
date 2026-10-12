@@ -39,6 +39,7 @@ user_facing_docs = [
     "docs/ADDONS.md",
     "docs/CONFIGURATION.md",
     "docs/native-policy.md",
+    "docs/guest-oci.md",
     "docs/native-credentials.md",
     "docs/native-settings.md",
     "docs/native-operator.md",

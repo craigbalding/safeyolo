@@ -12,7 +12,8 @@ and its [focused tests](../proxy/src/guest_oci/tests.rs) implement the shared
 rules. The default-guest archive producer and ORAS publisher are described
 below. [Native acquisition](../proxy/src/guest_acquisition.rs) and the
 [existing installer](../scripts/install_native.sh) obtain and install the
-selected guest. Explicit upgrade remains work under issue #238.
+selected guest. The native `guest upgrade` and `guest rollback` commands change
+the default guest selection for existing instances under issue #238.
 Issue #239 owns installed-platform and independent-update proof. The source
 contract does not establish those outcomes or authorize public publication.
 
@@ -164,6 +165,13 @@ handling, including the existing clone/copy behavior. Retain explicit offline
 platform assets. A failed pull, compatibility check, verification or extraction
 must leave the prior selection active, without an implicit local build.
 Atomic activation and rollback must preserve policy, credentials and agent state.
+Initial installed inputs remain under `share/`. An upgraded selection's
+`installed_assets` points to its separate backend files under
+`share/guest-versions/sha256/<archive-digest>/`. `previous` retains the prior
+selection in the same JSON file. Each native boot reads one complete selection
+and stages that selection's backend inputs. Existing per-agent rootfs and cache
+overrides keep their precedence. Activation does not replace the initial files
+or inputs used by an earlier sandbox incarnation.
 The installer feeds the verified prepared directory into its existing
 `platform_assets` path. It stages backend files and `guest-selection.json`
 together before initializing the fresh instance. The default persistent store
@@ -176,8 +184,62 @@ checks the prepared tree ownership. Native zstd decoding needs
 no separately installed zstd program. Explicit/offline inputs remain available
 with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.
 The installed selection is reused without resolving discovery again.
-Upgrade/rollback execution remains work under #238; installed/public proof and
-the unchanged-host/new-guest journey remain under #239.
+Guest-only upgrade and rollback use the same acquisition path. Broader host
+upgrade remains under #238. Installed/public proof and the unchanged-host/new-guest
+journey remain under #239.
+
+## Upgrade or roll back the installed default guest
+
+On the installed host, run these commands as the instance owner from any working
+directory. The instance must have a default guest acquired through OCI and an
+installed `package-info`. The commands use the installed host's compatibility
+identifier and trusted repository. Linux extraction retains the installer's sudo
+requirement for numeric ownership; Mac staging uses APFS image clones.
+
+Upgrade downloads changed guest bytes and selects the complete guest for the next
+sandbox boot. Running guests keep their current inputs until you stop and start
+them. The command retains the previous selection for rollback. Host binaries,
+policy, credentials, audit data and agent homes stay unchanged. Keep the guest
+store and the instance's `share/guest-versions/` directory: active and rollback
+selections reference those files. Upgrade does not remove older guest assets.
+
+For the default instance, select the latest compatible guest:
+
+```sh
+safeyolo guest upgrade
+```
+
+Success prints the selected version and the index, child-manifest and archive
+digests as JSON. `previous` identifies the rollback selection. Repeating the
+upgrade reuses unchanged archive bytes and backend inputs. Normal startup and
+restart do not contact the registry or select a newer guest.
+
+If the selected guest fails to start or you need the prior guest, restore the
+previous selection locally:
+
+```sh
+safeyolo guest rollback
+```
+
+Success prints the restored guest. Rollback makes no registry request and leaves
+running guests intact. After a successful rollback, repeating rollback retains
+the restored selection. Stop and start the affected agent to boot that guest,
+using the existing `safeyolo agent stop NAME` and `safeyolo agent start NAME`
+commands with its configured name.
+
+For another instance, put `--root /absolute/instance/path` before `guest`.
+For a specific release, pass `--index sha256:DIGEST` to `guest upgrade`, replacing
+`sha256:DIGEST` with the complete OCI index digest from that guest's publication.
+The native consumer verifies that index and pins its selected child and blob;
+it does not read the moving compatibility tag. Upgrade reuses the persistent
+store chosen during installation. A registry, compatibility, verification or staging failure preserves
+the selected guest. An interrupted command can be repeated; activation replaces
+the complete current/previous selection atomically.
+
+Custom guest profiles and host/component-pair upgrades are outside these
+commands. Local source controls cover selection, native boot staging, failure
+recovery and state preservation. Public GHCR and clean booted-platform proof
+remain under #239.
 
 ## Prepare and publish a default guest release
 

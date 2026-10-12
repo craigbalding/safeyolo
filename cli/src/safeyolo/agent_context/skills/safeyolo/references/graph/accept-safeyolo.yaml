@@ -248,9 +248,9 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: a2a7170e70db17490c7b47de4f37f3ae9a3ffe56875388fedd73aabee1a7ae08
         - path: proxy/src/host_platform.rs
-          sha256: b1ff92589bf3e909996a056ce7cd1e8782d9640597f51ef7bf9a7112cc6c9051
+          sha256: 03d574bab5e6f2500a81429fb1346b5cf9cc2bdf93b47999fdc02a1ee8f304f9
         - path: proxy/src/host_boot.rs
-          sha256: 0e7f550e1f68fb1495cbe38751122e66030f1c13fcddf3c231d16352cc1ed129
+          sha256: 1c2703b8685a4a312f07d8b3271b0a9ecd9ca42fcaabe560d95fe9f45ba90231
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/native-policy.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."

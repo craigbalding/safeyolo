@@ -1700,6 +1700,31 @@ async fn cleanup_failed_vz_start(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn vz_boot_inputs(
+    config: &std::path::Path,
+    directory: &std::path::Path,
+    launch_context: &serde_json::Value,
+) -> (PathBuf, PathBuf, PathBuf) {
+    // stage() captured one complete selection for this incarnation. Reading
+    // the moving default here could combine another guest's kernel and rootfs.
+    let guest_inputs = launch_context
+        .get("guest_inputs")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.join("share"));
+    let rootfs = if directory.join("rootfs.ext4").is_file() {
+        directory.join("rootfs.ext4")
+    } else {
+        guest_inputs.join("rootfs-base.ext4")
+    };
+    (
+        rootfs,
+        guest_inputs.join("Image"),
+        guest_inputs.join("initramfs.cpio.gz"),
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) async fn start_sandbox(
     name: &str,
@@ -1725,13 +1750,7 @@ pub(crate) async fn start_sandbox(
         .ok_or(io::Error::other(
             "agent workspace missing from host launch context",
         ))?;
-    let rootfs = if directory.join("rootfs.ext4").is_file() {
-        directory.join("rootfs.ext4")
-    } else {
-        config.join("share/rootfs-base.ext4")
-    };
-    let kernel = config.join("share/Image");
-    let initrd = config.join("share/initramfs.cpio.gz");
+    let (rootfs, kernel, initrd) = vz_boot_inputs(&config, &directory, &launch_context);
     for path in [&rootfs, &kernel, &initrd, &share] {
         if !path.exists() {
             return Err(io::Error::new(
@@ -2137,6 +2156,41 @@ mod guest_command_test_run;
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn vz_boot_uses_one_staged_selection_and_preserves_explicit_rootfs() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path();
+        let directory = config.join("agents/alice");
+        std::fs::create_dir_all(&directory).unwrap();
+        let selected = config.join("share/guest-versions/sha256/selected");
+        let context = serde_json::json!({"guest_inputs":selected});
+        // Other boot inputs exist, but must not be mixed into this incarnation.
+        std::fs::create_dir_all(config.join("share")).unwrap();
+        std::fs::write(config.join("share/Image"), "different kernel").unwrap();
+        assert_eq!(
+            vz_boot_inputs(config, &directory, &context),
+            (
+                selected.join("rootfs-base.ext4"),
+                selected.join("Image"),
+                selected.join("initramfs.cpio.gz"),
+            )
+        );
+        std::fs::write(directory.join("rootfs.ext4"), "custom profile").unwrap();
+        assert_eq!(
+            vz_boot_inputs(config, &directory, &context),
+            (
+                directory.join("rootfs.ext4"),
+                selected.join("Image"),
+                selected.join("initramfs.cpio.gz"),
+            )
+        );
+        std::fs::remove_file(directory.join("rootfs.ext4")).unwrap();
+        assert_eq!(
+            vz_boot_inputs(config, &directory, &serde_json::json!({})).0,
+            config.join("share/rootfs-base.ext4")
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
