@@ -27,6 +27,11 @@ and the actual minimum glibc or macOS version; it is the runtime requirement,
 not an inferred wheel tag. Read installed --version and native status to
 attribute a run, and retain separate guest/platform observations.
 
+The [OCI guest source contract](guest-oci.md) defines independent default-guest
+release discovery and compatibility. Its publisher, native acquisition and
+installed selection remain follow-on implementation; the current installer
+still uses explicitly prepared platform assets.
+
 Publication and promotion remain an operator-owned stopped outcome. Source
 integration and focused installer results do not publish packages or accept
 the final installed platform suites.

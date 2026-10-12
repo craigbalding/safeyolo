@@ -165,6 +165,8 @@ repos:
       - id: check-json
       - id: check-toml
       - id: end-of-file-fixer
+        # OCI blob names hash their exact raw bytes, including JSON without LF.
+        exclude: ^proxy/tests/fixtures/guest-oci/blobs/
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
         exclude: ^cli/src/safeyolo/templates/lists/
