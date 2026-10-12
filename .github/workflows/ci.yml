@@ -9,10 +9,10 @@ on:
   pull_request:
     branches: [master, main]
 
-# Cancel in-progress runs when a new commit is pushed to the same branch/PR.
-# Reduces runner minutes for iterative PR pushes.
+# Keep scheduled and manual runs independent of quick branch/PR updates.
+# Superseded runs of the same event on the same branch/PR still cancel.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:

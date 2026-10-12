@@ -747,6 +747,14 @@ async fn start_userns(name: &str) -> io::Result<u32> {
     let restricts =
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .is_ok_and(|value| value.trim() == "1");
+    // The recursive failed-start fixture exercises both launch commands without
+    // changing its host's AppArmor policy. Production always uses the sysctl.
+    #[cfg(test)]
+    let restricts = match std::env::var("SAFEYOLO_TEST_FAILED_START_LAUNCH").as_deref() {
+        Ok("direct") => false,
+        Ok("apparmor" | "missing-aa-exec") => true,
+        _ => restricts,
+    };
     let mut holder = if restricts {
         let mut command = Command::new("aa-exec");
         command.args([
@@ -2136,6 +2144,8 @@ mod tests {
         const TEST: &str = "host_platform::tests::failed_linux_start_reports_workload_cleanup";
         if let Some(root) = std::env::var_os("SAFEYOLO_TEST_FAILED_START_ROOT") {
             let root = PathBuf::from(root);
+            let launch = std::env::var("SAFEYOLO_TEST_FAILED_START_LAUNCH").unwrap();
+            let stop = std::env::var("SAFEYOLO_TEST_FAILED_START_STOP").unwrap();
             let directory = root.join("agents/alice");
             let share = directory.join("config-share");
             std::fs::create_dir_all(&share).unwrap();
@@ -2158,9 +2168,27 @@ mod tests {
             )
             .unwrap();
             for (name, script) in [
-                ("setfacl", "#!/bin/sh\nexit 0\n".to_owned()),
+                (
+                    "setfacl",
+                    format!(
+                        "#!/bin/sh\nprintf 'prepared' > '{}/fixture-acl'\n",
+                        directory.display()
+                    ),
+                ),
                 ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
                 ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
+                (
+                    "aa-exec",
+                    format!(
+                        r#"#!/bin/sh
+[ "$1" = -p ] && [ "$2" = safeyolo-runsc ] && [ "$3" = -- ] && [ "$4" = unshare ] || exit 2
+printf '%s\n' "$@" > '{}/fixture-aa-exec'
+shift 3
+exec "$@"
+"#,
+                        directory.display()
+                    ),
+                ),
                 (
                     "unshare",
                     format!(
@@ -2194,17 +2222,32 @@ esac
                     ),
                 ),
             ] {
+                if name == "aa-exec" && launch == "missing-aa-exec" {
+                    continue;
+                }
                 let path = root.join("bin").join(name);
                 std::fs::write(&path, script).unwrap();
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             in_instance(root.clone(), async {
-                let result = start_sandbox("alice", "10.200.0.1", 4096, true).await;
+                let error = start_sandbox("alice", "10.200.0.1", 4096, true).await.unwrap_err();
+                eprintln!("failed-start {launch}/{stop}: {error}");
                 let record = std::fs::read(directory.join("fixture-holder.json"))
                     .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();
                 let run: serde_json::Value = serde_json::from_slice(&record).unwrap();
-                let stop = std::env::var("SAFEYOLO_TEST_FAILED_START_STOP").unwrap();
-                let holder_pid: i64 = std::fs::read_to_string(directory.join("fixture-holder.pid")).unwrap().parse().unwrap();
+                assert_eq!(std::fs::read_to_string(directory.join("fixture-acl")).unwrap(), "prepared");
+                if launch == "missing-aa-exec" {
+                    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+                    assert!(!directory.join("fixture-holder.pid").exists());
+                    assert!(!directory.join("fixture-holder.json").exists());
+                    assert!(!directory.join("userns.pid").exists());
+                    assert_eq!(run, serde_json::json!({"run_id":run_id,"state":"starting"}));
+                    return;
+                }
+                let error = error.to_string();
+                let holder_pid: i64 = std::fs::read_to_string(directory.join("fixture-holder.pid"))
+                    .unwrap_or_else(|receipt_error| panic!("namespace holder receipt: {receipt_error}; start_sandbox: {error}"))
+                    .parse().unwrap();
                 // A successful SIGKILL can return before process exit is visible.
                 if stop != "failed" {
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -2220,7 +2263,24 @@ esac
                 if holder_live {
                     unsafe { libc::kill(run["holder_pid"].as_i64().unwrap() as i32, libc::SIGKILL); }
                 }
-                let error = result.unwrap_err().to_string();
+                let holder = PathBuf::from(format!("/proc/{holder_pid}"));
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                while holder.exists() && tokio::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert!(!holder.exists(), "identified namespace holder was not reaped: {holder_pid}");
+                let apparmor = match launch.as_str() {
+                    "direct" => false,
+                    "apparmor" => true,
+                    "native" => std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+                        .is_ok_and(|value| value.trim() == "1"),
+                    _ => panic!("unknown launch fixture: {launch}"),
+                };
+                assert_eq!(directory.join("fixture-aa-exec").exists(), apparmor);
+                if apparmor {
+                    assert_eq!(std::fs::read_to_string(directory.join("fixture-aa-exec")).unwrap(),
+                        "-p\nsafeyolo-runsc\n--\nunshare\n-Un\ntail\n-f\n/dev/null\n");
+                }
                 if stop == "missing-mapper" {
                     assert!(error.contains("No such file or directory"), "{error}");
                     assert!(!error.contains("cleanup failed"), "{error}");
@@ -2242,15 +2302,27 @@ esac
             }).await;
             return;
         }
-        for stop in ["succeeded", "failed", "missing-mapper"] {
+        for (launch, stop) in [
+            ("native", "succeeded"),
+            ("native", "failed"),
+            ("native", "missing-mapper"),
+            ("direct", "succeeded"),
+            ("direct", "failed"),
+            ("direct", "missing-mapper"),
+            ("apparmor", "succeeded"),
+            ("apparmor", "failed"),
+            ("apparmor", "missing-mapper"),
+            ("missing-aa-exec", "succeeded"),
+        ] {
             let root = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env("SAFEYOLO_TEST_FAILED_START_ROOT", root.path())
                 .env("SAFEYOLO_TEST_FAILED_START_STOP", stop)
+                .env("SAFEYOLO_TEST_FAILED_START_LAUNCH", launch)
                 .env(
                     "PATH",
-                    if stop == "missing-mapper" {
+                    if stop == "missing-mapper" || launch == "missing-aa-exec" {
                         root.path().join("bin").display().to_string()
                     } else {
                         format!("{}:/usr/bin:/bin", root.path().join("bin").display())
@@ -2261,7 +2333,7 @@ esac
                 .unwrap();
             assert!(
                 output.status.success(),
-                "{stop}: {} {}",
+                "{launch}/{stop}: {} {}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );

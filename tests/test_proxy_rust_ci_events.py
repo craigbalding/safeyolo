@@ -51,10 +51,57 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
 
 def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
     workflow = rust_workflow()
-    assert workflow["concurrency"]["group"] == "${{ github.workflow }}-${{ github.ref }}"
+    assert workflow["concurrency"]["group"] == (
+        "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}"
+    )
     assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event.action != 'ready_for_review' }}"
     assert "ready_for_review" in workflow[True]["pull_request"]["types"]
     assert "github.event.action != 'ready_for_review'" in workflow["jobs"]["focused-pr"]["if"]
+    assert not cancels_run(workflow, "pull_request", "pull_request", "refs/pull/123/merge", "ready_for_review")
+    assert cancels_run(workflow, "pull_request", "pull_request", "refs/pull/123/merge", "synchronize")
+
+
+def cancels_run(workflow: dict, running_event: str, incoming_event: str,
+                ref: str = "refs/heads/master", action: str = "") -> bool:
+    concurrency = workflow["concurrency"]
+
+    def group(event: str) -> str:
+        rendered = concurrency["group"]
+        for key, value in (("workflow", workflow["name"]), ("ref", ref), ("event_name", event)):
+            rendered = rendered.replace("${{ github." + key + " }}", value)
+        assert "${{" not in rendered, rendered
+        return rendered
+
+    cancel = concurrency["cancel-in-progress"]
+    if isinstance(cancel, str):
+        assert cancel == "${{ github.event.action != 'ready_for_review' }}"
+        cancel = action != "ready_for_review"
+    assert isinstance(cancel, bool)
+    return cancel and group(running_event) == group(incoming_event)
+
+
+@pytest.mark.parametrize("workflow_name,full_event", [
+    ("ci.yml", "schedule"),
+    ("ci.yml", "workflow_dispatch"),
+    ("proxy-rust.yml", "schedule"),
+    ("proxy-rust.yml", "workflow_dispatch"),
+    ("codeql.yml", "schedule"),
+])
+def test_full_admissions_and_quick_updates_do_not_cancel_each_other(workflow_name, full_event):
+    workflow = yaml.safe_load(WORKFLOW.with_name(workflow_name).read_text())
+    assert full_event in workflow[True]
+    assert not cancels_run(workflow, full_event, "push")
+    assert not cancels_run(workflow, "push", full_event)
+
+
+@pytest.mark.parametrize("workflow_name", ["ci.yml", "proxy-rust.yml", "codeql.yml"])
+@pytest.mark.parametrize("event,ref", [
+    ("push", "refs/heads/master"),
+    ("pull_request", "refs/pull/123/merge"),
+])
+def test_superseded_quick_runs_still_cancel(workflow_name, event, ref):
+    workflow = yaml.safe_load(WORKFLOW.with_name(workflow_name).read_text())
+    assert cancels_run(workflow, event, event, ref, "synchronize")
 
 
 def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
