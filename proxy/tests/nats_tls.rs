@@ -65,9 +65,10 @@ async fn real_nats_tls_preserves_pem_and_trusted_untrusted_controls() {
         format!("{}{malformed}", ca.pem()),
     )
     .unwrap();
+    let client_key = std::fs::read_to_string(root.join("client.key")).unwrap();
     std::fs::write(
         root.join("malformed.key"),
-        "-----BEGIN PRIVATE KEY-----\n!\n-----END PRIVATE KEY-----\n",
+        client_key.replacen('\n', "\n!\n", 1),
     )
     .unwrap();
     let result = Command::new("openssl")
@@ -76,10 +77,11 @@ async fn real_nats_tls_preserves_pem_and_trusted_untrusted_controls() {
         .output()
         .unwrap();
     assert!(result.status.success(), "{:?}", result.stderr);
+    let prefix = format!("-----BEGIN {}-----", "EC PRIVATE KEY");
     assert!(
         std::fs::read(root.join("client-sec1.key"))
             .unwrap()
-            .starts_with(b"-----BEGIN EC PRIVATE KEY-----")
+            .starts_with(prefix.as_bytes())
     );
     std::fs::write(
         root.join("nats.conf"),

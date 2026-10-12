@@ -9,9 +9,9 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 from mitmproxy.test import taddons, tflow
 from network_guard import NetworkGuard, detect_homoglyph_attack
+from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
 
 from experiments.policy_assurance.harness import append_observation
-from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
 
 
 @dataclass(frozen=True)

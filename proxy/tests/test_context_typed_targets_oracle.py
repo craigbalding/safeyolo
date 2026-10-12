@@ -17,8 +17,8 @@ sys.path[:0] = [str(ROOT / "cli/src"), str(ROOT)]
 
 from mitmproxy import http  # noqa: E402
 from mitmproxy.test import tflow  # noqa: E402
-
 from pdp.client import LocalPolicyClient, PolicyClientConfig  # noqa: E402
+
 from safeyolo.core import config_cache  # noqa: E402
 from safeyolo.mitm_addons import test_context as module  # noqa: E402
 from safeyolo.policy import engine as engine_module  # noqa: E402

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pdp.client import LocalPolicyClient, PolicyClientConfig
+
 from safeyolo.core.utils import sanitize_for_log
 from safeyolo.mitm_addons.request_logger import RequestLogger
 from safeyolo.policy import engine as engine_module
