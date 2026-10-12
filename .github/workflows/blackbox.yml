@@ -63,57 +63,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
-      # SafeYolo's rootless mapping deliberately fixes sandbox uid 0 at host
-      # uid 100000 so rootfs ownership, KVM ACLs, and identity evidence agree.
-      # Hosted images may allocate runner's default subordinate range elsewhere;
-      # add the required range explicitly on this ephemeral single-job VM.
-      - name: Provision SafeYolo subordinate IDs
-        run: |
-          has_range() {
-            awk -F: -v user="$USER" '
-              $1 == user && $2 <= 100000 && ($2 + $3) >= 165536 { found = 1 }
-              END { exit !found }
-            ' "$1"
-          }
+      - name: Prepare the supported systrap host
+        run: tests/blackbox/prepare-systrap-host.sh
 
-          if ! has_range /etc/subuid; then
-            sudo usermod --add-subuids 100000-165535 "$USER"
-          fi
-          if ! has_range /etc/subgid; then
-            sudo usermod --add-subgids 100000-165535 "$USER"
-          fi
-
-          grep -F "$USER:" /etc/subuid
-          grep -F "$USER:" /etc/subgid
-
-      - name: Install Linux runtime and rootfs prerequisites
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            openssh-server uidmap acl util-linux iproute2 tmux skopeo umoci e2fsprogs rsync curl gnupg ca-certificates
-          # Use gVisor's signed release repository, including its runtime sidecars.
-          curl -fsSL https://gvisor.dev/archive.key | \
-            sudo gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-          printf 'deb [arch=%s signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main\n' \
-            "$(dpkg --print-architecture)" | sudo tee /etc/apt/sources.list.d/gvisor.list
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends runsc
-          for command in runsc newuidmap newgidmap setfacl unshare tmux; do
-            command -v "$command"
-          done
-          runsc --version
-          tmux -V
-          # Native start_userns selects this retained profile on restricted hosts.
-          if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns && \
-                $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]]; then
-            sudo apt-get install -y -qq --no-install-recommends apparmor-utils
-            runsc_path=$(command -v runsc)
-            sed "s|/usr/local/bin/runsc|$runsc_path|" \
-              cli/src/safeyolo/templates/apparmor-safeyolo-runsc > "$RUNNER_TEMP/safeyolo-runsc"
-            sudo install -m 0644 "$RUNNER_TEMP/safeyolo-runsc" /etc/apparmor.d/safeyolo-runsc
-            sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
-            aa-exec -p safeyolo-runsc -- unshare -Urn true
-          fi
+      - name: Install source rootfs builder prerequisites
+        run: sudo -n apt-get install -y -qq --no-install-recommends skopeo umoci e2fsprogs rsync
 
       - name: Build matching Linux guest rootfs
         env:

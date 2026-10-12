@@ -426,6 +426,36 @@ restarting it. Their JSON statuses and limitations must be read; merely writing
 a report is not a pass. Discovery/attached guest claims require their actual
 substrate and listener; the host-only smoke does not claim one.
 
+## Hosted Linux ARM64 archive qualification
+
+The manual [installed-arm64 workflow](../../.github/workflows/installed-arm64.yml)
+tests the retained production host from `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`
+with original guest `guest-2026-10-12.1` from `8234a047d810d543d8c4d1cb1fa9859987be035b`.
+It runs on the repository's `ubuntu-24.04-arm` pool with real systrap guests.
+
+Before dispatch, integrate the independently reviewed workflow. The workflow
+uses draft release `410991309` for `host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796`,
+ARM64 production asset `634976985` and checksum asset `634976991`.
+The release must remain a draft with those unchanged assets.
+The job's repository read token must be able to download the draft assets and
+the retained G1 layout from run `38248401312`. That artifact expires on
+10 January 2027. From an authenticated operator terminal in this checkout:
+
+```sh
+gh workflow run installed-arm64.yml --ref master
+```
+
+The job verifies fixed host and guest identities before installation, preserves
+Linux filesystem metadata, and runs the maintained installed-package smoke.
+The `installed-arm64-RUN_ID` artifact contains individual isolation/root/home
+test outcomes, guest metadata, installed host/HTTPS/continuity reports and
+owned cleanup observations. Read those outcomes and any skips before claiming
+coverage. A failed draft download reports the missing job access and stops.
+The run builds only a verification tool; product files come from the archive.
+Python and uv provide test observers. This staged result does not establish
+anonymous public OCI acquisition, Python-free installation, guest updates or
+the transfer exceeding 2 GiB. The workflow publishes no host or guest artifacts.
+
 ## Owned origins and observation fidelity
 
 The native runner routes synthetic hosts through its owned parent and sinkhole,
