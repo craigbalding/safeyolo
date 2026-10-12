@@ -226,22 +226,31 @@ if [ "$LIFECYCLE" = true ] && { [ "$INGRESS" = true ] || \
     exit 2
 fi
 
-# Installed procedures use the source selected by run-lane.sh/run-installed.sh,
-# never a completed migration's frozen default. Resolve its HEAD before setup;
-# an explicit selection must agree with that checkout and the installed stamp.
+# Installed sections use either the verified prepared package or the selected
+# source checkout. The test checkout is not runtime input to an artifact install.
 if { [ "$INGRESS" = true ] || [ "$WORKLOADS" = true ] || \
      [ "$ACCESS" = true ] || [ "$LIFECYCLE" = true ]; } && [ "$ACCESS_CONFIG_ONLY" = false ]; then
-    if [ -z "${SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT:-}" ]; then
+    if [ -n "${SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR:-}" ]; then
+        if ! SELECTED_REVISION="$(python3 - "$SCRIPT_DIR" "$SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR/bin/safeyolo" <<'PY_PACKAGE_SOURCE'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installed_host_smoke import _cli_identity
+print(_cli_identity(sys.argv[2])["source_revision"])
+PY_PACKAGE_SOURCE
+)"; then
+            echo 'ERROR: cannot identify the prepared native package' >&2
+            exit 2
+        fi
+    elif [ -z "${SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT:-}" ]; then
         echo "ERROR: installed sections need SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT; use run-installed.sh or run-lane.sh" >&2
         exit 2
-    fi
-    if ! SELECTED_REVISION="$(git -C "$SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT" rev-parse HEAD)"; then
+    elif ! SELECTED_REVISION="$(git -C "$SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT" rev-parse HEAD)"; then
         echo "ERROR: cannot resolve the selected install checkout" >&2
         exit 2
     fi
     INSTALL_COMMIT="${INSTALL_COMMIT:-$SELECTED_REVISION}"
     if [[ ! "$INSTALL_COMMIT" =~ ^[0-9a-f]{40}$ ]] || [ "$INSTALL_COMMIT" != "$SELECTED_REVISION" ]; then
-        echo "ERROR: install checkout must contain the exact full selected commit" >&2
+        echo "ERROR: install checkout or prepared package must contain the exact full selected commit" >&2
         exit 2
     fi
     echo "Installed source: $INSTALL_COMMIT"
@@ -1065,6 +1074,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     for i in $(seq 1 60); do
         if python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" -c true >/dev/null 2>&1; then
             echo "  VM ready"
+            if [[ ${SAFEYOLO_PACKAGE_INSTALL_STARTED:-} =~ ^[0-9]+$ ]]; then
+                echo "Install-to-agent-ready: $(($(date +%s) - SAFEYOLO_PACKAGE_INSTALL_STARTED)) seconds (includes artifact verification, installation and test fixture preparation)"
+            fi
             VM_READY=true
             break
         fi

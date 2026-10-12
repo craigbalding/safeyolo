@@ -874,6 +874,16 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             document["hosts"][endpoint] = {"egress": decision}
         policy.write_text(tomlkit.dumps(document))
         started = True  # A failed start can still have spawned an owned process.
+        coord_ports = []
+        for option, value in (("--client-port", args.nats_client_port),
+                              ("--monitor-port", args.nats_monitor_port)):
+            if value is not None:
+                coord_ports += [option, str(value)]
+        if coord_ports:
+            result = _run([cli_path, "--root", str(config_dir), "coord", "start", *coord_ports],
+                          env=env, cwd=cwd, timeout=45)
+            if result.returncode:
+                raise SmokeError(f"installed Coord start failed (exit {result.returncode}): {result.stderr}")
         result = _run([cli_path, "--root", str(config_dir), "start"], env=env, cwd=cwd, timeout=45)
         if result.returncode:
             raise SmokeError(f"installed native start failed (exit {result.returncode}): "
@@ -963,6 +973,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install-commit", help="exact source revision in installed package-info")
     parser.add_argument("--http-port", type=int, default=0,
                         help="current package smoke's loopback HTTP fixture port (default: ephemeral)")
+    parser.add_argument("--nats-client-port", type=int, help="Coord client listener for a host with assigned fixture ports")
+    parser.add_argument("--nats-monitor-port", type=int, help="Coord monitor listener for a host with assigned fixture ports")
     parser.add_argument("--output", type=Path, required=True, help="JSON evidence output outside the checkout")
     args = parser.parse_args(argv)
     try:

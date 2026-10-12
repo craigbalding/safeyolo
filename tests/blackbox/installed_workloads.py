@@ -289,9 +289,11 @@ def main() -> None:
     parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
-    install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
-    revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
-    assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
+    selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
+    install_checkout = Path(selected_checkout).resolve() if selected_checkout else None
+    if install_checkout is not None:
+        revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
+        assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     assert runtime["host"]["system"] == "Linux"

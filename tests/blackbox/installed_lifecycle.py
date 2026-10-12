@@ -134,7 +134,7 @@ def stop_child(process: subprocess.Popen[str] | None) -> None:
 
 
 def runtime_identity(
-    config_dir: Path, cli: str, binary: str, checkout: Path, output: Path, agent: str, expected_revision: str
+    config_dir: Path, cli: str, binary: str, checkout: Path | None, output: Path, agent: str, expected_revision: str
 ) -> dict:
     checked(
         [
@@ -382,8 +382,11 @@ def main() -> None:
     args = parser.parse_args()
     os.environ["SAFEYOLO_BLACKBOX_PLATFORM"] = args.platform
     config_dir = args.config_dir.resolve()
-    checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
-    assert checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip() == args.install_commit
+    selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
+    checkout = Path(selected_checkout).resolve() if selected_checkout else None
+    if checkout is not None:
+        revision = checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip()
+        assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     first_runtime = json.loads(args.runtime.read_text())
     first_identity = installed_identity(first_runtime, checkout, expected_revision=args.install_commit)
     native = _native_config(config_dir / "config.toml", config_dir)["raw"]

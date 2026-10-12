@@ -1680,7 +1680,8 @@ def test_blocked_sse_input():
     assert json.loads(cleanup.read_text()) == [-1, -1]
 
 
-def test_selected_installed_identity_requires_native_source_binary_and_instance(tmp_path):
+@pytest.mark.parametrize("artifact_install", [False, True], ids=["source", "package"])
+def test_selected_installed_identity_requires_native_source_binary_and_instance(tmp_path, artifact_install):
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
@@ -1701,19 +1702,20 @@ def test_selected_installed_identity_requires_native_source_binary_and_instance(
                'candidate': {'path': str(packaged), 'sha256': hashlib.sha256(packaged.read_bytes()).hexdigest()},
                'runtime': {'status': 'ready', 'actual_executable': str(packaged),
                            'authenticated_runtime_identity': {'status': 'authenticated'}}, 'native': {}}
-    selected = installed_identity(runtime, checkout, expected_revision=revision)
+    selected_checkout = None if artifact_install else checkout
+    selected = installed_identity(runtime, selected_checkout, expected_revision=revision)
     assert selected['build_identity']['source_revision'] == revision
     assert selected['cli_diagnostics'] == diagnostic
     with pytest.raises(AssertionError, match='CLI source differs'):
-        installed_identity(runtime, checkout, expected_revision=OTHER_REVISION)
+        installed_identity(runtime, selected_checkout, expected_revision=OTHER_REVISION)
     packaged.write_bytes(b'substituted')
     with pytest.raises(AssertionError):
-        installed_identity(runtime, checkout, expected_revision=revision)
+        installed_identity(runtime, selected_checkout, expected_revision=revision)
     packaged.write_bytes(b'selected native bytes')
     diagnostic['root'] = str(tmp_path / 'other')
     cli.write_text(f'#!{sys.executable}\nprint({json.dumps(json.dumps(diagnostic))})\n')
     with pytest.raises(AssertionError, match='selected running instance'):
-        installed_identity(runtime, checkout, expected_revision=revision)
+        installed_identity(runtime, selected_checkout, expected_revision=revision)
 
 
 def test_install_commit_option_needs_an_installed_selection(tmp_path):
@@ -1762,7 +1764,7 @@ def test_direct_installed_selection_resolves_current_source_before_setup(tmp_pat
         assert f"Installed source: {revision}" in result.stdout
         assert "installed safeyolo CLI is required" in result.stderr
     elif selection == "mismatched":
-        assert "install checkout must contain the exact full selected commit" in result.stderr
+        assert "install checkout or prepared package must contain the exact full selected commit" in result.stderr
         assert "Installed source:" not in result.stdout
     else:
         assert "installed sections need SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT" in result.stderr
@@ -1904,6 +1906,30 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     assert "--operator-journey" not in selected
 
 
+def test_installed_sections_reuse_an_artifact_install_without_reinstalling_or_selecting_source(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    source = tmp_path / "installed-package"
+    env = {**os.environ, "SAFEYOLO_CONFIG_DIR": str(source)}
+    subprocess.run([str(installed_section_commands / "tests/blackbox/run-lane.sh"),
+                    "systrap", "--prepare-only"], env=env, check=True)
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT", "/missing/unrelated-source")
+    directory, artifacts = tmp_path / "sections", tmp_path / "reports"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "lifecycle"), installed_section_commands, "a" * 40,
+        directory, artifacts, prepared_config=source,
+    ) == 0
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert report["preparation"]["reused_installation"] is True
+    assert report["preparation"]["config_dir"] == str(source)
+    assert not (directory / "prepared").exists()
+    for row in report["sections"]:
+        assert row["result"] == "passed" and row["cleanup"] == "stopped"
+        root = Path(row["config_dir"])
+        assert (root / "share").resolve() == source / "share"
+        assert row["prepared_config_dir"] == str(source)
+
+
 @pytest.mark.parametrize("platform", ["systrap", "vz"])
 def test_installed_operator_selection_keeps_one_access_root_and_owned_cleanup(
     tmp_path, installed_section_commands, platform
@@ -1976,7 +2002,7 @@ def test_operator_cli_selection_requires_one_supported_access_section(
     if valid:
         assert installed_sections.main() == 0
         assert calls[0][0][:2] == (platform, ("access",))
-        assert calls[0][1] == {"operator_journey": True}
+        assert calls[0][1] == {"operator_journey": True, "prepared_config": None}
     else:
         with pytest.raises(SystemExit) as error:
             installed_sections.main()
@@ -1996,6 +2022,34 @@ def test_operator_access_checks_selected_source_before_runtime_setup(tmp_path, p
             "PYTHONPATH": f"{ROOT / 'tests/reference'}:{ROOT}"},
         capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "expected " + "a" * 40 in result.stderr, result.stderr
+    assert not (tmp_path / "uncreated").exists() and not (tmp_path / "unwritten.json").exists()
+
+
+@pytest.mark.parametrize("section,platform", [
+    ("workloads", "systrap"), ("workloads", "kvm"), ("ingress", None),
+    ("lifecycle", "systrap"), ("lifecycle", "vz"),
+])
+@pytest.mark.parametrize("artifact_install", [False, True], ids=["source", "package"])
+def test_installed_sections_check_source_before_runtime_setup(tmp_path, section, platform, artifact_install):
+    arguments = [
+        sys.executable, str(ROOT / f"tests/blackbox/installed_{section}.py"),
+        "--config-dir", str(tmp_path / "uncreated"), "--agent", "bbtest",
+        "--runtime", str(tmp_path / "unread-runtime.json"),
+        "--output", str(tmp_path / "unwritten.json"), "--install-commit", "a" * 40,
+    ]
+    if platform is not None:
+        arguments.extend(["--platform", platform])
+    environment = {**os.environ, "PYTHONPATH": f"{ROOT / 'tests/reference'}:{ROOT}"}
+    if artifact_install:
+        environment.pop("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT", None)
+    else:
+        environment["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(ROOT)
+    result = subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1, result.stderr
+    if artifact_install:
+        assert "FileNotFoundError" in result.stderr and "unread-runtime.json" in result.stderr, result.stderr
+    else:
+        assert "expected " + "a" * 40 in result.stderr and "FileNotFoundError" not in result.stderr, result.stderr
     assert not (tmp_path / "uncreated").exists() and not (tmp_path / "unwritten.json").exists()
 
 

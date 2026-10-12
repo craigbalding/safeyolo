@@ -6,12 +6,15 @@ import ctypes
 import importlib.util
 import json
 import os
+import shutil
+import socket
 import stat
 import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,6 +59,66 @@ def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
             }
         )
     )
+
+
+def test_native_smoke_uses_assigned_coord_ports_and_stops_its_owned_listeners(tmp_path, smoke_module, monkeypatch):
+    bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
+    nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if not bundle or not nats:
+        pytest.skip("requires a verified native bundle and pinned NATS binary")
+    from tests.blackbox.installed_sections import prepare_native_instance
+
+    root = tmp_path / "h"
+    prepare_native_instance(Path(bundle), root)
+    nats_dir = root / "data/coord/nats/bin/2.14.5"
+    nats_dir.mkdir(parents=True)
+    shutil.copy2(nats, nats_dir / "nats-server")
+    (root / ".safeyolo-platform-smoke").touch()
+    import tomlkit
+    path = root / "config.toml"
+    config = tomlkit.parse(path.read_text())
+    config.update(admin_port=0, parent_proxy="")
+    config["listeners"] = [{"agent_id": "bbpackage", "socket_path": "data/bbpackage.sock"}]
+    path.write_text(tomlkit.dumps(config))
+    for name, value in {"SAFEYOLO_CONFIG_DIR": str(root), "SAFEYOLO_LOGS_DIR": str(root / "logs"),
+                        "SAFEYOLO_COORD_DATA_DIR": str(root / "data/coord"),
+                        "SAFEYOLO_NATS_TEST_INSTANCE": "assigned-smoke"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
+    sockets = [socket.socket() for _ in range(3)]
+    try:
+        for listener in sockets:
+            listener.bind(("127.0.0.1", 0))
+        client, monitor, http_port = [listener.getsockname()[1] for listener in sockets]
+    finally:
+        for listener in sockets:
+            listener.close()
+    observed = []
+    observe_runtime = smoke_module._runtime_observation
+
+    def observe(*args, **kwargs):
+        record = json.loads((root / "data/coord/nats/process.json").read_text())
+        observed.append((record["client_port"], record["monitor_port"]))
+        return observe_runtime(*args, **kwargs)
+
+    monkeypatch.setattr(smoke_module, "_runtime_observation", observe)
+    cli = root / "bin/safeyolo"
+    binary, identity = smoke_module._installed_rust_binary(cli)
+    report, code = smoke_module._native_smoke(SimpleNamespace(
+        config_dir=str(root), rust_config=str(path), working_directory=str(tmp_path),
+        cli=str(cli), rust_bin=str(binary), install_commit=identity["source_revision"],
+        agent="bbpackage", http_port=http_port, nats_client_port=client, nats_monitor_port=monitor,
+    ))
+    assert code == 0, report
+    assert observed == [(client, monitor)]
+    assert report["cleanup"]["status"] == "stopped"
+    assert not (root / "data/coord/nats/process.json").exists()
+    for port in (client, monitor, http_port):
+        with socket.socket() as listener:
+            # Match the servers' restart behavior while prior HTTP connections
+            # can still be in TIME_WAIT. A live listener still prevents this bind.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", port))
 
 
 def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smoke_module, monkeypatch) -> None:
