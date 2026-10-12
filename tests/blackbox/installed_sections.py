@@ -132,9 +132,10 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
 
 
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
-                 directory: Path, artifacts: Path, *, operator_journey: bool = False) -> int:
+                 directory: Path, artifacts: Path, *, operator_journey: bool = False,
+                 prepared_config: Path | None = None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
-    source = directory / "prepared"
+    source = prepared_config or directory / "prepared"
     env = os.environ.copy()
     for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR",
                  "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR"):
@@ -150,25 +151,36 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         report_path.write_text(json.dumps(report, indent=2) + "\n")
 
     try:
-        prepared = subprocess.run(
-            [str(REPOSITORY / "tests/blackbox/run-lane.sh"), lane,
-             "--install-checkout", str(checkout), "--prepare-only"],
-            cwd=REPOSITORY, env=env, check=False,
-        )
+        if prepared_config is None:
+            prepared = subprocess.run(
+                [str(REPOSITORY / "tests/blackbox/run-lane.sh"), lane,
+                 "--install-checkout", str(checkout), "--prepare-only"],
+                cwd=REPOSITORY, env=env, check=False,
+            )
+            preparation_exit = prepared.returncode
+        else:
+            # The package wrapper already installed and verified these inputs.
+            # Do not call the source installer or resolve the guest tag again.
+            preparation_exit = 0
     except (OSError, subprocess.SubprocessError) as exc:
         report["preparation"] = {"exit": 2, "error": str(exc), "config_dir": str(source)}
         save()
         return 2
-    report["preparation"] = {"exit": prepared.returncode, "config_dir": str(source)}
+    report["preparation"] = {"exit": preparation_exit, "config_dir": str(source),
+                             "reused_installation": prepared_config is not None}
     save()
-    if prepared.returncode:
-        print(f"Product preparation failed (exit {prepared.returncode}); no sections ran")
+    if preparation_exit:
+        print(f"Product preparation failed (exit {preparation_exit}); no sections ran")
         return 2
     cli = source / "bin/safeyolo"
     env["PATH"] = os.pathsep.join((str(source / "bin"), str(REPOSITORY / ".venv/bin"), env["PATH"]))
     env["PYTHONPATH"] = os.pathsep.join((str(REPOSITORY / "tests/reference"), str(REPOSITORY)))
-    env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
+    if prepared_config is None:
+        env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
+    else:
+        env.pop("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT", None)
     env["SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR"] = str(source)
+    env["SAFEYOLO_PLATFORM_ASSETS"] = str(source / "share")
     # All sections use the prepared installation, including supplied bundles.
     env["SAFEYOLO_NATIVE_CLI"] = str(cli)
     if lane == "systrap":
@@ -255,17 +267,30 @@ def main() -> int:
     parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
     parser.add_argument("--operator-journey", action="store_true",
                         help="Extend the selected systrap or VZ access section with terminal, desktop and restart observations")
-    parser.add_argument("--install-commit", help="exact commit; defaults to this checkout's HEAD")
+    parser.add_argument("--install-commit", help="exact commit; defaults to the prepared package's source or the install checkout's HEAD")
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
+    parser.add_argument("--prepared-config", type=Path,
+                        help="Reuse an installed native package instead of installing source; the test checkout may differ from its source revision")
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR", REPOSITORY / "tests/blackbox/artifacts")))
     args = parser.parse_args()
     checkout = args.install_checkout.resolve()
-    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    prepared_config = args.prepared_config.resolve() if args.prepared_config else None
+    if prepared_config is None:
+        revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    else:
+        if __package__:
+            from .installed_host_smoke import SmokeError, _cli_identity
+        else:
+            from installed_host_smoke import SmokeError, _cli_identity
+        try:
+            revision = _cli_identity(prepared_config / "bin/safeyolo")["source_revision"]
+        except SmokeError as exc:
+            parser.error(str(exc))
     expected = args.install_commit or revision
     if re.fullmatch("[0-9a-f]{40}", expected) is None or revision != expected:
-        parser.error("install checkout must contain the exact full selected commit")
-    if subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip():
+        parser.error("installation must contain the exact full selected commit")
+    if prepared_config is None and subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip():
         parser.error("installed source checkout must be clean")
     sections = tuple(args.section or SECTIONS[args.lane])
     if any(section not in SECTIONS[args.lane] for section in sections) or len(set(sections)) != len(sections):
@@ -278,7 +303,7 @@ def main() -> int:
     directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path.home()))
     print(f"Prepared product and section state: {directory}", flush=True)
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
-                        operator_journey=args.operator_journey)
+                        operator_journey=args.operator_journey, prepared_config=prepared_config)
 
 
 if __name__ == "__main__":

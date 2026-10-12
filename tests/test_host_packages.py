@@ -669,3 +669,46 @@ def test_source_installer_preserves_missing_artifact_error_and_fresh_root(tmp_pa
     assert result.returncode != 0
     assert 'required artifact is missing' in result.stderr and 'safeyolo-proxy' in result.stderr
     assert not root.exists()
+
+
+@pytest.mark.parametrize("guest_input", ["default", "offline", "proxy", "bad-checksum"])
+def test_installed_package_wrapper_selects_the_archive_installer_without_source_fallback(tmp_path, guest_input):
+    """Stop at the real shell caller boundary; no synthetic runtime is claimed."""
+    repository = tmp_path / "test-driver"
+    scripts = repository / "tests/blackbox"
+    scripts.mkdir(parents=True)
+    shutil.copy2(REPO / "tests/blackbox/run-installed-package.sh", scripts)
+    (repository / "scripts").mkdir()
+    shutil.copy2(REPO / "scripts/native_package.sh", repository / "scripts")
+    bundle = tmp_path / "host-bundle"
+    bundle.mkdir()
+    calls = tmp_path / "installer-arguments"
+    installer = bundle / "install.sh"
+    installer.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$INSTALLER_CALLS"\nexit 42\n')
+    installer.chmod(0o755)
+    archive = tmp_path / "host package.tar.gz"
+    with tarfile.open(archive, "w:gz") as stream:
+        stream.add(bundle, arcname="host-bundle")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    home = tmp_path / "owned-home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "INSTALLER_CALLS": str(calls),
+           "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(tmp_path / "reports")}
+    options = ["--package", str(archive), "--sha256", "0" * 64 if guest_input == "bad-checksum" else digest]
+    if guest_input == "offline":
+        options += ["--platform-assets", str(tmp_path / "offline guest")]
+    elif guest_input == "proxy":
+        options += ["--no-guest-download"]
+    result = run(str(scripts / "run-installed-package.sh"), *options, cwd=tmp_path, env=env)
+    if guest_input == "bad-checksum":
+        assert result.returncode == 1 and "Host archive checksum differs" in result.stderr
+        assert not calls.exists()
+        assert not list(home.glob("*/archive"))
+    else:
+        assert result.returncode == 42, result.stdout + result.stderr
+        arguments = calls.read_text().splitlines()
+        root = Path(arguments[arguments.index("--root") + 1])
+        assert root.parent.parent == home
+        assert arguments[:4] == ["--root", str(root), "--command-dir", str(root / "commands")]
+        assert arguments[4:] == options[4:]
+        assert f"sha256:{digest}" in result.stdout

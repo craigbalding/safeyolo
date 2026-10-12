@@ -1680,7 +1680,8 @@ def test_blocked_sse_input():
     assert json.loads(cleanup.read_text()) == [-1, -1]
 
 
-def test_selected_installed_identity_requires_native_source_binary_and_instance(tmp_path):
+@pytest.mark.parametrize("artifact_install", [False, True], ids=["source", "package"])
+def test_selected_installed_identity_requires_native_source_binary_and_instance(tmp_path, artifact_install):
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
@@ -1701,19 +1702,20 @@ def test_selected_installed_identity_requires_native_source_binary_and_instance(
                'candidate': {'path': str(packaged), 'sha256': hashlib.sha256(packaged.read_bytes()).hexdigest()},
                'runtime': {'status': 'ready', 'actual_executable': str(packaged),
                            'authenticated_runtime_identity': {'status': 'authenticated'}}, 'native': {}}
-    selected = installed_identity(runtime, checkout, expected_revision=revision)
+    selected_checkout = None if artifact_install else checkout
+    selected = installed_identity(runtime, selected_checkout, expected_revision=revision)
     assert selected['build_identity']['source_revision'] == revision
     assert selected['cli_diagnostics'] == diagnostic
     with pytest.raises(AssertionError, match='CLI source differs'):
-        installed_identity(runtime, checkout, expected_revision=OTHER_REVISION)
+        installed_identity(runtime, selected_checkout, expected_revision=OTHER_REVISION)
     packaged.write_bytes(b'substituted')
     with pytest.raises(AssertionError):
-        installed_identity(runtime, checkout, expected_revision=revision)
+        installed_identity(runtime, selected_checkout, expected_revision=revision)
     packaged.write_bytes(b'selected native bytes')
     diagnostic['root'] = str(tmp_path / 'other')
     cli.write_text(f'#!{sys.executable}\nprint({json.dumps(json.dumps(diagnostic))})\n')
     with pytest.raises(AssertionError, match='selected running instance'):
-        installed_identity(runtime, checkout, expected_revision=revision)
+        installed_identity(runtime, selected_checkout, expected_revision=revision)
 
 
 def test_install_commit_option_needs_an_installed_selection(tmp_path):
@@ -1762,7 +1764,7 @@ def test_direct_installed_selection_resolves_current_source_before_setup(tmp_pat
         assert f"Installed source: {revision}" in result.stdout
         assert "installed safeyolo CLI is required" in result.stderr
     elif selection == "mismatched":
-        assert "install checkout must contain the exact full selected commit" in result.stderr
+        assert "install checkout or prepared package must contain the exact full selected commit" in result.stderr
         assert "Installed source:" not in result.stdout
     else:
         assert "installed sections need SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT" in result.stderr
@@ -1902,6 +1904,30 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     selected = json.loads((second / "selection.json").read_text())
     assert "--access" in selected and selected[-2:] == ["--install-commit", "a" * 40]
     assert "--operator-journey" not in selected
+
+
+def test_installed_sections_reuse_an_artifact_install_without_reinstalling_or_selecting_source(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    source = tmp_path / "installed-package"
+    env = {**os.environ, "SAFEYOLO_CONFIG_DIR": str(source)}
+    subprocess.run([str(installed_section_commands / "tests/blackbox/run-lane.sh"),
+                    "systrap", "--prepare-only"], env=env, check=True)
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT", "/missing/unrelated-source")
+    directory, artifacts = tmp_path / "sections", tmp_path / "reports"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "lifecycle"), installed_section_commands, "a" * 40,
+        directory, artifacts, prepared_config=source,
+    ) == 0
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert report["preparation"]["reused_installation"] is True
+    assert report["preparation"]["config_dir"] == str(source)
+    assert not (directory / "prepared").exists()
+    for row in report["sections"]:
+        assert row["result"] == "passed" and row["cleanup"] == "stopped"
+        root = Path(row["config_dir"])
+        assert (root / "share").resolve() == source / "share"
+        assert row["prepared_config_dir"] == str(source)
 
 
 @pytest.mark.parametrize("platform", ["systrap", "vz"])

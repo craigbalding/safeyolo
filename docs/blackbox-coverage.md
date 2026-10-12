@@ -74,9 +74,44 @@ the same guest handshake, payload and close helper.
 
 ### Installed host package
 
-`run-installed-package.sh` runs installed_host_smoke.py in smoke mode: current installed launcher, exact wheel/native executable, authenticated runtime identity, owned HTTP allow/deny authorities and verified stop. It boots no guest and proves no guest isolation.
+`run-installed-package.sh` can install a checksum-verified host archive through
+the archive's own installer. The archive path does not build or install product
+files from the test checkout. The default installation acquires the compatible
+guest through the native OCI client. `--platform-assets` selects prepared offline
+inputs; `--no-guest-download` selects a proxy-only witness.
 
-The package also selects `tests/proxy_contracts/test_https_contract.py::test_https_origin_verification` against its packaged executable.
+On a disposable supported Linux host, start from this test checkout with its
+Python test environment prepared. Python and uv are test-driver dependencies,
+not packaged-product dependencies. The host must have the runtime prerequisites
+in [Native policy](native-policy.md). Obtain the host archive and its SHA-256
+digest from the selected release. Replace both values below with those actual
+inputs. The command creates owned installation and section state under `HOME`,
+downloads the default guest, and starts and stops the test runtime.
+
+```sh
+./tests/blackbox/run-installed-package.sh --package /path/to/host.tar.gz --sha256 FULL_RELEASE_SHA256 --lane systrap
+```
+
+The output names the host archive digest, package source/profile and selected
+guest identities separately. The existing reports record the running installed
+executables and owned cleanup. Install-to-agent-ready timing includes artifact
+verification, installation and test fixture preparation. A staged input is not
+a published-artifact result.
+
+`--lane systrap` and `--lane vz` run the maintained isolation and lifecycle
+sections against that installation. `--lane kvm` runs isolation and ingress;
+guest restart/persistence proof for KVM remains separate. Physical Apple Silicon
+VZ needs the approved host route and assigned fixture ports. The fixed-port
+lifecycle and continuity probes cover TLS on that route. The same installation
+can be reused with `run-installed.sh LANE --prepared-config INSTALLATION_ROOT`; an
+explicit `--install-commit` must match the package's source identity.
+
+Without `--lane`, `installed_host_smoke.py` observes the native installed
+launcher, authenticated runtime identity, owned HTTP allow/deny authorities and
+verified stop. That host-only result boots no guest and proves no guest isolation.
+Without `--package`, the wrapper retains the existing source-based proxy witness.
+
+The host witness also selects `tests/proxy_contracts/test_https_contract.py::test_https_origin_verification` against its packaged executable. Those ephemeral-port controls run on Linux and the hosted Mac; physical VZ uses the fixed-port probes described above.
 
 The complete native process/protocol family is separately maintained in `tests/proxy_contracts/`, run once per supported host platform overnight. installed_state_transition.py checks installed durable state through four native process lifetimes on Linux and the hosted Mac. Historical cross-backend receipts remain in the accepted issues. Runner selection describes intended execution, not a passing receipt.
 

@@ -51,7 +51,7 @@ def runsc_identity(
     return {"pid": pid, "platform": platform, "bundle": str(agent_dir), "proxy_mount": mount}
 
 
-def installed_identity(runtime: dict, install_checkout: Path, *, expected_revision: str) -> dict:
+def installed_identity(runtime: dict, install_checkout: Path | None, *, expected_revision: str) -> dict:
     assert runtime["status"] == "attached_ready", "installed runtime was not attached and ready"
     cli = runtime["cli"]
     candidate = runtime["candidate"]
@@ -64,8 +64,9 @@ def installed_identity(runtime: dict, install_checkout: Path, *, expected_revisi
     assert Path(candidate["path"]).resolve() == packaged
     assert Path(running["actual_executable"]).resolve() == packaged
     assert candidate["sha256"] == _sha256(packaged)
-    revision = subprocess.check_output(["git", "-C", str(install_checkout), "rev-parse", "HEAD"], text=True).strip()
-    assert revision == expected_revision, "selected installation checkout source differs"
+    if install_checkout is not None:
+        revision = subprocess.check_output(["git", "-C", str(install_checkout), "rev-parse", "HEAD"], text=True).strip()
+        assert revision == expected_revision, "selected installation checkout source differs"
     root = Path(runtime["instance"]["config_dir"]).resolve()
     observations = {}
     for operation in ("status", "doctor"):
@@ -198,13 +199,8 @@ def main() -> None:
     parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
-    install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
-    revision = subprocess.check_output(
-        ["git", "-C", str(install_checkout), "rev-parse", "HEAD"],
-        text=True,
-        timeout=10,
-    ).strip()
-    assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
+    selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
+    install_checkout = Path(selected_checkout).resolve() if selected_checkout else None
     runtime = json.loads(args.runtime.read_text())
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     platform_evidence = json.loads((args.output.parent / "platform.json").read_text())

@@ -399,3 +399,49 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
         assert command("coord", "stop").returncode == 0
         assert json.loads(command("status").stdout)["proxy_state"] == "unavailable"
         assert json.loads(command("coord", "status").stdout)["state"] == "stopped"
+
+
+def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_path, guest_store):
+    """Exercise the actual archive wrapper against controlled anonymous TLS."""
+    if os.uname().sysname != "Linux":
+        pytest.skip("uses the existing tiny Linux guest payload; physical Mac proof belongs to #239")
+    archive = os.environ.get("SAFEYOLO_TEST_HOST_ARCHIVE")
+    nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if not archive or not nats:
+        pytest.skip("requires a native host archive and pinned NATS binary")
+    contents, requests, _faults, environment = registry
+    guest = release(compressed_archive())
+    contents.update(guest)
+    # Keep host archives/installations on disk; only the tiny numeric-ownership
+    # guest fixture uses the guest filesystem, as in the existing controls.
+    # The maintained Unix listeners need a short parent, independently of the
+    # long pytest node name; retain disk-backed host state in this owned root.
+    test_home = tmp_path.parent / "archive"
+    guest_link = test_home / ".local/share/safeyolo/guests"
+    guest_link.parent.mkdir(parents=True)
+    guest_store.mkdir(parents=True)
+    guest_link.symlink_to(guest_store, target_is_directory=True)
+    reports = tmp_path / "reports"
+    with Path(archive).open("rb") as stream:
+        archive_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    environment.update(HOME=str(test_home), SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(reports))
+    result = subprocess.run([
+        str(REPO / "tests/blackbox/run-installed-package.sh"), "--package", archive,
+        "--sha256", archive_digest,
+    ], env=environment, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-6000:]
+    smoke = json.loads((reports / "host-package.json").read_text())
+    assert smoke["status"] == "host_package_passed" and smoke["cleanup"]["status"] == "stopped"
+    assert smoke["cli"]["source"]["root"] is None
+    root = Path(smoke["cli"]["package_root"])
+    selected = json.loads((root / "share/guest-selection.json").read_text())
+    architecture = {"aarch64": "arm64", "x86_64": "amd64"}[os.uname().machine]
+    assert selected["platform"] == f"linux/{architecture}"
+    assert selected["index"]["digest"] == digest(guest["manifests/compat-v1"])
+    assert selected["archive"]["digest"] == digest(compressed_archive())
+    assert (root / "share/rootfs-tree").stat().st_uid == 100000
+    assert requests.count(PREFIX + "manifests/compat-v1") == 1
+    continuity = json.loads((reports / "installed-continuity.json").read_text())
+    assert continuity["result"] == "installed_native_continuity_passed"
+    assert continuity["agents_started"] == 0 and continuity["cleanup"] == "stopped"
+    assert f"sha256:{archive_digest}" in result.stdout
