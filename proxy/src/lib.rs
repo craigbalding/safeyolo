@@ -41,6 +41,7 @@ pub mod flow_store;
 mod flow_writer;
 pub mod grants;
 pub mod guest_commands;
+pub mod guest_oci;
 mod host_agents;
 mod host_boot;
 pub mod host_commands;
