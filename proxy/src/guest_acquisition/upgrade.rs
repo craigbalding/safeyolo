@@ -80,16 +80,14 @@ async fn upgrade(
         return Ok(current);
     }
     if selected.archive == current.archive {
-        // New release metadata can name identical bytes. Preserve the existing
-        // backend installation and useful rollback rather than cloning again.
-        selected.installed_assets = current.installed_assets;
-        selected.previous = current.previous;
+        // Release identities can change without changing backend bytes.
+        selected.installed_assets = current.installed_assets.clone();
     } else {
         selected.installed_assets = Some(install_inputs(root, &selected, package.platform)?);
-        let mut previous = current;
-        previous.previous = None;
-        selected.previous = Some(Box::new(previous));
     }
+    let mut previous = current;
+    previous.previous = None;
+    selected.previous = Some(Box::new(previous));
     selected.validate_inputs(root, package.platform)?;
     save(root, &selected)?;
     Ok(selected)

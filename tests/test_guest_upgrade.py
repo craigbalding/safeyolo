@@ -106,14 +106,6 @@ def test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_st
     assert Path(g2["assets"]).stat().st_ino == tree_inode
     assert all("/blobs/" not in path and not path.endswith("compat-v1") for path in requests[before:])
 
-    # A new release annotation with identical guest bytes must not destroy G1 rollback.
-    contents.update(release(compressed_archive(content=b"G2 guest"), version="guest-2026-10-12.4"))
-    result = command(native_cli, root, environment, "guest", "upgrade")
-    assert result.returncode == 0, result.stderr
-    same_bytes = json.loads(result.stdout)
-    assert same_bytes["archive"] == g2["archive"]
-    assert same_bytes["installed_assets"] == g2["installed_assets"]
-    assert same_bytes["previous"] == g1
     before = len(requests)
     for _ in range(2):
         result = command(native_cli, root, environment, "guest", "rollback")
@@ -122,6 +114,60 @@ def test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_st
         assert_preserved(root, original)
     assert len(requests) == before
     assert Path(g2["assets"]).exists() and Path(g2["installed_assets"]).exists()
+
+
+@pytest.mark.parametrize("changed_first", [False, True], ids=["initial-selection", "existing-rollback"])
+def test_metadata_only_upgrade_retains_previous_release_and_reuses_inputs(
+        native_cli, registry, package_info, tmp_path, guest_store, changed_first):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    root = tmp_path / "h"
+    installed(native_cli, root, guest_store, environment, package_info)
+    original = preserved(root)
+    if changed_first:
+        archive = compressed_archive(content=b"G2 guest")
+        contents.update(release(archive, version="guest-2026-10-12.2"))
+        result = command(native_cli, root, environment, "guest", "upgrade")
+        assert result.returncode == 0, result.stderr
+    current = json.loads((root / "share/guest-selection.json").read_bytes())
+    previous = {name: value for name, value in current.items() if name != "previous"}
+    assets = Path(current["assets"])
+    inputs = Path(current.get("installed_assets", root / "share"))
+    asset_inode = assets.stat().st_ino
+    input_inode = inputs.stat().st_ino
+    rootfs_inode = (inputs / "rootfs-tree").stat().st_ino
+    metadata_release = release(archive, version="guest-2026-10-12.3")
+    contents.update(metadata_release)
+    before = len(requests)
+    result = command(native_cli, root, environment, "guest", "upgrade")
+    assert result.returncode == 0, result.stderr
+    selected = json.loads(result.stdout)
+    assert selected["version"] == "guest-2026-10-12.3"
+    assert selected["index"] != current["index"] and selected["manifest"] != current["manifest"]
+    assert selected.get("previous") == previous
+    assert selected["archive"] == current["archive"] and selected["assets"] == current["assets"]
+    assert selected.get("installed_assets") == current.get("installed_assets")
+    assert all("/blobs/" not in path for path in requests[before:])
+    assert assets.stat().st_ino == asset_inode and inputs.stat().st_ino == input_inode
+    assert (inputs / "rootfs-tree").stat().st_ino == rootfs_inode
+    assert_preserved(root, original)
+
+    contents["manifests/" + selected["index"]["digest"]] = metadata_release["manifests/compat-v1"]
+    before = len(requests)
+    repeat = command(native_cli, root, environment, "guest", "upgrade", "--index", selected["index"]["digest"])
+    assert repeat.returncode == 0, repeat.stderr
+    assert json.loads(repeat.stdout) == selected
+    assert all("/blobs/" not in path and not path.endswith("compat-v1") for path in requests[before:])
+    before = len(requests)
+    for _ in range(2):
+        result = command(native_cli, root, environment, "guest", "rollback")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == previous
+        assert assets.stat().st_ino == asset_inode and inputs.stat().st_ino == input_inode
+        assert (inputs / "rootfs-tree").stat().st_ino == rootfs_inode
+        assert_preserved(root, original)
+    assert len(requests) == before
 
 
 @pytest.mark.parametrize("fault", ["partial", "hash", "size", "warm-size", "compatibility", "missing-platform", "ambiguous-platform", "registry", "index-hash", "manifest-hash", "manifest-size"])
