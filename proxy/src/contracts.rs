@@ -106,8 +106,11 @@ impl ContractTemplate {
             {
                 continue;
             }
-            if let Some(operation) = self.operations.iter().rev().find(|op| &op.name == name)
-                && let Some(reason) = operation.unsupported_grant_reason()
+            if let Some(reason) = self
+                .operations
+                .iter()
+                .filter(|operation| &operation.name == name)
+                .find_map(ContractOperation::unsupported_grant_reason)
             {
                 return Err(format!("Operation '{name}' cannot be granted: {reason}").into());
             }

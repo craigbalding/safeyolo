@@ -89,32 +89,70 @@ fn unsupported_binding_selection_does_not_replace_saved_or_live_binding() {
         .approve_binding(binding("alice"), &contract(), now(), validate)
         .unwrap();
     let source = fs::read(&path).unwrap();
-    let mut template = contract();
-    template.operations.push(serde_json::from_value(json!({
-        "name":"stateful", "request":{"path":"/messages", "query":{"allow":{"id":{"in_state_set":"ids"}}}}
-    })).unwrap());
     let mut selected = binding("alice");
     selected.grantable_operations.push("stateful".into());
-    let mut activated = false;
-    let error = store
-        .approve_binding(selected, &template, now(), |_| {
-            activated = true;
-            Ok(())
-        })
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Invalid);
-    assert!(error.message.contains("stateful") && error.message.contains("in_state_set"));
-    assert!(!activated);
-    assert_eq!(fs::read(&path).unwrap(), source);
-    assert_eq!(
-        store
-            .binding_for_agent("alice", "gmail", "read_messages")
-            .unwrap()
-            .unwrap()
-            .binding
-            .binding_id,
-        original.binding.binding.binding_id
-    );
+    for location in ["path_params", "query", "body"] {
+        for unsupported_first in [true, false] {
+            let mut template = contract();
+            template
+                .enforcement
+                .insert("response_validators".into(), "declared".into());
+            let constraint = json!({"id":{"in_state_set":"0", "equals_var":"approved_category"}});
+            let mut request = json!({"path":"/messages/{id}"});
+            request[location] = if location == "path_params" {
+                constraint
+            } else {
+                json!({"allow":constraint})
+            };
+            let unsupported =
+                serde_json::from_value(json!({"name":"stateful", "request":request})).unwrap();
+            let declared = serde_json::from_value(json!({"name":"stateful", "requires_enforcement":"response_validators", "request":{"path":"/shadow"}})).unwrap();
+            template.operations.extend(if unsupported_first {
+                [unsupported, declared]
+            } else {
+                [declared, unsupported]
+            });
+            let mut activated = false;
+            let error = store
+                .approve_binding(selected.clone(), &template, now(), |_| {
+                    activated = true;
+                    Ok(())
+                })
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Invalid);
+            assert!(error.message.contains("stateful") && error.message.contains("in_state_set"));
+            assert!(!activated);
+            assert_eq!(fs::read(&path).unwrap(), source);
+            assert_eq!(
+                store
+                    .binding_for_agent("alice", "gmail", "read_messages")
+                    .unwrap()
+                    .unwrap()
+                    .binding
+                    .binding_id,
+                original.binding.binding.binding_id
+            );
+
+            // A supported same-named definition keeps the existing selection
+            // semantics in either order; the declared shadow adds no scope.
+            let supported =
+                serde_json::from_value(json!({"name":"stateful", "request":{"path":"/supported"}}))
+                    .unwrap();
+            if unsupported_first {
+                template.operations.insert(0, supported);
+            } else {
+                template.operations.push(supported);
+            }
+            let (_supported_directory, _supported_path, supported_store) = setup(SOURCE);
+            let accepted = supported_store
+                .approve_binding(selected.clone(), &template, now(), validate)
+                .unwrap();
+            assert_eq!(
+                accepted.binding.binding.grantable_operations,
+                selected.grantable_operations
+            );
+        }
+    }
 }
 
 #[test]

@@ -937,12 +937,27 @@ async fn unsupported_selected_grants_are_refused_and_retained_names_stay_inert()
     template["enforcement"]["state_capture"] = serde_json::json!("enforced");
     template["enforcement"]["state_enforcement"] = serde_json::json!("enforced");
     template["operations"].as_array_mut().unwrap().extend([
-        serde_json::json!({"name":"path_state","request":{"path":"/v1/state/{id}","path_params":{"id":{"in_state_set":"ids"}}}}),
-        serde_json::json!({"name":"query_state","request":{"path":"/v1/query","query":{"allow":{"id":{"in_state_set":"ids"}}}}}),
-        serde_json::json!({"name":"body_state","request":{"method":"POST","path":"/v1/body","body":{"allow":{"id":{"in_state_set":"ids"}}}}}),
+        serde_json::json!({"name":"path_state","request":{"path":"/v1/state/{id}","path_params":{"id":{"in_state_set":"0","equals_var":"project"}}}}),
+        serde_json::json!({"name":"query_state","request":{"path":"/v1/query","query":{"allow":{"id":{"in_state_set":"0","equals_var":"project"}}}}}),
+        serde_json::json!({"name":"body_state","request":{"method":"POST","path":"/v1/body","body":{"allow":{"id":{"in_state_set":"0","equals_var":"project"}}}}}),
         serde_json::json!({"name":"capture","requires_enforcement":"state_capture","request":{"path":"/v1/capture"}}),
         serde_json::json!({"name":"enforce","requires_enforcement":"state_enforcement","request":{"path":"/v1/enforce"}}),
     ]);
+    let operations = template["operations"].as_array_mut().unwrap();
+    let unsupported = operations[2..].to_vec();
+    for operation in unsupported {
+        let name = operation["name"].as_str().unwrap();
+        operations.push(serde_json::json!({"name":name,"requires_enforcement":"response_validators","request":{"path":"/shadow"}}));
+        let reversed_name = format!("{name}_reversed");
+        operations.push(serde_json::json!({"name":reversed_name,"requires_enforcement":"response_validators","request":{"path":"/shadow"}}));
+        let mut reversed = operation;
+        reversed["name"] = serde_json::json!(reversed_name);
+        operations.push(reversed);
+    }
+    // Keep executable same-named operations available with an unsupported
+    // declaration both before and after the supported definition.
+    operations.insert(0, serde_json::json!({"name":"write","request":{"path":"/duplicate-write","query":{"allow":{"id":{"in_state_set":"0"}}}}}));
+    operations.push(serde_json::json!({"name":"read","request":{"path":"/duplicate-read","body":{"allow":{"id":{"in_state_set":"0"}}}}}));
     fs::write(
         root_path.join("services/contract.yaml"),
         service.to_string(),
@@ -1006,33 +1021,35 @@ async fn unsupported_selected_grants_are_refused_and_retained_names_stay_inert()
         ("capture", "GET", "/v1/capture", &b""[..]),
         ("enforce", "GET", "/v1/enforce", &b""[..]),
     ] {
-        let selected = serde_json::json!({"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["read",name]});
-        let refused = admin(
-            admin_port,
-            &admin_request(
-                "/admin/gateway/contract-binding",
-                selected.to_string().as_bytes(),
-            ),
-        )
-        .await;
-        status(&refused, 400);
-        let refusal: Value = serde_json::from_slice(body(&refused)).unwrap();
-        let error = refusal["error"].as_str().unwrap();
-        assert!(
-            error.contains(name) && error.contains("not supported"),
-            "{error}"
-        );
-        if name.ends_with("_state") {
-            assert!(error.contains("in_state_set"), "{error}");
+        for name in [name.to_owned(), format!("{name}_reversed")] {
+            let selected = serde_json::json!({"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["read",name]});
+            let refused = admin(
+                admin_port,
+                &admin_request(
+                    "/admin/gateway/contract-binding",
+                    selected.to_string().as_bytes(),
+                ),
+            )
+            .await;
+            status(&refused, 400);
+            let refusal: Value = serde_json::from_slice(body(&refused)).unwrap();
+            let error = refusal["error"].as_str().unwrap();
+            assert!(
+                error.contains(&name) && error.contains("not supported"),
+                "{error}"
+            );
+            if name.contains("_state") {
+                assert!(error.contains("in_state_set"), "{error}");
+            }
+            assert_eq!(fs::read(&policy_path).unwrap(), snapshot);
+            let denied = gateway_call(&socket, port, &token, method, target, payload).await;
+            status(&denied, 403);
+            assert_eq!(
+                seen.lock().unwrap().len(),
+                1,
+                "unsupported {name} reached origin"
+            );
         }
-        assert_eq!(fs::read(&policy_path).unwrap(), snapshot);
-        let denied = gateway_call(&socket, port, &token, method, target, payload).await;
-        status(&denied, 403);
-        assert_eq!(
-            seen.lock().unwrap().len(),
-            1,
-            "unsupported {name} reached origin"
-        );
     }
     let supported = br#"{"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["write","read"]}"#;
     let approved = admin(
@@ -1069,6 +1086,13 @@ async fn unsupported_selected_grants_are_refused_and_retained_names_stay_inert()
     )
     .await;
     status(&allowed, 200);
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    for target in ["/duplicate-read", "/duplicate-write", "/shadow"] {
+        status(
+            &gateway_call(&socket, port, &token, "GET", target, b"").await,
+            403,
+        );
+    }
     assert_eq!(seen.lock().unwrap().len(), 3);
     let saved = fs::read_to_string(&policy_path).unwrap();
     assert!(!saved.contains("query_state"));
