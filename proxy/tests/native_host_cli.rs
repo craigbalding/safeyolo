@@ -2368,6 +2368,212 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
 }
 
 #[test]
+fn mount_source_rejection_preserves_native_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let directory_link = temp.path().join("directory-link");
+    symlink(&workspace, &directory_link).unwrap();
+    let writable = format!("{}:/opt/writable", workspace.display());
+    let read_only = format!("{}:/opt/read-only:ro", directory_link.display());
+    let created = value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "--mount",
+            &writable,
+        ],
+    ));
+    let configured = value(cli(
+        &root,
+        &["agent", "configure", "marker", "--mount", &read_only],
+    ));
+    assert_eq!(
+        configured["configuration"]["id"],
+        created["configuration"]["id"]
+    );
+    assert_eq!(
+        configured["configuration"]["mounts"],
+        serde_json::json!([writable, read_only])
+    );
+    let file = temp.path().join("settings.json");
+    fs::write(&file, "{}").unwrap();
+    let file_link = temp.path().join("file-link");
+    symlink(&file, &file_link).unwrap();
+    let runtime = root.join("agents/marker/runtime.json");
+    let current = br#"{"state":"running","run_id":"0123456789abcdef0123456789abcdef"}"#;
+    fs::write(&runtime, current).unwrap();
+    let policy = fs::read(root.join("policy.toml")).unwrap();
+    let config = fs::read(root.join("config.toml")).unwrap();
+    for source in [&file, &file_link] {
+        let spec = format!("{}:/opt/settings.json:ro", source.display());
+        for (operation, name) in [("create", "new"), ("configure", "marker")] {
+            let rejected = cli(
+                &root,
+                &[
+                    "agent",
+                    operation,
+                    name,
+                    "--workspace",
+                    workspace.to_str().unwrap(),
+                    "--memory",
+                    "768",
+                    "--mount",
+                    &writable,
+                    "--mount",
+                    &spec,
+                ],
+            );
+            assert!(!rejected.status.success());
+            let error = String::from_utf8_lossy(&rejected.stderr);
+            assert!(
+                error.contains(file.canonicalize().unwrap().to_str().unwrap()),
+                "{error}"
+            );
+            assert!(
+                error.contains("regular file") && error.contains("dedicated directory"),
+                "{error}"
+            );
+            assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+            assert_eq!(fs::read(root.join("config.toml")).unwrap(), config);
+            assert_eq!(fs::read(&runtime).unwrap(), current);
+        }
+    }
+}
+
+#[test]
+fn saved_mount_source_rejection_precedes_native_and_admin_start() {
+    for scenario in ["saved-file", "replaced-directory", "retargeted-symlink"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let file = temp.path().join("settings.json");
+        fs::write(&file, "{}").unwrap();
+        let link = temp.path().join("source-link");
+        symlink(&source, &link).unwrap();
+        let mounted = if scenario == "retargeted-symlink" {
+            &link
+        } else {
+            &source
+        };
+        let spec = format!("{}:/opt/settings:ro", mounted.display());
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "marker",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--mount",
+                &spec,
+            ],
+        ));
+        let policy_path = root.join("policy.toml");
+        let actual = match scenario {
+            "saved-file" => {
+                let mut document: toml_edit::DocumentMut =
+                    fs::read_to_string(&policy_path).unwrap().parse().unwrap();
+                let mut mounts = toml_edit::Array::new();
+                mounts.push(format!("{}:/opt/settings:ro", file.display()));
+                document["agents"]["marker"]["mounts"] = toml_edit::value(mounts);
+                fs::write(&policy_path, document.to_string()).unwrap();
+                &file
+            }
+            "replaced-directory" => {
+                fs::remove_dir(&source).unwrap();
+                fs::write(&source, "{}").unwrap();
+                &source
+            }
+            "retargeted-symlink" => {
+                fs::remove_file(&link).unwrap();
+                symlink(&file, &link).unwrap();
+                &file
+            }
+            _ => unreachable!(),
+        };
+        let policy = fs::read(&policy_path).unwrap();
+        let config_path = root.join("config.toml");
+        let config = fs::read(&config_path).unwrap();
+        for options in [vec![], vec!["--sandbox-only"], vec!["--foreground"]] {
+            let mut args = vec!["agent", "start", "marker"];
+            args.extend(options);
+            let rejected = cli(&root, &args);
+            assert!(!rejected.status.success());
+            let error = String::from_utf8_lossy(&rejected.stderr);
+            assert!(
+                error.contains(actual.canonicalize().unwrap().to_str().unwrap()),
+                "{scenario}: {error}"
+            );
+            assert!(
+                error.contains("regular file") && error.contains("dedicated directory"),
+                "{scenario}: {error}"
+            );
+            assert_eq!(fs::read(&config_path).unwrap(), config);
+            assert_eq!(fs::read(&policy_path).unwrap(), policy);
+            for path in [
+                "logs/proxy.log",
+                "data/proxy-process.json",
+                "data/agent-map.json",
+                "agents/marker/runtime.json",
+                "agents/marker/config-share",
+            ] {
+                assert!(
+                    !root.join(path).exists(),
+                    "{scenario}: rejected start created {path}"
+                );
+            }
+        }
+        let mut config: toml_edit::DocumentMut =
+            fs::read_to_string(&config_path).unwrap().parse().unwrap();
+        config["admin_port"] = toml_edit::value(0);
+        fs::write(&config_path, config.to_string()).unwrap();
+        let _stop = StopOnDrop(&config_path);
+        value(cli(&root, &["start"]));
+        for operation in ["start", "start-interactive"] {
+            let (status, rejected) = admin_post(
+                &root,
+                created["configuration"]["id"].as_str().unwrap(),
+                operation,
+            );
+            assert_eq!(status, 500, "{scenario}: {rejected}");
+            let error = rejected["error"].as_str().unwrap();
+            assert!(
+                error.contains(actual.canonicalize().unwrap().to_str().unwrap()),
+                "{scenario}: {error}"
+            );
+            assert!(
+                error.contains("regular file") && error.contains("dedicated directory"),
+                "{scenario}: {error}"
+            );
+            assert_eq!(fs::read(&policy_path).unwrap(), policy);
+            for path in [
+                "agents/marker/runtime.json",
+                "agents/marker/config-share",
+                "data/agent-map.json",
+            ] {
+                assert!(
+                    !root.join(path).exists(),
+                    "{scenario}: Admin start created {path}"
+                );
+            }
+        }
+        value(cli(&root, &["stop"]));
+        assert!(!root.join("data/ready.json").exists());
+    }
+}
+
+#[test]
 fn configuration_rejection_is_atomic_and_current_run_is_unchanged() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");
