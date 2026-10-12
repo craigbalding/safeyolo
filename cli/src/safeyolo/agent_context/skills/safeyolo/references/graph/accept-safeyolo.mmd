@@ -23,7 +23,7 @@ flowchart TD
     sym.accept_security_analysis(["Changed production Python needs deterministic security and data-flow analysis"])
     sym.accept_state_integrity(["State transitions or interfaces may admit impossible, partial, or confused states"])
     sym.accept_race_risk(["Concurrency, shared resources, ordering, or state leakage needs stress evidence"])
-    sym.accept_dependency_security(["The exact locked Python runtime dependency closure needs vulnerability review"])
+    sym.accept_dependency_security(["The exact locked Python test and development dependencies need vulnerability review"])
     ev.accept_select_boundary["Choose one material affected, stale, failed, or currently unproven boundary"]
     ev.accept_python_lane["Use focused pytest, pytest-cov, and Hypothesis for Python behavior"]
     ev.accept_proxy_lane["Use the installed Rust proxy, per-agent UDS, sinkhole, curl/TLS, and host pytest through the proxy blackbox lane"]
@@ -39,7 +39,7 @@ flowchart TD
     ev.accept_mypy_lane["Use mypy to challenge affected state and interface contracts"]
     ev.accept_concurrency_stress_lane["Use pytest-repeat and pytest-xdist to stress ordering and shared-state assumptions"]
     ev.accept_semgrep_lane["Use the local tested Semgrep rules for high-signal SafeYolo security invariants"]
-    ev.accept_dependency_audit_lane["Use pip-audit on an exact hash-bearing export of runtime dependencies"]
+    ev.accept_dependency_audit_lane["Use pip-audit on a locked export of Python test and development dependencies"]
     ev.accept_radon_lane["Use Radon for an independent complexity and maintainability view"]
     ev.accept_codeql_lane["Use the checksum-pinned local CodeQL bundle for production Python security and data-flow analysis"]
     ev.accept_classify_result["Classify what the trusted probe actually established"]
@@ -73,7 +73,7 @@ flowchart TD
     ev.accept_select_boundary -->|"next_check: state shape, optionality, or interface contracts are material"| ev.accept_mypy_lane
     ev.accept_select_boundary -->|"next_check: ordering, cleanup, shared resources, or intermittent behavior are material"| ev.accept_concurrency_stress_lane
     ev.accept_select_boundary -->|"next_check: a local high-signal security invariant is material"| ev.accept_semgrep_lane
-    ev.accept_select_boundary -->|"next_check: the exact runtime dependency closure needs current vulnerability evidence"| ev.accept_dependency_audit_lane
+    ev.accept_select_boundary -->|"next_check: the exact locked Python test and development dependencies need current vulnerability evidence"| ev.accept_dependency_audit_lane
     ev.accept_select_boundary -->|"next_check: structural complexity or maintainability regression is material"| ev.accept_radon_lane
     ev.accept_select_boundary -->|"next_check: security, taint, or data-flow analysis is material"| ev.accept_codeql_lane
     sym.accept_install_proxy -->|"next_check: exercise the installed real proxy and sinkhole boundary"| ev.accept_proxy_lane
@@ -99,14 +99,14 @@ flowchart TD
     sym.accept_static_quality -->|"implies: the needed architecture fitness rule is not configured"| cls.accept_coverage_gap
     sym.accept_security_analysis -->|"next_check: the changed code is production Python on a supported CodeQL platform"| ev.accept_codeql_lane
     sym.accept_security_analysis -->|"next_check: the trusted local rules cover the changed security boundary"| ev.accept_semgrep_lane
-    sym.accept_security_analysis -->|"next_check: the risk is in the locked runtime dependency closure"| ev.accept_dependency_audit_lane
+    sym.accept_security_analysis -->|"next_check: the risk is in the locked Python test and development dependencies"| ev.accept_dependency_audit_lane
     sym.accept_security_analysis -->|"implies: only a platform without a pinned native CodeQL bundle is available"| cls.accept_resource_missing
     sym.accept_state_integrity -->|"next_check: challenge impossible or confused states at Python interfaces"| ev.accept_mypy_lane
     sym.accept_state_integrity -->|"implies: generated native state transitions are needed and no bound tool exercises them"| cls.accept_coverage_gap
     sym.accept_state_integrity -->|"next_check: a focused state-transition regression can be exercised directly"| ev.accept_python_lane
     sym.accept_race_risk -->|"next_check: bounded repeated or multi-process stress can expose the suspected coupling"| ev.accept_concurrency_stress_lane
     sym.accept_race_risk -->|"implies: native policy transaction interleavings or crash stages need a new probe"| cls.accept_coverage_gap
-    sym.accept_dependency_security -->|"next_check: audit the exact locked product runtime closure"| ev.accept_dependency_audit_lane
+    sym.accept_dependency_security -->|"next_check: audit the exact locked Python test and development dependencies"| ev.accept_dependency_audit_lane
     ev.accept_python_lane -->|"next_check: focused tests complete or fail"| ev.accept_classify_result
     ev.accept_proxy_lane -->|"next_check: the real proxy lane completes or fails"| ev.accept_classify_result
     ev.accept_runsc_lane -->|"next_check: the asserted runsc platform lane completes or fails"| ev.accept_classify_result

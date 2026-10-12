@@ -37,11 +37,6 @@ dev = [
     "pre-commit>=3.0.0",
     "ruff>=0.9.4",
 ]
-# SBOM generation
-sbom = [
-    "cyclonedx-bom>=5.1.0",
-]
-
 # Note: uv.lock includes hashes by default for supply-chain security
 
 [tool.uv.workspace]
