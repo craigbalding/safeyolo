@@ -58,8 +58,9 @@ def test_step_executor_preserves_github_default_and_explicit_bash_semantics(tmp_
 def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert set(WORKFLOW.get("on", WORKFLOW.get(True))) == {"workflow_dispatch"}
     assert WORKFLOW["permissions"] == {"contents": "read"}
-    assert set(WORKFLOW["jobs"]) == {"acquire-host", "installed-arm64"}
-    assert HOST_JOB["if"] == "github.event_name == 'workflow_dispatch'"
+    assert set(WORKFLOW["jobs"]) == {"acquire-host", "installed-arm64", "public-install"}
+    draft_route = "github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'"
+    assert HOST_JOB["if"] == draft_route
     assert HOST_JOB["permissions"] == {"contents": "write"}
     assert len(HOST_JOB["steps"]) == 2
     acquisition = step("Read and bind the retained draft host inputs", HOST_JOB)
@@ -76,7 +77,10 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert transfer["with"]["if-no-files-found"] == "error" and "if" not in transfer
     assert HOST_JOB["outputs"] == {"artifact-id": "${{ steps.host-inputs.outputs.artifact-id }}"}
     assert transfer["id"] == "host-inputs"
-    assert JOB["if"] == "github.event_name == 'workflow_dispatch'"
+    assert JOB["if"] == draft_route
+    public = WORKFLOW["jobs"]["public-install"]
+    assert public["if"] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'public-install'"
+    assert public["permissions"] == {"contents": "read"} and "needs" not in public
     assert JOB["runs-on"] == "ubuntu-24.04-arm" and JOB["needs"] == "acquire-host"
     assert JOB["permissions"] == {"contents": "read", "actions": "read"}
     assert "continue-on-error" not in HOST_JOB and "continue-on-error" not in JOB
@@ -122,7 +126,16 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
 
 
 @pytest.fixture
-def host_inputs(tmp_path):
+def workflow_stat():
+    # The workflow runs on Ubuntu. Use real GNU stat for its Linux format
+    # assertions, without replacing BSD stat for other Darwin consumers.
+    command = shutil.which("gstat") or shutil.which("stat")
+    assert command and "GNU coreutils" in subprocess.check_output([command, "--version"], text=True)
+    return command
+
+
+@pytest.fixture
+def host_inputs(tmp_path, workflow_stat):
     bundle = tmp_path / "safeyolo-linux-arm64-production"
     bundle.mkdir()
     (bundle / "package-info").write_text(
@@ -142,6 +155,7 @@ def host_inputs(tmp_path):
     }
     tools = tmp_path / "tools"
     tools.mkdir()
+    (tools / "stat").symlink_to(workflow_stat)
     gh = tools / "gh"
     gh.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
@@ -318,7 +332,7 @@ def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, tran
 
 
 @pytest.fixture
-def guest_inputs(tmp_path):
+def guest_inputs(tmp_path, workflow_stat):
     verifier = Path(os.environ.get("SAFEYOLO_GUEST_OCI_VERIFIER", ROOT / "proxy/target/debug/examples/verify_guest_oci")).resolve()
     if not verifier.is_file():
         pytest.skip("the existing native OCI verification tool is required")
@@ -344,7 +358,7 @@ def guest_inputs(tmp_path):
         (source / "cache-paths.txt").write_text("/var/cache/apt\n")
         subprocess.run(["sudo", "-n", "chown", "-Rh", "100000:100000", str(tree)], check=True)
         try:
-            raw = subprocess.check_output(["sudo", "-n", "tar", "--format=pax", "--sparse", "-C", str(source),
+            raw = subprocess.check_output(["sudo", "-n", shutil.which("tar"), "--format=pax", "--sparse", "-C", str(source),
                                            "-cf", "-", "rootfs-tree", "cache-paths.txt"])
         finally:
             subprocess.run(["sudo", "-n", "chown", "-Rh", f"{os.getuid()}:{os.getgid()}", str(tree)], check=True)
@@ -379,6 +393,7 @@ def guest_inputs(tmp_path):
         reports.mkdir()
         tools = tmp_path / "tools"
         tools.mkdir()
+        (tools / "stat").symlink_to(workflow_stat)
         sudo = tools / "sudo"
         sudo.write_text(f'#!/bin/bash\nif [[ "$2" != apt-get ]]; then exec "{real_sudo}" "$@"; fi\n')
         sudo.chmod(0o755)
@@ -532,9 +547,19 @@ sys.exit(int(os.environ['SMOKE_EXIT']))
     runner.chmod(0o755)
     reports = tmp_path / "reports"
     reports.mkdir()
+    # This Ubuntu workflow uses Linux diagnostics before the controlled caller.
+    # Model those commands on Darwin without changing the real lane/host guard.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, argument, output in (("uname", "-a", "Linux fixture arm64"),
+                                   ("getconf", "GNU_LIBC_VERSION", "glibc fixture")):
+        tool = tools / name
+        tool.write_text(f'#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = "{argument}" ] || exit 9\nprintf "%s\\n" "{output}"\n')
+        tool.chmod(0o755)
     result = execute("Run the installed production archive smoke", tmp_path, {
         "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
         "GITHUB_SHA": "c" * 40, "SMOKE_EXIT": str(exit_code),
+        "PATH": f"{tools}:{os.environ['PATH']}",
     })
     assert result.returncode == exit_code, result.stdout + result.stderr
     assert json.loads((tmp_path / "arguments.json").read_text()) == [
@@ -546,23 +571,34 @@ sys.exit(int(os.environ['SMOKE_EXIT']))
     assert "test_direct_egress PASSED" in output and "test_home_persistence SKIPPED" in output
 
 
-def test_maintained_isolation_caller_requests_individual_guest_root_and_home_outcomes(tmp_path):
+@pytest.mark.parametrize("failure,exit_code", [(None, 0), *[
+    (suite, code) for suite in ("identity", "guest", "guest-root", "lifecycle") for code in (1, 2)
+]])
+def test_maintained_isolation_caller_requests_individual_guest_root_and_home_outcomes(tmp_path, failure, exit_code):
     runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
-    phase = runner[runner.index("# --- Phase 2: Run tests ---"):runner.index("# --- Phase 3: Summary ---")]
+    phase = runner[runner.index("# --- Phase 2: Run tests ---"):]
     (tmp_path / "host").mkdir()
     capture = tmp_path / "pytest-calls.jsonl"
-    record = "import json,sys; from pathlib import Path; p=Path(sys.argv[1]); p.open('a').write(json.dumps(sys.argv[2:])+'\\n')"
+    record = (
+        "import json,os,sys; from pathlib import Path; args=sys.argv[2:]; "
+        "Path(sys.argv[1]).open('a').write(json.dumps(args)+'\\n'); "
+        "suite=('guest-root' if '--user' in args else 'guest') if args[0].endswith('guest_exec.py') "
+        "else 'identity' if 'identity/' in args else 'lifecycle'; "
+        "sys.exit(int(os.environ['SUITE_EXIT']) if suite==os.environ['FAIL_SUITE'] else 0)"
+    )
     command = " ".join(map(shlex.quote, [sys.executable, "-c", record, str(capture)]))
     probe = tmp_path / "isolation-caller.sh"
     probe.write_text(
-        "set -euo pipefail\nRUN_PROXY=false\nRUN_ISOLATION=true\nVERBOSE=\n"
+        "set -euo pipefail\nRUN_PROXY=false\nRUN_ISOLATION=true\nLISTENER_RESTART=false\nVERBOSE=\n"
         "PYTEST_FORWARD_ARGS=()\nPYTEST_FORWARD_SHELL=\nINSTALLED_CLI=installed-cli\nAGENT_NAME=bbtest\n"
         + f"SCRIPT_DIR={shlex.quote(str(tmp_path))}\n"
         + f'python3() {{ {command} "$@"; }}\n'
         + f'pytest() {{ {command} pytest "$@"; }}\n'
         + phase
     )
-    subprocess.run(["bash", str(probe)], check=True, capture_output=True, timeout=10)
+    result = subprocess.run(["bash", str(probe)], capture_output=True, text=True, timeout=10,
+                            env={**os.environ, "FAIL_SUITE": failure or "", "SUITE_EXIT": str(exit_code)})
+    assert result.returncode == exit_code, result.stdout + result.stderr
     calls = [json.loads(line) for line in capture.read_text().splitlines()]
     guest = [call for call in calls if call[0].endswith("guest_exec.py")]
     assert len(guest) == 2 and "--user" in guest[1]

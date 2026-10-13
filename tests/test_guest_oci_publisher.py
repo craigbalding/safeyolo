@@ -32,6 +32,7 @@ def archive_tools():
         pytest.skip("GNU tar, zstd and guest sudo are required")
     if run("sudo", "-n", "true").returncode:
         pytest.skip("guest sudo is unavailable")
+    assert "GNU tar" in run("tar", "--version").stdout, "put GNU tar on PATH for archive fixtures"
 
 
 @pytest.fixture
@@ -92,7 +93,7 @@ def test_archive_preserves_numeric_owners_modes_links_and_cache_paths(tmp_path, 
         assert tree.stat().st_uid == 100000
         try:
             output = archive("linux/arm64", source, tmp_path / "archive")
-            result = run("sudo", "-n", "tar", "--zstd", "--numeric-owner", "--same-owner", "--same-permissions",
+            result = run("sudo", "-n", shutil.which("tar"), "--zstd", "--numeric-owner", "--same-owner", "--same-permissions",
                          "-xf", str(output), "-C", str(extracted))
             assert result.returncode == 0, result.stderr
             for file in ("rootfs-tree", "rootfs-tree/command", "rootfs-tree/private", "rootfs-tree/symbolic"):
