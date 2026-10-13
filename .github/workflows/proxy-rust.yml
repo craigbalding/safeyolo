@@ -303,6 +303,12 @@ jobs:
           uv python install 3.12.14
           uv sync --frozen --group dev --python 3.12.14
 
+      - name: Install the pinned Codex execpolicy test consumer
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-execpolicy" @openai/codex@0.159.1
+          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
+          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
+
       - name: Install native desktop test dependency
         if: matrix.os == 'ubuntu-latest'
         run: |
