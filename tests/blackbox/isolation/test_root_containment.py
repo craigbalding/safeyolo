@@ -6,16 +6,16 @@ package installation and repair; the security property is that this privilege
 stops at the gVisor or microVM boundary.
 """
 
+import json
 import os
 import resource
 import shutil
-import socket
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 import pytest
+from harness.host_listener import refuse_listener
 
 NOFILE_LIMIT = 65536
 GUEST_ONLY_TRUST_ANCHOR = Path("/safeyolo/guest-only-trust-anchor.crt")
@@ -322,26 +322,12 @@ class TestGuestRootContainment:
     def test_root_cannot_reach_live_host_listener(self):
         """Guest root cannot connect to a known-live host TCP service.
 
-        What: Read the harness listener port from the read-only config share
+        What: Read the harness listener endpoint from the read-only config share
         and attempt a direct TCP connection to the host address.
         Why: Testing a live listener distinguishes real host isolation from a
         connection failure caused only by choosing an unused port.
         """
-        marker = Path("/safeyolo/host-listener-port")
-        if not marker.exists():
-            pytest.skip("Host-listener marker not provided by harness")
-        proxy = os.environ.get("HTTP_PROXY", "")
-        host = urlparse(proxy).hostname
-        if not host:
-            pytest.skip(f"Could not derive host endpoint from {proxy!r}")
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3)
-        try:
-            with pytest.raises((TimeoutError, ConnectionRefusedError, OSError)):
-                sock.connect((host, int(marker.read_text().strip())))
-        finally:
-            sock.close()
+        print("HOST_LISTENER_REFUSAL=" + json.dumps(refuse_listener()), flush=True)
 
     def test_root_cannot_modify_host_config_share(self):
         """Guest root cannot write the host-backed SafeYolo config share.

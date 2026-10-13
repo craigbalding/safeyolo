@@ -13,7 +13,27 @@ blocks packets before they reach any port. But the listener test
 remains valuable as a regression guard: if the implementation ever
 regains a routable path to the host, this test will catch it.
 """
+import os
 import socket
+from pathlib import Path
+
+
+def listener_endpoint(directory: Path) -> tuple[str, int]:
+    """Read the actual host listener address and port supplied by the runner."""
+    return ((directory / "host-listener-address").read_text().strip(),
+            int((directory / "host-listener-port").read_text().strip()))
+
+
+def refuse_listener() -> dict:
+    """Observe a failed guest connection to the runner's actual endpoint."""
+    host, port = listener_endpoint(Path("/safeyolo"))
+    try:
+        connection = socket.create_connection((host, port), timeout=3)
+    except OSError as error:
+        return {"host": host, "port": port, "uid": os.geteuid(),
+                "connected": False, "error": str(error)}
+    connection.close()
+    raise AssertionError(f"guest reached the live host listener at {host}:{port}")
 
 
 def main() -> None:

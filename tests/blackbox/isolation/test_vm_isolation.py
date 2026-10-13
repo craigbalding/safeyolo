@@ -10,6 +10,7 @@ python3 stdlib (os, socket, ctypes, subprocess).
 
 import ctypes
 import ctypes.util
+import json
 import os
 import platform as _platform
 import socket
@@ -19,6 +20,7 @@ import subprocess
 import sys
 
 import pytest
+from harness.host_listener import refuse_listener
 
 
 def _is_gvisor() -> bool:
@@ -462,7 +464,7 @@ class TestHostAdjacentReachability:
     def test_host_listener_unreachable(self):
         """A live TCP listener on the host is unreachable.
 
-        What: Read the marker file /safeyolo/host-listener-port
+        What: Read the listener address and port markers under /safeyolo
         (harness starts a real TCP listener on 127.0.0.1:<port>
         before booting the VM); assert the sandbox cannot connect.
         Why: Distinguishes "blocked by isolation" from "nothing
@@ -471,13 +473,7 @@ class TestHostAdjacentReachability:
         routable paths to the host would silently break isolation
         but pass the arbitrary-port test.
         """
-        marker = "/safeyolo/host-listener-port"
-        if not os.path.exists(marker):
-            pytest.skip("Host listener port marker not found — "
-                        "test harness did not set up host listener")
-        port = int(open(marker).read().strip())
-        host = self._host_ip_from_proxy()
-        self._assert_tcp_unreachable(host, port, f"host listener on port {port}")
+        print("HOST_LISTENER_REFUSAL=" + json.dumps(refuse_listener()), flush=True)
 
     def test_arbitrary_host_port_unreachable(self):
         """An unused port (44444) on the host is unreachable.
@@ -719,37 +715,22 @@ class TestSandboxRootContainment:
     def test_host_listener_stays_unreachable_as_sandbox_root(self):
         """Sandbox root cannot connect to a live host TCP listener.
 
-        What: Elevate with setpriv, parse the host endpoint from the
-        configured proxy URL, and attempt a direct TCP connection to
+        What: Elevate with setpriv, read the harness listener endpoint,
+        and attempt a direct TCP connection to
         the harness's known-live host listener; require failure.
         Why: Guest root must not turn the loopback-only network
         namespace into a path to host services or the admin API.
         """
-        marker = "/safeyolo/host-listener-port"
-        if not os.path.exists(marker):
-            pytest.skip("Host listener marker not provided by harness")
-        port = open(marker).read().strip()
-        proxy = os.environ.get("HTTP_PROXY", "")
-        if not proxy:
-            pytest.skip("HTTP_PROXY not set")
-        from urllib.parse import urlparse
-        host = urlparse(proxy).hostname
-        if not host:
-            pytest.skip(f"Could not parse host from HTTP_PROXY={proxy!r}")
-
         code = (
-            "import socket,sys; "
-            "s=socket.socket(); s.settimeout(3); "
-            "\ntry: s.connect((sys.argv[1], int(sys.argv[2])))"
-            "\nexcept OSError: sys.exit(0)"
-            "\nelse: sys.exit(9)"
+            "import json,sys; sys.path.insert(0, '/workspace/tests/blackbox'); "
+            "from harness.host_listener import refuse_listener; "
+            "print('HOST_LISTENER_REFUSAL=' + json.dumps(refuse_listener()), flush=True)"
         )
         result = _run_as_gvisor_sandbox_root(
-            [sys.executable, "-c", code, host, port],
+            [sys.executable, "-c", code],
         )
-        assert result.returncode == 0, (
-            f"Sandbox root connected to live host listener {host}:{port}"
-        )
+        assert result.returncode == 0, result.stderr
+        print(result.stdout, end="", flush=True)
 
     def test_host_kernel_surfaces_stay_absent_as_sandbox_root(self):
         """Sandbox root sees neither host devices nor the host PID 1.
