@@ -167,9 +167,12 @@ pub struct Config {
     /// Migration diagnostics, separate from the canonical audit stream.
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,
-    /// An empty list keeps global parent use; names match the accepted listener.
+    /// An empty list applies no agent filter; names match the accepted listener.
     #[serde(default)]
     pub parent_proxy_agents: Vec<String>,
+    /// An empty list applies no destination filter to the shared parent.
+    #[serde(default)]
+    pub parent_proxy_hosts: Vec<String>,
     pub upstream_ca_file: Option<PathBuf>,
     pub tls_ca_file: Option<PathBuf>,
     /// Canonical exact entries emitted by the existing CLI's normalize_ignore_hosts.
@@ -222,6 +225,7 @@ pub(crate) struct ParentProxy {
     pub host: String,
     pub port: u16,
     pub tls: bool,
+    pub destination_hosts: Vec<String>,
 }
 
 pub(crate) fn authority_port(
@@ -318,6 +322,26 @@ impl Config {
     }
 
     pub(crate) fn parent(&self) -> Result<Option<ParentProxy>, Error> {
+        let destination_hosts = self
+            .parent_proxy_hosts
+            .iter()
+            .map(|value| {
+                let invalid = || "parent_proxy_hosts entries must be exact DNS hostnames";
+                crate::http::validate_hostname(value).map_err(|_| invalid())?;
+                let host = crate::host_names::encode_idna2003(value)?.to_ascii_lowercase();
+                crate::http::validate_hostname(&host).map_err(|_| invalid())?;
+                let host = host.strip_suffix('.').unwrap_or(&host);
+                if host.contains(':')
+                    || crate::admin_shield::numeric_address(host).is_some()
+                    || host
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+                {
+                    return Err(invalid().into());
+                }
+                Ok(host.to_owned())
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         let Some(value) = self.parent_proxy.as_deref().filter(|v| !v.is_empty()) else {
             return Ok(None);
         };
@@ -349,6 +373,7 @@ impl Config {
             host,
             port,
             tls: scheme == "https",
+            destination_hosts,
         }))
     }
 }
@@ -370,6 +395,86 @@ fn resolve_credential_guard_block(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn parent_host_filter_defaults_validates_and_serializes() {
+        let mut source = json!({
+            "listeners": [], "policy_file": "policy.toml",
+            "readiness_file": "ready", "event_log": "events",
+            "parent_proxy": "http://parent.example:18080"
+        });
+        let default: Config = serde_json::from_value(source.clone()).unwrap();
+        assert!(default.parent_proxy_hosts.is_empty());
+        assert!(
+            default
+                .parent()
+                .unwrap()
+                .unwrap()
+                .destination_hosts
+                .is_empty()
+        );
+        source["parent_proxy_hosts"] = json!(["Auth.Example.Test.", "bücher.example"]);
+        let config: Config = serde_json::from_value(source.clone()).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.parent().unwrap().unwrap().destination_hosts,
+            ["auth.example.test", "xn--bcher-kva.example"]
+        );
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["parent_proxy_hosts"],
+            source["parent_proxy_hosts"]
+        );
+
+        for value in [
+            "",
+            "*",
+            "*.example.test",
+            ".example.test",
+            "a..example.test",
+            "a.example.test..",
+            "http://a.example.test",
+            "a.example.test/path",
+            "a.example.test:443",
+            "user@a.example.test",
+            "a.example.test?x",
+            "a.example.test#x",
+            " a.example.test",
+            "a.example.test ",
+            "a%2eexample.test",
+            "127.0.0.1",
+            "127.0.0.1.",
+            "127.1",
+            "2130706433",
+            "0x7f000001",
+            "0x7f.1",
+            "0x7f.0x0.0x0.0x1",
+            "::1",
+            "[::1]",
+            "fe80::1%lo",
+            "127.0.0.0/8",
+            "xn--invalid-",
+            "\u{200e}.test",
+        ] {
+            source["parent_proxy_hosts"] = json!([value]);
+            let mut config: Config = serde_json::from_value(source.clone()).unwrap();
+            assert!(config.validate().is_err(), "{value:?}");
+            config.parent_proxy = None;
+            assert!(config.validate().is_err(), "without parent: {value:?}");
+        }
+        for value in [
+            json!(null),
+            json!("example.test"),
+            json!({}),
+            json!([1]),
+            json!([null]),
+        ] {
+            source["parent_proxy_hosts"] = value.clone();
+            assert!(
+                serde_json::from_value::<Config>(source.clone()).is_err(),
+                "{value}"
+            );
+        }
+    }
 
     #[test]
     fn credential_guard_block_defaults_alias_serializes_and_resolves_values() {
