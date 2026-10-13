@@ -1708,19 +1708,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             ));
         }
         let standalone = command_centre.is_none();
-        if standalone
-            && !listeners
-                .iter()
-                .any(|listener| listener.agent_id == agent_id)
-        {
-            return Ok(desktop_failure(
-                agent_id,
-                StatusCode::NOT_FOUND,
-                "agent_not_found",
-                "Agent not found",
-                None,
-            ));
-        }
+        // The authenticated operator can inspect a configured agent even if
+        // its running listener is absent. present still resolves its host-owned
+        // identity and refuses unknown agents; browser access stays preview-scoped.
         let data = match read_json(request).await? {
             ParsedBody::Terminal(outcome) => return Ok(outcome),
             ParsedBody::Absent => Value::Null,

@@ -47,11 +47,15 @@ case "$3" in
   state)
     if [ -e "$SAFEYOLO_CONFIG_DIR/agent-stopped" ]; then exit 1; fi
     [ "$4" = "$FAKE_RUN_ID" ] || exit 2
-    printf '{"id":"%s","status":"running"}\n' "${FAKE_STATE_ID:-$FAKE_RUN_ID}"
+    printf '{"id":"%s","status":"%s"}\n' "${FAKE_STATE_ID:-$FAKE_RUN_ID}" "${FAKE_STATE_STATUS:-running}"
     ;;
   exec)
     [ "$8" = "$FAKE_RUN_ID" ] || exit 2
     case "$*" in
+      *"desktop-probe"*)
+        if [ -n "$SAFEYOLO_DESKTOP_GUEST" ]; then exec "$SAFEYOLO_DESKTOP_GUEST" desktop-probe; fi
+        printf '%s\n' '{"schema_version":1,"tcp":"refused","greeting":"not_checked","duration_ms":0}'
+        ;;
       *"guest-desktop status"*) [ -e "$SAFEYOLO_CONFIG_DIR/desktop-ready" ];;
       *"guest-desktop start"*)
         if [ -e "$SAFEYOLO_CONFIG_DIR/start-fails" ]; then exit 1; fi
@@ -185,12 +189,6 @@ fn assert_staged_desktop_size(root: &Path, expected: &str) {
         fs::read_to_string(share.join("desktop-size")).unwrap(),
         format!("{expected}\n")
     );
-    assert!(
-        fs::read_to_string(root.join("desktop-start-command"))
-            .unwrap()
-            .ends_with(&format!("guest-desktop start {expected}\n"))
-    );
-
     // Relocate the guest share and observe the parsed size at the capability
     // check, before starting graphical processes. The staged Bash consumer
     // really reads desktop-size; explicit arguments must still take precedence.
@@ -242,6 +240,15 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         std::env::set_var("SAFEYOLO_PREVIEW_SCREEN_SIZE", "1920x1080");
     }
     let mut run = OwnedRun::start(root.path());
+    // A stale launch projection must not deny an independently live runtime.
+    fs::write(
+        root.path().join("agents/alice/current-launch.json"),
+        serde_json::to_vec(&json!({
+            "agent_id":ID,"name":"alice","state":"exited"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let origin = tokio::spawn(async move {
         for attempt in 0..2 {
             let (mut stream, _) = guest.accept().await.unwrap();
@@ -280,41 +287,6 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
             .unwrap(),
     );
     let refused_runs = unverified_runs(root.path());
-    for refused in &refused_runs {
-        save_run(root.path(), refused);
-        let refused = request(
-            admin_port,
-            "POST",
-            "/admin/agents/alice/desktop/present",
-            &admin_headers,
-            b"",
-        )
-        .await;
-        assert_eq!(
-            status(&refused),
-            409,
-            "{}",
-            String::from_utf8_lossy(&refused)
-        );
-        assert!(!root.path().join("desktop-ready").exists());
-        save_run(root.path(), &saved_run);
-    }
-    unsafe {
-        std::env::set_var("FAKE_STATE_ID", "safeyolo-99999999999999999999999999999999");
-    }
-    let mismatched = request(
-        admin_port,
-        "POST",
-        "/admin/agents/alice/desktop/present",
-        &admin_headers,
-        b"",
-    )
-    .await;
-    assert_eq!(status(&mismatched), 409);
-    assert!(!root.path().join("desktop-ready").exists());
-    unsafe {
-        std::env::remove_var("FAKE_STATE_ID");
-    }
     let mut agent = UnixStream::connect(root.path().join("alice.sock"))
         .await
         .unwrap();
@@ -352,6 +324,8 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
             .exists()
     );
     assert_staged_desktop_size(root.path(), "1760x900");
+    let original_start = fs::read(root.path().join("desktop-start-command")).unwrap();
+    assert!(String::from_utf8_lossy(&original_start).ends_with("guest-desktop start 1760x900\n"));
     assert!(!root.path().join("config.toml").exists());
     let url = first["url"].as_str().unwrap();
     let preview_port: u16 = url
@@ -396,6 +370,132 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         .next()
         .unwrap()
         .to_owned();
+    let page = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&page), 200);
+    assert!(String::from_utf8_lossy(&page).contains("Show diagnostics"));
+    let denied = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&denied), 401);
+    let cross = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[
+            ("Cookie", cookie.clone()),
+            ("Origin", "https://other.test".into()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&cross), 403);
+    let legacy_cross_agent = request(
+        preview_port,
+        "GET",
+        "/websockify",
+        &[
+            ("Cookie", cookie.clone()),
+            ("Origin", "http://127.0.0.1:9".into()),
+            ("Upgrade", "websocket".into()),
+            ("Connection", "Upgrade".into()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&legacy_cross_agent), 403);
+    let diagnosis = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&diagnosis), 200);
+    assert_eq!(body(&diagnosis)["recorded_agent_state"], "exited");
+    assert_eq!(body(&diagnosis)["runtime"]["state"], "running");
+    assert_eq!(body(&diagnosis)["runtime"]["disagreement"], false);
+    for saved in &refused_runs {
+        save_run(root.path(), saved);
+        let presented = request(
+            admin_port,
+            "POST",
+            "/admin/agents/alice/desktop/present",
+            &admin_headers,
+            b"",
+        )
+        .await;
+        assert_eq!(
+            status(&presented),
+            200,
+            "authorized diagnosis must survive suspect readiness"
+        );
+        let page = request(
+            preview_port,
+            "GET",
+            "/_safeyolo_desktop/",
+            &[("Cookie", cookie.clone())],
+            b"",
+        )
+        .await;
+        assert_eq!(status(&page), 200);
+        save_run(root.path(), &saved_run);
+    }
+    unsafe {
+        std::env::set_var("FAKE_STATE_ID", "safeyolo-99999999999999999999999999999999");
+    }
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let diagnosis = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&diagnosis), 200);
+    assert_eq!(body(&diagnosis)["runtime"]["state"], "unknown");
+    assert_ne!(body(&diagnosis)["runtime"]["state"], "stopped");
+    unsafe {
+        std::env::remove_var("FAKE_STATE_ID");
+        std::env::set_var("FAKE_STATE_STATUS", "stopped");
+    }
+    fs::write(
+        root.path().join("agents/alice/current-launch.json"),
+        serde_json::to_vec(&json!({
+            "agent_id":ID,"name":"alice","state":"running"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let stopped_runtime = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&stopped_runtime), 200);
+    assert_eq!(body(&stopped_runtime)["runtime"]["state"], "stopped");
+    assert_eq!(body(&stopped_runtime)["recorded_agent_state"], "running");
+    assert_eq!(body(&stopped_runtime)["runtime"]["disagreement"], false);
+    unsafe {
+        std::env::remove_var("FAKE_STATE_STATUS");
+    }
     // The unlocked preview still consults native ownership before opening a
     // guest stream. No refused request should reach the two-response origin.
     for refused in &refused_runs {
@@ -435,7 +535,7 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         preview_port,
         "GET",
         "/vnc.html",
-        &[("Cookie", cookie), ("Content-Length", "0".into())],
+        &[("Cookie", cookie.clone()), ("Content-Length", "0".into())],
         b"",
     )
     .await;
@@ -453,6 +553,80 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     assert_eq!(second["reused"], true);
     assert_eq!(second["url"], first["url"]);
     assert_ne!(second["unlock_code"], first["unlock_code"]);
+
+    // An authenticated operator can diagnose a separate configured target.
+    // Alice's preview credential must not unlock Bob's diagnostic endpoint.
+    fs::write(root.path().join("policy.toml"), format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n")).unwrap();
+    let bob = request(
+        admin_port,
+        "POST",
+        "/admin/agents/bob/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&bob), 200);
+    let bob_port: u16 = body(&bob)["url"]
+        .as_str()
+        .unwrap()
+        .split(':')
+        .nth(2)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let cross_agent = request(
+        bob_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&cross_agent), 401);
+    fs::write(
+        root.path().join("policy.toml"),
+        format!("[agents.alice]\nagent_id='{ID}'\n"),
+    )
+    .unwrap();
+
+    // A different generation is terminal for this page. It cannot retarget.
+    let context_path = root
+        .path()
+        .join("agents/alice/config-share/host-launch-context.json");
+    let context = fs::read(&context_path).unwrap();
+    fs::write(
+        &context_path,
+        b"{\"generation\":\"99999999999999999999999999999999\"}",
+    )
+    .unwrap();
+    let replaced = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&replaced), 410);
+    fs::write(context_path, context).unwrap();
+    fs::write(root.path().join("policy.toml"), "").unwrap();
+    let deleted = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie)],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&deleted), 410);
+    fs::write(
+        root.path().join("policy.toml"),
+        format!("[agents.alice]\nagent_id='{ID}'\n"),
+    )
+    .unwrap();
     proxy.shutdown().await;
     let audit = fs::read_to_string(root.path().join("audit.jsonl")).unwrap();
     for event in [
@@ -569,6 +743,12 @@ fi
     );
     assert_eq!(body(&presented)["agent_id"], listed_id);
     assert_staged_desktop_size(root.path(), "1920x1080");
+    // #1040 forbids automatic desktop restarts. Stage the configured size for
+    // the next start, and preserve the desktop already running for a viewer.
+    assert_eq!(
+        fs::read(root.path().join("desktop-start-command")).unwrap(),
+        original_start
+    );
     assert!(
         fs::read_to_string(root.path().join("config.toml"))
             .unwrap()
@@ -578,7 +758,7 @@ fi
         body(&presented)["url"]
             .as_str()
             .unwrap()
-            .starts_with("https://host.test.ts.net:8443/vnc.html")
+            .starts_with("https://host.test.ts.net:8443/_safeyolo_desktop/")
     );
     let reused = request(
         admin_port,
@@ -595,6 +775,8 @@ fi
     installed.shutdown().await;
     assert!(!root.path().join("tailnet/8443.target").exists());
 
+    // This failure case needs an absent desktop to exercise rollback of only
+    // a newly started service. Removing this owned fixture marker models that.
     fs::remove_file(root.path().join("desktop-ready")).unwrap();
     fs::write(root.path().join("tailnet/disconnected"), "").unwrap();
     let disconnected = Proxy::start(config(root.path())).await.unwrap();
@@ -683,7 +865,11 @@ fi
         b"",
     )
     .await;
-    assert_eq!(status(&stopped), 409);
+    assert_eq!(
+        status(&stopped),
+        200,
+        "known target must keep diagnostic access"
+    );
     fs::remove_file(root.path().join("agent-stopped")).unwrap();
     fs::write(root.path().join("policy.toml"), "").unwrap();
     let missing = request(
@@ -698,4 +884,121 @@ fi
     proxy.shutdown().await;
     drop(run.child.stdin.take());
     run.assert_exited();
+}
+
+/// Real browser/noVNC/native bridge/X11 evidence with controlled runsc control.
+/// The installed platform witness separately proves the real runtime leg.
+#[tokio::test]
+#[ignore = "needs Playwright Python, noVNC 1.6 assets, native guest helper, Xvfb and x11vnc"]
+async fn native_desktop_real_browser() {
+    let storage = std::env::var("SAFEYOLO_DESKTOP_STORAGE").unwrap();
+    let root = TempDir::new_in(storage).unwrap();
+    fixture(root.path());
+    let mut run = OwnedRun::start(root.path());
+    // These real X11/bridge/probe processes share this test's loopback.
+    // Only the controlled runsc adapter skips entering the fixture network
+    // namespace for the fixed guest probe. Production ownership checks still
+    // run; this test does not claim an installed runsc guest journey.
+    fs::write(
+        root.path().join("bin/nsenter"),
+        r#"#!/bin/sh
+case "$*" in
+  *"desktop-probe"*) exec "$SAFEYOLO_DESKTOP_GUEST" desktop-probe;;
+  *) exec /usr/bin/nsenter --preserve-credentials "$@";;
+esac
+"#,
+    )
+    .unwrap();
+    let guest = UnixListener::bind(root.path().join("guest.sock")).unwrap();
+    let blackhole = root.path().join("blackhole");
+    let forwarder = tokio::spawn(async move {
+        let mut peers = tokio::task::JoinSet::new();
+        let mut viewers = 0;
+        loop {
+            tokio::select! {
+                accepted = guest.accept() => {
+                    let (mut client, _) = accepted.unwrap();
+                    let mut prefix = [0; 8192];
+                    let count = client.read(&mut prefix).await.unwrap();
+                    let upgrade = String::from_utf8_lossy(&prefix[..count]).to_ascii_lowercase().contains("upgrade: websocket");
+                    let faultable_viewer = upgrade && viewers != 1;
+                    if upgrade { viewers += 1; }
+                    let prefix = prefix[..count].to_vec();
+                    let blackhole = blackhole.clone();
+                    peers.spawn(async move {
+                        let Ok(mut origin) = TcpStream::connect((Ipv4Addr::LOCALHOST, 6080)).await else { return; };
+                        origin.write_all(&prefix).await.unwrap();
+                        let transfer = tokio::io::copy_bidirectional(&mut client, &mut origin);
+                        tokio::pin!(transfer);
+                        loop {
+                            // Hold both sockets open while only the first
+                            // established stream loses transport progress.
+                            if faultable_viewer && blackhole.exists() {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                continue;
+                            }
+                            tokio::select! {
+                                _ = &mut transfer => break,
+                                _ = tokio::time::sleep(Duration::from_millis(100)) => (),
+                            }
+                        }
+                    });
+                }
+                Some(_) = peers.join_next() => (),
+            }
+        }
+    });
+    let proxy = Proxy::start(config(root.path())).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let port = ready["admin_port"].as_u64().unwrap();
+    // The actual CLI needs only this disposable instance's Admin configuration.
+    fs::write(
+        root.path().join("config.toml"),
+        format!("admin_port={port}\nadmin_api_token_file='token'\npolicy_file='policy.toml'\n"),
+    )
+    .unwrap();
+    let cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args([
+            "--root",
+            root.path().to_str().unwrap(),
+            "agent",
+            "present",
+            "alice",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let presented: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert!(
+        presented["url"]
+            .as_str()
+            .unwrap()
+            .contains("/_safeyolo_desktop/")
+    );
+    let python = std::env::var("SAFEYOLO_DESKTOP_BROWSER_PYTHON").unwrap();
+    let result = tokio::process::Command::new(python)
+        .args(["-c", "from tests.proxy_contracts.test_desktop_waiting_page import native_browser_journey; native_browser_journey()"])
+        .env("PYTHONPATH", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+        .env("SAFEYOLO_DESKTOP_URL", presented["url"].as_str().unwrap())
+        .env("SAFEYOLO_DESKTOP_CODE", presented["unlock_code"].as_str().unwrap())
+        .env("SAFEYOLO_DESKTOP_FIXTURE", root.path())
+        .kill_on_drop(true).output().await.unwrap();
+    proxy.shutdown().await;
+    forwarder.abort();
+    let _ = forwarder.await;
+    drop(run.child.stdin.take());
+    run.assert_exited();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&result.stdout));
 }

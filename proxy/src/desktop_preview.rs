@@ -59,13 +59,46 @@ fn new_unlock_code() -> String {
     format!("{}-{}", &raw[..4], &raw[4..])
 }
 
-struct Access {
+pub(crate) struct Access {
     agent: String,
+    agent_id: String,
+    run_id: Option<String>,
+    diagnostics: Mutex<Option<(Instant, serde_json::Value)>>,
+    sessions: crate::desktop_session::Sessions,
     config: std::path::PathBuf,
     host_port: u16,
     token: String,
     cookie_name: String,
     unlock: Mutex<Unlock>,
+}
+
+impl Access {
+    // Permission to inspect a configured target does not depend on its readiness.
+    // Each preview retains the agent and sandbox generation captured at opening.
+    pub(crate) fn check_target(&self) -> std::io::Result<()> {
+        let agents = crate::host_agents::list()
+            .map_err(|_| std::io::Error::other("target inspection failed"))?;
+        if !agents
+            .iter()
+            .any(|agent| agent.id == self.agent_id && agent.name == self.agent)
+            || crate::host_runs::id(&self.agent)
+                .is_ok_and(|current| self.run_id.as_ref() != Some(&current))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "preview target was removed or replaced",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_run(&self) -> std::io::Result<()> {
+        self.check_target()?;
+        if self.run_id.is_none() || crate::host_runs::id(&self.agent).ok() != self.run_id {
+            return Err(std::io::Error::other("preview run identity is unverified"));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct Preview {
@@ -81,6 +114,7 @@ pub(crate) struct Preview {
 impl Preview {
     pub(crate) async fn start(
         agent: &str,
+        agent_id: &str,
         host_port: u16,
         tailnet_port: Option<u16>,
     ) -> Result<Self, Error> {
@@ -88,6 +122,10 @@ impl Preview {
         let port = listener.local_addr()?.port();
         let access = Arc::new(Access {
             agent: agent.to_owned(),
+            agent_id: agent_id.to_owned(),
+            run_id: crate::host_runs::id(agent).ok(),
+            diagnostics: Mutex::new(None),
+            sessions: Default::default(),
             config: crate::host_platform::config_path(),
             host_port: port,
             token: format!(
@@ -102,7 +140,7 @@ impl Preview {
         let running_access = access.clone();
         let task = tokio::spawn(async move { accept(listener, running_access, receiver).await });
         let mut preview = Self {
-            url: format!("http://127.0.0.1:{port}/vnc.html#autoconnect=true&resize=remote"),
+            url: format!("http://127.0.0.1:{port}/_safeyolo_desktop/"),
             access,
             stop,
             task,
@@ -113,7 +151,7 @@ impl Preview {
         if let Some(tailnet_port) = tailnet_port {
             match crate::tailnet::Session::start(port, tailnet_port).await {
                 Ok(session) => {
-                    preview.url = session.url("/vnc.html#autoconnect=true&resize=remote");
+                    preview.url = session.url("/_safeyolo_desktop/");
                     preview.tailnet = Some(session);
                 }
                 Err(error) => {
@@ -137,6 +175,10 @@ impl Preview {
 
     pub(crate) fn is_running(&mut self) -> bool {
         !self.task.is_finished()
+            && !self
+                .access
+                .check_target()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
             && self
                 .tailnet
                 .as_mut()
@@ -189,13 +231,17 @@ impl Drop for Preview {
 
 async fn accept(listener: TcpListener, access: Arc<Access>, mut stop: watch::Receiver<bool>) {
     let mut connections = JoinSet::new();
+    // Bound pending HTTP clients, probes and viewer streams for this preview.
+    let slots = Arc::new(tokio::sync::Semaphore::new(64));
     loop {
         tokio::select! {
             _ = stop.changed() => break,
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
+                    let Ok(slot) = slots.clone().try_acquire_owned() else { continue; };
                     let access = access.clone();
                     connections.spawn(async move {
+                        let _slot = slot;
                         crate::host_platform::in_config(access.config.clone(), async { let _ = connection(socket, access).await; }).await;
                     });
                 }
@@ -482,20 +528,27 @@ async fn read_body(
 
 async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Result<()> {
     let started = Instant::now();
-    let request = match read_request(&mut socket).await {
-        Ok(request) => request,
-        Err(error) => {
-            let _ = reply(
-                &mut socket,
-                "400 Bad Request",
-                &[("Content-Type", "application/json".into())],
-                b"{\"error\":\"invalid preview request\"}",
-                false,
-            )
-            .await;
-            return Err(error);
-        }
-    };
+    let mut request =
+        match tokio::time::timeout(Duration::from_secs(10), read_request(&mut socket)).await {
+            Ok(Ok(request)) => request,
+            Ok(Err(error)) => {
+                let _ = reply(
+                    &mut socket,
+                    "400 Bad Request",
+                    &[("Content-Type", "application/json".into())],
+                    b"{\"error\":\"invalid preview request\"}",
+                    false,
+                )
+                .await;
+                return Err(error);
+            }
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "preview request headers timed out",
+                ));
+            }
+        };
     let head_only = request.method == "HEAD";
     if request.path.starts_with("/_safeyolo_preview") {
         if request.path != "/_safeyolo_preview/unlock" {
@@ -551,7 +604,17 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
             );
             return result;
         }
-        let body = match read_body(&mut socket, &request, MAX_UNLOCK_BODY).await {
+        let body = match tokio::time::timeout(
+            Duration::from_secs(10),
+            read_body(&mut socket, &request, MAX_UNLOCK_BODY),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "preview unlock body timed out",
+            )
+        })? {
             Ok(body) => body,
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 let result = reply(
@@ -660,10 +723,7 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
             &mut socket,
             "303 See Other",
             &[
-                (
-                    "Location",
-                    "/vnc.html#autoconnect=true&resize=remote".into(),
-                ),
+                ("Location", "/_safeyolo_desktop/".into()),
                 ("Set-Cookie", cookie),
                 ("Cache-Control", "no-store".into()),
             ],
@@ -685,6 +745,20 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
         return result;
     }
     if !authorized(&request, &access) {
+        if request.path.starts_with("/_safeyolo_desktop/") && request.path != "/_safeyolo_desktop/"
+        {
+            return reply(
+                &mut socket,
+                "401 Unauthorized",
+                &[
+                    ("Content-Type", "application/json".into()),
+                    ("Cache-Control", "no-store".into()),
+                ],
+                b"{\"access\":\"unlock_required\"}",
+                head_only,
+            )
+            .await;
+        }
         let result = reply(
             &mut socket,
             "200 OK",
@@ -707,6 +781,173 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
         );
         return result;
     }
+    if let Err(error) = access.check_target() {
+        let (status, body) = if error.kind() == std::io::ErrorKind::NotFound {
+            ("410 Gone", "{\"access\":\"target_changed\"}")
+        } else {
+            ("503 Service Unavailable", "{\"access\":\"unknown\"}")
+        };
+        return reply(
+            &mut socket,
+            status,
+            &[
+                ("Content-Type", "application/json".into()),
+                ("Cache-Control", "no-store".into()),
+            ],
+            body.as_bytes(),
+            head_only,
+        )
+        .await;
+    }
+    // Preview cookies are host-scoped. A page on another localhost port must
+    // not use those cookies to open this agent's legacy viewer WebSocket.
+    if !local_origin(&request) {
+        return reply(
+            &mut socket,
+            "403 Forbidden",
+            &[("Content-Type", "application/json".into())],
+            b"{\"access\":\"origin_refused\"}",
+            head_only,
+        )
+        .await;
+    }
+    let mut viewer_id = None;
+    let mut viewer_asset = false;
+    if request.path.starts_with("/_safeyolo_desktop/") {
+        if request.method != "GET" && request.method != "HEAD" {
+            return reply(
+                &mut socket,
+                "405 Method Not Allowed",
+                &[],
+                b"Use GET or HEAD",
+                head_only,
+            )
+            .await;
+        }
+        let headers = [
+            ("Cache-Control", "no-store".into()),
+            ("X-Content-Type-Options", "nosniff".into()),
+        ];
+        match request.path.as_str() {
+            "/_safeyolo_desktop/" => {
+                return reply(
+                    &mut socket,
+                    "200 OK",
+                    &[
+                        headers[0].clone(),
+                        headers[1].clone(),
+                        ("Content-Type", "text/html; charset=utf-8".into()),
+                    ],
+                    include_bytes!("desktop_page.html"),
+                    head_only,
+                )
+                .await;
+            }
+            "/_safeyolo_desktop/page.js" => {
+                return reply(
+                    &mut socket,
+                    "200 OK",
+                    &[
+                        headers[0].clone(),
+                        headers[1].clone(),
+                        ("Content-Type", "text/javascript; charset=utf-8".into()),
+                    ],
+                    include_bytes!("desktop_page.js"),
+                    head_only,
+                )
+                .await;
+            }
+            "/_safeyolo_desktop/diagnostics" => {
+                let mut cached = access.diagnostics.lock().await;
+                if cached
+                    .as_ref()
+                    .is_none_or(|(when, _)| when.elapsed() >= Duration::from_secs(3))
+                {
+                    let value =
+                        crate::desktop_diagnostics::snapshot(&access.agent, &access.agent_id).await;
+                    *cached = Some((Instant::now(), value));
+                }
+                if let Err(error) = access.check_target() {
+                    let status = if error.kind() == std::io::ErrorKind::NotFound {
+                        "410 Gone"
+                    } else {
+                        "503 Service Unavailable"
+                    };
+                    return reply(
+                        &mut socket,
+                        status,
+                        &[("Content-Type", "application/json".into())],
+                        b"{\"access\":\"target_changed\"}",
+                        head_only,
+                    )
+                    .await;
+                }
+                let mut value = cached.as_ref().unwrap().1.clone();
+                value["access"] = "valid".into();
+                return reply(
+                    &mut socket,
+                    "200 OK",
+                    &[
+                        headers[0].clone(),
+                        ("Content-Type", "application/json".into()),
+                    ],
+                    &serde_json::to_vec(&value)?,
+                    head_only,
+                )
+                .await;
+            }
+            path if path.starts_with("/_safeyolo_desktop/session?") => {
+                let id = path.trim_start_matches("/_safeyolo_desktop/session?");
+                if valid_attempt_id(id) {
+                    let bytes =
+                        serde_json::to_vec(&crate::desktop_session::status(&access.sessions, id))?;
+                    return reply(
+                        &mut socket,
+                        "200 OK",
+                        &[
+                            headers[0].clone(),
+                            ("Content-Type", "application/json".into()),
+                        ],
+                        &bytes,
+                        head_only,
+                    )
+                    .await;
+                }
+            }
+            path if path.starts_with("/_safeyolo_desktop/viewer?") && request.upgrade() => {
+                let id = path.trim_start_matches("/_safeyolo_desktop/viewer?");
+                if valid_attempt_id(id) {
+                    viewer_id = Some(id.to_owned());
+                    request.path = "/websockify".into();
+                    // The native guest bridge does not negotiate compression.
+                    request.headers.retain(|header| {
+                        !header.name.eq_ignore_ascii_case("Sec-WebSocket-Extensions")
+                    });
+                }
+            }
+            path if path.starts_with("/_safeyolo_desktop/assets/") => {
+                if let Some((id, asset)) = path
+                    .trim_start_matches("/_safeyolo_desktop/assets/")
+                    .split_once('/')
+                    && valid_attempt_id(id)
+                {
+                    request.path = format!("/{asset}");
+                    viewer_asset = true;
+                }
+            }
+            _ => (),
+        }
+        if request.path.starts_with("/_safeyolo_desktop/") {
+            return reply(
+                &mut socket,
+                "404 Not Found",
+                &[],
+                b"Desktop path not found",
+                head_only,
+            )
+            .await;
+        }
+    }
     let started = Instant::now();
     log_preview(
         &access,
@@ -717,7 +958,23 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
         started,
         0,
     );
-    let result = relay(socket, &request, &access.agent).await;
+    let result = if viewer_asset {
+        // Dynamic imports cannot cancel their fetches. Bound the complete
+        // asset relay, including a guest that sends headers but no body.
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            relay(socket, &request, &access, viewer_id),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "viewer asset response timed out",
+            ))
+        })
+    } else {
+        relay(socket, &request, &access, viewer_id).await
+    };
     match &result {
         Ok((status, bytes_out)) => log_preview(
             &access,
@@ -750,6 +1007,10 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
         ),
     }
     result.map(|_| ())
+}
+
+fn valid_attempt_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn guest_request(request: &Request) -> Vec<u8> {
@@ -813,8 +1074,21 @@ fn guest_request(request: &Request) -> Vec<u8> {
 async fn relay(
     mut socket: TcpStream,
     request: &Request,
-    agent: &str,
+    access: &Access,
+    viewer_id: Option<String>,
 ) -> std::io::Result<(u16, u64)> {
+    let agent = &access.agent;
+    if access.check_run().is_err() {
+        return reply_status(
+            &mut socket,
+            "502 Bad Gateway",
+            502,
+            &[("Content-Type", "application/json".into())],
+            b"{\"error\":\"guest run identity is unverified\"}",
+            request.method == "HEAD",
+        )
+        .await;
+    }
     let upgrade = request.upgrade();
     // The relay reads one body length and forwards raw HTTP/1 headers. A
     // second length could make the guest parse a different request boundary.
@@ -875,7 +1149,19 @@ async fn relay(
     let header = guest_request(request);
     let started = Instant::now();
     loop {
-        let mut guest = match crate::host_platform::open_guest_port(agent, GUEST_PORT).await {
+        // A retry must not send the previous run's request to a new run.
+        access.check_run()?;
+        let mut guest = match tokio::time::timeout(
+            Duration::from_secs(12),
+            crate::host_platform::open_guest_port(agent, GUEST_PORT),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "guest transport timed out",
+            ))
+        }) {
             Ok(guest) => guest,
             Err(error) => {
                 if retryable && error.kind() == std::io::ErrorKind::ConnectionRefused {
@@ -898,6 +1184,7 @@ async fn relay(
                 .await;
             }
         };
+        access.check_run()?;
         let sent = async {
             guest.write_all(&header).await?;
             if let Some(body) = &body {
@@ -935,29 +1222,37 @@ async fn relay(
             )
             .await;
         }
-        let (head, rest) = match read_head(&mut guest).await {
-            Ok(response) => response,
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof && retryable => {
-                if request.header("X-SafeYolo-Waiting-Room-Poll") != Some("1")
-                    && started.elapsed() < Duration::from_secs(5)
-                {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue;
+        let (head, rest) =
+            match tokio::time::timeout(Duration::from_secs(12), read_head(&mut guest))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "guest response timed out",
+                    ))
+                }) {
+                Ok(response) => response,
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof && retryable => {
+                    if request.header("X-SafeYolo-Waiting-Room-Poll") != Some("1")
+                        && started.elapsed() < Duration::from_secs(5)
+                    {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    return waiting_room(&mut socket, request, agent, upgrade).await;
                 }
-                return waiting_room(&mut socket, request, agent, upgrade).await;
-            }
-            Err(_) => {
-                return reply_status(
-                    &mut socket,
-                    "502 Bad Gateway",
-                    502,
-                    &[("Content-Type", "application/json".into())],
-                    b"{\"error\":\"preview relay failed\"}",
-                    request.method == "HEAD",
-                )
-                .await;
-            }
-        };
+                Err(_) => {
+                    return reply_status(
+                        &mut socket,
+                        "502 Bad Gateway",
+                        502,
+                        &[("Content-Type", "application/json".into())],
+                        b"{\"error\":\"preview relay failed\"}",
+                        request.method == "HEAD",
+                    )
+                    .await;
+                }
+            };
         let status = head
             .split(|byte| *byte == b'\r')
             .next()
@@ -986,11 +1281,26 @@ async fn relay(
         if request.method == "HEAD" {
             return Ok((status, 0));
         }
-        socket.write_all(&rest).await?;
+        if viewer_id.is_none() || !upgrade || status != 101 {
+            socket.write_all(&rest).await?;
+        }
         let transferred = if upgrade && status == 101 {
-            tokio::io::copy_bidirectional(&mut socket, &mut guest)
-                .await?
-                .1
+            if let Some(id) = viewer_id {
+                let guest = crate::tunnels::Prefixed::new(guest, rest.clone());
+                crate::desktop_session::relay(
+                    Box::new(socket),
+                    Box::new(guest),
+                    &access.sessions,
+                    id,
+                    access,
+                )
+                .await
+                .map_err(|_| std::io::Error::other("desktop viewer transport interrupted"))?
+            } else {
+                tokio::io::copy_bidirectional(&mut socket, &mut guest)
+                    .await?
+                    .1
+            }
         } else {
             tokio::io::copy(&mut guest, &mut socket).await?
         };

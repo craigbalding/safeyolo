@@ -1,6 +1,7 @@
 //! Linux guest command operations. PID 1 owns the supervisor; the host owns boot inputs.
 
 mod desktop_bridge;
+mod desktop_probe;
 mod lab_evidence;
 mod observation;
 mod probe;
@@ -173,11 +174,12 @@ fn run() -> Result<i32, Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | supervise [check] | probe ID [--ssh-port PORT] | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
+                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | supervise [check] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
             );
             Ok(0)
         }
         [desktop, rest @ ..] if desktop == "desktop-bridge" => desktop_bridge::run(rest),
+        [desktop] if desktop == "desktop-probe" => desktop_probe::run(),
         [lab, rest @ ..] if lab == "lab-evidence" => lab_evidence::run(rest),
         [observe, check] if observe == "observe" && check == "check" => observation::check(&paths),
         [observe, exec, separator, command @ ..]

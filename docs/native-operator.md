@@ -34,6 +34,62 @@ you opened. A running proxy alone does not mean that the agent is running.
 
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
+## Open an agent desktop
+
+Use the host account and instance selected above. The proxy must be running.
+The guest needs the desktop packages and noVNC assets from its prepared guest
+image. Opening a presentation can start the guest desktop if it is absent.
+Opening a presentation does not start the agent.
+
+```sh
+safeyolo agent present work
+```
+
+The command returns a `url` and an `unlock_code`. Open that URL in your browser
+and enter the code. The Command Centre's approved desktop presentation opens
+the same SafeYolo page. Keep the code private. The existing five-minute,
+single-use unlock rules still apply.
+
+The desktop appears inside this page. Use the page's full-screen, keyboard,
+clipboard and view controls. The page stays open if the desktop disconnects.
+Its status explains what SafeYolo observed. **Show diagnostics** opens a live,
+timestamped history; checks also run while that panel is closed. **Copy
+diagnostics** copies up to 120 observations. That copy excludes credentials,
+unlock codes, cookies, URLs, clipboard text and screen content.
+
+If the desktop service accepts connections but sends no VNC greeting on two
+fresh guest-local checks, the page reports a suspected stuck service. Ask your
+agent to restart x11vnc. A failed guest or runtime inspection remains unknown.
+The page does not restart a service or agent, or repair saved agent state.
+When the service recovers, the page reconnects without a reload and retains
+its diagnostic history. Browser network events and a return to a visible page
+trigger fresh checks. A browser's offline hint alone does not disable a working
+local preview.
+
+The page checks both legs of its existing viewer connection with WebSocket
+Ping/Pong messages. The replies verify the existing browser-to-SafeYolo and
+SafeYolo-to-guest WebSocket paths. They do not check the relay's existing TCP
+connection to VNC or the browser's rendering loop. The checks send no keyboard
+or mouse input. They can detect a stalled WebSocket transport
+while a separate diagnostic request and a fresh VNC greeting still work. An
+active page checks at five-second intervals, with deadlines of 14 seconds for
+diagnostics and five seconds for viewer transport status. A covered transport
+stall is detected within 45 seconds while the browser runs and the diagnostic
+endpoint replies within those deadlines. Sleeping or suspended tabs have no
+timer guarantee. Ping/Pong and a VNC greeting do not prove that a guest
+application, window manager or screen is responding. A static screen is allowed.
+
+Guest checks use a two-second TCP connection deadline and a three-second total
+VNC greeting deadline. The host bounds each guest inspection at eight seconds.
+The page bounds viewer asset loading at 12 seconds and a connection handshake
+at 20 seconds. A request for desktop credentials or server verification waits
+for your input before resuming the handshake deadline. Failed connection
+attempts use backoff from one to 30 seconds. After eight failed attempts, use
+**Check again** to request fresh checks and retry. **Close viewer** stops that
+page's automatic attempts. Confirmed access failure or target replacement also
+stops attempts. Reopen the intended presentation to renew access; the page does
+not extend access or follow a replacement agent or run.
+
 ## Inspect and decide one request
 
 A network policy with `egress = "prompt"` creates a pending access request.
