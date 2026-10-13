@@ -37,8 +37,13 @@ uses another channel and preserves discovery for supported older hosts.
 The publisher owns serialization of promotion, conflicting-version refusal
 and retention of supported releases and rollback content. OCI tagging alone
 does not enforce immutability or compare-and-swap promotion. These publication
-controls are implemented by the #211 publisher. Actual public publication
-and retention observations remain pending under the publication hold.
+controls are implemented by the #211 publisher. The initial guest release,
+`guest-2026-10-12.1`, is public. Anonymous native acquisition and installation
+have been independently assessed for all three consumer platforms under
+[#239](https://github.com/craigbalding/safeyolo/issues/239).
+These results do not complete that issue's installed and independent-update
+proof or the publisher's ongoing retention obligations. Automatic and later
+publication remain held.
 
 ## OCI objects
 
@@ -244,9 +249,8 @@ remain under #239.
 ## Prepare and publish a default guest release
 
 The [manual repository workflow](../.github/workflows/guest-oci.yml) prepares
-releases without registry writes by default. Current operator direction
-authorizes one updated native host release (H) followed by publication of the
-already prepared initial guest (G1).
+releases without registry writes by default. The authorized one-time native
+host release (H) and initial guest release (G1) have been published.
 The workflow's explicit `publish_initial_g1` mode supports only that original
 G1 and identical recovery retries. Automatic and later publication remain held
 under #1003. Preparation does not restart automatic host releases or change Latest.
