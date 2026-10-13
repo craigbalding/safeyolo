@@ -64,6 +64,8 @@ pub(crate) struct Access {
     agent_id: String,
     run_id: Option<String>,
     diagnostics: Mutex<Option<(Instant, serde_json::Value)>>,
+    #[cfg(target_os = "macos")]
+    viewer_assets: tokio::sync::Semaphore,
     sessions: crate::desktop_session::Sessions,
     config: std::path::PathBuf,
     host_port: u16,
@@ -125,6 +127,11 @@ impl Preview {
             agent_id: agent_id.to_owned(),
             run_id: crate::host_runs::id(agent).ok(),
             diagnostics: Mutex::new(None),
+            // The VZ shell bridge admits six streams. Do not let parallel
+            // module imports consume all of them while viewers and the fixed
+            // guest-local diagnostic use the same bridge.
+            #[cfg(target_os = "macos")]
+            viewer_assets: tokio::sync::Semaphore::new(3),
             sessions: Default::default(),
             config: crate::host_platform::config_path(),
             host_port: port,
@@ -961,10 +968,15 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
     let result = if viewer_asset {
         // Dynamic imports cannot cancel their fetches. Bound the complete
         // asset relay, including a guest that sends headers but no body.
-        tokio::time::timeout(
-            Duration::from_secs(20),
-            relay(socket, &request, &access, viewer_id),
-        )
+        tokio::time::timeout(Duration::from_secs(20), async {
+            #[cfg(target_os = "macos")]
+            let _asset_slot = access
+                .viewer_assets
+                .acquire()
+                .await
+                .map_err(std::io::Error::other)?;
+            relay(socket, &request, &access, viewer_id).await
+        })
         .await
         .unwrap_or_else(|_| {
             Err(std::io::Error::new(

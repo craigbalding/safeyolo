@@ -81,7 +81,7 @@ application, window manager or screen is responding. A static screen is allowed.
 
 Guest checks use a two-second TCP connection deadline and a three-second total
 VNC greeting deadline. The host bounds each guest inspection at eight seconds.
-The page bounds viewer asset loading at 12 seconds and a connection handshake
+The page bounds viewer asset loading at 20 seconds and a connection handshake
 at 20 seconds. A request for desktop credentials or server verification waits
 for your input before resuming the handshake deadline. Failed connection
 attempts use backoff from one to 30 seconds. After eight failed attempts, use

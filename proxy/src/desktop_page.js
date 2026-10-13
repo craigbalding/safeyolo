@@ -128,7 +128,7 @@
             const attempt = attemptId();
             const module = await Promise.race([
                 import(`${base}assets/${attempt}/core/rfb.js`),
-                new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('asset deadline')), 12000); }),
+                new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('asset deadline')), 20000); }),
             ]);
             if (signal.aborted || closed || terminal || !pageActive) return false;
             RFB = module.default;
