@@ -15,8 +15,9 @@ Download a production archive and `SHA256SUMS` for your host from the published
 [native release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
 source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use this explicit release;
-GitHub's Latest selector still points to an earlier product. Automatic and later
-publication remain stopped. Source builds are an [alternative](#build-a-native-bundle).
+GitHub's Latest selector still points to an earlier product. This guide also
+covers newer source builds. Automatic and later publication remain stopped.
+Source builds are an [alternative](#build-a-native-bundle).
 Existing wheel downloads belong to the earlier Python CLI.
 A bundle's `package-info` records its source, profile, platform and actual
 minimum glibc or macOS version. Unpacking and installation need Bash, tar and
