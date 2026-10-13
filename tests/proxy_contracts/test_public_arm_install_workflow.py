@@ -70,6 +70,14 @@ def public_shell(tmp_path):
     curl.write_text('#!/bin/bash\nset -eu\nif [[ ${@: -1} == https://api.github.com/* ]]; then\n'
                     'cat "$TRANSPORT/release.json"\nelse\ncat "$TRANSPORT/host.tar.gz"\nfi\n')
     curl.chmod(0o755)
+    # Execute the unchanged Python/Bash programs with an isolated Path.home().
+    # The test process and child installer retain their actual HOME environment.
+    python = command_dir / 'python3'
+    python.write_text(f'#!{os.sys.executable}\n'
+                      'import os, pathlib, sys\nfrom unittest.mock import patch\n'
+                      'with patch.object(pathlib.Path, "home", return_value=pathlib.Path(os.environ["TEST_RUNNER_HOME"])):\n'
+                      '    exec(compile(sys.stdin.read(), "<workflow-python>", "exec"))\n')
+    python.chmod(0o755)
     source = WORKFLOW['env']['HOST_REVISION']
     fields = f'source_commit={source}\nprofile=production\nplatform=linux-arm64\n'
     fields += 'guest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n'
@@ -82,6 +90,7 @@ def public_shell(tmp_path):
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     env = {**os.environ, **WORKFLOW['env'], **PUBLIC['env'],
            'PUBLIC_INSTALL_WORK': str(work), 'PUBLIC_INSTALL_REPORTS': str(reports),
+           'TEST_RUNNER_HOME': str(tmp_path / 'runner-home'),
            'TRANSPORT': str(transport), 'PATH': str(command_dir) + os.pathsep + os.environ['PATH'],
            'HOST_SHA256': digest, 'HOST_BYTES': str(archive.stat().st_size)}
     release = {'id': int(env['HOST_RELEASE_ID']), 'draft': False, 'prerelease': False,
@@ -91,6 +100,36 @@ def public_shell(tmp_path):
                        'browser_download_url': f'https://github.com/craigbalding/safeyolo/releases/download/host-{source}/safeyolo-linux-arm64-production.tar.gz'}]}
     (transport / 'release.json').write_text(json.dumps(release))
     return work, reports, transport, release, env
+
+
+@pytest.mark.parametrize('cached', [None, 'empty-store', 'blob', 'tree'])
+def test_before_state_requires_uncached_original_guest_and_preserves_existing_inputs(public_shell, cached):
+    work, reports, _transport, _release, env = public_shell
+    store = Path(env['TEST_RUNNER_HOME']) / '.local/share/safeyolo/guests'
+    blob = store / 'blobs/sha256' / env['GUEST_ARCHIVE_SHA256']
+    tree = store / 'trees/sha256' / env['GUEST_ARCHIVE_SHA256']
+    if cached:
+        store.mkdir(parents=True)
+    if cached == 'blob':
+        blob.parent.mkdir(parents=True)
+        blob.write_bytes(b'owned cached archive fixture')
+    elif cached == 'tree':
+        tree.mkdir(parents=True)
+        (tree / 'retained').write_bytes(b'owned prepared tree fixture')
+    result = run_script(step_script('Record original guest store before installation'), env)
+    ready = cached in (None, 'empty-store')
+    assert (result.returncode == 0) == ready, result.stderr
+    before = json.loads((reports / 'guest-store-before.json').read_text())
+    assert before['fixture_ready'] == ready
+    assert before['installer_invoked'] is False
+    assert before['store'] == {'path': str(store), 'exists': cached is not None}
+    assert before['original_blob'] == {'path': str(blob), 'exists': cached == 'blob'}
+    assert before['original_tree'] == {'path': str(tree), 'exists': cached == 'tree'}
+    assert not (work / 'instance').exists()
+    if cached == 'blob':
+        assert blob.read_bytes() == b'owned cached archive fixture'
+    elif cached == 'tree':
+        assert (tree / 'retained').read_bytes() == b'owned prepared tree fixture'
 
 
 @pytest.mark.parametrize('fault', [None, 'draft', 'source', 'bytes', 'digest'])
@@ -156,12 +195,17 @@ def test_installer_exit_and_timing_receipt_survive_without_credentials(public_sh
                          f'exit {installer_exit}\n')
     installer.chmod(0o755)
     env.update(GH_TOKEN='synthetic-must-not-pass', GITHUB_TOKEN='synthetic-must-not-pass')
+    preflight = run_script(step_script('Record original guest store before installation'), env)
+    assert preflight.returncode == 0, preflight.stderr
     result = run_script(step_script('Install with default anonymous native guest acquisition'), env)
     assert result.returncode == installer_exit, result.stderr
     receipt = json.loads((reports / 'install-receipt.json').read_text())
     assert receipt['exit'] == installer_exit
     assert receipt['install_seconds'] >= 0
     assert receipt['registry_credentials_supplied'] is False
+    assert receipt['guest_store_before'] == 'guest-store-before.json'
+    before = json.loads((reports / receipt['guest_store_before']).read_text())
+    assert before['fixture_ready'] and before['observed_at'] <= receipt['started_at']
     assert receipt['command'][1:] == ['--root', str(work / 'instance'), '--command-dir', str(work / 'commands')]
     assert (reports / 'install.stdout').read_text() == 'installer-output\n'
     assert (reports / 'install.stderr').read_text().startswith('installer-diagnostic\n')

@@ -307,6 +307,26 @@ jobs:
             sudo -n apt-get update -qq
             sudo -n apt-get install -y -qq --no-install-recommends zstd
           fi
+      - name: Record original guest store before installation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          store = Path.home() / '.local/share/safeyolo/guests'
+          digest = os.environ['GUEST_ARCHIVE_SHA256']
+          paths = {'store': store, 'original_blob': store / 'blobs/sha256' / digest,
+                   'original_tree': store / 'trees/sha256' / digest}
+          before = {name: {'path': str(path), 'exists': os.path.lexists(path)}
+                    for name, path in paths.items()}
+          ready = not before['original_blob']['exists'] and not before['original_tree']['exists']
+          before.update(observed_at=time.time(), observer_uid=os.getuid(), fixture_ready=ready,
+                        installer_invoked=False, scope='Default-store before-state for original G1 acquisition; no clean-host or onboarding claim')
+          report = Path(os.environ['PUBLIC_INSTALL_REPORTS']) / 'guest-store-before.json'
+          report.write_text(json.dumps(before, indent=2) + '\n')
+          if not ready:
+              raise SystemExit('Original G1 inputs already exist in the default guest store; public acquisition fixture is unverified. Cached inputs were preserved.')
+          PY
       - name: Install with default anonymous native guest acquisition
         id: install
         shell: bash
@@ -330,6 +350,7 @@ jobs:
             {command:[$installer,"--root",$root,"--command-dir",$commands],exit:$status,
              started_at:($started|tonumber),ended_at:($ended|tonumber),
              install_seconds:(($ended|tonumber)-($started|tonumber)),timeout_seconds:600,
+             guest_store_before:"guest-store-before.json",
              scope:"Installation only; excludes host download/extraction, observer setup, metadata checks and all runtime startup",
              registry_credentials_supplied:false}' > "$PUBLIC_INSTALL_REPORTS/install-receipt.json"
           # Network errors can include signed redirect URLs or anonymous bearer tokens.
