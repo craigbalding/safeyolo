@@ -76,7 +76,7 @@ def prepared(directory, nats_binary):
         tools.mkdir()
         for name in ("bash", "env", "cp", "chmod", "mkdir", "install", "stat", "id",
                      "dirname", "cat", "tail", "grep", "sed", "awk", "readlink",
-                     "ln", "mv", "rm", "mktemp", "sha256sum", "git", "openssl"):
+                     "ln", "mv", "rm", "mktemp", "git", "openssl"):
             executable = shutil.which(name)
             assert executable is not None, name
             (tools / name).symlink_to(executable)
@@ -223,18 +223,31 @@ def test_installed_repo_map_reads_working_tree_and_reports_guidance(tmp_path, _b
             subprocess.run(["git", "-C", str(repository), *arguments], env=environment, check=True, capture_output=True)
         source.write_text("def repair_fixture():\n    return 1\n")
         (repository / "binary").write_bytes(b"\0fixture")
-        (repository / os.fsdecode(b"filename-\xff.rs")).write_text("fn byte_filename() {}\n")
+        # APFS requires UTF-8 names; Linux also retains arbitrary pathname bytes.
+        filename = "filename-é.rs" if os.uname().sysname == "Darwin" else os.fsdecode(b"filename-\xff.rs")
+        (repository / filename).write_text("fn byte_filename() {}\n")
         before = source.read_bytes()
         result = subprocess.run([str(instance.root / "bin/safeyolo-coord"), "repo-map", str(repository), "--query", "repair_fixture Factory", "--hints", str(instance.root / "assets/repo-map.toml")], env=environment, capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
-        assert all(value in result.stdout for value in ("symbols=lexical", "repair_fixture", "return 1", "GUIDANCE"))
-        assert source.read_bytes() == before
+        assert all(value in result.stdout for value in ("symbols=lexical", "repair_fixture", "GUIDANCE")), result.stdout
+        # Task queries rank symbols and guidance. An exact symbol query renders
+        # the current definition body, including edits after the Git commit.
+        exact = subprocess.run([str(instance.root / "bin/safeyolo-coord"), "repo-map", str(repository), "--query", "repair_fixture"], env=environment, capture_output=True, text=True, timeout=10)
+        assert exact.returncode == 0, exact.stderr
+        assert "DEFINITION fixture.py:1-2" in exact.stdout and "return 1" in exact.stdout, exact.stdout
+        assert "return 0" not in exact.stdout
         mapped = subprocess.run([str(instance.root / "bin/safeyolo-coord"), "repo-map", str(repository)], env=environment, capture_output=True, text=True, timeout=10)
         assert mapped.returncode == 0 and "binary" in mapped.stdout and "byte_filename" in mapped.stdout
         (repository / "pyproject.toml").write_text('[project]\nname="safeyolo"\n')
         staged = instance.root / "agents/fixture-forge/home/.safeyolo/safeyolo-coord"
+        if os.uname().sysname == "Darwin":
+            # The staged command is a Linux guest binary. Use the installed
+            # Darwin consumer with the same adjacent guidance for this check.
+            shutil.copyfile(staged.with_name("repo-map.toml"), instance.root / "bin/repo-map.toml")
+            staged = instance.root / "bin/safeyolo-coord"
         fallback = subprocess.run([str(staged), "repo-map", str(repository), "--query", "Factory"], env=environment, capture_output=True, text=True, timeout=10)
         assert fallback.returncode == 0 and "GUIDANCE" in fallback.stdout
+        assert source.read_bytes() == before
 
 
 def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_path, _binary_cache):

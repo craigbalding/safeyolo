@@ -292,6 +292,7 @@ def test_native_host_smoke_preserves_configured_ca_failure_and_owned_cleanup(tmp
                 config_dir=str(root), rust_config=str(root / "config.toml"),
                 rust_bin=str(root / "bin/safeyolo-proxy"), cli=str(root / "bin/safeyolo"),
                 working_directory=str(tmp_path), http_port=0, agent="alice",
+                nats_client_port=None, nats_monitor_port=None,
                 install_commit=smoke._cli_identity(root / "bin/safeyolo")["source_revision"],
             ))
             assert report["cleanup"] == {"status": "stopped", "errors": []}
