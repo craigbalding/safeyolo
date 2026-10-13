@@ -176,9 +176,10 @@ def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
         "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     )
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
-    peer = steps["Provide the macOS owned HTTP peer address"]
+    peer = steps["Provide the macOS owned HTTP peer addresses"]
     assert peer["if"] == "matrix.os == 'macos-latest'"
     assert "ifconfig lo0 alias 127.0.0.2" in peer["run"]
+    assert "ifconfig lo0 alias 127.0.0.3" in peer["run"]
     assert job["steps"].index(peer) < job["steps"].index(
         steps["Run native proxy component contracts"]
     )

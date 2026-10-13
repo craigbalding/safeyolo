@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,7 +69,10 @@ def test_helper_consumer_refuses_unowned_runtime_before_guest_effects(helper_ins
         receipt.write_text(json.dumps({"pid": os.getpid(), "token": smoke._process_start_token(os.getpid())}))
     elif control == "foreign_executable":
         args.native_proxy = root.parent / "other-proxy"
-        args.native_proxy.hardlink_to(root / "bin/safeyolo-proxy")
+        # On macOS, a new hard link can change the running executable's
+        # observed path. Use a distinct file for the foreign selection.
+        shutil.copy2(root / "bin/safeyolo-proxy", args.native_proxy)
+        assert not args.native_proxy.samefile(root / "bin/safeyolo-proxy")
     elif control.startswith("foreign_") and control != "foreign_socket":
         record = json.loads(marker.read_text())
         record["pid" if control == "foreign_readiness" else "instance_id"] = 1 if control == "foreign_readiness" else "other-instance"
@@ -121,7 +126,13 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                     headers={"Authorization": f"Bearer {AGENT_TOKEN}", "Content-Type": "application/json"})
                 return json.dumps({"status": status, "body": payload.decode(), "request_id": headers.get("x-safeyolo-request-id")})
             if operands[0].endswith("safeyolo-guest"):
-                version = checked([str(root / "assets/guest/safeyolo-guest"), "--version"])
+                guest = root / "assets/guest/safeyolo-guest"
+                # The Mac installer verifies the guest's .version file.
+                # The Linux guest executable cannot run on the Mac host.
+                if sys.platform == "darwin":
+                    version = guest.with_suffix(".version").read_text().strip()
+                else:
+                    version = checked([str(guest), "--version"])
                 if control == "wrong_guest_profile":
                     return version.replace("profile=debug", "profile=production") if "profile=debug" in version else version.replace("profile=production", "profile=debug")
                 return version
@@ -135,6 +146,9 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
             return json.dumps(state)
         result = checked(arguments, **kwargs)
         if arguments[3:] == ["stop"]:
+            # Pytest owns the child and must reap it before the consumer
+            # checks for a surviving proxy.
+            assert instance.process.wait(timeout=5) == 0
             # A stopped native receipt and a bound socket without a listener
             # are retained inert files, not surviving owned processes.
             inert.bind(instance.paths[args.worker])

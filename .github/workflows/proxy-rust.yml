@@ -428,11 +428,13 @@ jobs:
           echo "Coord fixture did not finish its ownership-verified teardown" >&2
           exit 1
 
-      - name: Provide the macOS owned HTTP peer address
+      - name: Provide the macOS owned HTTP peer addresses
         if: matrix.os == 'macos-latest'
         run: |
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.3
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
+          /sbin/ifconfig lo0 | grep -F '127.0.0.3'
 
       - name: Download matching Linux guest test inputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
