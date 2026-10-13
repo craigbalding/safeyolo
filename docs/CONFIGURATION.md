@@ -76,7 +76,8 @@ has no effect. If a selected parent fails or refuses CONNECT, the request fails
 without a direct fallback.
 
 To send only selected destinations through the parent, also set
-`parent_proxy_hosts`. Use exact DNS hostnames, without a URL or port:
+`parent_proxy_hosts`. Use exact Domain Name System (DNS) hostnames, without a
+URL or port:
 
 ```toml
 parent_proxy_hosts = ["auth-a.example.test", "auth-b.example.test"]
