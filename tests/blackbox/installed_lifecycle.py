@@ -54,6 +54,20 @@ PEER = "bbpeer"
 FIXTURE = "failing.test"
 
 
+def running_guest(config_dir: Path, agent: str, status: dict) -> dict:
+    """Correlate native status with the same live backend process birth."""
+    assert status["runtime_state"] == "running", "selected sandbox is not running"
+    assert status["name"] == agent and status["agent_id"] and status["run_id"]
+    run = json.loads((config_dir / "agents" / agent / "runtime.json").read_text())
+    keys = ("name", "agent_id", "run_id")
+    assert all(run[key] == status[key] for key in keys), "sandbox identity disagrees with its receipt"
+    pid, token = run["backend_pid"], run["backend_token"]
+    assert type(pid) is int and pid > 1 and token and _process_start_token(pid) == token, (
+        "sandbox backend process birth is no longer live"
+    )
+    return {**{key: status[key] for key in keys}, "backend_pid": pid, "backend_token": token}
+
+
 def checked(
     command: list[str], *, timeout: int = 35, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:

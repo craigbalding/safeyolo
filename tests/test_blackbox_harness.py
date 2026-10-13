@@ -1333,8 +1333,9 @@ def installed_pytest_runner(tmp_path):
         "#!/bin/bash\nset -euo pipefail\n"
         + r'''
 SCRIPT_DIR="$(dirname "$0")"
-RUN_PROXY=true
+RUN_PROXY=${FIXTURE_RUN_PROXY:-true}
 RUN_ISOLATION=true
+LISTENER_RESTART=${FIXTURE_LISTENER_RESTART:-false}
 AGENT_NAME=bbtest
 INSTALLED_CLI=fixture-package-cli
 VERBOSE=
@@ -1352,7 +1353,7 @@ pytest() {
         *native/) fixture_suite_exit PROXY ;;
         *security/) fixture_suite_exit FIREWALL ;;
         *identity/) fixture_suite_exit IDENTITY ;;
-        *lifecycle/) fixture_suite_exit LIFECYCLE ;;
+        *lifecycle/|*lifecycle/test_host_listener.py*lifecycle/test_token_lifecycle.py*) fixture_suite_exit LIFECYCLE ;;
         *) return 99 ;;
     esac
 }
@@ -1372,6 +1373,17 @@ python3() {
     )
     script.chmod(0o755)
     return script
+
+
+@pytest.mark.parametrize("suite_exit,expected", [(0, 0), (1, 1), (2, 2), (3, 2), (4, 2), (5, 2), (127, 2)])
+def test_listener_restart_runner_selects_only_delta_and_classifies_failure(
+    installed_pytest_runner, suite_exit, expected
+):
+    env = dict(os.environ, FIXTURE_RUN_PROXY="false", FIXTURE_LISTENER_RESTART="true",
+               FIXTURE_LIFECYCLE_EXIT=str(suite_exit))
+    result = subprocess.run([str(installed_pytest_runner)], env=env, capture_output=True, text=True)
+    assert result.returncode == expected, result.stderr
+    assert installed_pytest_runner.with_name("suites.log").read_text().splitlines() == ["LIFECYCLE"]
 
 
 @pytest.mark.parametrize("slot", INSTALLED_PYTEST_SLOTS)
@@ -2007,6 +2019,25 @@ def test_installed_sections_reuse_an_artifact_install_without_reinstalling_or_se
         assert row["prepared_config_dir"] == str(source)
 
 
+def test_listener_restart_selection_reuses_installation_and_owned_cleanup(
+    tmp_path, installed_section_commands
+):
+    source = tmp_path / "prepared"
+    env = {**os.environ, "SAFEYOLO_CONFIG_DIR": str(source)}
+    subprocess.run([str(installed_section_commands / "tests/blackbox/run-lane.sh"),
+                    "systrap", "--prepare-only"], env=env, check=True)
+    directory, artifacts = tmp_path / "sections", tmp_path / "reports"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation",), installed_section_commands, "a" * 40, directory, artifacts,
+        prepared_config=source, listener_restart=True,
+    ) == 0
+    selection = json.loads((directory / "isolation/selection.json").read_text())
+    assert "--listener-restart" in selection
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert report["preparation"]["reused_installation"] and report["isolation_selection"] == "listener-restart"
+    assert report["sections"][0]["cleanup"] == "stopped"
+
+
 @pytest.mark.parametrize("platform", ["systrap", "vz"])
 def test_installed_operator_selection_keeps_one_access_root_and_owned_cleanup(
     tmp_path, installed_section_commands, platform
@@ -2079,7 +2110,7 @@ def test_operator_cli_selection_requires_one_supported_access_section(
     if valid:
         assert installed_sections.main() == 0
         assert calls[0][0][:2] == (platform, ("access",))
-        assert calls[0][1] == {"operator_journey": True, "prepared_config": None}
+        assert calls[0][1] == {"operator_journey": True, "prepared_config": None, "listener_restart": False}
     else:
         with pytest.raises(SystemExit) as error:
             installed_sections.main()
