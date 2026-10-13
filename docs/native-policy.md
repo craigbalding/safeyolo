@@ -11,7 +11,7 @@ draft-safe chat and room/harness-event observation.
 ## Install and start
 
 On supported Ubuntu or Apple Silicon macOS, use your ordinary host account.
-Download a production archive and `SHA256SUMS` for your host from the published
+Download a production archive for your host from the published
 [native release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
 source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use this explicit release;
@@ -20,17 +20,20 @@ covers newer source builds. Automatic and later publication remain stopped.
 Source builds are an [alternative](#build-a-native-bundle).
 Existing wheel downloads belong to the earlier Python CLI.
 A bundle's `package-info` records its source, profile, platform and actual
-minimum glibc or macOS version. Unpacking and installation need Bash, tar and
+minimum glibc or macOS version. The published archives require glibc 2.39 on
+Linux and macOS 26.0 on Apple Silicon. Unpacking and installation need Bash, tar and
 the host's SHA-256 tool. They need no compiler, Python, wheel, virtual
 environment or uv tool installation.
 
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
 Before installation, prepare the [host runtime](#guest-prerequisites).
-Save the archive and `SHA256SUMS` in the same directory. Verify the downloaded
-archive with `sha256sum --ignore-missing --check SHA256SUMS` on Ubuntu, or
-`shasum -a 256 --ignore-missing --check SHA256SUMS` on macOS. Continue only when
-that archive's filename is reported as `OK`.
+For an optional archive integrity check, save `SHA256SUMS` beside the archive
+and run `sha256sum --ignore-missing --check SHA256SUMS` on Ubuntu, or
+`shasum -a 256 --ignore-missing --check SHA256SUMS` on macOS. An `OK` result
+checks the archive against that release's manifest; it does not independently
+authenticate the publisher. The installer still verifies the unpacked bundle
+internally.
 The published bundle obtains the compatible default guest anonymously from
 GitHub Container Registry (GHCR), using its guest discovery metadata. The initial
 guest release, `guest-2026-10-12.1`, is public. Prepared assets remain an explicit

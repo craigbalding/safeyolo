@@ -13,7 +13,8 @@ a debug bundle contains dev executables. The macOS helper is signed and retains
 its matching profile: the development helper additionally has the
 get-task-allow entitlement for authorized debugging.
 
-Verify a transferred archive against its supplied SHA-256 before extraction.
+An optional integrity check compares a transferred archive with its supplied
+SHA-256 before extraction; it does not independently authenticate its publisher.
 The unpacked install.sh invokes the same native installer used by source
 install.sh. It verifies package-info, internal SHA256SUMS, native executable
 identity, matching host/guest source and profile, runtime compatibility and

@@ -34,7 +34,7 @@ Organize around reader questions, not a prescribed section sequence:
 
 Up front, include only constraints that could change the decision to proceed. Put other prerequisites, defaults, and consequences near the action they affect. Avoid a wall of caveats before readers see anything useful.
 
-Show one complete normal path, with a representative result. Route readers to required platform instructions before dependent steps; keep optional alternatives separate. A library may lead with a small illustrative example, clearly distinguished from a setup step.
+Show one complete normal path, with a representative result. Keep required Quick Start steps, including platform setup, in Quick Start before dependent actions; link away only for optional detail or alternatives. A library may lead with a small illustrative example, clearly distinguished from a setup step.
 
 ## Context before action
 

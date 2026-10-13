@@ -31,8 +31,8 @@ publication remain stopped.
 
 ### 1. Install on your host
 
-Use your ordinary account on supported Ubuntu or Apple Silicon macOS. Download the
-production archive for your host and `SHA256SUMS` from the published
+Use your ordinary account on Ubuntu 24.04 or an Apple Silicon Mac with macOS
+26.0 or later. Download the production archive for your host from the published
 [native release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 
 | Host | Production download |
@@ -41,37 +41,64 @@ production archive for your host and `SHA256SUMS` from the published
 | Ubuntu arm64 | [safeyolo-linux-arm64-production.tar.gz](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/safeyolo-linux-arm64-production.tar.gz) |
 | Apple Silicon macOS | [safeyolo-darwin-arm64-production.tar.gz](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/safeyolo-darwin-arm64-production.tar.gz) |
 
-Save the archive and [SHA256SUMS](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/SHA256SUMS)
-in the same directory. In a host terminal, change to that directory. On Ubuntu,
-verify the archive with:
+In a host terminal, change to the directory containing the downloaded archive.
+Both platforms need Bash, curl, tar and network access for guest and runtime
+downloads. macOS supplies these and the OpenSSH tools used by the VM; skip the
+Ubuntu setup below.
+
+Use a fresh `$HOME/.safeyolo`, the default installation directory. Preserve any
+existing installation; this path does not convert earlier state. Other roots
+are an [optional installation path](docs/native-policy.md#other-installation-paths).
+The installer creates configuration, trust and private tokens, checks the bundle
+internally and downloads the compatible public guest. It may ask for sudo to
+create the command entry or preserve Linux guest ownership. Instance files
+stay owned by your account. Run commands individually and stop on an error.
+
+On Ubuntu 24.04, these commands install gVisor and its host tools, add the signed
+gVisor package repository, and permit your account's required user namespaces.
+They need host sudo and change package sources, your subordinate user/group
+ID ranges and the AppArmor profile. The installer does not perform this setup.
+First read your account identity and both allocation files:
 
 ```sh
-sha256sum --ignore-missing --check SHA256SUMS
+id
+cat /etc/subuid
+cat /etc/subgid
 ```
 
-On macOS, use:
+Each row is `account:first-ID:count`; its last ID is `first-ID + count - 1`.
+Your account's name or numeric user ID from `id` needs a range covering
+100000–165535 in both files, for example `your-login:100000:65536`.
+If another account owns any part of that range, stop: this native
+release cannot select a different range. Use a host where the range is available;
+do not overlap another account's allocation. If your account already has a
+covering range, keep it. Only when a file lacks your range and the range is free,
+run its corresponding command:
 
 ```sh
-shasum -a 256 --ignore-missing --check SHA256SUMS
+sudo usermod --add-subuids 100000-165535 "$USER"
+sudo usermod --add-subgids 100000-165535 "$USER"
 ```
 
-Continue only when the downloaded archive's filename is reported as `OK`.
-Before installation, complete the [platform prerequisites](docs/native-policy.md#guest-prerequisites).
-Ubuntu needs administrator-supplied runsc and user-namespace setup. Both platforms
-need Bash, curl, tar and network access for guest and runtime downloads.
+Then install the host tools and gVisor, and load the namespace profile:
 
-Use a fresh `$HOME/.safeyolo`, the default installation directory. If it already
-contains an installation, preserve it and follow the
-[custom-instance reference](docs/native-policy.md#other-installation-paths).
-SafeYolo does not convert earlier state. Installation creates configuration,
-trust and private tokens. It may ask for your normal sudo password to create
-the command entry or preserve Linux guest ownership. Instance files stay owned
-by your account. The installer downloads the compatible public guest automatically.
+```sh
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates gnupg uidmap acl iproute2 util-linux apparmor-utils
+curl -fL -o gvisor-archive.key https://gvisor.dev/archive.key
+sudo gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg gvisor-archive.key
+echo 'deb [signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main' | sudo tee /etc/apt/sources.list.d/gvisor.list
+sudo apt-get update
+sudo apt-get install -y runsc
+curl -fL -o apparmor-safeyolo-runsc https://raw.githubusercontent.com/craigbalding/safeyolo/7a38dff14e7e4eacb4095da732ffe06d7c7c5796/cli/src/safeyolo/templates/apparmor-safeyolo-runsc
+sed 's|/usr/local/bin/runsc|/usr/bin/runsc|' apparmor-safeyolo-runsc > safeyolo-runsc
+sudo install -m 0644 safeyolo-runsc /etc/apparmor.d/safeyolo-runsc
+sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
+```
 
 The commands below use the Ubuntu x86_64 download. For Ubuntu arm64, replace
 `linux-amd64` with `linux-arm64`; for Apple Silicon, replace it with
-`darwin-arm64`. Stop if installation or startup reports an error; use the
-[installation reference](docs/native-policy.md#install-and-start) to resolve it.
+`darwin-arm64`.
 
 ```sh
 tar -xzf safeyolo-linux-amd64-production.tar.gz
@@ -99,15 +126,35 @@ host permissions and copies selected Claude settings, extensions and
 `~/.claude/.credentials.json` when present. The agent can read copied credentials.
 If your login is not copied, enter `/login` when Claude opens. Open its login
 URL in your host browser and paste any prompted code back into the agent
-terminal. See [Claude authentication](https://code.claude.com/docs/en/authentication).
+terminal.
 Claude runs with its own permission prompts disabled inside SafeYolo; SafeYolo
 still enforces sandbox and access policy.
 
 The fresh policy allows network access and prompts for unfamiliar credentials.
-For an access request, run `safeyolo inspect` in a second host terminal. Select
-`work` and decide the request using the
-[approval guide](docs/native-operator.md#inspect-and-decide-one-request).
-Network approval and credential approval are separate.
+If Claude reports a credential request, open a second host terminal and run:
+
+```sh
+safeyolo services approvals
+```
+
+Find `work`'s credential entry. Read its destination in `approval.target` and
+fingerprint in `approval.key`. Approval saves that fingerprint and destination
+in the instance's shared host policy; network and service permissions remain
+separate. To refuse, leave it unapproved so the request stays blocked. If you
+intend that permission, replace `FINGERPRINT` and `HOST` with those exact values:
+
+```sh
+safeyolo credentials approve FINGERPRINT --destination HOST
+safeyolo policy show
+```
+
+When policy reports `saved_matches_active: true`, return to Claude and retry.
+For a network request instead, run `safeyolo inspect` in the second host terminal.
+At `inspect>`, enter `select work`, then `pending`. Use the full `request_id`
+in `approval REQUEST_ID` to read the `SafeYolo effect`. Network approval allows
+reusable access for this agent to the displayed host and port. Enter
+`approve REQUEST_ID` only if you intend that scope, or `reject REQUEST_ID` to
+refuse. Return to Claude and retry after approval.
 
 Create the workspace and launch Claude in your current terminal. The setup
 installs Claude on its first guest run:
