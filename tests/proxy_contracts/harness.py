@@ -117,7 +117,7 @@ def wait_ready(process, paths, log, *, readiness_file=None, expected_backend=Non
 
 @contextmanager
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_proxy_agents=None,
-                 tls=False, upstream_ca=None,
+                 parent_proxy_hosts=None, tls=False, upstream_ca=None,
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
                  audit_passthrough=False,
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
@@ -221,6 +221,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             env.pop("SAFEYOLO_UPSTREAM_PROXY", None)
         if parent_proxy_agents is not None:
             config["parent_proxy_agents"] = list(parent_proxy_agents)
+        if parent_proxy_hosts is not None:
+            config["parent_proxy_hosts"] = list(parent_proxy_hosts)
         config["ignore_hosts"] = list(ignore_hosts)
         config["agent_api_enabled"] = agent_api
         config["policy_file"] = str(policy)

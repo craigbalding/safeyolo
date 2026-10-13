@@ -1,14 +1,19 @@
 """Configured parent routing at the native proxy's real transport boundary."""
 
+import http.client
 import socket
 import socketserver
+import ssl
 import threading
 from contextlib import contextmanager
 
 import pytest
 
+from safeyolo.rust_proxy import _ensure_signing_ca
+from tests.proxy_contracts import test_authority_consistency as authority_fixture
 from tests.proxy_contracts.harness import launch_proxy, read_events, request
 from tests.proxy_contracts.scenarios import origin_server, wait_for_reserved_audit
+from tests.proxy_contracts.test_http2_contract import origin_certificate
 from tests.proxy_contracts.test_tunnel_contract import read_all, read_exact, read_until
 
 HTTP_HOST = "parent-http.invalid"
@@ -143,7 +148,8 @@ def connect(path, authority, *, headers=None):
         raise
 
 
-def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend, tmp_path):
+@pytest.mark.parametrize("hosts", [None, [HTTP_HOST, TUNNEL_HOST, "localhost"]], ids=["agents-only", "both-filters"])
+def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend, tmp_path, hosts):
     """Logical authorization survives parent routing and failures never dial the origin."""
     directory = tmp_path / proxy_backend
     with origin_server() as direct_origin, configured_parent() as parent:
@@ -165,6 +171,7 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             POLICY,
             parent_proxy=parent_url,
             parent_proxy_agents=["alice"],
+            parent_proxy_hosts=hosts,
             ignore_hosts=[TUNNEL_AUTHORITY, direct_authority],
             eager_connect=True,
             native_policy=True,
@@ -257,7 +264,8 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             assert proxy.process.poll() is None
 
 
-def test_selected_parent_mixed_agents_http_connect_and_spoofed_headers(proxy_backend, tmp_path):
+@pytest.mark.parametrize("hosts", [None, [], ["LOCALHOST."]], ids=["agents-only", "hosts-empty", "both-filters"])
+def test_selected_parent_mixed_agents_http_connect_and_spoofed_headers(proxy_backend, tmp_path, hosts):
     """Listener identity selects the shared parent or direct origin for one destination."""
     with origin_server(capture_heads=True) as origin:
         authority = f"localhost:{origin.server_address[1]}"
@@ -266,6 +274,7 @@ def test_selected_parent_mixed_agents_http_connect_and_spoofed_headers(proxy_bac
             proxy_backend, tmp_path / "mixed", MIXED_POLICY,
             parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
             parent_proxy_agents=["alice"], ignore_hosts=[authority], native_product=True,
+            parent_proxy_hosts=hosts,
         ) as proxy:
             for spoof in (False, True):
                 for agent, other in (("alice", "bob"), ("bob", "alice")):
@@ -313,7 +322,8 @@ def test_selected_parent_mixed_agents_http_connect_and_spoofed_headers(proxy_bac
 
 
 @pytest.mark.parametrize("agents", [None, []], ids=["omitted", "empty"])
-def test_parent_agent_filter_default_keeps_global_parent(proxy_backend, tmp_path, agents):
+@pytest.mark.parametrize("hosts", [None, []], ids=["hosts-omitted", "hosts-empty"])
+def test_parent_agent_filter_default_keeps_global_parent(proxy_backend, tmp_path, agents, hosts):
     """Removing the last selected name restores parent routing for every agent."""
     with origin_server() as origin:
         authority = f"localhost:{origin.server_address[1]}"
@@ -321,6 +331,7 @@ def test_parent_agent_filter_default_keeps_global_parent(proxy_backend, tmp_path
             proxy_backend, tmp_path / "unfiltered", MIXED_POLICY,
             parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
             parent_proxy_agents=agents, ignore_hosts=[authority], native_product=True,
+            parent_proxy_hosts=hosts,
         ) as proxy:
             for agent in ("alice", "bob"):
                 status, _, body = request(proxy.paths[agent], f"http://{authority}/route")
@@ -336,7 +347,8 @@ def test_parent_agent_filter_default_keeps_global_parent(proxy_backend, tmp_path
 
 
 @pytest.mark.parametrize("parent_configured", [False, True], ids=["no-parent", "unavailable-parent"])
-def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend, tmp_path, parent_configured):
+@pytest.mark.parametrize("hosts", [None, ["localhost"]], ids=["agents-only", "both-filters"])
+def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend, tmp_path, parent_configured, hosts):
     """A configured but unavailable parent fails only selected routes; no parent ignores the filter."""
     with origin_server() as origin:
         # Darwin times out on a bound, non-listening socket. Close the chosen
@@ -349,6 +361,7 @@ def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend
             proxy_backend, tmp_path / "unavailable", MIXED_POLICY,
             parent_proxy=parent_url, parent_proxy_agents=["alice"],
             ignore_hosts=[authority], native_product=True,
+            parent_proxy_hosts=hosts,
         ) as proxy:
             direct_accepts = 0
             for agent in ("alice", "bob"):
@@ -373,3 +386,174 @@ def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend
                 ("alice", "parent" if parent_configured else "direct"),
                 ("bob", "direct"), ("bob", "direct"),
             ]
+
+
+HOST_POLICY = '''budget = 12000
+[hosts."denied.invalid"]
+egress = "deny"
+[hosts."*"]
+egress = "allow"
+'''
+
+
+def https_request(proxy, agent, host, port, *, inner_host=None, outer_host=None):
+    """Complete verified TLS and HTTP inside an admitted CONNECT."""
+    ca = proxy.readiness_file.parent / "ca/mitmproxy-ca-cert.pem"
+    status, stream = authority_fixture._connect(
+        proxy.paths[agent], f"{host}:{port}".encode(), host, ca,
+        outer_host=outer_host,
+    )
+    assert status == 200
+    with stream:
+        client = http.client.HTTPConnection(host, timeout=5)
+        client.sock = stream
+        try:
+            client.request("GET", "/route", headers={"Host": inner_host or f"{host}:{port}"})
+            response = client.getresponse()
+            return response.status, response.read()
+        finally:
+            client.close()
+
+
+@pytest.mark.parametrize("agents", [None, [], ["alice"]], ids=["hosts-only", "empty-agents", "both-filters"])
+def test_destination_filter_mixed_http_and_verified_https(proxy_backend, tmp_path, agents):
+    """Two named parent destinations and direct traffic keep separate real connections."""
+    directory = tmp_path / "mixed-hosts"
+    directory.mkdir()
+    _ensure_signing_ca(directory / "proxy/ca")
+    pem, public = origin_certificate(directory)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(pem)
+    with authority_fixture._peers(directory / "peers") as (parent, peers, trust), \
+         origin_server(capture_heads=True) as direct_http, \
+         authority_fixture._server(authority_fixture.Origin("direct-tls", tls_context=context)) as direct_tls:
+        trust.write_bytes(trust.read_bytes() + public.read_bytes())
+        with launch_proxy(
+            proxy_backend, directory / "proxy", HOST_POLICY, native_product=True,
+            parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+            parent_proxy_agents=agents,
+            parent_proxy_hosts=[authority_fixture.ALLOWED, authority_fixture.FORBIDDEN,
+                                "denied.invalid", "_safeyolo.proxy.internal"],
+            tls=True, upstream_ca=trust,
+        ) as proxy:
+            expected_events = []
+            for agent in ("alice", "bob") if not agents else ("alice",):
+                for host, http_origin, tls_origin in (
+                    (authority_fixture.ALLOWED, peers[0], peers[2]),
+                    (authority_fixture.FORBIDDEN, peers[1], peers[3]),
+                ):
+                    before = (parent.accepts, http_origin.accepts, tls_origin.accepts)
+                    status, _, body = request(proxy.paths[agent], f"http://{host}/route")
+                    assert (status, body) == (200, http_origin.name.encode())
+                    assert (parent.accepts, http_origin.accepts, tls_origin.accepts) == (
+                        before[0] + 1, before[1] + 1, before[2],
+                    )
+                    assert https_request(proxy, agent, host, 443) == (200, tls_origin.name.encode())
+                    assert (parent.accepts, http_origin.accepts, tls_origin.accepts) == (
+                        before[0] + 2, before[1] + 1, before[2] + 1,
+                    )
+                    expected_events.extend([(agent, host, "parent")] * 2)
+
+            parent_before = parent.accepts
+            for agent in ("alice", "bob"):
+                spoof = {
+                    "Host": authority_fixture.ALLOWED, "X-SafeYolo-Agent": "alice",
+                    "X-Agent-Id": "alice", "X-Forwarded-Host": authority_fixture.ALLOWED,
+                    "X-Original-URL": f"http://{authority_fixture.ALLOWED}/route",
+                }
+                status, _, body = request(
+                    proxy.paths[agent], f"http://localhost:{direct_http.server_address[1]}/route",
+                    headers=spoof,
+                )
+                assert (status, body) == (200, b"hello")
+                assert https_request(
+                    proxy, agent, "localhost", direct_tls.server_address[1],
+                    outer_host=b"allowed.invalid:443",
+                ) == (200, b"direct-tls")
+                assert parent.accepts == parent_before
+                expected_events.extend([(agent, "localhost", "direct")] * 2)
+            assert direct_http.accepts == direct_tls.accepts == 2
+            assert all(head.startswith(b"GET /route HTTP/1.1\r\n") for head in direct_http.request_heads)
+            assert [(row["agent"], row["host"], row["route"]) for row in proxy.events("proxy.egress")] == expected_events
+            assert [row["kind"] for row in parent.requests] == ["http", "connect"] * (4 if not agents else 2)
+            assert all(row["target"].startswith(b"http://") for row in parent.requests if row["kind"] == "http")
+
+            # Denied and reserved targets stop before contacting either route.
+            before = (parent.accepts, direct_http.accepts, direct_tls.accepts)
+            for agent in ("alice", "bob"):
+                for host in ("denied.invalid", "_safeyolo.proxy.internal"):
+                    for method, target in (("GET", f"http://{host}/"), ("CONNECT", f"{host}:443")):
+                        status, _, _ = request(proxy.paths[agent], target, method=method)
+                        assert status == (503 if host == "_safeyolo.proxy.internal" and method == "GET" else 403)
+                        assert (parent.accepts, direct_http.accepts, direct_tls.accepts) == before
+            assert len(proxy.events("proxy.egress")) == len(expected_events)
+
+
+def test_exact_destination_boundaries_and_connect_authority(proxy_backend, tmp_path):
+    """Case and root dots match; other authorities cannot select or reuse the parent."""
+    directory = tmp_path / "boundaries"
+    _ensure_signing_ca(directory / "proxy/ca")
+    with authority_fixture._peers(directory / "peers") as (parent, peers, trust):
+        parent.http[authority_fixture.ALLOWED + "."] = peers[0]
+        parent.tls[authority_fixture.ALLOWED + "."] = peers[2]
+        parent.http[authority_fixture.IDN_WIRE] = peers[0]
+        # The parent hostname must not participate in logical destination selection.
+        with launch_proxy(
+            proxy_backend, directory / "proxy", HOST_POLICY, native_product=True,
+            parent_proxy=f"http://localhost:{parent.server_address[1]}",
+            parent_proxy_agents=["alice"], parent_proxy_hosts=["ALLOWED.INVALID.", authority_fixture.IDN_NAME],
+            tls=True, upstream_ca=trust,
+        ) as proxy:
+            for host in ("allowed.invalid", "ALLOWED.INVALID", "allowed.invalid."):
+                status, _, body = request(proxy.paths["alice"], f"http://{host}:8080/route")
+                assert (status, body) == (200, b"allowed-http")
+            assert parent.accepts == peers[0].accepts == 3
+            status, _, body = request(proxy.paths["alice"], f"http://{authority_fixture.IDN_WIRE}/route")
+            assert (status, body) == (200, b"allowed-http")
+            assert parent.accepts == peers[0].accepts == 4
+            for host in (
+                "evil-allowed.invalid", "allowed.invalid.attacker.invalid", "sub.allowed.invalid",
+                "allowecl.invalid", authority_fixture.FORBIDDEN,
+            ):
+                for method, target in (("GET", f"http://{host}/route"), ("CONNECT", f"{host}:443")):
+                    status, _, _ = request(proxy.paths["alice"], target, method=method,
+                                           headers={"Host": "allowed.invalid", "X-Forwarded-Host": "allowed.invalid"})
+                    assert status == 502
+                    assert parent.accepts == 4
+            # A different trusted agent cannot select a listed destination.
+            status, _, _ = request(proxy.paths["bob"], "http://allowed.invalid/route",
+                                   headers={"X-SafeYolo-Agent": "alice", "X-Agent-Id": "alice"})
+            assert status == 502 and parent.accepts == 4
+
+            # CONNECT's admitted target wins over the conflicting outer Host.
+            assert https_request(proxy, "alice", "allowed.invalid", 443,
+                                 outer_host=b"forbidden.invalid:443") == (200, b"allowed-tls")
+            assert parent.accepts == 5 and peers[2].accepts == 1
+            for inner_host in ("forbidden.invalid:443", "allowed.invalid:444", "allowed.invalid.:443"):
+                before = (parent.accepts, peers[2].accepts, peers[3].accepts)
+                status, _ = https_request(proxy, "alice", "allowed.invalid", 443, inner_host=inner_host)
+                assert status == 400
+                assert (parent.accepts, peers[2].accepts, peers[3].accepts) == (before[0] + 1, before[1] + 1, before[2])
+            assert len(peers[2].requests) == 1 and peers[3].requests == []
+
+
+def test_selected_parent_tls_failure_and_unmatched_direct_control(proxy_backend, tmp_path):
+    """A TLS failure at the selected parent cannot dial a working origin."""
+    with origin_server() as origin, origin_server() as plaintext_parent, launch_proxy(
+        proxy_backend, tmp_path / "bad-parent-tls", HOST_POLICY, native_product=True,
+        parent_proxy=f"https://localhost:{plaintext_parent.server_address[1]}",
+        parent_proxy_hosts=["localhost"],
+        ignore_hosts=[f"localhost:{origin.server_address[1]}", f"127.0.0.1:{origin.server_address[1]}"],
+    ) as proxy:
+        for method, target in (("GET", f"http://localhost:{origin.server_address[1]}/route"),
+                               ("CONNECT", f"localhost:{origin.server_address[1]}")):
+            status, _, _ = request(proxy.paths["alice"], target, method=method)
+            assert status == 502
+            assert origin.accepts == 0
+        assert plaintext_parent.accepts == 2
+        status, _, body = request(proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/route")
+        assert (status, body) == (200, b"hello")
+        assert origin.accepts == 1 and plaintext_parent.accepts == 2
+        assert [(row["host"], row["route"]) for row in proxy.events("proxy.egress")] == [
+            ("localhost", "parent"), ("localhost", "parent"), ("127.0.0.1", "direct"),
+        ]

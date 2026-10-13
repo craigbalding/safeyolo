@@ -616,7 +616,7 @@ fn policy_hostname(host: &str, byte_authority: bool, absolute_form: bool) -> Res
     Ok(decoded)
 }
 
-fn validate_hostname(host: &str) -> Result<(), Error> {
+pub(crate) fn validate_hostname(host: &str) -> Result<(), Error> {
     let encoded = crate::host_names::encode_idna2003(host)?;
     crate::host_names::decode_idna2003(encoded.as_bytes())?;
     let labels = encoded.strip_suffix('.').unwrap_or(&encoded);
@@ -910,16 +910,26 @@ fn admin_rejection() -> Response<Body> {
         .unwrap()
 }
 
-fn parent_for_agent<'a>(
+fn parent_for_destination<'a>(
     runtime: &'a Runtime,
     identity: &ConnectionIdentity,
+    destination: &Destination,
 ) -> Option<&'a crate::config::ParentProxy> {
-    runtime.parent.as_ref().filter(|_| {
-        runtime.config.parent_proxy_agents.is_empty()
+    runtime.parent.as_ref().filter(|parent| {
+        (runtime.config.parent_proxy_agents.is_empty()
             || runtime
                 .config
                 .parent_proxy_agents
-                .contains(&identity.agent_id)
+                .contains(&identity.agent_id))
+            && (parent.destination_hosts.is_empty()
+                || parent.destination_hosts.iter().any(|host| {
+                    host.eq_ignore_ascii_case(
+                        destination
+                            .host
+                            .strip_suffix('.')
+                            .unwrap_or(&destination.host),
+                    )
+                }))
     })
 }
 
@@ -944,7 +954,7 @@ async fn open_egress_for_flow(
     if is_reserved(&destination.host) {
         return Err("reserved destination cannot egress".into());
     }
-    let parent = parent_for_agent(runtime, allowed.identity);
+    let parent = parent_for_destination(runtime, allowed.identity, destination);
     let (host, port, tls, route_name) = match parent {
         Some(parent) => (parent.host.as_str(), parent.port, parent.tls, "parent"),
         None => (destination.host.as_str(), destination.port, false, "direct"),
@@ -2218,11 +2228,12 @@ where
     }
     let traffic = (request.method() != Method::CONNECT)
         .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
-    let protected_parent = parent_for_agent(&runtime, identity).is_some_and(|parent| {
-        runtime
-            .admin_shield
-            .blocks_request_destination(&parent.host, parent.port)
-    });
+    let protected_parent =
+        parent_for_destination(&runtime, identity, destination).is_some_and(|parent| {
+            runtime
+                .admin_shield
+                .blocks_request_destination(&parent.host, parent.port)
+        });
     if runtime
         .admin_shield
         .blocks_request_destination(&destination.host, destination.port)

@@ -1118,6 +1118,86 @@ async fn selected_parent_shield_does_not_block_an_unselected_direct_route() {
 }
 
 #[tokio::test]
+async fn parent_host_filter_shields_only_selected_routes_and_rejects_invalid_reload() {
+    let directory = TempDir::new().unwrap();
+    let token = synthetic();
+    let mut config = config(directory.path(), &token);
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    // This hostname control needs the exact address that localhost resolves to.
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let peer = Peer::from_listener(listener, "");
+    let target_host = format!("localhost:{}", peer.address.port());
+    let target = format!("http://{target_host}/health");
+    config.parent_proxy = Some(format!("http://2130706433:{port}"));
+    config.parent_proxy_agents = vec!["alice".into()];
+    config.parent_proxy_hosts = vec!["LOCALHOST.".into()];
+    proxy.reload(config.clone()).await.unwrap();
+
+    for method in ["GET", "CONNECT"] {
+        let route = if method == "GET" {
+            &target
+        } else {
+            &target_host
+        };
+        assert_blocked(&agent(&config, "alice", method, route, &target_host, None, b"").await);
+    }
+    let unmatched_host = peer.address.to_string();
+    let unmatched = format!("http://{unmatched_host}/health");
+    assert_eq!(
+        agent(
+            &config,
+            "alice",
+            "GET",
+            &unmatched,
+            &unmatched_host,
+            None,
+            b""
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        agent(&config, "bob", "GET", &target, &target_host, None, b"")
+            .await
+            .status,
+        200
+    );
+
+    // An invalid update must retain the live parent selection and containment.
+    let mut invalid = config.clone();
+    invalid.parent_proxy_hosts = vec!["*.invalid".into()];
+    invalid.parent_proxy = None;
+    assert!(proxy.reload(invalid).await.is_err());
+    assert_blocked(&agent(&config, "alice", "GET", &target, &target_host, None, b"").await);
+    for id in ["alice", "bob"] {
+        let admin_host = format!("localhost:{port}");
+        for method in ["GET", "CONNECT"] {
+            let admin_target = if method == "GET" {
+                format!("http://{admin_host}/health")
+            } else {
+                admin_host.clone()
+            };
+            assert_blocked(
+                &agent(&config, id, method, &admin_target, &admin_host, None, b"").await,
+            );
+        }
+    }
+    assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
+    let egress: Vec<_> = events(&config)
+        .into_iter()
+        .filter(|row| row["event"] == "proxy.egress")
+        .collect();
+    assert_eq!(egress.len(), 2);
+    assert_eq!(egress[0]["agent"], "alice");
+    assert_eq!(egress[1]["agent"], "bob");
+    assert!(egress.iter().all(|row| row["route"] == "direct"));
+    assert_shutdown(proxy, &config, port).await;
+    peer.stop().await;
+}
+
+#[tokio::test]
 async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containment() {
     let directory = TempDir::new().unwrap();
     let token = DETECTABLE_BEARER_TOKEN.to_owned();

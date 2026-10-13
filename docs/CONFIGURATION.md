@@ -75,6 +75,31 @@ Removing the last name restores global use. Without `parent_proxy`, the list
 has no effect. If a selected parent fails or refuses CONNECT, the request fails
 without a direct fallback.
 
+To send only selected destinations through the parent, also set
+`parent_proxy_hosts`. Use exact DNS hostnames, without a URL or port:
+
+```toml
+parent_proxy_hosts = ["auth-a.example.test", "auth-b.example.test"]
+```
+
+With this host list and the agent list in the previous example, agent `zx`
+uses the parent for those two hosts. Its requests to other hosts use direct
+upstream connections. Other agents also use direct connections.
+
+An omitted or empty host list applies no destination filter. An omitted or
+empty agent list applies no agent filter. If both lists contain entries, both
+must match. Without `parent_proxy`, neither list changes routing.
+
+Host matching ignores ASCII case and treats one final DNS root dot as
+equivalent. The loader applies the existing hostname and Internationalized
+Domain Names in Applications (IDNA) validation rules. Invalid entries are
+rejected. IP addresses, wildcards, domain suffixes, URL paths and port filters
+are not supported. A listed host does not include its subdomains or redirect
+destinations. Selection uses the logical request destination and trusted
+listener identity. Request headers and resolved addresses cannot select the
+parent. CONNECT retains its admitted authority for inner requests. A selected
+parent connection, TLS or CONNECT failure does not fall back to direct egress.
+
 Runtime listeners, audit, trace and capture settings take effect on restart.
 Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
