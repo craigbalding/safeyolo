@@ -1334,6 +1334,45 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
     Ok(status.code().unwrap_or(1))
 }
 
+/// The diagnostic has fixed arguments and must not run agent login scripts.
+#[cfg(target_os = "linux")]
+pub(crate) async fn spawn_desktop_probe(name: &str) -> io::Result<tokio::process::Child> {
+    if !valid_agent_name(name) || !guest_exec_available(name).await {
+        return Err(unavailable());
+    }
+    guest_command_stdio(
+        runsc_command(name)?.args([
+            "exec",
+            "--user",
+            "1000:1000",
+            "--cwd",
+            "/workspace",
+            &crate::host_runs::id(name).map_err(io::Error::other)?,
+            "/safeyolo/safeyolo-guest",
+            "desktop-probe",
+        ]),
+        true,
+        false,
+    )
+    .spawn()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn spawn_desktop_probe(name: &str) -> io::Result<tokio::process::Child> {
+    spawn_macos_guest_command(
+        name,
+        "exec /safeyolo/safeyolo-guest desktop-probe",
+        true,
+        false,
+    )
+    .await
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) async fn spawn_desktop_probe(_name: &str) -> io::Result<tokio::process::Child> {
+    Err(unavailable())
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
@@ -1607,6 +1646,16 @@ pub(crate) async fn spawn_guest_command_with_output(
     capture: bool,
     inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
+    spawn_macos_guest_command(name, &macos_guest_command(command), capture, inherit_stdin).await
+}
+
+#[cfg(target_os = "macos")]
+async fn spawn_macos_guest_command(
+    name: &str,
+    command: &str,
+    capture: bool,
+    inherit_stdin: bool,
+) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
         return Err(unavailable());
     }
@@ -1618,7 +1667,6 @@ pub(crate) async fn spawn_guest_command_with_output(
     }
     let key = config_dir().join("data/vm_ssh_key");
     let socket = shell.display().to_string().replace('\'', "'\\''");
-    let wrapped = macos_guest_command(command);
     guest_command_stdio(
         Command::new("ssh").args([
             "-i",
@@ -1641,7 +1689,7 @@ pub(crate) async fn spawn_guest_command_with_output(
             &format!("ProxyCommand=nc -U '{socket}'"),
             if inherit_stdin { "-t" } else { "-T" },
             "agent@sandbox",
-            &wrapped,
+            command,
         ]),
         capture,
         inherit_stdin,

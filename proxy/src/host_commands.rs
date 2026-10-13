@@ -524,8 +524,15 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                     return Ok(child.wait().await?.code().unwrap_or(1));
                 },
                 "present"=>{ if !extra.is_empty(){return Err("unexpected desktop argument".into());}
-                    let result = crate::desktop_present::present(agent.id.clone(), false).await
-                        .map_err(|error| format!("desktop presentation failed: {error:?}; run agent diagnostics {name}"))?;
+                    // The running proxy owns the preview lifetime. A preview
+                    // started in this short-lived CLI exits with the command.
+                    let result = crate::native_client::admin(
+                        &host_platform::config_path(),
+                        &format!("/admin/agents/{}/desktop/present", agent.id),
+                        hyper::Method::POST,
+                        Value::Null,
+                        Duration::from_secs(70),
+                    ).await?;
                     print(&result)?;
                 },
                 "diagnostics"=>{

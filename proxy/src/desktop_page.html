@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SafeYolo Desktop</title>
+  <style>
+    :root{color-scheme:light dark;font:15px system-ui,sans-serif}
+    body{margin:0;background:#171b24;color:#eef2fa}
+    header,details{padding:1rem 1.4rem;background:#232938}
+    h1{font-size:1.3rem;margin:.2rem 0}p{margin:.5rem 0;color:#c7d2e4}
+    nav{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}
+    button,input,textarea{font:inherit;padding:.4rem .7rem}button{cursor:pointer}
+    button:disabled{cursor:default;opacity:.5}a{color:#a6ccff}
+    #screen{height:68vh;min-height:260px;overflow:auto;background:#11151c}
+    #screen:empty:before{content:'The desktop will appear here when the viewer connects.';display:block;padding:2rem;color:#aab8cc}
+    pre{white-space:pre-wrap;max-height:22rem;overflow:auto;font:13px ui-monospace,monospace}
+    summary{cursor:pointer}textarea{max-width:90vw}label{display:inline-flex;gap:.3rem;align-items:center}
+    [hidden]{display:none!important}form{padding:1rem;background:#232938}
+    #clipboard-controls{padding:.8rem 1.4rem}
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="status" role="status" aria-live="polite">Checking desktop access</h1>
+    <p id="explanation">SafeYolo will check the selected agent and desktop connection.</p>
+    <p id="contact">No server observation yet.</p>
+    <a id="unlock" href="/_safeyolo_preview/unlock" hidden>Unlock preview</a>
+    <nav aria-label="Desktop controls">
+      <button id="retry">Check again</button><button id="close">Close viewer</button>
+      <button id="fullscreen" disabled>Full screen</button><button id="ctrlaltdelete" disabled>Ctrl-Alt-Delete</button>
+      <button id="escape" disabled>Esc</button><button id="tab" disabled>Tab</button>
+      <button id="ctrl" aria-pressed="false" disabled>Ctrl</button>
+      <button id="alt" aria-pressed="false" disabled>Alt</button>
+      <button id="super" aria-pressed="false" disabled>Super / Windows</button>
+      <label><input id="scale" type="checkbox" checked>Scale to fit</label>
+      <label><input id="resize" type="checkbox" checked>Resize desktop</label>
+      <label><input id="viewonly" type="checkbox">View only</label>
+      <label><input id="drag" type="checkbox">Drag view</label>
+    </nav>
+  </header>
+  <form id="credentials" hidden>
+    <p>The desktop server needs credentials. SafeYolo does not copy them to diagnostics.</p>
+    <label>Username <input id="username" autocomplete="username"></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password"></label>
+    <label>Target <input id="credential-target" autocomplete="off"></label>
+    <button>Connect</button>
+  </form>
+  <div id="verification" hidden>
+    <p>Desktop server fingerprint: <code id="fingerprint"></code></p>
+    <button id="approve-server">Approve server</button><button id="reject-server">Close viewer</button>
+  </div>
+  <div id="screen" aria-label="Remote desktop"></div>
+  <details id="clipboard-controls">
+    <summary>Desktop clipboard</summary>
+    <textarea id="clipboard" rows="3" cols="60" aria-label="Desktop clipboard"></textarea>
+    <button id="send-clipboard" disabled>Send to desktop</button>
+  </details>
+  <details id="diagnostics">
+    <summary>Show diagnostics</summary>
+    <p>Checks run while this panel is closed. The log contains up to 120 observations. Transport replies do not prove that an application or window manager responds.</p>
+    <button id="copy">Copy diagnostics</button><span id="copy-result" role="status"></span>
+    <pre id="log" aria-live="polite"></pre>
+  </details>
+  <script src="/_safeyolo_desktop/page.js" defer></script>
+</body>
+</html>
