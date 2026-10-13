@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import socket
 import ssl
 import subprocess
@@ -233,6 +234,35 @@ def package_info(tmp_path):
     path.write_text(f"source_commit={'a' * 40}\nprofile=debug\nplatform=linux-{architecture}\nminimum_runtime=2.34\n"
                     f"guest_compatibility=v1\nguest_repository={REPOSITORY}\nguest_discovery_tag=compat-v1\n")
     return path
+
+
+def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, package_info, tmp_path, guest_store):
+    """Fresh section state must keep the installed host's guest selection."""
+    from tests.blackbox.installed_sections import prepare_native_instance
+
+    contents, requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    source = tmp_path / "installed"
+    acquired = install(native_cli, source, guest_store, environment, package_info)
+    assert acquired.returncode == 0, acquired.stderr
+    # Match install_native.sh's installed root, including its host metadata.
+    (source / "bin").mkdir()
+    (source / "bin/safeyolo").symlink_to(native_cli)
+    shutil.copy2(package_info, source / "package-info")
+    selection = (source / "share/guest-selection.json").read_bytes()
+    request_count = len(requests)
+
+    root = tmp_path / "section"
+    prepare_native_instance(source, root)
+    selected = subprocess.run([str(root / "bin/safeyolo"), "--root", str(root), "guest", "rollback"],
+                              env=environment, capture_output=True, text=True, timeout=10)
+    assert selected.returncode == 0, selected.stderr
+    assert json.loads(selected.stdout) == json.loads(selection)
+    assert (root / "package-info").read_bytes() == package_info.read_bytes()
+    assert (root / "share/guest-selection.json").read_bytes() == selection
+    assert (source / "share/guest-selection.json").read_bytes() == selection
+    assert len(requests) == request_count
+    assert not (source / "config.toml").exists()
 
 
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):

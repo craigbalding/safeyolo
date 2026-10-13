@@ -47,6 +47,8 @@ def prepare_native_instance(source: Path, root: Path) -> None:
         if target.exists():
             target.rmdir()  # Only an empty initialization directory may be replaced.
         target.symlink_to(source / name, target_is_directory=True)
+    if (source / "package-info").is_file():
+        shutil.copy2(source / "package-info", root / "package-info")
 
 
 def owned_processes(root: Path) -> list[dict]:
