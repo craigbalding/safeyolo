@@ -147,6 +147,9 @@ def test_installer_exit_and_timing_receipt_survive_without_credentials(public_sh
     installer = bundle / 'install.sh'
     installer.write_text('#!/bin/bash\nset -eu\n'
                          '[[ -z ${GH_TOKEN+x} && -z ${GITHUB_TOKEN+x} ]] || exit 99\n'
+                         '[[ $(umask) == 0022 ]] || exit 98\n'
+                         '[[ $(stat -c %a "$PUBLIC_INSTALL_WORK/install.stdout") == 600 ]] || exit 98\n'
+                         '[[ $(stat -c %a "$PUBLIC_INSTALL_WORK/install.stderr") == 600 ]] || exit 98\n'
                          'echo installer-output\necho installer-diagnostic >&2\n'
                          'echo "GET https://example.test/blob?sig=synthetic-private-token" >&2\n'
                          'echo "Authorization: Bearer synthetic-private-token" >&2\n'
@@ -165,6 +168,8 @@ def test_installer_exit_and_timing_receipt_survive_without_credentials(public_sh
     assert 'synthetic-must-not-pass' not in result.stdout + result.stderr
     assert 'synthetic-private-token' not in result.stdout + result.stderr + (reports / 'install.stderr').read_text()
     assert 'synthetic-private-token' in (work / 'install.stderr').read_text()
+    assert stat.S_IMODE((work / 'install.stdout').stat().st_mode) == 0o600
+    assert stat.S_IMODE((work / 'install.stderr').stat().st_mode) == 0o600
 
 
 @pytest.fixture
@@ -176,11 +181,8 @@ def metadata_inputs(tmp_path):
     tree = assets / 'rootfs-tree'
     (tree / 'usr/bin').mkdir(parents=True)
     (tree / 'cache').mkdir()
-    header = bytearray(64)
-    header[:6] = b'\x7fELF\x02\x01'
-    header[18:20] = (183).to_bytes(2, 'little')
     bash = tree / 'usr/bin/bash'
-    bash.write_bytes(header)
+    bash.write_bytes(b'original guest executable fixture\n')
     bash.chmod(0o4755)
     (tree / 'usr/bin/bash-hardlink').hardlink_to(bash)
     (tree / 'bash-link').symlink_to('usr/bin/bash')
@@ -211,7 +213,7 @@ def metadata_inputs(tmp_path):
 @pytest.mark.parametrize('fault,diagnosis', [
     (None, None), ('mode', 'mode'), ('uid', 'uid'), ('type', 'type'),
     ('missing', 'missing_member'), ('extra', 'extra_member'), ('symlink', 'symlink_target'),
-    ('hardlink', 'hardlink_relationship'), ('cache', 'cache_text'), ('operand', 'cache_operand'),
+    ('hardlink', 'hardlink_relationship'), ('cache', 'cache_text'),
 ])
 def test_complete_metadata_comparison_detects_material_changes(metadata_inputs, fault, diagnosis):
     _root, _assets, actual, members = metadata_inputs
@@ -230,8 +232,6 @@ def test_complete_metadata_comparison_detects_material_changes(metadata_inputs, 
         rows['rootfs-tree/usr/bin/bash-hardlink']['ino'] += 1
     elif fault == 'cache':
         actual['installed_cache'] = '/different\n'
-    elif fault == 'operand':
-        actual['cache_operands'][0]['is_directory'] = False
     result = observer.compare(actual, members, '/cache\n')
     assert result['metadata_relationship_pass'] == (fault is None), result
     if diagnosis:

@@ -311,6 +311,9 @@ jobs:
         id: install
         shell: bash
         run: |
+          umask 077
+          : > "$PUBLIC_INSTALL_WORK/install.stdout"
+          : > "$PUBLIC_INSTALL_WORK/install.stderr"
           umask 022
           bundle="$PUBLIC_INSTALL_WORK/bundle/safeyolo-linux-arm64-production"
           started=$(date +%s.%N)

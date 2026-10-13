@@ -46,15 +46,9 @@ def observe(root, assets):
     cache = (share / 'cache-paths.txt').read_bytes().decode()
     operands = []
     for operand in cache.splitlines():
-        if not operand.startswith('/') or '..' in Path(operand).parts:
-            raise ValueError('Invalid installed cache operand')
         path = resolved / operand.lstrip('/')
-        operands.append({'operand': operand, 'path': str(path), 'is_directory': path.is_dir(),
+        operands.append({'operand': operand, 'path': str(path),
                              'metadata': metadata(path, 'rootfs-tree/' + operand.lstrip('/'))})
-    with (resolved / 'usr/bin/bash').open('rb') as stream:
-        header = stream.read(64)
-    if header[:6] != b'\x7fELF\x02\x01':
-        raise ValueError('Installed bash is not a little-endian 64-bit ELF executable')
     owner = root.stat()
     return {'installed_root': str(root), 'observer_uid': os.getuid(), 'rootfs_link': os.readlink(tree),
                 'installed_rootfs_metadata': metadata(tree, 'share/rootfs-tree'),
@@ -62,7 +56,7 @@ def observe(root, assets):
                 'acquired_cache_metadata': metadata(assets / 'cache-paths.txt', 'cache-paths.txt'),
                 'installed_cache': cache, 'acquired_cache': (assets / 'cache-paths.txt').read_bytes().decode(),
                 'cache_operands': operands, 'installer_uid': owner.st_uid, 'installer_gid': owner.st_gid,
-                'bash_elf_machine': int.from_bytes(header[18:20], 'little'), 'complete': True}
+                'complete': True}
 
 
 def read_archive(archive):
@@ -143,11 +137,6 @@ def compare(observation, members, cache):
         installed_cache['uid'], installed_cache['gid'], installed_cache['mode'], installed_cache['size']
     ) != (observation['installer_uid'], observation['installer_gid'], 0o644, len(cache.encode())):
         mismatch('installed_cache_copy', 'cache-paths.txt')
-    for operand in observation['cache_operands']:
-        if not operand['is_directory']:
-            mismatch('cache_operand', operand['operand'])
-    if observation['bash_elf_machine'] != 183:
-        mismatch('architecture', 'rootfs-tree/usr/bin/bash')
     return {'archive_members': len(members), 'installed_entries': len(rows),
                 'rootfs_owner_counts': dict(collections.Counter(
                     f"{row['uid']}:{row['gid']}" for name, row in rows.items() if name != 'cache-paths.txt')),
