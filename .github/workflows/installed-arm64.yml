@@ -198,7 +198,7 @@ jobs:
           sudo -n apt-get update -qq
           sudo -n apt-get install -y -qq --no-install-recommends zstd
           mkdir "$RUNNER_TEMP/verified-extracted-assets"
-          sudo -n tar --zstd --numeric-owner --same-owner --same-permissions --sparse \
+          sudo -n "$(command -v tar)" --zstd --numeric-owner --same-owner --same-permissions --sparse \
             --acls --xattrs --xattrs-include='*' -xf "$blob" -C "$RUNNER_TEMP/verified-extracted-assets"
           assets="$RUNNER_TEMP/verified-extracted-assets"
           test -x "$assets/rootfs-tree/bin/bash"

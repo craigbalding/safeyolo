@@ -57,7 +57,7 @@ def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
 
 
 @pytest.fixture
-def public_shell(tmp_path):
+def public_shell(tmp_path, linux_workflow_stat):
     work = tmp_path / 'public-install'
     reports = work / 'reports'
     reports.mkdir(parents=True)
@@ -66,6 +66,7 @@ def public_shell(tmp_path):
     transport.mkdir()
     command_dir = tmp_path / 'tools'
     command_dir.mkdir()
+    (command_dir / 'stat').symlink_to(linux_workflow_stat)
     curl = command_dir / 'curl'
     curl.write_text('#!/bin/bash\nset -eu\nif [[ ${@: -1} == https://api.github.com/* ]]; then\n'
                     'cat "$TRANSPORT/release.json"\nelse\ncat "$TRANSPORT/host.tar.gz"\nfi\n')
