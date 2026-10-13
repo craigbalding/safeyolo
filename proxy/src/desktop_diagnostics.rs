@@ -105,10 +105,17 @@ pub(crate) async fn snapshot(name: &str, agent_id: &str) -> Value {
         Some(saved) if saved["run_id"] == runtime["run_id"] && !runtime["run_id"].is_null() => {
             "matches_current"
         }
-        Some(_) => "different_or_unverified",
+        Some(saved)
+            if saved["run_id"].as_str().is_some_and(|id| {
+                id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }) && runtime["run_id"].as_str().is_some() =>
+        {
+            "different_current"
+        }
+        Some(_) => "unverified",
         None => "missing_or_unreadable",
     };
-    let disagreement = runtime["exec"] == true && saved_run != "matches_current";
+    let disagreement = runtime["exec"] == true && saved_run == "different_current";
     let guest = if runtime["exec"] == true {
         guest_check(name).await
     } else {

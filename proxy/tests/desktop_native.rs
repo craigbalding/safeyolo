@@ -453,6 +453,19 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         assert_eq!(status(&page), 200);
         save_run(root.path(), &saved_run);
     }
+    save_run(root.path(), &None);
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let missing_record = request(
+        preview_port,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(body(&missing_record)["saved_run"], "missing_or_unreadable");
+    assert_eq!(body(&missing_record)["runtime"]["disagreement"], false);
+    save_run(root.path(), &saved_run);
     unsafe {
         std::env::set_var("FAKE_STATE_ID", "safeyolo-99999999999999999999999999999999");
     }

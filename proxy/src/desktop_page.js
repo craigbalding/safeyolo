@@ -224,11 +224,13 @@
             const launchStates = ['running', 'starting', 'launching', 'exited', 'failed', 'stopped', 'stopping', 'finishing'];
             if (launchStates.includes(value.recorded_agent_state)) record('Saved coding agent launch', value.recorded_agent_state + '; separate from sandbox runtime');
             if (disagreement) record('Saved runtime record', 'does not match the independently observed live runtime');
+            if (['missing_or_unreadable', 'unverified'].includes(value.saved_run)) record('Saved runtime record', 'missing or unverified; no disagreement inferred');
             if (guest.tcp === 'accepted') {
                 record('Guest-local :5900', 'TCP connection accepted', guest.duration_ms);
                 const greeting = ['valid', 'timeout', 'invalid', 'closed', 'unknown'].includes(guest.greeting) ? guest.greeting : 'unknown';
                 record('Guest-local VNC greeting', greeting, guest.duration_ms);
             } else if (guest.tcp === 'refused') record('Guest-local :5900', 'connection refused', guest.duration_ms);
+            else if (guest.tcp === 'timeout') record('Guest-local :5900', 'TCP connection timed out; service cause unverified', guest.duration_ms);
             else record('Host → guest inspection', 'unavailable or unverified', guest.duration_ms);
             noGreetingCount = guest.tcp === 'accepted' && guest.greeting === 'timeout' ? noGreetingCount + 1 : 0;
         }
@@ -246,6 +248,8 @@
             status('Guest transport is unavailable', 'The runtime is not ready for verified guest inspection.');
         } else if (guest.tcp === 'refused') {
             status('Desktop service has not started', 'The guest-local VNC connection was refused. This page will check again.');
+        } else if (guest.tcp === 'timeout') {
+            status('Cause not yet identified', 'The guest-local VNC connection timed out. A timeout does not prove a stuck service. SafeYolo will check again.');
         } else if (noGreetingCount >= 2) {
             status('Desktop server is not responding', 'Repeated guest-local checks accepted TCP but received no VNC greeting. The service appears stuck. Ask your agent to restart x11vnc.');
         } else if (guest.tcp === 'accepted' && guest.greeting !== 'valid') {
