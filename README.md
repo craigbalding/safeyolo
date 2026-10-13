@@ -21,105 +21,149 @@ choose. Works with Claude Code, OpenAI Codex, Pi and other coding agents.
   scoped exports and capture/retention limits. Commander provides the Mac GUI.
 - Controlled labs, canonical Coord messaging and supervised factories.
 
-SafeYolo is pre-v1. The current source product is native Rust, with a signed
-Swift VM helper on macOS. Python is used by repository tests and black-box
-instruments. Public release publication is stopped; published Python CLI
-packages describe the earlier product.
+SafeYolo is pre-v1. The native product uses Rust, with a signed Swift VM helper
+on macOS. Native production downloads are available in the release linked below;
+published Python CLI packages describe the earlier product. Python is used by
+repository tests and black-box instruments. Automatic and later release
+publication remain stopped.
 
 ## Quick start
 
 ### 1. Install on your host
 
-Use your ordinary account on a supported Ubuntu or Apple Silicon Mac host.
-[Build a SafeYolo bundle](docs/native-policy.md#build-a-native-bundle), or obtain
-an already prepared bundle for your host and selected source. The bundle's
-`package-info` states its platform, build profile and minimum glibc or macOS
-version. Verify a transferred archive against its supplied SHA-256 before
-extracting it. The installer checks its internal checksums and identities.
+Use your ordinary account on Ubuntu or an Apple Silicon Mac. Download the
+production archive for your host and `SHA256SUMS` from the published
+[native release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
+This release contains host source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`;
+the documentation also covers newer source. Use this explicit release, rather
+than GitHub's Latest selector.
 
-Before installation, follow the [platform prerequisites](docs/native-policy.md#guest-prerequisites).
-Bundles built from this source acquire their compatible default guest from
-public GitHub Container Registry (GHCR). Initial public guest publication is
-pending. Until that publication, supply prepared assets with `--platform-assets`
-as described in the linked prerequisites. The automatic path below requires a
-bundle with guest discovery metadata and its published public guest release.
-This arm64 Linux example uses an unpacked production bundle in your current directory.
+| Host | Production download |
+| --- | --- |
+| Ubuntu x86_64 | [safeyolo-linux-amd64-production.tar.gz](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/safeyolo-linux-amd64-production.tar.gz) |
+| Ubuntu arm64 | [safeyolo-linux-arm64-production.tar.gz](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/safeyolo-linux-arm64-production.tar.gz) |
+| Apple Silicon macOS | [safeyolo-darwin-arm64-production.tar.gz](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/safeyolo-darwin-arm64-production.tar.gz) |
 
-Install into a fresh `$HOME/.safeyolo`, the default location. If that directory
-already contains an installation, preserve it and use the
-[custom-instance reference](docs/native-policy.md#other-installation-paths).
-SafeYolo does not convert an earlier installation's state. Follow
-[installation details](docs/native-policy.md#install-and-start) if you need
-another platform or build input.
-
-The installer may ask for your normal sudo password to create the command
-entry or preserve Linux guest ownership during extraction. Instance files
-stay owned by your account. New terminals use the default installation automatically.
+Save the archive and [SHA256SUMS](https://github.com/craigbalding/safeyolo/releases/download/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796/SHA256SUMS)
+in the same directory. In a host terminal, change to that directory. On Ubuntu,
+verify the archive with:
 
 ```sh
-./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo"
-safeyolo --help
+sha256sum --ignore-missing --check SHA256SUMS
+```
+
+On macOS, use:
+
+```sh
+shasum -a 256 --ignore-missing --check SHA256SUMS
+```
+
+Continue only when the downloaded archive's filename is reported as `OK`.
+Before installation, complete the [platform prerequisites](docs/native-policy.md#guest-prerequisites).
+Ubuntu needs the host administrator's runsc and user-namespace setup. Both
+platforms need Bash, curl, tar and a trusted network route for guest and runtime
+downloads. The published default guest is acquired anonymously from GitHub
+Container Registry (GHCR); no registry account or local guest build is needed.
+
+Use a fresh `$HOME/.safeyolo`, the default installation directory. If it already
+contains an installation, preserve it and follow the
+[custom-instance reference](docs/native-policy.md#other-installation-paths).
+SafeYolo does not convert earlier state. Installation creates configuration,
+trust and private tokens. It may ask for your normal sudo password to create
+the command entry or preserve Linux guest ownership. Instance files stay owned
+by your account.
+
+The commands below use the Ubuntu x86_64 download. For Ubuntu arm64, replace
+`linux-amd64` with `linux-arm64`; for Apple Silicon, replace it with
+`darwin-arm64`. The extracted `package-info` records the minimum glibc or macOS
+version, which the installer checks before installation. No compiler or Python
+installation is needed. Downloaded guest assets remain in
+`$HOME/.local/share/safeyolo/guests`. Keep that directory: Linux instances
+reference its prepared trees.
+
+```sh
+tar -xzf safeyolo-linux-amd64-production.tar.gz
+cat safeyolo-linux-amd64-production/package-info
+./safeyolo-linux-amd64-production/install.sh --root "$HOME/.safeyolo"
+```
+
+The installer prints the installed source and `profile=production`. In a new
+host terminal, check the installed version and start the proxy:
+
+```sh
 safeyolo --version
 safeyolo start
 safeyolo status
 ```
 
-Use `linux-amd64` for x86_64 Ubuntu or `darwin-arm64` for Apple Silicon.
-Installation creates configuration, trust and private tokens. It requires no
-Python, wheel, virtual environment or uv tool installation. Status identifies
-the selected root and reports `proxy_state: running` after successful startup.
-If installation or startup fails, resolve its named error before retrying.
-Keep `$HOME/.local/share/safeyolo/guests`: Linux installations reference its
-prepared trees. Startup and restart retain the installed guest selection.
-For source installation, the repository's `./install.sh` delegates to the same
-installer and accepts the same inputs.
+Version must identify the release's host source and production profile. Status
+identifies your installation and reports `proxy_state: running`. If a command
+fails, resolve its named error before continuing. See
+[installation details](docs/native-policy.md#install-and-start) for recovery,
+[source builds](docs/native-policy.md#build-a-native-bundle) for contributor
+inputs, and [other guest inputs](docs/native-policy.md#guest-prerequisites)
+for offline or custom setups.
 
-To try a small task on a prepared Ubuntu host, use the disposable
-[Demo](docs/demo.md). It uses your configured Codex login, with your agreement,
-or a stopped guest's existing login. It shows the agent build a tiny app, asks
-you to decide its real fixture request, and reads the resulting app response.
+### 2. Run your first agent task
 
-```sh
-safeyolo demo
-```
+This example uses Claude Code and a new workspace at
+`$HOME/code/safeyolo-first-run`. Choose an unused directory and agent name if
+that path or `work` is already in use, and replace them in the commands below.
+The agent can read and change the workspace through `/workspace`. Tools and
+state in its `/home/agent` persist.
 
-### 2. Choose your agent and workspace
+Have an account with Claude Code access ready. The bundled setup runs with your
+host permissions and copies selected Claude settings, extensions and
+`~/.claude/.credentials.json` when present. The agent can read copied credentials.
+If your login is not copied, enter `/login` when Claude opens. Open its login
+URL in your host browser and paste any prompted code back into the agent
+terminal. See [Claude authentication](https://code.claude.com/docs/en/authentication#log-in-to-claude-code).
+Claude runs with its own permission prompts disabled inside SafeYolo; SafeYolo
+still enforces sandbox and access policy.
+[Other agent setups](contrib/HOST_SCRIPT_GUIDE.md#bundled-setups), including
+Codex's required [first guest login](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login),
+are available separately.
 
-Choose an existing project that you own. The agent can read and change that
-project through `/workspace`. Host setup scripts run with your host permissions
-and can copy selected files into its home.
+The fresh policy allows network access and prompts for unfamiliar credentials.
+If installation of Claude or sign-in pauses for an access request, open a second
+host terminal on the same account and run `safeyolo inspect`. Select `work`,
+read the request's scope and decide it using the
+[approval guide](docs/native-operator.md#inspect-and-decide-one-request).
+Network approval and credential approval are separate.
 
-The example uses the existing owned directory `$HOME/code` and Claude setup,
-which copies selected host authentication and extensions. For another tool,
-choose `codex-host-setup.sh`, `pi-host-setup.sh` or `mise-shell-host-setup.sh`
-in the same installed directory before creating the agent. Ordinary Codex setup
-requires its [first login inside the agent](contrib/HOST_SCRIPT_GUIDE.md#first-codex-login);
-it does not copy host login credentials. The mise shell needs no model login.
-
-```sh
-safeyolo agent create work --workspace "$HOME/code" --host-script "$HOME/.safeyolo/assets/contrib/claude-host-setup.sh"
-safeyolo agent start work
-```
-
-Ask the agent to list `/workspace` to check the selected project. Tools and
-agent state under `/home/agent` persist.
-
-### 3. Review access requests
-
-Open a second terminal on the same host and account:
+From your host terminal, create the workspace and launch Claude in that terminal.
+The setup installs Claude on its first guest run:
 
 ```sh
-safeyolo inspect
+mkdir -p "$HOME/code/safeyolo-first-run"
+safeyolo agent create work --workspace "$HOME/code/safeyolo-first-run" --host-script "$HOME/.safeyolo/assets/contrib/claude-host-setup.sh"
+safeyolo agent start work --foreground
 ```
 
-Inspect lists agent names; select `work` to see its state and pending requests.
-The banner identifies the instance and selected agent. Follow the
-[inspect and approval example](docs/native-operator.md#inspect-and-decide-one-request)
-to create a network prompt, read its scope and decide it. The fresh policy
-allows network access by default, so a successful request does not create a
-pending network item. A network approval allows reusable access to its host and
-port; credential approval is separate. See [operator commands](docs/native-operator.md) and
-[policy configuration](docs/CONFIGURATION.md#policy).
+After sign-in, send Claude this task:
+
+> Create `/workspace/index.html` as a complete HTML page with the heading
+> "Hello from SafeYolo". Use no external dependencies.
+
+### 3. Read the result on your host
+
+After Claude reports completion, open a second host terminal on the same account:
+
+```sh
+cat "$HOME/code/safeyolo-first-run/index.html"
+```
+
+The file should contain the requested heading. Open it in your host browser to
+see the page. The file remains in your workspace after stopping the agent.
+When you finish, stop this agent's command and sandbox:
+
+```sh
+safeyolo agent stop work
+```
+
+Use the [everyday commands](#everyday-commands) to run and reconnect to an agent
+for your own project. For an optional guided app task and access decision on
+Ubuntu, see the [Demo](docs/demo.md).
 
 ## Everyday commands
 
@@ -128,6 +172,7 @@ These commands use your default installation. For another instance, use the
 
 | Task | Command |
 | --- | --- |
+| Run the agent | `safeyolo agent start work` |
 | Read proxy and agent state | `safeyolo status` |
 | Reconnect to the agent terminal | `safeyolo agent attach work` |
 | Open a separate shell | `safeyolo agent shell work` |
