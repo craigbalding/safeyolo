@@ -59,8 +59,9 @@ jobs:
       - name: Install Mac package and archive fixture dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install dpkg tmux gnu-tar coreutils zstd
-          printf '%s\n' "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          brew install dpkg tmux gnu-tar coreutils zstd bash
+          printf '%s\n' "$(brew --prefix bash)/bin" \
+            "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: uv sync --frozen --group dev

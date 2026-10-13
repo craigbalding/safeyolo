@@ -126,16 +126,7 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
 
 
 @pytest.fixture
-def workflow_stat():
-    # The workflow runs on Ubuntu. Use real GNU stat for its Linux format
-    # assertions, without replacing BSD stat for other Darwin consumers.
-    command = shutil.which("gstat") or shutil.which("stat")
-    assert command and "GNU coreutils" in subprocess.check_output([command, "--version"], text=True)
-    return command
-
-
-@pytest.fixture
-def host_inputs(tmp_path, workflow_stat):
+def host_inputs(tmp_path, linux_workflow_stat):
     bundle = tmp_path / "safeyolo-linux-arm64-production"
     bundle.mkdir()
     (bundle / "package-info").write_text(
@@ -155,7 +146,7 @@ def host_inputs(tmp_path, workflow_stat):
     }
     tools = tmp_path / "tools"
     tools.mkdir()
-    (tools / "stat").symlink_to(workflow_stat)
+    (tools / "stat").symlink_to(linux_workflow_stat)
     gh = tools / "gh"
     gh.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
@@ -332,7 +323,7 @@ def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, tran
 
 
 @pytest.fixture
-def guest_inputs(tmp_path, workflow_stat):
+def guest_inputs(tmp_path, linux_workflow_stat):
     verifier = Path(os.environ.get("SAFEYOLO_GUEST_OCI_VERIFIER", ROOT / "proxy/target/debug/examples/verify_guest_oci")).resolve()
     if not verifier.is_file():
         pytest.skip("the existing native OCI verification tool is required")
@@ -393,7 +384,7 @@ def guest_inputs(tmp_path, workflow_stat):
         reports.mkdir()
         tools = tmp_path / "tools"
         tools.mkdir()
-        (tools / "stat").symlink_to(workflow_stat)
+        (tools / "stat").symlink_to(linux_workflow_stat)
         sudo = tools / "sudo"
         sudo.write_text(f'#!/bin/bash\nif [[ "$2" != apt-get ]]; then exec "{real_sudo}" "$@"; fi\n')
         sudo.chmod(0o755)
