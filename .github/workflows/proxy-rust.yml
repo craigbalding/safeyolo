@@ -305,7 +305,20 @@ jobs:
 
       - name: Install the pinned Codex execpolicy test consumer
         run: |
-          npm install --prefix "$RUNNER_TEMP/codex-execpolicy" @openai/codex@0.159.1
+          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
+          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
+          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
+          # npm can omit a corrupt optional package. Refuse global module fallback.
+          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
+          const path = require('node:path');
+          const { createRequire } = require('node:module');
+          const modules = path.resolve(process.argv[2], 'node_modules');
+          const wrapper = path.join(modules, '@openai/codex/package.json');
+          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
+          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
+            throw new Error('Codex must use the locked local platform package');
+          }
+          JS
           test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
           printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
 
