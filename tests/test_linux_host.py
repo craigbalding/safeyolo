@@ -21,7 +21,7 @@ from tests.test_host_packages import executable
 native_cli = acquisition.native_cli
 package_info = acquisition.package_info
 
-FILES = ("runsc", "containerd-shim-runsc-v1", "gvisor-bin/checkpointgofer",
+FILES = ("runsc", "gvisor-bin/checkpointgofer",
          "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentry",
          "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server")
 
@@ -161,6 +161,7 @@ def test_denied_runtime_permission_reports_changes_and_retry_is_idempotent(nativ
     assert "Host changes and attempted operations: none" in declined.stderr and not settings.exists()
     denied = command(native_cli, *arguments, env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"})
     assert denied.returncode != 0 and "fixture sudo denied" in denied.stderr
+    assert "attempted allow UID" in denied.stderr
     assert denied.stderr.index("SafeYolo needs these host changes") < denied.stderr.index("fixture sudo denied")
     assert "Host changes and attempted operations:" in denied.stderr and not settings.exists()
     retry = command(native_cli, *arguments)

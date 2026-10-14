@@ -21,11 +21,13 @@ fn command_path(name: &str) -> Option<PathBuf> {
 }
 
 fn execute(command: &mut Command, purpose: &str, applied: &mut Vec<String>) -> Result<(), Error> {
+    let record = applied.len();
+    applied.push(format!("attempted {purpose}"));
     let status = command.status().map_err(|e| format!("{purpose}: {e}"))?;
     if !status.success() {
         return Err(format!("{purpose} failed ({status}); repair the reported host operation and run the installer again").into());
     }
-    applied.push(purpose.into());
+    applied[record] = purpose.into();
     Ok(())
 }
 

@@ -13,7 +13,6 @@ use std::{
 pub(super) const VERSION: &str = "release-20261005.0";
 pub(super) const FILES: &[&str] = &[
     "runsc",
-    "containerd-shim-runsc-v1",
     "gvisor-bin/checkpointgofer",
     "gvisor-bin/gvisor-sentry-prewarmer",
     "gvisor-bin/gvisor_sentry",

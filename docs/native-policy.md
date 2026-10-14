@@ -245,12 +245,14 @@ option selects a system installation of the same tested release. It must have
 the complete payload beside that executable, including `gvisor-bin`. Its
 administrator remains responsible for those bytes and security updates.
 Bundled runtime fixes arrive through normal SafeYolo host-package updates;
-there is no separate runtime updater. `package-info` records the bundled
+there is no separate runtime updater. SafeYolo ships `runsc` and its five
+companion executables. It omits the separate containerd shim, which its launcher
+does not call. `package-info` records the bundled
 version, source and origin. `assets/licenses` contains the gVisor and dependency
 notices.
 
-The complete upstream tar is about 121 MB compressed for ARM64 and 130 MB for
-AMD64; the ARM64 payload is about 310 MB unpacked. These are runtime artifact
+The verified upstream tar is about 121 MB compressed for ARM64 and 130 MB for
+AMD64; the ARM64 payload is about 268 MB unpacked. These are runtime artifact
 sizes, not installation or first-agent timing results. The bundled model adds
 those bytes to a host package. It avoids an extra package source, changes to an
 unrelated system runtime and system-package version drift. An Ubuntu gVisor

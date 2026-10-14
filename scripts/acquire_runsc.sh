@@ -29,6 +29,9 @@ fi
 [[ $(file_sha256 "$archive") == "$expected" ]] || { package_error "cached gVisor archive is corrupt: $archive; remove that file and retry"; exit 1; }
 stage=$(mktemp -d "$(dirname -- "$destination")/gvisor.XXXXXX")
 tar --zstd -xpf "$archive" -C "$stage"
+# SafeYolo invokes runsc directly. The separate containerd integration is
+# not a runsc companion and adds no behavior to the installed product.
+rm -- "$stage/containerd-shim-runsc-v1"
 verify_runsc_payload "$stage" "$platform"
 mv -T "$stage" "$destination"
 stage=

@@ -135,7 +135,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     runsc = tmp_path / "gvisor"
     (runsc / "gvisor-bin").mkdir(parents=True)
     executable(runsc / "runsc", "runsc version release-20261005.0")
-    for name in ("containerd-shim-runsc-v1", "gvisor-bin/checkpointgofer", "gvisor-bin/gvisor-sentry-prewarmer",
+    for name in ("gvisor-bin/checkpointgofer", "gvisor-bin/gvisor-sentry-prewarmer",
                  "gvisor-bin/gvisor_sentry", "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server"):
         shutil.copy2(runsc / "runsc", runsc / name)
     monkeypatch.setenv("PACKAGE_RUNSC_FIXTURE", str(runsc))

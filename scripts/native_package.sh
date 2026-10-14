@@ -35,7 +35,7 @@ native_executable() {
 }
 
 runsc_files() {
-  printf '%s\n' runsc containerd-shim-runsc-v1 gvisor-bin/checkpointgofer \
+  printf '%s\n' runsc gvisor-bin/checkpointgofer \
     gvisor-bin/gvisor-sentry-prewarmer gvisor-bin/gvisor_sentry \
     gvisor-bin/runsc-fd-parking gvisor-bin/runsc-metric-server
 }
