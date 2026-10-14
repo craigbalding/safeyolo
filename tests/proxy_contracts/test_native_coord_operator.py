@@ -21,6 +21,7 @@ import select
 import shlex
 import struct
 import subprocess
+import sys
 import termios
 import time
 from contextlib import contextmanager
@@ -344,6 +345,64 @@ def test_watch_timeline_payload_modes_and_cursor_reconnect(instance):
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_supervisor_events_reach_coord_and_live_watch(instance, tmp_path):
+    """Exercise the real sender/API contract with a deterministic model seam."""
+    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", instance.root / "bin/safeyolo-coord"))
+    home = tmp_path / "supervised-home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex/config.toml").write_text(f'''forced_chatgpt_auth=false
+model_provider="fixture"
+model="fixture-model"
+[mcp_servers.safeyolo-coord]
+command={json.dumps(str(binary))}
+[model_providers.fixture.auth]
+command="/usr/bin/true"
+args=[]
+''')
+    harness = tmp_path / "fixture-codex"
+    harness.write_text(f'''#!{sys.executable}
+import json,sys
+if "--version" in sys.argv:
+    print("fixture-harness");sys.exit(0)
+sys.stdin.read()
+events = [
+    {{"type":"thread.started","thread_id":"fixture-thread"}},
+    {{"type":"turn.started"}},
+    {{"type":"item.completed","item":{{"type":"command_execution",
+      "command":"printf live-watcher-marker","exit_code":0,"status":"completed"}}}},
+    {{"type":"turn.completed"}},
+]
+for event in events:
+    print(json.dumps(event),flush=True)
+''')
+    harness.chmod(0o755)
+    config = tmp_path / "supervisor.json"
+    config.write_text(json.dumps({"agent_name": "alice", "rooms": [ROOM],
+                                 "coordinators": ["bob"], "agent_room": ROOM,
+                                 "workspace": str(tmp_path), "wait_seconds": 1}))
+    sent = cli(instance, "send", ROOM, "Observe this disposable coding turn.", "--to", "alice")
+    assert sent.returncode == 0, sent.stderr
+    marker = history(instance)[-1]["sequence"]
+    environment = dict(instance.environment, HOME=str(home), CODEX_HOME=str(home / ".codex"),
+                       SAFEYOLO_CODEX_BIN=str(harness), SAFEYOLO_COORD_SOCKET=instance.paths["alice"],
+                       SAFEYOLO_COORD_TOKEN_PATH=str(instance.root / "data/agent_token"))
+    result = subprocess.run([str(binary), "supervise", "--config", str(config),
+                             "--state", str(tmp_path / "supervisor-state.json"),
+                             "--once", "--confirm-fresh-identity"],
+                            env=environment, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    messages = [m for m in history(instance) if m["sequence"] > marker]
+    events = [json.loads(m["body"]) for m in messages]
+    assert {"thread.started", "turn.started", "item.completed", "turn.completed"} <= {
+        event["type"] for event in events
+    }, result.stderr
+    assert all(m["sender_agent_name"] == "alice" and m["content_type"] == "text/plain"
+               and m["attention_intent"]["mode"] == "none" for m in messages)
+    watched = cli(instance, "watch", ROOM, "--since", str(marker), "--once")
+    assert watched.returncode == 0, watched.stderr
+    assert "TOOL    completed command rc=0 printf live-watcher-marker" in watched.stdout
 
 
 def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
