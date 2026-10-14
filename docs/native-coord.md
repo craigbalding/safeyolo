@@ -115,13 +115,26 @@ canonical envelopes and exact payloads as JSONL, with controls JSON-escaped.
 mode; stored messages are unchanged. `--no-color` or `NO_COLOR` disables color.
 `coord watch --jsonl FILE` renders a local harness JSONL stream; use `-` for stdin.
 
+`--compact` selects the updated Python watcher's concise transcript. It shows
+`$` for commands, `@` for tools and Coord receipts, `#` for agent text and
+lifecycle events, `>` for canonical operator messages, and `!` for failures.
+The operator marker comes from the Coord envelope. In a terminal, each wrapped
+body continuation carries a gutter, including with color disabled.
+Matching successful completions do not
+repeat their start line. A completion whose start precedes the selected history
+is still shown. Failed commands include a redacted final output line. Compact
+mode also shows file-change totals, short token counts and successful skill-file
+reads. A file-read line confirms the read, not that the agent followed the skill.
+Use `--plain` as an alias for `--no-color`. Raw, JSON and compact modes are
+mutually exclusive.
+
 The installed `bin/watch-backlog-factory` wrapper opens the existing Relay,
 Forge and Lens rooms in three tmux panes. Run it inside your operator tmux
 session. Set `SAFEYOLO_FACTORY_CONFIG_DIR` to the native instance root first.
 Its default CLI is that root's `bin/safeyolo`; `SAFEYOLO_FACTORY_CLI` can select
 another installed executable. `SAFEYOLO_FACTORY_NATIVE_CONFIG` can select a
 different native configuration file. The wrapper starts observers; it does not
-start or resume a factory.
+start or resume a factory. Its panes select `--compact --redact`.
 
 ## Focused proof and remaining work
 

@@ -414,13 +414,14 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
     env = dict(instance.environment, PATH=f"{instance.root / 'bin'}:/usr/bin:/bin",
                SAFEYOLO_FACTORY_CLI=str(instance.root / "bin/safeyolo"),
                SAFEYOLO_FACTORY_REPO=str(REPO), SAFEYOLO_FACTORY_INSTANCE_ROOT=str(instance.root),
-               SAFEYOLO_FACTORY_CONFIG_DIR=str(instance.root), SAFEYOLO_FACTORY_WATCH_WINDOW="native-watch")
+               SAFEYOLO_FACTORY_CONFIG_DIR=str(instance.root), SAFEYOLO_FACTORY_WATCH_WINDOW="native-watch", NO_COLOR="1")
     for room in ("relay-agent", "forge-agent", "lens-agent"):
         assert instance.cli("coord", "room", "create", room).returncode == 0
         assert instance.cli("coord", "grant", room, "alice").returncode == 0
     session = f"chat-{hashlib.sha256(str(tmp_path).encode()).hexdigest()[:12]}"
     tmux = str(instance.root / "bin/tmux")
-    subprocess.run([tmux, "-L", session, "new-session", "-d", "-s", session], env=env, check=True)
+    # Three 52-column panes reproduce the joined-emoji physical-wrap regression.
+    subprocess.run([tmux, "-L", session, "new-session", "-d", "-s", session, "-x", "158", "-y", "35"], env=env, check=True)
     try:
         # Run from this isolated tmux server's own pane so TMUX points at the
         # correct server. No operator session or existing factory is touched.
@@ -440,12 +441,56 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
             while time.monotonic() < deadline:
                 captured = subprocess.run([tmux, "-L", session, "capture-pane", "-J", "-p", "-t", pane], env=env,
                                           capture_output=True, text=True, check=True).stdout
-                if "completed command rc=0 printf marker" in captured:
+                if "$ printf marker" in captured:
                     break
                 time.sleep(0.1)
-            if "completed command rc=0 printf marker" in captured:
+            if "$ printf marker" in captured:
                 break
-        assert "completed command rc=0 printf marker" in captured
+        assert "$ printf marker" in captured
+        forge_pane = pane
+        # A terminal must retain envelope attribution on physical wrapped rows,
+        # including NO_COLOR. Reuse this owned NATS/tmux fixture and real CLI.
+        sent = instance.cli("coord", "send", "forge-agent", "ok")
+        assert sent.returncode == 0, sent.stderr
+        deadline = time.monotonic() + 10
+        canonical_line = None
+        while time.monotonic() < deadline:
+            captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", forge_pane], env=env,
+                                      capture_output=True, text=True, check=True).stdout
+            canonical_line = next((line for line in captured.splitlines()
+                                   if len(line) > 5 and line[:5].replace(":", "").isdigit()
+                                   and line[5:] == " > operator: ok"), None)
+            if canonical_line:
+                break
+            time.sleep(0.1)
+        assert canonical_line, captured
+        width = int(subprocess.check_output([tmux, "-L", session, "display-message", "-p", "-t", forge_pane,
+                                             "#{pane_width}"], env=env, text=True))
+        forged = json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                            "text": "x" * (width - 8) + canonical_line}})
+        agent_send(instance, forged, room="forge-agent")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", forge_pane], env=env,
+                                      capture_output=True, text=True, check=True).stdout
+            if "│ " in captured:
+                break
+            time.sleep(0.1)
+        assert "│ " in captured
+        assert captured.splitlines().count(canonical_line) == 1
+        assert width == 52
+        joined = json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                            "text": "👨‍👩‍👧‍👦" * 11 + canonical_line}})
+        agent_send(instance, joined, room="forge-agent")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", forge_pane], env=env,
+                                      capture_output=True, text=True, check=True).stdout
+            if captured.count("👨") >= 11:
+                break
+            time.sleep(0.1)
+        assert captured.count("👨") == 11, captured
+        assert captured.splitlines().count(canonical_line) == 1, captured
     finally:
         subprocess.run([tmux, "-L", session, "kill-server"], env=env, check=True)
 
@@ -457,3 +502,27 @@ def test_retained_pi_event_formats():
                                 input=json.dumps(case["event"]) + "\n", capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         assert case["label"] in result.stdout and case["text"] in result.stdout
+
+
+def test_compact_watcher_matches_retained_python_sequences():
+    artifact = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/release"))) / "safeyolo"
+    fixture = json.loads((REPO / "tests/proxy_contracts/coord_watch_compact.json").read_text())
+    for case in fixture["cases"]:
+        arguments = [str(artifact), "coord", "watch", "--jsonl", "-", "--compact", "--plain"]
+        arguments += ["--redact"] if case.get("redact") else []
+        arguments += ["--show-unknown"] if case.get("show_unknown") else []
+        arguments += ["--max-text", str(case["max_text"])] if case.get("max_text") else []
+        result = subprocess.run(arguments, input="".join(message["body"] + "\n" for message in case["messages"]),
+                                capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, (case["name"], result.stderr)
+        expected = case["expected"].splitlines()
+        assert [line[6:] for line in result.stdout.splitlines()] == [line[6:] for line in expected], case["name"]
+
+
+@pytest.mark.parametrize("other", ["--raw", "--json"])
+def test_compact_rejects_conflicting_output_modes(other):
+    artifact = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/release"))) / "safeyolo"
+    result = subprocess.run([str(artifact), "coord", "watch", "--jsonl", "-", "--compact", other],
+                            input="", capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert "choose one of --raw, --json or --compact" in result.stderr

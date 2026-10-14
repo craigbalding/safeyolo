@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::{Error, agent_api::coord::OperatorCoord, coord_timeline};
 
-pub const HELP: &str = "safeyolo [--root ROOT] coord send ROOM [TEXT | --file FILE | --stdin] [--to AGENT ...] [--content-type text/plain|text/markdown]\nsafeyolo [--root ROOT] coord chat ROOM [--since SEQUENCE] [--to AGENT] [--observe]\nsafeyolo [--root ROOT] coord history ROOM [--since SEQUENCE]\nsafeyolo [--root ROOT] coord watch ROOM [--history COUNT] [--since SEQUENCE] [--once] [--raw|--json] [--max-text COUNT] [--redact] [--show-unknown] [--no-color]\nsafeyolo coord watch --jsonl FILE [--raw|--json] [--max-text COUNT] [--redact] [--show-unknown]\n\nSend reads exactly one UTF-8 input and preserves its payload. --to targets receive-authorized members; otherwise it notifies the room.\nChat receives while you edit. :paste/:p reads the host clipboard, :edit/:e opens $VISUAL or $EDITOR, :q exits. Composed clipboard/editor messages require confirmation. Chat requires a terminal on stdin and stdout.\nWatch renders room messages and Codex/Pi harness events. Text is complete by default. --max-text limits only display; --redact is optional. --json preserves canonical payloads as JSONL. --jsonl - reads stdin.\nUnknown publication is reported without automatic retry. Inspect history before deciding whether to send again.";
+pub const HELP: &str = "safeyolo [--root ROOT] coord send ROOM [TEXT | --file FILE | --stdin] [--to AGENT ...] [--content-type text/plain|text/markdown]\nsafeyolo [--root ROOT] coord chat ROOM [--since SEQUENCE] [--to AGENT] [--observe]\nsafeyolo [--root ROOT] coord history ROOM [--since SEQUENCE]\nsafeyolo [--root ROOT] coord watch ROOM [--history COUNT] [--since SEQUENCE] [--once] [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown] [--no-color]\nsafeyolo coord watch --jsonl FILE [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown]\n\nSend reads exactly one UTF-8 input and preserves its payload. --to targets receive-authorized members; otherwise it notifies the room.\nChat receives while you edit. :paste/:p reads the host clipboard, :edit/:e opens $VISUAL or $EDITOR, :q exits. Composed clipboard/editor messages require confirmation. Chat requires a terminal on stdin and stdout.\nWatch renders room messages and Codex/Pi harness events. --compact shows the concise transcript, with one start line and only failures or useful receipts on completion. Text is complete by default. --max-text limits only display; --redact is optional. --json preserves canonical payloads as JSONL. --jsonl - reads stdin.\nUnknown publication is reported without automatic retry. Inspect history before deciding whether to send again.";
 
 #[derive(Default)]
 struct Options {
@@ -102,9 +102,10 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
                 }
                 "--raw" if command == "watch" => options.display.raw = true,
                 "--json" if command == "watch" => options.display.json = true,
+                "--compact" if command == "watch" => options.display.compact = true,
                 "--redact" if command == "watch" => options.display.redact = true,
                 "--show-unknown" if command == "watch" => options.display.show_unknown = true,
-                "--no-color" if command == "watch" => options.display.no_color = true,
+                "--no-color" | "--plain" if command == "watch" => options.display.no_color = true,
                 _ => return Err(format!("unknown coord {command} option: {arg}").into()),
             }
         } else if options.room.is_none() {
@@ -115,8 +116,17 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
             return Err(format!("unexpected coord {command} argument").into());
         }
     }
-    if options.display.raw && options.display.json {
-        return Err("choose either --raw or --json".into());
+    if [
+        options.display.raw,
+        options.display.json,
+        options.display.compact,
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count()
+        > 1
+    {
+        return Err("choose one of --raw, --json or --compact".into());
     }
     if options.jsonl.is_some()
         && (options.room.is_some()
