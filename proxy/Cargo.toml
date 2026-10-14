@@ -33,7 +33,7 @@ rand = "=0.10.2"
 regex = "1"
 rustyline = { version = "=18.0.1", default-features = false }
 ring = "0.17"
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
