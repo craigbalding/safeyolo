@@ -429,7 +429,7 @@ async fn telemetry(supervisor: &Supervisor, event: &Value) {
             .collect();
         json!({"type":format!("safeyolo.{}.stdout",supervisor.config.harness),"event":"oversize","original_bytes":raw.len(),"sha256":hash,"head":head,"tail":tail,"middle_omitted":true}).to_string()
     };
-    match tokio::time::timeout(Duration::from_secs(5),supervisor.client.call("send",&json!({"room_name":room,"body":body,"declared_content_type":"application/json","notify":"none"}))).await {
+    match tokio::time::timeout(Duration::from_secs(5),supervisor.client.call("send",&json!({"room_name":room,"body":body,"declared_content_type":"text/plain","notify":"none"}))).await {
         Ok(Ok(_))=>{},Ok(Err(error))=>eprintln!("Coord telemetry unavailable: {error}"),Err(_)=>eprintln!("Coord telemetry deadline expired; publication outcome unknown"),
     }
 }
