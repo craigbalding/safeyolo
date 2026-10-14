@@ -28,7 +28,6 @@ const REQUIRED_PACKAGES: &[(&str, &[&str])] = &[
     ("openssh-client", &["ssh"]),
     ("curl", &["curl"]),
     ("tar", &["tar"]),
-    ("zstd", &["zstd"]),
 ];
 
 pub(super) fn check_prerequisites(settings: Option<&Settings>) -> Result<(), Error> {

@@ -259,9 +259,20 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
                           env={**os.environ, "PATH": str(tools)})
     observed = json.loads(unavailable.stdout)["linux"]
     assert observed["state"] == "unavailable"
-    assert "newuidmap" in observed["error"] and "zstd" in observed["error"]
+    assert "newuidmap" in observed["error"] and "newgidmap" in observed["error"]
+    assert "zstd" not in observed["error"]
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
     assert observed["version"] == "release-20261005.0"
+    for name in ("newuidmap", "newgidmap", "setfacl", "getfacl", "unshare",
+                 "nsenter", "ip", "ssh", "curl", "tar", "true", "aa-exec"):
+        path = shutil.which(name)
+        if path:
+            (tools / name).symlink_to(path)
+    assert shutil.which("zstd", path=str(tools)) is None
+    ready = command(native_cli, "--root", root, "doctor",
+                    env={**os.environ, "PATH": str(tools)})
+    observed = json.loads(ready.stdout)["linux"]
+    assert observed["state"] == "ready", observed
     runtime.unlink()
     missing = command(native_cli, "--root", root, "doctor")
     assert missing.returncode == 0, missing.stderr
