@@ -443,9 +443,9 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
                 if "completed command rc=0 printf marker" in captured:
                     break
                 time.sleep(0.1)
-            if "completed command rc=0 printf marker" in captured:
+            if "$ printf marker" in captured:
                 break
-        assert "completed command rc=0 printf marker" in captured
+        assert "$ printf marker" in captured
     finally:
         subprocess.run([tmux, "-L", session, "kill-server"], env=env, check=True)
 
@@ -457,3 +457,27 @@ def test_retained_pi_event_formats():
                                 input=json.dumps(case["event"]) + "\n", capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         assert case["label"] in result.stdout and case["text"] in result.stdout
+
+
+def test_compact_watcher_matches_retained_python_sequences():
+    artifact = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/release"))) / "safeyolo"
+    fixture = json.loads((REPO / "tests/proxy_contracts/coord_watch_compact.json").read_text())
+    for case in fixture["cases"]:
+        arguments = [str(artifact), "coord", "watch", "--jsonl", "-", "--compact", "--plain"]
+        arguments += ["--redact"] if case.get("redact") else []
+        arguments += ["--show-unknown"] if case.get("show_unknown") else []
+        arguments += ["--max-text", str(case["max_text"])] if case.get("max_text") else []
+        result = subprocess.run(arguments, input="".join(message["body"] + "\n" for message in case["messages"]),
+                                capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, (case["name"], result.stderr)
+        expected = case["expected"].splitlines()
+        assert [line[6:] for line in result.stdout.splitlines()] == [line[6:] for line in expected], case["name"]
+
+
+@pytest.mark.parametrize("other", ["--raw", "--json"])
+def test_compact_rejects_conflicting_output_modes(other):
+    artifact = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/release"))) / "safeyolo"
+    result = subprocess.run([str(artifact), "coord", "watch", "--jsonl", "-", "--compact", other],
+                            input="", capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert "choose one of --raw, --json or --compact" in result.stderr

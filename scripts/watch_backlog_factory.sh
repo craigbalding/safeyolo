@@ -27,7 +27,7 @@ watch_command='room=$1; viewer=$2; config=$3; label=$4
 printf "Watching %s (%s)\n" "$label" "$room"
 while :; do
   if "$viewer" --config "$config" coord watch "$room" --history 1 --once >/dev/null 2>&1; then
-    "$viewer" --config "$config" coord watch "$room" --history 30 --max-text 600 --show-unknown
+    "$viewer" --config "$config" coord watch "$room" --history 30 --compact --redact --max-text 600 --show-unknown
   else
     printf "[%s] waiting for access to existing room %s\n" "$(date -u +%H:%M:%SZ)" "$room"
     sleep 5

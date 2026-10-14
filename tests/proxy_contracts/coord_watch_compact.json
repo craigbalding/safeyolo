@@ -1,0 +1,383 @@
+{
+  "reference": "Updated Python watcher retained during factory upgrade, 2026-10-14",
+  "reference_sha256": "8d0596b3ee232461f2986d15e40515d6a0acb3d3718b0c83edd6c1573312c92b",
+  "cases": [
+    {
+      "name": "command starts, successful completions disappear, partial history falls back",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"printf marker\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"printf marker\", \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"before-history\", \"command\": \"printf marker\", \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"second\", \"command\": \"printf marker\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"second\", \"command\": \"printf marker\", \"exit_code\": 0}}"
+        }
+      ],
+      "expected": "00:00 $ printf marker\n00:00 $ printf marker\n00:00 $ printf marker\n"
+    },
+    {
+      "name": "interleaved identities retain their own starts",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"one\", \"command\": \"printf marker\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"two\", \"command\": \"printf marker\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"two\", \"command\": \"printf marker\", \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"one\", \"command\": \"printf marker\", \"exit_code\": 0}}"
+        }
+      ],
+      "expected": "00:00 $ printf marker\n00:00 $ printf marker\n"
+    },
+    {
+      "name": "failed command safe last line, even without general redaction",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"printf marker\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"printf marker\", \"exit_code\": 7, \"stderr\": \"first line\\nfailed token=private-fixture https://example.test/?key=private#token\\n\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"missing-start\", \"command\": \"printf marker\", \"exit_code\": -9, \"aggregated_output\": \"older\\nlast failure\"}}"
+        }
+      ],
+      "expected": "00:00 $ printf marker\n00:00 ! command failed rc=7: failed token=<redacted> https://example.test/?<omitted>\n00:00 ! command failed rc=-9: last failure\n"
+    },
+    {
+      "name": "skill read is a successful literal read, not mere command text",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\", \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"/bin/bash -lc \\\"sed -n 1,20p /evidence/skills/issue-scope/SKILL.md\\\"\", \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\", \"exit_code\": 1}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"echo /evidence/skills/issue-scope/SKILL.md\", \"exit_code\": 0}}"
+        }
+      ],
+      "expected": "00:00 # skill file read: issue-scope\n00:00 # skill file read: issue-scope\n00:00 ! command failed rc=1\n00:00 $ echo /evidence/skills/issue-scope/SKILL.md\n"
+    },
+    {
+      "name": "Coord receipts hide result bodies and suppress empty successful completions",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\", \"result\": {\"structured_content\": {\"sequence\": 6123, \"attention_status\": \"queued\", \"body\": \"PRIVATE RESULT\"}}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"read_room\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"read_room\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\", \"result\": {\"structured_content\": {\"messages\": [{\"body\": \"PRIVATE\"}], \"next_cursor\": 44, \"has_more\": false}}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"get_room_state\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"get_room_state\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\", \"result\": {\"structured_content\": {\"members\": [{}, {}], \"resource_leases\": [{}], \"brief\": {\"revision\": 208}}}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"read_room\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"read_room\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\"}}"
+        }
+      ],
+      "expected": "00:00 @ safeyolo-coord.send room=backlog \u2192 seq=6123 attention=queued\n00:00 @ safeyolo-coord.read_room room=backlog \u2192 messages=1 cursor=44 more=false\n00:00 @ safeyolo-coord.get_room_state room=backlog \u2192 members=2 leases=1 brief=208\n"
+    },
+    {
+      "name": "Coord waits and alternate structured result spelling",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"wait_for_coord\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"wait_for_coord\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\", \"result\": {\"structured_content\": {\"objects\": [{}], \"next_cursor\": 42}}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"wait_for_attention\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\", \"result\": {\"structuredContent\": {\"edges\": [{}, {}], \"next_cursor\": 43}}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"completed\", \"result\": {\"structured_content\": {\"sequence\": true, \"attention_status\": \"none\"}}}}"
+        }
+      ],
+      "expected": "00:00 @ safeyolo-coord.wait_for_coord room=backlog\n00:00 @ safeyolo-coord.wait_for_coord room=backlog \u2192 objects=1 cursor=42\n00:00 @ safeyolo-coord.wait_for_attention room=backlog \u2192 edges=2 cursor=43\n00:00 @ safeyolo-coord.send room=backlog \u2192 attention=none\n"
+    },
+    {
+      "name": "MCP failures and non-Coord routing",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"failed\", \"error\": \"denied\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"foreign\", \"server\": \"docs\", \"tool\": \"search\", \"arguments\": {\"query\": \"hello\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"foreign\", \"server\": \"docs\", \"tool\": \"search\", \"status\": \"completed\", \"result\": {\"structured_content\": {\"sequence\": 9876}}}}"
+        }
+      ],
+      "expected": "00:00 ! safeyolo-coord.send room=backlog failed: denied\n00:00 @ docs.search query=hello\n"
+    },
+    {
+      "name": "compact session and usage counters for Codex and Pi",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"thread.started\", \"thread_id\": \"012345678901234567890\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"turn.started\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"Useful progress.\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"reasoning\", \"text\": \"Check the actual boundary.\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"turn.completed\", \"usage\": {\"input_tokens\": 1234567, \"cached_input_tokens\": 2345, \"output_tokens\": 9, \"reasoning_output_tokens\": 1000}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"session\", \"id\": \"pi-short\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"agent_start\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"agent_end\", \"usage\": {\"input\": 1234, \"cacheRead\": 99, \"output\": 1000000, \"reasoning\": 12}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"turn.failed\", \"error\": {\"message\": \"request failed\"}}"
+        }
+      ],
+      "expected": "00:00 # session 012345678901\u2026\n00:00 # turn start\n00:00 # Useful progress.\n00:00 # Check the actual boundary.\n00:00 # turn done in=1.2m cached=2.3k out=9 think=1.0k\n00:00 # session pi-short\n00:00 # turn start\n00:00 # turn done in=1.2k cached=99 out=1.0m think=12\n00:00 ! {'message': 'request failed'}\n"
+    },
+    {
+      "name": "Pi matching tool events and failure",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"tool_execution_start\", \"toolCallId\": \"pi1\", \"toolName\": \"bash\", \"args\": {\"command\": \"printf hi\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"tool_execution_end\", \"toolCallId\": \"pi1\", \"toolName\": \"bash\", \"isError\": false}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"tool_execution_start\", \"toolCallId\": \"pi2\", \"toolName\": \"read\", \"args\": {\"path\": \"source.rs\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"tool_execution_end\", \"toolCallId\": \"pi2\", \"toolName\": \"read\", \"isError\": true}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"tool_execution_end\", \"toolCallId\": \"before\", \"toolName\": \"read\", \"args\": {\"path\": \"old.rs\"}, \"isError\": false}"
+        }
+      ],
+      "expected": "00:00 $ bash command=printf hi\n00:00 @ read path=source.rs\n00:00 ! read path=source.rs failed\n00:00 @ read path=old.rs\n"
+    },
+    {
+      "name": "tool calls, search and file changes",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"function_call\", \"call_id\": \"f1\", \"name\": \"lookup\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"function_call\", \"call_id\": \"f1\", \"name\": \"lookup\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"function_call_output\", \"call_id\": \"f1\", \"output\": \"PRIVATE OUTPUT\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"web_search\", \"id\": \"web\", \"action\": {\"query\": \"a question\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"web_search\", \"id\": \"web\", \"action\": {\"query\": \"a question\"}}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"file_change\", \"changes\": [{\"path\": \"x.rs\", \"kind\": \"update\"}]}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"file_change\", \"changes\": [{\"path\": \"x.rs\", \"kind\": \"update\"}]}}"
+        }
+      ],
+      "expected": "00:00 @ lookup\n00:00 @ web_search query=a question\n00:00 @ file_change files=1 update=1 update:x.rs\n"
+    },
+    {
+      "name": "bounded redacted diagnostics and unknown events",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"safeyolo.codex.stderr\", \"text\": \"Bearer abcdefghijklmnop https://example.test/?private=abc\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"safeyolo.supervisor\", \"event\": \"crashed\", \"pid\": 42, \"message\": \"failed\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"unknown-type\", \"value\": \"future-event\"}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"cmd\", \"command\": \"printf marker\", \"exit_code\": 1, \"stderr\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx token=private\"}}"
+        }
+      ],
+      "expected": "00:00 ! <redacted> https://example.test/?<omitted>\n00:00 ! supervisor crashed pid=42 message=failed\n00:00 ? unknown-type {\"type\":\"unknown-type\",\"value\":\"future-event\"}\n00:00 ! command failed rc=1: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\u2026\n",
+      "redact": true,
+      "max_text": 60,
+      "show_unknown": true
+    },
+    {
+      "name": "unknown events quiet by default",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"unknown-type\", \"value\": \"future-event\"}"
+        }
+      ],
+      "expected": ""
+    },
+    {
+      "name": "oversize provenance retained in compact output",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"safeyolo.codex.oversize\", \"original_type\": \"item.completed\", \"original_bytes\": 5000, \"omitted_middle_bytes\": 4000, \"sha256\": \"abcdef\", \"summary\": {\"type\": \"agent_message\", \"text\": \"retained message\"}}"
+        }
+      ],
+      "expected": "00:00 # retained message [middle snipped; original_bytes=5000 omitted_bytes=4000 sha256=abcdef]\n",
+      "max_text": 200
+    }
+  ]
+}
