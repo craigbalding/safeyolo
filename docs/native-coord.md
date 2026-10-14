@@ -118,8 +118,9 @@ mode; stored messages are unchanged. `--no-color` or `NO_COLOR` disables color.
 `--compact` selects the updated Python watcher's concise transcript. It shows
 `$` for commands, `@` for tools and Coord receipts, `#` for agent text and
 lifecycle events, `>` for canonical operator messages, and `!` for failures.
-The operator marker comes from the Coord envelope, so agent text cannot copy it
-even with color disabled. Matching successful completions do not
+The operator marker comes from the Coord envelope. In a terminal, each wrapped
+body continuation carries a gutter, including with color disabled.
+Matching successful completions do not
 repeat their start line. A completion whose start precedes the selected history
 is still shown. Failed commands include a redacted final output line. Compact
 mode also shows file-change totals, short token counts and successful skill-file

@@ -1,6 +1,7 @@
 //! Compact operator transcript, matching the updated Python agent-room watcher.
 
 use super::*;
+use unicode_width::UnicodeWidthStr;
 
 // The reference watcher uses Python's readable diagnostic representation for
 // structured errors. Keep it distinct from canonical JSON/raw output modes.
@@ -91,6 +92,10 @@ fn identifier(value: &Value) -> String {
 }
 
 fn clean(display: &Display, text: &str, redact: bool) -> String {
+    clean_limit(text, display.max_text, redact)
+}
+
+fn clean_limit(text: &str, limit: Option<usize>, redact: bool) -> String {
     let text = if redact {
         redact_text(text)
     } else {
@@ -100,25 +105,51 @@ fn clean(display: &Display, text: &str, redact: bool) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    match display.max_text {
-        Some(n) if text.chars().count() > n => {
-            // Omitted-middle provenance remains visible even at short limits,
-            // just as in the rendered view and updated Python watcher.
-            let (detail, marker) = text
-                .rsplit_once(" [middle snipped;")
-                .map(|(detail, marker)| (detail, format!(" [middle snipped;{marker}")))
-                .unwrap_or((&text, String::new()));
-            let count = n.saturating_sub(marker.chars().count()).max(1);
-            format!(
-                "{}…{marker}",
-                detail
-                    .chars()
-                    .take(count.saturating_sub(1))
-                    .collect::<String>()
-            )
-        }
+    match limit {
+        Some(n) if text.chars().count() > n => format!(
+            "{}…",
+            text.chars().take(n.saturating_sub(1)).collect::<String>()
+        ),
         _ => text,
     }
+}
+
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
+    }
+}
+
+fn oversize(kind: &str) -> bool {
+    matches!(kind, "safeyolo.codex.oversize" | "safeyolo.pi.oversize")
+}
+
+fn oversize_event(display: &Display, e: &Value) -> Option<(&'static str, String)> {
+    // Only recognized event metadata gets a bounded provenance allowance.
+    // Ordinary text, including a copied marker, always observes max_text.
+    let mut bounded = e.clone();
+    for key in ["original_bytes", "omitted_middle_bytes"] {
+        bounded[key] = e[key].as_u64().map_or(json!("?"), |n| json!(n));
+    }
+    bounded["sha256"] = json!(
+        e["sha256"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+            .unwrap_or("?")
+    );
+    let (label, text) = event(&bounded, true)?;
+    let (detail, marker) = text.rsplit_once(" [middle snipped;")?;
+    let marker = format!(" [middle snipped;{marker}");
+    let limit = display
+        .max_text
+        .map(|n| n.saturating_sub(marker.chars().count()).max(1));
+    let detail = clean_limit(detail, limit, display.redact);
+    from_rendered(label, format!("{detail}{marker}"))
 }
 
 fn key(event: &Value, item: &Value) -> Option<String> {
@@ -437,14 +468,26 @@ fn render_event(display: &Display, e: &Value) -> Option<(&'static str, String)> 
             ),
             "command_execution" | "local_shell_call" => (
                 "$",
-                item.get("command")
-                    .or_else(|| item.get("action"))
-                    .or_else(|| item.get("arguments"))
-                    .map(string)
+                ["command", "action", "arguments"]
+                    .iter()
+                    .filter_map(|key| item.get(*key))
+                    .find(|v| truthy(v))
+                    .map(|v| diagnostic(v, false))
                     .unwrap_or_default(),
             ),
             "mcp_tool_call" => {
-                let detail = mcp(item, "").trim_start().to_owned();
+                let mut detail = mcp(item, "").trim_start().to_owned();
+                let error = &item["error"];
+                if !error.is_null() {
+                    let suffix = format!(" error={}", string(error));
+                    if let Some(base) = detail.strip_suffix(&suffix) {
+                        detail = if truthy(error) {
+                            format!("{base} error={}", diagnostic(error, false))
+                        } else {
+                            base.into()
+                        };
+                    }
+                }
                 let status = format!(" status={}", get(item, "status", "?"));
                 ("@", detail.replacen(&status, "", 1))
             }
@@ -482,9 +525,7 @@ fn render_event(display: &Display, e: &Value) -> Option<(&'static str, String)> 
             return Some(("!", format!("{} failed", prior.map_or(detail, |(_, s)| s))));
         }
         if item_type == "mcp_tool_call" {
-            if (!item["error"].is_null() && item["error"] != false && item["error"] != "")
-                || item["status"] == "failed"
-            {
+            if truthy(&item["error"]) || item["status"] == "failed" {
                 return Some((
                     "!",
                     format!(
@@ -538,8 +579,8 @@ fn render_event(display: &Display, e: &Value) -> Option<(&'static str, String)> 
             Some((marker, detail))
         };
     }
-    if matches!(kind, "safeyolo.codex.oversize" | "safeyolo.pi.oversize") {
-        return event(e, true).and_then(|(label, text)| from_rendered(label, text));
+    if oversize(kind) {
+        return oversize_event(display, e);
     }
     display.show_unknown.then(|| {
         (
@@ -550,17 +591,31 @@ fn render_event(display: &Display, e: &Value) -> Option<(&'static str, String)> 
 }
 
 pub(super) fn message(display: &Display, message: &Value) -> String {
+    let terminal = std::io::stdout().is_terminal();
+    let color = terminal && !display.no_color && std::env::var_os("NO_COLOR").is_none();
+    message_with_layout(display, message, terminal.then(width), color)
+}
+
+pub(super) fn message_with_layout(
+    display: &Display,
+    message: &Value,
+    columns: Option<usize>,
+    color: bool,
+) -> String {
     let Some(body) = message["body"].as_str() else {
         return String::new();
     };
     let operator = message["sender_kind"] == "operator";
-    let line = if message["sender_kind"] == "agent" {
+    let (line, provenance) = if message["sender_kind"] == "agent" {
         match serde_json::from_str::<Value>(body) {
-            Ok(e) if e.is_object() => render_event(display, &e),
-            _ => Some(("#", body.into())),
+            Ok(e) if e.is_object() => (
+                render_event(display, &e),
+                oversize(e["type"].as_str().unwrap_or_default()),
+            ),
+            _ => (Some(("#", body.into())), false),
         }
     } else {
-        Some(("#", body.to_owned()))
+        (Some(("#", body.to_owned())), false)
     };
     let Some((marker, text)) = line else {
         return String::new();
@@ -568,20 +623,22 @@ pub(super) fn message(display: &Display, message: &Value) -> String {
     // This marker comes only from the canonical envelope, never agent text.
     // Color alone cannot preserve attribution in logs or --plain output.
     let marker = if operator { ">" } else { marker };
-    let text = clean(display, &text, display.redact);
+    let text = if provenance {
+        clean_limit(&text, None, display.redact)
+    } else {
+        clean(display, &text, display.redact)
+    };
     let text = if operator {
         format!("operator: {text}")
     } else {
         text
     };
     let time = timestamp(message).chars().take(5).collect::<String>();
-    if display.no_color
-        || !std::io::stdout().is_terminal()
-        || std::env::var_os("NO_COLOR").is_some()
-    {
-        return format!("{time} {marker} {text}\n");
-    }
-    let time = format!("\x1b[2m{time}\x1b[0m");
+    let rows = if let Some(columns) = columns {
+        wrapped_rows(&time, marker, &text, columns)
+    } else {
+        vec![(format!("{time} {marker} "), text.clone())]
+    };
     let code = match marker {
         "!" => "31;1",
         "?" => "33;1",
@@ -596,9 +653,67 @@ pub(super) fn message(display: &Display, message: &Value) -> String {
         }
         _ => "32",
     };
-    if matches!(marker, "$" | "@") {
-        format!("{time} \x1b[{code}m{marker}\x1b[0m {text}\n")
-    } else {
-        format!("{time} \x1b[{code}m{marker} {text}\x1b[0m\n")
+    let mut output = String::new();
+    for (index, (prefix, body)) in rows.into_iter().enumerate() {
+        if !color {
+            output.push_str(&format!("{prefix}{body}\n"));
+            continue;
+        }
+        if index == 0 {
+            let (time_part, mark_part) =
+                prefix.rsplit_once(marker).unwrap_or(("", prefix.as_str()));
+            output.push_str(&format!(
+                "\x1b[2m{time_part}\x1b[0m\x1b[{code}m{marker}{mark_part}"
+            ));
+            if matches!(marker, "$" | "@") {
+                output.push_str("\x1b[0m");
+            }
+        } else {
+            output.push_str(&format!("\x1b[2m{prefix}\x1b[0m"));
+            if !matches!(marker, "$" | "@") {
+                output.push_str(&format!("\x1b[{code}m"));
+            }
+        }
+        output.push_str(&body);
+        output.push_str("\x1b[0m\n");
     }
+    output
+}
+
+// Plan physical terminal rows before adding color. The existing terminal width
+// leaves a margin; each continuation has a trusted gutter, never body text at
+// column zero. Pipes keep complete logical lines for downstream consumers.
+pub(super) fn wrapped_rows(
+    time: &str,
+    marker: &str,
+    text: &str,
+    columns: usize,
+) -> Vec<(String, String)> {
+    let columns = columns.max(3);
+    let normal = format!("{time} {marker} ");
+    let first = if normal.width() + 2 <= columns {
+        normal
+    } else if columns >= 4 {
+        format!("{marker} ")
+    } else {
+        marker.to_owned()
+    };
+    let gutter = if first.width() >= 2 {
+        format!("{}│ ", " ".repeat(first.width() - 2))
+    } else {
+        "│".into()
+    };
+    let mut prefix = first;
+    let mut body = String::new();
+    let mut rows = Vec::new();
+    for c in text.chars() {
+        let next = format!("{body}{c}");
+        if !body.is_empty() && prefix.width() + next.width() > columns {
+            rows.push((prefix, std::mem::take(&mut body)));
+            prefix = gutter.clone();
+        }
+        body.push(c);
+    }
+    rows.push((prefix, body));
+    rows
 }

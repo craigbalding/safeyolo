@@ -123,6 +123,72 @@
       "expected": "00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n"
     },
     {
+      "name": "null and empty command fields retain the saved start command",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-0\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-0\", \"command\": null, \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-1\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-1\", \"command\": \"\", \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-2\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-2\", \"command\": false, \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-3\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-3\", \"command\": 0, \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-4\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-4\", \"command\": [], \"exit_code\": 0}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-5\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill-5\", \"command\": {}, \"exit_code\": 0}}"
+        }
+      ],
+      "expected": "00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n"
+    },
+    {
       "name": "Coord receipts hide result bodies and suppress empty successful completions",
       "messages": [
         {
@@ -405,6 +471,18 @@
         }
       ],
       "expected": "00:00 # \u2026 [middle snipped; original_bytes=5000 omitted_bytes=4000 sha256=abcdef]\n",
+      "max_text": 40
+    },
+    {
+      "name": "ordinary text cannot claim oversize provenance",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"a [middle snipped;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}}"
+        }
+      ],
+      "expected": "00:00 # a [middle snipped;xxxxxxxxxxxxxxxxxxxxx\u2026\n",
       "max_text": 40
     }
   ]

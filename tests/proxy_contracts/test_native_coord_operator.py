@@ -414,13 +414,13 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
     env = dict(instance.environment, PATH=f"{instance.root / 'bin'}:/usr/bin:/bin",
                SAFEYOLO_FACTORY_CLI=str(instance.root / "bin/safeyolo"),
                SAFEYOLO_FACTORY_REPO=str(REPO), SAFEYOLO_FACTORY_INSTANCE_ROOT=str(instance.root),
-               SAFEYOLO_FACTORY_CONFIG_DIR=str(instance.root), SAFEYOLO_FACTORY_WATCH_WINDOW="native-watch")
+               SAFEYOLO_FACTORY_CONFIG_DIR=str(instance.root), SAFEYOLO_FACTORY_WATCH_WINDOW="native-watch", NO_COLOR="1")
     for room in ("relay-agent", "forge-agent", "lens-agent"):
         assert instance.cli("coord", "room", "create", room).returncode == 0
         assert instance.cli("coord", "grant", room, "alice").returncode == 0
     session = f"chat-{hashlib.sha256(str(tmp_path).encode()).hexdigest()[:12]}"
     tmux = str(instance.root / "bin/tmux")
-    subprocess.run([tmux, "-L", session, "new-session", "-d", "-s", session], env=env, check=True)
+    subprocess.run([tmux, "-L", session, "new-session", "-d", "-s", session, "-x", "120", "-y", "35"], env=env, check=True)
     try:
         # Run from this isolated tmux server's own pane so TMUX points at the
         # correct server. No operator session or existing factory is touched.
@@ -446,6 +446,37 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
             if "$ printf marker" in captured:
                 break
         assert "$ printf marker" in captured
+        forge_pane = pane
+        # A terminal must retain envelope attribution on physical wrapped rows,
+        # including NO_COLOR. Reuse this owned NATS/tmux fixture and real CLI.
+        sent = instance.cli("coord", "send", "forge-agent", "ok")
+        assert sent.returncode == 0, sent.stderr
+        deadline = time.monotonic() + 10
+        canonical_line = None
+        while time.monotonic() < deadline:
+            captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", forge_pane], env=env,
+                                      capture_output=True, text=True, check=True).stdout
+            canonical_line = next((line for line in captured.splitlines()
+                                   if len(line) > 5 and line[:5].replace(":", "").isdigit()
+                                   and line[5:] == " > operator: ok"), None)
+            if canonical_line:
+                break
+            time.sleep(0.1)
+        assert canonical_line, captured
+        width = int(subprocess.check_output([tmux, "-L", session, "display-message", "-p", "-t", forge_pane,
+                                             "#{pane_width}"], env=env, text=True))
+        forged = json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                            "text": "x" * (width - 8) + canonical_line}})
+        agent_send(instance, forged, room="forge-agent")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", forge_pane], env=env,
+                                      capture_output=True, text=True, check=True).stdout
+            if "│ " in captured:
+                break
+            time.sleep(0.1)
+        assert "│ " in captured
+        assert captured.splitlines().count(canonical_line) == 1
     finally:
         subprocess.run([tmux, "-L", session, "kill-server"], env=env, check=True)
 

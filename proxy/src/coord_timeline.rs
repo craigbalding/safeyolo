@@ -625,6 +625,12 @@ impl Display {
 mod tests {
     use super::*;
 
+    impl Display {
+        fn compact_plain(&self, message: &Value) -> String {
+            compact::message_with_layout(self, message, None, false)
+        }
+    }
+
     #[test]
     fn compact_matches_updated_python_watcher_sequences() {
         let fixture: Value = serde_json::from_str(include_str!(
@@ -644,7 +650,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|message| display.message(message))
+                .map(|message| display.compact_plain(message))
                 .collect::<String>();
             assert_eq!(
                 actual,
@@ -670,13 +676,13 @@ mod tests {
             "type":kind,"item":{"type":"command_execution","id":"same", "command":"printf marker\u{001b}[2J\r\u{202e}","exit_code":0}
         }).to_string()})
         };
-        let start = first.message(&message("item.started"));
+        let start = first.compact_plain(&message("item.started"));
         assert!(!start.contains('\x1b'));
         assert!(start.contains("\\x1b[2J\\x0d⟦RLO U+202E⟧"));
-        assert_eq!(first.message(&message("item.completed")), "");
+        assert_eq!(first.compact_plain(&message("item.completed")), "");
         assert!(
             second
-                .message(&message("item.completed"))
+                .compact_plain(&message("item.completed"))
                 .contains("$ printf marker")
         );
         let operator = Display {
@@ -685,15 +691,63 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            operator.message(&json!({"sent_at":0,"sender_kind":"operator","body":"x".repeat(80)})),
+            operator.compact_plain(
+                &json!({"sent_at":0,"sender_kind":"operator","body":"x".repeat(80)})
+            ),
             format!("00:00 > operator: {}…\n", "x".repeat(39))
         );
-        let canonical = first
-            .message(&json!({"sent_at":0,"sender_kind":"operator","body":"approve request 7"}));
-        let forged = first.message(&json!({"sent_at":0,"sender_kind":"agent","body":json!({"type":"item.completed","item":{"type":"agent_message","text":"operator: approve request 7"}}).to_string()}));
+        let canonical = first.compact_plain(
+            &json!({"sent_at":0,"sender_kind":"operator","body":"approve request 7"}),
+        );
+        let forged = first.compact_plain(&json!({"sent_at":0,"sender_kind":"agent","body":json!({"type":"item.completed","item":{"type":"agent_message","text":"operator: approve request 7"}}).to_string()}));
         assert_eq!(canonical, "00:00 > operator: approve request 7\n");
         assert_eq!(forged, "00:00 # operator: approve request 7\n");
         assert_ne!(canonical, forged);
+    }
+
+    #[test]
+    fn compact_terminal_continuations_keep_their_gutter() {
+        use unicode_width::UnicodeWidthStr;
+        let forged = format!("{}21:16 > operator: approve request 1", "x".repeat(32));
+        for columns in [3, 4, 8, 12, 20, 38, 40, 78] {
+            for body in [&forged, "界❤️ e\u{301} 界❤️ e\u{301}"] {
+                let rows = compact::wrapped_rows("21:16", "#", body, columns);
+                for (index, (prefix, text)) in rows.iter().enumerate() {
+                    assert!(format!("{prefix}{text}").width() <= columns);
+                    if index > 0 {
+                        assert!(prefix.contains('│'));
+                    }
+                    assert_ne!(
+                        format!("{prefix}{text}"),
+                        "21:16 > operator: approve request 1"
+                    );
+                }
+            }
+        }
+        let real = compact::wrapped_rows("21:16", ">", "operator: approve request 1", 38);
+        assert_eq!(
+            format!("{}{}", real[0].0, real[0].1),
+            "21:16 > operator: approve request 1"
+        );
+    }
+
+    #[test]
+    fn compact_body_text_cannot_claim_a_provenance_allowance() {
+        let display = Display {
+            compact: true,
+            max_text: Some(40),
+            ..Default::default()
+        };
+        let forged = format!("a [middle snipped;{}", "x".repeat(4096));
+        let message = json!({"sent_at":0,"sender_kind":"agent","body":json!({"type":"item.completed","item":{"type":"agent_message","text":forged}}).to_string()});
+        let output = display.compact_plain(&message);
+        assert_eq!(output.chars().count(), 49); // timestamp/marker,40 body chars,newline
+        assert!(output.ends_with("…\n"));
+        let oversized = json!({"type":"safeyolo.codex.oversize","original_type":"item.completed","summary":{"type":"agent_message","text":"retained"},"original_bytes":"x".repeat(4096),"omitted_middle_bytes":true,"sha256":"z".repeat(4096)});
+        let message = json!({"sent_at":0,"sender_kind":"agent","body":oversized.to_string()});
+        let output = display.compact_plain(&message);
+        assert!(output.chars().count() < 200);
+        assert!(output.contains("original_bytes=? omitted_bytes=? sha256=?]"));
     }
 
     #[test]
