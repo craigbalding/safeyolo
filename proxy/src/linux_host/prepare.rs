@@ -295,6 +295,7 @@ fn runtime_access_changes(runtime: &Path, uid: u32) -> Result<Vec<(PathBuf, Stri
         .map(|p| (p.to_owned(), false))
         .collect();
     let parent = runtime.parent().ok_or("runtime has no parent")?;
+    paths.push((parent.join("gvisor-bin"), false));
     paths.extend(super::runsc::FILES.iter().map(|name| {
         (
             if *name == "runsc" {

@@ -99,12 +99,18 @@ def test_relative_package_directory_selects_its_bundled_payload(native_cli, owne
 def test_runtime_access_preserves_other_acl_rights_and_honors_named_denial(native_cli, owned_stage, world_access):
     parent, _stage = owned_stage
     runtime = payload(parent / "runtime")
+    (runtime.parent / "gvisor-bin").chmod(0o700)
     settings = parent / "prepared.toml"
     arguments = ("--root", parent / "instance", "host", "prepare", "--yes",
                  "--system-runsc", runtime, "--write-settings", settings)
     first = command(native_cli, *arguments)
     assert first.returncode == 0, first.stderr
-    base = json.loads(first.stdout)["linux"]["uid_base"]
+    mapping = json.loads(first.stdout)["linux"]
+    base = mapping["uid_base"]
+    access = command("sudo", "-n", "setpriv", f"--reuid={base}",
+                     f"--regid={mapping['gid_base']}", "--clear-groups",
+                     "/usr/bin/test", "-x", runtime.parent / "gvisor-bin/gvisor_sentry")
+    assert access.returncode == 0, access.stderr
     settings.unlink()
     # An explicit user entry wins over other:: permissions. Widening the
     # mask must not expose another entry's previously masked permissions.
