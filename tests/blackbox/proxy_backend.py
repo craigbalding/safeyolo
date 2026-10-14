@@ -172,7 +172,7 @@ def identity(
     )
     selected = rust_bin or os.environ.get("SAFEYOLO_RUST_PROXY")
     if not selected:
-        selected = suite / "proxy/target/debug/safeyolo-proxy"
+        selected = suite / "proxy/target/release/safeyolo-proxy"
     binary, version = validate_rust_binary(selected)
     binary_source = _nearest_git_root(binary.parent)
     result: dict[str, object] = {

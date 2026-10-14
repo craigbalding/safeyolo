@@ -235,7 +235,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
         )
         if tls:
             config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
-        binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))
+        binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/release/safeyolo-proxy")))
         if not binary.is_file():
             raise FileNotFoundError(f"Build the Rust proxy or set SAFEYOLO_RUST_PROXY: {binary}")
         command = [str(binary)]

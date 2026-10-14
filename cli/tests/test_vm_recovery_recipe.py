@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-GUEST = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", ROOT / "guest/command/target/debug/safeyolo-guest"))
+GUEST = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", ROOT / "guest/command/target/release/safeyolo-guest"))
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Selected native guest probe requires Linux")
 
 

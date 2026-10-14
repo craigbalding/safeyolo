@@ -227,6 +227,7 @@ def test_native_policy_instance_selects_required_guest_inputs(tmp_path, monkeypa
             assert "--artifacts" not in command
         else:
             assert "--artifacts" in command and "--bundle" not in command
+            assert command[command.index("--profile") + 1] == "production"
         if prepared:
             assert command[command.index("--platform-assets") + 1] == str(assets)
             assert "--no-guest-download" not in command
@@ -238,6 +239,70 @@ def test_native_policy_instance_selects_required_guest_inputs(tmp_path, monkeypa
     with pytest.raises(InstallationBoundary), native_policy.native_instance(tmp_path, platform_assets=assets):
         pytest.fail("argv control must stop at installation")
     assert len(observed) == 1
+
+
+@pytest.mark.parametrize("profile", ["production", "debug"])
+def test_native_source_fixture_selects_matching_profile_inputs(monkeypatch, profile):
+    from tests.proxy_contracts.test_native_policy_cli import native_inputs
+
+    monkeypatch.setenv("SAFEYOLO_BUILD_PROFILE", profile)
+    monkeypatch.delenv("SAFEYOLO_NATIVE_ARTIFACTS", raising=False)
+    monkeypatch.delenv("SAFEYOLO_GUEST_ARTIFACTS", raising=False)
+    host, guest, selected = native_inputs()
+    directory = "release" if profile == "production" else "debug"
+    assert selected == profile
+    assert host == REPO / "proxy/target" / directory
+    assert guest == REPO / "guest/command/target" / directory
+
+
+def test_native_product_fixture_refuses_debug_bundle_when_production_is_selected(tmp_path, monkeypatch):
+    from tests.proxy_contracts import test_native_policy_cli as native_policy
+
+    monkeypatch.setenv("SAFEYOLO_NATIVE_BUNDLE", str(tmp_path / "bundle"))
+    monkeypatch.setenv("SAFEYOLO_BUILD_PROFILE", "production")
+
+    def install(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout=f"safeyolo commit={REVISION} profile=debug\n", stderr="")
+
+    monkeypatch.setattr(native_policy.subprocess, "run", install)
+    with pytest.raises(AssertionError), native_policy.native_instance(tmp_path):
+        pytest.fail("A wrong-profile bundle must fail before starting a product process")
+
+
+@pytest.mark.parametrize("profile,wrong_profile", [("production", False), ("debug", False), ("production", True)])
+@pytest.mark.parametrize("job,step_name", [("build", "Build Linux host test inputs"), ("macos-host", "Build and check Mac host test inputs")])
+def test_shared_host_input_step_selects_release_and_refuses_wrong_profile(
+    package_inputs, tmp_path, profile, wrong_profile, job, step_name,
+):
+    import yaml
+
+    source, host, guest, _, _, revision = package_inputs
+    selected = "release" if profile == "production" else "debug"
+    actual = "debug" if wrong_profile else profile
+    for directory, names in ((host, ("safeyolo", "safeyolo-proxy", "safeyolo-coord")),
+                             (guest, ("safeyolo-guest", "safeyolo-coord"))):
+        for name in names:
+            executable(directory / name, f"{name} 0.1.0 commit={revision} profile={actual}")
+            if directory == guest:
+                (guest / f"{name}.version").write_text(f"{name} 0.1.0 commit={revision} profile={actual}\n")
+                (guest / f"{name}.sha256").write_text(builder.sha256(guest / name) + "\n")
+    shutil.copytree(host, source / "proxy/target" / selected)
+    shutil.copytree(guest, source / "guest/command/target" / selected)
+    # Capture Cargo arguments. The normal validator checks real controlled ELF
+    # executables, not an assertion about the compiler output or Mac execution.
+    cargo = source / "scripts/cargo_with_space.sh"
+    cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CARGO_ARGUMENTS"\n')
+    cargo.chmod(0o755)
+    arguments = tmp_path / "cargo-arguments"
+    workflow = yaml.safe_load((REPO / ".github/workflows/guest-test-inputs.yml").read_text())
+    step = next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == step_name)
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=source,
+                 env={**os.environ, "SAFEYOLO_BUILD_PROFILE": profile, "CARGO_ARGUMENTS": str(arguments)})
+    assert ("--release" in arguments.read_text().splitlines()) == (profile == "production")
+    if wrong_profile:
+        assert result.returncode != 0 and "build profile is incorrect" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
 
 
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):

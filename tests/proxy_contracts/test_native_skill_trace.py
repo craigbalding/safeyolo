@@ -25,7 +25,7 @@ TOKEN = "synthetic-native-skill-trace"
 
 @pytest.mark.parametrize("mode", ["enabled", "disabled", "scope-exception", "truncated"])
 def test_native_trace_selectors_and_disabled_control_routes(tmp_path, mode):
-    binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))
+    binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/release/safeyolo-proxy")))
     assert binary.is_file(), "Supply the prepared native proxy; unavailable execution is not a pass"
     data = tmp_path / "data"
     data.mkdir(mode=0o700)

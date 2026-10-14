@@ -16,7 +16,7 @@ binary with the repository Cargo wrapper. The factory uses one build job and
 keeps a 20 GiB filesystem reserve.
 
 ```sh
-CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh build --locked --manifest-path proxy/Cargo.toml
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh build --release --locked --manifest-path proxy/Cargo.toml
 uv run --frozen pytest -q tests/proxy_contracts/test_http_contract.py \
   --proxy-backend rust
 ```
@@ -33,7 +33,7 @@ JUnit result. From the repository root, supply the native binary and a focused
 pytest expression after `--`:
 
 ```sh
-./tests/blackbox/run-tests.sh --proxy --rust-bin "$PWD/proxy/target/debug/safeyolo-proxy" \
+./tests/blackbox/run-tests.sh --proxy --rust-bin "$PWD/proxy/target/release/safeyolo-proxy" \
   -- -k test_readiness
 ```
 

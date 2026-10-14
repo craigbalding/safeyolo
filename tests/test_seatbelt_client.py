@@ -18,7 +18,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "contrib/macos-seatbelt-agent"
 def native_cli():
     selected = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI") or os.environ.get("SAFEYOLO_NATIVE_CLI")
     if not selected:
-        selected = str(Path(__file__).resolve().parents[1] / "proxy/target/debug/safeyolo")
+        selected = str(Path(__file__).resolve().parents[1] / "proxy/target/release/safeyolo")
     cli = Path(selected)
     if not cli.is_file():
         pytest.skip("requires a built native CLI, selected with SAFEYOLO_TEST_NATIVE_CLI")

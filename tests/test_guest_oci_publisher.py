@@ -389,7 +389,7 @@ def test_workflow_initial_source_artifacts_and_token_narrow(initial_publisher):
     build = next(step for step in steps if step.get("name") == "Build the shared native OCI verifier")
     assert build["env"]["SAFEYOLO_BUILD_REVISION"] == initial_publisher["env"]["GUEST_REVISION"]
     assert build["env"]["CARGO_BUILD_JOBS"] == "1"
-    assert build["run"] == "scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci"
+    assert build["run"] == "scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci"
     assert not any("guest/build" in step.get("run", "") for step in steps)
     authenticate = next(step for step in steps if step.get("name") == "Authenticate with the linked repository token")
     assert authenticate["env"] == {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
@@ -433,7 +433,7 @@ def test_initial_workflow_verifies_retained_inputs_before_authentication(
     scripts.mkdir(parents=True)
     shutil.copyfile(ROOT / "scripts/publish_guest_oci.sh", scripts / "publish_guest_oci.sh")
     (scripts / "publish_guest_oci.sh").chmod(0o755)
-    examples = source / "proxy/target/debug/examples"
+    examples = source / "proxy/target/release/examples"
     examples.mkdir(parents=True)
     (examples / "verify_guest_oci").symlink_to(Path(verifier).resolve())
     tools = tmp_path / "bin"
@@ -512,7 +512,7 @@ def test_initial_workflow_verifies_retained_inputs_before_authentication(
         assert json.loads(args_file.read_text()) == [
             "--artifacts", str(runner / "archives"), "--layout", str(runner / "guest-oci"),
             "--version", env["GUEST_VERSION"], "--compatibility", "v1", "--revision", env["GUEST_REVISION"],
-            "--verifier", "proxy/target/debug/examples/verify_guest_oci",
+            "--verifier", "proxy/target/release/examples/verify_guest_oci",
             "--publish", "ghcr.io/craigbalding/safeyolo-guest",
         ]
 

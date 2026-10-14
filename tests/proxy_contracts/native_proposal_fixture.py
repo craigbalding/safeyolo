@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from tests.proxy_contracts.harness import child_process, wait_ready
-from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, DENY, NativeInstance
+from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, DENY, NativeInstance, native_inputs
 
 REPO = Path(__file__).resolve().parents[2]
 ROOM = "proposal-proof"
@@ -69,7 +69,7 @@ class ProposalInstance(NativeInstance):
 
 
 def proposal_instance(tmp_path, *, nats_binary):
-    artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", REPO / "proxy/target/debug"))
+    artifacts, _, _ = native_inputs()
     proxy = Path(os.environ.get("SAFEYOLO_TEST_PROXY", artifacts / "safeyolo-proxy"))
     root = tmp_path / "native"
     environment = dict(os.environ, SAFEYOLO_NATS_TEST_INSTANCE=f"proposal-{tmp_path.name}",

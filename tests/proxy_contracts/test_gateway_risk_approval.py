@@ -178,7 +178,7 @@ def _gateway_files(directory):
     (services / "fixture.yaml").write_text(SERVICE_YAML)
     data = directory / "data"
     data.mkdir()
-    proxy = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/debug/safeyolo-proxy"))
+    proxy = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/release/safeyolo-proxy"))
     binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", proxy.with_name("safeyolo"))), proxy=proxy)
     # launch_proxy's explicit data_dir selects this store, ahead of its API env.
     store_credential(data, VAULT_NAME, VAULT_VALUE, binary=binary)

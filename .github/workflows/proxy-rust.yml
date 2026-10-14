@@ -30,6 +30,8 @@ on:
       - "cli/tests/test_vm_diagnostics.py"
       - "vm/**"
       - ".github/workflows/proxy-rust.yml"
+      - ".github/workflows/guest-test-inputs.yml"
+      - ".github/workflows/ci.yml"
       - "scripts/cargo_with_space.sh"
   push:
     branches: [master, main]
@@ -53,8 +55,9 @@ jobs:
     uses: ./.github/workflows/guest-test-inputs.yml
     with:
       revision: ${{ github.event.pull_request.head.sha || github.sha }}
-      profile: debug
+      profile: production
       architecture: ${{ matrix.architecture }}
+      host_inputs: false
 
   focused-pr:
     name: Quick native checks (Ubuntu)
@@ -89,7 +92,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^proxy/' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -107,7 +110,7 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
-          if grep -Eq '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -134,6 +137,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
+          key: production
           cache-bin: false
           cache-on-failure: true
 
@@ -142,28 +146,28 @@ jobs:
         working-directory: proxy
         run: |
           ../scripts/cargo_with_space.sh fmt --all -- --check
-          ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
+          ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 
       - name: Build the native guest command artifact
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
         env:
-          SAFEYOLO_BUILD_PROFILE: debug
+          SAFEYOLO_BUILD_PROFILE: production
           CARGO_BUILD_JOBS: "1"
         run: scripts/build_guest_command.sh
 
       - name: Check native guest command operations
         if: steps.changes.outputs.guest == 'true'
         run: |
-          scripts/cargo_with_space.sh test --manifest-path guest/command/Cargo.toml --locked
-          scripts/cargo_with_space.sh clippy --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
+          scripts/cargo_with_space.sh test --release --manifest-path guest/command/Cargo.toml --locked
+          scripts/cargo_with_space.sh clippy --release --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
 
       - name: Build the native CLI for recovery and Dispatch checks
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo
 
       - name: Validate the Dispatch publication tree
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.dispatch == 'true'
-        run: proxy/target/debug/safeyolo dispatch check-site
+        run: proxy/target/release/safeyolo dispatch check-site
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -198,7 +202,7 @@ jobs:
       - name: Test guest command staging and bounded native recovery
         if: steps.changes.outputs.guest == 'true'
         env:
-          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/debug/safeyolo-guest
+          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
         run: |
           uv run --frozen pytest -q cli/tests/test_agent_command_supervisor.py \
             cli/tests/test_vm_recovery_recipe.py
@@ -206,38 +210,86 @@ jobs:
       - name: Test native desktop presentation and host entry
         if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
-        run: ../scripts/cargo_with_space.sh test --locked --test desktop_native --test native_host_cli
+        run: ../scripts/cargo_with_space.sh test --release --locked --test desktop_native --test native_host_cli
 
       - name: Test changed Linux platform boundaries
         if: steps.changes.outputs.linux == 'true' && steps.changes.outputs.rust == 'true'
         working-directory: proxy
-        run: ../scripts/cargo_with_space.sh test --locked --test native_runtime_dependency
+        run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency
 
       - name: Test focused native boundaries
         if: steps.changes.outputs.rust == 'true'
         timeout-minutes: 10
         working-directory: proxy
         run: |
-          ../scripts/cargo_with_space.sh test --locked --test version
-          ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
-          ../scripts/cargo_with_space.sh test --locked --test tls existing_rsa_ca_formats_survive_native_import_and_restart -- --exact
-          ../scripts/cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
-          ../scripts/cargo_with_space.sh test --locked --lib native_config::tests
-          ../scripts/cargo_with_space.sh test --locked --lib policy::native::tests
-          ../scripts/cargo_with_space.sh test --locked --lib guest_acquisition::tests
-          ../scripts/cargo_with_space.sh test --locked --lib boot_
-          ../scripts/cargo_with_space.sh test --locked --test command_centre_lifecycle
+          ../scripts/cargo_with_space.sh test --release --locked --test version
+          ../scripts/cargo_with_space.sh test --release --locked --test agent_api_audit
+          ../scripts/cargo_with_space.sh test --release --locked --test tls existing_rsa_ca_formats_survive_native_import_and_restart -- --exact
+          ../scripts/cargo_with_space.sh test --release --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
+          ../scripts/cargo_with_space.sh test --release --locked --lib native_config::tests
+          ../scripts/cargo_with_space.sh test --release --locked --lib policy::native::tests
+          ../scripts/cargo_with_space.sh test --release --locked --lib guest_acquisition::tests
+          ../scripts/cargo_with_space.sh test --release --locked --lib boot_
+          ../scripts/cargo_with_space.sh test --release --locked --test command_centre_lifecycle
+
+      - name: Install the pinned Codex execpolicy test consumer
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
+          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
+          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
+          # npm can omit a corrupt optional package. Refuse global module fallback.
+          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
+          const path = require('node:path');
+          const { createRequire } = require('node:module');
+          const modules = path.resolve(process.argv[2], 'node_modules');
+          const wrapper = path.join(modules, '@openai/codex/package.json');
+          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
+          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
+            throw new Error('Codex must use the locked local platform package');
+          }
+          JS
+          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
+          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
+
 
       - name: Test installed native policy commands
         if: steps.changes.outputs.rust == 'true'
         run: |
-          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-proxy
+          scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
           uv run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py --basetemp "$RUNNER_TEMP/native-policy"
+          uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
+            tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
+            --basetemp "$RUNNER_TEMP/native-factory"
           uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py --basetemp "$RUNNER_TEMP/guest-selection"
 
-      - name: Save actual master CI debug runtimes
+      - name: Retain checked Linux production inputs
+        if: steps.changes.outputs.rust == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-host-amd64-production
+          path: |
+            proxy/target/release/safeyolo
+            proxy/target/release/safeyolo-coord
+            proxy/target/release/safeyolo-proxy
+          retention-days: 7
+          if-no-files-found: error
+      - name: Retain matching Linux guest inputs
+        if: steps.changes.outputs.rust == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-guest-amd64-production
+          path: |
+            guest/command/target/release/safeyolo-guest*
+            guest/command/target/release/safeyolo-coord*
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
-        run: uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"
+        run: |
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo-proxy
+          uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
         with:
@@ -281,6 +333,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
+          key: production
           cache-bin: false
           cache-on-failure: true
 
@@ -290,7 +343,7 @@ jobs:
           ../scripts/cargo_with_space.sh fmt --all -- --check
           host_target="$(rustc -vV | sed -n 's/^host: //p')"
           test -n "$host_target"
-          ../scripts/cargo_with_space.sh clippy --locked --target "$host_target" --all-targets -- -D warnings
+          ../scripts/cargo_with_space.sh clippy --release --locked --target "$host_target" --all-targets -- -D warnings
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -395,12 +448,12 @@ jobs:
           runner_variable="CARGO_TARGET_${runner_target}_RUNNER"
           export CARGO_BUILD_TARGET="$host_target"
           export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
-          ../scripts/cargo_with_space.sh test --locked
-          ../scripts/cargo_with_space.sh build --locked
-          rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
+          ../scripts/cargo_with_space.sh test --release --locked
+          ../scripts/cargo_with_space.sh build --release --locked
+          rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/release/safeyolo-proxy"
           test -x "$rust_proxy"
           printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
-          native_cli="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo"
+          native_cli="$GITHUB_WORKSPACE/proxy/target/$host_target/release/safeyolo"
           test -x "$native_cli"
           printf 'SAFEYOLO_NATIVE_CLI=%s\n' "$native_cli" >> "$GITHUB_ENV"
           printf 'SAFEYOLO_NATIVE_ARTIFACTS=%s\n' "$(dirname "$native_cli")" >> "$GITHUB_ENV"
@@ -439,29 +492,29 @@ jobs:
       - name: Download matching Linux guest test inputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-debug
-          path: guest/command/target/debug
+          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
+          path: guest/command/target/release
 
       - name: Restore Linux guest executable permissions
-        run: chmod +x guest/command/target/debug/safeyolo-guest guest/command/target/debug/safeyolo-coord
+        run: chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
 
       - name: Download macOS package terminal input
         if: matrix.os == 'macos-latest'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-guest-terminal-arm64-debug
+          name: linux-guest-terminal-arm64-production
           path: ${{ runner.temp }}/native-contract-vm
 
       - name: Prepare macOS VM package inputs
         if: matrix.os == 'macos-latest'
         run: |
           chmod +x "$RUNNER_TEMP/native-contract-vm/vsock-term"
-          make -C vm PROFILE=development install-helper INSTALL_DIR="$RUNNER_TEMP/native-contract-vm"
+          make -C vm PROFILE=production install-helper INSTALL_DIR="$RUNNER_TEMP/native-contract-vm"
 
       - name: Run native proxy component contracts
         env:
           PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
-          SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/debug
+          SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
           SAFEYOLO_NATIVE_VM_ARTIFACTS: ${{ matrix.os == 'macos-latest' && format('{0}/native-contract-vm', runner.temp) || '' }}
         run: uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
@@ -491,6 +544,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
+          key: production
           cache-bin: false
           cache-on-failure: true
 
@@ -509,10 +563,13 @@ jobs:
       - name: Test changed native platform boundaries
         if: needs.focused-pr.outputs.rust == 'true'
         working-directory: proxy
-        run: ../scripts/cargo_with_space.sh test --locked --test native_runtime_dependency --test native_host_cli --test native_host_identity
-      - name: Save actual master CI debug runtimes
+        run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency --test native_host_cli --test native_host_identity
+      - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.focused-pr.outputs.rust == 'true'
-        run: uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"
+        run: |
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo-proxy
+          make -C vm PROFILE=development build
+          uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.focused-pr.outputs.rust == 'true'
         with:

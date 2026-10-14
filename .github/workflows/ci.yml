@@ -28,10 +28,12 @@ jobs:
     uses: ./.github/workflows/guest-test-inputs.yml
     with:
       revision: ${{ github.event.pull_request.head.sha || github.sha }}
-      profile: debug
+      profile: production
       architecture: ${{ matrix.architecture }}
 
   test-addons:
+    needs: guest-inputs
+    if: ${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}
     name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     runs-on: ${{ matrix.os }}
     # #911 records the supported-host timings and incomplete Mac measurement.
@@ -75,8 +77,33 @@ jobs:
             tests/test_proxy_rust_ci_events.py tests/test_workflow_action_pins.py \
             tests/test_host_packages.py
 
+      - name: Download production native test inputs
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ runner.os == 'macOS' && 'darwin-host-arm64-production' || 'linux-host-amd64-production' }}
+          path: proxy/target/release
+
+      - name: Download production guest test inputs
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
+          path: guest/command/target/release
+
+      - name: Restore native test executable permissions
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          chmod +x proxy/target/release/safeyolo proxy/target/release/safeyolo-coord proxy/target/release/safeyolo-proxy
+          chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
+
       - name: All retained Python tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          SAFEYOLO_NATIVE_ARTIFACTS: ${{ github.workspace }}/proxy/target/release
+          SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
+          SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
+          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
         run: >-
           uv run --frozen pytest tests/ -v --tb=short
           --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/
@@ -146,54 +173,33 @@ jobs:
           uv run --frozen pytest -q cli/tests/test_config.py cli/tests/test_api.py \
             cli/tests/test_sockets.py cli/tests/test_rust_proxy.py
 
-      - name: Install the pinned Rust toolchain
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        working-directory: proxy
-        run: |
-          rustup show active-toolchain
-          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
-
-      - name: Restore Rust dependency cache
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: |
-            proxy -> target
-          cache-bin: false
-          cache-on-failure: true
-
-      - name: Download Linux guest test inputs
+      - name: Download production native test inputs
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-debug
-          path: guest/command/target/debug
+          name: ${{ runner.os == 'macOS' && 'darwin-host-arm64-production' || 'linux-host-amd64-production' }}
+          path: proxy/target/release
 
-      - name: Download Linux host test inputs
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      - name: Download production guest test inputs
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-host-amd64-debug
-          path: proxy/target/debug
+          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
+          path: guest/command/target/release
 
-      - name: Restore native executable permissions
+      - name: Restore native test executable permissions
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          chmod +x guest/command/target/debug/safeyolo-guest guest/command/target/debug/safeyolo-coord
-          if [ "$RUNNER_OS" = Linux ]; then chmod +x proxy/target/debug/safeyolo proxy/target/debug/safeyolo-coord proxy/target/debug/safeyolo-proxy; fi
-
-      - name: Build Mac host recovery and Coord test inputs
-        if: runner.os == 'macOS' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        env:
-          SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          CARGO_BUILD_JOBS: "1"
-        run: |
-          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
+          chmod +x proxy/target/release/safeyolo proxy/target/release/safeyolo-coord proxy/target/release/safeyolo-proxy
+          chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
 
       - name: All retained CLI tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
-          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/debug/safeyolo-guest
+          SAFEYOLO_NATIVE_ARTIFACTS: ${{ github.workspace }}/proxy/target/release
+          SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
+          SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
+          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
         run: uv run --frozen pytest cli/tests/ -v --tb=short
 
   lint:

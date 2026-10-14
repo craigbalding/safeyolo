@@ -27,6 +27,7 @@ jobs:
       revision: ${{ github.sha }}
       profile: production
       architecture: arm64
+      host_inputs: false
 
   systrap:
     name: Installed guest sections and host continuity — Linux systrap

@@ -54,7 +54,7 @@ def _guest_state(name: str, command: str) -> dict:
 
 def _stage_guest_supervisor_artifact(tmp_path: Path) -> tuple[Path, Path]:
     """Use the built native helper with explicit isolated fixture paths."""
-    binary = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).resolve().parents[2] / "guest/command/target/debug/safeyolo-guest")))
+    binary = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).resolve().parents[2] / "guest/command/target/release/safeyolo-guest")))
     artifact_dir = tmp_path / "isolated-config-share"
     artifact_dir.mkdir()
     workspace = tmp_path / "guest-workspace"

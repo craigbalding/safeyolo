@@ -29,7 +29,7 @@ OBJECT = {"msg_id": "msg-task", "sequence": 42, "room_id": "rm-backlog", "sender
 
 @pytest.fixture
 def binary():
-    path = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", ROOT / "proxy/target/debug/safeyolo-coord"))
+    path = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", ROOT / "proxy/target/release/safeyolo-coord"))
     assert path.is_file(), "Build safeyolo-coord before running the native supervisor tests"
     return path
 

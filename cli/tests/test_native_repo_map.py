@@ -14,7 +14,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from test_repo_map import _git, _repository
 
-BINARY = Path(__file__).resolve().parents[2] / "proxy/target/debug/safeyolo-coord"
+BINARY = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", Path(__file__).resolve().parents[2] / "proxy/target/release")) / "safeyolo-coord"
 # macOS accepts UTF-8 filenames; Linux also retains arbitrary pathname bytes.
 FILENAMES = (
     st.text(alphabet=st.characters(min_codepoint=32, max_codepoint=126, exclude_characters="/") | st.sampled_from("éµ漢字́"),

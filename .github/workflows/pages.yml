@@ -30,14 +30,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: proxy -> target
+          key: production
           cache-bin: false
       - name: Build the native Dispatch command
         env:
           CARGO_BUILD_JOBS: "1"
           SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo
       - name: Validate publication tree
-        run: proxy/target/debug/safeyolo dispatch check-site
+        run: proxy/target/release/safeyolo dispatch check-site
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:

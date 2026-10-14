@@ -88,7 +88,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "1"
           SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
       - name: Prepare and verify the complete release without registry writes
         env:
           GUEST_VERSION: ${{ inputs.version }}
@@ -98,7 +98,7 @@ jobs:
           scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/debug/examples/verify_guest_oci
+            --verifier proxy/target/release/examples/verify_guest_oci
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: verified-guest-oci-layout
@@ -156,15 +156,15 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "1"
           SAFEYOLO_BUILD_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
       - name: Verify original retained inputs before registry authentication
         run: |
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
-          proxy/target/debug/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
+          proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
           scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/debug/examples/verify_guest_oci
+            --verifier proxy/target/release/examples/verify_guest_oci
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
       - name: Authenticate with the linked repository token
         env:
@@ -175,5 +175,5 @@ jobs:
           scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/debug/examples/verify_guest_oci \
+            --verifier proxy/target/release/examples/verify_guest_oci \
             --publish ghcr.io/craigbalding/safeyolo-guest

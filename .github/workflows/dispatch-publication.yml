@@ -30,18 +30,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: proxy -> target
+          key: production
           cache-bin: false
       - name: Build the native Dispatch command
         env:
           CARGO_BUILD_JOBS: "1"
           SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha }}
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo
       - name: Validate generated content, metadata, links, and hygiene
-        run: proxy/target/debug/safeyolo dispatch check-site
+        run: proxy/target/release/safeyolo dispatch check-site
       - name: Enforce the publication-branch path boundary
         if: startsWith(github.head_ref, 'dispatch/')
         run: >-
-          proxy/target/debug/safeyolo dispatch check-site
+          proxy/target/release/safeyolo dispatch check-site
           --publication-base "${{ github.event.pull_request.base.sha }}"
 
   build:

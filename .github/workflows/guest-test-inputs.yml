@@ -1,4 +1,4 @@
-name: Linux guest test inputs
+name: Native test inputs
 
 on:
   workflow_call:
@@ -12,6 +12,9 @@ on:
       architecture:
         default: amd64
         type: string
+      host_inputs:
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -37,22 +40,31 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
+          key: ${{ inputs.profile }}
           cache-bin: false
       - name: Build Linux guest executables and receipts
         run: scripts/build_guest_command.sh
       - name: Build Linux host test inputs
-        if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
-        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
+        if: inputs.host_inputs && inputs.architecture == 'amd64'
+        run: |
+          options=()
+          if [ "$SAFEYOLO_BUILD_PROFILE" = production ]; then options+=(--release); fi
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy "${options[@]}"
+          source scripts/native_package.sh
+          directory=debug
+          if [ "$SAFEYOLO_BUILD_PROFILE" = production ]; then directory=release; fi
+          verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
       - name: Upload Linux host test inputs
-        if: inputs.profile == 'debug' && inputs.architecture == 'amd64'
+        if: inputs.host_inputs && inputs.architecture == 'amd64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: linux-host-${{ inputs.architecture }}-debug
+          name: linux-host-${{ inputs.architecture }}-${{ inputs.profile }}
           path: |
-            proxy/target/debug/safeyolo
-            proxy/target/debug/safeyolo-coord
-            proxy/target/debug/safeyolo-proxy
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-proxy
           if-no-files-found: error
+
       - name: Build Linux guest terminal input
         if: inputs.architecture == 'arm64'
         run: |
@@ -76,4 +88,48 @@ jobs:
           path: |
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest*
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord*
+          if-no-files-found: error
+
+  macos-host:
+    if: inputs.host_inputs && inputs.architecture == 'arm64'
+    needs: build
+    runs-on: macos-latest
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: proxy -> target
+          key: ${{ inputs.profile }}
+          cache-bin: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-arm64-${{ inputs.profile }}
+          path: guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}
+      - name: Build and check Mac host test inputs
+        env:
+          SAFEYOLO_BUILD_PROFILE: ${{ inputs.profile }}
+        run: |
+          options=() directory=debug
+          if [ "$SAFEYOLO_BUILD_PROFILE" = production ]; then options+=(--release); directory=release; fi
+          chmod +x "guest/command/target/$directory/safeyolo-guest" "guest/command/target/$directory/safeyolo-coord"
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy "${options[@]}"
+          source scripts/native_package.sh
+          verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: darwin-host-arm64-${{ inputs.profile }}
+          path: |
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-proxy
           if-no-files-found: error

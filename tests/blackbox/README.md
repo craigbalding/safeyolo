@@ -507,8 +507,8 @@ binary, then select a relevant test module:
 
 ```sh
 uv sync --frozen --group dev
-CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh build --locked --manifest-path proxy/Cargo.toml
-SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh build --release --locked --manifest-path proxy/Cargo.toml
+SAFEYOLO_RUST_PROXY="$PWD/proxy/target/release/safeyolo-proxy" \
   uv run --frozen pytest -q tests/proxy_contracts/test_https_contract.py --proxy-backend rust
 ```
 

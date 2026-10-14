@@ -44,6 +44,8 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
         "cli/tests/test_vm_control.py",
         "cli/tests/test_vm_diagnostics.py",
         ".github/workflows/proxy-rust.yml",
+        ".github/workflows/guest-test-inputs.yml",
+        ".github/workflows/ci.yml",
         "scripts/cargo_with_space.sh",
     ):
         assert path in paths
@@ -131,12 +133,12 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     site_check = steps["Validate the Dispatch publication tree"]
     assert "--bin safeyolo" in cli_build["run"]
     assert step_names.index(cli_build["name"]) < step_names.index(site_check["name"])
-    assert site_check["run"] == "proxy/target/debug/safeyolo dispatch check-site"
+    assert site_check["run"] == "proxy/target/release/safeyolo dispatch check-site"
     assert "--ignored" not in native["run"]
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
         "cargo_with_space.sh fmt --all -- --check",
-        "cargo_with_space.sh clippy --locked --all-targets -- -D warnings",
+        "cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings",
         "cli/tests/test_rust_proxy.py",
         "cli/tests/test_sockets.py",
         "tests/test_proxy_rust_coord_fixture.py",
@@ -145,18 +147,18 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "--test native_runtime_dependency",
         "tests/test_blackbox_harness.py",
         "tests/proxy_contracts/test_readiness.py",
-        "cargo_with_space.sh test --locked --test agent_api_audit",
-        "cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact",
-        "cargo_with_space.sh test --locked --lib native_config::tests",
-        "cargo_with_space.sh test --locked --lib policy::native::tests",
+        "cargo_with_space.sh test --release --locked --test agent_api_audit",
+        "cargo_with_space.sh test --release --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact",
+        "cargo_with_space.sh test --release --locked --lib native_config::tests",
+        "cargo_with_space.sh test --release --locked --lib policy::native::tests",
     ):
         assert required in runs
-    assert "../scripts/cargo_with_space.sh test --locked --lib" not in native["run"].splitlines()
+    assert "../scripts/cargo_with_space.sh test --release --locked --lib" not in native["run"].splitlines()
     # The concurrent resource observation remains in the final full suite;
     # it does not turn each intermediate PR's focused check into a load probe.
     assert "repeated_service_oauth_activity_runs_concurrently" not in runs
     full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["contracts"]["steps"])
-    assert "cargo_with_space.sh test --locked" in full_runs
+    assert "cargo_with_space.sh test --release --locked" in full_runs
     assert not any("tests/proxy_contracts --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 
@@ -232,9 +234,13 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     ("docs/DEVELOPERS.md", {}, "available"),
     ("site/index.md", {"dispatch": "true"}, "available"),
     (".github/workflows/pages.yml", {"dispatch": "true"}, "available"),
+    (".github/workflows/proxy-rust.yml", {"rust": "true", "macos": "true"}, "available"),
+    (".github/workflows/guest-test-inputs.yml", {"rust": "true", "macos": "true"}, "available"),
+    (".github/workflows/ci.yml", {"rust": "true", "macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {}, "missing"),
     ("proxy/src/host_platform.rs", {}, "failing"),
-], ids=["linux-only", "mac-only", "shared-native", "docs-only", "dispatch-content", "dispatch-workflow", "missing-grep", "failing-grep"])
+], ids=["linux-only", "mac-only", "shared-native", "docs-only", "dispatch-content", "dispatch-workflow",
+        "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "missing-grep", "failing-grep"])
 def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected, matcher):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
