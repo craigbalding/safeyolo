@@ -419,7 +419,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
     environment = {**environment, "HOME": str(guest_store.parents[3]),
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
-    result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
+    result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
                             env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     selection = (root / "share/guest-selection.json").read_bytes()

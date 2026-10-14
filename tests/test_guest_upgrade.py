@@ -339,7 +339,7 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
     environment = {**environment, "HOME": str(guest_store.parents[3]),
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-upgrade-installed", "TERM": "xterm-256color"}
     result = subprocess.run([str(Path(bundle) / "install.sh"), "--root", str(root),
-                             "--command-dir", str(root / "commands")], env=environment,
+                             "--command-dir", str(root / "commands"), "--yes"], env=environment,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     cli = root / "bin/safeyolo"
