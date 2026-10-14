@@ -15,9 +15,15 @@ from pathlib import Path
 import pytest
 
 from tests.test_guest_acquisition import compressed_archive, digest, release
+from tests.test_guest_acquisition import guest_store as _guest_store
+from tests.test_guest_acquisition import registry as _registry
+from tests.test_host_packages import package_inputs as _package_inputs
 from tests.test_host_packages import run
 
-pytest_plugins = ["tests.test_guest_acquisition", "tests.test_host_packages"]
+# Reuse fixtures in standalone and combined collection without plugin registration.
+guest_store = _guest_store
+registry = _registry
+package_inputs = _package_inputs
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASES = "/craigbalding/safeyolo/releases"
@@ -275,6 +281,58 @@ def test_state_created_during_guest_download_is_preserved(public_release, guest_
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
+@pytest.mark.parametrize("target_exists", [True, False], ids=["executable", "dangling"])
+def test_command_symlink_created_at_publication_is_preserved_and_refused(public_release, tmp_path, target_exists):
+    _contents, _requests, _faults, environment, bootstrap, root, _base, _archive = public_release
+    commands = Path(environment["HOME"]) / ".local/bin"
+    command = commands / "safeyolo"
+    target = tmp_path / "operator-command"
+    original = b"#!/bin/sh\necho unrelated operator command\n"
+    if target_exists:
+        target.write_bytes(original)
+        target.chmod(0o755)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    mkdir = tools / "mkdir"
+    # Create the collision after the installer's final directory creation,
+    # beyond the conflict checks exercised by the paused-download controls.
+    mkdir.write_text(
+        '#!/bin/bash\nset -e\n"$PUBLIC_TEST_MKDIR" "$@"\n'
+        'if [[ $# == 2 && $1 == -p && $2 == "$PUBLIC_TEST_COMMAND_DIR" ]]; then\n'
+        '  ln -s "$PUBLIC_TEST_COMMAND_TARGET" "$PUBLIC_TEST_COMMAND_DIR/safeyolo"\n'
+        'fi\n'
+    )
+    mkdir.chmod(0o755)
+    environment = {**environment, "PATH": f"{tools}:{environment['PATH']}",
+                   "PUBLIC_TEST_MKDIR": shutil.which("mkdir"),
+                   "PUBLIC_TEST_COMMAND_DIR": str(commands), "PUBLIC_TEST_COMMAND_TARGET": str(target)}
+    refused = run("bash", str(bootstrap), "--no-guest-download", env=environment)
+    assert refused.returncode != 0, (refused.stdout, refused.stderr)
+    assert "was preserved" in refused.stderr and "--command-dir" in refused.stderr
+    assert "Installed SafeYolo" not in refused.stdout
+    assert command.is_symlink() and command.readlink() == target
+    if target_exists:
+        assert target.read_bytes() == original
+        invoked = run(str(command), "--version", env=environment)
+        assert invoked.returncode == 0 and invoked.stdout == "unrelated operator command\n"
+    else:
+        assert not target.exists()
+    # Activation can precede a late command conflict. Preserve that valid
+    # installation so retry can select a separate command directory.
+    assert (root / "config.toml").is_file()
+    assert not list(root.parent.glob("safeyolo-install.*"))
+    assert not root.with_name(root.name + ".install-lock").exists()
+    state = {name: (root / name).read_bytes() for name in ("config.toml", "policy.toml", "data/instance_id")}
+    recovered_commands = tmp_path / "recovered-commands"
+    retried = run("bash", str(bootstrap), "--command-dir", str(recovered_commands), env=environment)
+    assert retried.returncode == 0, retried.stderr
+    assert (recovered_commands / "safeyolo").resolve() == root / "bin/safeyolo"
+    assert all((root / name).read_bytes() == data for name, data in state.items())
+    assert command.is_symlink() and command.readlink() == target
 
 
 @pytest.mark.parametrize("system,architecture", [("Darwin", "x86_64"), ("Linux", "riscv64"), ("Other", "arm64")])

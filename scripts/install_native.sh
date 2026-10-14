@@ -129,12 +129,12 @@ check_command_entry() {
   if $command_on_path; then
     discovered=$(command -v safeyolo || true)
     if [[ -n $discovered && ! $discovered -ef $command_target ]]; then
-      echo "Existing command $discovered was preserved. Select a separate --command-dir or move that command yourself before retrying; no instance state was changed." >&2; return 1
+      echo "Existing command $discovered was preserved. Select a separate --command-dir or move that command yourself before retrying." >&2; return 1
     fi
   fi
   if [[ -e $command_entry || -L $command_entry ]]; then
     if [[ ! -L $command_entry ]] || { [[ ! $command_entry -ef $command_target ]] && [[ $(readlink "$command_entry") != "$command_target" ]]; }; then
-      echo "Existing command $command_entry was preserved. Move or rename it yourself, or select another command directory with --command-dir; no instance state was changed." >&2
+      echo "Existing command $command_entry was preserved. Move or rename it yourself, or select another command directory with --command-dir." >&2
       return 1
     fi
   fi
@@ -214,6 +214,10 @@ if [[ ! -L $command_entry ]]; then
   if [[ $(uname -s) == Darwin ]]; then link_options+=(-h); else link_options+=(-T); fi
   ${command_install[@]+"${command_install[@]}"} ln "${link_options[@]}" "$command_target" "$command_entry"
 fi
+check_command_entry
+[[ $command_entry -ef $command_target ]] || {
+  echo "Command entry $command_entry does not select $command_target. Installation at $root was preserved. Check the command directory and retry, or select a separate --command-dir." >&2; exit 1
+}
 echo "Installed SafeYolo: $root"
 echo "Command: $command_entry"
-"$root/bin/safeyolo" --version
+"$command_entry" --version
