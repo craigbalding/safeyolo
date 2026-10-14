@@ -12,69 +12,13 @@ import os
 import shutil
 import sqlite3
 import subprocess
-import tempfile
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from tests.proxy_contracts.test_native_policy_cli import GUEST_BINARIES, HOST_BINARIES, REPO, native_instance
-
-
-def factory_install_inputs(directory):
-    """Omit unused debugger data from private Linux source-fixture copies.
-
-    Factory checks execute commands and check their build identities and bytes.
-    They do not use a debugger or inspect source locations in native backtraces.
-    Keep original inputs intact and let the normal installer check the copies.
-    """
-    if os.uname().sysname != "Linux":
-        return None
-    bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
-    if bundle:
-        bundle = Path(bundle)
-        if "profile=production" in (bundle / "package-info").read_text().splitlines():
-            return ["--bundle", str(bundle)]
-        host, guest = bundle / "bin", bundle / "assets/guest"
-        validation = ['source "$1"; verify_native_package "$2"', str(bundle)]
-    else:
-        host = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
-        guest = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")))
-        validation = ['source "$1"; verify_native_artifacts "$2" "$3" debug "$(host_platform)"', str(host), str(guest)]
-    # Check supplied receipts before making new receipts for transformed bytes.
-    subprocess.run(["bash", "-ec", validation[0], "fixture", str(REPO / "scripts/native_package.sh"), *validation[1:]],
-                   check=True, capture_output=True, text=True, timeout=15)
-    if bundle:
-        def omit_binaries(path, names):
-            return set(HOST_BINARIES) if Path(path) == host else set(GUEST_BINARIES) if Path(path) == guest else set()
-
-        shutil.copytree(bundle, directory, ignore=omit_binaries)
-        copied_host, copied_guest = directory / "bin", directory / "assets/guest"
-    else:
-        copied_host, copied_guest = directory / "host", directory / "guest"
-        copied_host.mkdir(parents=True)
-        copied_guest.mkdir()
-    for source, target, names in ((host, copied_host, HOST_BINARIES), (guest, copied_guest, GUEST_BINARIES)):
-        for name in names:
-            subprocess.run(["strip", "--strip-debug", "-o", str(target / name), str(source / name)],
-                           check=True, capture_output=True, text=True, timeout=15)
-    for name in GUEST_BINARIES:
-        shutil.copyfile(guest / f"{name}.version", copied_guest / f"{name}.version")
-        with (copied_guest / name).open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        (copied_guest / f"{name}.sha256").write_text(digest + "\n")
-    if bundle:
-        sums = []
-        for line in (bundle / "SHA256SUMS").read_text().splitlines():
-            _, name = line.split("  ", 1)
-            with (directory / name).open("rb") as stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            sums.append(f"{digest}  {name}\n")
-        (directory / "SHA256SUMS").write_text("".join(sums))
-        return ["--bundle", str(directory)]
-    return ["--artifacts", str(copied_host), "--guest-artifacts", str(copied_guest),
-            "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug"]
+from tests.proxy_contracts.test_native_policy_cli import native_instance
 
 
 def contract(directory, *, mixed=True):
@@ -125,9 +69,7 @@ def cli(instance, *arguments):
 
 @contextmanager
 def prepared(directory, nats_binary):
-    with tempfile.TemporaryDirectory(prefix="factory-inputs-", dir=directory) as scratch, native_instance(
-        directory, source=None, agent_api=True, install_inputs=factory_install_inputs(Path(scratch) / "inputs"),
-    ) as instance:
+    with native_instance(directory, source=None, agent_api=True) as instance:
         # Ordinary shell utilities are production prerequisites. No Python,
         # package import path or source-checkout helper is in the command PATH.
         tools = directory / "tools"

@@ -27,7 +27,7 @@ def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
 
-def executable(path, identity, guest_exit=None, guest_assets=None, *, debug=False):
+def executable(path, identity, guest_exit=None, guest_assets=None):
     # Real ELF header/architecture, controlled identity; never a runtime witness.
     source = path.with_suffix(".c")
     guest_command = ""
@@ -46,7 +46,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None, *, debug=Fals
         guest_command += '}'
     source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
                       f'int main(int argc,char **argv){{{guest_command}puts("{identity}");return 0;}}\n')
-    subprocess.run(["cc", *(["-g"] if debug else []), str(source), "-o", str(path)], check=True, timeout=15)
+    subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 
 
@@ -227,6 +227,7 @@ def test_native_policy_instance_selects_required_guest_inputs(tmp_path, monkeypa
             assert "--artifacts" not in command
         else:
             assert "--artifacts" in command and "--bundle" not in command
+            assert command[command.index("--profile") + 1] == "production"
         if prepared:
             assert command[command.index("--platform-assets") + 1] == str(assets)
             assert "--no-guest-download" not in command
@@ -240,76 +241,68 @@ def test_native_policy_instance_selects_required_guest_inputs(tmp_path, monkeypa
     assert len(observed) == 1
 
 
-@pytest.mark.parametrize("bundle", [False, True], ids=["source", "bundle"])
-def test_factory_fixture_copies_omit_debug_data_and_keep_checked_identity(package_inputs, tmp_path, monkeypatch, bundle):
-    from tests.proxy_contracts.test_native_factory_cli import factory_install_inputs
+@pytest.mark.parametrize("profile", ["production", "debug"])
+def test_native_source_fixture_selects_matching_profile_inputs(monkeypatch, profile):
+    from tests.proxy_contracts.test_native_policy_cli import native_inputs
+
+    monkeypatch.setenv("SAFEYOLO_BUILD_PROFILE", profile)
+    monkeypatch.delenv("SAFEYOLO_NATIVE_ARTIFACTS", raising=False)
+    monkeypatch.delenv("SAFEYOLO_GUEST_ARTIFACTS", raising=False)
+    host, guest, selected = native_inputs()
+    directory = "release" if profile == "production" else "debug"
+    assert selected == profile
+    assert host == REPO / "proxy/target" / directory
+    assert guest == REPO / "guest/command/target" / directory
+
+
+def test_native_product_fixture_refuses_debug_bundle_when_production_is_selected(tmp_path, monkeypatch):
+    from tests.proxy_contracts import test_native_policy_cli as native_policy
+
+    monkeypatch.setenv("SAFEYOLO_NATIVE_BUNDLE", str(tmp_path / "bundle"))
+    monkeypatch.setenv("SAFEYOLO_BUILD_PROFILE", "production")
+
+    def install(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout=f"safeyolo commit={REVISION} profile=debug\n", stderr="")
+
+    monkeypatch.setattr(native_policy.subprocess, "run", install)
+    with pytest.raises(AssertionError), native_policy.native_instance(tmp_path):
+        pytest.fail("A wrong-profile bundle must fail before starting a product process")
+
+
+@pytest.mark.parametrize("profile,wrong_profile", [("production", False), ("debug", False), ("production", True)])
+@pytest.mark.parametrize("job,step_name", [("build", "Build Linux host test inputs"), ("macos-host", "Build and check Mac host test inputs")])
+def test_shared_host_input_step_selects_release_and_refuses_wrong_profile(
+    package_inputs, tmp_path, profile, wrong_profile, job, step_name,
+):
+    import yaml
 
     source, host, guest, _, _, revision = package_inputs
+    selected = "release" if profile == "production" else "debug"
+    actual = "debug" if wrong_profile else profile
     for directory, names in ((host, ("safeyolo", "safeyolo-proxy", "safeyolo-coord")),
                              (guest, ("safeyolo-guest", "safeyolo-coord"))):
         for name in names:
-            executable(directory / name, f"{name} 0.1.0 commit={revision} profile=debug", debug=True)
+            executable(directory / name, f"{name} 0.1.0 commit={revision} profile={actual}")
             if directory == guest:
+                (guest / f"{name}.version").write_text(f"{name} 0.1.0 commit={revision} profile={actual}\n")
                 (guest / f"{name}.sha256").write_text(builder.sha256(guest / name) + "\n")
-    original_bundle = build_bundle(package_inputs, tmp_path) if bundle else None
-    if bundle:
-        monkeypatch.setenv("SAFEYOLO_NATIVE_BUNDLE", str(original_bundle))
-        host, guest = original_bundle / "bin", original_bundle / "assets/guest"
+    shutil.copytree(host, source / "proxy/target" / selected)
+    shutil.copytree(guest, source / "guest/command/target" / selected)
+    # Capture Cargo arguments. The normal validator checks real controlled ELF
+    # executables, not an assertion about the compiler output or Mac execution.
+    cargo = source / "scripts/cargo_with_space.sh"
+    cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CARGO_ARGUMENTS"\n')
+    cargo.chmod(0o755)
+    arguments = tmp_path / "cargo-arguments"
+    workflow = yaml.safe_load((REPO / ".github/workflows/guest-test-inputs.yml").read_text())
+    step = next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == step_name)
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=source,
+                 env={**os.environ, "SAFEYOLO_BUILD_PROFILE": profile, "CARGO_ARGUMENTS": str(arguments)})
+    assert ("--release" in arguments.read_text().splitlines()) == (profile == "production")
+    if wrong_profile:
+        assert result.returncode != 0 and "build profile is incorrect" in result.stderr
     else:
-        monkeypatch.delenv("SAFEYOLO_NATIVE_BUNDLE", raising=False)
-        monkeypatch.setenv("SAFEYOLO_NATIVE_ARTIFACTS", str(host))
-        monkeypatch.setenv("SAFEYOLO_GUEST_ARTIFACTS", str(guest))
-    originals = {path: path.read_bytes() for directory in (host, guest) for path in directory.iterdir() if path.is_file()}
-    inputs = factory_install_inputs(tmp_path / "compact")
-    if bundle:
-        compact = Path(inputs[1])
-    else:
-        compact = tmp_path / "compact-bundle"
-        built = run(str(source / "scripts/build_host_packages.sh"), *inputs, "--directory", str(compact))
-        assert built.returncode == 0, built.stderr
-    for original, data in originals.items():
-        assert original.read_bytes() == data
-    for original, copied in ((host / "safeyolo-coord", compact / "bin/safeyolo-coord"),
-                             (guest / "safeyolo-coord", compact / "assets/guest/safeyolo-coord")):
-        assert copied.stat().st_nlink == 1 and copied.stat().st_ino != original.stat().st_ino
-        assert copied.stat().st_size < original.stat().st_size
-        assert run(str(copied), "--version").stdout == run(str(original), "--version").stdout
-        assert ".debug_info" in run("readelf", "--sections", str(original)).stdout
-        assert ".debug_info" not in run("readelf", "--sections", str(copied)).stdout
-        for section in (".text", ".rodata", ".eh_frame"):
-            before, after = tmp_path / "before", tmp_path / "after"
-            for binary, output in ((original, before), (copied, after)):
-                subprocess.run(["objcopy", "--dump-section", f"{section}={output}", str(binary)], check=True, timeout=15)
-            assert before.read_bytes() == after.read_bytes()
-    checked = run("bash", "-ec", 'source "$1"; verify_native_package "$2"',
-                  "fixture", str(REPO / "scripts/native_package.sh"), str(compact))
-    assert checked.returncode == 0, checked.stderr
-    with (compact / "assets/guest/safeyolo-coord").open("ab") as stream:
-        stream.write(b"tamper")
-    refused = run(str(REPO / "scripts/install_native.sh"), "--bundle", str(compact),
-                  "--root", str(tmp_path / "refused"), "--command-dir", str(tmp_path / "commands"), "--no-guest-download")
-    assert refused.returncode != 0 and "bundle checksum verification failed" in refused.stderr
-    assert not (tmp_path / "refused/config.toml").exists()
-
-
-@pytest.mark.parametrize("bundle", [False, True], ids=["source", "bundle"])
-def test_factory_fixture_refuses_bad_input_receipt_before_copy(package_inputs, tmp_path, monkeypatch, bundle):
-    from tests.proxy_contracts.test_native_factory_cli import factory_install_inputs
-
-    if bundle:
-        original = build_bundle(package_inputs, tmp_path)
-        monkeypatch.setenv("SAFEYOLO_NATIVE_BUNDLE", str(original))
-        guest = original / "assets/guest"
-    else:
-        monkeypatch.delenv("SAFEYOLO_NATIVE_BUNDLE", raising=False)
-        monkeypatch.setenv("SAFEYOLO_NATIVE_ARTIFACTS", str(package_inputs[1]))
-        monkeypatch.setenv("SAFEYOLO_GUEST_ARTIFACTS", str(package_inputs[2]))
-        guest = package_inputs[2]
-    (guest / "safeyolo-coord.sha256").write_text("0" * 64 + "\n")
-    with pytest.raises(subprocess.CalledProcessError) as failure:
-        factory_install_inputs(tmp_path / "compact")
-    assert "checksum" in failure.value.stderr
-    assert not (tmp_path / "compact").exists()
+        assert result.returncode == 0, result.stderr
 
 
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):

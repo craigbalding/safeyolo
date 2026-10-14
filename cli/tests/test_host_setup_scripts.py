@@ -25,8 +25,8 @@ LAB_CONTROLLER_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safey
 FACTORY_SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
-COORD_NATIVE_BINARY = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "proxy/target")) / "debug/safeyolo-coord"
-COORD_GUEST_BINARY = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", REPO_ROOT / "guest/command/target/debug")) / "safeyolo-coord"
+COORD_NATIVE_BINARY = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "proxy/target")) / "release")) / "safeyolo-coord"
+COORD_GUEST_BINARY = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", REPO_ROOT / "guest/command/target/release")) / "safeyolo-coord"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 PI_COORD_SETUP_SOURCE = REPO_ROOT / "contrib/pi-coord-host-setup.sh"
 PI_COORD_EXTENSION_SOURCE = REPO_ROOT / "contrib/pi-coord-extension.ts"
@@ -2028,7 +2028,7 @@ def test_lab_remote_startup_keeps_native_observation_and_supervise_json_exact(tm
     command.unlink()
     command.write_text("#!/bin/sh\nexit 0\n")
     command.chmod(0o755)
-    guest = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", REPO_ROOT / "guest/command/target/debug/safeyolo-guest"))
+    guest = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", REPO_ROOT / "guest/command/target/release/safeyolo-guest"))
     assert guest.is_file(), "Build or select the existing native guest helper"
     context = tmp_path / "context.json"
     context.write_text(json.dumps({"generation": "startup-proof"}))

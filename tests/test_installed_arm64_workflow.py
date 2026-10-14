@@ -324,7 +324,7 @@ def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, tran
 
 @pytest.fixture
 def guest_inputs(tmp_path, linux_workflow_stat):
-    verifier = Path(os.environ.get("SAFEYOLO_GUEST_OCI_VERIFIER", ROOT / "proxy/target/debug/examples/verify_guest_oci")).resolve()
+    verifier = Path(os.environ.get("SAFEYOLO_GUEST_OCI_VERIFIER", ROOT / "proxy/target/release/examples/verify_guest_oci")).resolve()
     if not verifier.is_file():
         pytest.skip("the existing native OCI verification tool is required")
     real_sudo = shutil.which("sudo")
@@ -377,7 +377,7 @@ def guest_inputs(tmp_path, linux_workflow_stat):
         (blobs / index_digest[7:]).write_bytes(logical)
         # This deliberately is not the logical release index.
         (layout / "index.json").write_text('{"catalogue":"use the pinned logical digest"}')
-        examples = tmp_path / "proxy/target/debug/examples"
+        examples = tmp_path / "proxy/target/release/examples"
         examples.mkdir(parents=True)
         (examples / "verify_guest_oci").symlink_to(verifier)
         reports = tmp_path / "reports"

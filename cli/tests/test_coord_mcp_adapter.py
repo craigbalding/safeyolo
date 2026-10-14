@@ -19,7 +19,7 @@ IDS = ["attn-" + digit * 32 for digit in "ab"]
 
 @pytest.fixture
 def adapter(tmp_path):
-    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", ROOT / "proxy/target/debug/safeyolo-coord"))
+    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", ROOT / "proxy/target/release/safeyolo-coord"))
     assert binary.is_file(), "Build safeyolo-coord first"
     token = tmp_path / "token"
     token.write_text("fixture-token")
@@ -108,7 +108,7 @@ def test_malformed_task_never_sends(adapter, change):
 @given(st.one_of(st.none(), st.booleans(), st.integers(), st.lists(st.integers()), st.dictionaries(st.text(max_size=10), st.integers(), max_size=3)))
 @settings(max_examples=30, deadline=None)
 def test_untrusted_field_types_do_not_reach_transport(value):
-    binary = ROOT / "proxy/target/debug/safeyolo-coord"
+    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", ROOT / "proxy/target/release/safeyolo-coord"))
     request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "send", "arguments": {"room_name": "backlog", "body": value}}}
     result = subprocess.run([str(binary), "mcp"], input=json.dumps(request) + "\n", capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

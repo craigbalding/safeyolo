@@ -143,7 +143,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def native_agent(tmp_path):
     """Configure demo through the native CLI without booting a sandbox."""
-    artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", _PROJECT_ROOT / "proxy/target/debug"))
+    artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", _PROJECT_ROOT / "proxy/target/release"))
     cli = artifacts / "safeyolo"
     for arguments in (["init"], ["agent", "create", "demo", "--workspace", str(tmp_path)]):
         result = subprocess.run(

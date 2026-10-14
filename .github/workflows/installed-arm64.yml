@@ -166,6 +166,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: proxy -> target
+          key: production
           cache-bin: false
           cache-on-failure: true
       - name: Build only the native OCI verification tool
@@ -176,14 +177,14 @@ jobs:
           mkdir -p "$CARGO_TARGET_DIR"
           df -h "$CARGO_TARGET_DIR"
           du -sh "$CARGO_TARGET_DIR"
-          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+          scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
       - name: Verify the logical G1 index and extract Linux ARM64 assets
         shell: bash
         run: |
           layout="$RUNNER_TEMP/retained-guest-oci"
           index="$layout/blobs/sha256/${GUEST_INDEX#sha256:}"
           # index.json is ORAS's catalogue; GUEST_INDEX names the logical release.
-          proxy/target/debug/examples/verify_guest_oci "$layout" "$GUEST_INDEX" "$GUEST_COMPATIBILITY" 2>&1 \
+          proxy/target/release/examples/verify_guest_oci "$layout" "$GUEST_INDEX" "$GUEST_COMPATIBILITY" 2>&1 \
             | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/guest-verification.txt"
           jq -e --arg source "$GUEST_REVISION" --arg version "$GUEST_VERSION" '
             .annotations["org.opencontainers.image.revision"] == $source and

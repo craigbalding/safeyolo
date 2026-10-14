@@ -98,7 +98,7 @@ def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_c
 
 @pytest.fixture
 def native_cli():
-    binary = Path(os.environ.get("SAFEYOLO_NATIVE_CLI", REPO / "proxy/target/debug/safeyolo"))
+    binary = Path(os.environ.get("SAFEYOLO_NATIVE_CLI", REPO / "proxy/target/release/safeyolo"))
     if not binary.is_file():
         pytest.skip("build the candidate native CLI or set SAFEYOLO_NATIVE_CLI")
     if os.uname().sysname != "Linux":

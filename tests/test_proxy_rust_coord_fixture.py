@@ -394,8 +394,8 @@ def test_rust_workflow_exposes_the_host_target_binary_to_later_contracts() -> No
     test = workflow.index("- name: Test and build the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
     test_block = workflow[test:teardown]
-    build = test_block.index("../scripts/cargo_with_space.sh build --locked")
-    binary = test_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"')
+    build = test_block.index("../scripts/cargo_with_space.sh build --release --locked")
+    binary = test_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/release/safeyolo-proxy"')
     export = test_block.index('printf \'SAFEYOLO_RUST_PROXY=%s\\n\' "$rust_proxy" >> "$GITHUB_ENV"')
     assert build < binary < export
     assert 'test -x "$rust_proxy"' in test_block[binary:export]

@@ -19,8 +19,12 @@ SKILL = ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller"
 
 @pytest.fixture
 def guest_binary() -> Path:
-    selected = os.environ.get("SAFEYOLO_TEST_GUEST_BINARY")
-    binary = Path(selected) if selected else ROOT / "proxy/target/debug/safeyolo-guest"
+    # The shared Mac inputs include Linux guest bytes for staging. These tests
+    # execute the guest helper directly, which requires a Linux host.
+    if os.uname().sysname != "Linux":
+        pytest.skip("This fixture executes the Linux guest helper directly")
+    selected = os.environ.get("SAFEYOLO_TEST_GUEST_BINARY") or os.environ.get("SAFEYOLO_GUEST_HELPER")
+    binary = Path(selected) if selected else ROOT / "guest/command/target/release/safeyolo-guest"
     if selected:
         assert binary.is_file(), f"Selected native helper is missing: {binary}"
     elif not binary.is_file():
@@ -222,7 +226,7 @@ def test_native_capture_redacts_json_credentials_before_header_tokens(
 
 
 def test_nested_preparation_uses_native_configuration_and_preserves_retained_state(tmp_path: Path):
-    binaries = ROOT / "proxy/target/debug"
+    binaries = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", ROOT / "proxy/target/release"))
     for name in ["safeyolo", "safeyolo-proxy"]:
         if not (binaries / name).is_file():
             pytest.skip("Build the native CLI and proxy first")

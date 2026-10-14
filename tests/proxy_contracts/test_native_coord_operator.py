@@ -392,7 +392,7 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
 
 
 def test_retained_pi_event_formats():
-    artifact = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug"))) / "safeyolo"
+    artifact = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/release"))) / "safeyolo"
     for case in json.loads((REPO / "tests/proxy_contracts/coord_watch_events.json").read_text()):
         result = subprocess.run([str(artifact), "coord", "watch", "--jsonl", "-"],
                                 input=json.dumps(case["event"]) + "\n", capture_output=True, text=True, timeout=10)

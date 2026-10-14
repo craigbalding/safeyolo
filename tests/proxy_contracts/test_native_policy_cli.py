@@ -37,6 +37,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def native_inputs():
+    profile = os.environ.get("SAFEYOLO_BUILD_PROFILE", "production")
+    directory = "release" if profile == "production" else "debug"
+    host = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", REPO / "proxy/target" / directory))
+    guest = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", REPO / "guest/command/target" / directory))
+    return host, guest, profile
+
+
 class NativeInstance:
     def __init__(self, root, process, paths, environment):
         self.root = root
@@ -97,23 +105,17 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None, agent_map=None,
-                    install_inputs=None):
-    artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
+                    capture=False, extra_config="", platform_assets=None, agent_map=None):
+    artifacts, guest_artifacts, profile = native_inputs()
     root = directory / "installed"
     try:
         bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
-        if install_inputs is not None:
-            inputs = list(install_inputs)
-        elif bundle:
-            inputs = ["--bundle", bundle]
-        else:
-            inputs = [
-                "--artifacts", str(artifacts),
-                "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
-                "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
-            ]
-        if not bundle and install_inputs is None:
+        inputs = ["--bundle", bundle] if bundle else [
+            "--artifacts", str(artifacts),
+            "--guest-artifacts", str(guest_artifacts),
+            "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", profile,
+        ]
+        if not bundle:
             vm_artifacts = os.environ.get("SAFEYOLO_NATIVE_VM_ARTIFACTS")
             if vm_artifacts:
                 inputs += ["--vm-artifacts", vm_artifacts]
@@ -126,7 +128,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             capture_output=True, text=True, timeout=15,
         )
         assert installation.returncode == 0, installation.stderr
-        assert "commit=" in installation.stdout and "profile=" in installation.stdout
+        assert "commit=" in installation.stdout and f"profile={profile}" in installation.stdout
         assert set(HOST_BINARIES).issubset(path.name for path in (root / "bin").iterdir())
         assert (root / "bin/tmux").is_file() and not (root / ".venv").exists()
         assert (root / "bin/watch-backlog-factory").stat().st_mode & 0o111
@@ -312,8 +314,7 @@ def test_installed_check_show_apply_and_scoped_enforcement(tmp_path):
 
 
 def test_installed_lab_stages_skills_without_the_optional_python_checker(tmp_path):
-    artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
-    guest_artifacts = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")))
+    artifacts, guest_artifacts, _ = native_inputs()
     with native_instance(tmp_path) as instance:
         skill = instance.root / "assets/skills/safeyolo"
         instructions = (skill / "SKILL.md").read_bytes()
