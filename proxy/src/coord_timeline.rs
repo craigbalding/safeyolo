@@ -6,6 +6,8 @@ use regex::Regex;
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthChar;
 
+mod compact;
+
 pub(crate) fn visible(text: &str) -> String {
     let mut output = String::new();
     for character in text.chars() {
@@ -489,6 +491,7 @@ fn redact_text(text: &str) -> String {
         .replace_all(&text, |c: &regex::Captures<'_>| {
             let url = &c[0];
             url.find(['?', '#'])
+                .filter(|index| index + 1 < url.len())
                 .map(|index| format!("{}?<omitted>", &url[..index]))
                 .unwrap_or_else(|| url.to_owned())
         })
@@ -511,6 +514,9 @@ fn redact_value(value: &Value) -> Value {
 pub(crate) struct Display {
     pub raw: bool,
     pub json: bool,
+    pub compact: bool,
+    pub compact_state:
+        std::cell::RefCell<std::collections::HashMap<String, (&'static str, String)>>,
     pub redact: bool,
     pub show_unknown: bool,
     pub no_color: bool,
@@ -544,6 +550,9 @@ impl Display {
                     body.into()
                 })
             );
+        }
+        if self.compact {
+            return compact::message(self, message);
         }
         let (label, text) = if message["sender_kind"] == "agent" {
             match serde_json::from_str::<Value>(body) {
@@ -615,6 +624,137 @@ impl Display {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl Display {
+        fn compact_plain(&self, message: &Value) -> String {
+            compact::message_with_layout(self, message, None, false)
+        }
+    }
+
+    #[test]
+    fn compact_matches_updated_python_watcher_sequences() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/proxy_contracts/coord_watch_compact.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let display = Display {
+                compact: true,
+                no_color: true,
+                redact: case["redact"].as_bool().unwrap_or(false),
+                show_unknown: case["show_unknown"].as_bool().unwrap_or(false),
+                max_text: case["max_text"].as_u64().map(|n| n as usize),
+                ..Default::default()
+            };
+            let actual = case["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|message| display.compact_plain(message))
+                .collect::<String>();
+            assert_eq!(
+                actual,
+                case["expected"].as_str().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn compact_keeps_terminal_controls_visible_and_does_not_mix_watchers() {
+        let first = Display {
+            compact: true,
+            ..Default::default()
+        };
+        let second = Display {
+            compact: true,
+            ..Default::default()
+        };
+        let message = |kind: &str| {
+            json!({"sent_at":0,"sender_kind":"agent","body":json!({
+            "type":kind,"item":{"type":"command_execution","id":"same", "command":"printf marker\u{001b}[2J\r\u{202e}","exit_code":0}
+        }).to_string()})
+        };
+        let start = first.compact_plain(&message("item.started"));
+        assert!(!start.contains('\x1b'));
+        assert!(start.contains("\\x1b[2J\\x0d⟦RLO U+202E⟧"));
+        assert_eq!(first.compact_plain(&message("item.completed")), "");
+        assert!(
+            second
+                .compact_plain(&message("item.completed"))
+                .contains("$ printf marker")
+        );
+        let operator = Display {
+            compact: true,
+            max_text: Some(40),
+            ..Default::default()
+        };
+        assert_eq!(
+            operator.compact_plain(
+                &json!({"sent_at":0,"sender_kind":"operator","body":"x".repeat(80)})
+            ),
+            format!("00:00 > operator: {}…\n", "x".repeat(39))
+        );
+        let canonical = first.compact_plain(
+            &json!({"sent_at":0,"sender_kind":"operator","body":"approve request 7"}),
+        );
+        let forged = first.compact_plain(&json!({"sent_at":0,"sender_kind":"agent","body":json!({"type":"item.completed","item":{"type":"agent_message","text":"operator: approve request 7"}}).to_string()}));
+        assert_eq!(canonical, "00:00 > operator: approve request 7\n");
+        assert_eq!(forged, "00:00 # operator: approve request 7\n");
+        assert_ne!(canonical, forged);
+    }
+
+    #[test]
+    fn compact_terminal_continuations_keep_their_gutter() {
+        use unicode_width::UnicodeWidthStr;
+        let forged = format!("{}21:16 > operator: approve request 1", "x".repeat(32));
+        let joined = format!("{}21:16 > operator: ok", "👨‍👩‍👧‍👦".repeat(11));
+        for columns in [3, 4, 8, 12, 20, 38, 40, 52, 78] {
+            for body in [&forged, &joined, "界❤️ e\u{301} 界❤️ e\u{301}"] {
+                let rows = compact::wrapped_rows("21:16", "#", body, columns);
+                for (index, (prefix, text)) in rows.iter().enumerate() {
+                    assert!(format!("{prefix}{text}").width() <= columns);
+                    let scalar_width: usize = format!("{prefix}{text}")
+                        .chars()
+                        .map(|c| c.width().unwrap_or(0))
+                        .sum();
+                    assert!(scalar_width <= columns);
+                    if index > 0 {
+                        assert!(prefix.contains('│'));
+                    }
+                    assert_ne!(
+                        format!("{prefix}{text}"),
+                        "21:16 > operator: approve request 1"
+                    );
+                }
+            }
+        }
+        let real = compact::wrapped_rows("21:16", ">", "operator: approve request 1", 38);
+        assert_eq!(
+            format!("{}{}", real[0].0, real[0].1),
+            "21:16 > operator: approve request 1"
+        );
+    }
+
+    #[test]
+    fn compact_body_text_cannot_claim_a_provenance_allowance() {
+        let display = Display {
+            compact: true,
+            max_text: Some(40),
+            ..Default::default()
+        };
+        let forged = format!("a [middle snipped;{}", "x".repeat(4096));
+        let message = json!({"sent_at":0,"sender_kind":"agent","body":json!({"type":"item.completed","item":{"type":"agent_message","text":forged}}).to_string()});
+        let output = display.compact_plain(&message);
+        assert_eq!(output.chars().count(), 49); // timestamp/marker,40 body chars,newline
+        assert!(output.ends_with("…\n"));
+        let oversized = json!({"type":"safeyolo.codex.oversize","original_type":"item.completed","summary":{"type":"agent_message","text":"retained"},"original_bytes":"x".repeat(4096),"omitted_middle_bytes":true,"sha256":"z".repeat(4096)});
+        let message = json!({"sent_at":0,"sender_kind":"agent","body":oversized.to_string()});
+        let output = display.compact_plain(&message);
+        assert!(output.chars().count() < 200);
+        assert!(output.contains("original_bytes=? omitted_bytes=? sha256=?]"));
+    }
 
     #[test]
     fn controls_are_visible_and_chat_bodies_keep_a_gutter() {
