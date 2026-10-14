@@ -127,7 +127,7 @@ def registry(tmp_path):
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName("ghcr.io")]), False)
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("ghcr.io"), x509.DNSName("github.com")]), False)
             .sign(key, hashes.SHA256()))
     pem = tmp_path / "registry.pem"
     pem.touch(mode=0o600)
@@ -151,6 +151,12 @@ def registry(tmp_path):
             path = urlsplit(self.path).path
             requests.append(path)
             assert not self.headers.get("Authorization", "").startswith("Basic ")
+            if path.endswith("/releases/latest") and faults.get("host_release"):
+                self.send_response(302)
+                self.send_header("Location", f'https://github.com/craigbalding/safeyolo/releases/tag/{faults["host_release"]}')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if path == "/v2/":
                 self.send_response(401)
                 self.send_header("WWW-Authenticate", 'Bearer realm="https://ghcr.io/token",service="fixture"')
@@ -189,15 +195,18 @@ def registry(tmp_path):
 
     class RegistryParent(Request):
         def _peer(self, host, port, *, tls_origin):
-            assert tls_origin and host == "ghcr.io" and port == 443
+            assert tls_origin and host in ("ghcr.io", "github.com") and port == 443
             return socket.create_connection(server.server_address, timeout=5), False
 
     parent = Parent(None, None, request_handler=RegistryParent)
     threads = [threading.Thread(target=fixture.serve_forever, daemon=True) for fixture in (server, parent)]
     for thread in threads:
         thread.start()
-    environment = dict(os.environ, HTTPS_PROXY=f"http://127.0.0.1:{parent.server_port}",
-                       HTTP_PROXY=f"http://127.0.0.1:{parent.server_port}",
+    proxy = f"http://127.0.0.1:{parent.server_port}"
+    # curl prefers lowercase proxy variables; all fixture clients must reach
+    # this owned CONNECT parent and its test CA rather than the outer proxy.
+    environment = dict(os.environ, HTTPS_PROXY=proxy, HTTP_PROXY=proxy,
+                       https_proxy=proxy, http_proxy=proxy,
                        SSL_CERT_FILE=str(ca), REQUESTS_CA_BUNDLE=str(ca))
     try:
         yield contents, requests, faults, environment
@@ -419,9 +428,10 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
         assert len(requests) == before
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert all((root / name).read_bytes() == data for name, data in preserved.items())
-        refused = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
+        repeated = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
                                  env=environment, capture_output=True, text=True, timeout=10)
-        assert refused.returncode != 0 and "fresh root" in refused.stderr
+        assert repeated.returncode == 0, repeated.stderr
+        assert (root / "share/guest-selection.json").read_bytes() == selection
         assert len(requests) == before
         assert all((root / name).read_bytes() == data for name, data in preserved.items())
     finally:

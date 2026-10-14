@@ -60,6 +60,7 @@ def package_inputs(tmp_path, request):
     scripts.mkdir(parents=True)
     for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
+    shutil.copy2(REPO / "install.sh", source / "install.sh")
     shutil.copytree(REPO / "proxy/licenses", source / "proxy/licenses")
     assets = source / "cli/src/safeyolo"
     assets.mkdir(parents=True)
@@ -104,18 +105,19 @@ def package_inputs(tmp_path, request):
     prepared = tmp_path / "prepared-guest"
     (prepared / "rootfs-tree").mkdir(parents=True)
     (prepared / "cache-paths.txt").write_text("/var/cache/apt\n")
+    profile = "production" if getattr(request, "param", None) == "production" else "debug"
     for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
-        executable(host / name, f"{name} 0.1.0 commit={revision} profile=debug",
+        executable(host / name, f"{name} 0.1.0 commit={revision} profile={profile}",
                    guest_assets=str(prepared) if name == "safeyolo" else None)
     for name in ("safeyolo-guest", "safeyolo-coord"):
-        identity = f"{name} 0.1.0 commit={revision} profile=debug"
+        identity = f"{name} 0.1.0 commit={revision} profile={profile}"
         executable(guest / name, identity)
         (guest / f"{name}.version").write_text(identity + "\n")
         (guest / f"{name}.sha256").write_text(hashlib.sha256((guest / name).read_bytes()).hexdigest() + "\n")
     shutil.copy2(shutil.which("tmux"), runtime / "tmux")
     (runtime / "licenses").mkdir()
     (runtime / "licenses/tmux.txt").write_text("fixture runtime notice\n")
-    arguments = [str(scripts / "build_host_packages.sh"), "--profile", "debug", "--artifacts", str(host), "--guest-artifacts", str(guest), "--runtime-artifacts", str(runtime)]
+    arguments = [str(scripts / "build_host_packages.sh"), "--profile", profile, "--artifacts", str(host), "--guest-artifacts", str(guest), "--runtime-artifacts", str(runtime)]
     return source, host, guest, runtime, arguments, revision
 
 
@@ -309,6 +311,9 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
     assert result.returncode == 0, result.stderr
+    bootstrap = output / "install-safeyolo.sh"
+    assert f"release=host-{package_inputs[5]}" in bootstrap.read_text()
+    assert os.access(bootstrap, os.X_OK)
     archive, = output.glob("*.tar.gz")
     with tarfile.open(archive) as stream:
         names = stream.getnames()
@@ -374,7 +379,11 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
                  env=dict(os.environ, PACKAGE_GUEST_CALLS=str(marker)))
     assert result.returncode == 31 and "controlled guest acquisition refusal" in result.stderr
-    assert marker.read_text().splitlines() == ["--root", str(root), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", marker.read_text().splitlines()[-1]]
+    arguments = marker.read_text().splitlines()
+    staging = Path(arguments[1])
+    assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
+    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json")]
+    assert not staging.exists()
     assert not (root / "config.toml").exists()
     assert not (root / "bin").exists()
     assert not (root / "data").exists()
