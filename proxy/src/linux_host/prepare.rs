@@ -731,7 +731,12 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                 .and_then(|s| s.linux)
                 .ok_or("Linux runtime settings are missing")?;
             let mut applied = Vec::new();
-            runtime_access(&settings.runsc, settings.uid_base, &mut applied)
+            runtime_access(&settings.runsc, settings.uid_base, &mut applied).map_err(|error| {
+                format!(
+                    "{error}\nHost changes and attempted operations: {}. Completed changes remain; retry the installer to finish runtime access",
+                    if applied.is_empty() { "none".into() } else { applied.join("; ") }
+                ).into()
+            })
         }
         [operation, tree, uid, gid, host_uid, host_gid] if operation == "remap-rootfs" => {
             super::ownership::remap_tree(

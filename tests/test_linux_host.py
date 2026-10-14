@@ -175,6 +175,23 @@ def test_denied_runtime_permission_reports_changes_and_retry_is_idempotent(nativ
     assert "SafeYolo needs these host changes" not in repeated.stderr
     assert command("getfacl", "-ncp", private).stdout == before
 
+    # Activation also grants access to a newly created private install root.
+    # Its narrow operation must retain the same partial-failure diagnosis.
+    root = parent / "instance"
+    initialized = command(native_cli, "--root", root, "init")
+    assert initialized.returncode == 0, initialized.stderr
+    with (root / "config.toml").open("a") as config:
+        config.write(settings.read_text())
+    base = json.loads(repeated.stdout)["linux"]["uid_base"]
+    subprocess.run(["sudo", "-n", "setfacl", "-x", f"u:{base}", str(private)], check=True)
+    activation = command(native_cli, "--root", root, "host", "grant-runtime-access",
+                         env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"})
+    assert activation.returncode != 0 and "fixture sudo denied" in activation.stderr
+    assert "Host changes and attempted operations: attempted allow UID" in activation.stderr
+    assert "retry the installer" in activation.stderr
+    recovery = command(native_cli, "--root", root, "host", "grant-runtime-access")
+    assert recovery.returncode == 0, recovery.stderr
+
 
 def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cli, owned_stage):
     parent, _stage = owned_stage
