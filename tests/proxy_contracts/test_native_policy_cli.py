@@ -97,17 +97,23 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None, agent_map=None):
+                    capture=False, extra_config="", platform_assets=None, agent_map=None,
+                    install_inputs=None):
     artifacts = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", str(REPO / "proxy/target/debug")))
     root = directory / "installed"
     try:
         bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
-        inputs = ["--bundle", bundle] if bundle else [
-            "--artifacts", str(artifacts),
-            "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
-            "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
-        ]
-        if not bundle:
+        if install_inputs is not None:
+            inputs = list(install_inputs)
+        elif bundle:
+            inputs = ["--bundle", bundle]
+        else:
+            inputs = [
+                "--artifacts", str(artifacts),
+                "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
+                "--runtime-artifacts", str(Path(shutil.which("tmux")).parent), "--profile", "debug",
+            ]
+        if not bundle and install_inputs is None:
             vm_artifacts = os.environ.get("SAFEYOLO_NATIVE_VM_ARTIFACTS")
             if vm_artifacts:
                 inputs += ["--vm-artifacts", vm_artifacts]
