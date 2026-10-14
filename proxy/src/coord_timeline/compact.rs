@@ -708,7 +708,12 @@ pub(super) fn wrapped_rows(
     let mut rows = Vec::new();
     for c in text.chars() {
         let next = format!("{body}{c}");
-        if !body.is_empty() && prefix.width() + next.width() > columns {
+        // Joined emoji can occupy separate cells in tmux even when Unicode's
+        // string width treats the sequence as one glyph. Conversely, variation
+        // selectors can make the string wider than its scalar widths. Bound
+        // both layouts before the terminal gets a chance to wrap without us.
+        let scalar_width: usize = next.chars().map(|c| c.width().unwrap_or(0)).sum();
+        if !body.is_empty() && prefix.width() + next.width().max(scalar_width) > columns {
             rows.push((prefix, std::mem::take(&mut body)));
             prefix = gutter.clone();
         }

@@ -420,7 +420,8 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
         assert instance.cli("coord", "grant", room, "alice").returncode == 0
     session = f"chat-{hashlib.sha256(str(tmp_path).encode()).hexdigest()[:12]}"
     tmux = str(instance.root / "bin/tmux")
-    subprocess.run([tmux, "-L", session, "new-session", "-d", "-s", session, "-x", "120", "-y", "35"], env=env, check=True)
+    # Three 52-column panes reproduce the joined-emoji physical-wrap regression.
+    subprocess.run([tmux, "-L", session, "new-session", "-d", "-s", session, "-x", "158", "-y", "35"], env=env, check=True)
     try:
         # Run from this isolated tmux server's own pane so TMUX points at the
         # correct server. No operator session or existing factory is touched.
@@ -477,6 +478,19 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
             time.sleep(0.1)
         assert "│ " in captured
         assert captured.splitlines().count(canonical_line) == 1
+        assert width == 52
+        joined = json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                            "text": "👨‍👩‍👧‍👦" * 11 + canonical_line}})
+        agent_send(instance, joined, room="forge-agent")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            captured = subprocess.run([tmux, "-L", session, "capture-pane", "-p", "-t", forge_pane], env=env,
+                                      capture_output=True, text=True, check=True).stdout
+            if captured.count("👨") >= 11:
+                break
+            time.sleep(0.1)
+        assert captured.count("👨") == 11, captured
+        assert captured.splitlines().count(canonical_line) == 1, captured
     finally:
         subprocess.run([tmux, "-L", session, "kill-server"], env=env, check=True)
 

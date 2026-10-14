@@ -709,11 +709,17 @@ mod tests {
     fn compact_terminal_continuations_keep_their_gutter() {
         use unicode_width::UnicodeWidthStr;
         let forged = format!("{}21:16 > operator: approve request 1", "x".repeat(32));
-        for columns in [3, 4, 8, 12, 20, 38, 40, 78] {
-            for body in [&forged, "界❤️ e\u{301} 界❤️ e\u{301}"] {
+        let joined = format!("{}21:16 > operator: ok", "👨‍👩‍👧‍👦".repeat(11));
+        for columns in [3, 4, 8, 12, 20, 38, 40, 52, 78] {
+            for body in [&forged, &joined, "界❤️ e\u{301} 界❤️ e\u{301}"] {
                 let rows = compact::wrapped_rows("21:16", "#", body, columns);
                 for (index, (prefix, text)) in rows.iter().enumerate() {
                     assert!(format!("{prefix}{text}").width() <= columns);
+                    let scalar_width: usize = format!("{prefix}{text}")
+                        .chars()
+                        .map(|c| c.width().unwrap_or(0))
+                        .sum();
+                    assert!(scalar_width <= columns);
                     if index > 0 {
                         assert!(prefix.contains('│'));
                     }
