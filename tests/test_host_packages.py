@@ -44,15 +44,25 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                               'FILE *out=fopen(argv[i+1],"w");if(!out)return 91;fputs("{}",out);fclose(out);}}'
                               f'puts("{guest_assets}");return 0;')
         guest_command += '}'
+    host_command = (
+        'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"prepare")==0){'
+        'char *installed="/fixture";char *settings=NULL;'
+        'for(int i=5;i+1<argc;i++){if(strcmp(argv[i],"--installed-root")==0)installed=argv[i+1];'
+        'if(strcmp(argv[i],"--write-settings")==0)settings=argv[i+1];}'
+        'char *marker=getenv("PACKAGE_HOST_CALLS");if(marker){FILE *out=fopen(marker,"w");'
+        'if(!out)return 92;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+        'if(settings){FILE *out=fopen(settings,"w");if(!out)return 93;'
+        'fprintf(out,"[linux]\\nhost_uid=1000\\nhost_gid=1000\\nuid_base=100000\\ngid_base=100000\\nrunsc=\\\"%s/libexec/runsc\\\"\\nrunsc_origin=\\\"bundled\\\"\\n",installed);fclose(out);}return 0;}'
+    )
     source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
-                      f'int main(int argc,char **argv){{{guest_command}puts("{identity}");return 0;}}\n')
+                      f'int main(int argc,char **argv){{{host_command}{guest_command}puts("{identity}");return 0;}}\n')
     subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 
 
 
 @pytest.fixture
-def package_inputs(tmp_path, request):
+def package_inputs(tmp_path, request, monkeypatch):
     if os.uname().sysname != "Linux":
         pytest.skip("controlled ELF producer fixture runs on Linux; macOS uses actual Tart artifacts")
     source = tmp_path / "source"
@@ -60,6 +70,13 @@ def package_inputs(tmp_path, request):
     scripts.mkdir(parents=True)
     for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
+    # Only upstream acquisition is controlled. The real producer, complete
+    # payload reader, installer and architecture checks consume these bytes.
+    (scripts / "acquire_runsc.sh").write_text(
+        '#!/bin/bash\nset -euo pipefail\nmkdir "$1"\n'
+        'cp -R "$PACKAGE_RUNSC_FIXTURE/"* "$1/"\n',
+    )
+    (scripts / "acquire_runsc.sh").chmod(0o755)
     shutil.copy2(REPO / "install.sh", source / "install.sh")
     shutil.copytree(REPO / "proxy/licenses", source / "proxy/licenses")
     assets = source / "cli/src/safeyolo"
@@ -115,6 +132,13 @@ def package_inputs(tmp_path, request):
         (guest / f"{name}.version").write_text(identity + "\n")
         (guest / f"{name}.sha256").write_text(hashlib.sha256((guest / name).read_bytes()).hexdigest() + "\n")
     shutil.copy2(shutil.which("tmux"), runtime / "tmux")
+    runsc = tmp_path / "gvisor"
+    (runsc / "gvisor-bin").mkdir(parents=True)
+    executable(runsc / "runsc", "runsc version release-20261005.0")
+    for name in ("containerd-shim-runsc-v1", "gvisor-bin/checkpointgofer", "gvisor-bin/gvisor-sentry-prewarmer",
+                 "gvisor-bin/gvisor_sentry", "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server"):
+        shutil.copy2(runsc / "runsc", runsc / name)
+    monkeypatch.setenv("PACKAGE_RUNSC_FIXTURE", str(runsc))
     (runtime / "licenses").mkdir()
     (runtime / "licenses/tmux.txt").write_text("fixture runtime notice\n")
     arguments = [str(scripts / "build_host_packages.sh"), "--profile", profile, "--artifacts", str(host), "--guest-artifacts", str(guest), "--runtime-artifacts", str(runtime)]
@@ -150,9 +174,10 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     installer = selected / "install.sh"
     fixture_cli = '#!/bin/sh\nprintf "native %s\\n" "$*"\n'
     installer.write_text(f"#!{os.sys.executable}\nimport json,pathlib,sys\n"
-        "arguments = [arg for arg in sys.argv[1:] if arg != '--no-guest-download']\n"
+        "arguments = [arg for arg in sys.argv[1:] if arg not in {'--no-guest-download', '--yes'}]\n"
         "options = dict(zip(arguments[::2], arguments[1::2]))\n"
         "if '--no-guest-download' in sys.argv: options['--no-guest-download'] = True\n"
+        "assert '--yes' in sys.argv\n"
         "root = pathlib.Path(options['--root']); (root / 'bin').mkdir(parents=True)\n"
         "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
         "cli = root / 'bin/safeyolo'\n"
@@ -347,10 +372,49 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     bundle = build_bundle(package_inputs, tmp_path)
     fields = dict(line.split("=", 1) for line in (bundle / "package-info").read_text().splitlines())
     assert set(fields) == {"source_commit", "profile", "platform", "minimum_runtime",
-                           "guest_compatibility", "guest_repository", "guest_discovery_tag"}
+                           "guest_compatibility", "guest_repository", "guest_discovery_tag",
+                           "runsc_version", "runsc_source", "runsc_origin"}
+    assert fields["runsc_version"] == "release-20261005.0"
+    assert fields["runsc_origin"] == "bundled"
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"
     assert fields["guest_discovery_tag"] == "compat-v1"
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "architecture", "unlisted", "empty-metadata", "missing-metadata"])
+def test_runtime_payload_refusal_preserves_other_installation(package_inputs, tmp_path, damage):
+    bundle = build_bundle(package_inputs, tmp_path)
+    sidecar = bundle / "libexec/gvisor-bin/gvisor_sentry"
+    if damage == "missing":
+        sidecar.unlink()
+    elif damage == "corrupt":
+        sidecar.write_bytes(sidecar.read_bytes() + b"corrupt")
+    elif damage == "architecture":
+        data = bytearray(sidecar.read_bytes())
+        data[18:20] = (62 if os.uname().machine in ("arm64", "aarch64") else 183).to_bytes(2, "little")
+        sidecar.write_bytes(data)
+        sums = bundle / "SHA256SUMS"
+        sums.write_text("".join(f"{builder.sha256(sidecar)}  ./libexec/gvisor-bin/gvisor_sentry\n" if line.endswith(" ./libexec/gvisor-bin/gvisor_sentry\n") else line
+                                for line in sums.read_text().splitlines(keepends=True)))
+    elif damage == "unlisted":
+        sums = bundle / "SHA256SUMS"
+        sums.write_text("".join(line for line in sums.read_text().splitlines(keepends=True)
+                                if not line.endswith(" ./libexec/gvisor-bin/gvisor_sentry\n")))
+    else:
+        metadata = bundle / "package-info"
+        metadata.write_text("".join((line.split("=")[0] + "=\n" if damage == "empty-metadata" else "")
+                                    if line.startswith("runsc_") else line
+                                    for line in metadata.read_text().splitlines(keepends=True)))
+    other = tmp_path / "other-instance"
+    other.mkdir()
+    canary = other / "policy.toml"
+    canary.write_bytes(b"kept operator policy")
+    root = tmp_path / "refused"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    assert result.returncode != 0, result.stdout
+    assert not root.exists()
+    assert canary.read_bytes() == b"kept operator policy"
+    assert "gvisor" in result.stderr.lower() or "checksum" in result.stderr
 
 
 @pytest.mark.parametrize("change,diagnosis", [
@@ -382,7 +446,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     arguments = marker.read_text().splitlines()
     staging = Path(arguments[1])
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
-    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json")]
+    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json"), "--host-settings", str(staging / "host-settings.toml")]
     assert not staging.exists()
     assert not (root / "config.toml").exists()
     assert not (root / "bin").exists()

@@ -676,25 +676,31 @@ pub(crate) fn checked_namespace(pid: u32) -> Option<u32> {
     if holder_userns == own_userns || holder_netns == own_netns {
         return None;
     }
-    let expected = [
-        (0, 100000, 1000),
-        (1000, unsafe { libc::getuid() }, 1),
-        (1001, 101001, 64534),
-    ];
-    let mappings = std::fs::read_to_string(format!("/proc/{pid}/uid_map")).ok()?;
-    let actual = mappings
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            Some((
-                fields.next()?.parse::<u32>().ok()?,
-                fields.next()?.parse::<u32>().ok()?,
-                fields.next()?.parse::<u32>().ok()?,
-            ))
-        })
-        .collect::<Vec<_>>();
-    if actual != expected {
-        return None;
+    let mapping = crate::linux_host::selected_mapping().ok()?;
+    for (file, base, operator) in [
+        ("uid_map", mapping.uid_base, unsafe { libc::getuid() }),
+        ("gid_map", mapping.gid_base, unsafe { libc::getgid() }),
+    ] {
+        let expected = crate::linux_host::Mapping::entries(base, operator);
+        let mappings = std::fs::read_to_string(format!("/proc/{pid}/{file}")).ok()?;
+        let actual = mappings
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((
+                    fields.next()?.parse::<u32>().ok()?,
+                    fields.next()?.parse::<u32>().ok()?,
+                    fields.next()?.parse::<u32>().ok()?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let mut legacy = expected;
+        // Older owned namespaces omitted the final subordinate ID. Keep
+        // those live namespaces controllable while new starts map all IDs.
+        legacy[2].2 -= 1;
+        if actual != expected && actual != legacy {
+            return None;
+        }
     }
     Some(pid)
 }
@@ -772,7 +778,11 @@ fn userns_command(name: &str, program: &str) -> io::Result<Command> {
     } else {
         pin_namespace_arguments(name, &mut command)?;
     }
-    command.arg(program);
+    if program == "runsc" {
+        command.arg(crate::linux_host::runtime_path()?);
+    } else {
+        command.arg(program);
+    }
     Ok(command)
 }
 
@@ -886,13 +896,15 @@ fn scoped_runsc_create(name: &str, memory_mb: u64) -> io::Result<Command> {
         "--target",
         &pid.to_string(),
         "--",
-        "runsc",
     ]);
+    command.arg(crate::linux_host::runtime_path()?);
     Ok(command)
 }
 
 #[cfg(target_os = "linux")]
 async fn start_userns(name: &str) -> io::Result<u32> {
+    let mapping = crate::linux_host::selected_mapping().map_err(io::Error::other)?;
+    let settings = crate::native_config::host_settings().map_err(io::Error::other)?;
     let restricts =
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .is_ok_and(|value| value.trim() == "1");
@@ -908,7 +920,11 @@ async fn start_userns(name: &str) -> io::Result<u32> {
         let mut command = Command::new("aa-exec");
         command.args([
             "-p",
-            "safeyolo-runsc",
+            settings
+                .linux
+                .as_ref()
+                .and_then(|s| s.apparmor_profile.as_deref())
+                .unwrap_or("safeyolo-runsc"),
             "--",
             "unshare",
             "-Un",
@@ -966,48 +982,23 @@ async fn start_userns(name: &str) -> io::Result<u32> {
         }
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
-        let map = Command::new("newuidmap")
-            .args([
-                pid.to_string(),
-                "0".to_owned(),
-                "100000".to_owned(),
-                "1000".to_owned(),
-                "1000".to_owned(),
-                uid.to_string(),
-                "1".to_owned(),
-                "1001".to_owned(),
-                "101001".to_owned(),
-                "64534".to_owned(),
-            ])
-            .output()
-            .await?;
-        if !map.status.success() {
-            return Err(io::Error::other(format!(
-                "newuidmap failed: {}",
-                String::from_utf8_lossy(&map.stderr)
-            )));
+        for (program, base, operator) in [
+            ("newuidmap", mapping.uid_base, uid),
+            ("newgidmap", mapping.gid_base, gid),
+        ] {
+            let mut arguments = vec![pid.to_string()];
+            for (guest, host, count) in crate::linux_host::Mapping::entries(base, operator) {
+                arguments.extend([guest.to_string(), host.to_string(), count.to_string()]);
+            }
+            let map = Command::new(program).args(arguments).output().await?;
+            if !map.status.success() {
+                return Err(io::Error::other(format!(
+                    "{program} failed: {}",
+                    String::from_utf8_lossy(&map.stderr)
+                )));
+            }
         }
-        let map = Command::new("newgidmap")
-            .args([
-                pid.to_string(),
-                "0".to_owned(),
-                "100000".to_owned(),
-                "1000".to_owned(),
-                "1000".to_owned(),
-                gid.to_string(),
-                "1".to_owned(),
-                "1001".to_owned(),
-                "101001".to_owned(),
-                "64534".to_owned(),
-            ])
-            .output()
-            .await?;
-        if !map.status.success() {
-            return Err(io::Error::other(format!(
-                "newgidmap failed: {}",
-                String::from_utf8_lossy(&map.stderr)
-            )));
-        }
+
         std::fs::write(
             config_dir().join("agents").join(name).join("userns.pid"),
             pid.to_string(),
@@ -1040,6 +1031,17 @@ pub(crate) async fn start_sandbox(
             "invalid agent name",
         ));
     }
+    let mapping = crate::linux_host::selected_mapping().map_err(io::Error::other)?;
+    if crate::native_config::host_settings()
+        .map_err(io::Error::other)?
+        .linux
+        .is_some()
+        || crate::guest_acquisition::packaged_runsc_version(&config_dir())
+            .map_err(io::Error::other)?
+            .is_some()
+    {
+        crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
+    }
     let directory = config_dir().join("agents").join(name);
     let bundle = directory.join("config.json");
     let share = directory.join("config-share");
@@ -1052,7 +1054,7 @@ pub(crate) async fn start_sandbox(
     let root = runsc_root();
     std::fs::create_dir_all(&root)?;
     let acl = Command::new("setfacl")
-        .args(["-m", "u:100000:rwx"])
+        .args(["-m", &format!("u:{}:rwx", mapping.uid_base)])
         .arg(&root)
         .output()
         .await?;
@@ -1121,7 +1123,7 @@ pub(crate) async fn start_sandbox(
             .as_str()
         {
             "systrap" => "systrap",
-            "" | "auto" => {
+            requested @ ("" | "auto" | "kvm") => {
                 let operator_access = std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
@@ -1130,19 +1132,24 @@ pub(crate) async fn start_sandbox(
                 let subordinate_access = if operator_access {
                     tokio::time::timeout(
                         Duration::from_secs(3),
-                        Command::new("getfacl").arg("/dev/kvm").output(),
+                        Command::new("getfacl").args(["-ncp", "/dev/kvm"]).output(),
                     )
                     .await
                     .ok()
                     .and_then(Result::ok)
                     .is_some_and(|output| {
-                        output.status.success()
-                            && String::from_utf8_lossy(&output.stdout).contains("user:100000:rw")
+                        let text = String::from_utf8_lossy(&output.stdout);
+                        let rw = |value: &str| value.starts_with("rw");
+                        let mask = text.lines().find_map(|line| line.strip_prefix("mask::")).unwrap_or("rwx");
+                        output.status.success() && (text.lines().find_map(|line| line.strip_prefix("other::")).is_some_and(rw)
+                            || rw(mask) && text.lines().find_map(|line| line.strip_prefix(&format!("user:{}:",mapping.uid_base))).is_some_and(rw))
                     })
                 } else {
                     false
                 };
-                if subordinate_access { "kvm" } else { "systrap" }
+                if subordinate_access { "kvm" } else if requested == "kvm" {
+                    return Err(io::Error::other("the selected KVM backend lacks /dev/kvm access for the host and mapped root UID; run safeyolo host prepare with SAFEYOLO_RUNSC_PLATFORM=kvm, then retry"));
+                } else { "systrap" }
             }
             _ => {
                 return Err(io::Error::new(
@@ -1208,6 +1215,11 @@ pub(crate) async fn start_sandbox(
         let backend = value.get("pid").and_then(serde_json::Value::as_u64)
             .and_then(|pid| u32::try_from(pid).ok()).ok_or(io::Error::other("runsc did not identify its backend"))?;
         crate::host_runs::remember_process(name, "backend", backend).map_err(io::Error::other)?;
+        let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("sandbox runtime record disappeared"))?;
+        run["linux"] = crate::linux_host::runsc_report();
+        run["linux"]["platform"] = platform.into();
+        crate::host_runs::save(name, &run).map_err(io::Error::other)?;
         std::fs::write(
             directory.join("container.pid"),
             value

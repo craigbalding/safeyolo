@@ -54,6 +54,10 @@ internally and downloads the compatible public guest. It may ask for sudo to
 create the command entry or preserve Linux guest ownership. Instance files
 stay owned by your account. Run commands individually and stop on an error.
 
+The linked published release needs the Ubuntu setup below. New Linux source
+bundles prepare the host through their ordinary installer; see
+[automatic Linux host preparation](docs/native-policy.md#linux-host-preparation-in-new-source-bundles).
+
 On Ubuntu 24.04, these commands install gVisor and its host tools, add the signed
 gVisor package repository, and permit your account's required user namespaces.
 They need host sudo and change package sources, your subordinate user/group

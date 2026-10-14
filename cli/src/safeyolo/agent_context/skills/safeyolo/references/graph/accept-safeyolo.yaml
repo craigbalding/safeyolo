@@ -213,9 +213,9 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: 058d024d5ecec8ad9df29c557a6fd0ee53b1ff36355db94b31b3c331d2686f58
+          sha256: 93707ade5e09d7bc1c0496c37ccd0d0ab672f5733a051113890aaa6a6621c0e8
         - path: tests/blackbox/run-lane.sh
-          sha256: be7a48fabb58fc6a107f998b06cd7700d623a656ec166ba46eda2e3db51bc37f
+          sha256: 9164786f26e33387d1a06c558b3beb2d412a55ffa223f200d6a75c49e8fa7262
         - path: tests/blackbox/run-tests.sh
           sha256: 12b822f6047e9860d6cf801315f479bb922dcd0c468feb0837c3a4751c54fc89
         - path: uv.lock
@@ -241,20 +241,20 @@ nodes:
       supplies guest inputs; the retired Python bootstrap is not invoked.
     source: tests/blackbox/run-lane.sh
     tool:
-      obtain_from: "operator-prepared runsc from gVisor's official signed repository or verified release, plus the trusted source's shell rootfs builder and native installer"
+      obtain_from: "the host package's complete pinned gVisor payload (or its explicit tested system override), plus the trusted source's guest inputs and installer"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: be7a48fabb58fc6a107f998b06cd7700d623a656ec166ba46eda2e3db51bc37f
+          sha256: 9164786f26e33387d1a06c558b3beb2d412a55ffa223f200d6a75c49e8fa7262
         - path: tests/blackbox/run-tests.sh
           sha256: 12b822f6047e9860d6cf801315f479bb922dcd0c468feb0837c3a4751c54fc89
         - path: proxy/src/host_platform.rs
-          sha256: 48acd66dfae6a243d9759d0df98b01bf6811254351b82c1021ed2de4c2274e77
+          sha256: 91e70dd77bc0855ec64dd4a7f1e6679d701439c438d8388755117022c5705bf6
         - path: proxy/src/host_boot.rs
-          sha256: 1c2703b8685a4a312f07d8b3271b0a9ecd9ca42fcaabe560d95fe9f45ba90231
+          sha256: 5e759753d8f29722ad184db79049d4a797d25ae656dcfb95b47b647bc0db654a
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/native-policy.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
-      verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && runsc --version && safeyolo doctor"
+      verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
         gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
@@ -284,7 +284,7 @@ nodes:
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: be7a48fabb58fc6a107f998b06cd7700d623a656ec166ba46eda2e3db51bc37f
+          sha256: 9164786f26e33387d1a06c558b3beb2d412a55ffa223f200d6a75c49e8fa7262
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:

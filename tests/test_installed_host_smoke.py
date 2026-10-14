@@ -383,6 +383,24 @@ def test_missing_required_substrate_is_not_a_discovery_pass(smoke_module) -> Non
         smoke_module._require_substrate({"status": "unavailable", "reason": "runsc missing"})
 
 
+@pytest.mark.parametrize("ready", [True, False])
+def test_substrate_uses_installed_runtime_diagnosis_without_path_fallback(tmp_path, smoke_module, monkeypatch, ready):
+    cli = tmp_path / "bin/safeyolo"
+    cli.parent.mkdir()
+    cli.touch()
+    selected = {"state": "ready" if ready else "unavailable", "path": "/owned/libexec/runsc",
+                "version": "release-20261005.0", "origin": "bundled", "error": "missing companion"}
+    monkeypatch.setattr(smoke_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(smoke_module, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, json.dumps({"linux": selected}), ""))
+    monkeypatch.setattr(smoke_module.shutil, "which", lambda name: pytest.fail("ambient runtime lookup"))
+    observed = smoke_module._substrate_identity(tmp_path)
+    assert observed["status"] == ("discovered" if ready else "unavailable")
+    assert observed["path"] == selected["path"] and observed["origin"] == "bundled"
+    if not ready:
+        assert observed["reason"] == "missing companion"
+
+
 def test_darwin_process_identity_is_observed_or_unavailable(tmp_path: Path, smoke_module, monkeypatch) -> None:
     candidate = tmp_path / "safeyolo-proxy"
     candidate.write_text("native")

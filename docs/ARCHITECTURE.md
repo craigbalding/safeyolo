@@ -51,7 +51,7 @@ and a read-only configuration share.
 
 ### Linux runtime and storage
 
-- **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to subordinate host uid 100000, while container uid 1000 maps to the operator.
+- **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to the installation's selected subordinate host UID, while container UID 1000 maps to the operator. GIDs use their separately selected range. The installer reuses safe existing allocations or prepares unused ranges through the host account tools; the original archive base remains 100000.
 - **Rootfs**: a single shared directory tree at
   `~/.safeyolo/share/rootfs-tree/` is the gVisor OCI `root.path`; Linux does
   not package it as an image. By default, writes
@@ -59,7 +59,7 @@ and a read-only configuration share.
   `--ephemeral` selects a memory-backed overlay whose rootfs writes are
   discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by the native host prerequisites in `docs/native-policy.md` and surfaced in `safeyolo doctor`.
-- **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by the native host prerequisites in `docs/native-policy.md`.
+- **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they install a profile for the selected runtime path. Explicit KVM preparation grants the host and mapped root UIDs device access; a later device-permission reset requires `safeyolo host prepare` again. See [host preparation](native-policy.md#linux-host-preparation-in-new-source-bundles).
 
 
 See the [macOS microVM architecture](microvm-architecture.md) and

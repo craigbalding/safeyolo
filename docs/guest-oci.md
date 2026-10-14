@@ -162,8 +162,15 @@ change is explicitly selected. Reuse unchanged verified bytes without another
 download or extraction.
 
 Stage a verified archive in persistent storage identified by its blob digest.
-On Linux, preserve numeric UID/GID `100000`, modes, symlinks and
-`cache-paths.txt`; the installer links to the prepared `rootfs-tree/`.
+On Linux, the verified archive retains its original numeric UID/GID bytes,
+whose published root base is `100000`.
+A fresh prepared tree shifts the published range to the selected subordinate
+UID and GID bases independently. Guest UID/GID 1000 map to the host account;
+other guest IDs keep their offsets. Preserve modes, links, extended attributes
+and `cache-paths.txt`. The installer links to this prepared `rootfs-tree/`.
+The prepared-store key includes the archive digest, both subordinate bases
+and the host UID/GID. Reuse requires that exact mapping. Never recursively
+change ownership of a shared prepared or live tree.
 Keep referenced trees available for installed and rollback selections.
 On Darwin, preserve the finished kernel/initramfs/ext4 files and sparse-image
 handling, including the existing clone/copy behavior. Retain explicit offline
@@ -184,8 +191,10 @@ is `HOME/.local/share/safeyolo/guests`, with `blobs/sha256` and `trees/sha256`
 directories. Completed trees are renamed into their digest-addressed location;
 failed extraction removes its owned staging directory. The host's maintained
 tar extracts the selected backend members, preserving its path/link safeguards;
-Linux extraction uses sudo for numeric ownership and the host find command
-checks the prepared tree ownership. Native zstd decoding needs
+Linux extraction uses sudo for numeric ownership. The ownership operation
+checks every source owner and pins file descriptors before changing a fresh
+stage. Hard links that leave that stage are refused. Existing prepared trees
+are checked against the selected mapping and remain unchanged. Native zstd decoding needs
 no separately installed zstd program. Explicit/offline inputs remain available
 with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.
 The installed selection is reused without resolving discovery again.

@@ -232,10 +232,10 @@ must_contain = "{subdir}"
 forbidden = ["rootfs-base.erofs"]
 
 [[assertion]]
-name = "guest-root-uid-mapping"
-source = "proxy/src/host_platform.rs"
-pattern = '\(0, 100000, 1000\)'
-docs = ["docs/security-verification.md", "docs/ARCHITECTURE.md"]
+name = "guest-archive-uid-base"
+source = "proxy/src/linux_host.rs"
+pattern = 'pub const ARCHIVE_BASE: u32 = 100000;'
+docs = ["docs/guest-oci.md"]
 must_contain = "100000"
 
 [[assertion]]

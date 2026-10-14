@@ -1092,11 +1092,11 @@ if __name__ == '__main__':
                 assert option not in arguments
 
 
-def test_kvm_lane_prepares_operator_and_subordinate_access_before_native_installation():
+def test_kvm_lane_delegates_mapping_and_access_to_product_preparation():
     lane = (Path(__file__).parent / "blackbox/run-lane.sh").read_text()
-    acl = 'sudo -n setfacl -m "u:$(id -u):rw,u:100000:rw" /dev/kvm'
-    assert acl in lane
-    assert lane.index(acl) < lane.index('"$checkout/install.sh"')
+    assert "u:100000:rw" not in lane
+    assert 'host prepare --yes' in lane
+    assert 'export SAFEYOLO_RUNSC_PLATFORM=$lane' in lane
     assert 'safeyolo bootstrap' not in lane
 
 
@@ -1112,8 +1112,10 @@ def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tm
         path.mkdir(parents=True)
     (tools / "uname").write_text('#!/bin/sh\nprintf "Linux\\n"\n')
     calls = tmp_path / "acl-command.json"
-    (tools / "sudo").write_text(f'#!{sys.executable}\nimport json,sys\n'
-                              f'open({str(calls)!r}, "w").write(json.dumps(sys.argv[1:]))\nsys.exit({acl_exit})\n')
+    native = tools / "safeyolo"
+    native.write_text(f'#!{sys.executable}\nimport json,os,sys\n'
+                      f'assert os.environ["SAFEYOLO_RUNSC_PLATFORM"] == "kvm"\n'
+                      f'open({str(calls)!r}, "w").write(json.dumps(sys.argv[1:]))\nsys.exit({acl_exit})\n')
     unexpected = tmp_path / "unexpected-install-or-sync"
     failure_script = f'#!/bin/sh\ntouch {shlex.quote(str(unexpected))}\nexit 8\n'
     (tools / "uv").write_text(failure_script)
@@ -1123,13 +1125,14 @@ def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tm
     for path in (*tools.iterdir(), checkout / "install.sh"):
         path.chmod(0o755)
     env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
-               SAFEYOLO_PLATFORM_ASSETS=str(assets), SAFEYOLO_CONFIG_DIR=str(tmp_path / "prepared"))
+               SAFEYOLO_PLATFORM_ASSETS=str(assets), SAFEYOLO_CONFIG_DIR=str(tmp_path / "prepared"),
+               SAFEYOLO_NATIVE_CLI=str(native))
     result = subprocess.run(["bash", str(probe), lane, "--install-checkout", str(checkout), "--prepare-kvm-only"],
                             env=env, capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == expected, result.stderr
     assert not unexpected.exists() and not (tmp_path / "prepared").exists()
     if lane == "kvm":
-        assert json.loads(calls.read_text()) == ["-n", "setfacl", "-m", f"u:{os.getuid()}:rw,u:100000:rw", str(device)]
+        assert json.loads(calls.read_text()) == ["--root", str(tmp_path / "prepared"), "host", "prepare", "--yes"]
         assert ("KVM access prepared" in result.stdout) == (acl_exit == 0)
     else:
         assert not calls.exists() and "requires the KVM lane" in result.stderr

@@ -245,7 +245,8 @@ def package_info(tmp_path):
     return path
 
 
-def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, package_info, tmp_path, guest_store):
+@pytest.mark.parametrize("prepared_host", [False, True])
+def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, package_info, tmp_path, guest_store, prepared_host):
     """Fresh section state must keep the installed host's guest selection."""
     from tests.blackbox.installed_sections import prepare_native_instance
 
@@ -260,6 +261,15 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     shutil.copy2(package_info, source / "package-info")
     selection = (source / "share/guest-selection.json").read_bytes()
     request_count = len(requests)
+    if prepared_host:
+        initialized = subprocess.run([str(native_cli), "--root", str(source), "init"], capture_output=True, text=True)
+        assert initialized.returncode == 0, initialized.stderr
+        with (source / "config.toml").open("a") as configuration:
+            configuration.write(f'\n[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n'
+                                f'uid_base=100000\ngid_base=100000\nrunsc={json.dumps(str(source / "libexec/runsc"))}\n'
+                                'runsc_origin="bundled"\napparmor_profile="safeyolo-runsc-retained"\n')
+        (source / "SHA256SUMS").write_text("retained package integrity input\n")
+        original = (source / "config.toml").read_bytes()
 
     root = tmp_path / "section"
     prepare_native_instance(source, root)
@@ -271,7 +281,14 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     assert (root / "share/guest-selection.json").read_bytes() == selection
     assert (source / "share/guest-selection.json").read_bytes() == selection
     assert len(requests) == request_count
-    assert not (source / "config.toml").exists()
+    if prepared_host:
+        import tomllib
+        assert tomllib.loads((root / "config.toml").read_text())["linux"] == tomllib.loads(original.decode())["linux"]
+        assert (source / "config.toml").read_bytes() == original
+        assert (root / "data/instance_id").read_bytes() != (source / "data/instance_id").read_bytes()
+        assert (root / "SHA256SUMS").read_bytes() == (source / "SHA256SUMS").read_bytes()
+    else:
+        assert not (source / "config.toml").exists()
 
 
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):

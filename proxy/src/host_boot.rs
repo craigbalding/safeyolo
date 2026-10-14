@@ -306,9 +306,14 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         if !rootfs.is_dir() {
             return Err(format!("installed rootfs tree is missing: {}", rootfs.display()).into());
         }
-        if rootfs.metadata()?.uid() != 100000 {
+        let mapping = crate::linux_host::selected_mapping()?;
+        if rootfs.metadata()?.uid() != mapping.uid_base
+            || rootfs.metadata()?.gid() != mapping.gid_base
+        {
             return Err(format!(
-                "rootfs tree must be owned by sandbox root UID 100000: {}",
+                "rootfs tree must be owned by sandbox root {}:{}: {}",
+                mapping.uid_base,
+                mapping.gid_base,
                 rootfs.display()
             )
             .into());

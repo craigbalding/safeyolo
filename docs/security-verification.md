@@ -39,7 +39,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Only egress = proxy UDS | Private per-agent directory mounted read-only at `/safeyolo/proxy`, containing `proxy.sock` | [proxy/src/host_boot.rs](../proxy/src/host_boot.rs) |
 | Identity on every flow | The native per-agent Unix listener binds the selected agent identity to each connection | [proxy/src/main.rs](../proxy/src/main.rs), [proxy/src/policy_runtime.rs](../proxy/src/policy_runtime.rs) |
 | Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
-| Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
+| Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps UID 1000 to the operator and UID 0 to the selected subordinate host UID, never host root; GIDs use their independently selected base | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Read-only config share | `/safeyolo` mounted `ro` | [proxy/src/host_boot.rs](../proxy/src/host_boot.rs) |
 | Rootfs overlay (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; the default per-agent file-backed overlay persists across stop and run; `rootfs_overlay = "memory"` selects a memory-backed overlay that is discarded on stop | [guest/build-rootfs.sh](../guest/build-rootfs.sh), [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
@@ -49,7 +49,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 Build and install through [native installation](native-policy.md#build-a-native-bundle),
 with [prepared guest inputs](../guest/README.md). Supply their directory with
 `--platform-assets DIRECTORY` at fresh install. On Linux keep the prepared
-`share/rootfs-tree` available, immutable and owned by sandbox root UID 100000;
+`share/rootfs-tree` available, immutable and owned by the selected subordinate UID/GID bases;
 plain ownership-changing copies break this boundary. macOS uses the prepared
 ext4 image, signed VM helper, kernel and initramfs.
 

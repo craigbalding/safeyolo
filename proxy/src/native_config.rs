@@ -10,6 +10,7 @@ use crate::{Config, Error};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub linux: Option<crate::linux_host::Settings>,
     pub onepassword_executable: Option<PathBuf>,
     pub protected_host_directories: Vec<PathBuf>,
     pub capture: Capture,
@@ -232,6 +233,7 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         "web",
         "onepassword_executable",
         "protected_host_directories",
+        "linux",
     ] {
         if let Some(value) = fields.shift_remove(key) {
             settings.insert(key.into(), value);
@@ -239,6 +241,9 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     }
     let mut settings: Settings = serde_json::from_value(Value::Object(settings))
         .map_err(|error| format!("config.toml settings: {error}"))?;
+    if let Some(linux) = &settings.linux {
+        linux.validate()?;
+    }
     for directory in &mut settings.protected_host_directories {
         let path = if directory.is_absolute() {
             directory.clone()
