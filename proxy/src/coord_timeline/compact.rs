@@ -101,10 +101,22 @@ fn clean(display: &Display, text: &str, redact: bool) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     match display.max_text {
-        Some(n) if text.chars().count() > n => format!(
-            "{}…",
-            text.chars().take(n.saturating_sub(1)).collect::<String>()
-        ),
+        Some(n) if text.chars().count() > n => {
+            // Omitted-middle provenance remains visible even at short limits,
+            // just as in the rendered view and updated Python watcher.
+            let (detail, marker) = text
+                .rsplit_once(" [middle snipped;")
+                .map(|(detail, marker)| (detail, format!(" [middle snipped;{marker}")))
+                .unwrap_or((&text, String::new()));
+            let count = n.saturating_sub(marker.chars().count()).max(1);
+            format!(
+                "{}…{marker}",
+                detail
+                    .chars()
+                    .take(count.saturating_sub(1))
+                    .collect::<String>()
+            )
+        }
         _ => text,
     }
 }
@@ -510,7 +522,12 @@ fn render_event(display: &Display, e: &Value) -> Option<(&'static str, String)> 
                 return Some(("!", clean(display, &text, true)));
             }
             if item["exit_code"] == 0 {
-                if let Some(skill) = opened_skill(&detail) {
+                let command = if detail.is_empty() {
+                    prior.as_ref().map(|(_, text)| text.as_str()).unwrap_or("")
+                } else {
+                    &detail
+                };
+                if let Some(skill) = opened_skill(command) {
                     return Some(("#", format!("skill file read: {skill}")));
                 }
             }
@@ -543,15 +560,20 @@ pub(super) fn message(display: &Display, message: &Value) -> String {
             _ => Some(("#", body.into())),
         }
     } else {
-        Some((
-            "#",
-            format!("{}{body}", if operator { "operator: " } else { "" }),
-        ))
+        Some(("#", body.to_owned()))
     };
     let Some((marker, text)) = line else {
         return String::new();
     };
+    // This marker comes only from the canonical envelope, never agent text.
+    // Color alone cannot preserve attribution in logs or --plain output.
+    let marker = if operator { ">" } else { marker };
     let text = clean(display, &text, display.redact);
+    let text = if operator {
+        format!("operator: {text}")
+    } else {
+        text
+    };
     let time = timestamp(message).chars().take(5).collect::<String>();
     if display.no_color
         || !std::io::stdout().is_terminal()

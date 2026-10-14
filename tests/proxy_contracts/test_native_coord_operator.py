@@ -440,7 +440,7 @@ def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
             while time.monotonic() < deadline:
                 captured = subprocess.run([tmux, "-L", session, "capture-pane", "-J", "-p", "-t", pane], env=env,
                                           capture_output=True, text=True, check=True).stdout
-                if "completed command rc=0 printf marker" in captured:
+                if "$ printf marker" in captured:
                     break
                 time.sleep(0.1)
             if "$ printf marker" in captured:

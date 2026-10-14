@@ -107,6 +107,22 @@
       "expected": "00:00 # skill file read: issue-scope\n00:00 # skill file read: issue-scope\n00:00 ! command failed rc=1\n00:00 $ echo /evidence/skills/issue-scope/SKILL.md\n"
     },
     {
+      "name": "skill completion can omit the command retained at its start",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.started\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill\", \"command\": \"cat /evidence/skills/issue-scope/SKILL.md\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"skill\", \"exit_code\": 0}}"
+        }
+      ],
+      "expected": "00:00 $ cat /evidence/skills/issue-scope/SKILL.md\n00:00 # skill file read: issue-scope\n"
+    },
+    {
       "name": "Coord receipts hide result bodies and suppress empty successful completions",
       "messages": [
         {
@@ -189,7 +205,7 @@
         {
           "sent_at": 0,
           "sender_kind": "agent",
-          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"failed\", \"error\": \"denied\"}}"
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"mcp\", \"server\": \"safeyolo-coord\", \"tool\": \"send\", \"arguments\": {\"room_name\": \"backlog\", \"body\": \"PRIVATE BODY\"}, \"status\": \"failed\", \"error\": {\"message\": \"denied\"}}}"
         },
         {
           "sent_at": 0,
@@ -202,7 +218,7 @@
           "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"mcp_tool_call\", \"id\": \"foreign\", \"server\": \"docs\", \"tool\": \"search\", \"status\": \"completed\", \"result\": {\"structured_content\": {\"sequence\": 9876}}}}"
         }
       ],
-      "expected": "00:00 ! safeyolo-coord.send room=backlog failed: denied\n00:00 @ docs.search query=hello\n"
+      "expected": "00:00 ! safeyolo-coord.send room=backlog failed: {'message': 'denied'}\n00:00 @ docs.search query=hello\n"
     },
     {
       "name": "compact session and usage counters for Codex and Pi",
@@ -378,6 +394,18 @@
       ],
       "expected": "00:00 # retained message [middle snipped; original_bytes=5000 omitted_bytes=4000 sha256=abcdef]\n",
       "max_text": 200
+    },
+    {
+      "name": "short display limits retain oversize provenance",
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"safeyolo.codex.oversize\", \"original_type\": \"item.completed\", \"original_bytes\": 5000, \"omitted_middle_bytes\": 4000, \"sha256\": \"abcdef\", \"summary\": {\"type\": \"agent_message\", \"text\": \"retained message\"}}"
+        }
+      ],
+      "expected": "00:00 # \u2026 [middle snipped; original_bytes=5000 omitted_bytes=4000 sha256=abcdef]\n",
+      "max_text": 40
     }
   ]
 }
