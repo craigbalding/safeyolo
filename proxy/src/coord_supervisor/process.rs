@@ -127,6 +127,15 @@ fn snapshot(leader: i32, include_group: bool) -> Result<BTreeMap<i32, String>, E
 }
 
 fn capture_descendants(owned: &mut Owned) -> Result<(), Error> {
+    // Only live birth identities need cleanup. Retaining every completed tool
+    // child makes a serial invocation exceed the concurrent ownership bound.
+    let mut living = BTreeMap::new();
+    for (pid, expected) in &owned.descendants {
+        if alive(*pid, expected)? {
+            living.insert(*pid, expected.clone());
+        }
+    }
+    owned.descendants = living;
     if token(owned.pid).as_deref() == Some(&owned.token) {
         owned.descendants.extend(snapshot(owned.pid, true)?);
     }
@@ -656,4 +665,55 @@ pub(super) async fn invoke(
     };
     supervisor.state.save(&supervisor.state_path)?;
     Ok(success)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    fn waiting_child() -> std::process::Child {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", "read -r line"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn finish(child: &mut std::process::Child) {
+        drop(child.stdin.take());
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn capture_retains_live_identities_without_accumulating_exited_children() {
+        let pid = std::process::id() as i32;
+        let mut owned = Owned {
+            pid,
+            token: token(pid).unwrap(),
+            descendants: BTreeMap::new(),
+        };
+        let mut keeper = waiting_child();
+        let keeper_pid = keeper.id() as i32;
+        let keeper_token = token(keeper_pid).unwrap();
+        for _ in 0..67 {
+            let mut child = waiting_child();
+            let observed = capture_descendants(&mut owned);
+            finish(&mut child);
+            observed.unwrap();
+            assert_eq!(owned.descendants.get(&keeper_pid), Some(&keeper_token));
+        }
+        capture_descendants(&mut owned).unwrap();
+        assert_eq!(owned.descendants.len(), 1);
+        finish(&mut keeper);
+
+        // The existing bound still rejects more than 64 concurrent children.
+        let mut children: Vec<_> = (0..65).map(|_| waiting_child()).collect();
+        let observed = capture_descendants(&mut owned);
+        for child in &mut children {
+            finish(child);
+        }
+        assert!(observed.unwrap_err().to_string().contains("64-descendant"));
+    }
 }
