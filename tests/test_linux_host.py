@@ -114,7 +114,7 @@ def test_runtime_access_preserves_other_acl_rights_and_honors_named_denial(nativ
     assert result.returncode == 0, result.stderr
     acl = command("getfacl", "-ncp", parent).stdout
     assert "user:42:---" in acl
-    assert "group::---" in acl and "group:43:---" in acl
+    assert "group::---" in acl and "group:43:rw-\t#effective:---" in acl
     assert f"user:{base}:--x" in acl and "mask::--x" in acl
     settings.unlink()
     repeat = command(native_cli, *arguments)
