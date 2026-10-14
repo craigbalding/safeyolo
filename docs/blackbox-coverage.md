@@ -187,10 +187,10 @@ installation. Its host safety depends on the enclosing user
 namespace mapping sandbox uid 0 to a subordinate uid while mapping
 sandbox uid 1000 to the operator for workspace access.
 
-- **`test_sandbox_root_maps_to_subordinate_host_uid`** — Sandbox uid 0 maps to uid 100000 rather than host root.
-  - *Probe:* On Linux, read the live user-namespace holder's uid_map
-and assert sandbox uid 0 maps to host uid 100000, while uid
-1000 maps only to the current host operator uid.
+- **`test_sandbox_root_maps_to_subordinate_host_uid`** — Sandbox root maps to the selected subordinate UID and GID.
+  - *Probe:* Read the live namespace holder's UID and GID maps. Check
+that root uses the prepared bases and guest ID 1000 uses the
+host account. Retain the original mapping for older packages.
   - *Consequence if unasserted:* If sandbox uid 0 mapped to host uid 0, setpriv or a package
 maintainer script would gain real host root. If uid 1000 did
 not map to the operator, normal workspace ownership would fail.

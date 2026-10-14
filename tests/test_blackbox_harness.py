@@ -2,6 +2,7 @@
 
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 import shlex
@@ -2710,3 +2711,28 @@ def test_continuity_owned_parent_keeps_oauth_provider_separate():
         for thread in threads:
             thread.join(timeout=3)
             assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("fault", [None, "root", "gid", "operator"])
+def test_installed_identity_probe_checks_selected_uid_and_gid_maps(tmp_path, monkeypatch, fault):
+    spec = importlib.util.spec_from_file_location("host_mapping_probe", ROOT / "tests/blackbox/host/identity/test_agent_identity.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_CONFIG_DIR", tmp_path)
+    agent = tmp_path / "agents" / module._AGENT_NAME
+    agent.mkdir(parents=True)
+    (agent / "userns.pid").write_text("173971")
+    (tmp_path / "config.toml").write_text("[linux]\nuid_base=300000\ngid_base=500000\n")
+    uid, gid = os.getuid(), os.getgid()
+    values = {
+        "/proc/173971/uid_map": f"0 {0 if fault == 'root' else 300000} 1000\n1000 {uid+1 if fault == 'operator' else uid} 1\n1001 301001 64535\n",
+        "/proc/173971/gid_map": f"0 {300000 if fault == 'gid' else 500000} 1000\n1000 {gid} 1\n1001 501001 64535\n",
+    }
+    read, exists = Path.read_text, Path.exists
+    monkeypatch.setattr(Path, "read_text", lambda path, *a, **kw: values[str(path)] if str(path) in values else read(path, *a, **kw))
+    monkeypatch.setattr(Path, "exists", lambda path: str(path) in values or exists(path))
+    if fault:
+        with pytest.raises(AssertionError, match="differs from the selected"):
+            module.TestRootlessUidMapping().test_sandbox_root_maps_to_subordinate_host_uid()
+    else:
+        module.TestRootlessUidMapping().test_sandbox_root_maps_to_subordinate_host_uid()
