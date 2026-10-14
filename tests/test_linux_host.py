@@ -77,6 +77,52 @@ def test_runtime_input_fails_before_host_changes(native_cli, tmp_path, fault):
     assert not settings.exists() and not (tmp_path / "fresh").exists()
 
 
+def test_relative_package_directory_selects_its_bundled_payload(native_cli, owned_stage):
+    parent, _stage = owned_stage
+    bundle = parent / "bundle"
+    payload(bundle / "libexec")
+    (bundle / "SHA256SUMS").write_text("".join(
+        f"{hashlib.sha256((bundle / 'libexec' / name).read_bytes()).hexdigest()}  ./libexec/{name}\n"
+        for name in FILES
+    ))
+    root = parent / "instance"
+    result = command(native_cli, "--root", root, "host", "prepare", "--yes",
+                     "--package-root", "bundle", "--installed-root", root,
+                     "--write-settings", parent / "prepared.toml", cwd=parent)
+    assert result.returncode == 0, result.stderr
+    selected = json.loads(result.stdout)["linux"]
+    assert selected["runsc"] == str(root / "libexec/runsc")
+    assert selected["runsc_origin"] == "bundled"
+
+
+@pytest.mark.parametrize("world_access", [False, True])
+def test_runtime_access_preserves_other_acl_rights_and_honors_named_denial(native_cli, owned_stage, world_access):
+    parent, _stage = owned_stage
+    runtime = payload(parent / "runtime")
+    settings = parent / "prepared.toml"
+    arguments = ("--root", parent / "instance", "host", "prepare", "--yes",
+                 "--system-runsc", runtime, "--write-settings", settings)
+    first = command(native_cli, *arguments)
+    assert first.returncode == 0, first.stderr
+    base = json.loads(first.stdout)["linux"]["uid_base"]
+    settings.unlink()
+    # An explicit user entry wins over other:: permissions. Widening the
+    # mask must not expose another entry's previously masked permissions.
+    subprocess.run(["setfacl", "-m", f"u:42:rwx,u:{base}:---,g::rwx,g:43:rw-,m::---,o::{ '--x' if world_access else '---'}",
+                    str(parent)], check=True)
+    result = command(native_cli, *arguments)
+    assert result.returncode == 0, result.stderr
+    acl = command("getfacl", "-ncp", parent).stdout
+    assert "user:42:---" in acl
+    assert "group::---" in acl and "group:43:---" in acl
+    assert f"user:{base}:--x" in acl and "mask::--x" in acl
+    settings.unlink()
+    repeat = command(native_cli, *arguments)
+    assert repeat.returncode == 0, repeat.stderr
+    assert json.loads(repeat.stdout)["applied"] == []
+    assert command("getfacl", "-ncp", parent).stdout == acl
+
+
 @pytest.mark.parametrize("uid_base,gid_base", [(300000, 500000), (100000, 100000)])
 def test_mapping_remap_keeps_modes_links_and_guest_user_ids(native_cli, owned_stage, uid_base, gid_base):
     parent, stage = owned_stage

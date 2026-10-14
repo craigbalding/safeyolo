@@ -221,7 +221,8 @@ It never renumbers existing accounts or changes a live guest tree.
 Where Ubuntu restricts unprivileged user namespaces, preparation installs and
 loads a separate AppArmor profile for this runtime's actual path. It grants
 only the selected mapped root UID needed access through private runtime
-directories. It keeps AppArmor enabled and does not change global namespace
+directories. It preserves other users' and groups' effective file permissions.
+It keeps AppArmor enabled and does not change global namespace
 policy. For an explicitly selected KVM backend, set
 `SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
 requires `/dev/kvm` and grants only the host UID and mapped root UID required
@@ -257,7 +258,7 @@ sizes, not installation or first-agent timing results. The bundled model adds
 those bytes to a host package. It avoids an extra package source, changes to an
 unrelated system runtime and system-package version drift. An Ubuntu gVisor
 package can share its runtime across installations, but its package updates
-and Docker integration remain host administration. SafeYolo selects the
+and installation remain host administration. SafeYolo selects the
 private pinned payload by default. See the upstream
 [distribution instructions](https://gvisor.dev/docs/user_guide/install/).
 

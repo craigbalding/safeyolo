@@ -285,9 +285,26 @@ fn access_change(
         Err(error) => return Err(error.into()),
     };
     let bits = metadata.permissions().mode();
-    if bits & needed == needed || metadata.uid() == uid && (bits >> 6) & needed == needed {
-        return Ok(None);
+    let permission_text = |bits: u32| {
+        format!(
+            "{}{}{}",
+            if bits & 4 != 0 { 'r' } else { '-' },
+            if bits & 2 != 0 { 'w' } else { '-' },
+            if bits & 1 != 0 { 'x' } else { '-' }
+        )
+    };
+    if metadata.uid() == uid {
+        let owner = (bits >> 6) & 7;
+        return Ok((owner & needed != needed).then(|| {
+            (
+                path.to_owned(),
+                format!("u::{}", permission_text(owner | needed)),
+                metadata.uid() != unsafe { libc::getuid() },
+            )
+        }));
     }
+    // A named user entry takes precedence over other:: permissions. Read the
+    // ACL even when the mode permits other users to traverse the directory.
     let output = Command::new("getfacl").args(["-ncp"]).arg(path).output()?;
     if !output.status.success() {
         return Err(format!("cannot check access to {}", path.display()).into());
@@ -304,29 +321,42 @@ fn access_change(
             }
         })
     };
-    let old = text
+    let named = text
         .lines()
         .find_map(|line| line.strip_prefix(&prefix))
-        .map(permissions)
-        .unwrap_or(0);
+        .map(permissions);
     let mask = text
         .lines()
         .find_map(|line| line.strip_prefix("mask::"))
         .map(permissions)
         .unwrap_or(7);
-    if old & mask & needed == needed {
+    let old = named.map_or(bits & 7, |named| named & mask);
+    if old & needed == needed {
         return Ok(None);
     }
-    let bits = old | needed;
-    let permissions = format!(
-        "{}{}{}",
-        if bits & 4 != 0 { 'r' } else { '-' },
-        if bits & 2 != 0 { 'w' } else { '-' },
-        if bits & 1 != 0 { 'x' } else { '-' }
-    );
+    let new_mask = mask | needed;
+    let mut entries = vec![
+        format!("u:{uid}:{}", permission_text(old | needed)),
+        format!("m::{}", permission_text(new_mask)),
+    ];
+    // Widen only the selected user's effective access. A mask increase must
+    // not expose previously masked rights of another user or group.
+    for line in text.lines().filter(|line| !line.starts_with(&prefix)) {
+        let mut fields = line.split(':');
+        let (Some(kind), Some(id), Some(value)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if kind == "group" || kind == "user" && !id.is_empty() {
+            let raw = permissions(value);
+            if raw & new_mask != raw & mask {
+                entries.push(format!("{kind}:{id}:{}", permission_text(raw & mask)));
+            }
+        }
+    }
     Ok(Some((
         path.to_owned(),
-        permissions,
+        entries.join(","),
         metadata.uid() != unsafe { libc::getuid() },
     )))
 }
@@ -336,17 +366,18 @@ fn grant_access(
     uid: u32,
     applied: &mut Vec<String>,
 ) -> Result<(), Error> {
-    let (path, permissions, needs_sudo) = change;
+    let (path, acl, needs_sudo) = change;
     let mut command = if needs_sudo {
         privilege("setfacl")
     } else {
         Command::new("setfacl")
     };
     execute(
-        command
-            .args(["-m", &format!("u:{uid}:{permissions}")])
-            .arg(&path),
-        &format!("allow UID {uid} {permissions} access to {}", path.display()),
+        command.args(["--no-mask", "-m", &acl]).arg(&path),
+        &format!(
+            "allow UID {uid} required access to {} while preserving other ACL permissions",
+            path.display()
+        ),
         applied,
     )
 }
@@ -489,7 +520,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         )
     } else {
         (
-            bundle.join("libexec/runsc"),
+            bundle.canonicalize()?.join("libexec/runsc"),
             installed_root.join("libexec/runsc"),
             "bundled",
         )
@@ -632,9 +663,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             "SafeYolo needs these host changes:\n  {}",
             changes.join("\n  ")
         );
-        eprintln!(
-            "Only the listed package, account and profile operations use sudo. The proxy and agent run as {owner}."
-        );
+        eprintln!("Only the listed host operations use sudo. The proxy and agent run as {owner}.");
         if !yes {
             eprint!("Allow these host changes? [y/N] ");
             io::stderr().flush()?;
