@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import tomllib
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -485,7 +486,7 @@ def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_p
     result = subprocess.run([
         str(REPO / "tests/blackbox/run-installed-package.sh"), "--package", archive,
         "--sha256", archive_digest,
-    ], env=environment, capture_output=True, text=True, timeout=120)
+    ], env=environment, input="yes\n", capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-6000:]
     smoke = json.loads((reports / "host-package.json").read_text())
     assert smoke["status"] == "host_package_passed" and smoke["cleanup"]["status"] == "stopped"
@@ -496,7 +497,10 @@ def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_p
     assert selected["platform"] == f"linux/{architecture}"
     assert selected["index"]["digest"] == digest(guest["manifests/compat-v1"])
     assert selected["archive"]["digest"] == digest(compressed_archive())
-    assert (root / "share/rootfs-tree").stat().st_uid == 100000
+    mapping = tomllib.loads((root / "config.toml").read_text())["linux"]
+    ownership = (root / "share/rootfs-tree").stat()
+    assert ownership.st_uid == mapping["uid_base"]
+    assert ownership.st_gid == mapping["gid_base"]
     assert requests.count(PREFIX + "manifests/compat-v1") == 1
     continuity = json.loads((reports / "installed-continuity.json").read_text())
     assert continuity["result"] == "installed_native_continuity_passed"
