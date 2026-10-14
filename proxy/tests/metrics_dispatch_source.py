@@ -98,9 +98,9 @@ async def run(source):
         from mitmproxy.net import encoding
         from mitmproxy.proxy.layers.http._hooks import HttpRequestHook, HttpResponseHook
         from mitmproxy.test import tflow
+        from pdp import is_policy_client_configured
 
         import safeyolo.mitm_addons as production
-        from pdp import is_policy_client_configured
         from safeyolo.core import audit_writer
         from safeyolo.mitm_addons import ignored_host_logger as ignored
         from safeyolo.mitm_addons import metrics as metrics_module

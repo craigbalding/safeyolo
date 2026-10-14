@@ -47,6 +47,8 @@ def prepare_native_instance(source: Path, root: Path) -> None:
         if target.exists():
             target.rmdir()  # Only an empty initialization directory may be replaced.
         target.symlink_to(source / name, target_is_directory=True)
+    if (source / "package-info").is_file():
+        shutil.copy2(source / "package-info", root / "package-info")
 
 
 def owned_processes(root: Path) -> list[dict]:
@@ -133,7 +135,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
 
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
                  directory: Path, artifacts: Path, *, operator_journey: bool = False,
-                 prepared_config: Path | None = None) -> int:
+                 prepared_config: Path | None = None, listener_restart: bool = False) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     source = prepared_config or directory / "prepared"
     env = os.environ.copy()
@@ -144,6 +146,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                SAFEYOLO_COORD_DATA_DIR=str(source / "data/coord"),
                SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex, CARGO_BUILD_JOBS="1")
     report = {"source_revision": revision, "lane": lane, "preparation": {}, "sections": []}
+    if listener_restart:
+        report["isolation_selection"] = "listener-restart"
     artifacts.mkdir(parents=True, exist_ok=True)
     report_path = artifacts / "installed-sections.json"
 
@@ -203,6 +207,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                 "--proxy-impl", "rust"]
         if section != "isolation":
             args += ["--" + section]
+        elif listener_restart:
+            args += ["--listener-restart"]
         if section == "access" and operator_journey:
             args += ["--operator-journey"]
         if section in {"ingress", "workloads", "access", "lifecycle"}:
@@ -267,6 +273,8 @@ def main() -> int:
     parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
     parser.add_argument("--operator-journey", action="store_true",
                         help="Extend the selected systrap or VZ access section with terminal, desktop and restart observations")
+    parser.add_argument("--listener-restart", action="store_true",
+                        help="Run only live-host-listener and same-running-guest proxy restart controls in the isolation section")
     parser.add_argument("--install-commit", help="exact commit; defaults to the prepared package's source or the install checkout's HEAD")
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
     parser.add_argument("--prepared-config", type=Path,
@@ -297,13 +305,16 @@ def main() -> int:
         parser.error("sections must be distinct and supported by the selected lane")
     if args.operator_journey and (args.lane not in {"systrap", "vz"} or sections != ("access",)):
         parser.error("--operator-journey requires systrap or vz --section access")
+    if args.listener_restart and sections != ("isolation",):
+        parser.error("--listener-restart requires --section isolation")
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
     # Short roots also keep configured UDS paths within macOS's pathname limit.
     directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path.home()))
     print(f"Prepared product and section state: {directory}", flush=True)
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
-                        operator_journey=args.operator_journey, prepared_config=prepared_config)
+                        operator_journey=args.operator_journey, prepared_config=prepared_config,
+                        listener_restart=args.listener_restart)
 
 
 if __name__ == "__main__":

@@ -76,6 +76,7 @@ fn config(directory: &TempDir) -> Config {
         event_log: directory.path().join("events.jsonl"),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
+        parent_proxy_hosts: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),

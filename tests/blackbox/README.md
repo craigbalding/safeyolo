@@ -433,13 +433,24 @@ tests the retained production host from `7a38dff14e7e4eacb4095da732ffe06d7c7c579
 with original guest `guest-2026-10-12.1` from `8234a047d810d543d8c4d1cb1fa9859987be035b`.
 It runs on the repository's `ubuntu-24.04-arm` pool with real systrap guests.
 
-Before dispatch, integrate the independently reviewed workflow. The workflow
+The draft-access correction is prepared for Craig's decision. Merge and dispatch
+are held until he approves the permission increase. After approval, integrate
+the independently reviewed workflow before dispatch. The workflow
 uses draft release `410991309` for `host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796`,
 ARM64 production asset `634976985` and checksum asset `634976991`.
 The release must remain a draft with those unchanged assets.
-The job's repository read token must be able to download the draft assets and
-the retained G1 layout from run `38248401312`. That artifact expires on
-10 January 2027. From an authenticated operator terminal in this checkout:
+GitHub requires [push access to see draft releases](https://docs.github.com/en/rest/releases/releases#list-releases).
+The prepared acquisition job requests an ephemeral repository `GITHUB_TOKEN`
+with `contents: write` for the fixed release and asset GET requests. It has no
+checkout and runs no product, verifier, guest or publication command. It transfers
+only the hash/size-bound host archive, checksums and release metadata through an
+Actions artifact. Actual hosted token access remains unverified.
+
+The qualification job keeps `contents: read` and `actions: read`. It downloads
+the successful acquisition job's artifact by ID from the same run, rechecks H,
+and downloads the retained G1 layout from run `38248401312`, artifact `11747551391`.
+The G1 artifact expires on 10 January 2027. After Craig's approval and integration,
+use an authenticated operator terminal in this checkout:
 
 ```sh
 gh workflow run installed-arm64.yml --ref master

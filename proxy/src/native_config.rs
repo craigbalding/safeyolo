@@ -531,6 +531,7 @@ reload_id="owned-reload"
 agent_map_file="state/agents.json"
 parent_proxy="http://127.0.0.1:18080"
 parent_proxy_agents=["alice"]
+parent_proxy_hosts=["Auth.Example.Test.", "bücher.example"]
 upstream_ca_file="certs/upstream.pem"
 tls_ca_file="certs/signing.pem"
 gateway_builtin_services_dir="builtin"
@@ -614,6 +615,14 @@ tailnet_port=8443
             Some("http://127.0.0.1:18080")
         );
         assert_eq!(config.parent_proxy_agents, ["alice"]);
+        assert_eq!(
+            config.parent_proxy_hosts,
+            ["Auth.Example.Test.", "bücher.example"]
+        );
+        assert_eq!(
+            config.parent().unwrap().unwrap().destination_hosts,
+            ["auth.example.test", "xn--bcher-kva.example"]
+        );
         for (actual, expected) in [
             (&config.admin_api_token_file, "state/operator-token"),
             (&config.audit_log_path, "records/security.jsonl"),
@@ -733,6 +742,16 @@ tailnet_port=8443
             ("[audit]\nunknown=1", "unknown"),
             ("data_dir=42", "data_dir"),
             ("[listeners]\nagent_id='alice'", "sequence"),
+            ("parent_proxy_hosts='example.test'", "sequence"),
+            ("parent_proxy_hosts=[42]", "string"),
+            (
+                "parent_proxy_hosts=['*.example.test']",
+                "parent_proxy_hosts",
+            ),
+            (
+                "parent_proxy_hosts=['example.test:443']",
+                "parent_proxy_hosts",
+            ),
         ] {
             std::fs::write(&path, source).unwrap();
             let error = read(&path).unwrap_err().to_string();

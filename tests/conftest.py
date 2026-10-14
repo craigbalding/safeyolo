@@ -1,6 +1,8 @@
 """Shared fixtures for current Python and native proxy tests."""
 
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -16,6 +18,14 @@ os.environ.setdefault(
 
 # Use the checked-out CLI package when testing local edits.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "reference"))
+
+
+@pytest.fixture
+def linux_workflow_stat():
+    """Use real GNU stat for Ubuntu workflow assertions on either test host."""
+    command = shutil.which("gstat") or shutil.which("stat")
+    assert command and "GNU coreutils" in subprocess.check_output([command, "--version"], text=True)
+    return command
 
 
 @pytest.fixture(scope="session")

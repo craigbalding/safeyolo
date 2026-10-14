@@ -45,24 +45,44 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_process_token(pid: i64) -> Option<String> {
-    let pid = i32::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    macos_process_token_detail(pid).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_token_detail(pid: i64) -> Result<String, String> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| format!("stage=pid invalid_pid={pid}"))?;
     let mut info = std::mem::MaybeUninit::<DarwinProcessInfo>::zeroed();
     let size = std::mem::size_of::<DarwinProcessInfo>();
     if size != 136 {
-        return None;
+        return Err(format!(
+            "stage=proc_pidinfo_layout expected=136 observed={size}"
+        ));
     }
     let returned = unsafe { proc_pidinfo(pid, 3, 0, info.as_mut_ptr().cast(), size as i32) };
     if returned != size as i32 {
-        return None;
+        let errno = if returned <= 0 {
+            io::Error::last_os_error().raw_os_error()
+        } else {
+            None
+        };
+        return Err(format!(
+            "stage=proc_pidinfo return={returned} expected={size} errno={errno:?}"
+        ));
     }
     let info = unsafe { info.assume_init() };
     if info.first_fields[3] != pid as u32
         || info.started_seconds == 0
         || info.started_microseconds >= 1_000_000
     {
-        return None;
+        return Err(format!(
+            "stage=process_birth observed_pid={} seconds={} microseconds={}",
+            info.first_fields[3], info.started_seconds, info.started_microseconds
+        ));
     }
-    Some(format!(
+    Ok(format!(
         "darwin:{pid}:{}:{}",
         info.started_seconds, info.started_microseconds
     ))
@@ -70,25 +90,51 @@ pub(crate) fn macos_process_token(pid: i64) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn process_arguments(pid: i32, executable: &std::path::Path) -> Option<Vec<Vec<u8>>> {
+    macos_process_arguments_detail(pid, executable).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_arguments_detail(
+    pid: i32,
+    executable: &std::path::Path,
+) -> Result<Vec<Vec<u8>>, String> {
     let mut buffer = [0u8; 4096];
     let size = unsafe { proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
     if size <= 0 {
-        return None;
+        return Err(format!(
+            "stage=proc_pidpath return={size} errno={:?}",
+            io::Error::last_os_error().raw_os_error()
+        ));
     }
-    let path = std::ffi::CStr::from_bytes_until_nul(&buffer).ok()?;
-    let actual = std::fs::canonicalize(std::path::Path::new(std::ffi::OsStr::from_bytes(
-        path.to_bytes(),
-    )))
-    .ok()?;
-    let expected = executable.canonicalize().ok()?;
+    let path = std::ffi::CStr::from_bytes_until_nul(&buffer)
+        .map_err(|_| format!("stage=proc_pidpath_parse return={size} missing_terminator"))?;
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
+    let actual = path.canonicalize().map_err(|error| {
+        format!(
+            "stage=actual_executable_canonicalize path={} errno={:?}",
+            vz_diagnostic_path(path),
+            error.raw_os_error()
+        )
+    })?;
+    let expected = executable.canonicalize().map_err(|error| {
+        format!(
+            "stage=expected_executable_canonicalize actual_executable={} errno={:?}",
+            vz_diagnostic_path(&actual),
+            error.raw_os_error()
+        )
+    })?;
     if actual != expected {
-        return None;
+        return Err(format!(
+            "stage=executable_mismatch actual_executable={} expected_executable={}",
+            vz_diagnostic_path(&actual),
+            vz_diagnostic_path(&expected)
+        ));
     }
     // A helper executable alone cannot identify an agent. Bind its actual
     // launch arguments to this instance's private control endpoint.
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     let mut size = 0;
-    if unsafe {
+    let returned = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
             3,
@@ -97,13 +143,20 @@ fn process_arguments(pid: i32, executable: &std::path::Path) -> Option<Vec<Vec<u
             std::ptr::null_mut(),
             0,
         )
-    } != 0
-        || size > 1024 * 1024
-    {
-        return None;
+    };
+    if returned != 0 {
+        return Err(format!(
+            "stage=sysctl_argv_size return={returned} errno={:?}",
+            io::Error::last_os_error().raw_os_error()
+        ));
+    }
+    if size > 1024 * 1024 {
+        return Err(format!(
+            "stage=sysctl_argv_size observed_size={size} limit=1048576"
+        ));
     }
     let mut bytes = vec![0u8; size];
-    if unsafe {
+    let returned = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
             3,
@@ -112,26 +165,50 @@ fn process_arguments(pid: i32, executable: &std::path::Path) -> Option<Vec<Vec<u
             std::ptr::null_mut(),
             0,
         )
-    } != 0
-    {
-        return None;
+    };
+    if returned != 0 {
+        return Err(format!(
+            "stage=sysctl_argv return={returned} errno={:?}",
+            io::Error::last_os_error().raw_os_error()
+        ));
     }
     bytes.truncate(size);
-    let argc = i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?);
+    let malformed = || format!("stage=argv_parse size={size} malformed_arguments");
+    let argc = i32::from_ne_bytes(
+        bytes
+            .get(..4)
+            .ok_or_else(malformed)?
+            .try_into()
+            .map_err(|_| malformed())?,
+    );
     if !(1..=1024).contains(&argc) {
-        return None;
+        return Err(format!(
+            "stage=argv_parse argc={argc} invalid_argument_count"
+        ));
     }
-    let mut offset = 4 + bytes.get(4..)?.iter().position(|b| *b == 0)? + 1;
+    let mut offset = 4
+        + bytes
+            .get(4..)
+            .ok_or_else(malformed)?
+            .iter()
+            .position(|b| *b == 0)
+            .ok_or_else(malformed)?
+        + 1;
     while bytes.get(offset) == Some(&0) {
         offset += 1;
     }
     let mut arguments = Vec::new();
     for _ in 0..argc {
-        let length = bytes.get(offset..)?.iter().position(|b| *b == 0)?;
+        let length = bytes
+            .get(offset..)
+            .ok_or_else(malformed)?
+            .iter()
+            .position(|b| *b == 0)
+            .ok_or_else(malformed)?;
         arguments.push(bytes[offset..offset + length].to_vec());
         offset += length + 1;
     }
-    Some(arguments)
+    Ok(arguments)
 }
 
 #[cfg(target_os = "linux")]
@@ -240,17 +317,89 @@ pub(crate) fn process_has_config_path(
 
 #[cfg(target_os = "macos")]
 pub(crate) fn vm_process_token(name: &str, pid: i32) -> Option<String> {
-    let token = macos_process_token(i64::from(pid))?;
+    vm_process_token_detail(name, pid).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn vz_diagnostic_path(path: &std::path::Path) -> String {
+    let escaped = format!("{path:?}");
+    if escaped.chars().count() <= 512 {
+        escaped
+    } else {
+        format!(
+            "{}...<truncated>",
+            escaped.chars().take(512).collect::<String>()
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
+    let executable = config_dir().join("bin/safeyolo-vm");
     let control = config_dir()
         .join("data/vm-control")
         .join(format!("{name}.sock"));
-    process_has_path_argument(
-        i64::from(pid),
-        &config_dir().join("bin/safeyolo-vm"),
-        b"--control-socket",
-        &control,
+    let expected = format!(
+        "expected_executable={} expected_control_argument={}",
+        vz_diagnostic_path(&executable),
+        vz_diagnostic_path(&control)
+    );
+    let token = macos_process_token_detail(i64::from(pid))
+        .map_err(|error| format!("{error}; {expected}"))?;
+    let arguments = macos_process_arguments_detail(pid, &executable)
+        .map_err(|error| format!("{error}; observed_birth={token}; {expected}"))?;
+    if !arguments
+        .windows(2)
+        .any(|pair| pair[0] == b"--control-socket" && pair[1] == control.as_os_str().as_bytes())
+    {
+        // Only the control pathname is diagnostic. Do not include other argv
+        // or the environment, which can contain credentials.
+        let actual = arguments
+            .windows(2)
+            .find(|pair| pair[0] == b"--control-socket")
+            .map(|pair| {
+                vz_diagnostic_path(std::path::Path::new(std::ffi::OsStr::from_bytes(&pair[1])))
+            });
+        return Err(format!(
+            "stage=control_argument_mismatch actual_control_argument={} observed_birth={token}; {expected}",
+            actual.as_deref().unwrap_or("missing")
+        ));
+    }
+    Ok(token)
+}
+
+#[cfg(target_os = "macos")]
+fn vz_process_absence_detail(pid: i32) -> String {
+    let returned = unsafe { libc::kill(pid, 0) };
+    let errno = if returned != 0 {
+        io::Error::last_os_error().raw_os_error()
+    } else {
+        None
+    };
+    // Match host_runs::saved_backend_is_dead: denied inspection is not death.
+    format!(
+        "process_absent={} kill_zero_return={returned} errno={errno:?}",
+        returned != 0 && errno == Some(libc::ESRCH)
     )
-    .then_some(token)
+}
+
+#[cfg(target_os = "macos")]
+fn vz_wait_matches(
+    name: &str,
+    pid: i32,
+    expected: &str,
+    first_mismatch: &mut Option<String>,
+) -> bool {
+    let observed = vm_process_token_detail(name, pid);
+    let matches = observed.as_deref() == Ok(expected);
+    if !matches && first_mismatch.is_none() {
+        let detail = match observed {
+            Ok(token) => format!("stage=birth_mismatch observed_birth={token}"),
+            Err(error) => error,
+        };
+        *first_mismatch = Some(format!("{detail}; {}", vz_process_absence_detail(pid)));
+    }
+    matches
 }
 
 #[cfg(target_os = "linux")]
@@ -1185,6 +1334,45 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
     Ok(status.code().unwrap_or(1))
 }
 
+/// The diagnostic has fixed arguments and must not run agent login scripts.
+#[cfg(target_os = "linux")]
+pub(crate) async fn spawn_desktop_probe(name: &str) -> io::Result<tokio::process::Child> {
+    if !valid_agent_name(name) || !guest_exec_available(name).await {
+        return Err(unavailable());
+    }
+    guest_command_stdio(
+        runsc_command(name)?.args([
+            "exec",
+            "--user",
+            "1000:1000",
+            "--cwd",
+            "/workspace",
+            &crate::host_runs::id(name).map_err(io::Error::other)?,
+            "/safeyolo/safeyolo-guest",
+            "desktop-probe",
+        ]),
+        true,
+        false,
+    )
+    .spawn()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn spawn_desktop_probe(name: &str) -> io::Result<tokio::process::Child> {
+    spawn_macos_guest_command(
+        name,
+        "exec /safeyolo/safeyolo-guest desktop-probe",
+        true,
+        false,
+    )
+    .await
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) async fn spawn_desktop_probe(_name: &str) -> io::Result<tokio::process::Child> {
+    Err(unavailable())
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) async fn spawn_guest_command_with_output(
     name: &str,
@@ -1458,6 +1646,16 @@ pub(crate) async fn spawn_guest_command_with_output(
     capture: bool,
     inherit_stdin: bool,
 ) -> io::Result<tokio::process::Child> {
+    spawn_macos_guest_command(name, &macos_guest_command(command), capture, inherit_stdin).await
+}
+
+#[cfg(target_os = "macos")]
+async fn spawn_macos_guest_command(
+    name: &str,
+    command: &str,
+    capture: bool,
+    inherit_stdin: bool,
+) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
         return Err(unavailable());
     }
@@ -1469,7 +1667,6 @@ pub(crate) async fn spawn_guest_command_with_output(
     }
     let key = config_dir().join("data/vm_ssh_key");
     let socket = shell.display().to_string().replace('\'', "'\\''");
-    let wrapped = macos_guest_command(command);
     guest_command_stdio(
         Command::new("ssh").args([
             "-i",
@@ -1492,7 +1689,7 @@ pub(crate) async fn spawn_guest_command_with_output(
             &format!("ProxyCommand=nc -U '{socket}'"),
             if inherit_stdin { "-t" } else { "-T" },
             "agent@sandbox",
-            &wrapped,
+            command,
         ]),
         capture,
         inherit_stdin,
@@ -1508,73 +1705,94 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
             "invalid agent name",
         ));
     }
-    let path = config_dir().join("agents").join(name).join("vm.pid");
-    // The private socket independently identifies this agent's helper when
-    // the saved PID projection is missing or stale.
-    let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
-        .await
-        .ok();
-    let controlled = control
-        .as_ref()
-        .filter(|value| value["agent"] == name)
-        .and_then(|value| value["pid"].as_i64())
-        .and_then(|pid| i32::try_from(pid).ok());
-    let saved = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|value| value.trim().parse::<i32>().ok());
-    let saved = saved.filter(|pid| {
-        vm_process_token(name, *pid).is_some_and(|token| {
-            std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
-                .is_ok_and(|saved| saved.trim() == token)
-        })
-    });
-    let pid = controlled.or(saved).ok_or(io::Error::other(
-        "VZ helper identity is missing; inspect agent diagnostics",
-    ))?;
-    let Some(token) = vm_process_token(name, pid) else {
-        if unsafe { libc::kill(pid, 0) } != 0
-            && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
-        {
-            std::fs::remove_file(path)?;
-            let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
-            return Ok(());
+    let invocation = uuid::Uuid::new_v4();
+    let root = config_dir();
+    let mut helper_pid = None;
+    let mut expected_birth = None;
+    let mut first_wait_mismatch = None;
+    let result = async {
+        let path = config_dir().join("agents").join(name).join("vm.pid");
+        // The private socket independently identifies this agent's helper when
+        // the saved PID projection is missing or stale.
+        let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
+            .await
+            .ok();
+        let controlled = control
+            .as_ref()
+            .filter(|value| value["agent"] == name)
+            .and_then(|value| value["pid"].as_i64())
+            .and_then(|pid| i32::try_from(pid).ok());
+        let saved = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|value| value.trim().parse::<i32>().ok());
+        let saved = saved.filter(|pid| {
+            vm_process_token(name, *pid).is_some_and(|token| {
+                std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
+                    .is_ok_and(|saved| saved.trim() == token)
+            })
+        });
+        let pid = controlled.or(saved).ok_or(io::Error::other(
+            "VZ helper identity is missing; inspect agent diagnostics",
+        ))?;
+        helper_pid = Some(pid);
+        let token = vm_process_token_detail(name, pid);
+        let token = match token {
+            Ok(token) => token,
+            Err(detail) => {
+                if unsafe { libc::kill(pid, 0) } != 0
+                    && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
+                {
+                    std::fs::remove_file(path)?;
+                    let _ = std::fs::remove_file(
+                        config_dir().join("agents").join(name).join("vm.token"),
+                    );
+                    return Ok(());
+                }
+                return Err(io::Error::other(format!(
+                    "VM PID does not identify this agent's helper; {detail}; {}",
+                    vz_process_absence_detail(pid)
+                )));
+            }
+        };
+        expected_birth = Some(token.clone());
+        if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
+            }
         }
-        return Err(io::Error::other(
-            "VM PID does not identify this agent's helper",
-        ));
-    };
-    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::NotFound {
-            return Err(error);
-        }
-    }
-    for _ in 0..100 {
-        if vm_process_token(name, pid).as_deref() != Some(&token) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    if vm_process_token(name, pid).as_deref() == Some(&token) {
-        unsafe { libc::kill(pid, libc::SIGKILL) };
-        for _ in 0..50 {
-            if vm_process_token(name, pid).as_deref() != Some(&token) {
+        for _ in 0..100 {
+            if !vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        if vm_process_token(name, pid).as_deref() == Some(&token) {
-            return Err(io::Error::other("owned VZ helper did not stop"));
+        if vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            for _ in 0..50 {
+                if !vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            if vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
+                return Err(io::Error::other("owned VZ helper did not stop"));
+            }
         }
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        };
+        let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
+        remove_stopped_vz_sockets(name)?;
+        Ok(())
     }
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    };
-    let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
-    remove_stopped_vz_sockets(name)?;
-    Ok(())
+    .await;
+    result.map_err(|error| io::Error::new(error.kind(), format!(
+        "VZ stop invocation={invocation} root={} agent={name} pid={helper_pid:?} expected_birth={} first_wait_mismatch={}: {error}",
+        vz_diagnostic_path(&root), expected_birth.as_deref().unwrap_or("not_observed"), first_wait_mismatch.as_deref().unwrap_or("not_observed")
+    )))
 }
 
 #[cfg(target_os = "macos")]
@@ -1589,7 +1807,46 @@ pub(crate) fn remove_stopped_vz_sockets(name: &str) -> io::Result<()> {
                 return Err(io::Error::other("VZ socket path is not a socket"));
             }
             Ok(_) => match std::os::unix::net::UnixStream::connect(path) {
-                Ok(_) => return Err(io::Error::other("VZ socket still has a live listener")),
+                Ok(socket) => {
+                    use std::os::fd::AsRawFd;
+                    let mut pid: libc::pid_t = 0;
+                    let mut length = std::mem::size_of_val(&pid) as libc::socklen_t;
+                    // Inspect the guard's existing connection; do not open
+                    // another connection or infer signal authority from it.
+                    let returned = unsafe {
+                        libc::getsockopt(
+                            socket.as_raw_fd(),
+                            0,
+                            2,
+                            (&mut pid as *mut libc::pid_t).cast(),
+                            &mut length,
+                        )
+                    };
+                    let peer = if returned == 0
+                        && length as usize == std::mem::size_of_val(&pid)
+                        && pid > 0
+                    {
+                        match macos_process_token_detail(i64::from(pid)) {
+                            Ok(birth) => format!("peer_pid={pid} peer_birth={birth}"),
+                            Err(error) => {
+                                format!("peer_pid={pid} peer_birth_unavailable=({error})")
+                            }
+                        }
+                    } else {
+                        let errno = if returned != 0 {
+                            io::Error::last_os_error().raw_os_error()
+                        } else {
+                            None
+                        };
+                        format!(
+                            "stage=LOCAL_PEERPID return={returned} errno={errno:?} length={length} observed_pid={pid}"
+                        )
+                    };
+                    return Err(io::Error::other(format!(
+                        "VZ socket still has a live listener; socket={} {peer}",
+                        vz_diagnostic_path(path)
+                    )));
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -2156,6 +2413,296 @@ mod guest_command_test_run;
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_stop_test_helper() {
+        let Some(root) = std::env::var_os("SAFEYOLO_TEST_VZ_STOP_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let control =
+            tokio::net::UnixListener::bind(root.join("data/vm-control/alice.sock")).unwrap();
+        let _shell =
+            tokio::net::UnixListener::bind(root.join("data/shell-sockets/alice.sock")).unwrap();
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        let mut connections = 0;
+        std::fs::write(root.join("helper.ready"), "ready").unwrap();
+        loop {
+            tokio::select! {
+                _ = terminate.recv() => {
+                    if std::env::var_os("SAFEYOLO_TEST_VZ_STOP_FAULT").is_none() {
+                        break;
+                    }
+                    // The process and sockets stay live while executable
+                    // inspection fails. This is not positive process absence.
+                    std::fs::remove_file(root.join("bin/safeyolo-vm")).unwrap();
+                }
+                accepted = control.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    connections += 1;
+                    std::fs::write(root.join("connections"), connections.to_string()).unwrap();
+                    let mut request = [0; 4096];
+                    if socket.read(&mut request).await.unwrap() != 0 {
+                        use tokio::io::AsyncWriteExt;
+                        let response = serde_json::json!({"schema_version":1,"ok":true,"instance":"owned-test","agent":"alice","pid":std::process::id()});
+                        let _ = socket.write_all(format!("{response}\n").as_bytes()).await;
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn spawn_vz_stop_test_helper(root: &std::path::Path, fault: bool) -> Child {
+        for directory in [
+            "bin",
+            "agents/alice",
+            "data/vm-control",
+            "data/shell-sockets",
+        ] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        let executable = root.join("bin/safeyolo-vm");
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
+        let mut command = Command::new(&executable);
+        command
+            .args([
+                "--exact",
+                "host_platform::tests::vz_stop_test_helper",
+                "--nocapture",
+                "--",
+                "--control-socket",
+            ])
+            .arg(root.join("data/vm-control/alice.sock"))
+            .arg("fake-secret-argv-canary")
+            .env("SAFEYOLO_TEST_VZ_STOP_ROOT", root)
+            .env("SAFEYOLO_TEST_VZ_SECRET", "fake-secret-environment-canary")
+            .env_remove("SAFEYOLO_TEST_VZ_STOP_FAULT")
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true);
+        if fault {
+            command.env("SAFEYOLO_TEST_VZ_STOP_FAULT", "1");
+        }
+        let mut child = command.spawn().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !root.join("helper.ready").exists() {
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "helper exited before ready"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let pid = child.id().unwrap() as i32;
+        std::fs::write(root.join("agents/alice/vm.pid"), pid.to_string()).unwrap();
+        std::fs::write(
+            root.join("agents/alice/vm.token"),
+            macos_process_token(i64::from(pid)).unwrap(),
+        )
+        .unwrap();
+        child
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_stop_failure_reports_first_identity_loss_and_listener_peer() {
+        let temp = tempfile::tempdir().unwrap();
+        in_config(temp.path().join("config.toml"), async {
+            let mut child = spawn_vz_stop_test_helper(temp.path(), true).await;
+            let pid = child.id().unwrap() as i32;
+            let birth = vm_process_token("alice", pid).unwrap();
+            let error = stop_sandbox("alice").await.unwrap_err().to_string();
+            assert!(child.try_wait().unwrap().is_none());
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while std::fs::read_to_string(temp.path().join("connections")).unwrap() != "2" {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // Cleanup the owned helper before testing the captured operands.
+            child.kill().await.unwrap();
+            assert!(error.contains("VZ stop invocation="), "{error}");
+            assert!(!error.contains("fake-secret"), "{error}");
+            assert!(
+                error.contains(&format!("root={}", vz_diagnostic_path(temp.path()))),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("expected_birth={birth}")),
+                "{error}"
+            );
+            assert!(
+                error.contains("first_wait_mismatch=stage=expected_executable_canonicalize"),
+                "{error}"
+            );
+            assert!(error.contains("errno=Some(2)"), "{error}");
+            assert!(
+                error.contains("process_absent=false kill_zero_return=0 errno=None"),
+                "{error}"
+            );
+            assert!(
+                error.contains("VZ socket still has a live listener"),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!(
+                    "socket={}",
+                    vz_diagnostic_path(&temp.path().join("data/vm-control/alice.sock"))
+                )),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("peer_pid={pid} peer_birth={birth}")),
+                "{error}"
+            );
+            // One status connection and the guard's existing connection only.
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("connections")).unwrap(),
+                "2"
+            );
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_wait_distinguishes_birth_control_and_executable_mismatch_from_absence() {
+        let temp = tempfile::tempdir().unwrap();
+        in_config(temp.path().join("config.toml"), async {
+            let mut child = spawn_vz_stop_test_helper(temp.path(), false).await;
+            let pid = child.id().unwrap() as i32;
+            let birth = vm_process_token("alice", pid).unwrap();
+            let mut mismatch = None;
+            assert!(vz_wait_matches("alice", pid, &birth, &mut mismatch));
+            assert!(mismatch.is_none());
+            assert!(!vz_wait_matches(
+                "alice",
+                pid,
+                "darwin:0:1:1",
+                &mut mismatch
+            ));
+            let first = mismatch.clone();
+            assert!(
+                mismatch
+                    .as_ref()
+                    .unwrap()
+                    .contains(&format!("stage=birth_mismatch observed_birth={birth}"))
+            );
+            assert!(!vz_wait_matches("bob", pid, &birth, &mut mismatch));
+            assert_eq!(mismatch, first);
+            let control_error = vm_process_token_detail("bob", pid).unwrap_err();
+            assert!(!control_error.contains("fake-secret"), "{control_error}");
+            assert!(
+                control_error.contains("stage=control_argument_mismatch"),
+                "{control_error}"
+            );
+            assert!(
+                control_error.contains(&format!(
+                    "actual_control_argument={}",
+                    vz_diagnostic_path(&temp.path().join("data/vm-control/alice.sock"))
+                )),
+                "{control_error}"
+            );
+            assert!(
+                control_error.contains(&format!(
+                    "expected_control_argument={}",
+                    vz_diagnostic_path(&temp.path().join("data/vm-control/bob.sock"))
+                )),
+                "{control_error}"
+            );
+            std::fs::remove_file(temp.path().join("bin/safeyolo-vm")).unwrap();
+            std::os::unix::fs::symlink("/bin/sh", temp.path().join("bin/safeyolo-vm")).unwrap();
+            let executable_error = vm_process_token_detail("alice", pid).unwrap_err();
+            assert!(
+                executable_error.contains("stage=executable_mismatch actual_executable="),
+                "{executable_error}"
+            );
+            assert!(
+                executable_error.contains("expected_executable="),
+                "{executable_error}"
+            );
+            child.kill().await.unwrap();
+            let mut absent = None;
+            assert!(!vz_wait_matches("alice", pid, &birth, &mut absent));
+            let absent = absent.unwrap();
+            assert!(absent.contains("stage=proc_pidinfo return=0"), "{absent}");
+            assert!(
+                absent.contains(&format!(
+                    "process_absent=true kill_zero_return=-1 errno=Some({})",
+                    libc::ESRCH
+                )),
+                "{absent}"
+            );
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_socket_guard_identifies_control_and_shell_and_preserves_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        in_config(temp.path().join("config.toml"), async {
+            let birth = macos_process_token(i64::from(std::process::id())).unwrap();
+            for directory in ["data/vm-control", "data/shell-sockets"] {
+                let path = temp.path().join(directory).join("alice.sock");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+                let error = remove_stopped_vz_sockets("alice").unwrap_err().to_string();
+                assert!(path.exists());
+                assert!(
+                    error.contains(&format!("socket={}", vz_diagnostic_path(&path))),
+                    "{error}"
+                );
+                assert!(
+                    error.contains(&format!(
+                        "peer_pid={} peer_birth={birth}",
+                        std::process::id()
+                    )),
+                    "{error}"
+                );
+                drop(listener);
+            }
+            remove_stopped_vz_sockets("alice").unwrap();
+            assert!(!temp.path().join("data/vm-control/alice.sock").exists());
+            assert!(!temp.path().join("data/shell-sockets/alice.sock").exists());
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vz_diagnostic_paths_escape_controls_and_limit_output() {
+        let path = PathBuf::from(format!("/{}", "a\n\t".repeat(1000)));
+        let detail = vz_diagnostic_path(&path);
+        assert!(!detail.contains(['\n', '\t']));
+        assert!(detail.ends_with("...<truncated>"));
+        assert!(detail.chars().count() <= 512 + "...<truncated>".len());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_stop_success_removes_receipts_and_stale_sockets() {
+        let temp = tempfile::tempdir().unwrap();
+        in_config(temp.path().join("config.toml"), async {
+            let mut child = spawn_vz_stop_test_helper(temp.path(), false).await;
+            stop_sandbox("alice").await.unwrap();
+            assert!(child.wait().await.unwrap().success());
+            for path in [
+                "agents/alice/vm.pid",
+                "agents/alice/vm.token",
+                "data/vm-control/alice.sock",
+                "data/shell-sockets/alice.sock",
+            ] {
+                assert!(!temp.path().join(path).exists(), "{path}");
+            }
+        })
+        .await;
+    }
 
     #[test]
     fn vz_boot_uses_one_staged_selection_and_preserves_explicit_rootfs() {

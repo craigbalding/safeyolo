@@ -1,51 +1,53 @@
 name: Installed Linux ARM64 archive smoke
 
-# Explicit pre-promotion qualification of the retained production H and G1.
+# Manual qualification of the retained production host and original guest.
+# Public installation has a separate job from the retained draft/offline smoke.
 # Ordinary native/source workflows and all publication controls stay separate.
+# The draft-access permission increase remains held for Craig's merge/dispatch decision.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Public installation only, or the retained draft/offline runtime smoke
+        type: choice
+        default: draft-offline
+        options:
+          - draft-offline
+          - public-install
 
 permissions:
   contents: read
 
+env:
+  HOST_RELEASE_ID: "410991309"
+  HOST_ARCHIVE_ASSET_ID: "634976985"
+  HOST_CHECKSUM_ASSET_ID: "634976991"
+  HOST_REVISION: 7a38dff14e7e4eacb4095da732ffe06d7c7c5796
+  HOST_SHA256: 8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f
+  HOST_BYTES: "36529500"
+  GUEST_COMPATIBILITY: v1
+
 jobs:
-  installed-arm64:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+  acquire-host:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # GitHub draft visibility requires push access. Only fixed GETs run here;
+    # no checkout, product, verifier, guest or publication command uses this token.
     permissions:
-      contents: read
-      actions: read
-    env:
-      CARGO_BUILD_JOBS: "1"
-      SAFEYOLO_CARGO_RESERVE_GIB: "10"
-      SAFEYOLO_RUNSC_DEBUG: "1"
-      HOST_RELEASE_ID: "410991309"
-      HOST_ARCHIVE_ASSET_ID: "634976985"
-      HOST_CHECKSUM_ASSET_ID: "634976991"
-      HOST_REVISION: 7a38dff14e7e4eacb4095da732ffe06d7c7c5796
-      HOST_SHA256: 8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f
-      HOST_BYTES: "36529500"
-      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
-      GUEST_VERSION: guest-2026-10-12.1
-      GUEST_COMPATIBILITY: v1
-      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
-      GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
-      GUEST_ARCHIVE_BYTES: "223000369"
+      contents: write
+    outputs:
+      artifact-id: ${{ steps.host-inputs.outputs.artifact-id }}
     steps:
-      - name: Select the owned report directory
-        run: printf 'SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=%s/installed-arm64-reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Read and verify the retained host archive
+      - name: Read and bind the retained draft host inputs
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p "$RUNNER_TEMP/retained-host" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
+          mkdir -p "$RUNNER_TEMP/retained-host"
           host="$RUNNER_TEMP/retained-host"
           if ! gh api "repos/craigbalding/safeyolo/releases/$HOST_RELEASE_ID" > "$host/release.json"; then
-            echo 'The job read token cannot access the selected draft release. Supply the actual accessible draft inputs; no promotion was attempted.' >&2
+            echo 'The acquisition job token cannot access the retained draft release.' >&2
             exit 1
           fi
           jq -e --arg id "$HOST_RELEASE_ID" --arg source "$HOST_REVISION" '
@@ -62,7 +64,7 @@ jobs:
             ' "$host/release.json" >/dev/null || { echo "Missing retained asset $name (ID $id)." >&2; exit 1; }
             if ! gh api --header 'Accept: application/octet-stream' \
                 "repos/craigbalding/safeyolo/releases/assets/$id" > "$host/$name"; then
-              echo "The job read token cannot download retained asset $name (ID $id)." >&2
+              echo "The acquisition job token cannot download retained asset $name (ID $id)." >&2
               exit 1
             fi
           done
@@ -73,6 +75,73 @@ jobs:
           archive="$host/safeyolo-linux-arm64-production.tar.gz"
           [[ $(stat -c %s "$archive") == "$HOST_BYTES" ]] || { echo 'Retained host archive size differs.' >&2; exit 1; }
           [[ $(sha256sum "$archive" | cut -d ' ' -f 1) == "$HOST_SHA256" ]] || { echo 'Retained host archive checksum differs.' >&2; exit 1; }
+      - name: Transfer only bound host inputs
+        id: host-inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: retained-arm64-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/retained-host/safeyolo-linux-arm64-production.tar.gz
+            ${{ runner.temp }}/retained-host/SHA256SUMS
+            ${{ runner.temp }}/retained-host/release.json
+          retention-days: 30
+          if-no-files-found: error
+
+  installed-arm64:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'
+    needs: acquire-host
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SAFEYOLO_CARGO_RESERVE_GIB: "10"
+      SAFEYOLO_RUNSC_DEBUG: "1"
+      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
+      GUEST_VERSION: guest-2026-10-12.1
+      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
+      GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
+      GUEST_ARCHIVE_BYTES: "223000369"
+    steps:
+      - name: Select the owned report directory
+        run: printf 'SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=%s/installed-arm64-reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the bound host inputs from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.acquire-host.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/retained-host
+      - name: Recheck the transferred host inputs before installation
+        shell: bash
+        run: |
+          mkdir -p "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
+          host="$RUNNER_TEMP/retained-host"
+          jq -e --arg id "$HOST_RELEASE_ID" --arg source "$HOST_REVISION" '
+            .id == ($id | tonumber) and .draft == true and
+            .tag_name == ("host-" + $source) and .target_commitish == $source
+          ' "$host/release.json" >/dev/null || {
+            echo 'Transferred release must be the retained host source and tag, still in draft.' >&2
+            exit 1
+          }
+          for name in safeyolo-linux-arm64-production.tar.gz SHA256SUMS; do
+            if [[ $name == SHA256SUMS ]]; then id=$HOST_CHECKSUM_ASSET_ID; else id=$HOST_ARCHIVE_ASSET_ID; fi
+            jq -e --argjson id "$id" --arg name "$name" '
+              [.assets[] | select(.id == $id and .name == $name and .state == "uploaded")] | length == 1
+            ' "$host/release.json" >/dev/null || { echo "Missing retained asset $name (ID $id)." >&2; exit 1; }
+            test -s "$host/$name" || { echo "Missing transferred asset $name." >&2; exit 1; }
+          done
+          grep -Fx "$HOST_SHA256  safeyolo-linux-arm64-production.tar.gz" "$host/SHA256SUMS" || {
+            echo 'Transferred SHA256SUMS does not contain the retained ARM64 production checksum.' >&2
+            exit 1
+          }
+          archive="$host/safeyolo-linux-arm64-production.tar.gz"
+          [[ $(stat -c %s "$archive") == "$HOST_BYTES" ]] || { echo 'Transferred host archive size differs.' >&2; exit 1; }
+          [[ $(sha256sum "$archive" | cut -d ' ' -f 1) == "$HOST_SHA256" ]] || { echo 'Transferred host archive checksum differs.' >&2; exit 1; }
           tar -xOzf "$archive" safeyolo-linux-arm64-production/package-info > "$host/package-info"
           for field in "source_commit=$HOST_REVISION" profile=production platform=linux-arm64 "guest_compatibility=$GUEST_COMPATIBILITY"; do
             grep -Fx "$field" "$host/package-info" || { echo "Host package must contain $field." >&2; exit 1; }
@@ -129,7 +198,7 @@ jobs:
           sudo -n apt-get update -qq
           sudo -n apt-get install -y -qq --no-install-recommends zstd
           mkdir "$RUNNER_TEMP/verified-extracted-assets"
-          sudo -n tar --zstd --numeric-owner --same-owner --same-permissions --sparse \
+          sudo -n "$(command -v tar)" --zstd --numeric-owner --same-owner --same-permissions --sparse \
             --acls --xattrs --xattrs-include='*' -xf "$blob" -C "$RUNNER_TEMP/verified-extracted-assets"
           assets="$RUNNER_TEMP/verified-extracted-assets"
           test -x "$assets/rootfs-tree/bin/bash"
@@ -168,3 +237,183 @@ jobs:
           path: ${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}
           retention-days: 30
           if-no-files-found: warn
+
+  public-install:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'public-install'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
+      GUEST_VERSION: guest-2026-10-12.1
+      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
+      GUEST_MANIFEST: sha256:6558c425a728533a79fe03e0d3774ee1b6e2d2fcb78e3bac53495602bcb52858
+      GUEST_ARCHIVE_SHA256: 2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5
+      GUEST_ARCHIVE_BYTES: "223000369"
+    steps:
+      - name: Select fresh owned installation and report directories
+        shell: bash
+        run: |
+          work=$(mktemp -d "$RUNNER_TEMP/public-arm-install.XXXXXX")
+          mkdir "$work/reports" "$work/bundle"
+          printf 'PUBLIC_INSTALL_WORK=%s\nPUBLIC_INSTALL_REPORTS=%s/reports\n' "$work" "$work" >> "$GITHUB_ENV"
+          { uname -a; id; getconf GNU_LIBC_VERSION; } > "$work/reports/environment.txt"
+          printf 'Observer source=%s; no runtime startup; no registry credential supplied.\n' "$GITHUB_SHA" >> "$work/reports/environment.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and bind the unchanged public host
+        shell: bash
+        run: |
+          reports="$PUBLIC_INSTALL_REPORTS"
+          name=safeyolo-linux-arm64-production.tar.gz
+          url="https://github.com/craigbalding/safeyolo/releases/download/host-$HOST_REVISION/$name"
+          curl --fail --silent --show-error --location --max-time 120 \
+            "https://api.github.com/repos/craigbalding/safeyolo/releases/$HOST_RELEASE_ID" > "$reports/release.json"
+          jq -e --argjson id "$HOST_RELEASE_ID" --arg source "$HOST_REVISION" \
+            --argjson asset "$HOST_ARCHIVE_ASSET_ID" --arg name "$name" --arg url "$url" \
+            --arg digest "sha256:$HOST_SHA256" --argjson bytes "$HOST_BYTES" '
+            .id == $id and .draft == false and .prerelease == false and
+            .tag_name == ("host-" + $source) and .target_commitish == $source and
+            ([.assets[] | select(.id == $asset and .name == $name and .state == "uploaded" and
+              .browser_download_url == $url and .digest == $digest and .size == $bytes)] | length == 1)
+          ' "$reports/release.json" >/dev/null
+          archive="$PUBLIC_INSTALL_WORK/$name"
+          curl --fail --silent --show-error --location --max-time 180 "$url" > "$archive"
+          bytes=$(stat -c %s "$archive")
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          [[ $bytes == "$HOST_BYTES" && $digest == "$HOST_SHA256" ]] || {
+            echo 'Public host archive bytes differ from the retained production bundle.' >&2; exit 1;
+          }
+          tar -xzf "$archive" -C "$PUBLIC_INSTALL_WORK/bundle"
+          bundle="$PUBLIC_INSTALL_WORK/bundle/safeyolo-linux-arm64-production"
+          cp "$bundle/package-info" "$reports/package-info"
+          for field in "source_commit=$HOST_REVISION" profile=production platform=linux-arm64 \
+              "guest_compatibility=$GUEST_COMPATIBILITY" guest_repository=ghcr.io/craigbalding/safeyolo-guest \
+              "guest_discovery_tag=compat-$GUEST_COMPATIBILITY"; do
+            grep -Fx "$field" "$reports/package-info" >/dev/null
+          done
+          jq -n --arg url "$url" --arg source "$HOST_REVISION" --arg sha256 "$digest" \
+            --argjson bytes "$bytes" --argjson release "$HOST_RELEASE_ID" \
+            '{url:$url,release:$release,source:$source,sha256:$sha256,bytes:$bytes,platform:"linux-arm64",profile:"production"}' \
+            > "$reports/host-input.json"
+      - name: Prepare the archive observation tool
+        shell: bash
+        run: |
+          # Python and zstd are test observers. The shipped installer uses neither.
+          python3 --version
+          if ! command -v zstd >/dev/null; then
+            sudo -n apt-get update -qq
+            sudo -n apt-get install -y -qq --no-install-recommends zstd
+          fi
+      - name: Record original guest store before installation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          store = Path.home() / '.local/share/safeyolo/guests'
+          digest = os.environ['GUEST_ARCHIVE_SHA256']
+          paths = {'store': store, 'original_blob': store / 'blobs/sha256' / digest,
+                   'original_tree': store / 'trees/sha256' / digest}
+          before = {name: {'path': str(path), 'exists': os.path.lexists(path)}
+                    for name, path in paths.items()}
+          ready = not before['original_blob']['exists'] and not before['original_tree']['exists']
+          before.update(observed_at=time.time(), observer_uid=os.getuid(), fixture_ready=ready,
+                        installer_invoked=False, scope='Default-store before-state for original G1 acquisition; no clean-host or onboarding claim')
+          report = Path(os.environ['PUBLIC_INSTALL_REPORTS']) / 'guest-store-before.json'
+          report.write_text(json.dumps(before, indent=2) + '\n')
+          if not ready:
+              raise SystemExit('Original G1 inputs already exist in the default guest store; public acquisition fixture is unverified. Cached inputs were preserved.')
+          PY
+      - name: Install with default anonymous native guest acquisition
+        id: install
+        shell: bash
+        run: |
+          umask 077
+          : > "$PUBLIC_INSTALL_WORK/install.stdout"
+          : > "$PUBLIC_INSTALL_WORK/install.stderr"
+          umask 022
+          bundle="$PUBLIC_INSTALL_WORK/bundle/safeyolo-linux-arm64-production"
+          started=$(date +%s.%N)
+          set +e
+          env -u GH_TOKEN -u GITHUB_TOKEN timeout --kill-after=30s 10m "$bundle/install.sh" \
+            --root "$PUBLIC_INSTALL_WORK/instance" --command-dir "$PUBLIC_INSTALL_WORK/commands" \
+            > "$PUBLIC_INSTALL_WORK/install.stdout" 2> "$PUBLIC_INSTALL_WORK/install.stderr"
+          status=$?
+          set -e
+          ended=$(date +%s.%N)
+          jq -n --arg started "$started" --arg ended "$ended" --argjson status "$status" \
+            --arg installer "$bundle/install.sh" --arg root "$PUBLIC_INSTALL_WORK/instance" \
+            --arg commands "$PUBLIC_INSTALL_WORK/commands" '
+            {command:[$installer,"--root",$root,"--command-dir",$commands],exit:$status,
+             started_at:($started|tonumber),ended_at:($ended|tonumber),
+             install_seconds:(($ended|tonumber)-($started|tonumber)),timeout_seconds:600,
+             guest_store_before:"guest-store-before.json",
+             scope:"Installation only; excludes host download/extraction, observer setup, metadata checks and all runtime startup",
+             registry_credentials_supplied:false}' > "$PUBLIC_INSTALL_REPORTS/install-receipt.json"
+          # Network errors can include signed redirect URLs or anonymous bearer tokens.
+          # Retain diagnostics after removing those credentials; keep raw logs private.
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          work = Path(os.environ['PUBLIC_INSTALL_WORK'])
+          reports = Path(os.environ['PUBLIC_INSTALL_REPORTS'])
+          for name in ('install.stdout', 'install.stderr'):
+              text = (work / name).read_text(errors='replace')
+              text = re.sub(r'(https?://[^\s?]+)\?[^\s]+', r'\1?[REDACTED]', text)
+              text = re.sub(r'(?i)\b(Bearer|Basic)\s+\S+', r'\1 [REDACTED]', text)
+              text = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED]', text)
+              (reports / name).write_text(text)
+          PY
+          cat "$PUBLIC_INSTALL_REPORTS/install.stdout" "$PUBLIC_INSTALL_REPORTS/install.stderr"
+          exit "$status"
+      - name: Preserve any installed guest selection
+        if: ${{ !cancelled() && steps.install.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          selection="$PUBLIC_INSTALL_WORK/instance/share/guest-selection.json"
+          if [[ -f $selection ]]; then cp "$selection" "$PUBLIC_INSTALL_REPORTS/guest-selection.json"; fi
+      - name: Bind actual public acquisition and observe all installed metadata
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          jq -e --arg version "$GUEST_VERSION" --arg compatibility "$GUEST_COMPATIBILITY" \
+            --arg index "$GUEST_INDEX" --arg manifest "$GUEST_MANIFEST" \
+            --arg archive "sha256:$GUEST_ARCHIVE_SHA256" --argjson bytes "$GUEST_ARCHIVE_BYTES" '
+            .repository == "ghcr.io/craigbalding/safeyolo-guest" and .platform == "linux/arm64" and
+            .version == $version and .compatibility == $compatibility and
+            .index.digest == $index and .manifest.digest == $manifest and
+            .archive.digest == $archive and .archive.size == $bytes
+          ' "$PUBLIC_INSTALL_REPORTS/guest-selection.json" >/dev/null
+          jq -n --arg producer "$GUEST_REVISION" --arg index "$GUEST_INDEX" \
+            '{expected_producer:$producer,verified_original_index:$index,scope:"Producer binding through the original immutable index; native client validates annotations and descriptors"}' \
+            > "$PUBLIC_INSTALL_REPORTS/guest-producer-binding.json"
+          sudo -n python3 tests/blackbox/observe_guest_metadata.py \
+            --root "$PUBLIC_INSTALL_WORK/instance" --store "$HOME/.local/share/safeyolo/guests" \
+            --output "$PUBLIC_INSTALL_REPORTS"
+      - name: Check installed CLI and proxy identity, help and version
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          root="$PUBLIC_INSTALL_WORK/instance"
+          bundle="$PUBLIC_INSTALL_WORK/bundle/safeyolo-linux-arm64-production"
+          for binary in safeyolo safeyolo-proxy; do
+            cmp "$bundle/bin/$binary" "$root/bin/$binary"
+            stat -c '%n type=%F mode=%a uid=%u gid=%g dev=%d ino=%i nlink=%h size=%s' "$root/bin/$binary" \
+              >> "$PUBLIC_INSTALL_REPORTS/installed-binary-metadata.txt"
+            sha256sum "$root/bin/$binary" >> "$PUBLIC_INSTALL_REPORTS/installed-binary-sha256.txt"
+            "$root/bin/$binary" --version > "$PUBLIC_INSTALL_REPORTS/$binary-version.txt"
+            grep -F "commit=$HOST_REVISION profile=production" "$PUBLIC_INSTALL_REPORTS/$binary-version.txt"
+            "$root/bin/$binary" --help > "$PUBLIC_INSTALL_REPORTS/$binary-help.txt"
+          done
+      - name: Upload public installation observations, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: public-install-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          # Only observations are uploaded; instance state contains private tokens.
+          path: ${{ env.PUBLIC_INSTALL_REPORTS }}
+          retention-days: 30
+          if-no-files-found: error

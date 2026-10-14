@@ -108,8 +108,10 @@ def _provider_run(directory, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Fake runsc provider fixture requires Linux")
-@pytest.mark.parametrize("parent_enabled", [False, True], ids=["direct", "parent"])
-def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monkeypatch, parent_enabled):
+@pytest.mark.parametrize("parent_enabled,hosts", [
+    (False, None), (True, None), (True, ["proofspot.safeyolo.internal"]), (True, ["unmatched.invalid"]),
+], ids=["direct", "parent", "selected-host", "unselected-host"])
+def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monkeypatch, parent_enabled, hosts):
     directory = tmp_path / "provider"
     directory.mkdir()
     (directory / "builtin").mkdir()
@@ -156,6 +158,7 @@ esac
             agents=("alice", "bob"), network_guard_enabled=True,
             network_guard_block=True,
             parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}" if parent_enabled else None,
+            parent_proxy_hosts=hosts,
         ) as proxy:
             status, _, body = request(
                 proxy.paths["alice"], AGENT_API + "/gateway/services",

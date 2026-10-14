@@ -703,11 +703,11 @@ def run():
         )
         stack.enter_context(patch.object(socket, "create_connection", side_effect=deny_network))
         stack.enter_context(patch.object(socket, "getaddrinfo", side_effect=deny_network))
+        import pdp
         import yaml
         from mitmproxy import http
         from mitmproxy.test import tflow
 
-        import pdp
         from safeyolo.core import audit_writer, service_loader
         from safeyolo.mitm_addons import agent_api, service_gateway
         from safeyolo.proxy_modes.unix_listener import UnixMode

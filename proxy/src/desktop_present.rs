@@ -182,6 +182,29 @@ fn response(id: &str, name: &str, preview: &Preview, code: String, reused: bool)
     json!({"agent_id":id, "agent":name, "url":preview.url, "unlock_code":code, "reused":reused})
 }
 
+async fn desktop_command_status(name: &str, command: &str) -> std::io::Result<i32> {
+    // Captured commands have kill-on-drop on both supported host platforms.
+    // Discard their output without accumulating guest-controlled bytes.
+    let mut child =
+        host_platform::spawn_guest_command_with_output(name, command, true, false).await?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("missing desktop output"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("missing desktop error output"))?;
+    let mut output_sink = tokio::io::sink();
+    let mut error_sink = tokio::io::sink();
+    let (status, _, _) = tokio::try_join!(
+        child.wait(),
+        tokio::io::copy(&mut stdout, &mut output_sink),
+        tokio::io::copy(&mut stderr, &mut error_sink)
+    )?;
+    Ok(status.code().unwrap_or(1))
+}
+
 pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Result<Value, Error> {
     if !valid_agent_id(&agent_id) {
         return Err(Error::Failed);
@@ -212,9 +235,7 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     if let Some(mut presentation) = presentations.remove(&id) {
         presentation.preview.close().await;
     }
-    if !host_platform::guest_exec_available(&name).await {
-        return Err(Error::Failed);
-    }
+    let guest_available = host_platform::guest_exec_available(&name).await;
     let (preferred_size, host_port) = settings()?;
     let geometry = geometry(&preferred_size).await?;
     stage_guest_desktop(&name, &geometry)?;
@@ -237,32 +258,44 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     } else {
         None
     };
-    let already_ready = matches!(
-        host_platform::exec_guest_command(&name, "/safeyolo/guest-desktop status >/dev/null 2>&1")
+    let already_ready = guest_available
+        && matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                desktop_command_status(&name, "/safeyolo/guest-desktop status >/dev/null 2>&1")
+            )
             .await,
-        Ok(0)
-    );
-    let started = host_platform::exec_guest_command(
-        &name,
-        &format!("SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start {geometry}"),
-    )
-    .await;
-    let preview = if matches!(started, Ok(0)) {
-        Preview::start(&name, host_port, tailnet.map(|(port, _)| port))
-            .await
-            .map_err(|_| Error::Failed)
+            Ok(Ok(0))
+        );
+    // The explicit presentation action retains initial desktop startup. The
+    // diagnostic page and later retries never start or repair an agent/service.
+    let desktop_absent = guest_available
+        && !already_ready
+        && crate::desktop_diagnostics::guest_check(&name).await["tcp"] == "refused";
+    let started = if desktop_absent {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(35),
+            desktop_command_status(
+                &name,
+                &format!("SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start {geometry}"),
+            ),
+        )
+        .await
     } else {
-        Err(Error::Failed)
+        Ok(Err(std::io::Error::other("runtime unavailable")))
     };
+    let preview = Preview::start(&name, &id, host_port, tailnet.map(|(port, _)| port))
+        .await
+        .map_err(|_| Error::Failed);
     let preview = match preview {
         Ok(preview) => preview,
         Err(error) => {
             // Preserve an already-running desktop. Only the guest newly
             // started by this attempt needs rollback when preview setup fails.
-            if !already_ready {
-                let _ = host_platform::exec_guest_command(
-                    &name,
-                    "/safeyolo/guest-desktop stop >/dev/null 2>&1",
+            if !already_ready && matches!(started, Ok(Ok(0))) {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    desktop_command_status(&name, "/safeyolo/guest-desktop stop >/dev/null 2>&1"),
                 )
                 .await;
             }

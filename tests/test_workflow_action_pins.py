@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
+import json
+import os
 import re
+import shutil
+import subprocess
+import tarfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -89,3 +98,83 @@ def test_proxy_rust_broad_test_and_build_step_has_platform_limits() -> None:
     assert broad_step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     assert "../scripts/cargo_with_space.sh test --locked" in broad_step["run"]
     assert "../scripts/cargo_with_space.sh build --locked" in broad_step["run"]
+
+
+def test_codex_test_lock_covers_wrapper_and_all_platform_packages() -> None:
+    directory = REPO_ROOT / "tools/codex-execpolicy"
+    manifest = json.loads((directory / "package.json").read_text())
+    packages = json.loads((directory / "package-lock.json").read_text())["packages"]
+    assert manifest["private"] is True
+    assert manifest["dependencies"] == packages[""]["dependencies"] == {"@openai/codex": "0.159.1"}
+    wrapper = packages["node_modules/@openai/codex"]
+    assert wrapper["version"] == "0.159.1"
+    platforms = {f"{system}-{cpu}" for system in ("linux", "darwin", "win32") for cpu in ("arm64", "x64")}
+    assert set(wrapper["optionalDependencies"]) == {f"@openai/codex-{platform}" for platform in platforms}
+    for platform in platforms:
+        name = f"@openai/codex-{platform}"
+        package = packages[f"node_modules/{name}"]
+        assert wrapper["optionalDependencies"][name] == f"npm:@openai/codex@{package['version']}"
+        assert package["version"] == f"0.159.1-{platform}"
+        system, cpu = platform.split("-")
+        assert package["os"] == [system] and package["cpu"] == [cpu]
+    for name, package in packages.items():
+        if name:
+            algorithm, digest = package["integrity"].split("-", 1)
+            assert algorithm == "sha512" and len(base64.b64decode(digest, validate=True)) == 64
+            assert package["resolved"] == f"https://registry.npmjs.org/@openai/codex/-/codex-{package['version']}.tgz"
+
+
+@pytest.mark.parametrize("changed_package", ["wrapper", "platform"])
+def test_codex_workflow_refuses_changed_package_bytes_before_export(tmp_path, changed_package) -> None:
+    if shutil.which("npm") is None:
+        pytest.skip("the workflow's npm prerequisite is unavailable")
+    directory = tmp_path / "tools/codex-execpolicy"
+    directory.mkdir(parents=True)
+    shutil.copyfile(REPO_ROOT / "tools/codex-execpolicy/package.json", directory / "package.json")
+    lock = json.loads((REPO_ROOT / "tools/codex-execpolicy/package-lock.json").read_text())
+    changed = tmp_path / "codex-changed.tgz"
+    changed_manifest = tmp_path / "changed-package.json"
+    changed_manifest.write_text(json.dumps({"name": "@openai/codex", "version": "0.159.1"}))
+    with tarfile.open(changed, "w:gz") as archive:
+        archive.add(changed_manifest, arcname="package/package.json")
+    wrapper = lock["packages"]["node_modules/@openai/codex"]
+    if changed_package == "wrapper":
+        wrapper["resolved"] = changed.as_uri()
+    else:
+        platform = subprocess.check_output(["node", "-p", "process.platform + '-' + process.arch"], text=True).strip()
+        name = f"@openai/codex-{platform}"
+        lock["packages"][f"node_modules/{name}"]["resolved"] = changed.as_uri()
+        # A controlled wrapper reports the right version even without its native
+        # package. The workflow must refuse before that command can export PATH.
+        valid_wrapper = tmp_path / "wrapper.tgz"
+        metadata = {"name": "@openai/codex", "version": "0.159.1", "bin": wrapper["bin"],
+                    "optionalDependencies": wrapper["optionalDependencies"]}
+        with tarfile.open(valid_wrapper, "w:gz") as archive:
+            for name_in_archive, content in (
+                ("package/package.json", json.dumps(metadata).encode()),
+                ("package/bin/codex.js", b"#!/usr/bin/env node\nconsole.log('codex-cli 0.159.1');\n"),
+            ):
+                member = tarfile.TarInfo(name_in_archive)
+                member.size = len(content)
+                member.mode = 0o755
+                archive.addfile(member, io.BytesIO(content))
+        wrapper["resolved"] = valid_wrapper.as_uri()
+        wrapper["integrity"] = "sha512-" + base64.b64encode(hashlib.sha512(valid_wrapper.read_bytes()).digest()).decode()
+        # Reproduce an ambient install that would mask the missing local package.
+        ambient = tmp_path / "ambient" / name
+        ambient.mkdir(parents=True)
+        (ambient / "package.json").write_text(json.dumps({"name": name, "version": f"0.159.1-{platform}"}))
+    (directory / "package-lock.json").write_text(json.dumps(lock))
+    workflow = yaml.safe_load((WORKFLOW_DIR / "proxy-rust.yml").read_text())
+    setup = next(step for step in workflow["jobs"]["contracts"]["steps"]
+                 if step.get("name") == "Install the pinned Codex execpolicy test consumer")
+    github_path = tmp_path / "github-path"
+    environment = dict(os.environ, RUNNER_TEMP=str(tmp_path / "runner"), GITHUB_PATH=str(github_path),
+                       npm_config_cache=str(tmp_path / "npm-cache"), npm_config_offline="true")
+    if changed_package == "platform":
+        environment["NODE_PATH"] = str(tmp_path / "ambient")
+    result = subprocess.run(["bash", "-eo", "pipefail", "-c", setup["run"]], cwd=tmp_path,
+                            env=environment, capture_output=True, text=True, timeout=30)
+    expected = "EINTEGRITY" if changed_package == "wrapper" else "Codex must use the locked local platform package"
+    assert result.returncode != 0 and expected in result.stderr, (result.stdout, result.stderr)
+    assert not github_path.exists(), "a rejected checker must not reach the test PATH"

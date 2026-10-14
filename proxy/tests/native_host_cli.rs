@@ -3245,7 +3245,7 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
         .unwrap()
         .replace("admin_port = 9090", "admin_port = 0");
     let source = format!(
-        "parent_proxy = \"http://127.0.0.1:18080\"\nparent_proxy_agents = [\"marker\"]\n{source}"
+        "parent_proxy = \"http://127.0.0.1:18080\"\nparent_proxy_agents = [\"marker\"]\nparent_proxy_hosts = [\"auth.example.test\"]\n{source}"
     );
     fs::write(&selected, source).unwrap();
     let a_default = fs::read(a.join("config.toml")).unwrap();
@@ -3269,6 +3269,10 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
         Some("http://127.0.0.1:18080")
     );
     assert_eq!(saved["parent_proxy_agents"][0].as_str(), Some("marker"));
+    assert_eq!(
+        saved["parent_proxy_hosts"][0].as_str(),
+        Some("auth.example.test")
+    );
     assert_eq!(fs::read(a.join("config.toml")).unwrap(), a_default);
     assert_eq!(fs::read(b.join("config.toml")).unwrap(), b_default);
     value(selected_cli(&[

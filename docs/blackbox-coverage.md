@@ -4,7 +4,7 @@ Generated from native pytest selections and installed procedures in `tests/black
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**82 distinct pytest methods across 23 threat categories.**
+**83 distinct pytest methods across 24 threat categories.**
 
 This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and private-key isolation. Private-key scans run under both identities; public-cert checks run as the ordinary user. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
 
@@ -221,22 +221,29 @@ the OCI bind-mount is broken or was never wired. Host-script
 auth staging, mise installs, and shell history all rely on
 this invariant.
 
+### `tests/blackbox/host/lifecycle/test_host_listener.py`
+
+#### TestLiveHostListener — A contemporaneously live host listener remains isolated from guests.
+
+**Threat:** A guest refusal without host liveness can pass when no service exists.
+
+- **`test_live_host_listener_refused`** — A live host listener stays unreachable to ordinary and root guests.
+  - *Probe:* Connect from the host before and after the maintained guest refusal
+and proxy positive controls. Record the actual endpoint and guest identity.
+  - *Consequence if unasserted:* A stale port or an absent listener cannot establish host isolation.
+
 ### `tests/blackbox/host/lifecycle/test_token_lifecycle.py`
 
 #### TestLiveAgentLifecycle — Agent egress survives proxy restart without restarting its sandbox.
 
-**Threat:** The agent_token authenticates the sandbox's requests to the
-agent API. If a proxy restart regenerates the token but the
-sandbox still holds the old value, the agent gets 401 on every
-diagnostic call — breaking `safeyolo explain`, credential
-approval UX, and any other observability feature the agent
-exposes to itself. Token- and UDS-inode refresh across a proxy
-restart is the common regression point this test catches.
+**Threat:** A running guest must retain authenticated Agent API and proxy access
+after proxy replacement. Boot-time health cannot prove that the same
+guest reconnects to the recreated socket with its current token.
 
 - **`test_agent_api_survives_proxy_restart`** — Agent API stays reachable from the sandbox across proxy restart.
   - *Probe:* Verify agent API /health returns 200 from inside the
-sandbox; stop + start the test proxy; assert /health still
-returns 200 from the same running sandbox.
+sandbox and deliver a marked proxy request. Stop and start the proxy.
+Require the same guest/backend birth, health, traffic and home state.
   - *Consequence if unasserted:* A recreated token or Unix socket must remain reachable from
 the same sandbox. File-binding the old socket inode made every
 reconnect fail even though the host pathname had been recreated.
@@ -452,7 +459,7 @@ host and require a 200 response.
   - *Consequence if unasserted:* A direct-egress failure is only meaningful when the intended
 proxy path is a working positive control for the same root process.
 - **`test_root_cannot_reach_live_host_listener`** — Guest root cannot connect to a known-live host TCP service.
-  - *Probe:* Read the harness listener port from the read-only config share
+  - *Probe:* Read the harness listener endpoint from the read-only config share
 and attempt a direct TCP connection to the host address.
   - *Consequence if unasserted:* Testing a live listener distinguishes real host isolation from a
 connection failure caused only by choosing an unused port.
@@ -608,7 +615,7 @@ password brute force or probe for authorized_keys leaks.
 The sandbox-internal sshd is a separate service that
 doesn't run against host keys.
 - **`test_host_listener_unreachable`** — A live TCP listener on the host is unreachable.
-  - *Probe:* Read the marker file /safeyolo/host-listener-port
+  - *Probe:* Read the listener address and port markers under /safeyolo
 (harness starts a real TCP listener on 127.0.0.1:<port>
 before booting the VM); assert the sandbox cannot connect.
   - *Consequence if unasserted:* Distinguishes "blocked by isolation" from "nothing
@@ -709,8 +716,8 @@ absent.
 tamper with proxy configuration or guest bootstrap state,
 turning guest package installation into host-state mutation.
 - **`test_host_listener_stays_unreachable_as_sandbox_root`** — Sandbox root cannot connect to a live host TCP listener.
-  - *Probe:* Elevate with setpriv, parse the host endpoint from the
-configured proxy URL, and attempt a direct TCP connection to
+  - *Probe:* Elevate with setpriv, read the harness listener endpoint,
+and attempt a direct TCP connection to
 the harness's known-live host listener; require failure.
   - *Consequence if unasserted:* Guest root must not turn the loopback-only network
 namespace into a path to host services or the admin API.

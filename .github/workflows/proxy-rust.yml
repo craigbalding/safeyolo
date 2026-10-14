@@ -303,6 +303,25 @@ jobs:
           uv python install 3.12.14
           uv sync --frozen --group dev --python 3.12.14
 
+      - name: Install the pinned Codex execpolicy test consumer
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
+          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
+          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
+          # npm can omit a corrupt optional package. Refuse global module fallback.
+          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
+          const path = require('node:path');
+          const { createRequire } = require('node:module');
+          const modules = path.resolve(process.argv[2], 'node_modules');
+          const wrapper = path.join(modules, '@openai/codex/package.json');
+          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
+          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
+            throw new Error('Codex must use the locked local platform package');
+          }
+          JS
+          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
+          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
+
       - name: Install native desktop test dependency
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -409,11 +428,13 @@ jobs:
           echo "Coord fixture did not finish its ownership-verified teardown" >&2
           exit 1
 
-      - name: Provide the macOS owned HTTP peer address
+      - name: Provide the macOS owned HTTP peer addresses
         if: matrix.os == 'macos-latest'
         run: |
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.3
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
+          /sbin/ifconfig lo0 | grep -F '127.0.0.3'
 
       - name: Download matching Linux guest test inputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

@@ -7,6 +7,8 @@ Real full-platform runs still prove that leg with the same running guest.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,7 +155,7 @@ def test_native_process_secrecy_consumer_observes_tokens_and_owned_process(tmp_p
         assert ca.is_file() and ca.parent == instance.root / "certs"
 
 
-@pytest.mark.parametrize("changed", [None, "run_id", "agent_id", "socket_directory"])
+@pytest.mark.parametrize("changed", [None, "run_id", "agent_id", "backend_token", "home", "socket_directory"])
 def test_native_restart_consumer_uses_real_start_and_checks_sandbox_continuity(tmp_path_factory, monkeypatch, changed):
     monkeypatch.syspath_prepend(str(BLACKBOX))
     from tests.blackbox.host.lifecycle.test_token_lifecycle import TestLiveAgentLifecycle
@@ -166,6 +168,10 @@ def test_native_restart_consumer_uses_real_start_and_checks_sandbox_continuity(t
         socket_path = Path(listener["path"])
         sandbox = {"name": "alice", "agent_id": "ag-owned", "run_id": "0123456789abcdef0123456789abcdef",
                    "runtime_state": "running"}
+        directory = instance.root / "agents/alice"
+        (directory / "home").mkdir(parents=True)
+        backend = {**sandbox, "backend_pid": os.getpid(), "backend_token": smoke._process_start_token(os.getpid())}
+        (directory / "runtime.json").write_text(json.dumps(backend))
         operations = []
 
         def command(*arguments, **kwargs):
@@ -175,6 +181,14 @@ def test_native_restart_consumer_uses_real_start_and_checks_sandbox_continuity(t
                 if ("start",) in operations and changed in {"run_id", "agent_id"}:
                     value[changed] = "different-incarnation"
                 return SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr="")
+            if arguments[:2] == ("agent", "shell"):
+                fields = shlex.split(arguments[4])
+                home_file = directory / "home" / Path(fields[-1]).name
+                if fields[0] == "printf":
+                    home_file.write_text(fields[2])
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                assert fields[0] == "cat"
+                return SimpleNamespace(returncode=0, stdout=home_file.read_text(), stderr="")
             result = instance.cli(*arguments, **kwargs)
             if arguments == ("start",) and changed == "socket_directory":
                 # Preserve the old directory so inode reuse cannot mask replacement.
@@ -182,6 +196,10 @@ def test_native_restart_consumer_uses_real_start_and_checks_sandbox_continuity(t
                 socket_path.parent.rename(old)
                 socket_path.parent.mkdir()
                 (old / "proxy.sock").rename(socket_path)
+            if arguments == ("start",) and changed == "backend_token":
+                (directory / "runtime.json").write_text(json.dumps({**backend, "backend_token": "other-birth"}))
+            if arguments == ("start",) and changed == "home":
+                next((directory / "home").iterdir()).write_text("lost-home-state")
             return result
 
         consumer = TestLiveAgentLifecycle()
@@ -189,16 +207,19 @@ def test_native_restart_consumer_uses_real_start_and_checks_sandbox_continuity(t
         monkeypatch.setattr(consumer, "_agent_api_health", lambda _name: smoke._probe_agent_health(
             listener, instance.root,
         )["status"])
+        monkeypatch.setattr(consumer, "_allowed_traffic", lambda _name, marker: {"marker": marker, "status": 200})
         # Exercise the real native stop/start and API sockets. Only the guest
         # inventory/shell observations use the controlled retained status shape.
         try:
             if changed:
-                with pytest.raises(AssertionError, match="sandbox identity|socket directory"):
+                with pytest.raises(AssertionError, match="sandbox identity|socket directory|process birth|persistent home"):
                     consumer.test_agent_api_survives_proxy_restart()
             else:
                 consumer.test_agent_api_survives_proxy_restart()
-            assert operations == [("agent", "status", "alice"), ("stop",), ("start",),
-                                  ("agent", "status", "alice")]
+            assert [call for call in operations if call[:2] != ("agent", "shell")] == [
+                ("agent", "status", "alice"), ("stop",), ("agent", "status", "alice"),
+                ("start",), ("agent", "status", "alice"),
+            ]
             assert instance.process.wait(timeout=10) == 0
         finally:
             stopped = instance.cli("stop")
@@ -271,6 +292,7 @@ def test_native_host_smoke_preserves_configured_ca_failure_and_owned_cleanup(tmp
                 config_dir=str(root), rust_config=str(root / "config.toml"),
                 rust_bin=str(root / "bin/safeyolo-proxy"), cli=str(root / "bin/safeyolo"),
                 working_directory=str(tmp_path), http_port=0, agent="alice",
+                nats_client_port=None, nats_monitor_port=None,
                 install_commit=smoke._cli_identity(root / "bin/safeyolo")["source_revision"],
             ))
             assert report["cleanup"] == {"status": "stopped", "errors": []}

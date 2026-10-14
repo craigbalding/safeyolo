@@ -12,9 +12,9 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from pdp.client import LocalPolicyClient, PolicyClientConfig
 from pydantic_core import to_json
 
-from pdp.client import LocalPolicyClient, PolicyClientConfig
 from safeyolo.policy.loader import PolicyLoader
 
 

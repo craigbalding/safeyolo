@@ -19,16 +19,18 @@ from tests.test_guest_acquisition import digest, release
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/installed-arm64.yml").read_text())
 JOB = WORKFLOW["jobs"]["installed-arm64"]
+HOST_JOB = WORKFLOW["jobs"]["acquire-host"]
+HOST = WORKFLOW["env"]
 
 
-def step(name):
-    return next(item for item in JOB["steps"] if item.get("name") == name)
+def step(name, job=JOB):
+    return next(item for item in job["steps"] if item.get("name") == name)
 
 
-def execute(name, cwd, env):
-    selected = step(name)
+def execute(name, cwd, env, job=JOB):
+    selected = step(name, job)
     workflow_shell = WORKFLOW.get("defaults", {}).get("run", {}).get("shell")
-    job_shell = JOB.get("defaults", {}).get("run", {}).get("shell", workflow_shell)
+    job_shell = job.get("defaults", {}).get("run", {}).get("shell", workflow_shell)
     shell = selected.get("shell", job_shell)
     # Match GitHub's Ubuntu shell templates. An unspecified shell lacks
     # pipefail; explicit Bash uses --noprofile --norc -eo pipefail.
@@ -38,7 +40,7 @@ def execute(name, cwd, env):
     script = cwd / "workflow-step.sh"
     script.write_text(selected["run"])
     return subprocess.run([*command, str(script)],
-                          cwd=cwd, env={**os.environ, **JOB["env"], **env},
+                          cwd=cwd, env={**os.environ, **HOST, **job.get("env", {}), **env},
                           text=True, capture_output=True, check=False, timeout=20)
 
 
@@ -53,29 +55,63 @@ def test_step_executor_preserves_github_default_and_explicit_bash_semantics(tmp_
     assert (tmp_path / "after.txt").exists() == (shell is None)
 
 
-def test_manual_route_preserves_source_jobs_and_pins_read_only_inputs():
+def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert set(WORKFLOW.get("on", WORKFLOW.get(True))) == {"workflow_dispatch"}
-    assert JOB["if"] == "github.event_name == 'workflow_dispatch'"
-    assert JOB["runs-on"] == "ubuntu-24.04-arm" and "needs" not in JOB
+    assert WORKFLOW["permissions"] == {"contents": "read"}
+    assert set(WORKFLOW["jobs"]) == {"acquire-host", "installed-arm64", "public-install"}
+    draft_route = "github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'"
+    assert HOST_JOB["if"] == draft_route
+    assert HOST_JOB["permissions"] == {"contents": "write"}
+    assert len(HOST_JOB["steps"]) == 2
+    acquisition = step("Read and bind the retained draft host inputs", HOST_JOB)
+    assert acquisition["shell"] == "bash"
+    assert acquisition["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
+    assert "tar " not in acquisition["run"]
+    assert "cargo" not in acquisition["run"] and "tests/" not in acquisition["run"]
+    transfer = step("Transfer only bound host inputs", HOST_JOB)
+    assert transfer["uses"].startswith("actions/upload-artifact@")
+    assert transfer["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/retained-host/" + name
+        for name in ("safeyolo-linux-arm64-production.tar.gz", "SHA256SUMS", "release.json")
+    ]
+    assert transfer["with"]["if-no-files-found"] == "error" and "if" not in transfer
+    assert HOST_JOB["outputs"] == {"artifact-id": "${{ steps.host-inputs.outputs.artifact-id }}"}
+    assert transfer["id"] == "host-inputs"
+    assert JOB["if"] == draft_route
+    public = WORKFLOW["jobs"]["public-install"]
+    assert public["if"] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'public-install'"
+    assert public["permissions"] == {"contents": "read"} and "needs" not in public
+    assert JOB["runs-on"] == "ubuntu-24.04-arm" and JOB["needs"] == "acquire-host"
     assert JOB["permissions"] == {"contents": "read", "actions": "read"}
+    assert "continue-on-error" not in HOST_JOB and "continue-on-error" not in JOB
+    assert all("continue-on-error" not in item for job in WORKFLOW["jobs"].values() for item in job["steps"])
     checkout = next(item for item in JOB["steps"] if item.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"] == {"persist-credentials": False}
-    assert JOB["env"]["HOST_REVISION"] == "7a38dff14e7e4eacb4095da732ffe06d7c7c5796"
-    assert JOB["env"]["HOST_RELEASE_ID"] == "410991309"
-    assert JOB["env"]["HOST_ARCHIVE_ASSET_ID"] == "634976985"
-    assert JOB["env"]["HOST_CHECKSUM_ASSET_ID"] == "634976991"
-    assert JOB["env"]["HOST_SHA256"] == "8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f"
+    assert HOST["HOST_REVISION"] == "7a38dff14e7e4eacb4095da732ffe06d7c7c5796"
+    assert HOST["HOST_RELEASE_ID"] == "410991309"
+    assert HOST["HOST_ARCHIVE_ASSET_ID"] == "634976985"
+    assert HOST["HOST_CHECKSUM_ASSET_ID"] == "634976991"
+    assert HOST["HOST_SHA256"] == "8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f"
+    assert HOST["HOST_BYTES"] == "36529500" and HOST["GUEST_COMPATIBILITY"] == "v1"
     assert JOB["env"]["GUEST_REVISION"] == "8234a047d810d543d8c4d1cb1fa9859987be035b"
     assert JOB["env"]["GUEST_INDEX"] == "sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e"
     assert JOB["env"]["GUEST_ARCHIVE_SHA256"] == "2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5"
     downloads = [item for item in JOB["steps"] if item.get("uses", "").startswith("actions/download-artifact@")]
-    assert len(downloads) == 1
+    assert len(downloads) == 2
     assert downloads[0]["with"] == {
+        "artifact-ids": "${{ needs.acquire-host.outputs.artifact-id }}", "merge-multiple": True,
+        "path": "${{ runner.temp }}/retained-host",
+    }
+    assert "if" not in downloads[0]
+    assert "if" not in step("Recheck the transferred host inputs before installation")
+    assert JOB["steps"].index(downloads[0]) < JOB["steps"].index(step("Recheck the transferred host inputs before installation"))
+    assert downloads[1]["with"] == {
         "artifact-ids": "11747551391", "run-id": 38248401312,
         "repository": "craigbalding/safeyolo", "github-token": "${{ secrets.GITHUB_TOKEN }}",
         "merge-multiple": True, "path": "${{ runner.temp }}/retained-guest-oci",
     }
     commands = "\n".join(item.get("run", "") for item in JOB["steps"])
+    assert "gh api" not in commands
     assert "--example verify_guest_oci" in commands and "--bin " not in commands
     assert "guest/build" not in commands and "publish_guest" not in commands
     assert "--lane systrap" in commands and "--platform-assets" in commands
@@ -90,11 +126,11 @@ def test_manual_route_preserves_source_jobs_and_pins_read_only_inputs():
 
 
 @pytest.fixture
-def host_inputs(tmp_path):
+def host_inputs(tmp_path, linux_workflow_stat):
     bundle = tmp_path / "safeyolo-linux-arm64-production"
     bundle.mkdir()
     (bundle / "package-info").write_text(
-        f"source_commit={JOB['env']['HOST_REVISION']}\nprofile=production\nplatform=linux-arm64\nguest_compatibility=v1\n"
+        f"source_commit={HOST['HOST_REVISION']}\nprofile=production\nplatform=linux-arm64\nguest_compatibility=v1\n"
     )
     archive = tmp_path / "fixture-host.tar.gz"
     with tarfile.open(archive, "w:gz") as output:
@@ -103,13 +139,14 @@ def host_inputs(tmp_path):
     sums = tmp_path / "SHA256SUMS"
     sums.write_text(f"{sha}  safeyolo-linux-arm64-production.tar.gz\n")
     metadata = {
-        "id": 42, "draft": True, "tag_name": "host-" + JOB["env"]["HOST_REVISION"],
-        "target_commitish": JOB["env"]["HOST_REVISION"],
+        "id": 42, "draft": True, "tag_name": "host-" + HOST["HOST_REVISION"],
+        "target_commitish": HOST["HOST_REVISION"],
         "assets": [{"id": 43, "name": "safeyolo-linux-arm64-production.tar.gz", "state": "uploaded"},
                    {"id": 44, "name": "SHA256SUMS", "state": "uploaded"}],
     }
     tools = tmp_path / "tools"
     tools.mkdir()
+    (tools / "stat").symlink_to(linux_workflow_stat)
     gh = tools / "gh"
     gh.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
@@ -134,11 +171,33 @@ sys.stdout.buffer.write(Path(os.environ[files[endpoint]]).read_bytes())
     return metadata, env
 
 
+@pytest.fixture
+def transferred_host_inputs(tmp_path, host_inputs):
+    metadata, env = host_inputs
+    Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
+    result = execute("Read and bind the retained draft host inputs", tmp_path, env, HOST_JOB)
+    assert result.returncode == 0, result.stdout + result.stderr
+    runner_temp = tmp_path / "consumer runner $(unused)"
+    received = runner_temp / "retained-host"
+    received.mkdir(parents=True)
+    # Upload preserves paths relative to their common root. The pinned download
+    # action requires merge-multiple even for one ID to avoid a name subdirectory.
+    download = step("Download the bound host inputs from this run")["with"]
+    assert download["merge-multiple"] is True
+    assert received == Path(download["path"].replace("${{ runner.temp }}", str(runner_temp)))
+    for path in step("Transfer only bound host inputs", HOST_JOB)["with"]["path"].splitlines():
+        source = Path(path.replace("${{ runner.temp }}", env["RUNNER_TEMP"]))
+        shutil.copy2(source, received / source.name)
+    return received, {**env, "RUNNER_TEMP": str(runner_temp), "GH_TOKEN": "",
+                      "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(runner_temp / "reports")}
+
+
 def test_report_binding_uses_admitted_context_and_reaches_writer_and_upload(tmp_path, host_inputs):
     # runner is unavailable in job.env. Runtime paths belong to a run step,
     # whose GITHUB_ENV assignment is supplied to subsequent steps by Actions.
     assert "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR" not in JOB["env"]
     assert "${{ runner." not in json.dumps(JOB["env"])
+    assert "${{ runner." not in json.dumps(HOST)
     metadata, env = host_inputs
     runner_temp = tmp_path / "runner temp $(unused)"
     runner_temp.mkdir()
@@ -151,7 +210,10 @@ def test_report_binding_uses_admitted_context_and_reaches_writer_and_upload(tmp_
     assert key == "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
     assert value == str(runner_temp / "installed-arm64-reports")
     Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
-    result = execute("Read and verify the retained host archive", tmp_path, {
+    result = execute("Read and bind the retained draft host inputs", tmp_path, env, HOST_JOB)
+    assert result.returncode == 0, result.stdout + result.stderr
+    shutil.copytree(tmp_path / "retained-host", runner_temp / "retained-host")
+    result = execute("Recheck the transferred host inputs before installation", tmp_path, {
         **env, "RUNNER_TEMP": str(runner_temp), key: value,
     })
     assert result.returncode == 0, result.stdout + result.stderr
@@ -159,14 +221,14 @@ def test_report_binding_uses_admitted_context_and_reaches_writer_and_upload(tmp_
     assert JOB["steps"][-1]["with"]["path"] == "${{ env." + key + " }}"
 
 
-@pytest.mark.parametrize("defect", [None, "release-denied", "asset-denied", "public", "tag", "source",
-                                  "missing", "duplicate", "uploading", "digest", "size", "checksum-file", "profile",
+@pytest.mark.parametrize("defect", [None, "release-denied", "asset-denied", "checksums-denied", "public", "tag", "source",
+                                  "missing", "duplicate", "uploading", "digest", "size", "checksum-file",
                                   "release-id", "asset-id", "release-shape", "asset-shape", "asset-name"])
-def test_actual_draft_consumer_rejects_wrong_inputs_before_install(tmp_path, host_inputs, defect):
+def test_actual_draft_acquisition_rejects_wrong_inputs_before_transfer(tmp_path, host_inputs, defect):
     metadata, env = host_inputs
-    if defect in {"release-denied", "asset-denied"}:
+    if defect in {"release-denied", "asset-denied", "checksums-denied"}:
         env["DENIED_ENDPOINT"] = "repos/craigbalding/safeyolo/releases/" + (
-            "42" if defect == "release-denied" else "assets/43")
+            {"release-denied": "42", "asset-denied": "assets/43", "checksums-denied": "assets/44"}[defect])
     elif defect == "public":
         metadata["draft"] = False
     elif defect == "tag":
@@ -197,28 +259,71 @@ def test_actual_draft_consumer_rejects_wrong_inputs_before_install(tmp_path, hos
         env["HOST_BYTES"] = "1"
     elif defect == "checksum-file":
         Path(env["SUMS_FILE"]).write_text("wrong checksum\n")
-    elif defect == "profile":
-        bundle = tmp_path / "safeyolo-linux-arm64-production"
-        info = bundle / "package-info"
-        info.write_text(info.read_text().replace("profile=production", "profile=debug"))
-        with tarfile.open(env["HOST_FILE"], "w:gz") as output:
-            output.add(bundle, arcname=bundle.name)
-        env["HOST_SHA256"] = hashlib.sha256(Path(env["HOST_FILE"]).read_bytes()).hexdigest()
-        env["HOST_BYTES"] = str(Path(env["HOST_FILE"]).stat().st_size)
-        Path(env["SUMS_FILE"]).write_text(f"{env['HOST_SHA256']}  safeyolo-linux-arm64-production.tar.gz\n")
     Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
-    result = execute("Read and verify the retained host archive", tmp_path, env)
+    result = execute("Read and bind the retained draft host inputs", tmp_path, env, HOST_JOB)
     assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
-    assert (tmp_path / "reports/host-input.txt").exists() == (defect is None)
+    assert not (tmp_path / "retained-host/package-info").exists()
     calls = [json.loads(line) for line in Path(env["API_CALLS"]).read_text().splitlines()]
     assert all(call[0] == "api" and "--method" not in call for call in calls)
     assert "fixture-token" not in result.stdout + result.stderr
-    if defect in {"release-denied", "asset-denied"}:
-        assert "job read token cannot" in result.stderr
+    if defect in {"release-denied", "asset-denied", "checksums-denied"}:
+        assert "acquisition job token cannot" in result.stderr
+
+
+@pytest.mark.parametrize("defect", [None, "missing-archive", "missing-checksums", "missing-metadata",
+                                  "digest", "size", "checksum-file", "release-id", "asset-id", "source", "tag",
+                                  "public", "profile", "package-source", "platform", "compatibility"])
+def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, transferred_host_inputs, defect):
+    received, env = transferred_host_inputs
+    archive = received / "safeyolo-linux-arm64-production.tar.gz"
+    metadata_file = received / "release.json"
+    metadata = json.loads(metadata_file.read_text())
+    if defect in {"missing-archive", "missing-checksums", "missing-metadata"}:
+        (received / {"missing-archive": archive.name, "missing-checksums": "SHA256SUMS",
+                     "missing-metadata": "release.json"}[defect]).unlink()
+    elif defect == "digest":
+        # Keep the size correct so the actual archive hash must reject it.
+        content = archive.read_bytes()
+        archive.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
+    elif defect == "size":
+        archive.write_bytes(archive.read_bytes()[:-1])
+    elif defect == "checksum-file":
+        (received / "SHA256SUMS").write_text("wrong checksum\n")
+    elif defect in {"release-id", "asset-id", "source", "tag", "public"}:
+        if defect == "asset-id":
+            metadata["assets"][0]["id"] = 99
+        else:
+            key, value = {"release-id": ("id", 99), "source": ("target_commitish", "b" * 40),
+                          "tag": ("tag_name", "other-host"), "public": ("draft", False)}[defect]
+            metadata[key] = value
+        metadata_file.write_text(json.dumps(metadata))
+    elif defect in {"profile", "package-source", "platform", "compatibility"}:
+        info = tmp_path / "safeyolo-linux-arm64-production/package-info"
+        before, after = {"profile": ("profile=production", "profile=debug"),
+                         "package-source": (HOST["HOST_REVISION"], "b" * 40),
+                         "platform": ("platform=linux-arm64", "platform=linux-amd64"),
+                         "compatibility": ("guest_compatibility=v1", "guest_compatibility=v2")}[defect]
+        info.write_text(info.read_text().replace(before, after))
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(info.parent, arcname=info.parent.name)
+        # Challenge package fields after supplying a self-consistent hash/size.
+        env["HOST_SHA256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+        env["HOST_BYTES"] = str(archive.stat().st_size)
+        (received / "SHA256SUMS").write_text(f"{env['HOST_SHA256']}  {archive.name}\n")
+    calls_before = Path(env["API_CALLS"]).read_text()
+    result = execute("Recheck the transferred host inputs before installation", tmp_path, env)
+    assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
+    assert (Path(env["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / "host-input.txt").exists() == (defect is None)
+    assert Path(env["API_CALLS"]).read_text() == calls_before
+    assert "fixture-token" not in result.stdout + result.stderr
+    if defect is None:
+        assert {path.name for path in received.iterdir()} == {archive.name, "SHA256SUMS", "release.json", "package-info"}
+        assert "Draft release=42" in result.stdout and f"host_source={HOST['HOST_REVISION']}" in result.stdout
+        assert all(b"fixture-token" not in path.read_bytes() for path in received.iterdir())
 
 
 @pytest.fixture
-def guest_inputs(tmp_path):
+def guest_inputs(tmp_path, linux_workflow_stat):
     verifier = Path(os.environ.get("SAFEYOLO_GUEST_OCI_VERIFIER", ROOT / "proxy/target/debug/examples/verify_guest_oci")).resolve()
     if not verifier.is_file():
         pytest.skip("the existing native OCI verification tool is required")
@@ -244,7 +349,7 @@ def guest_inputs(tmp_path):
         (source / "cache-paths.txt").write_text("/var/cache/apt\n")
         subprocess.run(["sudo", "-n", "chown", "-Rh", "100000:100000", str(tree)], check=True)
         try:
-            raw = subprocess.check_output(["sudo", "-n", "tar", "--format=pax", "--sparse", "-C", str(source),
+            raw = subprocess.check_output(["sudo", "-n", shutil.which("tar"), "--format=pax", "--sparse", "-C", str(source),
                                            "-cf", "-", "rootfs-tree", "cache-paths.txt"])
         finally:
             subprocess.run(["sudo", "-n", "chown", "-Rh", f"{os.getuid()}:{os.getgid()}", str(tree)], check=True)
@@ -279,6 +384,7 @@ def guest_inputs(tmp_path):
         reports.mkdir()
         tools = tmp_path / "tools"
         tools.mkdir()
+        (tools / "stat").symlink_to(linux_workflow_stat)
         sudo = tools / "sudo"
         sudo.write_text(f'#!/bin/bash\nif [[ "$2" != apt-get ]]; then exec "{real_sudo}" "$@"; fi\n')
         sudo.chmod(0o755)
@@ -432,37 +538,58 @@ sys.exit(int(os.environ['SMOKE_EXIT']))
     runner.chmod(0o755)
     reports = tmp_path / "reports"
     reports.mkdir()
+    # This Ubuntu workflow uses Linux diagnostics before the controlled caller.
+    # Model those commands on Darwin without changing the real lane/host guard.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, argument, output in (("uname", "-a", "Linux fixture arm64"),
+                                   ("getconf", "GNU_LIBC_VERSION", "glibc fixture")):
+        tool = tools / name
+        tool.write_text(f'#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = "{argument}" ] || exit 9\nprintf "%s\\n" "{output}"\n')
+        tool.chmod(0o755)
     result = execute("Run the installed production archive smoke", tmp_path, {
         "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
         "GITHUB_SHA": "c" * 40, "SMOKE_EXIT": str(exit_code),
+        "PATH": f"{tools}:{os.environ['PATH']}",
     })
     assert result.returncode == exit_code, result.stdout + result.stderr
     assert json.loads((tmp_path / "arguments.json").read_text()) == [
         "--package", str(tmp_path / "retained-host/safeyolo-linux-arm64-production.tar.gz"),
-        "--sha256", JOB["env"]["HOST_SHA256"], "--platform-assets", str(tmp_path / "verified-extracted-assets"),
+        "--sha256", HOST["HOST_SHA256"], "--platform-assets", str(tmp_path / "verified-extracted-assets"),
         "--lane", "systrap",
     ]
     output = (reports / "installed-smoke.txt").read_text()
     assert "test_direct_egress PASSED" in output and "test_home_persistence SKIPPED" in output
 
 
-def test_maintained_isolation_caller_requests_individual_guest_root_and_home_outcomes(tmp_path):
+@pytest.mark.parametrize("failure,exit_code", [(None, 0), *[
+    (suite, code) for suite in ("identity", "guest", "guest-root", "lifecycle") for code in (1, 2)
+]])
+def test_maintained_isolation_caller_requests_individual_guest_root_and_home_outcomes(tmp_path, failure, exit_code):
     runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
-    phase = runner[runner.index("# --- Phase 2: Run tests ---"):runner.index("# --- Phase 3: Summary ---")]
+    phase = runner[runner.index("# --- Phase 2: Run tests ---"):]
     (tmp_path / "host").mkdir()
     capture = tmp_path / "pytest-calls.jsonl"
-    record = "import json,sys; from pathlib import Path; p=Path(sys.argv[1]); p.open('a').write(json.dumps(sys.argv[2:])+'\\n')"
+    record = (
+        "import json,os,sys; from pathlib import Path; args=sys.argv[2:]; "
+        "Path(sys.argv[1]).open('a').write(json.dumps(args)+'\\n'); "
+        "suite=('guest-root' if '--user' in args else 'guest') if args[0].endswith('guest_exec.py') "
+        "else 'identity' if 'identity/' in args else 'lifecycle'; "
+        "sys.exit(int(os.environ['SUITE_EXIT']) if suite==os.environ['FAIL_SUITE'] else 0)"
+    )
     command = " ".join(map(shlex.quote, [sys.executable, "-c", record, str(capture)]))
     probe = tmp_path / "isolation-caller.sh"
     probe.write_text(
-        "set -euo pipefail\nRUN_PROXY=false\nRUN_ISOLATION=true\nVERBOSE=\n"
+        "set -euo pipefail\nRUN_PROXY=false\nRUN_ISOLATION=true\nLISTENER_RESTART=false\nVERBOSE=\n"
         "PYTEST_FORWARD_ARGS=()\nPYTEST_FORWARD_SHELL=\nINSTALLED_CLI=installed-cli\nAGENT_NAME=bbtest\n"
         + f"SCRIPT_DIR={shlex.quote(str(tmp_path))}\n"
         + f'python3() {{ {command} "$@"; }}\n'
         + f'pytest() {{ {command} pytest "$@"; }}\n'
         + phase
     )
-    subprocess.run(["bash", str(probe)], check=True, capture_output=True, timeout=10)
+    result = subprocess.run(["bash", str(probe)], capture_output=True, text=True, timeout=10,
+                            env={**os.environ, "FAIL_SUITE": failure or "", "SUITE_EXIT": str(exit_code)})
+    assert result.returncode == exit_code, result.stdout + result.stderr
     calls = [json.loads(line) for line in capture.read_text().splitlines()]
     guest = [call for call in calls if call[0].endswith("guest_exec.py")]
     assert len(guest) == 2 and "--user" in guest[1]

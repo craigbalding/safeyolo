@@ -155,7 +155,7 @@ fn is_protected_local_address(address: IpAddr) -> bool {
     }
 }
 
-fn numeric_address(host: &str) -> Option<IpAddr> {
+pub(crate) fn numeric_address(host: &str) -> Option<IpAddr> {
     let host = host
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))

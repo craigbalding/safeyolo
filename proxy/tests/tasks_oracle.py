@@ -11,6 +11,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from pdp.client import LocalPolicyClient, PolicyClientConfig
+
 from safeyolo.policy.loader import PolicyLoader
 
 

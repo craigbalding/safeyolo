@@ -28,9 +28,11 @@ trap 'rm -f -- "$temporary"' EXIT
 # owners, modes, hard/symbolic links, ACLs and xattrs; sparse ext4 holes remain
 # holes after a matching GNU tar extraction. Remove access/change-time fields
 # so reading the same stopped inputs produces the same archive on a retry.
-sudo -n tar --format=pax --numeric-owner --acls --xattrs --xattrs-include='*' \
+# Resolve the selected GNU tar before sudo can replace PATH.
+sudo -n "$(command -v tar)" --format=pax --numeric-owner --acls --xattrs --xattrs-include='*' \
     --sparse --sort=name --pax-option=delete=atime,delete=ctime \
     -C "$assets" -cf - -- "${files[@]}" | zstd -T1 -3 -q -c > "$temporary"
 mv -- "$temporary" "$destination/guest.tar.zst"
 cp -- "$assets/build-base.txt" "$destination/build-base.txt"
-printf '%s archive_bytes=%s\n' "$platform" "$(stat -c %s "$destination/guest.tar.zst")"
+read -r archive_bytes < <(wc -c < "$destination/guest.tar.zst")
+printf '%s archive_bytes=%s\n' "$platform" "$archive_bytes"

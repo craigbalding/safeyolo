@@ -1,0 +1,7 @@
+{
+  "name": "safeyolo-codex-execpolicy-tests",
+  "private": true,
+  "dependencies": {
+    "@openai/codex": "0.159.1"
+  }
+}

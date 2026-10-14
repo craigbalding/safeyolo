@@ -619,9 +619,13 @@ struct PendingMessage {
     body: PendingBytes,
     fragments: PendingBytes,
     utf8: Utf8,
+    byte_limit: u64,
 }
 impl PendingMessage {
     async fn append(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.len() as u64 > self.byte_limit.saturating_sub(self.body.len) {
+            return Err(ReceiveError::Protocol.into());
+        }
         if self.kind == MessageType::Text {
             self.utf8.check(bytes)?;
         }
@@ -656,6 +660,7 @@ pub struct Reader<R> {
     compression: Option<Compression>,
     inflater: Option<Inflater>,
     pending: Option<PendingMessage>,
+    message_limit: u64,
 }
 impl<R: AsyncRead + Unpin> Reader<R> {
     pub fn new(stream: R, from_client: bool, compression: Option<Compression>) -> Self {
@@ -665,7 +670,15 @@ impl<R: AsyncRead + Unpin> Reader<R> {
             compression,
             inflater: None,
             pending: None,
+            message_limit: u64::MAX,
         }
+    }
+
+    /// The desktop's fixed producers need bounded assembly. Generic proxy
+    /// inspection retains its existing complete-message spill behavior.
+    pub(crate) fn with_message_limit(mut self, bytes: u64) -> Self {
+        self.message_limit = bytes;
+        self
     }
     pub async fn read(&mut self) -> Result<Event, ReceiveError> {
         loop {
@@ -716,6 +729,9 @@ impl<R: AsyncRead + Unpin> Reader<R> {
                     Control::Reserved(_) => Err(ReceiveError::Protocol),
                 };
             }
+            if payload_len > self.message_limit {
+                return Err(ReceiveError::Protocol);
+            }
             match header.opcode {
                 OpCode::Data(Data::Text | Data::Binary) if self.pending.is_none() => {
                     if header.rsv1 && self.compression.is_none() {
@@ -734,6 +750,7 @@ impl<R: AsyncRead + Unpin> Reader<R> {
                         body: PendingBytes::default(),
                         fragments: PendingBytes::default(),
                         utf8: Utf8::default(),
+                        byte_limit: self.message_limit,
                     });
                 }
                 OpCode::Data(Data::Continue) if self.pending.is_some() && !header.rsv1 => (),
@@ -770,6 +787,9 @@ impl<R: AsyncRead + Unpin> Reader<R> {
                     self.inflater = None;
                 }
             }
+            if pending.fragments.len >= self.message_limit {
+                return Err(ReceiveError::Protocol);
+            }
             pending
                 .fragments
                 .append(&(pending.body.len - start).to_be_bytes())
@@ -796,6 +816,7 @@ fn mask(bytes: &mut [u8], key: Option<[u8; 4]>, offset: u64) {
         }
     }
 }
+
 fn validate_close(bytes: &[u8]) -> Result<(), ReceiveError> {
     if bytes.len() == 1 {
         return Err(ReceiveError::Protocol);
@@ -1026,5 +1047,46 @@ async fn deflate(
         if read == 0 && written == 0 {
             return Err("stalled WebSocket compression".into());
         }
+    }
+}
+
+#[cfg(test)]
+mod bounded_reader_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn desktop_assembly_refuses_large_frames_payloads_and_fragment_indexes() {
+        // An oversized advertised frame must fail before reading its body.
+        let mut advertised = vec![0x82, 127];
+        advertised.extend_from_slice(&65537u64.to_be_bytes());
+        assert!(matches!(
+            Reader::new(Cursor::new(advertised), false, None)
+                .with_message_limit(65536)
+                .read()
+                .await,
+            Err(ReceiveError::Protocol)
+        ));
+
+        let mut fragmented = vec![0x02, 8];
+        fragmented.extend_from_slice(b"12345678");
+        fragmented.extend_from_slice(&[0x80, 9]);
+        fragmented.extend_from_slice(b"123456789");
+        // Each frame fits; the assembled message exceeds the limit.
+        assert!(matches!(
+            Reader::new(Cursor::new(fragmented), false, None)
+                .with_message_limit(16)
+                .read()
+                .await,
+            Err(ReceiveError::Protocol)
+        ));
+
+        // Empty fragments cannot grow a host index without a bound either.
+        assert!(matches!(
+            Reader::new(Cursor::new([0x02, 0, 0x00, 0, 0x80, 0]), false, None)
+                .with_message_limit(16)
+                .read()
+                .await,
+            Err(ReceiveError::Protocol)
+        ));
     }
 }

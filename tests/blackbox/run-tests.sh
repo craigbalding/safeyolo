@@ -17,6 +17,7 @@
 #   ./run-tests.sh              # Run all tests
 #   ./run-tests.sh --proxy      # Native proxy process contracts only
 #   ./run-tests.sh --isolation  # VM isolation tests only
+#   ./run-tests.sh --listener-restart  # Live listener and running-guest restart controls
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --proxy --proxy-impl rust
 #   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
@@ -89,6 +90,7 @@ INGRESS=false
 WORKLOADS=false
 ACCESS=false
 LIFECYCLE=false
+LISTENER_RESTART=false
 ACCESS_CONFIG_ONLY=false
 INSTALL_COMMIT=""
 PYTEST_FORWARD_ARGS=()
@@ -101,6 +103,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --isolation)
+            RUN_PROXY=false
+            shift
+            ;;
+        --listener-restart)
+            LISTENER_RESTART=true
             RUN_PROXY=false
             shift
             ;;
@@ -192,6 +199,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$LISTENER_RESTART" = true ] && [ "$RUN_ISOLATION" != true ]; then
+    echo "ERROR: --listener-restart requires a running isolation guest" >&2
+    exit 2
+fi
 
 if [ -n "$INSTALL_COMMIT" ] && [ "$INGRESS" != true ] && [ "$WORKLOADS" != true ] && [ "$ACCESS" != true ] && [ "$LIFECYCLE" != true ]; then
     echo "ERROR: --install-commit requires an installed ingress, workloads, access, or lifecycle selection" >&2
@@ -1042,6 +1054,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     printf 'HTTP %s\nHTTPS %s\ncontrol %s\n' \
         "$SINKHOLE_HTTP_PORT" "$SINKHOLE_HTTPS_PORT" "$SINKHOLE_CONTROL_PORT" \
         > "$CONFIG_SHARE/blackbox-sinkhole-ports"
+    # Both the fixed origin and the disposable listener accept this address.
+    # The attribution IP in HTTP_PROXY is not the listener's host endpoint.
+    printf '127.0.0.1\n' > "$CONFIG_SHARE/host-listener-address"
     if [ "$VZ_FIXED_PORTS" = true ]; then
         # The origin is already known-live and binds on all host interfaces.
         printf '%s\n' "$SINKHOLE_HTTP_PORT" > "$CONFIG_SHARE/host-listener-port"
@@ -1179,6 +1194,19 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
 fi
 
+if [ "$LISTENER_RESTART" = true ]; then
+    cd "$SCRIPT_DIR/host"
+    set +e
+    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -s --tb=short --timeout=120 \
+        lifecycle/test_host_listener.py lifecycle/test_token_lifecycle.py
+    LISTENER_RESTART_RESULT=$?
+    set -e
+    case "$LISTENER_RESTART_RESULT" in
+        0|1) exit "$LISTENER_RESTART_RESULT" ;;
+        *) exit 2 ;;
+    esac
+fi
+
 IDENTITY_RESULT=0
 if [ "$RUN_ISOLATION" = true ]; then
     # Host-side identity validation — agent_map must have correct
@@ -1214,9 +1242,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     # Lifecycle tests — host-side but need the sandbox still running
     # (write/read state across a stop+start cycle, verify agent API
     # after proxy restart, etc.). MUST run BEFORE cleanup tears down
-    # the VM. Cross-platform now that home-persistence lives here;
-    # individual tests that only apply to one platform carry their
-    # own pytest skipif (see test_token_lifecycle.py).
+    # the VM. Proxy replacement must preserve the running guest on both hosts.
     echo "=== Lifecycle Tests (host-side, sandbox running) ==="
     echo ""
     cd "$SCRIPT_DIR/host"

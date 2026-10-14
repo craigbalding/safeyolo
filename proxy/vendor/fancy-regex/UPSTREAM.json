@@ -35,12 +35,16 @@
       "line": 9,
       "removed_trailing_characters": "U+0020 U+0020",
       "recorded_outside_unified_hunks_to_avoid_trailing_whitespace_in_artifact": true
+    },
+    {
+      "file": ".cargo_vcs_info.json",
+      "added_final_newline": true
     }
   ],
   "files": {
     ".cargo_vcs_info.json": {
       "upstream_sha256": "3066aea22c2cab2425dde350c138f9f54de1f55c409824d5ba6fb33b94704f3e",
-      "vendored_sha256": "3066aea22c2cab2425dde350c138f9f54de1f55c409824d5ba6fb33b94704f3e"
+      "vendored_sha256": "c01d8c76c8b12a59eca77af90bb21e06ff129f4c126f9a8b315abfacc81706f0"
     },
     ".gitignore": {
       "upstream_sha256": "d02caed6e54b39fb898bc32f9b8d72f87b5d7a7e44f8271503984617450c1dcc",

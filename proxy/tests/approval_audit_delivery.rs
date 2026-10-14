@@ -92,6 +92,7 @@ fn config(root: &Path) -> Config {
         event_log: root.join("events.jsonl"),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
+        parent_proxy_hosts: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),
