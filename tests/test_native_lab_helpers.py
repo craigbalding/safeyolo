@@ -41,6 +41,7 @@ def lab(tmp_path: Path, guest_binary: Path):
     command = home / ".safeyolo-command"
     command.write_text(
         '#!/bin/bash\n'
+        'printf "%s:%s\\n" "$$" "$(awk \'{print $22}\' /proc/$$/stat)" >> "$HOME/command-identities"\n'
         'printf "started\\n" >> "$HOME/starts"\n'
         'printf "public-marker\\nAuthorization: Bearer fake-only-secret\\n"\n'
         'while :; do sleep 1; done\n'
@@ -86,6 +87,31 @@ def lab(tmp_path: Path, guest_binary: Path):
         yield home, env, command_tmux, run
     finally:
         subprocess.run([tmux, "-S", str(socket), "kill-server"], env=env, capture_output=True, timeout=10, check=False)
+        # Killing the controller runner in the recovery test can orphan its
+        # fake command. Stop only commands born in this fixture, not peers.
+        identities = home / "command-identities"
+        owned = identities.read_text().splitlines() if identities.exists() else []
+
+        def command_alive(identity: str) -> bool:
+            pid, birth = identity.split(":")
+            process = Path("/proc") / pid
+            try:
+                stat = (process / "stat").read_text().rsplit(")", 1)[1].split()
+                args = (process / "cmdline").read_bytes().split(b"\0")
+            except FileNotFoundError:
+                return False
+            return stat[0] != "Z" and stat[19] == birth and args[:2] == [b"/bin/bash", os.fsencode(command)]
+
+        for identity in owned:
+            if command_alive(identity):
+                try:
+                    os.kill(int(identity.split(":", 1)[0]), 15)
+                except ProcessLookupError:
+                    pass
+        deadline = time.monotonic() + 2
+        while any(command_alive(identity) for identity in owned) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not any(command_alive(identity) for identity in owned), "An owned fake Lab command survived fixture cleanup"
     assert not python_calls.exists(), "Reached Lab helpers executed Python"
 
 
