@@ -544,7 +544,6 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         ("openssh-client", &["ssh"][..]),
         ("curl", &["curl"][..]),
         ("tar", &["tar"][..]),
-        ("ca-certificates", &["update-ca-certificates"][..]),
     ] {
         if commands.iter().any(|name| command_path(name).is_none()) {
             packages.push(package);

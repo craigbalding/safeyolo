@@ -44,6 +44,7 @@ struct PackageGuest {
     repository: String,
     discovery_tag: String,
     platform: ConsumerPlatform,
+    #[cfg(target_os = "linux")]
     runsc_version: Option<String>,
 }
 
@@ -136,12 +137,14 @@ impl PackageGuest {
             repository: repository.into(),
             discovery_tag: discovery_tag.into(),
             platform,
+            #[cfg(target_os = "linux")]
             runsc_version: fields.get("runsc_version").map(|value| value.to_string()),
         })
     }
 }
 
 /// Reuse the package's strict reader for Linux runtime selection and doctor.
+#[cfg(target_os = "linux")]
 pub(crate) fn packaged_runsc_version(root: &Path) -> Result<Option<String>, Error> {
     let path = root.join("package-info");
     if !path.try_exists()? {
