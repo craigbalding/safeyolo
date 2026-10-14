@@ -688,6 +688,26 @@ mod tests {
 
     #[test]
     fn capture_retains_live_identities_without_accumulating_exited_children() {
+        // The supervisor owns a process tree, so isolate this witness from
+        // child processes created by other concurrently running Rust tests.
+        if std::env::var_os("SAFEYOLO_TEST_CAPTURE_INNER").is_none() {
+            let observed = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "coord_supervisor::process::tests::capture_retains_live_identities_without_accumulating_exited_children",
+                    "--nocapture",
+                ])
+                .env("SAFEYOLO_TEST_CAPTURE_INNER", "1")
+                .output()
+                .unwrap();
+            assert!(
+                observed.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&observed.stdout),
+                String::from_utf8_lossy(&observed.stderr)
+            );
+            return;
+        }
         let pid = std::process::id() as i32;
         let mut owned = Owned {
             pid,
