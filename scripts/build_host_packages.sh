@@ -168,5 +168,10 @@ printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\nguest_com
 verify_native_package "$directory"
 if [[ -n $output ]]; then
   tar -czf "$output/$name.tar.gz" -C "$temporary" "$name"
+  # The public bootstrap stays bound to the release that supplies this package.
+  # Publishing this file follows the existing host-release procedure.
+  sed "s/^release=$/release=host-$revision/" \
+    "$repository/install.sh" > "$output/install-safeyolo.sh"
+  chmod 0755 "$output/install-safeyolo.sh"
   echo "Built native bundle: $output/$name.tar.gz"
 else echo "Built native bundle: $directory"; fi
