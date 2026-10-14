@@ -20,6 +20,44 @@ fn command_path(name: &str) -> Option<PathBuf> {
         .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
+const REQUIRED_PACKAGES: &[(&str, &[&str])] = &[
+    ("uidmap", &["newuidmap", "newgidmap"]),
+    ("acl", &["setfacl", "getfacl"]),
+    ("util-linux", &["unshare", "nsenter"]),
+    ("iproute2", &["ip"]),
+    ("openssh-client", &["ssh"]),
+    ("curl", &["curl"]),
+    ("tar", &["tar"]),
+    ("zstd", &["zstd"]),
+];
+
+pub(super) fn check_prerequisites(settings: Option<&Settings>) -> Result<(), Error> {
+    namespaces_enabled()?;
+    let missing: Vec<_> = REQUIRED_PACKAGES
+        .iter()
+        .flat_map(|(_, commands)| commands.iter().copied())
+        .filter(|name| command_path(name).is_none())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "rootless Linux host tools are missing: {}; run safeyolo host prepare, then retry",
+            missing.join(", ")
+        )
+        .into());
+    }
+    let profile = if restricted()? {
+        Some(match settings {
+            Some(settings) => settings.apparmor_profile.as_deref().ok_or(
+                "the selected runtime needs an AppArmor profile; run safeyolo host prepare, then retry",
+            )?,
+            None => "safeyolo-runsc",
+        })
+    } else {
+        None
+    };
+    probe_namespace(profile)
+}
+
 fn execute(command: &mut Command, purpose: &str, applied: &mut Vec<String>) -> Result<(), Error> {
     let record = applied.len();
     applied.push(format!("attempted {purpose}"));
@@ -569,15 +607,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     let load_profile_needed =
         apparmor && (missing_profile || probe_namespace(Some(&name)).is_err());
     let mut packages = Vec::new();
-    for (package, commands) in [
-        ("uidmap", &["newuidmap", "newgidmap"][..]),
-        ("acl", &["setfacl", "getfacl"][..]),
-        ("util-linux", &["unshare", "nsenter"][..]),
-        ("iproute2", &["ip"][..]),
-        ("openssh-client", &["ssh"][..]),
-        ("curl", &["curl"][..]),
-        ("tar", &["tar"][..]),
-    ] {
+    for &(package, commands) in REQUIRED_PACKAGES {
         if commands.iter().any(|name| command_path(name).is_none()) {
             packages.push(package);
         }

@@ -236,7 +236,9 @@ safeyolo doctor
 ```
 
 Doctor's `linux` result gives the selected runtime path, version and origin,
-the host UID/GID, the subordinate bases and the AppArmor profile. The same
+the host UID/GID, the subordinate bases and the AppArmor profile. It also checks
+required host tools and rootless namespaces. A failed host check keeps the
+known runtime identity and gives a recovery action. The same
 identity appears in the existing agent run metadata. A missing or invalid
 selected payload stops startup with a repair action; it does not select
 another runtime silently.
