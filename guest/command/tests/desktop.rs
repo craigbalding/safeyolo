@@ -10,6 +10,7 @@ use std::{
     os::fd::AsRawFd,
     os::unix::fs::symlink,
     process::{Child, Command, Stdio},
+    sync::{Mutex, MutexGuard, TryLockError, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -22,15 +23,24 @@ use tungstenite::{
     },
 };
 
+// A fixture releases endpoints before child bind, during restart and while
+// testing a missing VNC target. Keep other fixtures from allocating them.
+static DESKTOP_ENDPOINTS: Mutex<()> = Mutex::new(());
+
 struct Desktop {
     directory: tempfile::TempDir,
     web: std::path::PathBuf,
     child: RefCell<Child>,
     address: SocketAddr,
     vnc: TcpListener,
+    // Drop this after the child and sockets have been cleaned up.
+    _endpoints: MutexGuard<'static, ()>,
 }
 impl Desktop {
     fn new() -> Self {
+        let endpoints = DESKTOP_ENDPOINTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let directory = tempfile::tempdir().unwrap();
         let web = directory.path().join("web");
         fs::create_dir(&web).unwrap();
@@ -61,6 +71,7 @@ impl Desktop {
             child: RefCell::new(child),
             address,
             vnc,
+            _endpoints: endpoints,
         };
         desktop.wait_for_listener();
         desktop
@@ -149,6 +160,47 @@ impl Drop for Desktop {
         let _ = child.kill();
         let _ = child.wait();
     }
+}
+
+#[test]
+fn released_endpoint_cannot_be_reused_by_another_desktop_fixture() {
+    let mut desktop = Desktop::new();
+    desktop.child.get_mut().kill().unwrap();
+    desktop.child.get_mut().wait().unwrap();
+
+    // Force a competing fixture's VNC allocation to take the released web
+    // endpoint. The real executable then reports the observed bind failure.
+    let competing_vnc = TcpListener::bind(desktop.address).unwrap();
+    let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo-guest"))
+        .arg("desktop-bridge")
+        .arg("--web")
+        .arg(&desktop.web)
+        .arg(desktop.address.to_string())
+        .arg(desktop.vnc.local_addr().unwrap().to_string())
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Address already in use"));
+    drop(competing_vnc);
+    assert!(matches!(
+        DESKTOP_ENDPOINTS.try_lock(),
+        Err(TryLockError::WouldBlock)
+    ));
+
+    let (attempting, attempted) = mpsc::channel();
+    let (ready, started) = mpsc::channel();
+    let next_fixture = thread::spawn(move || {
+        attempting.send(()).unwrap();
+        let next = Desktop::new();
+        assert!(next.http("GET", "/vnc.html").starts_with(b"HTTP/1.1 200"));
+        ready.send(()).unwrap();
+    });
+    attempted.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(started.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    drop(desktop);
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    next_fixture.join().unwrap();
 }
 
 #[test]
@@ -258,35 +310,47 @@ fn binary_base64_and_default_protocol_relay_live_vnc_in_both_directions() {
 
 #[test]
 fn fragmented_binary_ping_and_client_close_retire_the_vnc_connection() {
-    let desktop = Desktop::new();
-    let (mut browser, mut vnc) = desktop.browser(Some("binary"));
-    browser
-        .send(Message::Frame(Frame::message(
-            b"frag".to_vec(),
-            OpCode::Data(Data::Binary),
-            false,
-        )))
-        .unwrap();
-    browser
-        .send(Message::Ping(b"control".to_vec().into()))
-        .unwrap();
-    browser
-        .send(Message::Frame(Frame::message(
-            b"mented".to_vec(),
-            OpCode::Data(Data::Continue),
-            true,
-        )))
-        .unwrap();
-    assert_eq!(
-        browser.read().unwrap(),
-        Message::Pong(b"control".to_vec().into())
-    );
-    let mut bytes = [0; 10];
-    vnc.read_exact(&mut bytes).unwrap();
-    assert_eq!(&bytes, b"fragmented");
-    browser.close(None).unwrap();
-    assert!(matches!(browser.read().unwrap(), Message::Close(_)));
-    assert_eq!(vnc.read(&mut [0]).unwrap(), 0);
+    for pong_before_continuation in [false, true] {
+        let desktop = Desktop::new();
+        let (mut browser, mut vnc) = desktop.browser(Some("binary"));
+        browser
+            .send(Message::Frame(Frame::message(
+                b"frag".to_vec(),
+                OpCode::Data(Data::Binary),
+                false,
+            )))
+            .unwrap();
+        browser
+            .send(Message::Ping(b"control".to_vec().into()))
+            .unwrap();
+        let pong = Message::Pong(b"control".to_vec().into());
+        // Also force the real bridge to parse the ping while the fragmented
+        // message is incomplete, before the continuation can arrive.
+        if pong_before_continuation {
+            assert_eq!(browser.read().unwrap(), pong);
+        }
+        browser
+            .send(Message::Frame(Frame::message(
+                b"mented".to_vec(),
+                OpCode::Data(Data::Continue),
+                true,
+            )))
+            .unwrap();
+        if !pong_before_continuation {
+            assert_eq!(browser.read().unwrap(), pong);
+        }
+        let mut bytes = [0; 10];
+        vnc.read_exact(&mut bytes).unwrap_or_else(|error| {
+            panic!(
+                "fragmented VNC read failed: {error}; pong_before_continuation={pong_before_continuation} bytes={bytes:?}; {}",
+                desktop.diagnosis()
+            )
+        });
+        assert_eq!(&bytes, b"fragmented");
+        browser.close(None).unwrap();
+        assert!(matches!(browser.read().unwrap(), Message::Close(_)));
+        assert_eq!(vnc.read(&mut [0]).unwrap(), 0);
+    }
 }
 
 #[test]
