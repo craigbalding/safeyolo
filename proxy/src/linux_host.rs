@@ -409,6 +409,8 @@ fn validate_current_mapping(mapping: Mapping) -> Result<(), Error> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) use prepare::runsc_platform;
+#[cfg(target_os = "linux")]
 pub(crate) use runsc::report as runsc_report;
 #[cfg(target_os = "linux")]
 pub(crate) use runsc::verify_selected_runtime;

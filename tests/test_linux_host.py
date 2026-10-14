@@ -129,6 +129,42 @@ def test_runtime_access_preserves_other_acl_rights_and_honors_named_denial(nativ
     assert command("getfacl", "-ncp", parent).stdout == acl
 
 
+@pytest.mark.parametrize("prior_access", ["other", "group"])
+def test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat(native_cli, owned_stage, prior_access):
+    parent, _stage = owned_stage
+    runtime = payload(parent / "runtime")
+    root = parent / "instance"
+    initialized = command(native_cli, "--root", root, "init")
+    assert initialized.returncode == 0, initialized.stderr
+    prepared = command(native_cli, "--root", root, "host", "prepare", "--yes", "--system-runsc", runtime)
+    assert prepared.returncode == 0, prepared.stderr
+    mapping = json.loads(prepared.stdout)["linux"]
+    if prior_access == "group":
+        own(parent, os.getuid(), mapping["gid_base"])
+    # other:: is outside the ACL mask. A new named entry must retain those
+    # rights under its mask. Matching group rights must also be preserved.
+    acl = ("u::rwx,u:42:rwx,g::---,m::---,o::r--" if prior_access == "other" else
+           "u::rwx,u:42:rwx,g::r--,m::r--,o::---")
+    subprocess.run(["setfacl", "--set", acl, str(parent)], check=True)
+    listing = ("-n", "setpriv", f"--reuid={mapping['uid_base']}",
+               f"--regid={mapping['gid_base']}", "--clear-groups", "/usr/bin/python3",
+               "-c", "import os,sys; print(sorted(os.listdir(sys.argv[1])))", parent)
+    before = command("sudo", *listing)
+    assert before.returncode == 0, before.stderr
+    grant = command(native_cli, "--root", root, "host", "grant-runtime-access")
+    assert grant.returncode == 0, grant.stderr
+    after = command("sudo", *listing)
+    assert after.returncode == 0 and after.stdout == before.stdout, after.stderr
+    selected_acl = command("getfacl", "-ncp", parent).stdout
+    assert f"user:{mapping['uid_base']}:r-x" in selected_acl and "mask::r-x" in selected_acl
+    assert ("user:42:---" if prior_access == "other" else "user:42:r--") in selected_acl
+    repeat = command(native_cli, "--root", root, "host", "grant-runtime-access")
+    assert repeat.returncode == 0, repeat.stderr
+    assert command("getfacl", "-ncp", parent).stdout == selected_acl
+    repeated_listing = command("sudo", *listing)
+    assert repeated_listing.returncode == 0 and repeated_listing.stdout == before.stdout
+
+
 @pytest.mark.parametrize("uid_base,gid_base", [(300000, 500000), (100000, 100000)])
 def test_mapping_remap_keeps_modes_links_and_guest_user_ids(native_cli, owned_stage, uid_base, gid_base):
     parent, stage = owned_stage
@@ -279,6 +315,17 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
                     env={**os.environ, "PATH": str(tools)})
     observed = json.loads(ready.stdout)["linux"]
     assert observed["state"] == "ready", observed
+    if not Path("/dev/kvm").exists():
+        kvm = command(native_cli, "--root", root, "doctor",
+                      env={**os.environ, "SAFEYOLO_RUNSC_PLATFORM": "kvm"})
+        observed = json.loads(kvm.stdout)["linux"]
+        assert observed["state"] == "unavailable", observed
+        assert "/dev/kvm" in observed["error"] and "host prepare" in observed["error"]
+        assert observed["path"] == str(runtime) and observed["origin"] == "system"
+        for backend in ("auto", "systrap"):
+            available = command(native_cli, "--root", root, "doctor",
+                                env={**os.environ, "SAFEYOLO_RUNSC_PLATFORM": backend})
+            assert json.loads(available.stdout)["linux"]["state"] == "ready", available.stdout
     runtime.unlink()
     missing = command(native_cli, "--root", root, "doctor")
     assert missing.returncode == 0, missing.stderr

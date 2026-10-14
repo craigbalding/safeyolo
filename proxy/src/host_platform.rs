@@ -1118,46 +1118,7 @@ pub(crate) async fn start_sandbox(
             std::fs::create_dir_all(&path)?;
             format!("--overlay2=root:dir={}", path.display())
         };
-        let platform = match std::env::var("SAFEYOLO_RUNSC_PLATFORM")
-            .unwrap_or_default()
-            .as_str()
-        {
-            "systrap" => "systrap",
-            requested @ ("" | "auto" | "kvm") => {
-                let operator_access = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open("/dev/kvm")
-                    .is_ok();
-                let subordinate_access = if operator_access {
-                    tokio::time::timeout(
-                        Duration::from_secs(3),
-                        Command::new("getfacl").args(["-ncp", "/dev/kvm"]).output(),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .is_some_and(|output| {
-                        let text = String::from_utf8_lossy(&output.stdout);
-                        let rw = |value: &str| value.starts_with("rw");
-                        let mask = text.lines().find_map(|line| line.strip_prefix("mask::")).unwrap_or("rwx");
-                        output.status.success() && (text.lines().find_map(|line| line.strip_prefix("other::")).is_some_and(rw)
-                            || rw(mask) && text.lines().find_map(|line| line.strip_prefix(&format!("user:{}:",mapping.uid_base))).is_some_and(rw))
-                    })
-                } else {
-                    false
-                };
-                if subordinate_access { "kvm" } else if requested == "kvm" {
-                    return Err(io::Error::other("the selected KVM backend lacks /dev/kvm access for the host and mapped root UID; run safeyolo host prepare with SAFEYOLO_RUNSC_PLATFORM=kvm, then retry"));
-                } else { "systrap" }
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid runsc platform override",
-                ));
-            }
-        };
+        let platform = crate::linux_host::runsc_platform(mapping).map_err(io::Error::other)?;
         // runsc create forks a sandbox and gofer. A pipe inherited by either
         // child can keep Command::output waiting after create itself exits.
         let stderr = tempfile::tempfile()?;

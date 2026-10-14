@@ -3,6 +3,7 @@
 
 use data_encoding::BASE64;
 use std::{
+    cell::RefCell,
     fs,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -24,7 +25,7 @@ use tungstenite::{
 struct Desktop {
     directory: tempfile::TempDir,
     web: std::path::PathBuf,
-    child: Child,
+    child: RefCell<Child>,
     address: SocketAddr,
     vnc: TcpListener,
 }
@@ -38,11 +39,10 @@ impl Desktop {
         fs::write(web.join("image.png"), [0, 255, 128, 1]).unwrap();
         fs::write(directory.path().join("private"), "private-fixture-marker").unwrap();
         symlink(directory.path().join("private"), web.join("escape")).unwrap();
-        let address = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let web_reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = web_reservation.local_addr().unwrap();
         let vnc = TcpListener::bind("127.0.0.1:0").unwrap();
+        drop(web_reservation);
         let child = Command::new(env!("CARGO_BIN_EXE_safeyolo-guest"))
             .arg("desktop-bridge")
             .arg("--web")
@@ -55,23 +55,45 @@ impl Desktop {
             .stderr(fs::File::create(directory.path().join("bridge-stderr")).unwrap())
             .spawn()
             .unwrap();
-        let mut desktop = Self {
+        let desktop = Self {
             directory,
             web,
-            child,
+            child: RefCell::new(child),
             address,
             vnc,
         };
+        desktop.wait_for_listener();
+        desktop
+    }
+    fn diagnosis(&self) -> String {
+        let status = self.child.borrow_mut().try_wait();
+        let stderr = fs::read_to_string(self.directory.path().join("bridge-stderr"));
+        format!(
+            "web={} vnc={:?} bridge_status={status:?} bridge-stderr={stderr:?}",
+            self.address,
+            self.vnc.local_addr()
+        )
+    }
+    fn wait_for_listener(&self) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while TcpStream::connect(address).is_err() {
+        loop {
+            let connected = TcpStream::connect(self.address).is_ok();
+            let status = self.child.borrow_mut().try_wait();
             assert!(
-                desktop.child.try_wait().unwrap().is_none(),
-                "bridge exited before readiness"
+                matches!(status, Ok(None)),
+                "bridge exited or its status is unavailable before readiness: {}",
+                self.diagnosis()
             );
-            assert!(Instant::now() < deadline, "bridge did not listen");
+            if connected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bridge did not listen: {}",
+                self.diagnosis()
+            );
             thread::sleep(Duration::from_millis(10));
         }
-        desktop
     }
     fn http(&self, method: &str, path: &str) -> Vec<u8> {
         let mut socket = TcpStream::connect(self.address).unwrap();
@@ -88,7 +110,9 @@ impl Desktop {
         reply
     }
     fn browser(&self, protocol: Option<&str>) -> (WebSocket<TcpStream>, TcpStream) {
-        let socket = TcpStream::connect(self.address).unwrap();
+        let socket = TcpStream::connect(self.address).unwrap_or_else(|error| {
+            panic!("browser connection failed: {error}; {}", self.diagnosis())
+        });
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -103,7 +127,9 @@ impl Desktop {
                 .headers_mut()
                 .insert("sec-websocket-protocol", protocol.parse().unwrap());
         }
-        let (browser, response) = tungstenite::client(request, socket).unwrap();
+        let (browser, response) = tungstenite::client(request, socket).unwrap_or_else(|error| {
+            panic!("browser handshake failed: {error:?}; {}", self.diagnosis())
+        });
         assert_eq!(
             response
                 .headers()
@@ -119,9 +145,37 @@ impl Desktop {
 }
 impl Drop for Desktop {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let child = self.child.get_mut();
+        let _ = child.kill();
+        let _ = child.wait();
     }
+}
+
+#[test]
+fn a_listening_port_cannot_hide_an_exited_owned_bridge() {
+    let desktop = Desktop::new();
+    desktop.child.borrow_mut().kill().unwrap();
+    desktop.child.borrow_mut().wait().unwrap();
+    let _other_listener = TcpListener::bind(desktop.address).unwrap();
+    fs::write(
+        desktop.directory.path().join("bridge-stderr"),
+        "owned bridge failure",
+    )
+    .unwrap();
+    let failure =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| desktop.wait_for_listener()))
+            .expect_err("an unrelated listener must not make an exited bridge ready");
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(
+        message.contains(&format!("web={}", desktop.address)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&desktop.vnc.local_addr().unwrap().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("bridge_status=Ok(Some("), "{message}");
+    assert!(message.contains("owned bridge failure"), "{message}");
 }
 
 #[test]
@@ -289,7 +343,7 @@ fn disconnected_browser_retires_connection_even_when_vnc_is_not_reading() {
         .unwrap();
     drop(browser);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while fs::read_dir(format!("/proc/{}/task", desktop.child.id()))
+    while fs::read_dir(format!("/proc/{}/task", desktop.child.borrow().id()))
         .unwrap()
         .count()
         != 1
@@ -522,8 +576,8 @@ fn missing_target_reports_bad_gateway_and_restart_frees_the_listener() {
         browser.read().unwrap(),
         Message::Binary(b"RFB 003.008\n".to_vec().into())
     );
-    desktop.child.kill().unwrap();
-    desktop.child.wait().unwrap();
+    desktop.child.get_mut().kill().unwrap();
+    desktop.child.get_mut().wait().unwrap();
     vnc.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     assert_eq!(vnc.read(&mut [0]).unwrap(), 0);
     assert!(TcpStream::connect(desktop.address).is_err());
@@ -534,13 +588,11 @@ fn missing_target_reports_bad_gateway_and_restart_frees_the_listener() {
         .arg(desktop.address.to_string())
         .arg(unavailable.to_string())
         .env_clear()
+        .stderr(fs::File::create(desktop.directory.path().join("bridge-stderr")).unwrap())
         .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(desktop.address).is_err() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(10));
-    }
+        .unwrap()
+        .into();
+    desktop.wait_for_listener();
     assert!(
         desktop
             .http("GET", "/vnc.html")

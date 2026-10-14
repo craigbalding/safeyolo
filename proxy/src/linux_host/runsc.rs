@@ -198,8 +198,8 @@ pub(crate) fn report() -> Value {
                 .into()
         };
         unavailable["version"] = json!(version);
-        super::prepare::check_prerequisites(settings.as_ref())?;
         let mapping = super::selected_mapping()?;
+        super::prepare::check_prerequisites(settings.as_ref(), mapping)?;
         Ok(
             json!({"state":"ready", "path":path,"version":version,"origin":origin,
             "uid_base":mapping.uid_base,"gid_base":mapping.gid_base,

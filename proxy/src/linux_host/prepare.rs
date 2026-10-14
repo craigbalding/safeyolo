@@ -30,7 +30,10 @@ const REQUIRED_PACKAGES: &[(&str, &[&str])] = &[
     ("tar", &["tar"]),
 ];
 
-pub(super) fn check_prerequisites(settings: Option<&Settings>) -> Result<(), Error> {
+pub(super) fn check_prerequisites(
+    settings: Option<&Settings>,
+    mapping: Mapping,
+) -> Result<(), Error> {
     namespaces_enabled()?;
     let missing: Vec<_> = REQUIRED_PACKAGES
         .iter()
@@ -54,7 +57,53 @@ pub(super) fn check_prerequisites(settings: Option<&Settings>) -> Result<(), Err
     } else {
         None
     };
-    probe_namespace(profile)
+    probe_namespace(profile)?;
+    runsc_platform(mapping)?;
+    Ok(())
+}
+
+pub(crate) fn runsc_platform(mapping: Mapping) -> Result<&'static str, Error> {
+    match std::env::var("SAFEYOLO_RUNSC_PLATFORM")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "systrap" => Ok("systrap"),
+        requested @ ("" | "auto" | "kvm") => {
+            match check_kvm_access(Path::new("/dev/kvm"), mapping) {
+                Ok(()) => Ok("kvm"),
+                Err(error) if requested == "kvm" => Err(format!(
+                    "the selected KVM backend is unavailable: {error}; run safeyolo host prepare with SAFEYOLO_RUNSC_PLATFORM=kvm, then retry"
+                ).into()),
+                Err(_) => Ok("systrap"),
+            }
+        }
+        _ => Err("SAFEYOLO_RUNSC_PLATFORM must be auto, systrap or kvm".into()),
+    }
+}
+
+fn check_kvm_access(path: &Path, mapping: Mapping) -> Result<(), Error> {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "host UID {} cannot read and write {}: {error}",
+                mapping.host_uid,
+                path.display()
+            )
+        })?;
+    let metadata = fs::metadata(path)?;
+    let acl = read_acl(path)?;
+    if !acl_allows(&metadata, &acl, mapping.uid_base, &[mapping.gid_base], 6) {
+        return Err(format!(
+            "mapped root UID {} cannot read and write {}",
+            mapping.uid_base,
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn execute(command: &mut Command, purpose: &str, applied: &mut Vec<String>) -> Result<(), Error> {
@@ -288,7 +337,10 @@ fn load_profile(runtime: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn runtime_access_changes(runtime: &Path, uid: u32) -> Result<Vec<(PathBuf, String, bool)>, Error> {
+fn runtime_access_changes(
+    runtime: &Path,
+    mapping: Mapping,
+) -> Result<Vec<(PathBuf, String, bool)>, Error> {
     let mut paths: Vec<_> = runtime
         .ancestors()
         .skip(1)
@@ -308,13 +360,75 @@ fn runtime_access_changes(runtime: &Path, uid: u32) -> Result<Vec<(PathBuf, Stri
     }));
     paths
         .into_iter()
-        .filter_map(|(path, file)| access_change(&path, uid, if file { 5 } else { 1 }).transpose())
+        .filter_map(|(path, file)| {
+            access_change(
+                &path,
+                mapping.uid_base,
+                &[mapping.gid_base],
+                if file { 5 } else { 1 },
+            )
+            .transpose()
+        })
         .collect()
+}
+
+fn permissions(value: &str) -> u32 {
+    value.chars().take(3).fold(0, |bits, c| {
+        bits | match c {
+            'r' => 4,
+            'w' => 2,
+            'x' => 1,
+            _ => 0,
+        }
+    })
+}
+
+fn read_acl(path: &Path) -> Result<String, Error> {
+    let output = Command::new("getfacl").args(["-ncp"]).arg(path).output()?;
+    if !output.status.success() {
+        return Err(format!("cannot check access to {}", path.display()).into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn acl_allows(metadata: &fs::Metadata, acl: &str, uid: u32, groups: &[u32], needed: u32) -> bool {
+    let bits = metadata.permissions().mode();
+    if metadata.uid() == uid {
+        return (bits >> 6) & needed == needed;
+    }
+    let entry = |prefix: &str| {
+        acl.lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .map(permissions)
+    };
+    let mask = entry("mask::").unwrap_or(7);
+    if let Some(named) = entry(&format!("user:{uid}:")) {
+        return named & mask & needed == needed;
+    }
+    // A matching group must grant the whole requested operation. Do not
+    // combine separate read and write entries to infer O_RDWR access.
+    let mut matched_group = false;
+    for gid in groups {
+        for rights in [
+            (metadata.gid() == *gid).then(|| entry("group::")).flatten(),
+            entry(&format!("group:{gid}:")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            matched_group = true;
+            if rights & mask & needed == needed {
+                return true;
+            }
+        }
+    }
+    !matched_group && bits & needed == needed
 }
 
 fn access_change(
     path: &Path,
     uid: u32,
+    groups: &[u32],
     needed: u32,
 ) -> Result<Option<(PathBuf, String, bool)>, Error> {
     let metadata = match fs::metadata(path) {
@@ -343,36 +457,23 @@ fn access_change(
     }
     // A named user entry takes precedence over other:: permissions. Read the
     // ACL even when the mode permits other users to traverse the directory.
-    let output = Command::new("getfacl").args(["-ncp"]).arg(path).output()?;
-    if !output.status.success() {
-        return Err(format!("cannot check access to {}", path.display()).into());
-    }
-    let text = std::str::from_utf8(&output.stdout)?;
+    let text = read_acl(path)?;
     let prefix = format!("user:{uid}:");
-    let permissions = |value: &str| -> u32 {
-        value.chars().take(3).fold(0, |bits, c| {
-            bits | match c {
-                'r' => 4,
-                'w' => 2,
-                'x' => 1,
-                _ => 0,
-            }
-        })
-    };
-    let named = text
-        .lines()
-        .find_map(|line| line.strip_prefix(&prefix))
-        .map(permissions);
     let mask = text
         .lines()
         .find_map(|line| line.strip_prefix("mask::"))
         .map(permissions)
         .unwrap_or(7);
-    let old = named.map_or(bits & 7, |named| named & mask);
-    if old & needed == needed {
+    if acl_allows(&metadata, &text, uid, groups, needed) {
         return Ok(None);
     }
-    let new_mask = mask | needed;
+    let old = [4, 2, 1]
+        .into_iter()
+        .filter(|bit| acl_allows(&metadata, &text, uid, groups, *bit))
+        .sum::<u32>();
+    // other:: permissions were not subject to the old mask. Preserve them
+    // when moving this UID into the masked named-user class.
+    let new_mask = mask | old | needed;
     let mut entries = vec![
         format!("u:{uid}:{}", permission_text(old | needed)),
         format!("m::{}", permission_text(new_mask)),
@@ -420,29 +521,36 @@ fn grant_access(
     )
 }
 
-fn runtime_access(runtime: &Path, uid: u32, applied: &mut Vec<String>) -> Result<(), Error> {
-    for change in runtime_access_changes(runtime, uid)? {
-        grant_access(change, uid, applied)?;
+fn runtime_access(
+    runtime: &Path,
+    mapping: Mapping,
+    applied: &mut Vec<String>,
+) -> Result<(), Error> {
+    for change in runtime_access_changes(runtime, mapping)? {
+        grant_access(change, mapping.uid_base, applied)?;
     }
     Ok(())
 }
 
 fn kvm_access(mapping: Mapping, applied: &mut Vec<String>) -> Result<(), Error> {
-    for uid in [mapping.host_uid, mapping.uid_base] {
-        if let Some(change) = access_change(Path::new("/dev/kvm"), uid, 6)? {
+    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if count < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let mut groups = vec![0; count as usize];
+    if unsafe { libc::getgroups(count, groups.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    groups.push(mapping.host_gid);
+    for (uid, groups) in [
+        (mapping.host_uid, groups.as_slice()),
+        (mapping.uid_base, &[mapping.gid_base]),
+    ] {
+        if let Some(change) = access_change(Path::new("/dev/kvm"), uid, groups, 6)? {
             grant_access(change, uid, applied)?;
         }
     }
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/kvm")
-        .map_err(|error| {
-            format!(
-                "KVM device access failed: {error}; repair /dev/kvm access and retry host prepare"
-            )
-        })?;
-    Ok(())
+    check_kvm_access(Path::new("/dev/kvm"), mapping)
 }
 
 fn restricted() -> Result<bool, Error> {
@@ -588,11 +696,11 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     } else {
         None
     };
-    let need_ranges =
-        linux_host::existing_base(&uid_ranges, &owner, &linux_host::occupied_ids("passwd")?)
-            .is_none()
-            || linux_host::existing_base(&gid_ranges, &owner, &linux_host::occupied_ids("group")?)
-                .is_none();
+    let available_uid =
+        linux_host::existing_base(&uid_ranges, &owner, &linux_host::occupied_ids("passwd")?);
+    let available_gid =
+        linux_host::existing_base(&gid_ranges, &owner, &linux_host::occupied_ids("group")?);
+    let need_ranges = available_uid.is_none() || available_gid.is_none();
     if let Some(saved) = &saved {
         linux_host::validate_current_mapping(saved.mapping()?)?;
     }
@@ -658,18 +766,17 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             profile.display()
         ));
     }
-    let planned_base = saved
+    let planned_mapping = saved
         .as_ref()
-        .map(|settings| settings.uid_base)
-        .or(prepared_mapping.map(|mapping| mapping.uid_base))
-        .or(linux_host::existing_base(
-            &uid_ranges,
-            &owner,
-            &linux_host::occupied_ids("passwd")?,
-        ));
-    let access_needed = if let Some(base) = planned_base {
+        .map(Settings::mapping)
+        .transpose()?
+        .or(prepared_mapping)
+        .or(available_uid
+            .zip(available_gid)
+            .map(|(uid, gid)| Mapping::for_bases(uid, gid)));
+    let access_needed = if let Some(mapping) = planned_mapping {
         if command_path("getfacl").is_some() {
-            !runtime_access_changes(&destination, base)?.is_empty()
+            !runtime_access_changes(&destination, mapping)?.is_empty()
         } else {
             true
         }
@@ -681,10 +788,8 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     }
     if kvm
         && (command_path("getfacl").is_none()
-            || planned_base.is_none()
-            || [uid, planned_base.unwrap_or(uid)].into_iter().any(|id| {
-                access_change(Path::new("/dev/kvm"), id, 6).map_or(true, |change| change.is_some())
-            }))
+            || planned_mapping
+                .is_none_or(|mapping| check_kvm_access(Path::new("/dev/kvm"), mapping).is_err()))
     {
         changes.push("allow only your host UID and the selected sandbox-root UID to read and write /dev/kvm for the selected KVM backend".into());
     }
@@ -761,7 +866,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     probe_namespace(apparmor.then_some(name.as_str()))?;
     // A private home may otherwise hide the installed runtime from mapped
     // sandbox root. Grant traversal to that one subordinate UID only.
-    runtime_access(&destination, mapping.uid_base, applied)?;
+    runtime_access(&destination, mapping, applied)?;
     if kvm {
         kvm_access(mapping, applied)?;
     }
@@ -790,7 +895,7 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                 .and_then(|s| s.linux)
                 .ok_or("Linux runtime settings are missing")?;
             let mut applied = Vec::new();
-            runtime_access(&settings.runsc, settings.uid_base, &mut applied).map_err(|error| {
+            runtime_access(&settings.runsc, settings.mapping()?, &mut applied).map_err(|error| {
                 format!(
                     "{error}\nHost changes and attempted operations: {}. Completed changes remain; retry the installer to finish runtime access",
                     if applied.is_empty() { "none".into() } else { applied.join("; ") }
@@ -875,5 +980,63 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
             result.map_err(|error|format!("{error}\nHost changes and attempted operations: {}. Completed changes remain; retry reuses valid prerequisites",if applied.is_empty(){"none".into()}else{applied.join("; ")}).into())
         }
         _ => Err(format!("use host prepare\n{}", linux_host::HELP).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_access_honors_owner_named_user_groups_and_mask() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o606))
+            .unwrap();
+        let metadata = file.as_file().metadata().unwrap();
+        let uid = metadata.uid() + 1;
+        let gid = metadata.gid() + 1;
+        let acl = format!("user::rw-\nuser:{uid}:---\ngroup::---\nmask::rw-\nother::rw-\n");
+        assert!(acl_allows(&metadata, &acl, metadata.uid(), &[gid], 6));
+        assert!(!acl_allows(&metadata, &acl, uid, &[gid], 6));
+        let masked = acl
+            .replace(&format!("user:{uid}:---"), &format!("user:{uid}:rw-"))
+            .replace("mask::rw-", "mask::r--");
+        assert!(acl_allows(&metadata, &masked, uid, &[gid], 4));
+        assert!(!acl_allows(&metadata, &masked, uid, &[gid], 6));
+        let unnamed = acl.replace(&format!("user:{uid}:---\n"), "");
+        assert!(acl_allows(&metadata, &unnamed, uid, &[gid], 6));
+        assert!(!acl_allows(&metadata, &unnamed, uid, &[metadata.gid()], 6));
+        let groups = unnamed
+            .replace("group::---", "group::r--")
+            .replace("mask::rw-", &format!("group:{gid}:-w-\nmask::rw-"));
+        assert!(acl_allows(
+            &metadata,
+            &groups,
+            uid,
+            &[metadata.gid(), gid],
+            4
+        ));
+        assert!(acl_allows(
+            &metadata,
+            &groups,
+            uid,
+            &[metadata.gid(), gid],
+            2
+        ));
+        assert!(!acl_allows(
+            &metadata,
+            &groups,
+            uid,
+            &[metadata.gid(), gid],
+            6
+        ));
+        assert!(!acl_allows(
+            &metadata,
+            &groups.replace("mask::rw-", "mask::r--"),
+            uid,
+            &[gid],
+            2
+        ));
     }
 }
