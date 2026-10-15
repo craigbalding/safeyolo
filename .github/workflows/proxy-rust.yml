@@ -226,6 +226,29 @@ jobs:
         working-directory: proxy
         run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency
 
+      - name: Prepare the installed Linux share test executable
+        id: linux_share_test
+        if: steps.changes.outputs.rust == 'true'
+        env:
+          SAFEYOLO_CARGO_RESERVE_GIB: "10"
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+          printf 'CARGO_BUILD_TARGET=%s\nCARGO_TARGET_DIR=%s\nRUSTFLAGS=%s\nCARGO_ENCODED_RUSTFLAGS=%s\n' \
+            "${CARGO_BUILD_TARGET:-}" "${CARGO_TARGET_DIR:-}" "${RUSTFLAGS:-}" "${CARGO_ENCODED_RUSTFLAGS:-}"
+          df -Pk proxy/target
+          du -sk proxy/target
+          executable=$(
+            scripts/cargo_with_space.sh test --release --manifest-path proxy/Cargo.toml --locked --lib --no-run --message-format=json |
+            .venv/bin/python -c 'import json,sys; rows=(json.loads(line) for line in sys.stdin); hits=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="safeyolo_proxy" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(hits)==1,hits; print(hits[0])'
+          )
+          "$executable" --list --exact linux_host::shares::tests::installed_share_operation | grep -Fx 'linux_host::shares::tests::installed_share_operation: test'
+          mkdir "$RUNNER_TEMP/linux-share-test"
+          install -m 0755 "$executable" "$RUNNER_TEMP/linux-share-test/native-library-test"
+          df -Pk proxy/target
+          du -sk proxy/target
+
       - name: Test focused native boundaries
         if: steps.changes.outputs.rust == 'true'
         timeout-minutes: 10
@@ -300,6 +323,15 @@ jobs:
           path: |
             guest/command/target/release/safeyolo-guest*
             guest/command/target/release/safeyolo-coord*
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Retain the installed Linux share test executable
+        if: ${{ !cancelled() && steps.linux_share_test.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-share-test-amd64-production
+          path: ${{ runner.temp }}/linux-share-test/native-library-test
           retention-days: 7
           if-no-files-found: error
 
