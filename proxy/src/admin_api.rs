@@ -903,7 +903,10 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
 }
 
 fn pending_approvals(path: &Path) -> Value {
-    let events = read_audit_events(path);
+    pending_approval_events(&read_audit_events(path))
+}
+
+fn pending_approval_events(events: &[Value]) -> Value {
     let mut durable_resolutions = std::collections::HashSet::new();
     let mut pending: std::collections::HashMap<String, (usize, Value)> =
         std::collections::HashMap::new();
@@ -2040,6 +2043,37 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 ));
             }
         };
+        if let Some(expected) = fields.get("approval_action") {
+            let current = match (
+                audit,
+                policy,
+                fields.get("approval_request_id").and_then(Value::as_str),
+            ) {
+                (Some(writer), Some(policy), Some(id)) => {
+                    approvals::credential_record(writer, policy, id)
+                }
+                _ => Err("credential approval evidence unavailable"),
+            };
+            match current {
+                Ok(Some(view))
+                    if view["status"] == "pending"
+                        && view["action"] == *expected
+                        && view["action"]["host"] == destination
+                        && view["action"]["credentials"] == json!(credentials) => {}
+                Ok(_) => {
+                    return Ok(response(
+                        StatusCode::CONFLICT,
+                        json!({"error":"credential request is resolved or changed; inspect the pending requests again before deciding"}),
+                    ));
+                }
+                Err(error) => {
+                    return Ok(response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error":error}),
+                    ));
+                }
+            }
+        }
         let tier = fields
             .get("tier")
             .and_then(Value::as_str)

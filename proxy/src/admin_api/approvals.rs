@@ -1,7 +1,110 @@
-//! All operator consumers resolve the immutable network request here.
+//! Operator reads retain canonical request scope across credential retries.
 
 use super::*;
 use crate::approvals::network_action;
+
+fn credential_view(events: &[Value], id: &str) -> Result<Option<Value>, &'static str> {
+    let matching: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event["request_id"] == id
+                && event["event"] == "security.credential_guard"
+                && event["approval"]["approval_type"] == "credential"
+        })
+        .collect();
+    let Some(first) = matching.first() else {
+        return Ok(None);
+    };
+    let agent = first["agent"]
+        .as_str()
+        .ok_or("credential request has no agent")?;
+    let agent_id = first["details"]["agent_id"].as_str().ok_or("credential request predates identity binding; use direct credential policy controls or make a new request")?;
+    let host = first["approval"]["target"]
+        .as_str()
+        .ok_or("credential request has no destination")?;
+    let mut credentials = Vec::new();
+    for event in &matching {
+        if event["agent"] != agent
+            || event["details"]["agent_id"] != agent_id
+            || event["approval"]["target"] != host
+        {
+            return Err("credential request has conflicting scope; use direct policy controls");
+        }
+        let key = event["approval"]["key"]
+            .as_str()
+            .filter(|key| key.starts_with("hmac:") && key.len() > 5)
+            .ok_or("credential request has no fingerprint")?;
+        if !credentials.iter().any(|saved| saved == key) {
+            credentials.push(key.to_owned());
+        }
+    }
+    credentials.sort();
+    Ok(Some(json!({"request_id":id,"status":"pending",
+        "action":{"kind":"credential_allow","agent":agent,"agent_id":agent_id,"host":host,"credentials":credentials},
+        "effect":format!("Allow these credential fingerprints to {} for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed. Existing network rules still apply.", crate::network_guard::sanitize(host))})))
+}
+
+// The retained audit supplies the selected request's original identity. The
+// pending reducer supplies its current state; a newer representative is usable
+// only when its entire action still matches that original identity.
+pub(super) fn credential_record(
+    writer: &crate::audit::Writer,
+    policy: &Policy,
+    id: &str,
+) -> Result<Option<Value>, &'static str> {
+    let mut document = writer
+        .approval_events(id)
+        .map_err(|_| "credential approval evidence unavailable")?;
+    let rendered = document.render_json(false);
+    crate::audit::wipe(&mut document);
+    let rendered =
+        Zeroizing::new(rendered.map_err(|_| "credential approval evidence unavailable")?);
+    let events = Json(
+        serde_json::from_str(&rendered).map_err(|_| "credential approval evidence unavailable")?,
+    );
+    let Some(mut view) = credential_view(
+        events
+            .0
+            .as_array()
+            .ok_or("credential approval evidence unavailable")?,
+        id,
+    )?
+    else {
+        return Ok(None);
+    };
+    let current = read_audit_events(writer.path());
+    let pending = pending_approval_events(&current);
+    let action = &view["action"];
+    let mut matches = policy.evidence_agent_id(
+        action["agent"]
+            .as_str()
+            .ok_or("credential request has no agent")?,
+    ) == action["agent_id"].as_str();
+    for credential in action["credentials"]
+        .as_array()
+        .ok_or("credential request has no fingerprints")?
+    {
+        let representative = pending.as_array().and_then(|events| {
+            events.iter().find(|event| {
+                event["event"] == "security.credential_guard"
+                    && event["approval"]["key"] == *credential
+                    && event["approval"]["target"] == action["host"]
+            })
+        });
+        matches &= match representative.and_then(|event| event["request_id"].as_str()) {
+            Some(current_id) => credential_view(&current, current_id)?
+                .is_some_and(|current| current["action"] == *action),
+            None => false,
+        };
+    }
+    if !matches {
+        view["status"] = json!("stale");
+        view["effect"] = json!(
+            "This credential request is resolved or changed, or its current evidence is unavailable. Inspect the pending requests again before deciding."
+        );
+    }
+    Ok(Some(view))
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +148,11 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     if request.method() == Method::GET && !share {
         let (policy, writer, id) = (policy.clone(), writer.clone(), id.to_owned());
         return tokio::task::spawn_blocking(move || {
+            match credential_record(&writer, &policy, &id) {
+                Ok(Some(view)) => return Ok(response(StatusCode::OK, view)),
+                Ok(None) => {},
+                Err(error) => return Ok(response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error}))),
+            }
             Ok(match network_action::record(&writer, &policy, &id) {
                 Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
                 Ok(None) => response(StatusCode::NOT_FOUND, json!({"error":"approval unavailable"})),
