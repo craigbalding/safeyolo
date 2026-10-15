@@ -59,7 +59,7 @@ and a read-only configuration share.
   `--ephemeral` selects a memory-backed overlay whose rootfs writes are
   discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. `safeyolo doctor` reports the selected runtime.
-- **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they install a profile for the selected runtime path. Explicit KVM preparation grants the host and mapped root UIDs device access; a later device-permission reset requires `safeyolo host prepare` again. See [host preparation](installation.md#linux-host-preparation-in-new-source-bundles). The published release still needs [manual host preparation](installation.md#guest-prerequisites).
+- **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they install a profile for the selected runtime path. Explicit KVM preparation grants the mapped root UID device access. If device permissions reset, run `safeyolo host prepare` before the next sandbox creation. See [host preparation](installation.md#linux-host-preparation-in-new-source-bundles). The published release still needs [manual host preparation](installation.md#guest-prerequisites).
 
 
 See the [macOS microVM architecture](microvm-architecture.md) and

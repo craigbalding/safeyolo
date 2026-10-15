@@ -82,18 +82,10 @@ pub(crate) fn runsc_platform(mapping: Mapping) -> Result<&'static str, Error> {
 }
 
 fn check_kvm_access(path: &Path, mapping: Mapping) -> Result<(), Error> {
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| {
-            format!(
-                "host UID {} cannot read and write {}: {error}",
-                mapping.host_uid,
-                path.display()
-            )
-        })?;
-    let metadata = fs::metadata(path)?;
+    // nsenter selects the mapped root and clears host supplementary groups.
+    // runsc opens the device with that identity when creating the sandbox.
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("cannot check KVM device {}: {error}", path.display()))?;
     let acl = read_acl(path)?;
     if !acl_allows(&metadata, &acl, mapping.uid_base, &[mapping.gid_base], 6) {
         return Err(format!(
@@ -532,25 +524,11 @@ fn runtime_access(
     Ok(())
 }
 
-fn kvm_access(mapping: Mapping, applied: &mut Vec<String>) -> Result<(), Error> {
-    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
-    if count < 0 {
-        return Err(io::Error::last_os_error().into());
+fn kvm_access(path: &Path, mapping: Mapping, applied: &mut Vec<String>) -> Result<(), Error> {
+    if let Some(change) = access_change(path, mapping.uid_base, &[mapping.gid_base], 6)? {
+        grant_access(change, mapping.uid_base, applied)?;
     }
-    let mut groups = vec![0; count as usize];
-    if unsafe { libc::getgroups(count, groups.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    groups.push(mapping.host_gid);
-    for (uid, groups) in [
-        (mapping.host_uid, groups.as_slice()),
-        (mapping.uid_base, &[mapping.gid_base]),
-    ] {
-        if let Some(change) = access_change(Path::new("/dev/kvm"), uid, groups, 6)? {
-            grant_access(change, uid, applied)?;
-        }
-    }
-    check_kvm_access(Path::new("/dev/kvm"), mapping)
+    check_kvm_access(path, mapping)
 }
 
 fn restricted() -> Result<bool, Error> {
@@ -791,7 +769,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             || planned_mapping
                 .is_none_or(|mapping| check_kvm_access(Path::new("/dev/kvm"), mapping).is_err()))
     {
-        changes.push("allow only your host UID and the selected sandbox-root UID to read and write /dev/kvm for the selected KVM backend".into());
+        changes.push("allow only the selected sandbox-root UID to read and write /dev/kvm for the selected KVM backend".into());
     }
     if !changes.is_empty() {
         eprintln!(
@@ -868,7 +846,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     // sandbox root. Grant traversal to that one subordinate UID only.
     runtime_access(&destination, mapping, applied)?;
     if kvm {
-        kvm_access(mapping, applied)?;
+        kvm_access(Path::new("/dev/kvm"), mapping, applied)?;
     }
     Ok(Settings {
         host_uid: uid,
@@ -986,6 +964,61 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires getfacl, setfacl and a POSIX ACL-capable temporary directory"]
+    fn kvm_access_checks_and_grants_only_the_mapped_root() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o000))
+            .unwrap();
+        let mapping = Mapping::for_bases(100000, 300000);
+        let denied = check_kvm_access(file.path(), mapping)
+            .unwrap_err()
+            .to_string();
+        assert!(denied.contains("mapped root UID 100000"), "{denied}");
+
+        let mut applied = Vec::new();
+        kvm_access(file.path(), mapping, &mut applied).unwrap();
+        assert_eq!(applied.len(), 1);
+        check_kvm_access(file.path(), mapping).unwrap();
+        let acl = read_acl(file.path()).unwrap();
+        assert!(acl.contains("user:100000:rw-"), "{acl}");
+        assert!(acl.contains("user::---") && acl.contains("other::---"));
+        assert!(!acl.contains(&format!("user:{}:", mapping.host_uid)));
+        if mapping.host_uid != 0 {
+            let denied = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(file.path())
+                .unwrap_err();
+            assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        applied.clear();
+        kvm_access(file.path(), mapping, &mut applied).unwrap();
+        assert!(applied.is_empty());
+        assert_eq!(read_acl(file.path()).unwrap(), acl);
+
+        assert!(
+            Command::new("setfacl")
+                .args(["--set", "u::---,g::rw-,o::---"])
+                .arg(file.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let group_mapping = Mapping {
+            gid_base: file.as_file().metadata().unwrap().gid(),
+            ..mapping
+        };
+        check_kvm_access(file.path(), group_mapping).unwrap();
+        assert!(check_kvm_access(file.path(), mapping).is_err());
+        let missing = file.path().with_extension("missing");
+        let error = check_kvm_access(&missing, mapping).unwrap_err().to_string();
+        assert!(error.contains("cannot check KVM device"), "{error}");
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+    }
 
     #[test]
     fn effective_access_honors_owner_named_user_groups_and_mask() {

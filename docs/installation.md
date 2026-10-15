@@ -275,8 +275,10 @@ directories. It preserves other users' and groups' effective file permissions.
 It keeps AppArmor enabled and does not change global namespace
 policy. For an explicitly selected KVM backend, set
 `SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
-requires `/dev/kvm` and grants only the host UID and mapped root UID required
-read/write access. `SAFEYOLO_RUNSC_PLATFORM=systrap` needs no KVM device.
+requires `/dev/kvm` and grants only the mapped root UID required read/write
+access. If device permissions reset, run preparation again before creating
+another sandbox. An already running KVM sandbox retains its open virtual
+machine descriptor. `SAFEYOLO_RUNSC_PLATFORM=systrap` needs no KVM device.
 
 To check or retry an installed source bundle after a host change, run:
 

@@ -794,7 +794,10 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
     report = _base_report(cli, candidate, substrate)
     report["instance"] = {"config_dir": str(config_dir), "mode": args.mode}
     try:
-        _require_substrate(substrate)
+        # Doctor describes a future launch. Attached mode checks the current
+        # process below, even if a later launch would need host preparation.
+        if not require_running:
+            _require_substrate(substrate)
         native_path = _absolute_path(args.rust_config, cwd)
         native = _native_config(native_path, cwd)
         report["native"] = {key: value for key, value in native.items() if key != "raw"}

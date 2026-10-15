@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import socket
+import socketserver
 import stat
 import subprocess
 import sys
@@ -32,10 +33,16 @@ def smoke_module(monkeypatch):
     return module
 
 
-def _executable(path: Path, output: str) -> Path:
+def _executable(path: Path, output: str, *, doctor: dict | None = None, run: bool = False) -> Path:
     # Controlled native identity, never a real runtime witness.
     source = path.with_suffix('.c')
-    source.write_text('#include <stdio.h>\nint main(void){puts(' + json.dumps(output) + ');return 0;}\n')
+    source.write_text(
+        '#include <stdio.h>\n#include <string.h>\n#include <unistd.h>\nint main(int argc,char **argv){'
+        + (f'if(argc>1 && !strcmp(argv[argc-1],"doctor")){{puts({json.dumps(json.dumps(doctor))});return 0;}}'
+           if doctor is not None else '')
+        + ('if(argc>1 && !strcmp(argv[1],"--config")){for(;;)pause();}' if run else '')
+        + 'puts(' + json.dumps(output) + ');return 0;}\n'
+    )
     subprocess.run(['cc', str(source), '-o', str(path)], check=True, timeout=15)
     source.unlink()
     return path
@@ -381,6 +388,133 @@ def test_smoke_logs_are_created_inside_disposable_state(tmp_path: Path, smoke_mo
 def test_missing_required_substrate_is_not_a_discovery_pass(smoke_module) -> None:
     with pytest.raises(smoke_module.SmokeError, match="required host substrate unavailable"):
         smoke_module._require_substrate({"status": "unavailable", "reason": "runsc missing"})
+
+
+@pytest.fixture
+def attached_instance(tmp_path, smoke_module):
+    root = tmp_path / "i"
+    (root / "bin").mkdir(parents=True)
+    data = root / "data"
+    uds = data / "sockets/10.0.0.2_alice/proxy.sock"
+    uds.parent.mkdir(parents=True)
+    revision = "a" * 40
+    (root / "package-info").write_text(f"source_commit={revision}\nprofile=debug\n")
+    candidate = _executable(root / "bin/safeyolo-proxy", "safeyolo-proxy 0.1.0", run=True)
+    (data / "admin_token").write_text("synthetic-admin-token")
+    (data / "agent_token").write_text("synthetic-agent-token")
+    (data / "agent_map.json").write_text(json.dumps({"alice": {"ip": "10.0.0.2"}}))
+    config = root / "config.toml"
+    config.write_text('[[listeners]]\nagent_id="alice"\nsocket_path=' + json.dumps(str(uds)) + '\n')
+    requests = []
+
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            admin = self.path == "/admin/runtime-identity"
+            token = "synthetic-admin-token" if admin else "synthetic-agent-token"
+            authenticated = self.headers.get("Authorization") == f"Bearer {token}"
+            requests.append((self.path, authenticated))
+            body = json.dumps({"schema_version": 1, "state": "active", "instance_id": "owned"}
+                              if admin else {"agent_api": "ok"}).encode()
+            self.send_response(200 if authenticated else 401)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-SafeYolo-Agent-API", "true")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            pass
+
+    admin = ThreadingHTTPServer(("127.0.0.1", 0), Health)
+    health = socketserver.ThreadingUnixStreamServer(str(uds), Health)
+    servers = [admin, health]
+    threads = [threading.Thread(target=server.serve_forever) for server in servers]
+    with subprocess.Popen([str(candidate), "--config", str(config)]) as child:
+        receipt = {"pid": child.pid, "token": smoke_module._process_start_token(child.pid)}
+        (data / "proxy-process.json").write_text(json.dumps(receipt))
+        (data / "ready.json").write_text(json.dumps({
+            "ready": True, "pid": child.pid, "backend": "rust-m2", "instance_id": "owned",
+            "listeners": 1, "admin_port": admin.server_address[1],
+        }))
+        for thread in threads:
+            thread.start()
+        try:
+            yield SimpleNamespace(root=root, data=data, candidate=candidate, config=config,
+                                  revision=revision, requests=requests, receipt=receipt)
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+            for server, thread in zip(servers, threads, strict=True):
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("diagnosis", [
+    {"state": "ready"},
+    {"state": "unavailable", "error": "mapped root UID 100000 cannot read and write /dev/kvm"},
+    {"state": "unavailable", "error": "host UID 1000 cannot read and write /dev/kvm"},
+    {"state": "unavailable", "error": "required runtime companion is missing"},
+    {"state": "unavailable", "error": "KVM device /dev/kvm is missing"},
+])
+def test_attached_checks_current_runtime_and_retains_future_launch_diagnosis(attached_instance, diagnosis):
+    instance = attached_instance
+    cli = _executable(instance.root / "bin/safeyolo",
+                      f"safeyolo 0.1.0 commit={instance.revision} profile=debug", doctor={"linux": diagnosis})
+    output = instance.root / "report.json"
+    arguments = [sys.executable, str(SCRIPT), "--cli", str(cli), "--rust-bin", str(instance.candidate),
+                 "--rust-config", str(instance.config), "--config-dir", str(instance.root),
+                 "--output", str(output)]
+    # The observer and controlled doctor both cross the real subprocess boundary.
+    attached = subprocess.run([*arguments, "--mode", "attached"], capture_output=True, text=True, timeout=15)
+    report = json.loads(output.read_text())
+    assert attached.returncode == 0, report
+    assert report["status"] == "attached_ready"
+    assert report["runtime"]["authenticated_runtime_identity"]["status"] == "authenticated"
+    assert report["runtime"]["listeners"][0]["accepting"] is True
+    assert report["guest_ingress"]["health"]["agent_api"] == "ok"
+    ready = diagnosis["state"] == "ready"
+    assert report["substrate"]["status"] == ("discovered" if ready else "unavailable")
+    if not ready:
+        assert report["substrate"]["reason"] == diagnosis["error"]
+    assert instance.requests == [("/admin/runtime-identity", True), ("/health", True)]
+
+    discovery = subprocess.run(arguments, capture_output=True, text=True, timeout=15)
+    assert discovery.returncode == (0 if ready else 2)
+    if not ready:
+        assert "required host substrate unavailable" in json.loads(output.read_text())["error"]
+
+
+@pytest.mark.parametrize("defect,expected", [
+    ("stale-receipt", "does not own"),
+    ("wrong-executable", "expected selected Rust binary"),
+    ("admin-token", "HTTP 401"),
+    ("agent-token", "HTTP 401"),
+    ("missing-listener", "listener is unavailable"),
+])
+def test_attached_refuses_invalid_current_runtime_despite_future_launch_failure(attached_instance, defect, expected):
+    instance = attached_instance
+    cli = _executable(instance.root / "bin/safeyolo",
+                      f"safeyolo 0.1.0 commit={instance.revision} profile=debug",
+                      doctor={"linux": {"state": "unavailable", "error": "mapped root access denied"}})
+    candidate = instance.candidate
+    if defect == "stale-receipt":
+        (instance.data / "proxy-process.json").write_text(json.dumps({**instance.receipt, "token": "stale"}))
+    elif defect == "wrong-executable":
+        candidate = _executable(instance.root / "bin/other-proxy", "safeyolo-proxy 0.1.0")
+    elif defect in {"admin-token", "agent-token"}:
+        (instance.data / ("admin_token" if defect == "admin-token" else "agent_token")).write_text("wrong-token")
+    else:
+        (instance.data / "sockets/10.0.0.2_alice/proxy.sock").unlink()
+    output = instance.root / "report.json"
+    result = subprocess.run([
+        sys.executable, str(SCRIPT), "--mode", "attached", "--cli", str(cli), "--rust-bin", str(candidate),
+        "--rust-config", str(instance.config), "--config-dir", str(instance.root), "--output", str(output),
+    ], capture_output=True, text=True, timeout=15)
+    report = json.loads(output.read_text())
+    assert result.returncode == 2, report
+    assert expected in report["error"]
+    assert report["substrate"]["status"] == "unavailable"
 
 
 @pytest.mark.parametrize("ready", [True, False])

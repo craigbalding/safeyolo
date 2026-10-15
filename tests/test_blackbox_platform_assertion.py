@@ -34,6 +34,20 @@ def test_running_platform_uses_actual_runsc_arguments(probe, monkeypatch, platfo
     assert result['platform'] == platform and result['pid'] == 42
 
 
+@pytest.mark.parametrize('expected,actual', [('kvm', 'systrap'), ('systrap', 'kvm')])
+def test_platform_gate_refuses_an_owned_backend_on_the_wrong_platform(probe, monkeypatch, capsys, expected, actual):
+    module, root = probe
+    monkeypatch.setattr(module, '_process_command_line', lambda pid: [b'runsc-sandbox',
+        b'--bundle=' + os.fsencode(root / 'agents/worker'), ('--platform=' + actual).encode()])
+    output = root / 'platform.json'
+    monkeypatch.setattr(module.sys, 'argv', [str(SCRIPT), expected, str(root), 'worker', '--output', str(output)])
+    with pytest.raises(SystemExit) as refused:
+        module.main()
+    assert refused.value.code == 2
+    assert f"expected {expected!r}, selected {actual!r}" in capsys.readouterr().err
+    assert not output.exists()
+
+
 @pytest.mark.parametrize('defect', ['stale', 'foreign-bundle', 'unknown-backend', 'ambiguous-platform'])
 def test_platform_gate_refuses_unowned_or_ambiguous_backend(probe, monkeypatch, defect):
     module, root = probe
