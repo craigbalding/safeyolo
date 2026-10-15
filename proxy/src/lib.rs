@@ -49,6 +49,7 @@ mod host_agents;
 mod host_boot;
 pub mod host_commands;
 mod host_events;
+mod host_launch;
 mod host_lifecycle;
 mod host_runs;
 pub mod lab;

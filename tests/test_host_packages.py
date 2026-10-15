@@ -332,6 +332,39 @@ def test_shared_host_input_step_selects_release_and_refuses_wrong_profile(
         assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("workflow_name,job,step_name", [
+    ("ci.yml", "test-cli", "Restore native test executable permissions"),
+    ("ci.yml", "test-addons", "Restore native test executable permissions"),
+    ("proxy-rust.yml", "contracts", "Restore Linux guest executable permissions"),
+])
+@pytest.mark.parametrize("damage", [None, "missing-guest", "profile", "checksum"])
+def test_workflow_consumers_validate_prepared_native_inputs(package_inputs, tmp_path, workflow_name, job, step_name, damage):
+    import yaml
+
+    source, host, guest, _, _, _ = package_inputs
+    host_inputs = source / "proxy/target/release"
+    guest_inputs = source / "guest/command/target/release"
+    shutil.copytree(host, host_inputs)
+    shutil.copytree(guest, guest_inputs)
+    if damage == "missing-guest":
+        (guest_inputs / "safeyolo-coord").unlink()
+    elif damage == "profile":
+        receipt = guest_inputs / "safeyolo-coord.version"
+        receipt.write_text(receipt.read_text().replace("production", "debug"))
+    elif damage == "checksum":
+        (guest_inputs / "safeyolo-coord.sha256").write_text("0" * 64 + "\n")
+    workflow = yaml.safe_load((REPO / ".github/workflows" / workflow_name).read_text())
+    step = next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == step_name)
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=source,
+                 env={**os.environ, "SAFEYOLO_NATIVE_ARTIFACTS": str(host_inputs)})
+    if damage is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert "safeyolo-coord" in result.stderr
+
+
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))

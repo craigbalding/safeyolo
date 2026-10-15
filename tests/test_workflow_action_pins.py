@@ -91,13 +91,17 @@ def test_setup_uv_preserves_v5_cache_pruning_behavior() -> None:
                 assert step.get("with", {}).get("prune-cache") is True
 
 
-def test_proxy_rust_broad_test_and_build_step_has_platform_limits() -> None:
+def test_proxy_rust_compilation_and_execution_have_platform_limits() -> None:
     workflow = yaml.safe_load((WORKFLOW_DIR / "proxy-rust.yml").read_text(encoding="utf-8"))
     steps = workflow["jobs"]["contracts"]["steps"]
-    broad_step = next(step for step in steps if step.get("name") == "Test and build the Rust proxy")
-    assert broad_step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
-    assert "../scripts/cargo_with_space.sh test --release --locked" in broad_step["run"]
-    assert "../scripts/cargo_with_space.sh build --release --locked" in broad_step["run"]
+    for name in ("Compile production native executables", "Compile Rust contract executables", "Test the Rust proxy"):
+        bounded_step = next(step for step in steps if step.get("name") == name)
+        assert bounded_step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
+    named = {step.get("name"): step for step in steps}
+    assert "test --release --locked --no-run" in named["Compile Rust contract executables"]["run"]
+    assert "build --release --locked --bins" in named["Compile production native executables"]["run"]
+    assert "test --release --locked" in named["Test the Rust proxy"]["run"]
+    assert "build --release --locked --bins" in named["Test the Rust proxy"]["run"]
 
 
 def test_codex_test_lock_covers_wrapper_and_all_platform_packages() -> None:

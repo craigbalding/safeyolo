@@ -128,6 +128,7 @@ directory through `/workspace`.
 Have an account with Claude Code access ready. The bundled setup runs with your
 host permissions and copies selected Claude settings, extensions and
 `~/.claude/.credentials.json` when present. The agent can read copied credentials.
+Copied authentication files have owner-only read and write permissions.
 If your login is not copied, enter `/login` when Claude opens. Open its login
 URL in your host browser and paste any prompted code back into the agent
 terminal.

@@ -10,6 +10,7 @@
 # See contrib/HOST_SCRIPT_GUIDE.md for the contract.
 
 set -euo pipefail
+umask 077
 
 : "${SAFEYOLO_AGENT_NAME:?run via agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
 : "${SAFEYOLO_AGENT_HOME:?run via agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
@@ -23,7 +24,11 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=lib/stage-coord-native.sh
 . "$SCRIPT_DIR/lib/stage-coord-native.sh"
 stage_coord_native "$AGENT_HOME"
-"$coord_host" claude-state "$AGENT_HOME" "$HOME"
+if [ "${SAFEYOLO_CLAUDE_COPY_HOST_STATE:-1}" = 1 ]; then
+    "$coord_host" claude-state "$AGENT_HOME" "$HOME"
+else
+    "$coord_host" claude-state "$AGENT_HOME"
+fi
 
 # --- 1. Stage host Claude state (best-effort) ---------------------------------
 # Credentials + settings are the core "identity + prefs" bucket. User-authored
@@ -32,45 +37,6 @@ stage_coord_native "$AGENT_HOME"
 # (projects, sessions, history.jsonl, file-history, paste-cache, plans,
 # backups, session-env, shell-snapshots, statsig, cache, debug) is deliberately
 # NOT staged -- those are session-scope and would leak transcripts cross-agent.
-
-host_claude="$HOME/.claude"
-
-stage_file() {
-    local rel="$1"
-    if [ -f "$host_claude/$rel" ]; then
-        mkdir -p "$(dirname "$AGENT_HOME/.claude/$rel")"
-        cp "$host_claude/$rel" "$AGENT_HOME/.claude/$rel"
-    fi
-}
-
-stage_dir() {
-    local rel="$1"
-    if [ -d "$host_claude/$rel" ]; then
-        mkdir -p "$AGENT_HOME/.claude/$rel"
-        cp -R "$host_claude/$rel/." "$AGENT_HOME/.claude/$rel/" 2>/dev/null || true
-    fi
-}
-
-stage_file .credentials.json  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
-
-for d in plugins commands agents; do
-    stage_dir "$d"
-done
-
-# SafeYolo owns the `safeyolo` skill name in the sandbox. Copy the operator's
-# other Claude skills individually so a host-side skill with that name cannot
-# overwrite or collide with the managed SafeYolo skill on first or later runs.
-if [ -d "$host_claude/skills" ]; then
-    mkdir -p "$AGENT_HOME/.claude/skills"
-    while IFS= read -r -d '' host_skill; do
-        skill_name="$(basename "$host_skill")"
-        if [ "$skill_name" = "safeyolo" ]; then
-            echo "  Skipped host Claude skill 'safeyolo' (reserved by SafeYolo)" >&2
-            continue
-        fi
-        cp -R "$host_skill" "$AGENT_HOME/.claude/skills/" 2>/dev/null || true
-    done < <(find "$host_claude/skills" -mindepth 1 -maxdepth 1 -print0)
-fi
 
 # --- 2. Stage SafeYolo baseline + shared skill ------------------------------
 # Keep SafeYolo's always-on baseline outside .claude/ so it cannot shadow the
@@ -129,6 +95,7 @@ sy_local_version()  { mise latest --installed "$1" 2>/dev/null | tail -1; }
 # launcher can exist even though its postinstall did not place the native
 # binary.
 if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; then
+    echo "SafeYolo: downloading or repairing Claude Code and its required tools (first use can take several minutes)." >&2
     if [ -f /etc/alpine-release ]; then
         if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
             sudo -n apk add nodejs npm >&2
@@ -181,6 +148,10 @@ if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; th
     echo "claude-host-setup: Claude Code installation is incomplete" >&2
     exit 1
 fi
+
+# The foreground command has passed its executable check. Authentication can
+# still require Claude's supported interactive login.
+echo "SafeYolo: Claude Code is installed; opening the session. Sign in if Claude asks." >&2
 
 # Report the version actually about to run, and say when a newer one exists
 # without silently taking it. A pinned artifact ageing in place is fine; one

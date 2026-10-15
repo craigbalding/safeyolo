@@ -362,7 +362,7 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     """Both matrix platforms run Rust tests between owned fixture steps."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     setup = workflow.index("- name: Start the Python-owned Coord fixture")
-    test = workflow.index("- name: Test and build the Rust proxy")
+    test = workflow.index("- name: Test the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
     assert setup < test < teardown
     setup_block = workflow[setup:test]
@@ -374,11 +374,12 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     test_block = workflow[test:teardown]
     assert "export SAFEYOLO_PROXY_COORD_DATA_DIR" in test_block
     assert "export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture" in test_block
-    assert 'host_target="$(rustc -vV' in test_block
-    assert "runner_variable=" in test_block
-    assert "tr '[:lower:]-' '[:upper:]_'" in test_block
-    assert "export CARGO_BUILD_TARGET" in test_block
-    assert "coord_test_runner.sh" in test_block
+    lint = workflow[workflow.index("      - name: Check Rust formatting and lint", workflow.index("  contracts:")):setup]
+    assert 'host_target="$(rustc -vV' in lint
+    assert "tr '[:lower:]-' '[:upper:]_'" in lint
+    assert "CARGO_TARGET_%s_RUNNER" in lint
+    assert "coord_test_runner.sh" in lint
+    assert "CARGO_BUILD_TARGET" not in lint + test_block
     assert 'if [ "$RUNNER_OS" = Linux ]; then' not in test_block
     assert "export SAFEYOLO_COORD_DATA_DIR" not in test_block
     assert "export SAFEYOLO_NATS_TEST_INSTANCE" not in test_block
@@ -388,14 +389,64 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     assert "coord_fixture.py --teardown" in teardown_block
 
 
-def test_rust_workflow_exposes_the_host_target_binary_to_later_contracts() -> None:
-    """The explicit Cargo target must not hide the binary from Python tests."""
+def test_rust_workflow_exposes_production_inputs_and_restores_their_dependency_features() -> None:
+    """All production and test outputs use the producers' implicit host target."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    test = workflow.index("- name: Test and build the Rust proxy")
+    compile_production = workflow.index("- name: Compile production native executables")
+    compile_tests = workflow.index("- name: Compile Rust contract executables")
+    setup = workflow.index("- name: Start the Python-owned Coord fixture")
+    test = workflow.index("- name: Test the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
+    assert compile_production < compile_tests < setup < test < teardown
+    assert "build --release --locked --bins" in workflow[compile_production:compile_tests]
+    assert "test --release --locked --no-run" in workflow[compile_tests:setup]
     test_block = workflow[test:teardown]
-    build = test_block.index("../scripts/cargo_with_space.sh build --release --locked")
-    binary = test_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/release/safeyolo-proxy"')
-    export = test_block.index('printf \'SAFEYOLO_RUST_PROXY=%s\\n\' "$rust_proxy" >> "$GITHUB_ENV"')
-    assert build < binary < export
-    assert 'test -x "$rust_proxy"' in test_block[binary:export]
+    assert test_block.index("cargo_with_space.sh test --release --locked") < test_block.index("cargo_with_space.sh build --release --locked --bins")
+    production_block = workflow[compile_production:compile_tests]
+    binary = production_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/release/safeyolo-proxy"')
+    export = production_block.index('printf \'SAFEYOLO_RUST_PROXY=%s\\n\' "$rust_proxy" >> "$GITHUB_ENV"')
+    assert binary < export
+    assert 'test -x "$rust_proxy"' in production_block[binary:export]
+    assert 'verify_native_artifacts "$SAFEYOLO_NATIVE_ARTIFACTS" guest/command/target/release production' in production_block
+
+
+def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_path):
+    """Observe actual Cargo test outputs and runner isolation without --target."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname="coord-runner-probe"\nversion="0.1.0"\nedition="2024"\n',
+    )
+    (tmp_path / "Cargo.lock").write_text(
+        'version=4\n[[package]]\nname="coord-runner-probe"\nversion="0.1.0"\n',
+    )
+    (tmp_path / "tests/coord_state_cross_version.rs").write_text(
+        '#[test]\nfn fixture_reaches_coord() {\n'
+        'assert_eq!(std::env::var("SAFEYOLO_COORD_DATA_DIR").unwrap(), "owned-fixture");\n'
+        'assert_eq!(std::env::var("SAFEYOLO_NATS_TEST_INSTANCE").unwrap(), "owned-instance");\n}\n',
+    )
+    (tmp_path / "tests/regular.rs").write_text(
+        '#[test]\nfn regular_test_stays_isolated() {\n'
+        'assert!(std::env::var_os("SAFEYOLO_COORD_DATA_DIR").is_none());\n'
+        'assert!(std::env::var_os("SAFEYOLO_NATS_TEST_INSTANCE").is_none());\n}\n',
+    )
+    version = subprocess.check_output(["rustc", "-vV"], text=True)
+    target = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
+    environment = {**os.environ, "CARGO_TARGET_DIR": str(tmp_path / "target"),
+                   "SAFEYOLO_PROXY_COORD_DATA_DIR": "owned-fixture",
+                   "SAFEYOLO_PROXY_NATS_TEST_INSTANCE": "owned-instance",
+                   f"CARGO_TARGET_{target.upper().replace('-', '_')}_RUNNER": str(RUNNER)}
+    environment.pop("CARGO_BUILD_TARGET", None)
+    command = [str(REPOSITORY_ROOT / "scripts/cargo_with_space.sh"), "test", "--release", "--locked", "--offline",
+               "--manifest-path", str(tmp_path / "Cargo.toml"), "--message-format=json"]
+    compiled = subprocess.run([*command, "--no-run"], env=environment, capture_output=True, text=True, timeout=30)
+    assert compiled.returncode == 0, compiled.stderr
+    outputs = [json.loads(line) for line in compiled.stdout.splitlines()]
+    executables = {row["executable"] for row in outputs if row["reason"] == "compiler-artifact" and row["executable"]}
+    assert len(executables) == 2
+    assert all(Path(path).parent == tmp_path / "target/release/deps" for path in executables)
+    executed = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert executed.returncode == 0, executed.stderr + executed.stdout
+    assert executed.stdout.count("1 passed; 0 failed") == 2
+    artifacts = [json.loads(line) for line in executed.stdout.splitlines() if line.startswith('{"reason":')]
+    assert {row["executable"] for row in artifacts if row["reason"] == "compiler-artifact"} == executables
+    assert all(row["fresh"] for row in artifacts if row["reason"] == "compiler-artifact")

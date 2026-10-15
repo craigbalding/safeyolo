@@ -76,6 +76,12 @@ Malformed settings JSON recovers to defaults; missing or invalid host identity
 metadata leaves the retained agent identity intact. Claude credentials still use
 the explicit sharing path described below.
 
+With `SAFEYOLO_CLAUDE_COPY_HOST_STATE=0`, the shipped Claude script prepares guest
+defaults and SafeYolo context without reading host Claude state. Existing agent
+authentication stays in place. With copying enabled, the host helper replaces
+credential files through private temporary files with mode `0600`. Extension
+files use atomic replacement too; a destination directory link stops copying.
+
 ### First Codex login
 
 Use the installed product and its matching Linux guest Coord assets.
