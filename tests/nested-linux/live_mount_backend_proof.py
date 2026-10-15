@@ -90,6 +90,8 @@ elif mode == "mmap":
 elif mode != "marker":
     raise ValueError(mode)
 identity = {"pid":os.getpid(), "start":Path("/proc/self/stat").read_text().split(") ")[1].split()[19]}
+if mapped is not None:
+    result.with_suffix(".mapped-before").write_text(mapped[:64].decode())
 result.with_suffix(".ready").write_text(json.dumps(identity))
 deadline = time.monotonic() + 300
 while not result.with_suffix(".release").exists():
@@ -100,14 +102,20 @@ while not result.with_suffix(".release").exists():
 try:
     if mode == "file":
         opened.seek(0); data=opened.read(64).decode()
-        opened.seek(128); opened.write(b"guest-open-handle-write")
     elif mode == "cwd":
         data=Path("host.txt").read_text()[:64]
-        Path("guest-cwd-write").write_text("guest-cwd-write")
     elif mode == "mmap":
-        data=mapped[:64].decode(); mapped[128:151]=b"guest-open-handle-write"; mapped.flush()
+        data=mapped[:64].decode()
     else:
         data="marker survived"
+    # Retain a successful read even if the following write signals SIGBUS.
+    result.with_suffix(".read-result").write_text(json.dumps({"identity":identity, "data":data}))
+    if mode == "file":
+        opened.seek(128); opened.write(b"guest-open-handle-write")
+    elif mode == "cwd":
+        Path("guest-cwd-write").write_text("guest-cwd-write")
+    elif mode == "mmap":
+        mapped[128:151]=b"guest-open-handle-write"; mapped.flush()
     observation={"identity":identity, "accessible":True, "data":data}
 except OSError as error:
     observation={"identity":identity, "accessible":False, "errno":error.errno, "error":str(error)}
@@ -165,7 +173,11 @@ def run_proof(root: Path, base: Path):
         code = int(wait_file(result.with_suffix(".exit")))
         observation = (json.loads(result.with_suffix(".result").read_text())
                        if result.with_suffix(".result").exists() else {"accessible": None})
-        return {**observation, "exit": code}
+        read_after = (json.loads(result.with_suffix(".read-result").read_text())
+                      if result.with_suffix(".read-result").exists() else None)
+        mapped_before = (result.with_suffix(".mapped-before").read_text()
+                         if result.with_suffix(".mapped-before").exists() else None)
+        return {**observation, "exit": code, "read_after": read_after, "mapped_before": mapped_before}
 
     def same_run():
         current = json.loads((root / "agents" / agent / "runtime.json").read_text())

@@ -131,7 +131,11 @@ def run_proof(root: Path, base: Path):
         code = int(wait_file(result.with_suffix(".exit")))
         observation = (json.loads(result.with_suffix(".result").read_text())
                        if result.with_suffix(".result").exists() else {"accessible": None})
-        return {**observation, "exit": code}
+        read_after = (json.loads(result.with_suffix(".read-result").read_text())
+                      if result.with_suffix(".read-result").exists() else None)
+        mapped_before = (result.with_suffix(".mapped-before").read_text()
+                         if result.with_suffix(".mapped-before").exists() else None)
+        return {**observation, "exit": code, "read_after": read_after, "mapped_before": mapped_before}
 
     def bind_live():
         guest(f"sudo -n mkdir -p {target} && sudo -n mount --bind {exports}/live {target}")
