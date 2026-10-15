@@ -32,6 +32,13 @@ agent_id="ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 REPO = Path(__file__).resolve().parents[2]
 
 
+def _wait_for_active_policy(instance):
+    deadline = time.monotonic() + 4
+    while not instance.show()["saved_matches_active"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+
+
 @pytest.mark.parametrize("kind", ["network", "credential"])
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 def test_first_run_numbered_decisions_show_and_enforce_their_real_scope(tmp_path, kind, decision):
@@ -63,10 +70,7 @@ headers=["authorization"]
             output += until(b"No pending requests")
             assert process.wait(timeout=5) == 0
             assert b"first-launch-key" not in output
-        deadline = time.monotonic() + 4
-        while not instance.show()["saved_matches_active"]:
-            assert time.monotonic() < deadline
-            time.sleep(0.02)
+        _wait_for_active_policy(instance)
         status, _, body = request(instance.paths["alice"], target, headers=headers)
         if decision == "reject":
             assert status == 428 and origin.accepts == 0
@@ -258,15 +262,16 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
                     until(b"inspect> ")
                 os.write(master, b"quit\n")
             assert process.wait(timeout=5) == 0
-            assert b"404" not in output and b"first-launch-key" not in output
+            assert b"API 404 " not in output and b"first-launch-key" not in output
         assert origin.accepts == 0
+        _wait_for_active_policy(instance)
         status, _, _ = request(instance.paths["alice"], target, headers=headers)
         assert status == (200 if decision == "approve" else 428)
         assert origin.accepts == (1 if decision == "approve" else 0)
 
 
 @pytest.mark.parametrize("window", ["list", "detail"])
-@pytest.mark.parametrize("change", ["other_agent", "fingerprint", "identity", "refusal", "resolution"])
+@pytest.mark.parametrize("change", ["other_agent", "fingerprint", "destination", "identity", "refusal", "resolution"])
 def test_changed_credential_selection_refreshes_without_a_decision(tmp_path, window, change):
     policy = CREDENTIAL_RETRY_POLICY
     with origin_server() as origin, native_instance(tmp_path, source=policy) as instance:
@@ -282,9 +287,20 @@ def test_changed_credential_selection_refreshes_without_a_decision(tmp_path, win
                 until(b"approve / reject")
             if change == "other_agent":
                 assert request(instance.paths["bob"], target, headers=headers)[0] == 428
-            elif change == "fingerprint":
-                assert request(instance.paths["alice"], target,
-                               headers={**headers, "X-Api-Key": "second-launch-key"})[0] == 428
+            elif change in ("fingerprint", "destination"):
+                # Replace trusted fixture evidence to challenge the caller's
+                # saved scope at both interaction windows. Real retries get new
+                # request IDs; the separate controls exercise that producer.
+                audit = instance.root / "logs/audit.jsonl"
+                events = [json.loads(line) for line in audit.read_text().splitlines()]
+                for event in events:
+                    if event.get("event") == "security.credential_guard" and event.get("request_id") == identifier:
+                        if change == "fingerprint":
+                            event["approval"]["key"] = "hmac:changed-fixture"
+                            event["details"]["fingerprint"] = "hmac:changed-fixture"
+                        else:
+                            event["host"] = event["approval"]["target"] = "localhost"
+                audit.write_text("".join(json.dumps(event) + "\n" for event in events))
             elif change == "identity":
                 instance.apply(policy.replace("ag-" + "a" * 32, "ag-" + "c" * 32))
             else:
@@ -293,25 +309,28 @@ def test_changed_credential_selection_refreshes_without_a_decision(tmp_path, win
                 instance.admin("POST", f"/admin/policy/baseline/{route}",
                                {"destination": "127.0.0.1", "cred_id": credential})
             before = instance.policy.read_bytes()
-            audit = instance.root / tomllib.loads((instance.root / "config.toml").read_text())["audit_log_path"]
+            audit = instance.root / "logs/audit.jsonl"
             before_events = [row for row in audit.read_text().splitlines() if '"admin.approval_added"' in row or '"admin.denial"' in row]
             os.write(master, b"1\n" if window == "list" else b"approve\n")
-            marker = b"Request number" if change == "fingerprint" else b"No pending requests"
+            marker = b"Request number" if change in ("fingerprint", "destination") else b"No pending requests"
             output = until(marker)
-            assert b"404" not in output and b"approve / reject" not in output
-            if change == "fingerprint":
+            assert b"API 404 " not in output and b"approve / reject" not in output
+            if change in ("fingerprint", "destination"):
                 os.write(master, b"\n")
             assert process.wait(timeout=5) == 0
             assert instance.policy.read_bytes() == before and origin.accepts == 0
             after_events = [row for row in audit.read_text().splitlines() if '"admin.approval_added"' in row or '"admin.denial"' in row]
             assert after_events == before_events
-        stale = instance.cli("approvals", "approve", identifier, "--agent", "alice")
-        assert stale.returncode != 0 and "404" not in stale.stderr
+        if change not in ("fingerprint", "destination"):
+            for decision in ("approve", "reject"):
+                stale = instance.cli("approvals", decision, identifier, "--agent", "alice")
+                assert stale.returncode != 0 and "API 404 " not in stale.stderr
         assert instance.policy.read_bytes() == before and origin.accepts == 0
 
 
+@pytest.mark.parametrize("surface", ["direct", "inspect"])
 @pytest.mark.parametrize("decision", ["approve", "reject"])
-def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, decision):
+def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, decision, surface):
     policy = CREDENTIAL_RETRY_POLICY
     with origin_server() as origin, native_instance(tmp_path, source=policy) as instance:
         port = origin.server_address[1]
@@ -322,17 +341,23 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
         identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
         assert request(instance.paths["alice"], target, headers=headers)[0] == 428
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
-        with terminal(instance, ["inspect", "--agent", "alice"]) as (process, master, until):
-            until(b"inspect> ")
-            os.write(master, f"approval {identifier}\n".encode())
-            output = until(b"inspect> ")
-            assert b"Status: pending" in output
-            os.write(master, f"{decision} {identifier}\n".encode())
-            output = until(b"inspect> ")
-            expected = b"approved" if decision == "approve" else b"rejected"
-            assert b"Status: " + expected in output
-            os.write(master, b"quit\n")
-            assert process.wait(timeout=5) == 0
+        if surface == "direct":
+            result = instance.cli("approvals", decision, identifier, "--agent", "alice", "--json")
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout)["status"] == ("approved" if decision == "approve" else "rejected")
+        else:
+            with terminal(instance, ["inspect", "--agent", "alice"]) as (process, master, until):
+                until(b"inspect> ")
+                os.write(master, f"approval {identifier}\n".encode())
+                output = until(b"inspect> ")
+                assert b"Status: pending" in output
+                os.write(master, f"{decision} {identifier}\n".encode())
+                output = until(b"inspect> ")
+                expected = b"approved" if decision == "approve" else b"rejected"
+                assert b"Status: " + expected in output
+                os.write(master, b"quit\n")
+                assert process.wait(timeout=5) == 0
+        _wait_for_active_policy(instance)
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
         assert origin.accepts == 0
         assert request(instance.paths["alice"], target, headers=headers)[0] == (200 if decision == "approve" else 428)

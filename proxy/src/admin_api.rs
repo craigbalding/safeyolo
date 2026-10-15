@@ -903,7 +903,16 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
 }
 
 fn pending_approvals(path: &Path) -> Value {
-    pending_approval_events(&read_audit_events(path))
+    let events = read_audit_events(path);
+    let mut pending = pending_approval_events(&events);
+    for event in pending.as_array_mut().expect("pending approval array") {
+        if let Some(id) = event["request_id"].as_str()
+            && let Ok(Some(view)) = approvals::credential_view(&events, id)
+        {
+            event["action"] = view["action"].clone();
+        }
+    }
+    pending
 }
 
 fn pending_approval_events(events: &[Value]) -> Value {

@@ -376,7 +376,7 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
     }
     // Routine projections contain only the canonical summary and identity.
     for view in approvals {
-        *view = json!({"request_id":view["request_id"],"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"]});
+        *view = json!({"request_id":view["request_id"],"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"],"action":view["action"]});
     }
     Ok(value)
 }
@@ -440,6 +440,10 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
                 return Err(error);
             }
         };
+        if !entry["action"].is_null() && entry["action"] != view["action"] {
+            println!("Request scope changed. Inspect the refreshed requests before deciding.");
+            continue;
+        }
         show_approval(&view)?;
         if view["status"] != "pending" {
             continue;
