@@ -542,7 +542,13 @@ fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), E
             )?;
         }
         for name in ["plugins", "commands", "agents"] {
-            copy_claude_path(&source.join(name), &claude.join(name))?;
+            let source_directory = source.join(name);
+            if source_directory.is_dir() {
+                // The previous cp of DIRECTORY/. followed a selected host
+                // directory link. Preserve that behavior at the root, while
+                // links inside its contents remain links in the guest.
+                copy_claude_path(&source_directory.canonicalize()?, &claude.join(name))?;
+            }
         }
         if source.join("skills").is_dir() {
             directory(&claude.join("skills"))?;

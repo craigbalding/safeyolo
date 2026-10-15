@@ -3167,7 +3167,8 @@ def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script
 
 
 @pytest.mark.parametrize("copy", ["0", "1"])
-def test_claude_host_state_choice_controls_auth_preferences_and_extensions(tmp_path, copy):
+@pytest.mark.parametrize("source_kind", ["directory", "directory_link"])
+def test_claude_host_state_choice_controls_auth_preferences_and_extensions(tmp_path, copy, source_kind):
     operator, agent = tmp_path / "operator", tmp_path / "agent"
     host = operator / ".claude"
     (host / "plugins").mkdir(parents=True)
@@ -3179,6 +3180,9 @@ def test_claude_host_state_choice_controls_auth_preferences_and_extensions(tmp_p
     # copy operation's ability to carry ordinary files larger than two MiB.
     extension = b"x" * (2 * 1024 * 1024 + 1)
     (host / "plugins/large.txt").write_bytes(extension)
+    if source_kind == "directory_link":
+        (host / "plugins").rename(operator / "linked-plugins")
+        (host / "plugins").symlink_to(operator / "linked-plugins", target_is_directory=True)
     result = _run_setup("claude-host-setup.sh", operator, agent, tmp_path,
                         extra_env={"SAFEYOLO_CLAUDE_COPY_HOST_STATE": copy})
     assert secret not in result.stdout + result.stderr
@@ -3190,6 +3194,7 @@ def test_claude_host_state_choice_controls_auth_preferences_and_extensions(tmp_p
         assert credentials.stat().st_mode & 0o777 == 0o600
         assert config["userID"] == "selected-fixture-user"
         assert settings["model"] == "host-choice"
+        assert not (agent / ".claude/plugins").is_symlink()
         assert (agent / ".claude/plugins/large.txt").read_bytes() == extension
     else:
         assert not (agent / ".claude/.credentials.json").exists()
