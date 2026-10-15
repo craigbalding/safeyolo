@@ -257,7 +257,11 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         run: |
           scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
-          uv run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py --basetemp "$RUNNER_TEMP/native-policy"
+          uv run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py \
+            tests/proxy_contracts/test_first_agent_launch.py \
+            cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions \
+            cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links \
+            --basetemp "$RUNNER_TEMP/native-policy"
           uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
             tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
             --basetemp "$RUNNER_TEMP/native-factory"

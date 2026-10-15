@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import time
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,14 +111,15 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path):
     shutil.copy2(REPO / "contrib/claude-host-setup.sh", scripts)
     instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color"})
     policy = (root / "policy.toml").read_bytes()
-    with terminal(instance, ["agent", "launch", str(workspace), "--name", "first"]) as (process, master, until):
+    with terminal(instance, ["agent", "launch"], cwd=workspace) as (process, master, until):
         output = until(b"Run this setup and share this workspace?")
         assert b"guest can read and write" in output
+        assert str(workspace).encode() in output
         os.write(master, b"n\n")
         until(b"Setup declined")
         assert process.wait(timeout=5) == 0
     assert (root / "policy.toml").read_bytes() == policy
-    assert not (root / "agents/first").exists()
+    assert not (root / "agents").exists()
     assert not (root / "data/proxy-process.json").exists()
     assert not (root / "data/coord/nats/process.json").exists()
 
@@ -136,6 +138,22 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
         assert started.returncode == 0, started.stderr
         nats = json.loads(started.stdout)
         try:
+            receipt = instance.root / "assets/guest/safeyolo-coord.sha256"
+            missing = receipt.with_name("coord-checksum.fixture-missing")
+            policy_before_setup = instance.policy.read_bytes()
+            receipt.rename(missing)
+            try:
+                with terminal(instance, ["agent", "launch", str(workspace), "--name", "first"]) as (process, master, until):
+                    until(b"Run this setup and share this workspace?")
+                    os.write(master, b"y\n")
+                    until(b"Copy this selected host authentication and settings?")
+                    os.write(master, b"n\n")
+                    until(b"First-agent host setup failed", timeout=30)
+                    assert process.wait(timeout=5) != 0
+                assert instance.policy.read_bytes() == policy_before_setup
+                assert instance.process.poll() is None
+            finally:
+                missing.rename(receipt)
             with terminal(instance, ["agent", "launch", str(workspace), "--name", "first"]) as (process, master, until):
                 until(b"Run this setup and share this workspace?")
                 os.write(master, b"y\n")
@@ -167,7 +185,9 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert process.wait(timeout=5) != 0
             assert command.read_bytes() == command_bytes
-            assert instance.policy.read_bytes() == policy_bytes
+            # Explicit repair uses the existing TOML writer. Whitespace can
+            # change, while every saved policy choice and agent field stays.
+            assert tomllib.loads(instance.policy.read_text()) == tomllib.loads(policy_bytes.decode())
             assert json.loads(instance.cli("coord", "status").stdout)["process"] == nats
             assert instance.process.poll() is None
             target = f"http://127.0.0.1:{origin.server_address[1]}/unrelated-agent"
@@ -176,7 +196,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
             other.mkdir()
             conflict = instance.cli("agent", "launch", str(other), "--name", "first")
             assert conflict.returncode != 0 and "different workspace" in conflict.stderr
-            assert instance.policy.read_bytes() == policy_bytes
+            assert tomllib.loads(instance.policy.read_text()) == tomllib.loads(policy_bytes.decode())
         finally:
             stopped = instance.cli("coord", "stop")
             assert stopped.returncode == 0, stopped.stderr
