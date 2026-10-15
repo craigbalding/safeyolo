@@ -1473,6 +1473,8 @@ pub(crate) async fn start(
         if observed["backend"].is_object() {
             crate::host_platform::stop_sandbox(&agent.name).await?;
         }
+        #[cfg(target_os = "linux")]
+        crate::linux_host::shares::cleanup_stopped(&agent.name).await?;
         clear_stopped_command_state(&agent.name)?;
         let slot = crate::host_agents::reserve_network_slot(&agent.name)?;
         let address = u32::from(slot) + 1;
@@ -2035,6 +2037,8 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
         crate::host_platform::stop_sandbox(&agent.name).await?;
     }
+    #[cfg(target_os = "linux")]
+    crate::linux_host::shares::cleanup_stopped(&agent.name).await?;
     crate::host_platform::update_agent_map(&agent.name, None)?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)? {
         run["state"] = "stopped".into();

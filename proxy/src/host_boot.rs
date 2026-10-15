@@ -428,12 +428,9 @@ fn oci(
             true,
         ),
     ];
-    for (host, guest, ro) in shares {
-        if let Ok(relative) = Path::new(guest).strip_prefix("/home/agent") {
-            fs::create_dir_all(directory.join("home").join(relative))?;
-        }
-        mounts.push(bind(host, guest, *ro));
-    }
+    // Extra sources are served by isolated Gofers after runsc start. Their
+    // guest targets are prepared inside the sentry, not through host home
+    // paths. An OCI bind would leave the source in the root Gofer tree.
     let caches = directory.join("cache-paths.txt");
     let caches = if caches.is_file() {
         caches
@@ -481,8 +478,8 @@ fn oci(
     Ok(
         json!({"ociVersion":"1.0.0","root":{"path":rootfs,"readonly":false},"hostname":format!("safeyolo-{name}"),
         "process":{"terminal":false,"user":{"uid":0,"gid":0},"cwd":"/",
-            "args":["/bin/bash","-c","mkdir -p /var/log /safeyolo-status && : > /safeyolo-status/boot.log && ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log && exec /safeyolo/guest-init >> /safeyolo-status/boot.log 2>&1"],
-            "env":["PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","HOME=/home/agent","USER=agent","TERM=xterm-256color","BASH_ENV=/etc/mise-activate.sh","MISE_DATA_DIR=/home/agent/.mise","MISE_CONFIG_DIR=/home/agent/.mise","MISE_CACHE_DIR=/home/agent/.mise/cache","MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml","MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none"],
+            "args":["/bin/bash","-c","while [ ! -f /safeyolo/per-run-go ]; do /bin/sleep 0.1; done; export BASH_ENV=/etc/mise-activate.sh; mkdir -p /var/log /safeyolo-status && : > /safeyolo-status/boot.log && ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log && exec /safeyolo/guest-init >> /safeyolo-status/boot.log 2>&1"],
+            "env":["PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","HOME=/home/agent","USER=agent","TERM=xterm-256color","BASH_ENV=","MISE_DATA_DIR=/home/agent/.mise","MISE_CONFIG_DIR=/home/agent/.mise","MISE_CACHE_DIR=/home/agent/.mise/cache","MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml","MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none"],
             "capabilities":{"bounding":caps,"effective":caps,"permitted":caps,"ambient":caps},"rlimits":[{"type":"RLIMIT_NOFILE","hard":65536,"soft":65536}],"noNewPrivileges":false},
         "mounts":mounts,"linux":{"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","architectures":["SCMP_ARCH_X86_64","SCMP_ARCH_AARCH64"],"syscalls":[{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}]}}}),
     )
@@ -492,6 +489,96 @@ fn oci(
 mod mount_tests {
     use super::*;
     use std::{ffi::CString, os::unix::fs::symlink, os::unix::net::UnixListener};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_extra_sources_are_absent_from_the_root_gofer_spec() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let directory = root.join("agents/alice");
+        fs::create_dir_all(directory.join("home")).unwrap();
+        fs::create_dir(root.join("outside")).unwrap();
+        symlink(root.join("outside"), directory.join("home/reference")).unwrap();
+        let shares = vec![
+            (root.join("writable"), "/mnt/shared".into(), false),
+            (
+                root.join("readonly"),
+                "/home/agent/reference/nested".into(),
+                true,
+            ),
+        ];
+        let spec = oci(
+            root,
+            &directory,
+            &root.join("rootfs"),
+            root,
+            &root.join("workspace"),
+            "10.200.0.1",
+            &shares,
+        )
+        .unwrap();
+        let mounts = spec["mounts"].as_array().unwrap();
+        for (source, target, _) in shares {
+            assert!(!mounts.iter().any(|mount| mount["source"] == json!(source) || mount["destination"] == target));
+        }
+        for target in [
+            "/workspace",
+            "/home/agent",
+            "/safeyolo",
+            "/safeyolo-status",
+            "/safeyolo/proxy",
+        ] {
+            assert!(mounts.iter().any(|mount| mount["destination"] == target));
+        }
+        assert!(
+            !root.join("outside/nested").exists(),
+            "OCI preparation must not follow guest home links on the host"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn oci_entry_waits_for_shares_before_guest_setup() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let directory = root.join("agents/alice");
+        fs::create_dir_all(&directory).unwrap();
+        let spec = oci(root, &directory, root, root, root, "10.200.0.1", &[]).unwrap();
+        assert!(
+            spec["process"]["env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "BASH_ENV=")
+        );
+        let entry = spec["process"]["args"][2].as_str().unwrap();
+        let prefix = entry.split_once("mkdir -p /var/log").unwrap().0;
+        let gate = root.join("per-run-go");
+        let started = root.join("guest-setup-started");
+        let script = format!(
+            "{} printf started > '{}'",
+            prefix.replace("/safeyolo/per-run-go", gate.to_str().unwrap()),
+            started.display()
+        );
+        let mut child = tokio::process::Command::new("/bin/bash")
+            .args(["-c", &script])
+            .env_remove("BASH_ENV")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!started.exists());
+        assert!(child.try_wait().unwrap().is_none());
+        fs::write(&gate, "").unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(fs::read_to_string(started).unwrap(), "started");
+    }
 
     #[test]
     fn non_directory_sources_report_the_resolved_path_and_type() {

@@ -787,7 +787,7 @@ fn userns_command(name: &str, program: &str) -> io::Result<Command> {
 }
 
 #[cfg(target_os = "linux")]
-fn pin_namespace_arguments(name: &str, command: &mut Command) -> io::Result<()> {
+pub(crate) fn pinned_namespaces(name: &str) -> io::Result<(std::fs::File, std::fs::File)> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
     let unverified = || {
@@ -818,6 +818,14 @@ fn pin_namespace_arguments(name: &str, command: &mut Command) -> io::Result<()> 
     {
         return Err(unverified());
     }
+    Ok((user, net))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn pin_namespace_arguments(name: &str, command: &mut Command) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let (user, net) = pinned_namespaces(name)?;
     command.args([
         format!("--user=/proc/self/fd/{}", user.as_raw_fd()),
         format!("--net=/proc/self/fd/{}", net.as_raw_fd()),
@@ -1089,7 +1097,11 @@ pub(crate) async fn start_sandbox(
         for marker in ["static-init-done", "per-run-started", "vm-status"] {
             let _ = std::fs::remove_file(status_dir.join(marker));
         }
-        std::fs::write(share.join("per-run-go"), b"")?;
+        match std::fs::remove_file(share.join("per-run-go")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         let set_loopback = userns_command(name, "ip")?
             .args(["link", "set", "lo", "up"])
             .status()
@@ -1180,6 +1192,7 @@ pub(crate) async fn start_sandbox(
             .ok_or_else(|| io::Error::other("sandbox runtime record disappeared"))?;
         run["linux"] = crate::linux_host::runsc_report();
         run["linux"]["platform"] = platform.into();
+        run["linux"]["extra_share_startup"] = "starting".into();
         crate::host_runs::save(name, &run).map_err(io::Error::other)?;
         std::fs::write(
             directory.join("container.pid"),
@@ -1189,9 +1202,22 @@ pub(crate) async fn start_sandbox(
                 .unwrap_or(0)
                 .to_string(),
         )?;
+        crate::linux_host::shares::attach_startup(name)
+            .await
+            .map_err(io::Error::other)?;
+        // Linux extras must be mounted before guest-init performs static
+        // setup or launches any workload. The OCI entry shell waits here.
+        std::fs::write(share.join("per-run-go"), b"")?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-        while tokio::time::Instant::now() < deadline && guest_exec_available(name).await {
+        while tokio::time::Instant::now() < deadline && backend_pid(name).is_some() {
             if status_dir.join("per-run-started").is_file() {
+                let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
+                    .ok_or_else(|| io::Error::other("sandbox record disappeared before readiness"))?;
+                if run["run_id"].as_str().map(|generation| format!("safeyolo-{generation}")) != Some(id.clone()) {
+                    return Err(io::Error::other("sandbox incarnation changed before readiness"));
+                }
+                run["linux"]["extra_share_startup"] = "ready".into();
+                crate::host_runs::save(name, &run).map_err(io::Error::other)?;
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1206,16 +1232,18 @@ pub(crate) async fn start_sandbox(
                 "{error}; sandbox cleanup failed: {cleanup}"
             )));
         }
-        if let Some(mut run) = failed_run
-            && crate::host_runs::read(name)
-                .map_err(io::Error::other)?
-                .as_ref()
-                == Some(&run)
+        if let (Some(failed), Some(mut run)) = (
+            failed_run,
+            crate::host_runs::read(name).map_err(io::Error::other)?,
+        ) && ["run_id", "agent_id", "holder_token", "backend_token"]
+            .iter()
+            .all(|key| failed[key] == run[key])
             && run["run_id"].as_str().map(|id| format!("safeyolo-{id}"))
                 == Some(crate::host_runs::id(name).map_err(io::Error::other)?)
         {
             // Cleanup proved this attempt stopped, including a failure before
-            // runsc create could produce a backend receipt. Retain diagnostics.
+            // runsc create could produce a backend receipt. Keep the updated
+            // share cleanup receipts rather than restoring the pre-stop copy.
             run["state"] = "stopped".into();
             crate::host_runs::save(name, &run).map_err(io::Error::other)?;
         }
@@ -1406,7 +1434,10 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     // namespace control. Stop it through the verified process handle when
     // the original holder is gone; never run runsc outside its namespaces.
     if userns_pid(name).is_none() {
-        return crate::host_runs::stop_without_holder(name)
+        crate::host_runs::stop_without_holder(name)
+            .await
+            .map_err(io::Error::other)?;
+        return crate::linux_host::shares::cleanup_stopped(name)
             .await
             .map_err(io::Error::other);
     }
@@ -1464,7 +1495,10 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         }
     }
     if userns_pid(name).is_none() {
-        return crate::host_runs::stop_without_holder(name)
+        crate::host_runs::stop_without_holder(name)
+            .await
+            .map_err(io::Error::other)?;
+        return crate::linux_host::shares::cleanup_stopped(name)
             .await
             .map_err(io::Error::other);
     }
@@ -1501,6 +1535,9 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     let directory = config_dir().join("agents").join(name);
     let _ = std::fs::remove_file(directory.join("userns.pid"));
     let _ = std::fs::remove_file(directory.join("container.pid"));
+    crate::linux_host::shares::cleanup_stopped(name)
+        .await
+        .map_err(io::Error::other)?;
     Ok(())
 }
 
