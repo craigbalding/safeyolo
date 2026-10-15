@@ -30,6 +30,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.revision }}
+      - name: Install uv for the existing source-binding check
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+      - name: Check acceptance tool source bindings before compilation
+        run: |
+          uv export --frozen --only-group dev --no-emit-workspace --format requirements-txt --output-file "$RUNNER_TEMP/source-bindings.txt" > /dev/null
+          uv venv --python 3.12 .venv-source-bindings
+          .venv-source-bindings/bin/python - "$RUNNER_TEMP/source-bindings.txt" <<'PY'
+          import runpy
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("uv.lock").read_text())
+          requirements = [f"{package['name']}=={package['version']}" for package in lock["package"]
+                          if package["name"] in ("pytest", "pyyaml")]
+          subprocess.run(["uv", "pip", "install", "--python", sys.executable, "--require-hashes",
+                          "--constraint", sys.argv[1], *requirements], check=True)
+          runpy.run_path("cli/tests/test_host_setup_scripts.py")["test_safeyolo_acceptance_graph_tool_hashes_match_sources"]()
+          PY
       - name: Install the pinned Rust toolchain
         working-directory: proxy
         run: |
@@ -40,7 +63,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
-          key: ${{ inputs.profile }}
+          shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
       - name: Build Linux guest executables and receipts
         run: scripts/build_guest_command.sh
@@ -108,8 +131,10 @@ jobs:
           printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: proxy -> target
-          key: ${{ inputs.profile }}
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

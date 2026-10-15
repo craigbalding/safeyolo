@@ -3,10 +3,12 @@
 import hashlib
 import os
 import select
+import shutil
 import socket
 import socketserver
 import ssl
 import subprocess
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +16,8 @@ from pathlib import Path
 import pytest
 
 SOURCE = Path(__file__).resolve().parents[1] / "contrib/macos-seatbelt-agent"
+
+
 @pytest.fixture
 def native_cli():
     selected = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI") or os.environ.get("SAFEYOLO_NATIVE_CLI")
@@ -21,8 +25,37 @@ def native_cli():
         selected = str(Path(__file__).resolve().parents[1] / "proxy/target/release/safeyolo")
     cli = Path(selected)
     if not cli.is_file():
+        if os.environ.get("SAFEYOLO_TEST_NATIVE_CLI") or os.environ.get("SAFEYOLO_NATIVE_CLI"):
+            pytest.fail(f"Selected native CLI is missing: {cli}")
         pytest.skip("requires a built native CLI, selected with SAFEYOLO_TEST_NATIVE_CLI")
     return cli
+
+
+@pytest.fixture
+def native_coord(native_cli):
+    coord = native_cli.with_name("safeyolo-coord")
+    assert coord.is_file(), f"Supply the matching host Coord executable: {coord}"
+    return coord
+
+
+@pytest.fixture
+def guest_coord(native_coord):
+    directory = Path(os.environ.get(
+        "SAFEYOLO_GUEST_ARTIFACTS",
+        Path(__file__).resolve().parents[1] / "guest/command/target/release",
+    ))
+    coord = directory / "safeyolo-coord"
+    for path in (coord, coord.with_suffix(".version"), coord.with_suffix(".sha256")):
+        assert path.is_file(), f"Supply the matching Linux guest Coord executable and receipts: {path}"
+    return coord
+
+
+def _stage_coord(coord, home, artifact):
+    result = subprocess.run(
+        [str(coord), "stage-runtime", str(home), str(artifact)], capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    return home / ".safeyolo/safeyolo-coord"
 
 
 def _relay(cli, host, port, **overrides):
@@ -235,10 +268,10 @@ def test_https_proxy_verifies_trust_and_rejects_obsolete_tls(tmp_path, monkeypat
         assert not received and errors
 
 
-@pytest.mark.parametrize("entry", ["host", "staged-guest"])
+@pytest.mark.parametrize("entry", ["host", "host-coord"] + (["staged-guest"] if sys.platform == "linux" else []))
 @pytest.mark.parametrize("effect", ["allow", "deny"])
-def test_generated_proxycommand_executes_the_native_route(tmp_path, monkeypatch, native_cli, entry, effect):
-    """Observe OpenSSH calling the configured native helper, including guest staging."""
+def test_generated_proxycommand_executes_the_native_route(tmp_path, monkeypatch, native_cli, native_coord, entry, effect, request):
+    """Run host transports on each host and the staged guest transport on Linux."""
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
     ssh_dir = home / ".ssh"
@@ -248,17 +281,10 @@ def test_generated_proxycommand_executes_the_native_route(tmp_path, monkeypatch,
     for path in (identity, host_key):
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(path)], check=True)
     selected = native_cli
+    if entry == "host-coord":
+        selected = native_coord
     if entry == "staged-guest":
-        coord = native_cli.with_name("safeyolo-coord")
-        if not coord.is_file():
-            pytest.skip("requires the matching native safeyolo-coord artifact")
-        artifact = tmp_path / "safeyolo-coord"
-        os.link(coord, artifact)
-        artifact.with_suffix(".version").write_bytes(subprocess.check_output([str(coord), "--version"]))
-        with artifact.open("rb") as stream:
-            artifact.with_suffix(".sha256").write_text(hashlib.file_digest(stream, "sha256").hexdigest())
-        subprocess.run([str(coord), "stage-runtime", str(home), str(artifact)], check=True, capture_output=True)
-        selected = home / ".safeyolo/safeyolo-coord"
+        selected = _stage_coord(native_coord, home, request.getfixturevalue("guest_coord"))
     # A hidden Python transport/configuration fallback records its use and fails.
     shims = tmp_path / "shims"
     shims.mkdir()
@@ -310,3 +336,58 @@ def test_generated_proxycommand_executes_the_native_route(tmp_path, monkeypatch,
         assert not marker.exists()
     if entry == "staged-guest":
         selected.unlink()  # Its owned invocation completed; avoid retaining test copies.
+
+
+@pytest.mark.parametrize("damage", [None, "host-format", "architecture", "source", "profile", "checksum", "missing-receipt"])
+def test_guest_coord_staging_checks_linux_bytes_and_receipts(tmp_path, native_coord, guest_coord, damage):
+    """The host stages Linux guest bytes without executing them, also on macOS."""
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    artifact = tmp_path / "safeyolo-coord"
+    shutil.copy2(guest_coord, artifact)
+    for suffix in (".version", ".sha256"):
+        shutil.copy2(guest_coord.with_suffix(suffix), artifact.with_suffix(suffix))
+    if damage == "host-format":
+        # Use the actual host Mach-O on macOS and the same header shape on Linux.
+        if sys.platform == "darwin":
+            shutil.copy2(native_coord, artifact)
+        else:
+            with artifact.open("r+b") as stream:
+                stream.write(bytes.fromhex("cffaedfe0c000001"))
+    elif damage == "architecture":
+        with artifact.open("r+b") as stream:
+            stream.seek(18)
+            stream.write((62 if os.uname().machine in ("arm64", "aarch64") else 183).to_bytes(2, "little"))
+    elif damage in ("source", "profile"):
+        receipt = artifact.with_suffix(".version")
+        identity = receipt.read_text()
+        field = "commit" if damage == "source" else "profile"
+        previous = identity.split(f"{field}=")[1].split()[0]
+        receipt.write_text(identity.replace(f"{field}={previous}", f"{field}=different"))
+    elif damage == "checksum":
+        artifact.with_suffix(".sha256").write_text("0" * 64 + "\n")
+    elif damage == "missing-receipt":
+        artifact.with_suffix(".version").unlink()
+    result = subprocess.run(
+        [str(native_coord), "stage-runtime", str(home), str(artifact)], capture_output=True, text=True, timeout=15,
+    )
+    staged = home / ".safeyolo/safeyolo-coord"
+    try:
+        if damage is None:
+            assert result.returncode == 0, result.stderr
+            assert staged.stat().st_mode & 0o777 == 0o755
+            assert staged.stat().st_nlink == 1
+            with staged.open("rb") as stream:
+                assert hashlib.file_digest(stream, "sha256").hexdigest() == artifact.with_suffix(".sha256").read_text().strip()
+        else:
+            assert result.returncode != 0, result.stdout
+            assert not staged.exists()
+            if damage in ("host-format", "architecture"):
+                assert "matching 64-bit Linux executable" in result.stderr
+            elif damage in ("source", "profile"):
+                assert "host and guest source/profile identities differ" in result.stderr
+            elif damage == "checksum":
+                assert "guest bytes differ from their build receipt" in result.stderr
+    finally:
+        staged.unlink(missing_ok=True)
+        artifact.unlink()
