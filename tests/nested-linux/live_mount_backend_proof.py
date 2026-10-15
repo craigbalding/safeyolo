@@ -56,8 +56,10 @@ def rpc_child(arguments):
     if method == "Fs.Umount":
         argument = {"container_id": container_id, "target": target, "flags": 0}
     elif method == "Fs.Mount":
+        # release-20261005.0 rejects the historical "cache=remote" spelling.
+        # Shared host/guest writes need the runtime's revalidating cache mode.
         argument = {"container_id": container_id, "source": "proof1042", "target": target,
-                    "fs_type": "gofer", "flags": 6 | int(mode), "data": "cache=remote"}
+                    "fs_type": "gofer", "flags": 6 | int(mode), "data": "cache=remote_revalidating"}
     else:
         raise ValueError("the probe supports only Fs.Mount and Fs.Umount")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -150,15 +152,20 @@ def run_proof(root: Path, base: Path):
 
     def holder(mode, target):
         result = base / "workspace" / (mode + "-holder")
-        guest("python3 -I -B /workspace/holder.py " + " ".join(map(shlex.quote,
+        guest("( python3 -I -B /workspace/holder.py " + " ".join(map(shlex.quote,
               [mode, target, "/workspace/" + result.name])) +
+              f'; printf \'%s\' "$?" > /workspace/{mode}-holder.exit )' +
               f" </dev/null > /workspace/{mode}.log 2>&1 &")
         identity = json.loads(wait_file(result.with_suffix(".ready")))
         return result, identity
 
     def release(result):
         result.with_suffix(".release").touch()
-        return json.loads(wait_file(result.with_suffix(".result")))
+        # mmap access can end with SIGBUS instead of a Python exception.
+        code = int(wait_file(result.with_suffix(".exit")))
+        observation = (json.loads(result.with_suffix(".result").read_text())
+                       if result.with_suffix(".result").exists() else {"accessible": None})
+        return {**observation, "exit": code}
 
     def same_run():
         current = json.loads((root / "agents" / agent / "runtime.json").read_text())
