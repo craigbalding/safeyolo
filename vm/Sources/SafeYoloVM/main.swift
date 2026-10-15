@@ -281,11 +281,15 @@ do {
         from: config,
         machineIdentifier: machineIdentifier
     )
+    let shareProofDirectory = try LiveShareProof1042.prepare(vmConfig)
     try vmConfig.validate()
 
     let vmQueue = DispatchQueue(label: "com.safeyolo.vm", qos: .userInteractive)
     let vm = VZVirtualMachine(configuration: vmConfig, queue: vmQueue)
     let runner = VMRunner(vm: vm, queue: vmQueue)
+    if let shareProofDirectory {
+        _ = LiveShareProof1042(directory: shareProofDirectory, vm: vm, queue: vmQueue)
+    }
 
     // Compute the hardware fingerprint we'll need for save (sidecar) and
     // restore (sidecar validation). Done once here so a SIGUSR1 mid-run
