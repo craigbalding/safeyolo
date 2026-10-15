@@ -54,8 +54,14 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         'if(settings){FILE *out=fopen(settings,"w");if(!out)return 93;'
         'fprintf(out,"[linux]\\nhost_uid=1000\\nhost_gid=1000\\nuid_base=100000\\ngid_base=100000\\nrunsc=\\\"%s/libexec/runsc\\\"\\nrunsc_origin=\\\"bundled\\\"\\n",installed);fclose(out);}return 0;}'
     )
+    launch_command = (
+        'if(argc>4 && strcmp(argv[3],"agent")==0 && strcmp(argv[4],"launch")==0){'
+        'char *marker=getenv("PACKAGE_LAUNCH_CALLS");if(marker){FILE *out=fopen(marker,"w");'
+        'if(!out)return 94;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+        'char *code=getenv("PACKAGE_LAUNCH_EXIT");return code?atoi(code):0;}'
+    )
     source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
-                      f'int main(int argc,char **argv){{{host_command}{guest_command}puts("{identity}");return 0;}}\n')
+                      f'int main(int argc,char **argv){{{host_command}{guest_command}{launch_command}puts("{identity}");return 0;}}\n')
     subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 

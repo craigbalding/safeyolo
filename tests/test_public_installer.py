@@ -11,9 +11,11 @@ import signal
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.test_guest_acquisition import compressed_archive, digest, release
 from tests.test_guest_acquisition import guest_store as _guest_store
 from tests.test_guest_acquisition import registry as _registry
@@ -102,6 +104,21 @@ def test_downloaded_bootstrap_installs_without_checkout_and_exposes_same_termina
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("status", [0, 37])
+def test_bootstrap_forwards_literal_launch_arguments_and_exit_status(public_release, tmp_path, status):
+    _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    marker = tmp_path / "launch-called"
+    environment = {**environment, "PACKAGE_LAUNCH_CALLS": str(marker), "PACKAGE_LAUNCH_EXIT": str(status)}
+    arguments = [str(tmp_path / "workspace with spaces; literal"), "--name", "chosen", "--harness", "claude"]
+    result = run("bash", str(bootstrap), "--launch", *arguments, env=environment)
+    assert result.returncode == status, result.stderr
+    assert marker.read_text().splitlines() == ["--root", str(root), "agent", "launch", *arguments]
+    assert (root / "bin/safeyolo").is_file()
+    assert requests.count(f"{base}/{archive.name}") == 1
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("fault", ["checksum", "duplicate-checksum", "partial", "inner-checksum"])
 def test_bad_host_download_never_activates_and_retry_preserves_another_installation(public_release, tmp_path, fault):
     contents, requests, faults, environment, bootstrap, root, base, archive = public_release
@@ -174,6 +191,122 @@ def test_unpinned_source_bootstrap_resolves_latest_once(public_release):
     assert result.returncode == 0, result.stderr
     assert (root / "config.toml").exists()
     assert requests.count(f"{RELEASES}/latest") == 1
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
+@pytest.mark.parametrize("decision", ["decline", "interrupt"])
+def test_download_then_install_and_launch_keeps_host_consent_and_repeat_state(public_release, tmp_path, decision):
+    _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    # The first entered command is the real HTTPS download in public_release.
+    # The second installs and enters the actual first-launch operation.
+    workspace = tmp_path / "workspace with spaces; literal"
+    workspace.mkdir()
+    environment = {**environment, "TERM": "xterm-256color"}
+    instance = SimpleNamespace(root=root, environment=environment)
+    selected_workspace = [str(workspace)] if decision == "decline" else []
+    # This mounted fixture lacks POSIX ACL support. Host preparation and
+    # guest acquisition retain their separate installed controls and proof.
+    command = ["bash", str(bootstrap), "--no-guest-download", "--yes", "--launch", *selected_workspace,
+               "--name", "first", "--harness", "claude", "--launcher", "tmux-window"]
+    with terminal(instance, command=command, cwd=workspace) as (process, master, until):
+        output = until(b"Run this setup and share this workspace?")
+        assert b"SafeYolo host" in output and b"agent first" in output
+        assert str(workspace).encode() in output
+        assert b"guest can read and write" in output
+        # Download files and the installation lock must not live for the
+        # duration of the interactive session.
+        assert not list(Path(environment["HOME"]).rglob("acquire.*"))
+        assert not root.with_name(root.name + ".install-lock").exists()
+        state = {name: (root / name).read_bytes() for name in (
+            "config.toml", "policy.toml", "data/instance_id", "data/admin_token", "data/agent_token",
+            "certs/mitmproxy-ca.pem", "certs/mitmproxy-ca-cert.pem",
+        )}
+        if decision == "decline":
+            os.write(master, b"n\n")
+            until(b"Setup declined")
+            assert process.wait(timeout=5) == 0
+        else:
+            os.killpg(process.pid, signal.SIGINT)
+            assert process.wait(timeout=5) in (-signal.SIGINT, 130)
+    assert requests.count(f"{base}/{archive.name}") == 1
+    before = list(requests)
+    with terminal(instance, command=command, cwd=workspace) as (process, master, until):
+        until(b"Run this setup and share this workspace?")
+        os.write(master, b"n\n")
+        until(b"Setup declined")
+        assert process.wait(timeout=5) == 0
+    assert requests == before
+    assert all((root / name).read_bytes() == value for name, value in state.items())
+    assert not (root / "agents").exists()
+    assert not (root / "data/proxy-process.json").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
+    located = run("bash", "--noprofile", "--norc", "-c", "command -v safeyolo", env=environment)
+    assert located.stdout.strip() == str(Path(environment["HOME"]) / ".local/bin/safeyolo")
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
+def test_downloaded_composition_launches_from_relative_root_starting_with_dash(public_release, tmp_path):
+    _contents, requests, _faults, environment, bootstrap, default_root, base, archive = public_release
+    root = tmp_path / "-instance"
+    arguments = ["bash", str(bootstrap), "--root", root.name, "--no-guest-download", "--launch", "--help"]
+    result = run(*arguments, cwd=tmp_path, env=environment)
+    assert result.returncode == 0, result.stderr
+    assert "agent launch [WORKSPACE]" in result.stdout
+    assert (root / "config.toml").is_file() and not default_root.exists()
+    assert requests.count(f"{base}/{archive.name}") == 1
+    instance_id = (root / "data/instance_id").read_bytes()
+    before = list(requests)
+    repeated = run(*arguments, cwd=tmp_path, env=environment)
+    assert repeated.returncode == 0, repeated.stderr
+    assert "agent launch [WORKSPACE]" in repeated.stdout
+    assert requests == before
+    assert (root / "data/instance_id").read_bytes() == instance_id
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
+def test_composed_install_failure_and_launch_failure_recover_without_reinstallation(public_release, tmp_path):
+    contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = contents[f"{base}/{archive.name}"]
+    contents[f"{base}/{archive.name}"] += b"bad host transfer"
+    arguments = ["bash", str(bootstrap), "--no-guest-download", "--yes", "--launch"]
+    refused = run(*arguments, str(workspace), env=environment)
+    assert refused.returncode != 0 and "checksum failed" in refused.stderr
+    assert "launching the first agent" not in refused.stderr and not root.exists()
+    contents[f"{base}/{archive.name}"] = original
+    # Actual first launch needs a trusted terminal. Its error must propagate
+    # while retaining the successful installation for the next invocation.
+    failed_launch = run(*arguments, str(workspace), env=environment)
+    assert failed_launch.returncode != 0 and "interactive host terminal" in failed_launch.stderr
+    state = {name: (root / name).read_bytes() for name in (
+        "config.toml", "policy.toml", "data/admin_token", "data/instance_id",
+    )}
+    before = list(requests)
+    repeated = run(*arguments, "--help", env=environment)
+    assert repeated.returncode == 0 and "agent launch [WORKSPACE]" in repeated.stdout
+    assert requests == before
+    assert all((root / name).read_bytes() == value for name, value in state.items())
+    assert not (root / "agents").exists()
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
+@pytest.mark.parametrize("entry", ["source", "bundle"])
+def test_contributor_composition_uses_the_selected_installed_root(public_release, entry):
+    _contents, requests, _faults, environment, bootstrap, root, _base, archive = public_release
+    before = list(requests)
+    selected = root.parent / "separate instance"
+    entrypoint = REPO / "install.sh" if entry == "source" else bootstrap
+    result = run("bash", str(entrypoint), "--root", str(selected),
+                 "--bundle", str(archive.parent / archive.name.removesuffix(".tar.gz")),
+                 "--no-guest-download", "--launch", "--help", env=environment)
+    assert result.returncode == 0, result.stderr
+    assert "agent launch [WORKSPACE]" in result.stdout
+    assert (selected / "config.toml").is_file() and not root.exists() and requests == before
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
