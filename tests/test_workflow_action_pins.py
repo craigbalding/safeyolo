@@ -101,6 +101,7 @@ def test_proxy_rust_compilation_and_execution_have_platform_limits() -> None:
     assert "test --release --locked --no-run" in named["Compile Rust contract executables"]["run"]
     assert "build --release --locked --bins" in named["Compile production native executables"]["run"]
     assert "test --release --locked" in named["Test the Rust proxy"]["run"]
+    assert "build --release --locked --bins" in named["Test the Rust proxy"]["run"]
 
 
 def test_codex_test_lock_covers_wrapper_and_all_platform_packages() -> None:

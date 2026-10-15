@@ -479,6 +479,9 @@ jobs:
           export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
           export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
           ../scripts/cargo_with_space.sh test --release --locked
+          # Tests can select binaries linked with dev-dependency features.
+          # Restore the normal production outputs for the component consumers.
+          ../scripts/cargo_with_space.sh build --release --locked --bins
 
       - name: Stop the Python-owned Coord fixture
         if: always()

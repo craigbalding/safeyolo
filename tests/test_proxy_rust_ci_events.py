@@ -225,6 +225,12 @@ def test_existing_graph_integrity_check_runs_for_quick_cli_and_before_guest_comp
         assert 'runpy.run_path("cli/tests/test_host_setup_scripts.py")' in check["run"]
         assert 'test_safeyolo_acceptance_graph_tool_hashes_match_sources' in check["run"]
         assert job["steps"].index(check) < job["steps"].index(steps[following])
+    producer = inputs["jobs"]["build"]["steps"]
+    check = next(step for step in producer if step.get("name") == "Check acceptance tool source bindings before compilation")
+    assert "uv export --frozen --only-group dev" in check["run"]
+    assert '"--require-hashes"' in check["run"]
+    assert 'if package["name"] in ("pytest", "pyyaml")' in check["run"]
+    assert "uv sync" not in check["run"]
 
 
 def test_native_producers_and_consumers_share_the_existing_compatible_dependency_cache():

@@ -389,7 +389,7 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     assert "coord_fixture.py --teardown" in teardown_block
 
 
-def test_rust_workflow_exposes_production_inputs_without_a_second_build() -> None:
+def test_rust_workflow_exposes_production_inputs_and_restores_their_dependency_features() -> None:
     """All production and test outputs use the producers' implicit host target."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     compile_production = workflow.index("- name: Compile production native executables")
@@ -401,7 +401,7 @@ def test_rust_workflow_exposes_production_inputs_without_a_second_build() -> Non
     assert "build --release --locked --bins" in workflow[compile_production:compile_tests]
     assert "test --release --locked --no-run" in workflow[compile_tests:setup]
     test_block = workflow[test:teardown]
-    assert "cargo_with_space.sh build" not in test_block
+    assert test_block.index("cargo_with_space.sh test --release --locked") < test_block.index("cargo_with_space.sh build --release --locked --bins")
     production_block = workflow[compile_production:compile_tests]
     binary = production_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/release/safeyolo-proxy"')
     export = production_block.index('printf \'SAFEYOLO_RUST_PROXY=%s\\n\' "$rust_proxy" >> "$GITHUB_ENV"')

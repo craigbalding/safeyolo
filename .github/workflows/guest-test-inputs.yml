@@ -37,8 +37,22 @@ jobs:
           prune-cache: true
       - name: Check acceptance tool source bindings before compilation
         run: |
-          uv sync --frozen --group dev --python 3.12
-          uv run --frozen python -c 'import runpy; runpy.run_path("cli/tests/test_host_setup_scripts.py")["test_safeyolo_acceptance_graph_tool_hashes_match_sources"]()'
+          uv export --frozen --only-group dev --no-emit-workspace --format requirements-txt --output-file "$RUNNER_TEMP/source-bindings.txt" > /dev/null
+          uv venv --python 3.12 .venv-source-bindings
+          .venv-source-bindings/bin/python - "$RUNNER_TEMP/source-bindings.txt" <<'PY'
+          import runpy
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("uv.lock").read_text())
+          requirements = [f"{package['name']}=={package['version']}" for package in lock["package"]
+                          if package["name"] in ("pytest", "pyyaml")]
+          subprocess.run(["uv", "pip", "install", "--python", sys.executable, "--require-hashes",
+                          "--constraint", sys.argv[1], *requirements], check=True)
+          runpy.run_path("cli/tests/test_host_setup_scripts.py")["test_safeyolo_acceptance_graph_tool_hashes_match_sources"]()
+          PY
       - name: Install the pinned Rust toolchain
         working-directory: proxy
         run: |
