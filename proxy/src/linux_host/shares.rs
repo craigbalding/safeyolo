@@ -28,6 +28,20 @@ use tokio::{
 
 const MODE: &str = "isolated-gofer-v1";
 
+// Select cwd after unshare has copied the mount tree. An inherited O_PATH
+// descriptor still names the old tree, so Linux refuses to bind it in the new
+// namespace (EINVAL). Check the selected inode against that descriptor on
+// stdin, then close it before Gofer exec. Cwd pins the directory in the new
+// namespace without leaving a descriptor that can walk above the chroot.
+const PIN_GOFER_SOURCE: &str = r#"cd -P -- "$1"
+if [ ! . -ef /proc/self/fd/0 ]; then
+    printf '%s\n' 'extra mount source changed before Gofer startup' >&2
+    exit 1
+fi
+exec </dev/null
+shift
+exec "$@""#;
+
 struct Run {
     name: String,
     receipt: Value,
@@ -523,8 +537,7 @@ pub(crate) async fn attach(
     let id = uuid::Uuid::new_v4().simple().to_string();
     let bundle = directory.join("extra-shares").join(expected).join(&id);
     fs::create_dir_all(&bundle)?;
-    spec["root"] =
-        json!({"path":format!("/proc/self/fd/{}", source_fd.as_raw_fd()),"readonly":read_only});
+    spec["root"] = json!({"path":"/proc/self/cwd","readonly":read_only});
     spec["mounts"] = json!([]);
     spec["hooks"] = json!({});
     crate::guest_commands::write_json(&bundle.join("config.json"), &spec)?;
@@ -546,7 +559,13 @@ pub(crate) async fn attach(
             "--fork",
             "--kill-child=SIGKILL",
             "--",
+            "/bin/sh",
+            "-eu",
+            "-c",
+            PIN_GOFER_SOURCE,
+            "share-gofer-source",
         ])
+        .arg(&source)
         .arg(super::runtime_path()?)
         .args(["--host-uds=open", "gofer", "--bundle"])
         .arg(&bundle)
@@ -556,14 +575,13 @@ pub(crate) async fn attach(
         .arg(format!("--rpc-fd={}", rpc_gofer.as_raw_fd()))
         .arg(format!("--mounts-fd={}", mounts_gofer.as_raw_fd()))
         .arg(&run.id)
-        .stdin(Stdio::null())
+        .stdin(Stdio::from(source_fd.try_clone()?))
         .stdout(log.try_clone()?)
         .stderr(log);
     inherit(
         &mut command,
         vec![
             config.as_raw_fd(),
-            source_fd.as_raw_fd(),
             gofer.as_raw_fd(),
             rpc_gofer.as_raw_fd(),
             mounts_gofer.as_raw_fd(),
@@ -836,6 +854,58 @@ pub(crate) async fn cleanup_stopped(name: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+
+    #[tokio::test]
+    async fn gofer_source_selection_checks_identity_and_closes_the_host_descriptor() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("share ' \" $(exit 42) `exit 43`");
+        fs::create_dir(&source).unwrap();
+        let pinned = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(&source)
+            .unwrap();
+        // Selecting a directory must not add a host read-permission requirement.
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o111)).unwrap();
+        let launch = || {
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-eu", "-c", PIN_GOFER_SOURCE, "share-gofer-source"])
+                .arg(&source)
+                .args([
+                    "/bin/sh",
+                    "-eu",
+                    "-c",
+                    "test /proc/self/cwd -ef \"$1\"; test /proc/self/fd/0 -ef /dev/null; printf selected",
+                    "source-probe",
+                ])
+                .arg(&source)
+                .stdin(Stdio::from(pinned.try_clone().unwrap()));
+            command
+        };
+        let result = launch().output().await.unwrap();
+        assert!(result.status.success(), "{:?}", result);
+        assert_eq!(result.stdout, b"selected");
+
+        let moved = fixture.path().join("renamed-source");
+        fs::rename(&source, &moved).unwrap();
+        symlink(&moved, &source).unwrap();
+        assert!(launch().output().await.unwrap().status.success());
+
+        fs::remove_file(&source).unwrap();
+        fs::create_dir(&source).unwrap();
+        let result = launch().output().await.unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty(), "replacement source was executed");
+        assert!(
+            String::from_utf8(result.stderr)
+                .unwrap()
+                .contains("extra mount source changed")
+        );
+        fs::set_permissions(&moved, fs::Permissions::from_mode(0o700)).unwrap();
+    }
 
     #[tokio::test]
     async fn scope_join_checks_placement_before_exec_and_preserves_descriptors() {
