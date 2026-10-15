@@ -151,11 +151,17 @@ jobs:
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 
       - name: Build the native guest command artifact
+        id: linux_guest_inputs
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
         env:
           SAFEYOLO_BUILD_PROFILE: production
           CARGO_BUILD_JOBS: "1"
         run: scripts/build_guest_command.sh
+
+      - name: Build Linux production inputs
+        id: linux_host_inputs
+        if: steps.changes.outputs.rust == 'true'
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
 
       - name: Check native guest command operations
         if: steps.changes.outputs.guest == 'true'
@@ -186,7 +192,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap zstd
-          sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+          getsubids "$USER"
+          getsubids -g "$USER"
 
       - name: Test workflow, fixture, deletion, and blackbox runner boundaries
         run: |
@@ -267,10 +274,13 @@ jobs:
           uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
             tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
             --basetemp "$RUNNER_TEMP/native-factory"
-          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py --basetemp "$RUNNER_TEMP/guest-selection"
+          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
 
-      - name: Retain checked Linux production inputs
-        if: steps.changes.outputs.rust == 'true'
+      # Failed runs retain successful matching builds for diagnosis, not release.
+      - name: Retain built Linux production inputs
+        if: >-
+          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
+              steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-host-amd64-production
@@ -281,7 +291,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - name: Retain matching Linux guest inputs
-        if: steps.changes.outputs.rust == 'true'
+        if: >-
+          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
+              steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-guest-amd64-production
@@ -389,7 +401,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap
-          sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+          getsubids "$USER"
+          getsubids -g "$USER"
 
       - name: Install macOS native terminal test dependency
         if: matrix.os == 'macos-latest'

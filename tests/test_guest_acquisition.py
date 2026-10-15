@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import tomllib
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -236,6 +237,21 @@ def install(binary, root, store, environment, package_info):
     return result
 
 
+def owned_root_ids(tree):
+    """Check prepared root ownership against the account's real allocations."""
+    metadata = tree.stat()
+    account = subprocess.check_output(["id", "-un"], text=True).strip()
+    for arguments, base in (([], metadata.st_uid), (["-g"], metadata.st_gid)):
+        output = subprocess.check_output(["getsubids", *arguments, account], text=True)
+        ranges = sorted(tuple(map(int, line.split()[2:4])) for line in output.splitlines())
+        end = base
+        for start, count in ranges:
+            if start <= end:
+                end = max(end, start + count)
+        assert end >= base + 65536, f"root ID {base} is outside the account's owned ranges: {output}"
+    return metadata.st_uid, metadata.st_gid
+
+
 @pytest.fixture
 def package_info(tmp_path):
     architecture = "amd64" if os.uname().machine == "x86_64" else "arm64"
@@ -245,7 +261,8 @@ def package_info(tmp_path):
     return path
 
 
-def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, package_info, tmp_path, guest_store):
+@pytest.mark.parametrize("prepared_host", [False, True])
+def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, package_info, tmp_path, guest_store, prepared_host):
     """Fresh section state must keep the installed host's guest selection."""
     from tests.blackbox.installed_sections import prepare_native_instance
 
@@ -260,6 +277,16 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     shutil.copy2(package_info, source / "package-info")
     selection = (source / "share/guest-selection.json").read_bytes()
     request_count = len(requests)
+    if prepared_host:
+        initialized = subprocess.run([str(native_cli), "--root", str(source), "init"], capture_output=True, text=True)
+        assert initialized.returncode == 0, initialized.stderr
+        uid_base, gid_base = owned_root_ids(source / "share/rootfs-tree")
+        with (source / "config.toml").open("a") as configuration:
+            configuration.write(f'\n[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n'
+                                f'uid_base={uid_base}\ngid_base={gid_base}\nrunsc={json.dumps(str(source / "libexec/runsc"))}\n'
+                                'runsc_origin="bundled"\napparmor_profile="safeyolo-runsc-retained"\n')
+        (source / "SHA256SUMS").write_text("retained package integrity input\n")
+        original = (source / "config.toml").read_bytes()
 
     root = tmp_path / "section"
     prepare_native_instance(source, root)
@@ -271,12 +298,19 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     assert (root / "share/guest-selection.json").read_bytes() == selection
     assert (source / "share/guest-selection.json").read_bytes() == selection
     assert len(requests) == request_count
-    assert not (source / "config.toml").exists()
+    if prepared_host:
+        import tomllib
+        assert tomllib.loads((root / "config.toml").read_text())["linux"] == tomllib.loads(original.decode())["linux"]
+        assert (source / "config.toml").read_bytes() == original
+        assert (root / "data/instance_id").read_bytes() != (source / "data/instance_id").read_bytes()
+        assert (root / "SHA256SUMS").read_bytes() == (source / "SHA256SUMS").read_bytes()
+    else:
+        assert not (source / "config.toml").exists()
 
 
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, faults, environment = registry
-    first = release(compressed_archive())
+    first = release(compressed_archive(child_owner=101000))
     second = release(compressed_archive(content=b"new guest bytes"), version="guest-2026-10-12.2")
     contents.update(first)
     faults["advance"] = second
@@ -290,7 +324,8 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert requests.count(PREFIX + "manifests/compat-v1") == 1
     assert (root / "share/rootfs-tree").is_symlink()
     tree = root / "share/rootfs-tree"
-    assert tree.stat().st_uid == tree.stat().st_gid == 100000
+    owned_root_ids(tree)
+    assert ((tree / "command").stat().st_uid, (tree / "command").stat().st_gid) == (os.getuid(), os.getgid())
     assert (tree / "command").stat().st_mode & 0o777 == 0o751
     assert (tree / "hard").stat().st_ino == (tree / "command").stat().st_ino
     assert (tree / "symbolic").readlink() == Path("command")
@@ -402,7 +437,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
     environment = {**environment, "HOME": str(guest_store.parents[3]),
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
-    result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
+    result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
                             env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     selection = (root / "share/guest-selection.json").read_bytes()
@@ -468,7 +503,7 @@ def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_p
     result = subprocess.run([
         str(REPO / "tests/blackbox/run-installed-package.sh"), "--package", archive,
         "--sha256", archive_digest,
-    ], env=environment, capture_output=True, text=True, timeout=120)
+    ], env=environment, input="yes\n", capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-6000:]
     smoke = json.loads((reports / "host-package.json").read_text())
     assert smoke["status"] == "host_package_passed" and smoke["cleanup"]["status"] == "stopped"
@@ -479,7 +514,10 @@ def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_p
     assert selected["platform"] == f"linux/{architecture}"
     assert selected["index"]["digest"] == digest(guest["manifests/compat-v1"])
     assert selected["archive"]["digest"] == digest(compressed_archive())
-    assert (root / "share/rootfs-tree").stat().st_uid == 100000
+    mapping = tomllib.loads((root / "config.toml").read_text())["linux"]
+    ownership = (root / "share/rootfs-tree").stat()
+    assert ownership.st_uid == mapping["uid_base"]
+    assert ownership.st_gid == mapping["gid_base"]
     assert requests.count(PREFIX + "manifests/compat-v1") == 1
     continuity = json.loads((reports / "installed-continuity.json").read_text())
     assert continuity["result"] == "installed_native_continuity_passed"

@@ -34,6 +34,19 @@ native_executable() {
   esac
 }
 
+runsc_files() {
+  printf '%s\n' runsc gvisor-bin/checkpointgofer \
+    gvisor-bin/gvisor-sentry-prewarmer gvisor-bin/gvisor_sentry \
+    gvisor-bin/runsc-fd-parking gvisor-bin/runsc-metric-server
+}
+
+verify_runsc_payload() {
+  local directory=$1 platform=$2 name version
+  while IFS= read -r name; do native_executable "$directory/$name" "$platform" || return; done < <(runsc_files)
+  version=$("$directory/runsc" --version) || { package_error 'gVisor runtime cannot execute'; return 1; }
+  [[ ${version%%$'\n'*} == 'runsc version release-20261005.0' ]] || { package_error "incompatible gVisor runtime: $version; requires release-20261005.0"; return 1; }
+}
+
 version_at_least() {
   local observed required index
   IFS=. read -r -a observed <<< "$1"
@@ -75,7 +88,7 @@ verify_native_artifacts() {
 
 verify_native_package() {
   local package=$1 key value source= profile= platform= minimum= identity binary
-  local compatibility= repository= discovery= seen=$'\n'
+  local compatibility= repository= discovery= seen=$'\n' runsc_version= runsc_source= runsc_origin=
   require_file "$package/package-info" && require_file "$package/SHA256SUMS" || return
   while IFS='=' read -r key value || [[ -n $key ]]; do
     case "$seen" in *$'\n'"$key"$'\n'*) package_error "duplicate package field: $key"; return 1;; esac
@@ -83,6 +96,7 @@ verify_native_package() {
     case "$key" in
       source_commit) source=$value;; profile) profile=$value;; platform) platform=$value;; minimum_runtime) minimum=$value;;
       guest_compatibility) compatibility=$value;; guest_repository) repository=$value;; guest_discovery_tag) discovery=$value;;
+      runsc_version) runsc_version=$value;; runsc_source) runsc_source=$value;; runsc_origin) runsc_origin=$value;;
       *) package_error "unknown package field: $key"; return 1;;
     esac
   done < "$package/package-info"
@@ -93,6 +107,12 @@ verify_native_package() {
     package_error 'invalid guest compatibility/discovery metadata'; return 1;
   }
   [[ $repository == ghcr.io/craigbalding/safeyolo-guest ]] || { package_error 'untrusted guest repository'; return 1; }
+  if [[ $seen == *$'\nrunsc_version\n'* || $seen == *$'\nrunsc_source\n'* || $seen == *$'\nrunsc_origin\n'* || -e $package/libexec/runsc ]]; then
+    [[ $platform == linux-* && $runsc_version == release-20261005.0 && $runsc_origin == bundled && \
+       $runsc_source == https://github.com/google/gvisor/releases/tag/release-20261005.0 ]] || {
+      package_error 'invalid gVisor package metadata'; return 1;
+    }
+  fi
   if [[ $platform == darwin-arm64 ]]; then
     version_at_least "$(sw_vers -productVersion)" "$minimum" || { package_error "requires macOS $minimum"; return 1; }
   else
@@ -114,6 +134,15 @@ verify_native_package() {
   (cd "$package"; if command -v sha256sum >/dev/null 2>&1; then sha256sum --check --status SHA256SUMS; else shasum -a 256 --check --status SHA256SUMS; fi) || {
     package_error 'bundle checksum verification failed'; return 1;
   }
+  if [[ -n $runsc_version ]]; then
+    local runtime_file
+    while IFS= read -r runtime_file; do
+      awk -v file="./libexec/$runtime_file" '$2 == file && length($1) == 64 { found = 1 } END { exit !found }' "$package/SHA256SUMS" || {
+        package_error "gVisor payload is absent from bundle checksums: $runtime_file"; return 1;
+      }
+    done < <(runsc_files)
+    verify_runsc_payload "$package/libexec" "$platform" || return
+  fi
   verify_native_artifacts "$package/bin" "$package/assets/guest" "$profile" "$platform" || return
   identity=$("$package/bin/safeyolo" --version)
   [[ ${identity#* commit=} == "$source profile=$profile" ]] || { package_error 'package source differs from executable'; return 1; }

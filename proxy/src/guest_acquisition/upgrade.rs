@@ -45,7 +45,11 @@ fn install_inputs(
         )?;
         fs::File::open(stage.path().join("cache-paths.txt"))?.sync_all()?;
     }
-    archive::validate_assets(stage.path(), platform)?;
+    archive::validate_assets(
+        stage.path(),
+        platform,
+        crate::linux_host::mapping_for_root(root)?,
+    )?;
     fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o755))?;
     fs::File::open(stage.path())?.sync_all()?;
     fs::rename(stage.path(), &destination)?;
@@ -72,7 +76,15 @@ async fn upgrade(
 ) -> Result<GuestSelection, Error> {
     let current = installed(root, package)?
         .ok_or("no installed OCI guest selection; install a default guest before upgrading")?;
-    let mut selected = acquire(client, package, store, index, Some(&current)).await?;
+    let mut selected = acquire(
+        client,
+        package,
+        store,
+        index,
+        Some(&current),
+        crate::linux_host::mapping_for_root(root)?,
+    )
+    .await?;
     if selected.index == current.index
         && selected.manifest == current.manifest
         && selected.archive == current.archive

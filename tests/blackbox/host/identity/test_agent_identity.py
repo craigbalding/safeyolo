@@ -8,6 +8,7 @@ sandbox.
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -107,11 +108,11 @@ class TestRootlessUidMapping:
     """
 
     def test_sandbox_root_maps_to_subordinate_host_uid(self):
-        """Sandbox uid 0 maps to uid 100000 rather than host root.
+        """Sandbox root maps to the selected subordinate UID and GID.
 
-        What: On Linux, read the live user-namespace holder's uid_map
-        and assert sandbox uid 0 maps to host uid 100000, while uid
-        1000 maps only to the current host operator uid.
+        What: Read the live namespace holder's UID and GID maps. Check
+        that root uses the prepared bases and guest ID 1000 uses the
+        host account. Retain the original mapping for older packages.
         Why: If sandbox uid 0 mapped to host uid 0, setpriv or a package
         maintainer script would gain real host root. If uid 1000 did
         not map to the operator, normal workspace ownership would fail.
@@ -126,29 +127,15 @@ class TestRootlessUidMapping:
         except ValueError as exc:
             pytest.fail(f"Invalid userns holder PID in {pid_path}: {exc}")
 
-        uid_map_path = Path(f"/proc/{pid}/uid_map")
-        assert uid_map_path.exists(), (
-            f"Live userns uid_map not found for holder PID {pid}"
-        )
-        mappings = [
-            tuple(map(int, line.split()))
-            for line in uid_map_path.read_text().splitlines()
-            if line.strip()
-        ]
-
-        def host_uid_for(sandbox_uid: int) -> int | None:
-            for inside, outside, length in mappings:
-                if inside <= sandbox_uid < inside + length:
-                    return outside + sandbox_uid - inside
-            return None
-
-        assert host_uid_for(0) == 100000, (
-            f"Sandbox root mapping is not subordinate: {mappings}"
-        )
-        assert host_uid_for(0) != 0, (
-            f"Sandbox root maps to host root: {mappings}"
-        )
-        assert host_uid_for(1000) == os.getuid(), (
-            f"Sandbox agent uid does not map to operator uid {os.getuid()}: "
-            f"{mappings}"
-        )
+        linux = tomllib.loads((_CONFIG_DIR / "config.toml").read_text()).get("linux")
+        for kind, operator in (("uid", os.getuid()), ("gid", os.getgid())):
+            base = linux[f"{kind}_base"] if linux else 100000
+            assert base != 0, f"selected {kind} base maps to host root"
+            map_path = Path(f"/proc/{pid}/{kind}_map")
+            assert map_path.exists(), f"live {kind} map missing for holder PID {pid}"
+            mappings = [tuple(map(int, line.split())) for line in map_path.read_text().splitlines() if line.strip()]
+            expected = [(0, base, 1000), (1000, operator, 1), (1001, base + 1001, 64535)]
+            legacy = [*expected[:2], (1001, base + 1001, 64534)]
+            assert mappings == expected or not linux and mappings == legacy, (
+                f"live {kind} map differs from the selected rootless mapping: {mappings}"
+            )

@@ -16,7 +16,8 @@ Download a production archive for your host from the published
 It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
 source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use this explicit release;
 GitHub's Latest selector still points to an earlier product. This guide also
-covers newer source builds. Automatic and later publication remain stopped.
+covers newer source builds. Check the source commit in your bundle: newer
+source features are absent from the linked older release.
 Source builds are an [alternative](#build-a-bundle).
 Existing wheel downloads belong to the earlier Python CLI.
 A bundle's `package-info` records its source, profile, platform and actual
@@ -31,7 +32,8 @@ environment or uv tool installation.
 
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
-Before installation, prepare the [host runtime](#guest-prerequisites).
+For this linked release, prepare the [host runtime](#guest-prerequisites) before installation.
+New source bundles use [automatic Linux host preparation](#linux-host-preparation-in-new-source-bundles).
 For an optional archive integrity check, save `SHA256SUMS` beside the archive
 and run `sha256sum --ignore-missing --check SHA256SUMS` on Ubuntu, or
 `shasum -a 256 --ignore-missing --check SHA256SUMS` on macOS. An `OK` result
@@ -195,7 +197,8 @@ it prevents discovery; the new instance files remain available for recovery.
 
 ## Guest prerequisites
 
-Prepare the platform inputs below before creating an agent. The package
+For the linked `host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796` release,
+prepare the platform inputs below before creating an agent. That package
 does not run a Python bootstrap or provision the host operating system. On
 Ubuntu, the host administrator supplies runsc, uidmap, acl, iproute2 and
 util-linux; subordinate user ID (UID) and group ID (GID) ranges must
@@ -218,7 +221,8 @@ These steps preserve the existing namespace and hardware isolation setup.
 
 Automatic acquisition uses the [OCI guest contract](guest-oci.md) and the registry client. No registry account, Docker, ORAS or local guest build is
 needed. The installer stores verified blobs and prepared trees in
-`$HOME/.local/share/safeyolo/guests`, addressed by their archive digest.
+`$HOME/.local/share/safeyolo/guests`. Blobs use their archive digest; new Linux
+source builds also distinguish prepared trees by their UID/GID mapping.
 Keep that directory: installed Linux instances reference its trees.
 `share/guest-selection.json` records the version, repository, compatibility,
 consumer platform and selected index, child-manifest and archive descriptors.
@@ -242,6 +246,101 @@ keep that shared tree available and immutable for the instance's lifetime.
 Use `--no-guest-download` for a contributor or proxy-only installation that
 will receive guest assets separately. That option preserves already prepared
 inputs. It does not build a guest or fall back after a failed pull.
+
+## Linux host preparation in new source bundles
+
+New Linux source bundles include the complete gVisor `release-20261005.0`
+payload for the bundle's architecture. The installer checks its checksums,
+architecture, executable files and version. It uses that private runtime;
+it does not replace a system `runsc` or add a package repository.
+The older published release linked above still needs its manual prerequisites.
+
+Run the bundle's ordinary `install.sh` as your host account. Before changing
+Ubuntu, it lists missing packages, account ranges, file permissions and the
+AppArmor profile, then asks for consent. `--yes` accepts those listed changes
+for an unattended installation. It uses sudo only for required privileged
+operations. The proxy and agents continue to run without host root privilege.
+
+Preparation installs missing host tools from Ubuntu's existing package sources.
+It reuses suitable subordinate UID and GID ranges independently. If either
+range is missing, shadow's locked account allocator selects an unused range.
+Another account's allocation at 100000–165535 does not prevent installation.
+Preparation preserves that allocation and uses different bases when needed.
+It never renumbers existing accounts or changes a live guest tree.
+
+Where Ubuntu restricts unprivileged user namespaces, preparation installs and
+loads a separate AppArmor profile for this runtime's actual path. It grants
+only the selected mapped root UID needed access through private runtime
+directories. It preserves other users' and groups' effective file permissions.
+It keeps AppArmor enabled and does not change global namespace
+policy. For an explicitly selected KVM backend, set
+`SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
+requires `/dev/kvm` and grants the mapped root GID required read/write access.
+It repairs a selected root UID denial if required and preserves other ACL
+permissions. The group grant remains when named-user ACL entries are reset.
+If the device or its group permissions reset, run preparation again before
+creating another sandbox. An already running KVM sandbox retains its open
+virtual machine descriptor. `SAFEYOLO_RUNSC_PLATFORM=systrap` needs no KVM device.
+
+To check or retry an installed source bundle after a host change, use the
+commands for the backend you selected. For the default backend selection, run:
+
+```sh
+safeyolo host prepare
+safeyolo doctor
+```
+
+For an explicitly selected KVM backend, run:
+
+```sh
+SAFEYOLO_RUNSC_PLATFORM=kvm safeyolo host prepare
+SAFEYOLO_RUNSC_PLATFORM=kvm safeyolo doctor
+```
+
+Doctor's `linux` result gives the selected runtime path, version and origin,
+the host UID/GID, the subordinate bases and the AppArmor profile. It also checks
+required host tools and rootless namespaces. A failed host check keeps the
+known runtime identity and gives a recovery action. The same
+identity appears in the existing agent run metadata. A missing or invalid
+selected payload stops startup with a repair action; it does not select
+another runtime silently.
+
+An explicit `--system-runsc /absolute/path/to/runsc` installer or host-prepare
+option selects a system installation of the same tested release. It must have
+the complete payload beside that executable, including `gvisor-bin`. Its
+administrator remains responsible for those bytes and security updates.
+Bundled runtime fixes arrive through normal SafeYolo host-package updates;
+there is no separate runtime updater. SafeYolo ships `runsc` and its five
+companion executables. It omits the separate containerd shim, which its launcher
+does not call. `package-info` records the bundled
+version, source and origin. `assets/licenses` contains the gVisor and dependency
+notices.
+
+The verified upstream tar is about 121 MB compressed for ARM64 and 130 MB for
+AMD64; the ARM64 payload is about 268 MB unpacked. These are runtime artifact
+sizes, not installation or first-agent timing results. The bundled model adds
+those bytes to a host package. It avoids an extra package source, changes to an
+unrelated system runtime and system-package version drift. An Ubuntu gVisor
+package can share its runtime across installations, but its package updates
+and installation remain host administration. SafeYolo selects the
+private pinned payload by default. See the upstream
+[distribution instructions](https://gvisor.dev/docs/user_guide/install/).
+
+A declined consent prompt makes no host changes. If sudo, allocation, namespace
+or profile setup fails, the command reports the failed operation and any
+completed changes. Keep those results. Repair the named prerequisite and retry;
+valid prerequisites are reused. If no unused range exists, the administrator
+must supply one within the host's allocation limits. Do not overlap another
+account's range. If the host disables rootless namespaces, use a supported
+host configuration; SafeYolo does not disable AppArmor or start agents as host
+root to compensate.
+
+Explicit `--platform-assets` inputs must already use a valid mapping for your
+account. Preparation checks and retains that mapping. It preserves shared
+prepared trees and refuses a conflicting saved mapping. Omit this option to
+acquire a separate tree for the selected account mapping. `--no-guest-download`
+retains contributor and proxy-only installation without host preparation,
+unless you explicitly select `--system-runsc`.
 
 ## Configure and use an agent
 
@@ -580,7 +679,9 @@ approval operations retain their separate owners.
 
 From a clean committed checkout on the target host, use Bash and the Rust
 toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
-ldd. macOS needs Command Line Tools and a signed VM helper build. Prepared
+ldd, curl and a tar with zstd support for the pinned gVisor payload. The
+assembler verifies the downloaded archive and reuses its checked cache.
+macOS needs Command Line Tools and a signed VM helper build. Prepared
 runtime inputs contain the `tmux` executable for this host. The assembler
 copies its resolved non-system libraries. This Ubuntu example selects
 `/usr/bin/tmux`, so `/usr/bin` is the runtime input directory.

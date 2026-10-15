@@ -90,7 +90,7 @@ def test_downloaded_bootstrap_installs_without_checkout_and_exposes_same_termina
     # Additional commands observe the same shell after installation. They are
     # validation, not prerequisites hidden in the proposed user workflow.
     result = run("/bin/bash", "--noprofile", "--norc", "-c",
-                 'set -e\nbash "$BOOTSTRAP"\ncommand -v safeyolo\nsafeyolo --version', env=environment)
+                 'set -e\nbash "$BOOTSTRAP" --yes\ncommand -v safeyolo\nsafeyolo --version', env=environment)
     assert result.returncode == 0, result.stderr
     assert (root / "bin/safeyolo").read_bytes().startswith(b"\x7fELF")
     assert str(Path(environment["HOME"]) / ".local/bin/safeyolo") in result.stdout
@@ -186,7 +186,7 @@ def test_product_acquisition_and_repeat_preserve_state_and_guest(public_release,
     guest_store.mkdir(parents=True)
     store_link.symlink_to(guest_store, target_is_directory=True)
     installed = run("/bin/bash", "--noprofile", "--norc", "-c",
-                    'set -e\nbash "$BOOTSTRAP"\ncommand -v safeyolo\nsafeyolo --version',
+                    'set -e\nbash "$BOOTSTRAP" --yes\ncommand -v safeyolo\nsafeyolo --version',
                     env={**environment, "BOOTSTRAP": str(bootstrap)})
     assert installed.returncode == 0, installed.stderr
     assert str(Path(environment["HOME"]) / ".local/bin/safeyolo") in installed.stdout
@@ -201,7 +201,7 @@ def test_product_acquisition_and_repeat_preserve_state_and_guest(public_release,
     preserved = {name: (root / name).read_bytes() for name in (*state, "data/agents/operator-state", "data/credentials.enc")}
     guest_inode = (root / "share/rootfs-tree").stat().st_ino
     requests_before = list(requests)
-    repeated = run("bash", str(bootstrap), env=environment)
+    repeated = run("bash", str(bootstrap), "--yes", env=environment)
     assert repeated.returncode == 0, repeated.stderr
     assert requests == requests_before
     assert (root / "share/rootfs-tree").stat().st_ino == guest_inode
@@ -218,13 +218,13 @@ def test_product_acquisition_and_repeat_preserve_state_and_guest(public_release,
     contents.update(replacement)
     separate_root = root.parent / "second-instance"
     separate_commands = root.parent / "second-commands"
-    refused = run("bash", str(bootstrap), "--root", str(separate_root),
+    refused = run("bash", str(bootstrap), "--yes", "--root", str(separate_root),
                   "--command-dir", str(separate_commands), env=environment)
     assert refused.returncode != 0 and "Guest acquisition failed" in refused.stderr
     assert not separate_root.exists() and not separate_commands.exists()
     assert all((root / name).read_bytes() == data for name, data in preserved.items())
     contents[blob_path] = original_blob
-    retry = run("bash", str(bootstrap), "--root", str(separate_root),
+    retry = run("bash", str(bootstrap), "--yes", "--root", str(separate_root),
                 "--command-dir", str(separate_commands), env=environment)
     assert retry.returncode == 0, retry.stderr
     assert (separate_root / "config.toml").exists()
@@ -246,7 +246,7 @@ def test_state_created_during_guest_download_is_preserved(public_release, guest_
     shadow_commands = root.parent / "first-bin"
     shadow_commands.mkdir()
     environment = {**environment, "PATH": f'{shadow_commands}:{environment["PATH"]}'}
-    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+    process = subprocess.Popen(["bash", str(bootstrap), "--yes"], env=environment, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         assert faults["entered"].wait(timeout=15), "installer did not reach guest download"
@@ -328,7 +328,7 @@ def test_command_symlink_created_at_publication_is_preserved_and_refused(public_
     assert not root.with_name(root.name + ".install-lock").exists()
     state = {name: (root / name).read_bytes() for name in ("config.toml", "policy.toml", "data/instance_id")}
     recovered_commands = tmp_path / "recovered-commands"
-    retried = run("bash", str(bootstrap), "--command-dir", str(recovered_commands), env=environment)
+    retried = run("bash", str(bootstrap), "--yes", "--command-dir", str(recovered_commands), env=environment)
     assert retried.returncode == 0, retried.stderr
     assert (recovered_commands / "safeyolo").resolve() == root / "bin/safeyolo"
     assert all((root / name).read_bytes() == data for name, data in state.items())

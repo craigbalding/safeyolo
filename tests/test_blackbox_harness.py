@@ -2,6 +2,7 @@
 
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 import shlex
@@ -1092,12 +1093,67 @@ if __name__ == '__main__':
                 assert option not in arguments
 
 
-def test_kvm_lane_prepares_operator_and_subordinate_access_before_native_installation():
+def test_kvm_lane_delegates_mapping_and_access_to_product_preparation():
     lane = (Path(__file__).parent / "blackbox/run-lane.sh").read_text()
-    acl = 'sudo -n setfacl -m "u:$(id -u):rw,u:100000:rw" /dev/kvm'
-    assert acl in lane
-    assert lane.index(acl) < lane.index('"$checkout/install.sh"')
+    assert "u:100000:rw" not in lane
+    assert 'host prepare --yes' in lane
+    assert 'export SAFEYOLO_RUNSC_PLATFORM=$lane' in lane
     assert 'safeyolo bootstrap' not in lane
+
+
+@pytest.mark.parametrize("instance", [None, "retained-disposable-instance"])
+def test_blackbox_native_autostart_receives_disposable_coord_binding(tmp_path, instance):
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    probe = tmp_path / "coord-environment.sh"
+    probe.write_text(runner[:runner.index("# Test instance ports")]
+                     + f'\n{shlex.quote(sys.executable)} -c '
+                     + shlex.quote("import json, os; print(json.dumps({k: os.environ[k] for k in ('SAFEYOLO_NATS_TEST_INSTANCE', 'SAFEYOLO_COORD_DATA_DIR')}))") + "\n")
+    root = tmp_path / "disposable"
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR"}}
+    env["SAFEYOLO_TEST_CONFIG_DIR"] = str(root)
+    if instance:
+        env["SAFEYOLO_NATS_TEST_INSTANCE"] = instance
+    result = subprocess.run(["bash", str(probe)], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["SAFEYOLO_COORD_DATA_DIR"] == str(root / "data/coord")
+    if instance:
+        assert observed["SAFEYOLO_NATS_TEST_INSTANCE"] == instance
+    else:
+        assert len(observed["SAFEYOLO_NATS_TEST_INSTANCE"]) == 32
+
+
+def test_blackbox_coord_binding_reaches_real_native_start_and_restart(tmp_path):
+    cli = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
+    nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if not cli or not nats:
+        pytest.skip("requires the native CLI and pinned NATS binary")
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    probe = tmp_path / "coord-start.sh"
+    probe.write_text(runner[:runner.index("# Test instance ports")]
+                     + '\nexec "$SELECTED_NATIVE_CLI" --root "$SAFEYOLO_CONFIG_DIR" coord start --binary "$SELECTED_NATS"\n')
+    root = tmp_path / "disposable"
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR", "SAFEYOLO_NATIVE_CONFIG_PATH"}}
+    env.update(SAFEYOLO_TEST_CONFIG_DIR=str(root), SELECTED_NATIVE_CLI=cli, SELECTED_NATS=nats)
+    subprocess.run([cli, "--root", str(root), "init"], env=env,
+                   capture_output=True, text=True, timeout=10, check=True)
+    try:
+        for _ in range(2):
+            result = subprocess.run(["bash", str(probe)], env=env, capture_output=True, text=True, timeout=20)
+            assert result.returncode == 0, result.stderr
+            process = json.loads(result.stdout)
+            assert process["client_port"] not in {4222, 8222}
+            assert process["monitor_port"] not in {4222, 8222, process["client_port"]}
+            status = subprocess.run([cli, "--root", str(root), "coord", "status"], env=env,
+                                    capture_output=True, text=True, timeout=10, check=True)
+            assert json.loads(status.stdout)["process"] == process
+            subprocess.run([cli, "--root", str(root), "coord", "stop"], env=env,
+                           capture_output=True, text=True, timeout=10, check=True)
+    finally:
+        subprocess.run([cli, "--root", str(root), "coord", "stop"], env=env,
+                       capture_output=True, text=True, timeout=10, check=True)
 
 
 @pytest.mark.parametrize("lane,acl_exit,expected", [("kvm", 0, 0), ("kvm", 7, 7), ("systrap", 0, 2)])
@@ -1112,8 +1168,10 @@ def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tm
         path.mkdir(parents=True)
     (tools / "uname").write_text('#!/bin/sh\nprintf "Linux\\n"\n')
     calls = tmp_path / "acl-command.json"
-    (tools / "sudo").write_text(f'#!{sys.executable}\nimport json,sys\n'
-                              f'open({str(calls)!r}, "w").write(json.dumps(sys.argv[1:]))\nsys.exit({acl_exit})\n')
+    native = tools / "safeyolo"
+    native.write_text(f'#!{sys.executable}\nimport json,os,sys\n'
+                      f'assert os.environ["SAFEYOLO_RUNSC_PLATFORM"] == "kvm"\n'
+                      f'open({str(calls)!r}, "w").write(json.dumps(sys.argv[1:]))\nsys.exit({acl_exit})\n')
     unexpected = tmp_path / "unexpected-install-or-sync"
     failure_script = f'#!/bin/sh\ntouch {shlex.quote(str(unexpected))}\nexit 8\n'
     (tools / "uv").write_text(failure_script)
@@ -1123,13 +1181,14 @@ def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tm
     for path in (*tools.iterdir(), checkout / "install.sh"):
         path.chmod(0o755)
     env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
-               SAFEYOLO_PLATFORM_ASSETS=str(assets), SAFEYOLO_CONFIG_DIR=str(tmp_path / "prepared"))
+               SAFEYOLO_PLATFORM_ASSETS=str(assets), SAFEYOLO_CONFIG_DIR=str(tmp_path / "prepared"),
+               SAFEYOLO_NATIVE_CLI=str(native))
     result = subprocess.run(["bash", str(probe), lane, "--install-checkout", str(checkout), "--prepare-kvm-only"],
                             env=env, capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == expected, result.stderr
     assert not unexpected.exists() and not (tmp_path / "prepared").exists()
     if lane == "kvm":
-        assert json.loads(calls.read_text()) == ["-n", "setfacl", "-m", f"u:{os.getuid()}:rw,u:100000:rw", str(device)]
+        assert json.loads(calls.read_text()) == ["--root", str(tmp_path / "prepared"), "host", "prepare", "--yes"]
         assert ("KVM access prepared" in result.stdout) == (acl_exit == 0)
     else:
         assert not calls.exists() and "requires the KVM lane" in result.stderr
@@ -2707,3 +2766,28 @@ def test_continuity_owned_parent_keeps_oauth_provider_separate():
         for thread in threads:
             thread.join(timeout=3)
             assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("fault", [None, "root", "gid", "operator"])
+def test_installed_identity_probe_checks_selected_uid_and_gid_maps(tmp_path, monkeypatch, fault):
+    spec = importlib.util.spec_from_file_location("host_mapping_probe", ROOT / "tests/blackbox/host/identity/test_agent_identity.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_CONFIG_DIR", tmp_path)
+    agent = tmp_path / "agents" / module._AGENT_NAME
+    agent.mkdir(parents=True)
+    (agent / "userns.pid").write_text("173971")
+    (tmp_path / "config.toml").write_text("[linux]\nuid_base=300000\ngid_base=500000\n")
+    uid, gid = os.getuid(), os.getgid()
+    values = {
+        "/proc/173971/uid_map": f"0 {0 if fault == 'root' else 300000} 1000\n1000 {uid+1 if fault == 'operator' else uid} 1\n1001 301001 64535\n",
+        "/proc/173971/gid_map": f"0 {300000 if fault == 'gid' else 500000} 1000\n1000 {gid} 1\n1001 501001 64535\n",
+    }
+    read, exists = Path.read_text, Path.exists
+    monkeypatch.setattr(Path, "read_text", lambda path, *a, **kw: values[str(path)] if str(path) in values else read(path, *a, **kw))
+    monkeypatch.setattr(Path, "exists", lambda path: str(path) in values or exists(path))
+    if fault:
+        with pytest.raises(AssertionError, match="differs from the selected"):
+            module.TestRootlessUidMapping().test_sandbox_root_maps_to_subordinate_host_uid()
+    else:
+        module.TestRootlessUidMapping().test_sandbox_root_maps_to_subordinate_host_uid()

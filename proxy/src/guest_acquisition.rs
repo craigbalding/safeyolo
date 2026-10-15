@@ -28,6 +28,14 @@ mod archive;
 #[path = "guest_acquisition/upgrade.rs"]
 mod upgrade;
 
+#[cfg(target_os = "linux")]
+pub(crate) fn validate_prepared_linux_assets(
+    path: &Path,
+    mapping: crate::linux_host::Mapping,
+) -> Result<(), Error> {
+    archive::validate_assets(path, consumer_platform()?, mapping)
+}
+
 pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY]\nPrepare the compatible default guest for the verified installer.\nPrint the prepared asset directory and write its OCI selection as JSON. Existing installed selections are retained.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
@@ -36,6 +44,8 @@ struct PackageGuest {
     repository: String,
     discovery_tag: String,
     platform: ConsumerPlatform,
+    #[cfg(target_os = "linux")]
+    runsc_version: Option<String>,
 }
 
 impl PackageGuest {
@@ -53,6 +63,9 @@ impl PackageGuest {
                     | "guest_compatibility"
                     | "guest_repository"
                     | "guest_discovery_tag"
+                    | "runsc_version"
+                    | "runsc_source"
+                    | "runsc_origin"
             ) {
                 return Err(format!("unknown package field: {key}").into());
             }
@@ -90,6 +103,17 @@ impl PackageGuest {
             "linux-arm64" => ConsumerPlatform::LinuxArm64,
             _ => return Err("unsupported guest consumer platform".into()),
         };
+        if ["runsc_version", "runsc_source", "runsc_origin"]
+            .iter()
+            .any(|key| fields.contains_key(key))
+            && (platform == ConsumerPlatform::DarwinArm64
+                || field("runsc_version")? != "release-20261005.0"
+                || field("runsc_source")?
+                    != "https://github.com/google/gvisor/releases/tag/release-20261005.0"
+                || field("runsc_origin")? != "bundled")
+        {
+            return Err("invalid gVisor package metadata".into());
+        }
         if platform != consumer_platform()? {
             return Err("package platform differs from this host".into());
         }
@@ -113,8 +137,20 @@ impl PackageGuest {
             repository: repository.into(),
             discovery_tag: discovery_tag.into(),
             platform,
+            #[cfg(target_os = "linux")]
+            runsc_version: fields.get("runsc_version").map(|value| value.to_string()),
         })
     }
+}
+
+/// Reuse the package's strict reader for Linux runtime selection and doctor.
+#[cfg(target_os = "linux")]
+pub(crate) fn packaged_runsc_version(root: &Path) -> Result<Option<String>, Error> {
+    let path = root.join("package-info");
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    Ok(PackageGuest::read(&path)?.runsc_version)
 }
 
 fn consumer_platform() -> Result<ConsumerPlatform, Error> {
@@ -246,6 +282,7 @@ async fn acquire(
     store: &Path,
     index_digest: Option<&str>,
     retained: Option<&GuestSelection>,
+    mapping: crate::linux_host::Mapping,
 ) -> Result<GuestSelection, Error> {
     let reference: Reference = match index_digest {
         Some(digest) => {
@@ -285,7 +322,12 @@ async fn acquire(
         child.archive.check_size(selected.archive.size)?;
         selected.assets.clone()
     } else {
-        trees.join(guest_oci::sha256_hex(&child.archive.digest)?)
+        let digest = guest_oci::sha256_hex(&child.archive.digest)?;
+        if package.platform == ConsumerPlatform::DarwinArm64 {
+            trees.join(digest)
+        } else {
+            trees.join(mapping.tree_name(digest))
+        }
     };
     // Verify a reusable archive's descriptor too. A changed index can declare
     // a wrong size even when its tree already exists from an earlier operation.
@@ -295,13 +337,15 @@ async fn acquire(
         None
     };
     if assets.try_exists()? {
-        archive::validate_assets(&assets, package.platform)?;
+        archive::validate_assets(&assets, package.platform, mapping)?;
     } else {
         let input = input.ok_or("retained guest inputs disappeared during acquisition")?;
         let destination = assets.clone();
         let platform = package.platform;
-        tokio::task::spawn_blocking(move || archive::prepare(&input, &destination, platform))
-            .await??;
+        tokio::task::spawn_blocking(move || {
+            archive::prepare(&input, &destination, platform, mapping)
+        })
+        .await??;
     }
     let (os, architecture) = package.platform.os_architecture();
     Ok(GuestSelection {
@@ -351,9 +395,10 @@ impl GuestSelection {
     }
 
     fn validate_inputs(&self, root: &Path, platform: ConsumerPlatform) -> Result<(), Error> {
-        archive::validate_assets(&self.assets, platform)?;
+        let mapping = crate::linux_host::mapping_for_root(root)?;
+        archive::validate_assets(&self.assets, platform, mapping)?;
         let inputs = self.inputs(root);
-        archive::validate_assets(&inputs, platform)?;
+        archive::validate_assets(&inputs, platform, mapping)?;
         if platform != ConsumerPlatform::DarwinArm64
             && inputs.join("rootfs-tree").canonicalize()?
                 != self.assets.join("rootfs-tree").canonicalize()?
@@ -407,6 +452,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     let mut package_info = None;
     let mut store = None;
     let mut selection_file = None;
+    let mut host_settings = None;
     let mut options = arguments[1..].iter();
     while let Some(option) = options.next() {
         let value = options
@@ -418,6 +464,8 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             store = Some(PathBuf::from(value));
         } else if option == "--write-selection" && selection_file.is_none() {
             selection_file = Some(PathBuf::from(value));
+        } else if option == "--host-settings" && host_settings.is_none() {
+            host_settings = Some(PathBuf::from(value));
         } else {
             return Err("unknown or duplicate guest acquire option".into());
         }
@@ -451,7 +499,11 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     fs::create_dir_all(&store)?;
     let store = store.canonicalize()?;
     let _store_lock = crate::host_platform::lock_host_state(&store.join("acquire.lock"))?;
-    let selection = acquire(&registry_client()?, &package, &store, None, None).await?;
+    let mapping = match host_settings {
+        Some(path) => crate::linux_host::mapping_from_settings(&path)?,
+        None => crate::linux_host::mapping_for_root(root)?,
+    };
+    let selection = acquire(&registry_client()?, &package, &store, None, None, mapping).await?;
     // Acquisition can take time. Preserve an instance initialized meanwhile.
     if root.join("config.toml").try_exists()?
         || root.join("policy.toml").try_exists()?

@@ -124,7 +124,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         else:
             inputs += ["--no-guest-download"]
         installation = subprocess.run(
-            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), *inputs],
+            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
             capture_output=True, text=True, timeout=15,
         )
         assert installation.returncode == 0, installation.stderr
@@ -201,6 +201,12 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         for binary in (*HOST_BINARIES, "tmux", "watch-backlog-factory"):
             (root / "bin" / binary).unlink(missing_ok=True)
         (root / "libexec/tmux").unlink(missing_ok=True)
+        # Proxy-only fixtures have no guest that could still use these bytes.
+        # Retain runtime payloads for guest-bearing fixtures and their cleanup.
+        if not (root / "agents").exists():
+            for binary in ("runsc", "containerd-shim-runsc-v1"):
+                (root / "libexec" / binary).unlink(missing_ok=True)
+            shutil.rmtree(root / "libexec/gvisor-bin", ignore_errors=True)
         for binary in GUEST_BINARIES:
             (root / "assets/guest" / binary).unlink(missing_ok=True)
 

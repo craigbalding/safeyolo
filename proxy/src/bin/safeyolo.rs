@@ -281,6 +281,9 @@ async fn run() -> Result<(), Error> {
                 .map_err(|_| "command arguments must be UTF-8 text")
         })
         .collect::<Result<_, _>>()?;
+    if arguments.first().is_some_and(|value| value == "host") {
+        return safeyolo_proxy::linux_host::run(&root, &arguments[1..]);
+    }
     if arguments.first().is_some_and(|value| value == "demo") {
         return safeyolo_proxy::demo::run(&config, &arguments[1..]).await;
     }
@@ -331,6 +334,8 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::demo::HELP);
             println!("{}", safeyolo_proxy::guest_acquisition::HELP);
+            #[cfg(target_os = "linux")]
+            println!("{}", safeyolo_proxy::linux_host::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
             println!("{}", safeyolo_proxy::factory_proposals::HELP);
             println!("{}", safeyolo_proxy::dispatch::request::HELP);

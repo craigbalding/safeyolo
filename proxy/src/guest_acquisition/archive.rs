@@ -2,13 +2,17 @@
 
 use std::{
     fs,
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
 };
 
-use crate::{Error, guest_oci::ConsumerPlatform};
+use crate::{
+    Error,
+    guest_oci::ConsumerPlatform,
+    linux_host::{ARCHIVE_BASE, ID_COUNT, Mapping},
+};
 
 fn regular(path: &Path) -> Result<(), Error> {
     if !fs::symlink_metadata(path)?.is_file() {
@@ -17,7 +21,11 @@ fn regular(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub(super) fn validate_assets(path: &Path, platform: ConsumerPlatform) -> Result<(), Error> {
+pub(super) fn validate_assets(
+    path: &Path,
+    platform: ConsumerPlatform,
+    mapping: Mapping,
+) -> Result<(), Error> {
     if platform == ConsumerPlatform::DarwinArm64 {
         for name in ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"] {
             regular(&path.join(name))?;
@@ -25,9 +33,14 @@ pub(super) fn validate_assets(path: &Path, platform: ConsumerPlatform) -> Result
     } else {
         let tree = path.join("rootfs-tree");
         let metadata = tree.metadata()?;
-        if !metadata.is_dir() || metadata.uid() != 100000 || metadata.gid() != 100000 {
+        if !metadata.is_dir()
+            || metadata.uid() != mapping.uid_base
+            || metadata.gid() != mapping.gid_base
+        {
             return Err(format!(
-                "prepared rootfs-tree must be a directory owned by 100000:100000: {}",
+                "prepared rootfs-tree must be a directory owned by {}:{}: {}",
+                mapping.uid_base,
+                mapping.gid_base,
                 tree.display()
             )
             .into());
@@ -59,7 +72,12 @@ pub(super) fn remove_stage(path: &Path, platform: ConsumerPlatform) -> Result<()
     }
 }
 
-fn extract(input: &Path, stage: &Path, platform: ConsumerPlatform) -> Result<(), Error> {
+fn extract(
+    input: &Path,
+    stage: &Path,
+    platform: ConsumerPlatform,
+    mapping: Mapping,
+) -> Result<(), Error> {
     let linux = platform != ConsumerPlatform::DarwinArm64;
     let mut command = if linux && unsafe { libc::geteuid() } != 0 {
         let mut command = Command::new("sudo");
@@ -110,14 +128,18 @@ fn extract(input: &Path, stage: &Path, platform: ConsumerPlatform) -> Result<(),
     if !diagnostic.is_empty() {
         eprintln!("Guest extraction warnings: {diagnostic}");
     }
-    validate_assets(stage, platform)?;
+    validate_assets(
+        stage,
+        platform,
+        Mapping::for_bases(ARCHIVE_BASE, ARCHIVE_BASE),
+    )?;
     // A top-level symlink cannot stand in for the Linux rootfs directory.
     if linux && !fs::symlink_metadata(stage.join("rootfs-tree"))?.is_dir() {
         return Err("archive rootfs-tree must be a directory, not a link".into());
     }
     if linux {
-        // build-rootfs.sh chowns the entire finished tree to sandbox root.
-        // Check descendants too before exposing the prepared tree to installations.
+        // The publisher uses the original subordinate-ID range. Reject owners
+        // outside that range before shifting this freshly extracted stage.
         let mut command = if unsafe { libc::geteuid() } != 0 {
             let mut command = Command::new("sudo");
             command.arg("find");
@@ -125,10 +147,26 @@ fn extract(input: &Path, stage: &Path, platform: ConsumerPlatform) -> Result<(),
         } else {
             Command::new("find")
         };
+        let minimum = ARCHIVE_BASE.to_string();
+        let maximum = (ARCHIVE_BASE + ID_COUNT - 1).to_string();
         let checked = command
             .arg(stage.join("rootfs-tree"))
             .args([
-                "-xdev", "(", "!", "-uid", "100000", "-o", "!", "-gid", "100000", ")", "-print",
+                "-xdev",
+                "(",
+                "-uid",
+                &format!("-{minimum}"),
+                "-o",
+                "-uid",
+                &format!("+{maximum}"),
+                "-o",
+                "-gid",
+                &format!("-{minimum}"),
+                "-o",
+                "-gid",
+                &format!("+{maximum}"),
+                ")",
+                "-print",
                 "-quit",
             ])
             .output()
@@ -138,9 +176,72 @@ fn extract(input: &Path, stage: &Path, platform: ConsumerPlatform) -> Result<(),
         }
         if !checked.stdout.is_empty() {
             return Err(
-                "archive rootfs-tree entries must retain sandbox ownership 100000:100000".into(),
+                "archive rootfs-tree ownership is outside the published subordinate-ID range 100000–165535".into(),
             );
         }
+        let mut needs_remap = mapping.uid_base != ARCHIVE_BASE || mapping.gid_base != ARCHIVE_BASE;
+        if !needs_remap {
+            let mut find = if unsafe { libc::geteuid() } != 0 {
+                let mut c = Command::new("sudo");
+                c.arg("find");
+                c
+            } else {
+                Command::new("find")
+            };
+            let checked = find
+                .arg(stage.join("rootfs-tree"))
+                .args([
+                    "-xdev", "(", "-uid", "101000", "-o", "-gid", "101000", ")", "-print", "-quit",
+                ])
+                .output()?;
+            if !checked.status.success() {
+                return Err("cannot check the archive's guest-user ownership".into());
+            }
+            needs_remap = !checked.stdout.is_empty();
+            if !needs_remap {
+                // A named guest-user ACL also needs the host account's ID,
+                // even when the file itself is owned by unchanged root.
+                let mut output = tempfile::tempfile_in(stage)?;
+                let status = Command::new("sudo")
+                    .args(["--", "getfacl", "-R", "-s", "-n", "-p"])
+                    .arg(stage.join("rootfs-tree"))
+                    .stdout(output.try_clone()?)
+                    .status()?;
+                if !status.success() {
+                    return Err(
+                        "cannot check named guest-user ACLs before ownership preparation".into(),
+                    );
+                }
+                output.seek(SeekFrom::Start(0))?;
+                for line in BufReader::new(output).lines() {
+                    let line = line?;
+                    if line.starts_with("user:101000:")
+                        || line.starts_with("group:101000:")
+                        || line.starts_with("default:user:101000:")
+                        || line.starts_with("default:group:101000:")
+                    {
+                        needs_remap = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if needs_remap {
+            let mut remap = Command::new("sudo");
+            remap
+                .arg("--")
+                .arg(std::env::current_exe()?)
+                .args(["host", "remap-rootfs"])
+                .arg(stage.join("rootfs-tree"))
+                .arg(mapping.uid_base.to_string())
+                .arg(mapping.gid_base.to_string())
+                .arg(mapping.host_uid.to_string())
+                .arg(mapping.host_gid.to_string());
+            if !remap.status()?.success() {
+                return Err("guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer".into());
+            }
+        }
+        validate_assets(stage, platform, mapping)?;
     }
     Ok(())
 }
@@ -149,13 +250,15 @@ pub(super) fn prepare(
     input: &Path,
     destination: &Path,
     platform: ConsumerPlatform,
+    mapping: Mapping,
 ) -> Result<(), Error> {
     let parent = destination.parent().ok_or("guest tree has no parent")?;
     let stage = tempfile::Builder::new()
         .prefix("extract-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?
         .keep();
-    let result = extract(input, &stage, platform)
+    let result = extract(input, &stage, platform, mapping)
         .and_then(|()| {
             fs::set_permissions(&stage, fs::Permissions::from_mode(0o755)).map_err(Into::into)
         })

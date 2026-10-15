@@ -413,9 +413,16 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
         }
         [command] if command == "status" || command == "doctor" => {
             let agents = host_lifecycle::operate("list", None).await?;
-            print(
-                &json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root}),
-            )?;
+            let report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root});
+            #[cfg(target_os = "linux")]
+            let report = {
+                let mut report = report;
+                if command == "doctor" {
+                    report["linux"] = crate::linux_host::runsc_report();
+                }
+                report
+            };
+            print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
             "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional host-state copying require host consent. Detach from the agent terminal to review requests here. Configuration changes apply at the next sandbox start. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."

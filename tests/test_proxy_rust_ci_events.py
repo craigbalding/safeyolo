@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -164,6 +165,96 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["contracts"]["steps"])
     assert "cargo_with_space.sh test --release --locked" in full_runs
     assert not any("tests/proxy_contracts --proxy-backend rust" in step.get("run", "") for step in job["steps"])
+
+
+@pytest.mark.parametrize("rust,host,guest,cancelled,expected", [
+    ("true", "success", "success", False, True),
+    ("true", "failure", "success", False, False),
+    ("true", "skipped", "success", False, False),
+    ("true", "cancelled", "success", False, False),
+    ("true", "success", "failure", False, False),
+    ("true", "success", "skipped", False, False),
+    ("true", "success", "cancelled", False, False),
+    ("false", "success", "success", False, False),
+    ("", "", "", False, False),
+    ("true", "success", "success", True, False),
+])
+def test_linux_input_retention_requires_successful_producers_after_test_failure(rust, host, guest, cancelled, expected):
+    job = rust_workflow()["jobs"]["focused-pr"]
+    producers = {step.get("id"): step for step in job["steps"]}
+    host_build = producers["linux_host_inputs"]
+    guest_build = producers["linux_guest_inputs"]
+    assert "--bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy" in host_build["run"]
+    assert "pytest" not in host_build["run"]
+    assert guest_build["run"] == "scripts/build_guest_command.sh"
+    assert guest_build["env"]["SAFEYOLO_BUILD_PROFILE"] == "production"
+    for artifact in ("linux-host-amd64-production", "linux-guest-amd64-production"):
+        upload = next(step for step in job["steps"] if step.get("with", {}).get("name") == artifact)
+        # An explicit Actions status function removes the implicit success()
+        # check, so a later failed test does not suppress successful builds.
+        condition = upload["if"].strip().removeprefix("${{").removesuffix("}}").strip()
+        assert condition.startswith("!cancelled() && ")
+        condition = condition.replace("!cancelled()", "'false' == 'true'" if cancelled else "'true' == 'true'")
+        for name, value in (("steps.changes.outputs.rust", rust),
+                            ("steps.linux_host_inputs.outcome", host),
+                            ("steps.linux_guest_inputs.outcome", guest)):
+            assert name in condition
+            condition = condition.replace(name, shlex.quote(value))
+        # These string equalities and conjunctions have the same truth table
+        # in Bash. This checks admission, not a hosted artifact upload.
+        result = subprocess.run(["bash", "-e", "-c", f"[[ {condition} ]]"], capture_output=True, text=True)
+        assert result.returncode == (0 if expected else 1), result.stderr
+        assert upload["with"]["retention-days"] == 7
+        assert upload["with"]["if-no-files-found"] == "error"
+        assert job["steps"].index(host_build) < job["steps"].index(upload)
+        assert job["steps"].index(guest_build) < job["steps"].index(upload)
+    assert not job.get("continue-on-error")
+
+
+@pytest.mark.parametrize("failure", ["build", "tests"])
+def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_path, failure):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    build = next(step for step in steps if step.get("id") == "linux_host_inputs")
+    tests = next(step for step in steps if step.get("name") == "Test installed native policy commands")
+    assert steps.index(build) < steps.index(tests)
+    guest_tests = next(step for step in steps if step.get("name") == "Check native guest command operations")
+    assert steps.index(build) < steps.index(guest_tests)
+    assert not tests.get("continue-on-error")
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    build_calls = tmp_path / "build-calls"
+    cargo = scripts / "cargo_with_space.sh"
+    cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FIXTURE_BUILD_CALLS"\nexit ' + ("29" if failure == "build" else "0") + '\n')
+    cargo.chmod(0o755)
+    uv = commands / "uv"
+    uv.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FIXTURE_UV_CALLS"\nexit 23\n')
+    uv.chmod(0o755)
+    calls = tmp_path / "uv-calls"
+    script = tmp_path / "installed-tests.sh"
+    script.write_text(tests["run"])
+    # Hosted Bash has no sandbox startup file that replaces the fixture PATH.
+    result = subprocess.run(["bash", "-e", str(script)], cwd=tmp_path,
+                            capture_output=True, text=True,
+                            env=dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}",
+                                     BASH_ENV=os.devnull, RUNNER_TEMP=str(tmp_path),
+                                     FIXTURE_BUILD_CALLS=str(build_calls), FIXTURE_UV_CALLS=str(calls)))
+    assert build_calls.read_text().splitlines() == [
+        "build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy"
+    ]
+    if failure == "build":
+        assert result.returncode == 29, result.stderr
+        assert not calls.exists()
+    else:
+        assert result.returncode == 23, result.stderr
+        assert calls.read_text().splitlines() == [
+            "run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py "
+            "tests/proxy_contracts/test_first_agent_launch.py "
+            "cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions "
+            "cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links "
+            f"--basetemp {tmp_path}/native-policy"
+        ]
 
 
 def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:

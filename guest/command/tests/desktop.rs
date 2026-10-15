@@ -3,12 +3,14 @@
 
 use data_encoding::BASE64;
 use std::{
+    cell::RefCell,
     fs,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     os::fd::AsRawFd,
     os::unix::fs::symlink,
     process::{Child, Command, Stdio},
+    sync::{Mutex, MutexGuard, TryLockError, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -21,15 +23,24 @@ use tungstenite::{
     },
 };
 
+// A fixture releases endpoints before child bind, during restart and while
+// testing a missing VNC target. Keep other fixtures from allocating them.
+static DESKTOP_ENDPOINTS: Mutex<()> = Mutex::new(());
+
 struct Desktop {
     directory: tempfile::TempDir,
     web: std::path::PathBuf,
-    child: Child,
+    child: RefCell<Child>,
     address: SocketAddr,
     vnc: TcpListener,
+    // Drop this after the child and sockets have been cleaned up.
+    _endpoints: MutexGuard<'static, ()>,
 }
 impl Desktop {
     fn new() -> Self {
+        let endpoints = DESKTOP_ENDPOINTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let directory = tempfile::tempdir().unwrap();
         let web = directory.path().join("web");
         fs::create_dir(&web).unwrap();
@@ -38,11 +49,10 @@ impl Desktop {
         fs::write(web.join("image.png"), [0, 255, 128, 1]).unwrap();
         fs::write(directory.path().join("private"), "private-fixture-marker").unwrap();
         symlink(directory.path().join("private"), web.join("escape")).unwrap();
-        let address = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let web_reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = web_reservation.local_addr().unwrap();
         let vnc = TcpListener::bind("127.0.0.1:0").unwrap();
+        drop(web_reservation);
         let child = Command::new(env!("CARGO_BIN_EXE_safeyolo-guest"))
             .arg("desktop-bridge")
             .arg("--web")
@@ -55,23 +65,46 @@ impl Desktop {
             .stderr(fs::File::create(directory.path().join("bridge-stderr")).unwrap())
             .spawn()
             .unwrap();
-        let mut desktop = Self {
+        let desktop = Self {
             directory,
             web,
-            child,
+            child: RefCell::new(child),
             address,
             vnc,
+            _endpoints: endpoints,
         };
+        desktop.wait_for_listener();
+        desktop
+    }
+    fn diagnosis(&self) -> String {
+        let status = self.child.borrow_mut().try_wait();
+        let stderr = fs::read_to_string(self.directory.path().join("bridge-stderr"));
+        format!(
+            "web={} vnc={:?} bridge_status={status:?} bridge-stderr={stderr:?}",
+            self.address,
+            self.vnc.local_addr()
+        )
+    }
+    fn wait_for_listener(&self) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while TcpStream::connect(address).is_err() {
+        loop {
+            let connected = TcpStream::connect(self.address).is_ok();
+            let status = self.child.borrow_mut().try_wait();
             assert!(
-                desktop.child.try_wait().unwrap().is_none(),
-                "bridge exited before readiness"
+                matches!(status, Ok(None)),
+                "bridge exited or its status is unavailable before readiness: {}",
+                self.diagnosis()
             );
-            assert!(Instant::now() < deadline, "bridge did not listen");
+            if connected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bridge did not listen: {}",
+                self.diagnosis()
+            );
             thread::sleep(Duration::from_millis(10));
         }
-        desktop
     }
     fn http(&self, method: &str, path: &str) -> Vec<u8> {
         let mut socket = TcpStream::connect(self.address).unwrap();
@@ -88,7 +121,9 @@ impl Desktop {
         reply
     }
     fn browser(&self, protocol: Option<&str>) -> (WebSocket<TcpStream>, TcpStream) {
-        let socket = TcpStream::connect(self.address).unwrap();
+        let socket = TcpStream::connect(self.address).unwrap_or_else(|error| {
+            panic!("browser connection failed: {error}; {}", self.diagnosis())
+        });
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -103,7 +138,9 @@ impl Desktop {
                 .headers_mut()
                 .insert("sec-websocket-protocol", protocol.parse().unwrap());
         }
-        let (browser, response) = tungstenite::client(request, socket).unwrap();
+        let (browser, response) = tungstenite::client(request, socket).unwrap_or_else(|error| {
+            panic!("browser handshake failed: {error:?}; {}", self.diagnosis())
+        });
         assert_eq!(
             response
                 .headers()
@@ -119,9 +156,78 @@ impl Desktop {
 }
 impl Drop for Desktop {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let child = self.child.get_mut();
+        let _ = child.kill();
+        let _ = child.wait();
     }
+}
+
+#[test]
+fn released_endpoint_cannot_be_reused_by_another_desktop_fixture() {
+    let mut desktop = Desktop::new();
+    desktop.child.get_mut().kill().unwrap();
+    desktop.child.get_mut().wait().unwrap();
+
+    // Force a competing fixture's VNC allocation to take the released web
+    // endpoint. The real executable then reports the observed bind failure.
+    let competing_vnc = TcpListener::bind(desktop.address).unwrap();
+    let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo-guest"))
+        .arg("desktop-bridge")
+        .arg("--web")
+        .arg(&desktop.web)
+        .arg(desktop.address.to_string())
+        .arg(desktop.vnc.local_addr().unwrap().to_string())
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Address already in use"));
+    drop(competing_vnc);
+    assert!(matches!(
+        DESKTOP_ENDPOINTS.try_lock(),
+        Err(TryLockError::WouldBlock)
+    ));
+
+    let (attempting, attempted) = mpsc::channel();
+    let (ready, started) = mpsc::channel();
+    let next_fixture = thread::spawn(move || {
+        attempting.send(()).unwrap();
+        let next = Desktop::new();
+        assert!(next.http("GET", "/vnc.html").starts_with(b"HTTP/1.1 200"));
+        ready.send(()).unwrap();
+    });
+    attempted.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(started.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    drop(desktop);
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    next_fixture.join().unwrap();
+}
+
+#[test]
+fn a_listening_port_cannot_hide_an_exited_owned_bridge() {
+    let desktop = Desktop::new();
+    desktop.child.borrow_mut().kill().unwrap();
+    desktop.child.borrow_mut().wait().unwrap();
+    let _other_listener = TcpListener::bind(desktop.address).unwrap();
+    fs::write(
+        desktop.directory.path().join("bridge-stderr"),
+        "owned bridge failure",
+    )
+    .unwrap();
+    let failure =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| desktop.wait_for_listener()))
+            .expect_err("an unrelated listener must not make an exited bridge ready");
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(
+        message.contains(&format!("web={}", desktop.address)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&desktop.vnc.local_addr().unwrap().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("bridge_status=Ok(Some("), "{message}");
+    assert!(message.contains("owned bridge failure"), "{message}");
 }
 
 #[test]
@@ -204,35 +310,47 @@ fn binary_base64_and_default_protocol_relay_live_vnc_in_both_directions() {
 
 #[test]
 fn fragmented_binary_ping_and_client_close_retire_the_vnc_connection() {
-    let desktop = Desktop::new();
-    let (mut browser, mut vnc) = desktop.browser(Some("binary"));
-    browser
-        .send(Message::Frame(Frame::message(
-            b"frag".to_vec(),
-            OpCode::Data(Data::Binary),
-            false,
-        )))
-        .unwrap();
-    browser
-        .send(Message::Ping(b"control".to_vec().into()))
-        .unwrap();
-    browser
-        .send(Message::Frame(Frame::message(
-            b"mented".to_vec(),
-            OpCode::Data(Data::Continue),
-            true,
-        )))
-        .unwrap();
-    assert_eq!(
-        browser.read().unwrap(),
-        Message::Pong(b"control".to_vec().into())
-    );
-    let mut bytes = [0; 10];
-    vnc.read_exact(&mut bytes).unwrap();
-    assert_eq!(&bytes, b"fragmented");
-    browser.close(None).unwrap();
-    assert!(matches!(browser.read().unwrap(), Message::Close(_)));
-    assert_eq!(vnc.read(&mut [0]).unwrap(), 0);
+    for pong_before_continuation in [false, true] {
+        let desktop = Desktop::new();
+        let (mut browser, mut vnc) = desktop.browser(Some("binary"));
+        browser
+            .send(Message::Frame(Frame::message(
+                b"frag".to_vec(),
+                OpCode::Data(Data::Binary),
+                false,
+            )))
+            .unwrap();
+        browser
+            .send(Message::Ping(b"control".to_vec().into()))
+            .unwrap();
+        let pong = Message::Pong(b"control".to_vec().into());
+        // Also force the real bridge to parse the ping while the fragmented
+        // message is incomplete, before the continuation can arrive.
+        if pong_before_continuation {
+            assert_eq!(browser.read().unwrap(), pong);
+        }
+        browser
+            .send(Message::Frame(Frame::message(
+                b"mented".to_vec(),
+                OpCode::Data(Data::Continue),
+                true,
+            )))
+            .unwrap();
+        if !pong_before_continuation {
+            assert_eq!(browser.read().unwrap(), pong);
+        }
+        let mut bytes = [0; 10];
+        vnc.read_exact(&mut bytes).unwrap_or_else(|error| {
+            panic!(
+                "fragmented VNC read failed: {error}; pong_before_continuation={pong_before_continuation} bytes={bytes:?}; {}",
+                desktop.diagnosis()
+            )
+        });
+        assert_eq!(&bytes, b"fragmented");
+        browser.close(None).unwrap();
+        assert!(matches!(browser.read().unwrap(), Message::Close(_)));
+        assert_eq!(vnc.read(&mut [0]).unwrap(), 0);
+    }
 }
 
 #[test]
@@ -289,7 +407,7 @@ fn disconnected_browser_retires_connection_even_when_vnc_is_not_reading() {
         .unwrap();
     drop(browser);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while fs::read_dir(format!("/proc/{}/task", desktop.child.id()))
+    while fs::read_dir(format!("/proc/{}/task", desktop.child.borrow().id()))
         .unwrap()
         .count()
         != 1
@@ -522,8 +640,8 @@ fn missing_target_reports_bad_gateway_and_restart_frees_the_listener() {
         browser.read().unwrap(),
         Message::Binary(b"RFB 003.008\n".to_vec().into())
     );
-    desktop.child.kill().unwrap();
-    desktop.child.wait().unwrap();
+    desktop.child.get_mut().kill().unwrap();
+    desktop.child.get_mut().wait().unwrap();
     vnc.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     assert_eq!(vnc.read(&mut [0]).unwrap(), 0);
     assert!(TcpStream::connect(desktop.address).is_err());
@@ -534,13 +652,11 @@ fn missing_target_reports_bad_gateway_and_restart_frees_the_listener() {
         .arg(desktop.address.to_string())
         .arg(unavailable.to_string())
         .env_clear()
+        .stderr(fs::File::create(desktop.directory.path().join("bridge-stderr")).unwrap())
         .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(desktop.address).is_err() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(10));
-    }
+        .unwrap()
+        .into();
+    desktop.wait_for_listener();
     assert!(
         desktop
             .http("GET", "/vnc.html")

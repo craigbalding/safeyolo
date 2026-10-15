@@ -313,9 +313,14 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         if !rootfs.is_dir() {
             return Err(format!("installed rootfs tree is missing: {}", rootfs.display()).into());
         }
-        if rootfs.metadata()?.uid() != 100000 {
+        let mapping = crate::linux_host::selected_mapping()?;
+        if rootfs.metadata()?.uid() != mapping.uid_base
+            || rootfs.metadata()?.gid() != mapping.gid_base
+        {
             return Err(format!(
-                "rootfs tree must be owned by sandbox root UID 100000: {}",
+                "rootfs tree must be owned by sandbox root {}:{}: {}",
+                mapping.uid_base,
+                mapping.gid_base,
                 rootfs.display()
             )
             .into());
@@ -585,6 +590,7 @@ mod package_tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
         fs::write(root.join("config.toml"), "").unwrap();
+        let mapping = crate::linux_host::mapping_for_root(root).unwrap();
         let platform = if std::env::consts::ARCH == "aarch64" {
             "arm64"
         } else {
@@ -636,12 +642,14 @@ mod package_tests {
                 format!("/var/cache/{version}\n"),
             )
             .unwrap();
-            // Synthetic staging inputs, not an archive-ownership witness.
+            // Synthetic staging inputs use the selected host mapping.
+            // Archive ownership is checked separately.
             let tree = inputs.join("rootfs-tree");
             fs::set_permissions(&tree, fs::Permissions::from_mode(0o777)).unwrap();
             assert!(
                 std::process::Command::new("sudo")
-                    .args(["-n", "chown", "100000:100000"])
+                    .args(["-n", "chown"])
+                    .arg(format!("{}:{}", mapping.uid_base, mapping.gid_base))
                     .arg(&tree)
                     .status()
                     .unwrap()

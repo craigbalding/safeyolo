@@ -199,6 +199,7 @@ mod linux {
                 discovery_tag: "compat-v1".into(),
                 repository: format!("{}/guest", self.address),
                 platform: consumer_platform().unwrap(),
+                runsc_version: None,
             }
         }
 
@@ -266,9 +267,16 @@ mod linux {
         let registry = Registry::new(&release);
         let package = registry.package();
         let store = temp.path().join("store");
-        let selection = acquire(&registry.client(), &package, &store, None, None)
-            .await
-            .unwrap();
+        let selection = acquire(
+            &registry.client(),
+            &package,
+            &store,
+            None,
+            None,
+            crate::linux_host::Mapping::for_bases(100000, 100000),
+        )
+        .await
+        .unwrap();
         assert_eq!(selection.archive, release.archive);
         let tree = selection.assets.join("rootfs-tree");
         assert_eq!(tree.metadata().unwrap().uid(), 100000);
@@ -287,9 +295,16 @@ mod linux {
         );
         let tree_identity = selection.assets.metadata().unwrap().ino();
         let requests = registry.requests.lock().unwrap().len();
-        let again = acquire(&registry.client(), &package, &store, None, None)
-            .await
-            .unwrap();
+        let again = acquire(
+            &registry.client(),
+            &package,
+            &store,
+            None,
+            None,
+            crate::linux_host::Mapping::for_bases(100000, 100000),
+        )
+        .await
+        .unwrap();
         assert_eq!(again.assets.metadata().unwrap().ino(), tree_identity);
         let seen = registry.requests.lock().unwrap();
         assert!(
@@ -316,9 +331,16 @@ mod linux {
         *registry.truncated.lock().unwrap() = Some(key.clone());
         let store = temp.path().join("store");
         assert!(
-            acquire(&registry.client(), &registry.package(), &store, None, None)
-                .await
-                .is_err()
+            acquire(
+                &registry.client(),
+                &registry.package(),
+                &store,
+                None,
+                None,
+                crate::linux_host::Mapping::for_bases(100000, 100000)
+            )
+            .await
+            .is_err()
         );
         let blobs = store.join("blobs/sha256");
         assert!(
@@ -338,9 +360,16 @@ mod linux {
         *registry.truncated.lock().unwrap() = None;
         registry.contents.lock().unwrap().get_mut(&key).unwrap()[0] ^= 1;
         assert!(
-            acquire(&registry.client(), &registry.package(), &store, None, None)
-                .await
-                .is_err()
+            acquire(
+                &registry.client(),
+                &registry.package(),
+                &store,
+                None,
+                None,
+                crate::linux_host::Mapping::for_bases(100000, 100000)
+            )
+            .await
+            .is_err()
         );
         assert_eq!(fs::read_dir(store.join("trees/sha256")).unwrap().count(), 0);
     }
@@ -377,7 +406,12 @@ mod linux {
             let destination = temp
                 .path()
                 .join(if linked { "refused" } else { "prepared" });
-            let result = archive::prepare(&input, &destination, ConsumerPlatform::DarwinArm64);
+            let result = archive::prepare(
+                &input,
+                &destination,
+                ConsumerPlatform::DarwinArm64,
+                crate::linux_host::Mapping::for_bases(100000, 100000),
+            );
             if linked {
                 assert!(result.is_err());
                 assert!(!destination.exists());

@@ -16,14 +16,14 @@ while (($#)); do
         --root) root=$2;; --release) release=$2;;
       esac
       shift 2;;
-    --bundle|--platform-assets|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile)
+    --bundle|--platform-assets|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
       (($# >= 2)) || { echo "$1 requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$1 requires a nonempty value" >&2; exit 2; }
       [[ $1 != --bundle ]] || bundle=$2
       install_arguments+=("$1" "$2"); shift 2;;
-    --no-guest-download) install_arguments+=("$1"); shift;;
+    --no-guest-download|--yes) install_arguments+=("$1"); shift;;
     --help)
-      echo 'Usage: bash install-safeyolo.sh [--root DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download]'
+      echo 'Usage: bash install-safeyolo.sh [--root DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download] [--system-runsc PATH] [--yes]'
       echo 'Downloads the production host package from the official GitHub release and runs its installer. The default instance is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat uses the installed package without checking Latest or upgrading.'
       echo 'Trust source: HTTPS from the official github.com/craigbalding/safeyolo release, including its install-safeyolo.sh bootstrap. Same-release SHA256SUMS checks integrity; it is not independent publisher authentication.'
       echo 'Ubuntu AMD64/ARM64 and Apple Silicon macOS use the same download-and-run route. No package manager or build toolchain is needed for host acquisition. Host preparation, runtime and first-agent launch must also be available in the selected release.'

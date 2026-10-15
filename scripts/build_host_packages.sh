@@ -63,6 +63,12 @@ fi
 mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/assets/guest" "$directory/assets/launchers" "$directory/assets/contrib/lib" "$directory/assets/docs"
 for binary in safeyolo safeyolo-proxy safeyolo-coord; do cp "$artifacts/$binary" "$directory/bin/"; done
 cp "$runtime_artifacts/tmux" "$directory/libexec/"
+if [[ $platform == linux-* ]]; then
+  "$repository/scripts/acquire_runsc.sh" "$directory/gvisor-runtime"
+  cp -R "$directory/gvisor-runtime/"* "$directory/libexec/"
+  rm -rf "$directory/gvisor-runtime"
+  chmod 0755 "$directory/libexec" "$directory/libexec/gvisor-bin"
+fi
 cp "$repository/scripts/tmux_runtime.sh" "$directory/bin/tmux"
 cp "$repository/scripts/watch_backlog_factory.sh" "$directory/bin/watch-backlog-factory"
 mkdir -p "$directory/assets/licenses"
@@ -164,6 +170,9 @@ else
   minimum=$(readelf --version-info "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord} "${runtime_binaries[@]}" | sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -1)
 fi
 printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n' "$revision" "$profile" "$platform" "$minimum" > "$directory/package-info"
+if [[ $platform == linux-* ]]; then
+  printf 'runsc_version=release-20261005.0\nrunsc_source=https://github.com/google/gvisor/releases/tag/release-20261005.0\nrunsc_origin=bundled\n' >> "$directory/package-info"
+fi
 (cd "$directory"; find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s  %s\n' "$(file_sha256 "$file")" "$file"; done > SHA256SUMS)
 verify_native_package "$directory"
 if [[ -n $output ]]; then

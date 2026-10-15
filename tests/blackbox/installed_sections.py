@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import uuid
 from pathlib import Path
 
@@ -47,8 +48,18 @@ def prepare_native_instance(source: Path, root: Path) -> None:
         if target.exists():
             target.rmdir()  # Only an empty initialization directory may be replaced.
         target.symlink_to(source / name, target_is_directory=True)
-    if (source / "package-info").is_file():
-        shutil.copy2(source / "package-info", root / "package-info")
+    for name in ("package-info", "SHA256SUMS"):
+        if (source / name).is_file():
+            shutil.copy2(source / name, root / name)
+    if (source / "config.toml").is_file():
+        linux = tomllib.loads((source / "config.toml").read_text()).get("linux")
+        if linux is not None:
+            # Keep the prepared mapping and actual runtime/profile path while
+            # retaining this section's fresh credentials and other settings.
+            with (root / "config.toml").open("a") as configuration:
+                configuration.write("\n[linux]\n")
+                for key, value in linux.items():
+                    configuration.write(f"{json.dumps(key)} = {json.dumps(value)}\n")
 
 
 def owned_processes(root: Path) -> list[dict]:
@@ -187,8 +198,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     env["SAFEYOLO_PLATFORM_ASSETS"] = str(source / "share")
     # All sections use the prepared installation, including supplied bundles.
     env["SAFEYOLO_NATIVE_CLI"] = str(cli)
-    if lane == "systrap":
-        env["SAFEYOLO_RUNSC_PLATFORM"] = "systrap"
+    if lane in {"systrap", "kvm"}:
+        env["SAFEYOLO_RUNSC_PLATFORM"] = lane
     else:
         env.pop("SAFEYOLO_RUNSC_PLATFORM", None)
     overall = 0

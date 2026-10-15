@@ -668,6 +668,26 @@ def _substrate_identity(config_dir: Path) -> dict[str, Any]:
     """Discover the platform bridge prerequisite without booting a guest."""
     system = platform.system()
     if system == "Linux":
+        cli = config_dir / "bin/safeyolo"
+        if cli.is_file():
+            try:
+                inspection = _run([str(cli), "--root", str(config_dir), "doctor"], timeout=15)
+                if inspection.returncode:
+                    raise SmokeError(f"doctor exited {inspection.returncode}")
+                doctor = json.loads(inspection.stdout)
+                if not isinstance(doctor, dict) or "linux" in doctor and not isinstance(doctor["linux"], dict):
+                    raise SmokeError("doctor returned invalid runtime diagnosis")
+                selected = doctor.get("linux")
+                if isinstance(selected, dict):
+                    result = {"status": "discovered" if selected.get("state") == "ready" else "unavailable",
+                              "kind": "gvisor", "path": selected.get("path"),
+                              "version": selected.get("version"), "origin": selected.get("origin")}
+                    if result["status"] == "unavailable":
+                        result["reason"] = selected.get("error", "selected runtime is unavailable")
+                    return result
+            except (SmokeError, ValueError) as exc:
+                return {"status": "unavailable", "kind": "gvisor", "reason": f"runtime diagnosis failed: {exc}"}
+        # Older retained host packages have no selected-runtime diagnosis.
         runsc = shutil.which("runsc")
         if runsc is None:
             return {
@@ -774,7 +794,10 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
     report = _base_report(cli, candidate, substrate)
     report["instance"] = {"config_dir": str(config_dir), "mode": args.mode}
     try:
-        _require_substrate(substrate)
+        # Doctor describes a future launch. Attached mode checks the current
+        # process below, even if a later launch would need host preparation.
+        if not require_running:
+            _require_substrate(substrate)
         native_path = _absolute_path(args.rust_config, cwd)
         native = _native_config(native_path, cwd)
         report["native"] = {key: value for key, value in native.items() if key != "raw"}
