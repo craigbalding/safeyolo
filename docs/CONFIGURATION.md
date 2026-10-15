@@ -1,7 +1,7 @@
 # Configuration
 
 Select the installed instance with `safeyolo --root ROOT COMMAND`, or set
-`SAFEYOLO_CONFIG_DIR`. The default root is `$HOME/.safeyolo`. The native product
+`SAFEYOLO_CONFIG_DIR`. The default root is `$HOME/.safeyolo`. SafeYolo
 reads `config.toml` and `policy.toml`. Paths resolve relative to the selected
 configuration or policy file. It does not search for project-local configuration,
 convert old state, read `config.yaml`/`addons.yaml` or select a Python fallback.
@@ -10,9 +10,9 @@ convert old state, read `config.yaml`/`addons.yaml` or select a Python fallback.
 
 ```text
 ROOT/
-├── config.toml          # Native runtime settings
+├── config.toml          # Runtime settings
 ├── policy.toml          # Hosts, agents, grants, budgets, lists and controls
-├── bin/                 # Native host executables
+├── bin/                 # Host executables
 ├── libexec/ and lib/    # Private tmux runtime and non-system libraries
 ├── assets/              # Helpers, guest scripts, skills, launchers and services
 ├── share/               # Prepared platform images or Linux rootfs-tree
@@ -22,10 +22,10 @@ ROOT/
 └── logs/                # Audit, runtime diagnostics and flow storage
 ```
 
-The [settings reference](native-settings.md#runtime-settings) gives every
-retained key, default and consumer. Native paths such as `data_dir`,
+The [settings reference](settings.md#runtime-settings) gives every
+retained key, default and consumer. Paths such as `data_dir`,
 `audit_log_path`, `event_log` and `flow_store_db_path` belong to this root by
-default; the earlier Python XDG log selection is not a native runtime setting.
+default; the earlier Python XDG log selection is not a runtime setting.
 Keep private tokens, signing keys and service credentials on the host.
 
 ## Runtime settings
@@ -41,10 +41,10 @@ safeyolo status
 The Admin API defaults to IPv4 loopback port 9090 and requires the selected
 `admin_api_token_file`. Port zero requests an ephemeral Admin port, reported
 in readiness. Agent listeners are Unix sockets with host-owned identity;
-request headers cannot change that identity. Native lifecycle stages their
+request headers cannot change that identity. Agent lifecycle stages their
 listeners and the agent discovery map from the same policy/runtime state.
 
-To use an explicit parent or additional CA trust, set the native keys:
+To use an explicit parent or additional CA trust, set the keys:
 
 ```toml
 parent_proxy = "https://parent.example:8443"
@@ -104,11 +104,11 @@ parent connection, TLS or CONNECT failure does not fall back to direct egress.
 Runtime listeners, audit, trace and capture settings take effect on restart.
 Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
-values and zero/negative handling in [native settings](native-settings.md).
+values and zero/negative handling in [settings](settings.md).
 
 ## Workspace and memory
 
-An agent's saved `folder` is exposed as `/workspace`. `memory_mb` defaults to 4096 MiB in the native host. Extra `mounts` retain their specified access;
+An agent's saved `folder` is exposed as `/workspace`. `memory_mb` defaults to 4096 MiB in the host. Extra `mounts` retain their specified access;
 `HOST:GUEST:ro` is read-only. Choose owned workspaces and review trusted host
 scripts before executing them.
 
@@ -121,14 +121,14 @@ safeyolo agent start work
 
 Saved changes apply at the next sandbox start. Existing live runs keep their
 bound inputs. The explicit `--dangerously-allow-unowned` option retains the
-native host's existing ownership override; it is not required for an owned
+host's existing ownership override; it is not required for an owned
 project. A launcher can be `tmux-window`, `tmux-pane`, `supervisor` or a trusted
 script. [Agent launchers](agent-launchers.md) describe selection and attach.
 
-Native `desktop.size` retains `auto` or an explicit `WIDTHxHEIGHT` preference;
+`desktop.size` retains `auto` or an explicit `WIDTHxHEIGHT` preference;
 `desktop.present_host_port` selects the permitted loopback presentation port.
 Use `safeyolo agent present work` for the running desktop. Web and Commander
-listener/share settings stay in the same native config. Their authenticated
+listener/share settings stay in the same config. Their authenticated
 Admin owners and Commander make the existing operator changes; the retired
 Python desktop/web/command-centre wrappers are not installed.
 
@@ -144,10 +144,10 @@ them available when the serving host is unreachable.
 ### Set up and inspect the local mount
 
 Run the following commands on either a Linux or macOS SafeYolo host, as the
-account that owns the native instance. Select that instance with `--root` or
+account that owns the instance. Select that instance with `--root` or
 `SAFEYOLO_CONFIG_DIR` as described at the start of this guide. The example uses
 an existing agent named `dropbox-trial` and an instance directory name of
-`work-instance`. For a new agent, first follow [agent setup](native-policy.md#configure-and-use-an-agent).
+`work-instance`. For a new agent, first follow [agent setup](installation.md#configure-and-use-an-agent).
 Use a different instance directory name for each instance on the same host.
 
 Keep the output parent outside disposable runtime state and every agent
@@ -192,7 +192,7 @@ findmnt --mountpoint /dropbox
 
 The supplied list must include a destination of `/dropbox`, and `findmnt` must
 show that mount as writable. Directory existence alone does not establish a
-host-backed mount. Native configuration and startup reject missing sources
+host-backed mount. Configuration and startup reject missing sources
 and sources that are not directories. A valid directory can still refuse a
 file operation. If the selected mount is absent, read-only or unusable, report
 the selected path and failure. Do not create a guest-local replacement or
@@ -381,12 +381,12 @@ cleanup command before removing its configuration:
 safeyolo agent cleanup dropbox-trial
 ```
 
-Remove only that agent's entry from the selected `policy.toml`. Native agent
+Remove only that agent's entry from the selected `policy.toml`. Agent
 creation can write an inline entry such as `agents = { dropbox-trial = { ... } }`;
 remove that entry while preserving the other agents. If the file uses
 `[agents.dropbox-trial]` tables instead, remove that table and its child tables.
-Use `safeyolo status` to confirm that the agent is no longer configured. Native
-cleanup clears stopped runtime records and retains the persistent home. Keep
+Use `safeyolo status` to confirm that the agent is no longer configured.
+Cleanup clears stopped runtime records and retains the persistent home. Keep
 the separate output directory and any retained copies. Deleting those files
 is a separate explicit operator action.
 
@@ -431,7 +431,7 @@ To remove a designation:
 safeyolo mount unprotect "$HOME/reference"
 ```
 
-The native setting is the top-level `protected_host_directories` path array
+The setting is the top-level `protected_host_directories` path array
 in `config.toml`; it defaults to `[]`. The commands save resolved absolute
 paths. If you edit the array directly, relative paths resolve from the selected
 configuration file's directory.
@@ -440,7 +440,7 @@ configuration file's directory.
 
 The host policy file contains hosts, agent settings, named lists, scoped
 credential/service grants, budgets and named controls. There is no addon model.
-[Policy guidance](native-policy.md#policy-and-runtime-settings) explains
+[Policy guidance](installation.md#policy-and-runtime-settings) explains
 precedence, expiration, show and apply with examples.
 
 ```toml
@@ -479,8 +479,8 @@ safeyolo policy show
 
 Network permission and credential permission remain separate. Service bindings
 retain route/method, capability, risk and credential scope through the existing
-native gateway. The #819 source/prerequisite and installed credential proofs
-remain in the [responsibility map](native-settings.md#operator-entry-responsibilities);
+gateway. The #819 source/prerequisite and installed credential proofs
+remain in the [responsibility map](settings.md#operator-entry-responsibilities);
 removing Python does not accept them or invent a replacement credential store.
 
 ## Restart and persistence
@@ -499,6 +499,6 @@ safeyolo agent start work
 ```
 
 Use `doctor`, `agent diagnostics NAME` and the named logs to diagnose failure.
-The [native operator guide](native-operator.md) covers scoped evidence and
+The [operator guide](operator-guide.md) covers scoped evidence and
 approvals. Historical Python/addon descriptions remain in [ADDONS.md](ADDONS.md)
 for interpreting retained tests and older records; they are not install guidance.

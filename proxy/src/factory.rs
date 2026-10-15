@@ -84,7 +84,7 @@ impl Snapshot {
             named(name)?;
             if !host_platform::valid_agent_name(&role.agent) {
                 return Err(format!(
-                    "role {name}: agent name does not match the native host naming rules"
+                    "role {name}: agent name does not match the agent naming rules"
                 )
                 .into());
             }
@@ -303,7 +303,7 @@ fn setup_script(root: &Path, harness: &str) -> Result<PathBuf, Error> {
         .join(format!("{harness}-coord-host-setup.sh"));
     if !path.is_file() || path.metadata()?.permissions().mode() & 0o111 == 0 {
         return Err(format!(
-            "required role setup executable is missing: {}; reinstall native assets",
+            "required role setup executable is missing: {}; reinstall SafeYolo assets",
             path.display()
         )
         .into());
@@ -449,7 +449,7 @@ fn staged(root: &Path, snapshot: &Snapshot, role_name: &str, role: &Role) -> Res
         || observed
             != String::from_utf8(read(&root.join("assets/guest/safeyolo-coord.sha256"))?)?.trim()
     {
-        return Err("staged native role executable differs from the installed artifact".into());
+        return Err("staged role executable differs from the installed artifact".into());
     }
     if role.harness == "pi" {
         for directory in [
@@ -520,7 +520,7 @@ fn staged_command(root: &Path, home: &Path, harness: &str) -> Result<(), Error> 
         }
     } else if command != expected.as_bytes() {
         return Err(
-            "entry differs from the installed supervised launcher or native wrapper".into(),
+            "entry differs from the installed supervised launcher or guest command wrapper".into(),
         );
     }
     Ok(())
@@ -597,7 +597,7 @@ async fn doctor(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
             json!({"component":"operator-approvals","status":if count == 0 {"PASS"} else {"WARN"},"pending_count":count,"recovery":"Inspect approvals pending for the named Factory agents. A pending decision is not an instruction to approve and does not block Factory readiness."})
         },
         Ok(_) => json!({"component":"operator-approvals","status":"WARN","error":"pending approvals response is malformed; current decisions are unverified"}),
-        Err(error) => json!({"component":"operator-approvals","status":"WARN","error":error.to_string(),"recovery":"Pending decisions are unverified; use the native approval commands when the Admin route is available."}),
+        Err(error) => json!({"component":"operator-approvals","status":"WARN","error":error.to_string(),"recovery":"Pending decisions are unverified; use the approval commands when the Admin route is available."}),
     });
     for (name, role) in &snapshot.roles {
         let binding = staged_binding(root, role);

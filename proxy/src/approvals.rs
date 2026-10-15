@@ -708,7 +708,7 @@ pub(crate) fn policy_transaction<T>(
     if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
         return Err(ApprovalError {
             kind: ErrorKind::Unsupported,
-            message: "native durable network approvals currently require policy.toml".into(),
+            message: "durable network approvals currently require policy.toml".into(),
         });
     }
     let parent = path

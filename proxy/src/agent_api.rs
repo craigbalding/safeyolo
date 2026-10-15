@@ -855,7 +855,7 @@ async fn authenticated_read<'p>(
             PolicyState::NoEngine { .. } => {
                 let mut outcome = response(
                     503,
-                    json!({"error":"Agent API endpoint unavailable in native development mode"}),
+                    json!({"error":"Agent API endpoint unavailable in development mode"}),
                 );
                 outcome.failure = Some(Failure::DevelopmentEndpoint);
                 return outcome;
@@ -865,7 +865,7 @@ async fn authenticated_read<'p>(
     if ENDPOINTS.contains(&path) || path.starts_with("/api/flows/") || path.starts_with("/plumb") {
         let mut outcome = response(
             503,
-            json!({"error":"Agent API endpoint unavailable in native development mode"}),
+            json!({"error":"Agent API endpoint unavailable in development mode"}),
         );
         outcome.failure = Some(Failure::DevelopmentEndpoint);
         return outcome;

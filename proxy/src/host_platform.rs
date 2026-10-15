@@ -2228,14 +2228,12 @@ pub(crate) async fn coding_agent_observation(name: &str) -> io::Result<String> {
         }
     })?;
     if !output.status.success() {
-        return Err(io::Error::other("native coding-agent observation failed"));
+        return Err(io::Error::other("coding-agent observation failed"));
     }
     let state = String::from_utf8(output.stdout).map_err(io::Error::other)?;
     match state.trim() {
         "running" | "stopped" => Ok(state.trim().into()),
-        _ => Err(io::Error::other(
-            "native coding-agent observation is unverified",
-        )),
+        _ => Err(io::Error::other("coding-agent observation is unverified")),
     }
 }
 
@@ -2279,7 +2277,7 @@ pub(crate) async fn start_sandbox(
 }
 
 /// Reconstruct the existing attachment projection from host-owned run records
-/// and retained native listeners. Unknown bindings remain until backend proof
+/// and retained agent listeners. Unknown bindings remain until backend proof
 /// authorizes removal; this is not a second runtime store.
 pub(crate) fn agent_map_from_runs() -> io::Result<serde_json::Map<String, serde_json::Value>> {
     use serde_json::json;

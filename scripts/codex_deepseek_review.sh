@@ -39,7 +39,7 @@ die() { echo "codex-deepseek-review: $*" >&2; exit 2; }
 
 git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1 || \
   die "review repository is not a git checkout: $repo"
-[[ -x "$viewer" ]] || die "native JSONL viewer is missing: $viewer; set SAFEYOLO_REVIEW_VIEWER_CLI"
+[[ -x "$viewer" ]] || die "JSONL viewer is missing: $viewer; set SAFEYOLO_REVIEW_VIEWER_CLI"
 mkdir -p "$root"
 
 extract_session() {
@@ -110,7 +110,7 @@ launch() {
   {
     printf '#!/usr/bin/env bash\nset -u -o pipefail\nset +e\n'
     printf "printf '%%s\\\\n' %q\n" "DeepSeek review issue=$issue candidate=${CANDIDATE:-unknown}"
-    printf "printf '%%s\\\\n' %q\n" "Live view uses native coord watch; raw JSONL and receipt are retained."
+    printf "printf '%%s\\\\n' %q\n" "Live view uses coord watch; raw JSONL and receipt are retained."
     printf ' %q' "${command[@]}"
     printf ' 2>%q | tee %q |' "$err" "$log"
     printf ' %q' "$viewer" coord watch \

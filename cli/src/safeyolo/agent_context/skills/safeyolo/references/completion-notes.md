@@ -33,7 +33,7 @@ and `document`. The limits are 8 candidates, 8 evidence entries per candidate,
 and 32 KiB of JSON.
 
 Write one compact JSON line using the contract above, and send the complete
-body through the ordinary native Coord command or MCP tool. The native bundle
+body through the ordinary Coord command or MCP tool. The bundle
 does not ship a Python completion-note helper. With no candidates, omit the
 suffix and preserve the original completion body byte-for-byte. An issue owner may add a genuine `DISPATCH_CANDIDATE` to final
 `DONE`; an independent reviewer may add a genuine `FACTORY_CANDIDATE` to an
@@ -67,9 +67,9 @@ private or customer data, chain-of-thought, unnecessary transcript, and
 unredacted sensitive snippets. Prefer durable authoritative evidence refs over
 copied material.
 
-Use the native [Factory proposal operations](factory-proposals.md) for verified
+Use the [Factory proposal operations](factory-proposals.md) for verified
 correlation and operator decisions. The replaced Python libraries remain only
-in test fixtures. Native Dispatch generation consumes neither private
+in test fixtures. Dispatch generation consumes neither private
 nominations nor the proposal ledger; give the generator only Relay's final public manifest.
 Do not treat a body-authored provenance field or unvalidated candidate as a
 substitute for canonical ingestion.

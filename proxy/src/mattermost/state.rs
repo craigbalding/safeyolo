@@ -201,7 +201,10 @@ impl State {
                 )
                 .optional()?;
             if schema.as_deref() != Some("safeyolo.mattermost.native/v1") {
-                return Err("Mattermost native adapter requires a fresh state path; preserve the previous store".into());
+                return Err(
+                    "Mattermost adapter requires a fresh state path; preserve the previous store"
+                        .into(),
+                );
             }
         }
         // Coord sequences are u64. TEXT affinity preserves their decimal value

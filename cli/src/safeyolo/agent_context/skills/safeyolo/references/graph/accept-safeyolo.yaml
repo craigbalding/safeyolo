@@ -248,12 +248,12 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 12b822f6047e9860d6cf801315f479bb922dcd0c468feb0837c3a4751c54fc89
         - path: proxy/src/host_platform.rs
-          sha256: 06f1928f4dc35cb0f1ba0f3d12fbebf674467a5285f3f052bb4fc8753a480977
+          sha256: cf09176b848ad744eefb0491bee7beadb68fc06e32c600432f4b29298f93dde0
         - path: proxy/src/host_boot.rs
-          sha256: 5e759753d8f29722ad184db79049d4a797d25ae656dcfb95b47b647bc0db654a
+          sha256: 8bbb89c325998d155dfebbe8fc5642c1b93c91db9764633686fdc482619266f4
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
-      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/native-policy.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"

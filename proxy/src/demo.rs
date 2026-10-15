@@ -23,7 +23,7 @@ use tokio::{
 };
 use toml_edit::{DocumentMut, Item, value};
 
-pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] demo [--task tiny-web-app] [--workspace PATH] [--agent NAME] [--auth-file FILE] [--keep]\n\nBuild and run a tiny web app in a real guest, then approve its owned JSON request.\nThe native installation needs its prepared guest runtime and normal Codex model access.\nChoose an empty workspace, or use the disposable default. --agent reuses that stopped guest's own configured authentication; its authentication stays in that guest home.\n--auth-file selects an existing Codex auth.json to copy privately into a guest with no login. The interactive default offers your configured host login. A new guest can also use normal Codex device login. Missing authentication is reported before a model task starts.\nDemo stops its selected runtime and removes its fixture permission on exit. By default it removes the disposable workspace and any newly created guest home. --keep retains these files after stopping. A reused guest's home and prior workspace setting remain.\nThe fixture request record and normal proxy audit remain in the instance logs. Ctrl-C or cancel stops the Demo. Lab and tmux are not required.";
+pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] demo [--task tiny-web-app] [--workspace PATH] [--agent NAME] [--auth-file FILE] [--keep]\n\nBuild and run a tiny web app in a real guest, then approve its owned JSON request.\nThe SafeYolo installation needs its prepared guest runtime and normal Codex model access.\nChoose an empty workspace, or use the disposable default. --agent reuses that stopped guest's own configured authentication; its authentication stays in that guest home.\n--auth-file selects an existing Codex auth.json to copy privately into a guest with no login. The interactive default offers your configured host login. A new guest can also use normal Codex device login. Missing authentication is reported before a model task starts.\nDemo stops its selected runtime and removes its fixture permission on exit. By default it removes the disposable workspace and any newly created guest home. --keep retains these files after stopping. A reused guest's home and prior workspace setting remain.\nThe fixture request record and normal proxy audit remain in the instance logs. Ctrl-C or cancel stops the Demo. Lab and tmux are not required.";
 
 const CODEX_COMMAND: &[u8] = include_bytes!("../../contrib/codex-command.sh");
 const GUEST_CODEX: &str = "/home/agent/.safeyolo/demo-codex-command";
@@ -202,7 +202,7 @@ impl Fixture {
 fn edit_policy<T>(mutate: impl FnOnce(&mut DocumentMut) -> Result<T, Error>) -> Result<T, Error> {
     let path = crate::native_config::read(&host_platform::config_path())?
         .policy_file
-        .ok_or("native policy is missing")?;
+        .ok_or("policy is missing")?;
     Ok(crate::approvals::policy_transaction(
         &path,
         true,
@@ -845,7 +845,7 @@ async fn session(
                 );
                 match operator_commands::flow(&host_platform::config_dir(), &id, Some(name)).await {
                     Ok(flow) if flow["status"].as_u64().is_some() => println!(
-                        "Observation: native traffic request {} returned HTTP {}.",
+                        "Observation: traffic request {} returned HTTP {}.",
                         safe(&id),
                         flow["status"]
                     ),
@@ -957,7 +957,7 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
     let mut options = Options::parse(args)?;
     let config = config
         .canonicalize()
-        .map_err(|error| format!("Demo needs an installed native instance: {error}"))?;
+        .map_err(|error| format!("Demo needs an installed SafeYolo instance: {error}"))?;
     host_platform::in_config(config, async {
         let mut input = input();
         println!("Build a tiny web app that summarizes JSON from an owned service.");

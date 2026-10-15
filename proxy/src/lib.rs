@@ -862,7 +862,7 @@ fn prepare_policy_runtime(previous: &Runtime, policy: policy::Policy) -> Result<
     let previous_guard = previous
         .credential_guard
         .as_ref()
-        .ok_or("native credential guard is unavailable")?;
+        .ok_or("credential guard is unavailable")?;
     let (credential_guard, _) = previous_guard.prepare_policy(&policy)?;
     let gateway_grants = if let Some(store) = previous.gateway_grants.as_ref() {
         let store = store.clone();
@@ -937,7 +937,7 @@ pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<
         .policy
         .as_ref()
         .and_then(|policy| policy.native_view(path))
-        .ok_or("active native policy is unavailable")?;
+        .ok_or("active policy is unavailable")?;
     result["status"] = json!("active");
     Ok(result)
 }
@@ -1120,7 +1120,7 @@ pub(crate) fn native_policy_status(state: &RuntimeState) -> Result<Value, Error>
         .ok_or("active policy is unavailable")?;
     let mut result = policy
         .native_view(&path)
-        .ok_or("active native policy is unavailable")?;
+        .ok_or("active policy is unavailable")?;
     let list_files = policy.native_list_file_status();
     let lists_match = list_files
         .values()
@@ -1981,7 +1981,7 @@ impl Proxy {
                             previous
                                 .policy
                                 .as_ref()
-                                .ok_or("service catalog requires native policy")?,
+                                .ok_or("service catalog requires policy")?,
                         ),
                         &previous.audit,
                     )?;
@@ -2025,7 +2025,7 @@ impl Proxy {
                     .config
                     .policy_file
                     .as_ref()
-                    .ok_or("native policy requires policy_file")?,
+                    .ok_or("policy requires policy_file")?,
                 policy.gateway().and_then(|gateway| gateway.registry()),
                 Some(policy),
                 &previous.audit,

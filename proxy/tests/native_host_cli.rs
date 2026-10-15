@@ -1091,8 +1091,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
     assert!(!failed.status.success());
     assert!(
-        String::from_utf8_lossy(&failed.stderr)
-            .contains("native listener update was not acknowledged")
+        String::from_utf8_lossy(&failed.stderr).contains("listener update was not acknowledged")
     );
     assert!(!root.join("agents/marker/runtime.json").exists());
     assert_eq!(
@@ -1104,8 +1103,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("API 500"));
     assert!(
-        String::from_utf8_lossy(&failed.stderr)
-            .contains("native listener update was not acknowledged")
+        String::from_utf8_lossy(&failed.stderr).contains("listener update was not acknowledged")
     );
     assert!(!root.join("agents/marker/runtime.json").exists());
     assert!(

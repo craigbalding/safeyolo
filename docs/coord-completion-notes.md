@@ -43,7 +43,7 @@ These compact fields are optional when they add useful context:
 The supported limits are 8 candidates, 8 evidence references per candidate,
 and 32 KiB for the JSON payload. The implementation also bounds individual
 text fields. Authors can write the compact JSON line using the wire contract
-above and send the complete body through their ordinary native Coord command or
+above and send the complete body through their ordinary Coord command or
 Model Context Protocol (MCP) tool. If there are no candidates, omit the suffix
 and leave the original body byte-for-byte unchanged. No Python helper import is
 needed to author a note.

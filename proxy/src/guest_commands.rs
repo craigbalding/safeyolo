@@ -10,7 +10,7 @@ use std::{
 };
 
 pub const HELPER: &str = "/safeyolo/safeyolo-guest";
-pub const WRAPPER: &[u8] = b"#!/bin/sh\n# SafeYolo configured-command observation\nif [ ! -x /safeyolo/safeyolo-guest ]; then\n    echo 'Required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n    exit 127\nfi\nexec /safeyolo/safeyolo-guest observe exec -- \"$0.payload\" \"$@\"\n";
+pub const WRAPPER: &[u8] = b"#!/bin/sh\n# SafeYolo configured-command observation\nif [ ! -x /safeyolo/safeyolo-guest ]; then\n    echo 'Required guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n    exit 127\nfi\nexec /safeyolo/safeyolo-guest observe exec -- \"$0.payload\" \"$@\"\n";
 
 pub(crate) fn payload_identity(path: &Path) -> Result<Value, Error> {
     let info = fs::symlink_metadata(path)?;
@@ -91,7 +91,7 @@ pub fn stage(home: &Path, share: &Path, assets: &Path, mut context: Value) -> Re
     fs::File::open(&helper)
         .map_err(|error| {
             format!(
-                "required native guest helper is missing or unreadable: {}: {error}",
+                "required guest helper is missing or unreadable: {}: {error}",
                 helper.display()
             )
         })?
@@ -337,7 +337,7 @@ mod tests {
             stage(&home, &share, &source, json!({"generation":"run"}))
                 .unwrap_err()
                 .to_string()
-                .contains("required native guest helper")
+                .contains("required guest helper")
         );
         assert!(!home.join(".safeyolo-command.payload").exists());
         fs::write(home.join(".safeyolo-command.payload"), "operator payload").unwrap();

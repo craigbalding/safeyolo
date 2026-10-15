@@ -33,7 +33,7 @@ usage() {
   cat <<'EOF'
 Usage: safeyolo-lab [OPTIONS]
 
-The native `safeyolo lab` entry invokes this guest helper. It enters the
+The `safeyolo lab` entry invokes this guest helper. It enters the
 owned Lab tmux and starts the controller after provisioning and authentication.
 
 On a later reconnect, run the same command. It attaches to the existing lab.

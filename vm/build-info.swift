@@ -47,7 +47,7 @@ do {
     guard let match = expression.firstMatch(in: manifest, range: NSRange(manifest.startIndex..., in: manifest)),
           let range = Range(match.range(at: 1), in: manifest) else {
         throw NSError(domain: "SafeYoloBuild", code: 1,
-                      userInfo: [NSLocalizedDescriptionKey: "native product version is missing"])
+                      userInfo: [NSLocalizedDescriptionKey: "SafeYolo version is missing"])
     }
     let metadata: [String: Any] = [
         "schema_version": 1, "version": String(manifest[range]), "git_sha": revision,

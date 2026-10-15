@@ -1,6 +1,6 @@
 # SafeYolo Developer Guide
 
-This guide is for developers who contribute to the host CLI, native proxy,
+This guide is for developers who contribute to the host CLI, Rust proxy,
 agent sandbox, and operator integrations.
 
 Before changing agent attribution or sandbox lifecycle, read the
@@ -12,7 +12,7 @@ restart behavior.
 
 The trusted host CLI starts the packaged Rust proxy and manages agent
 sandboxes. Each sandbox has a per-agent Unix domain socket (UDS) to the proxy
-and no direct external network interface. The native proxy owns policy,
+and no direct external network interface. The Rust proxy owns policy,
 credential inspection, the Agent and Admin APIs, traffic evidence, and the
 read-only terminal inspector. The CLI reads and updates instance configuration,
 uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
@@ -22,12 +22,12 @@ The instance policy file is the source of truth for durable permissions.
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
   traffic-view implementations.
-- `proxy/src/bin/` contains the native host CLI and guest Coord entry.
+- `proxy/src/bin/` contains the host CLI and guest Coord entry.
 - `cli/src/safeyolo/` retains shell boot scripts, launchers, skills, services
-  and policy templates assembled into native bundles.
+  and policy templates assembled into bundles.
 - `tests/reference/` contains Python protocol/storage references used only
   by repository fixtures. No Python package or CLI is installed.
-- `tests/proxy_contracts/` contains native process/protocol contracts.
+- `tests/proxy_contracts/` contains Rust process/protocol contracts.
   Completed comparator receipts and their source references remain in
   [the historical state inventory](state-compatibility.md).
 - `tests/blackbox/` contains installed host and sandbox lane probes.
@@ -140,7 +140,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check (no auth required) |
-| GET | `/stats` | Native control and runtime counters |
+| GET | `/stats` | Control and runtime counters |
 | GET | `/admin/policy/baseline` | Get baseline policy |
 | PUT | `/admin/policy/baseline` | Update baseline policy (see note below) |
 | POST | `/admin/policy/baseline/approve` | Add credential approval |
@@ -156,9 +156,9 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 > comments as guidance should prefer incremental local updates or regenerate from
 > a canonical source.
 
-On the host, supply the selected native instance's Admin URL and token.
+On the host, supply the selected instance's Admin URL and token.
 This example uses a credential fingerprint; service authorization and risk
-approval remain separate. The native product does not expose addon-mode
+approval remain separate. SafeYolo does not expose addon-mode
 authoring; use the policy check/show/apply operations.
 
 **Add an approval via API:**
@@ -173,24 +173,24 @@ curl -X POST "http://localhost:9090/admin/policy/baseline/approve" \
   }'
 ```
 
-Use the installed native commands for policy, credentials, services and
+Use the installed commands for policy, credentials, services and
 operator diagnosis. The retired Python `safeyolo.api` client is not shipped.
-[Native policy](native-policy.md), [credentials](native-credentials.md) and
-[operator commands](native-operator.md) describe the current operations and
+[Policy](installation.md#check-show-and-apply), [credentials](credentials.md) and
+[operator commands](operator-guide.md) describe the current operations and
 their authority. CLI and Commander use the authenticated Admin API; guest
 requests use the separately authenticated Agent API and listener identity.
 
 ## Development Setup
 
-For fresh native host installation and prepared guest inputs, use the
+For fresh host installation and prepared guest inputs, use the
 [installation reference](../cli/README.md#installation).
 
 The [contract notes](../tests/proxy_contracts/CONTRACT.md) retain historical
 migration receipts. They do not prescribe a current comparator or PR gate.
 
-For native contract development, run these commands from the repository root
+For Rust contract development, run these commands from the repository root
 on Linux or macOS with uv and Rust 1.94.0 selected. The tests
-start isolated native processes and local fixtures; they do not use the
+start isolated Rust processes and local fixtures; they do not use the
 operator's configured instance or require mitmproxy:
 
 ```sh
@@ -200,19 +200,19 @@ SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
   uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 ```
 
-Select a relevant module for a normal change. The full native Linux/macOS
+Select a relevant module for a normal change. The full Rust Linux/macOS
 family runs overnight, once per platform. Normal PRs use quick checks and add
 relevant platform tests for platform-specific changes; they do not require a
 full suite or a product installation. Installed guest compositions use the
 [blackbox runners](../tests/blackbox/README.md).
 
-### Native proxy development
+### Rust proxy development
 
 The installed CLI reads `config.toml` and `policy.toml` from its selected
-root. It selects that root's native binaries, helper assets and process records.
+root. It selects that root's binaries, helper assets and process records.
 It does not generate `native.json`, select an old backend, install a wheel or
 fall back to Python. Source `install.sh` and the unpacked bundle use the same
-[native installer](native-policy.md#install-and-start). Builds remain separate
+[installer](installation.md#install-and-start). Builds remain separate
 from an operator's ordinary install/start journey.
 
 ### Cargo disk-space guard and target retirement
@@ -233,10 +233,10 @@ review of the exact candidate and any necessary correctness or security checks.
 This reduces total delivery effort, including review and CI, rather than merely
 reducing patch size.
 
-Hosted native, retained CLI and installed blackbox jobs restore Rust dependency
+Hosted Rust, retained CLI and installed blackbox jobs restore Rust dependency
 caches after selecting the pinned toolchain. Jobs save these dependency caches
 even when later checks fail, so correction rounds can reuse them. Workspace product binaries still
-build from the checked-out candidate. The full native lane uses the same explicit
+build from the checked-out candidate. The full Rust lane uses the same explicit
 host target for Clippy, tests and builds, retaining its Coord test runner.
 
 Normal and isolated candidates use the same wrapper:
@@ -302,9 +302,9 @@ descriptors. A rejected candidate keeps its target until it is repaired, superse
 or explicitly retired with its receipt. Source, fixtures, patches and review
 reports remain untouched.
 
-### Disposable native development instance
+### Disposable development instance
 
-Use the [native bundle build and installation](native-policy.md#build-a-native-bundle)
+Use the [bundle build and installation](installation.md#build-a-bundle)
 from a clean committed checkout. Choose a fresh development root; leave the
 operator's live instance intact. The bundle requires matching host and Linux
 guest artifacts, private tmux runtime, and the signed helper on macOS. Prepared
@@ -321,7 +321,7 @@ After installing into `$HOME/sy-development`, run from a host terminal:
 "$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" stop
 ```
 
-Start waits for native readiness. Status and doctor use the owned process
+Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
@@ -329,22 +329,22 @@ The Admin client reads the configured private token and the live readiness
 port, including an automatically assigned port. Stale ownership or an
 unavailable endpoint fails visibly. Token-file changes require a restart.
 
-Service authorization and revocation use the current native policy transaction:
+Service authorization and revocation use the current policy transaction:
 the store and file locks precede the runtime lock; activation prepares the
 candidate before publication. A failure restores saved bytes and the exact
-prior live generation. See [native credentials and services](native-credentials.md)
+prior live generation. See [credentials and services](credentials.md)
 for service scope, credential approval, contract binding and risk grants.
 
 ### Live traffic inspection
 
-Use the native host executable to inspect an already prepared instance. Open
+Use the host executable to inspect an already prepared instance. Open
 `inspect --factory NAME`, select Worker once, then read its state, traffic,
 approvals and logs without selecting it again. `attach` delegates to the existing
-native host terminal owner and returns to that workflow. See
-[native operator and Helper commands](native-operator.md) for the prerequisites,
+host terminal owner and returns to that workflow. See
+[operator and Helper commands](operator-guide.md) for the prerequisites,
 direct commands and selected Helper preparation.
 
-The native client reads the proxy's shared live HTTP and WebSocket view. It
+The Rust client reads the proxy's shared live HTTP and WebSocket view. It
 includes ordinary requests without TestContext, pending requests, and terminal
 responses or errors. Direct commands carry their own `--agent`, TestContext
 selection and `--filter`. They do not change the shared viewer's scope or filter.
@@ -356,7 +356,7 @@ Use `traffic show FLOW_ID`, `traffic body FLOW_ID request` or `response`,
 `traffic websocket FLOW_ID`, and `traffic message FLOW_ID MESSAGE_INDEX` to
 read the selected exchange. Body projections retain exact base64 bytes and add
 UTF-8 text when available. JSON escapes terminal controls. Unavailable, empty,
-truncated and failed reads retain their distinct metadata. The native client
+truncated and failed reads retain their distinct metadata. The Rust client
 does not format or decompress body previews; the existing exporter supplies
 its supported text representations.
 
@@ -408,7 +408,7 @@ predicate without an operand, use a spaced group such as `(~q )` for flows
 without a response or `(~websocket )` for WebSockets. The source wrapper rejects
 bare `~q` and `~websocket`. An explicit combination such as `~q & ~m GET` works.
 
-The native filter supports URL, method, status, request/response presence,
+The Rust filter supports URL, method, status, request/response presence,
 headers, content type, assets, metadata, HTTP/WebSocket body, HTTP/WebSocket type,
 `~all` and error predicates. Body searches use complete retained HTTP content
 after decoding and each retained WebSocket message separately, including dropped
@@ -422,13 +422,13 @@ Domain, peer-address, replay, mark, comment and non-HTTP protocol predicates
 remain unimplemented. The private filter API reports unsupported predicates or
 known regex incompatibilities with HTTP 501. Invalid expressions return 400;
 evaluation failures return 500. Compilation and evaluation errors contain a
-category, without the expression or captured content. Native regex matching
+category, without the expression or captured content. Rust regex matching
 has finite Python compatibility. Unavailable byte-pattern cases include
 case-insensitive backreferences and advanced patterns containing non-ASCII byte
 literals. This interface does not establish complete mitmproxy filter parity.
 
 The live view is separate from the durable TestContext evidence store.
-Native configuration settings `flow_pruner_max` (default 5000 flows) and
+Configuration settings `flow_pruner_max` (default 5000 flows) and
 `flow_pruner_max_body_bytes` (default 1 GiB) set positive retention targets.
 The proxy evicts the oldest finished flows across all scopes. Open WebSockets
 and active HTTP exchanges remain retained even above these targets. If retained
@@ -440,7 +440,7 @@ keep their remaining transcript until the whole flow is evicted. These targets
 do not limit forwarded message size. Large messages share the relay's anonymous
 file storage; inspecting a page does not load the whole message into memory.
 Accepted reloads keep the view, scope and user filter, and apply updated targets.
-Failed reloads leave the targets unchanged. Native pruning occurs on observation,
+Failed reloads leave the targets unchanged. Rust pruning occurs on observation,
 exchange release or settings changes. Python uses its hook and interval schedule.
 
 For HTTP, the inspector shows retained encoded body bytes, including a distinct
@@ -466,12 +466,12 @@ WebSocket transcripts retain complete decompressed and unmasked text or binary
 messages, including messages dropped by inspection. Ping, pong and close frames
 are not transcript messages. The flow remains open until the session ends.
 The inspector shows the session end time, direction, code and reason when
-available. A code can describe a peer close or the native relay's local close
-decision. Native transport failures have categorical errors; they do not invent
+available. A code can describe a peer close or the relay's local close
+decision. Transport failures have categorical errors; they do not invent
 a peer reason. Cancellation marks the session incomplete. A message page can
 report a storage error independently of forwarding. Terminal control bytes in
 payloads and close reasons are escaped for display.
-If native validation rejects an upstream 101 upgrade response, the HTTP view
+If Rust validation rejects an upstream 101 upgrade response, the HTTP view
 keeps that observed response and shows the rejection error. No WebSocket
 session is created for that response.
 
@@ -479,15 +479,15 @@ Further filter-language compatibility, flow editing, replay, interactive
 interception, all-flow HAR archives and lifecycle behavior, flow-dump save/load,
 HAR import and a web inspector are deferred beyond the first Rust release.
 
-The native view excludes CONNECT, reserved internal hosts, and requests whose
+The Rust view excludes CONNECT, reserved internal hosts, and requests whose
 destination cannot be parsed. URLs use the admitted scheme and authority with
 the original path and query; headers retain the observed Host field. This is
-not the Python view's `pretty_url` projection. Native scope matching uses
+not the Python view's `pretty_url` projection. Rust scope matching uses
 case-insensitive literal metadata text with multiline anchors. The Python
 filter lexer can change escaped punctuation and reject newlines; its optional
-case-sensitive mode and Unicode regex folding also differ. Native scope
+case-sensitive mode and Unicode regex folding also differ. Rust scope
 updates validate before publication. Python can publish scope fields before
-its generated filter fails. Native pins also remain a separate AND condition
+its generated filter fails. Rust pins also remain a separate AND condition
 when a user expression closes the source's generated parentheses early. The
 Python expression can widen the pinned selection in that case. These are
 display-selection differences; scope is not an authorization boundary.
@@ -508,38 +508,38 @@ unreadable or malformed map cannot become an empty replacement.
 
 For a running Rust process, listener synchronization updates the JSON recorded
 at launch, preserving other fields and file permissions, then sends SIGHUP.
-Native SIGHUP reloads the full configuration, including policy and catalog
+SIGHUP reloads the full configuration, including policy and catalog
 inputs. It is not a listener-only operation. The CLI confirms success only
 after the same process publishes the requested `reload_id`. A timeout means
 the result is unconfirmed; the requested JSON remains for the next reload or
 start. It does not imply that the live configuration was rolled back. Processes
 launched before configuration-path recording need one restart to use live sync.
 
-The fresh native product has no backend switch or old-package rollback.
+The fresh SafeYolo installation has no backend switch or old-package rollback.
 Historical comparator receipts remain in [state compatibility](state-compatibility.md).
-Native stop waits for observed process exit and retains ownership state when an
+Stop waits for observed process exit and retains ownership state when an
 interrupted stop can be retried. Direct diagnosis and stopped-agent cleanup
 preserve persistent homes and operator evidence.
 
 ### Runtime and build identity
 
-The native lifecycle receipt records the selected executable path, process ID,
+The lifecycle receipt records the selected executable path, process ID,
 process-start token, configuration path, and readiness marker. `safeyolo status`
-and `safeyolo doctor` use that receipt to report the running native process.
+and `safeyolo doctor` use that receipt to report the running process.
 Doctor checks process liveness and that the recorded executable path still
 exists. It does not compare the running image's bytes with a file that may have
 been replaced after launch.
 
 The authenticated host-admin `GET /admin/runtime-identity` route reports the
-native instance ID. It does not report the executable's source revision. The sandbox
+instance ID. It does not report the executable's source revision. The sandbox
 Agent API does not expose this host-admin route.
 
-Native `--version` reports the executable's source commit and build profile.
+`--version` reports the executable's source commit and build profile.
 The package's `package-info` and guest receipts bind matching source/profile
 inputs. A dirty working-tree build without an explicit full source ID reports
 `unknown`; it is not an exact committed candidate. Production installation
 uses no Hatch hook, Python package resource or wheel stamp. See
-[native package identity](host-packages.md) for package verification.
+[package identity](installation.md) for package verification.
 
 Guest VM artifacts (kernel, initramfs, rootfs) are rebuilt separately via
 `./guest/build-all.sh` — see the top-level README for the full guest-build flow.
@@ -628,8 +628,8 @@ a missing query pack fails instead of contacting a package registry.
 
 ## CLI Development
 
-The native host entry is `proxy/src/bin/safeyolo.rs`. Add commands through
-its existing dispatch and the responsible native owner. Keep authoritative
+The host entry is `proxy/src/bin/safeyolo.rs`. Add commands through
+its existing dispatch and the responsible owner. Keep authoritative
 usage strings beside that owner; the documentation checker reads those strings
 without importing Python or building Rust. Do not register a Python command or
 introduce another production launcher.
@@ -666,7 +666,7 @@ runtime remains enabled; no library-injection or executable-memory exceptions
 are added. Use this profile only where that local debugger authority is acceptable.
 
 The retained package `doctor` reports the installed helper's build identity and
-warns when debugger access is enabled. Native `agent diagnostics` reports the
+warns when debugger access is enabled. `agent diagnostics` reports the
 running helper's private-control status. The helper's `version` and `--version`
 commands accept `--json`. Output includes the SafeYolo and helper versions, Git revision
 and dirty state, profile, architecture, compiler, optimisation, symbol profile
@@ -1062,7 +1062,7 @@ for those skipped paths.
 Before a PR, run quick focused checks of the changed behavior, including useful
 negative controls. Add the relevant Linux/macOS checks for platform changes.
 Full-suite success, product installation and the hardware matrix are not routine
-PR gates. Complete retained Python/CLI and native process contracts run overnight
+PR gates. Complete retained Python/CLI and Rust process contracts run overnight
 across supported hosts; next-morning discovery is accepted. Installed systrap,
 actual KVM and physical Apple Silicon VZ observations retain the boundaries and
 current automation limits in the [blackbox guide](../tests/blackbox/README.md).

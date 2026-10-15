@@ -78,7 +78,7 @@ impl Host {
             root: config
                 .native_config_dir
                 .clone()
-                .ok_or("native configuration directory is missing")?,
+                .ok_or("configuration directory is missing")?,
             user: std::env::var("USER").ok(),
             config_path: config.native_config_path.clone(),
             instance_file: config.data_dir().join("instance_id"),

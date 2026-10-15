@@ -16,10 +16,10 @@ and the sandboxes have separate dependency and isolation boundaries.
 | Aspect | Implementation | Where |
 |--------|----------------|-------|
 | Python CLI deps | Locked with hashes in `uv.lock` (`--frozen`) | [uv.lock](../uv.lock) |
-| Native proxy deps | Locked in `proxy/Cargo.lock`; the installer builds the packaged executable | [proxy/Cargo.lock](../proxy/Cargo.lock), [install.sh](../install.sh) |
+| Rust proxy dependencies | Locked in `proxy/Cargo.lock`; the installer builds the packaged executable | [proxy/Cargo.lock](../proxy/Cargo.lock), [install.sh](../install.sh) |
 | No root at runtime | Started by the operator, runs as the operator's uid | n/a |
 | Bind address | IPv4 loopback Admin listener; per-agent Unix proxy listeners | [proxy/src/host_commands.rs](../proxy/src/host_commands.rs) |
-| Admin API listener and gating | Native host-local routes require the configured admin token | [proxy/src/admin_api.rs](../proxy/src/admin_api.rs) |
+| Admin API listener and gating | Host-local routes require the configured admin token | [proxy/src/admin_api.rs](../proxy/src/admin_api.rs) |
 | Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/security/test_firewall_structural.py](../tests/blackbox/host/security/test_firewall_structural.py) |
 
 ## Agent Sandbox
@@ -37,7 +37,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 |--------|----------------|-------|
 | No external interface | Sandbox netns has only loopback (Linux); VM has no virtio-net (macOS) | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs), [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Only egress = proxy UDS | Private per-agent directory mounted read-only at `/safeyolo/proxy`, containing `proxy.sock` | [proxy/src/host_boot.rs](../proxy/src/host_boot.rs) |
-| Identity on every flow | The native per-agent Unix listener binds the selected agent identity to each connection | [proxy/src/main.rs](../proxy/src/main.rs), [proxy/src/policy_runtime.rs](../proxy/src/policy_runtime.rs) |
+| Identity on every flow | The per-agent Unix listener binds the selected agent identity to each connection | [proxy/src/main.rs](../proxy/src/main.rs), [proxy/src/policy_runtime.rs](../proxy/src/policy_runtime.rs) |
 | Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps UID 1000 to the operator and UID 0 to the selected subordinate host UID, never host root; GIDs use their independently selected base | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
@@ -46,7 +46,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 
 ### Build Verification
 
-Build and install through [native installation](native-policy.md#build-a-native-bundle),
+Build and install through [installation](installation.md#build-a-bundle),
 with [prepared guest inputs](../guest/README.md). Supply their directory with
 `--platform-assets DIRECTORY` at fresh install. On Linux keep the prepared
 `share/rootfs-tree` available, immutable and owned by the selected subordinate UID/GID bases;
@@ -69,7 +69,7 @@ safeyolo agent diagnostics NAME
 
 These observations distinguish runtime/control/command and proxy state. They
 are not by themselves isolation acceptance. Apply the actual
-[host prerequisites](native-policy.md#guest-prerequisites), including AppArmor
+[host prerequisites](installation.md#guest-prerequisites), including AppArmor
 and subordinate UID/GID mapping where required. The retired Python setup
 command is not an installed operation.
 
@@ -129,7 +129,7 @@ The 2026-01-05 dependency ratings covered the pre-cutover implementation.
 
 The current Python CLI dependency set is declared in
 [pyproject.toml](../pyproject.toml) and locked in [uv.lock](../uv.lock). The
-native proxy dependency set is declared in [proxy/Cargo.toml](../proxy/Cargo.toml)
+Rust proxy dependency set is declared in [proxy/Cargo.toml](../proxy/Cargo.toml)
 and locked in [proxy/Cargo.lock](../proxy/Cargo.lock). The removed mitmproxy,
 tenacity, and confusable-homoglyphs dependencies are outside this cutover
 candidate's runtime closure. Audit the exact locked closure at release time;
@@ -150,6 +150,6 @@ the historical dependency ratings do not establish a current scan result.
 | Admin API auth | [admin_api.rs](../proxy/src/admin_api.rs) |
 | Request ID | [request_trace.rs](../proxy/src/request_trace.rs) |
 | Request logging | [request_logger.rs](../proxy/src/request_logger.rs) |
-| Native proxy startup | [host_commands.rs](../proxy/src/host_commands.rs), [main.rs](../proxy/src/main.rs) |
+| Proxy startup | [host_commands.rs](../proxy/src/host_commands.rs), [main.rs](../proxy/src/main.rs) |
 | Blackbox tests | [tests/blackbox/](../tests/blackbox/) |
 | Policy assurance threat model | [policy-assurance-threat-model.md](policy-assurance-threat-model.md) |

@@ -1,6 +1,6 @@
 # SafeYolo Guest Image Builds
 
-For native host installation and prepared platform inputs, see the
+For host installation and prepared platform inputs, see the
 [installation reference](../cli/README.md#installation). For default guest tools
 and custom distributions, see the [rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md).
 
@@ -53,7 +53,7 @@ The download cache under `guest/out/.download-cache/` is preserved — mise/gh
 tarballs and the trixie OCI image don't re-fetch.
 
 Artifacts land in `guest/out/`. Return to the repository root, then provide
-that directory to the native installer at a fresh installation. This example
+that directory to the installer at a fresh installation. This example
 uses `$HOME/.safeyolo`; choose another explicit root if it already contains
 instance configuration. It does not change an existing installation:
 
@@ -62,12 +62,12 @@ instance configuration. It does not change an existing installation:
 ```
 
 Supply matching guest/VM artifacts as described in the
-[native build guide](../docs/native-policy.md#build-a-native-bundle).
+[build guide](../docs/installation.md#build-a-bundle).
 The Ubuntu example uses prepared `/usr/bin/tmux`. On Linux the installer links
 the prepared `rootfs-tree` without changing its UID 100000 ownership. Keep the
 tree available and immutable for the instance's lifetime. On macOS it clones
 Image, initramfs.cpio.gz and rootfs-base.ext4 into the instance's share.
-A missing or incorrectly owned tree fails native agent start.
+A missing or incorrectly owned tree fails agent start.
 
 ## macOS setup
 

@@ -64,3 +64,40 @@ forbidden = [
     "\npre-commit install",
     "\npre-commit run",
 ]
+
+# #1053 A retires the product qualifier. Keep this focused on the active
+# onboarding, CLI and skill surfaces; implementation comparisons and historical
+# evidence still need human review under docs/technical-writing.md.
+[[rule]]
+name = "one-safeyolo-product-name"
+docs = [
+    "README.md",
+    "cli/README.md",
+    "docs/installation.md",
+    "docs/credentials.md",
+    "docs/operator-guide.md",
+    "docs/coord-operations.md",
+    "docs/CONFIGURATION.md",
+    "docs/factories.md",
+    "docs/coord-mattermost.md",
+    "docs/nested-linux-lab.md",
+    "cli/src/safeyolo/agent_context/skills/readme-usability/references/safeyolo.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/desktop.md",
+    "proxy/src/bin/safeyolo.rs",
+    "proxy/src/demo.rs",
+    "proxy/src/lab.rs",
+    "proxy/src/guest_acquisition.rs",
+    "scripts/native_package.sh",
+    "scripts/build_host_packages.sh",
+]
+reason = "#1053 retires the product qualifier. Use SafeYolo, proxy, installer, release or settings. Keep technical and historical distinctions explicit."
+forbidden = [
+    "native product", "Native product",
+    "native release", "Native release",
+    "native proxy", "Native proxy",
+    "native installer", "Native installer",
+    "native settings", "Native settings",
+    "native CLI", "Native CLI",
+    "native instance", "Native instance",
+]

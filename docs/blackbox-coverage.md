@@ -83,7 +83,7 @@ inputs; `--no-guest-download` selects a proxy-only witness.
 On a disposable supported Linux host, start from this test checkout with its
 Python test environment prepared. Python and uv are test-driver dependencies,
 not packaged-product dependencies. The host must have the runtime prerequisites
-in [Native policy](native-policy.md). Obtain the host archive and its SHA-256
+in [installation prerequisites](installation.md#guest-prerequisites). Obtain the host archive and its SHA-256
 digest from the selected release. Replace both values below with those actual
 inputs. The command creates owned installation and section state under `HOME`,
 downloads the default guest, and starts and stops the test runtime.
@@ -121,7 +121,7 @@ The complete native process/protocol family is separately maintained in `tests/p
 
 #### TestInstalledNative — The installed native listener serves real host requests during the guest run.
 
-**Threat:** An isolation pass cannot name a native proxy if its host requests ran
+**Threat:** An isolation pass cannot name a Rust proxy if its host requests ran
 through a different process or never reached an origin.
 
 - **`test_controlled_origin_and_protected_admin`** — The selected agent reaches an owned origin and cannot proxy to admin.
@@ -137,7 +137,7 @@ to the protected management listener through the same agent socket.
 
 **Threat:** Process command lines are readable by any local user via
 `ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
-the native proxy invocation, a non-root user on the host (or a
+the Rust proxy invocation, a non-root user on the host (or a
 process that escaped the sandbox) can read them and gain full
 admin control. Tokens must be passed via file or env var instead.
 

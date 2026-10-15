@@ -183,7 +183,7 @@ inputs; `--no-guest-download` selects a proxy-only witness.
 On a disposable supported Linux host, start from this test checkout with its
 Python test environment prepared. Python and uv are test-driver dependencies,
 not packaged-product dependencies. The host must have the runtime prerequisites
-in [Native policy](native-policy.md). Obtain the host archive and its SHA-256
+in [installation prerequisites](installation.md#guest-prerequisites). Obtain the host archive and its SHA-256
 digest from the selected release. Replace both values below with those actual
 inputs. The command creates owned installation and section state under `HOME`,
 downloads the default guest, and starts and stops the test runtime.

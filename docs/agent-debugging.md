@@ -16,7 +16,7 @@ inside that shell and start the coding agent manually for guest-side lab work.
 The plain `agent shell NAME` command keeps its direct-shell behavior.
 
 If opening a shell fails, inspect the agent from the host operator's terminal.
-Use the installed native CLI for that instance. Replace `ROOT` with the instance
+Use the installed CLI for that instance. Replace `ROOT` with the instance
 directory and `NAME` with the configured agent name:
 
 ```sh
@@ -283,11 +283,11 @@ to run a fixed guest health probe. PID 1 must still be responsive, and the
 guest must still see its home and configuration shares. This path does not
 use the helper control socket, shell relay or proxy relay.
 
-Use the installed native CLI from the matching SafeYolo version on the host.
+Use the installed CLI from the matching SafeYolo version on the host.
 Replace `ROOT` with the instance directory and `NAME` with an existing, booted
 agent. Its current configuration share must contain the matching
 `safeyolo-guest` Linux executable and `host-launch-context.json` with a current-run
-generation. The native installer supplies guest assets; the host staging path
+generation. The installer supplies guest assets; the host staging path
 must bind them before boot. This operation needs no Python or SSH connection.
 
 ```sh

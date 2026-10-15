@@ -19,7 +19,7 @@ function coordRequest(tool: string, args: unknown, signal?: AbortSignal): Promis
         child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
         child.on("error", reject);
         child.on("close", (code) => {
-            if (code !== 0) { reject(new Error(stderr.trim() || `Native Coord ${tool} failed; inspect history before repeating an uncertain send`)); return; }
+            if (code !== 0) { reject(new Error(stderr.trim() || `Coord ${tool} failed; inspect history before repeating an uncertain send`)); return; }
             try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
         });
         child.stdin.on("error", reject);

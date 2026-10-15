@@ -2,11 +2,11 @@
 
 On a prepared Ubuntu host, run `safeyolo demo` as the ordinary account that
 owns your SafeYolo installation. Complete the [installation and guest
-prerequisites](native-policy.md#guest-prerequisites) first. The installed command
+prerequisites](installation.md#guest-prerequisites) first. The installed command
 uses your default installation automatically. Demo uses Codex and its normal
 model access; no new API key is required. Your policy must permit that model
 access. Copying a login does not grant network or credential permission; see
-[credential approval](native-credentials.md#authorization-binding-and-risk-approval)
+[credential approval](credentials.md#authorization-binding-and-risk-approval)
 if the proxy reports that prerequisite. Missing tools are installed through
 the guest's existing mise path and network policy.
 

@@ -1,10 +1,10 @@
 # Agent launchers
 
-The native CLI reports runtime liveness, control health, coding-agent state
+The CLI reports runtime liveness, control health, coding-agent state
 and terminal-session state separately. Use `safeyolo status`,
 `agent status NAME`, or `agent diagnostics NAME`. Command Centre reports the
 same observations. A successful launch script does not, by itself, prove the
-coding agent is running. Install the [native host commands](native-policy.md)
+coding agent is running. Install the [host commands](installation.md)
 before following this reference.
 
 Recorded launch transitions refresh Command Centre through the existing event
@@ -137,8 +137,8 @@ Context arrives as environment data, not shell source:
 | `SAFEYOLO_WORKSPACE` | Workspace for this launch. |
 | `SAFEYOLO_LAUNCH_MODE` | `foreground` or `background`. |
 | `SAFEYOLO_CONFIG_DIR` | This host's selected SafeYolo configuration. |
-| `SAFEYOLO_EXECUTABLE` | Installed native host executable. |
-| `SAFEYOLO_NATIVE_CONFIG_PATH` | Selected native `config.toml` path. |
+| `SAFEYOLO_EXECUTABLE` | Installed host executable. |
+| `SAFEYOLO_NATIVE_CONFIG_PATH` | Selected `config.toml` path. |
 | `SAFEYOLO_LAUNCHER_PRESETS` | Installed directory containing the two tmux presets. |
 | `SAFEYOLO_TMUX_SESSION`, `SAFEYOLO_LAUNCH_PANE` | Selected host session and recorded pane, where applicable. |
 | `SAFEYOLO_TMUX_SOCKET` | Recorded tmux server socket for this launch, where applicable. |
@@ -188,7 +188,7 @@ Standard SSH works over the tailnet, including
 when Tailscale SSH provides authentication on that host.
 
 On an installed SafeYolo host with Tailscale connected, enable the explicit
-Tailnet share and restart the native proxy. Select two free Tailnet HTTPS ports;
+Tailnet share and restart the proxy. Select two free Tailnet HTTPS ports;
 the defaults are 9443 for Admin and 9444 for events.
 
 Set these values in the selected instance's `config.toml` (merge them into
@@ -243,8 +243,7 @@ forwarded loopback URL cannot identify an SSH destination.
 Run Agent uses the named Admin API operation and needs no SSH connection.
 Open Agent Terminal opens Terminal.app and runs `ssh -t TARGET` followed by
 the server's reported `host_executable` with its `host_root` and
-`agent attach -- NAME` on that host. This uses the running instance's native
-SafeYolo installation even when the non-interactive SSH shell has no `safeyolo`
+`agent attach -- NAME` on that host. This uses the running instance's SafeYolo installation even when the non-interactive SSH shell has no `safeyolo`
 on its PATH. An explicit SSH target in local
 connection settings overrides discovery, for example to use another login.
 If the host's effective UID has no OS account entry, `host_user` is null and an
@@ -290,9 +289,9 @@ Admin API and event stream; the graphical app runs on the operator's Mac.
 ### Proxy restart and connection failures
 
 Installing the app does not enable the host's live-event listener. For a local
-connection, set `enabled = true` under `[command_centre]` in that native instance's
+connection, set `enabled = true` under `[command_centre]` in that instance's
 `config.toml`. Its default loopback event port is 9091. From the host operator's
-terminal, restart the installed native proxy. Replace `ROOT` with the instance
+terminal, restart the installed proxy. Replace `ROOT` with the instance
 directory:
 
 ```sh
@@ -300,7 +299,7 @@ safeyolo --root ROOT stop
 safeyolo --root ROOT start
 ```
 
-The restart briefly interrupts agent networking and Coord. Native startup
+The restart briefly interrupts agent networking and Coord. Startup
 rebuilds proxy attachments and listeners from current runtime evidence. Agents
 stay running. Local mode loads the existing local
 Admin API credential automatically; it does not require pasting a key.
@@ -320,7 +319,7 @@ duplicates combined. It excludes credentials, headers, URL paths and queries,
 and response bodies. Hostnames remain visible. **Copy Details** continues to
 copy the displayed error text.
 
-The native installation uses fresh TOML configuration. It does not convert an
-existing Python installation. Native host acceptance uses installed CLI and
+The installation uses fresh TOML configuration. It does not convert an
+existing Python installation. Host acceptance uses installed CLI and
 guest assets on Ubuntu/gVisor and physical macOS/VZ; a graphical macOS VM
 without nested virtualization cannot substitute for the latter.

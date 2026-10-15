@@ -8,7 +8,7 @@ durable `agent_id` plus runtime `run_id` are documented in the
 
 ## Overview
 
-The current host CLI launches the packaged Rust proxy. The native process
+The current host CLI launches the packaged Rust proxy. The process
 handles network policy, credential and pattern inspection, local Agent and
 Admin APIs, flow evidence, and the read-only terminal inspector. The CLI owns
 host setup and sandbox lifecycle. See [developer architecture](DEVELOPERS.md#architecture-overview)
@@ -25,7 +25,7 @@ accepted differences and first-release traffic scope.
 
 Each agent runs in an isolated Linux sandbox without an external network
 interface. Requests go through the guest forwarder and a host-owned,
-per-agent Unix domain socket (UDS) to the native Rust proxy:
+per-agent Unix domain socket (UDS) to the Rust proxy:
 
 ```text
 Agent sandbox -> guest forwarder -> per-agent UDS -> Rust proxy -> upstream
@@ -58,8 +58,8 @@ and a read-only configuration share.
   go to a per-agent file-backed overlay and persist across stop and run.
   `--ephemeral` selects a memory-backed overlay whose rootfs writes are
   discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
-- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by the native host prerequisites in `docs/native-policy.md` and surfaced in `safeyolo doctor`.
-- **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they install a profile for the selected runtime path. Explicit KVM preparation grants the host and mapped root UIDs device access; a later device-permission reset requires `safeyolo host prepare` again. See [host preparation](native-policy.md#linux-host-preparation-in-new-source-bundles).
+- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. `safeyolo doctor` reports the selected runtime.
+- **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they install a profile for the selected runtime path. Explicit KVM preparation grants the host and mapped root UIDs device access; a later device-permission reset requires `safeyolo host prepare` again. See [host preparation](installation.md#linux-host-preparation-in-new-source-bundles). The published release still needs [manual host preparation](installation.md#guest-prerequisites).
 
 
 See the [macOS microVM architecture](microvm-architecture.md) and

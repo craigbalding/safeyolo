@@ -286,7 +286,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     let configuration = crate::native_config::read(config)?;
     let path: PathBuf = configuration
         .data_dir
-        .ok_or("native data directory is missing")?
+        .ok_or("data directory is missing")?
         .join("coord/dispatch-schedule.json");
     let client = OperatorCoord::open(config)?;
     let result = deliver(&client, &path, room, day, &weekly_on, &mode).await;

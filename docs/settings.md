@@ -1,8 +1,8 @@
-# Native settings reference
+# Settings reference
 
 Use `config.toml` for runtime settings and `policy.toml` for host policy and
 named controls. Relative paths belong to the directory containing the selected
-configuration or policy file. The native loader never reads `config.yaml`,
+configuration or policy file. The loader never reads `config.yaml`,
 `addons.yaml`, or a generated `native.json` as a fallback. Unknown configuration
 keys and old addon keys produce validation errors.
 
@@ -11,11 +11,17 @@ This inventory binds #816 P2 once to starting source
 `cli/src/safeyolo/config.py`, `rust_proxy.py`, the native `Config`, detector
 settings, and native host readers. It records remaining consumers owned by
 #817/#818. The inventory does not claim those separate host/helper outcomes.
-See [native policy commands](native-policy.md) for installation and use.
+See [policy commands](installation.md#check-show-and-apply) for policy operations
+and [installation](installation.md#install-and-start) for setup.
+
+The responsibility map and release bindings below retain the Python-to-Rust
+implementation history and revision-specific proof. In those sections,
+“native” names that implementation distinction. For current configuration
+keys, go to [runtime settings](#runtime-settings).
 
 ## Operator entry responsibilities
 
-[Native operator commands](native-operator.md) use one selected instance and
+[Native operator commands](operator-guide.md) use one selected instance and
 session-local target. This map records the reached entries and native package
 relationships. The release reconciliation starts from integrated source
 `062b49b5e25cb757aa62eb3fd233e0ce4ed01ed8`. The selected clean candidate and
@@ -49,7 +55,7 @@ The reached #818 helper replacements use the same entry map:
 | Removed Python product and retained test tooling | The shared completion-note/Factory proposal production libraries are replaced by the native Coord commands; original Python behavior fixtures remain test-only. The native bundle supplies operator send/chat/watch and both native adapters: Mattermost exchange and Dispatch request/generation/checking. Claude host setup and all Codex/Pi repository context use native operations. The replaced `repo_map.py` remains only as a test reference; the native package excludes it and the product wheel is removed. The Lab controller uses the native evidence capture/redactor in `guest/command/src/lab_evidence.rs`, staged by `proxy/src/lab.rs`; its reached helper path no longer requires Python. The source `install.sh` now delegates to the same accepted native installer. The Python CLI entry, wheel build metadata and production Python modules are removed. Python references under `tests/reference` are reached only by protocol/storage/schema fixtures and controlled test-state producers; the former CLI entry and command modules are deleted. Maintained installed runners select native bin/assets, TOML, native commands, actual process/guest ownership and receipts. `build_host_packages.py` remains CI debug tooling. Final #822 R5/R7 installed journey and process/dependency audit remain open; a source binding is not their acceptance. |
 | Seatbelt SSH client | Bash `contrib/macos-seatbelt-agent/configure-client` discovers an installed host CLI or the existing staged Linux `safeyolo-coord`. Both invoke the same `ssh_proxy.rs` CONNECT relay, replacing `ssh-via-proxy.py`. Existing host-key pins, private key verification, dedicated known_hosts, managed-file backups, HTTP(S) proxy/CA selection, TLS checks, binary bytes, half-close and refusal are retained. No direct fallback or new credential authority is introduced. |
 | Optional contrib examples | The unreached Python ntfy notifier/action and custom log-monitor examples are deleted; their README files now point to the retained native operations. The unused `scripts/generate_fingerprint.py` helper for the old `policy.yaml`/installation layout is removed. Native `services approvals` reports credential fingerprints and `credentials approve` consumes them. The optional ntfy push buttons, custom summaries and standalone pre-request fingerprint utility are retired; existing native logs/traffic/approvals and accepted Mattermost/Dispatch remain. No native package producer or launcher called these helpers. |
-| Credential and service entry | The accepted #819 implementation from PR931 at `af5cdba42f4b291e36fa7801b5a238989b1be56f` is reconciled with the current native Admin client and policy transaction. `credentials` and `services` use the same encrypted store, gateway and service catalogue; maintained access/continuity fixtures seed through the matching native CLI. See [native credentials](native-credentials.md). Frozen PR931 and its original evidence remain intact. C3's real 1Password result remains open; this source integration does not establish real-provider or final installed acceptance. |
+| Credential and service entry | The accepted #819 implementation from PR931 at `af5cdba42f4b291e36fa7801b5a238989b1be56f` is reconciled with the current native Admin client and policy transaction. `credentials` and `services` use the same encrypted store, gateway and service catalogue; maintained access/continuity fixtures seed through the matching native CLI. See [native credentials](credentials.md). Frozen PR931 and its original evidence remain intact. C3's real 1Password result remains open; this source integration does not establish real-provider or final installed acceptance. |
 | Guest boot, command construction and harness staging | `host_boot.rs` stages the shipped Bash boot scripts, skill tree and native `safeyolo-guest` in the read-only `/safeyolo` share. `guest_commands.rs` writes native command/state payloads; `host_platform.rs` and `host_lifecycle.rs` select runsc or the signed VZ helper, native supervision, tmux and shell/SSH/socat transports. [Host setup](../contrib/HOST_SCRIPT_GUIDE.md) selects installed host/guest Coord artifacts through `contrib/lib/stage-coord-native.sh`; the Linux guest Coord executable lives at `/home/agent/.safeyolo/safeyolo-coord`, not the ordinary config share. Lab stages the native evidence/redaction helper and embedded shell launchers. Direct/absolute helper paths, shebangs, generated shell commands and `include_bytes!` inputs belong to this same production path. |
 | Shipped skills and workload tools | The package ships the managed skill tree, baseline, services, launchers and shell/TypeScript setup inputs. It excludes the repository-only `github_checks.py`, its instructions and Python bytecode. The read-all token recipe uses shell and `/dev/urandom`. `mise-shell-host-setup.sh` prints `mise use -g python@3.12` inside a quoted welcome-message heredoc; it does not execute that command. Guest-tool guidance and optional Kali/Alpine rootfs builders offer Python for operator workloads. Those tools are separate from SafeYolo's native boot/control requirements; they do not supply a Python-unavailable acceptance filesystem. |
 | Build and dependency consumers | `proxy/Cargo.toml`/`Cargo.lock` and `guest/command/Cargo.toml`/`Cargo.lock` own Rust dependencies; their build identity hook is Rust. `tree-sitter-python` compiles a native grammar selected by `repo_map.rs`, not an interpreter. The scanner's generated Python-semantics tables are static data; their Python generators under `proxy/tools` are validation tooling. `vm/Makefile` builds metadata with Swift and signs the native VM helper; its Python subprocess calls are confined to test targets. The shell assembler resolves tmux's private library closure with `ldd` or `otool`. Actual final binaries and loaded libraries still require the installed dependency/execution check; package names or symbol searches alone do not exclude embedding. |
@@ -88,7 +94,7 @@ evidence and approvals. Capture, policy and canonical outcome owners are retaine
 
 ## Installed release bindings
 
-Use the [normal install → start → use path](native-policy.md#install-and-start).
+Use the [normal install → start → use path](installation.md#install-and-start).
 The source relationships above prepare final #822 R5/R7 reconciliation; they do
 not select F or accept R1–R8. Public release publication remains stopped.
 
@@ -99,7 +105,7 @@ Build with `scripts/build_host_packages.sh --output DIRECTORY
 --runtime-artifacts DIRECTORY`, adding matching `--artifacts` and
 `--guest-artifacts` when reusing built binaries. macOS additionally requires
 `--vm-artifacts` with the signed helper, metadata, symbols and Linux terminal
-receipts. The [build reference](native-policy.md#build-a-native-bundle) states
+receipts. The [build reference](installation.md#build-a-bundle) states
 these inputs. For this disposable witness, install its command entry below
 `ROOT/commands` to preserve the host's ordinary command. Select the installed
 executable with `ROOT/bin/safeyolo --root ROOT` for subsequent witness commands.
@@ -119,10 +125,10 @@ built from the current source or F.
 | Required relationship | Existing invocation and remaining observation |
 | --- | --- |
 | R1 package/install failures and recovery | On each supported host, use `tests/proxy_contracts/native-package-journey.sh BUNDLE STATE FREE_ADMIN_PORT` with a disposable writable bundle, fresh disk-backed state parent and permitted free port. The witness creates two roots, checks missing-proxy refusal/restoration and occupied-endpoint refusal without harming the other root, then status/identity/doctor and owned stop. It does not boot a guest. The maintained installed lanes supply the guest observations. |
-| R3 continuous guest/operator path | Reuse applicable child results and the full lane's `access`, `lifecycle` and `continuity` observations. `installed_access.py` binds the retained HTTP export to `raw_request`. The accepted Ubuntu G2/G4 driver is `tests/nested-linux/operator_coord_acceptance.py --root ROOT --agent AGENT --peer PEER --commit FULL_SHA`, using two already booted guests and provisioned Codex. Reuse its recorded native Coord/Agent API exchange when those inputs remain applicable; `installed_guest_commands.py` supplies G1 supervision/recovery, not that Coord result. Native attach, independent shell, desktop presentation/missing-target reporting and same-instance stop/restart must be observed where a child or lane has not already supplied them. Use the commands in [native host guidance](native-policy.md#configure-and-use-an-agent) and [operator guidance](native-operator.md), with the selected installed executable/root. A host-only socket fixture does not supply guest effects. |
+| R3 continuous guest/operator path | Reuse applicable child results and the full lane's `access`, `lifecycle` and `continuity` observations. `installed_access.py` binds the retained HTTP export to `raw_request`. The accepted Ubuntu G2/G4 driver is `tests/nested-linux/operator_coord_acceptance.py --root ROOT --agent AGENT --peer PEER --commit FULL_SHA`, using two already booted guests and provisioned Codex. Reuse its recorded native Coord/Agent API exchange when those inputs remain applicable; `installed_guest_commands.py` supplies G1 supervision/recovery, not that Coord result. Native attach, independent shell, desktop presentation/missing-target reporting and same-instance stop/restart must be observed where a child or lane has not already supplied them. Use the commands in [native host guidance](installation.md#configure-and-use-an-agent) and [operator guidance](operator-guide.md), with the selected installed executable/root. A host-only socket fixture does not supply guest effects. |
 | R4 Demo, Lab and Factory | Use installed `safeyolo demo`, `safeyolo lab` and the [Factory check/approve/prepare/login/run/restart commands](factories.md#fresh-setup-check-approve-and-run). [W1 at `b5451c2d` plus `4b40c521`](https://github.com/craigbalding/safeyolo/issues/822#issuecomment-6083223408), [W3 at `35df27b1`](https://github.com/craigbalding/safeyolo/issues/820#issuecomment-6034124246) and [W4/W5 at `73ba3231`](https://github.com/craigbalding/safeyolo/issues/820#issuecomment-6036872352) supply accepted installed Ubuntu results at those revisions and limits. Compare their native package, embedded Codex launcher, skill tree, staging and protocol inputs with F; repeat only an affected installed relationship. Deterministic fixtures count only under R4's reuse rule and are never a new live-model pass. On macOS, check registration of all three entries and compare [G7's installed `594630519` staging/guest-start result](https://github.com/craigbalding/safeyolo/issues/818#issuecomment-6090918076) with F before reuse. |
 | R4 assistance and external resolver | The existing [installed real-Helper invocation](../tests/blackbox/README.md#installed-shared-approval-witness) binds U3's human-decided action. [U3/U7/U8 and cross-client U6 are independently supported](https://github.com/craigbalding/safeyolo/issues/821#issuecomment-6073857108) at native backend `a8e3648e`, executed driver `a0d0d72c` and Commander `cb587fcc`; compare their relevant package/launch/staging/client inputs with F before reuse. The [running-Helper model-unavailable relationship is independently accepted](https://github.com/craigbalding/safeyolo/issues/821#issuecomment-6074970483) at that native backend with driver `ac53f3df`; compare its actual launch, policy and model inputs with F before reuse. C3's actual host `op`/authentication/synthetic-item result remains missing under #819. `tests/proxy_contracts/test_native_onepassword_cli.py::test_real_onepassword_resolves_only_after_host_approval` supplies the existing bounded provider witness; set `SAFEYOLO_NATIVE_BUNDLE` to the selected verified bundle so the fixture installs that package instead of building from default debug artifacts. Retain its declared host authentication setup, process-boundary controls and secret-free observations. |
-| R5 process/dependency coverage | During installed R1/R3/R4, observe the actual launched descendants and correlate shebang/interpreter/inline shell/embedding relationships with this map and final package inputs. Reuse the [bounded journey and detector procedure](../tests/blackbox/README.md#native-journey-with-python-unavailable) where applicable. PID-1 boot/login/recovery and generated `/run` inputs were outside the accepted selected guest trace; static source evidence is not a dynamic observation. On the actual macOS launch path, record the selected CLI, signed VM/terminal helpers, guest assets, Commander/SSH transport and `otool` library closure plus the execution scope actually observed. No Mac or final-F coverage follows from the Ubuntu result. |
+| R5 process/dependency coverage | During installed R1/R3/R4, observe the actual launched descendants and correlate shebang/interpreter/inline shell/embedding relationships with this map and final package inputs. Reuse the [bounded journey and detector procedure](../tests/blackbox/README.md#journey-with-python-unavailable) where applicable. PID-1 boot/login/recovery and generated `/run` inputs were outside the accepted selected guest trace; static source evidence is not a dynamic observation. On the actual macOS launch path, record the selected CLI, signed VM/terminal helpers, guest assets, Commander/SSH transport and `otool` library closure plus the execution scope actually observed. No Mac or final-F coverage follows from the Ubuntu result. |
 | R6 two-instance isolation | Reuse [Ubuntu H6 at `ee75dabcc`/production](https://github.com/craigbalding/safeyolo/issues/817#issuecomment-6026266001) and [physical VZ H6 at `594630519`/debug](https://github.com/craigbalding/safeyolo/issues/817#issuecomment-6092568570) only where their path, process, endpoint and packaging assumptions still apply. Those results include A stop/cleanup/restart with B's saved data, actual identities, fresh response and scoped history preserved. The host-only package witness does not supply the guest/session relationship. Repeat a missing or affected check using R3's instances where practical. |
 
 Final execution still has concrete prerequisites. #821's corrected
@@ -156,15 +162,15 @@ source reconciliation:
 
 ## Coord listener ports
 
-The native `coord start` command accepts `--client-port PORT` and
+The `coord start` command accepts `--client-port PORT` and
 `--monitor-port PORT` for the selected instance. Both listeners bind to
 `127.0.0.1`. Explicit ports must be distinct integers from 1 through 65535.
 Each omitted port uses its ordinary default: client 4222 or monitor 8222.
 With `SAFEYOLO_NATS_TEST_INSTANCE` set, each omitted port is assigned dynamically.
 
-On the host, use the account that owns the two initialized native roots. The
+On the host, use the account that owns the two initialized roots. The
 following example uses the executable installed by the
-[native installation](native-policy.md#install-and-start) at
+[installation](installation.md#install-and-start) at
 `$HOME/.safeyolo/bin/safeyolo`. Roots `$HOME/sy-a` and `$HOME/sy-b` must
 already exist. If your installed executable is elsewhere, replace its path;
 keep the two explicit roots unchanged. The four example ports must be free and permitted by the host
@@ -176,7 +182,7 @@ policy. Start Coord before starting each proxy:
 ```
 
 Each command returns its owned process identity and observed client/monitor
-ports. Native room commands, Agent API clients, status and stop use that
+ports. Room commands, Agent API clients, status and stop use that
 instance's endpoints. A compatible live server is reused. A conflicting
 explicit port is refused without changing or stopping the live server.
 Use `safeyolo --root ROOT coord stop` before changing its listener ports.
@@ -187,7 +193,7 @@ process and ports. `--binary PATH` retains its reviewed NATS binary pin.
 ## Runtime settings
 
 All entries below are retained. Configuration values override built-in defaults.
-Native audit, trace, capture and Command Centre settings override the corresponding
+Audit, trace, capture and Command Centre settings override the corresponding
 legacy environment settings. Proxy/CA environment variables remain available to
 host tools. File paths are strings; integer ports are in the existing 0–65535
 range. Port zero selects an ephemeral Admin listener, while an enabled Command
@@ -204,45 +210,45 @@ passed to the existing storage/queue owners without a new positive-only rule.
 
 | New config.toml key | Type and default | Starting input and consumer |
 | --- | --- | --- |
-| `listeners` | Array of tables; `[]` | Generated native listeners; native UDS listener preparation. Each table has string `agent_id`, `socket_path`, and optional `source_id`. The listener supplies identity; `source_id` supplies the declaration slot. |
-| `agent_map_file` | Path; empty | Generated discovery map path; native agent discovery. Empty uses listener identity alone. |
+| `listeners` | Array of tables; `[]` | Generated listeners; UDS listener preparation. Each table has string `agent_id`, `socket_path`, and optional `source_id`. The listener supplies identity; `source_id` supplies the declaration slot. |
+| `agent_map_file` | Path; empty | Generated discovery map path; agent discovery. Empty uses listener identity alone. |
 | `data_dir` | Path; `data` | Generated runtime directory; HMAC, Agent API and durable instance identity. |
-| `policy_file` | Path; `policy.toml` | Policy path; shared native policy compiler and watcher. |
-| `admin_port` | Integer; `9090` | `proxy.admin_port`; native loopback Admin listener. |
-| `admin_api_token_file` | Path; `data/admin_token` | Generated operator token path; Admin authentication and native CLI. |
+| `policy_file` | Path; `policy.toml` | Policy path; shared policy compiler and watcher. |
+| `admin_port` | Integer; `9090` | `proxy.admin_port`; loopback Admin listener. |
+| `admin_api_token_file` | Path; `data/admin_token` | Generated operator token path; Admin authentication and CLI. |
 | `readiness_file` | Path; `data/ready.json` | Generated readiness path; accepted process/listener marker. |
 | `audit_log_path`, `event_log` | Paths; `logs/audit.jsonl`, `logs/events.jsonl` | Generated log paths; canonical audit writer and separate runtime diagnostics. |
 | `circuit_state_file` | Path; `data/circuits.json` | Generated circuit snapshot path; existing circuit state owner. Empty disables snapshots. |
-| `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; `builtin-services`, `services` | Standalone init creates these directories; the native installer selects `assets/services` and `data/services`. Operator definitions override builtins by name. CLI and delivery read the same accepted catalogue. Set both together. |
+| `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; `builtin-services`, `services` | Standalone init creates these directories; the installer selects `assets/services` and `data/services`. Operator definitions override builtins by name. CLI and delivery read the same accepted catalogue. Set both together. |
 | `onepassword_executable` | Absolute host executable path; absent | Optional 1Password resolver, after service/policy/approval checks. Authentication stays in the host environment. Restart after changing it; local credentials do not need it. |
-| `protected_host_directories` | Path array; `[]` | Native extra-mount validation refuses writable sources at these resolved directories or descendants before save and startup. `mount protect`, `unprotect` and `list` select persistent protection in the same file. A directory may be designated before it exists. Workspace shares and running sandboxes are unchanged. See [protected host directories](CONFIGURATION.md#protected-host-directories). |
-| `parent_proxy`, `upstream_ca_file` | URL/path; absent | `proxy.upstream_proxy`, `proxy.upstream_ca_cert`; native upstream transport and trust loader. |
+| `protected_host_directories` | Path array; `[]` | extra-mount validation refuses writable sources at these resolved directories or descendants before save and startup. `mount protect`, `unprotect` and `list` select persistent protection in the same file. A directory may be designated before it exists. Workspace shares and running sandboxes are unchanged. See [protected host directories](CONFIGURATION.md#protected-host-directories). |
+| `parent_proxy`, `upstream_ca_file` | URL/path; absent | `proxy.upstream_proxy`, `proxy.upstream_ca_cert`; upstream transport and trust loader. |
 | `parent_proxy_agents` | String array; `[]` | Applies an optional trusted-agent filter to the shared parent. Omitted/empty applies no agent filter. If `parent_proxy_hosts` is also populated, both filters must match. Without `parent_proxy`, the list has no effect. See the [configuration example](CONFIGURATION.md#runtime-settings). |
 | `parent_proxy_hosts` | Domain Name System (DNS) hostname array; `[]` | Applies an optional exact destination filter to the shared parent. Omitted/empty applies no host filter. Matching ignores ASCII case and one final root dot; entries use the existing hostname/IDNA validation. Invalid entries are rejected. IP, wildcard, suffix, URL and port filters are not supported. Without `parent_proxy`, the list has no effect. |
-| `tls_ca_file` | Path; absent | Generated signing CA path; native TLS interception. |
+| `tls_ca_file` | Path; absent | Generated signing CA path; TLS interception. |
 | `ignore_hosts` | String array; `[]` | `proxy.ignore_hosts`; existing exact TLS bypass entries. |
 | `via_token` | String; absent | `proxy.via_token`; existing Via-loop detection. Explicit values retain RFC-token validation. |
 | `admin_shield_extra_ports` | String; empty | Generated/host input; existing local Admin endpoint shield. |
-| `agent_api_enabled` | Boolean; `true` | Generated setting; native reserved-host Agent API. |
-| `sse_streaming_enabled`, `sse_stream_json` | Booleans; `true`, `false` | Existing native streaming inputs; response streaming consumer. Host exceptions remain policy. |
+| `agent_api_enabled` | Boolean; `true` | Generated setting; reserved-host Agent API. |
+| `sse_streaming_enabled`, `sse_stream_json` | Booleans; `true`, `false` | Existing streaming inputs; response streaming consumer. Host exceptions remain policy. |
 | `flow_store_enabled`, `flow_store_db_path` | Boolean/path; `true`, `logs/flows.sqlite3` | Generated capture inputs; existing FlowRecorder and FlowStore. Context and evidence authority still govern capture. |
 | `flow_pruner_max`, `flow_pruner_max_body_bytes` | Integers; `5000`, `1073741824` | Existing inspector inputs; existing FlowStore pruner. Active flows remain retained. |
-| `plumb.max_participants`, `plumb.max_message_bytes` | Integers; `8`, `1048576` | Existing plumb settings; native conversation admission. A zero message-size limit disables that cap. |
-| `plumb.message_page_limit`, `plumb.default_ttl_seconds` | Integers; `200`, `3600` | Existing plumb settings; native history read and conversation TTL. Existing zero/default handling remains. |
+| `plumb.max_participants`, `plumb.max_message_bytes` | Integers; `8`, `1048576` | Existing plumb settings; conversation admission. A zero message-size limit disables that cap. |
+| `plumb.message_page_limit`, `plumb.default_ttl_seconds` | Integers; `200`, `3600` | Existing plumb settings; history read and conversation TTL. Existing zero/default handling remains. |
 | `capture.max_request_body_bytes`, `capture.max_response_body_bytes` | Integers; `1048576`, `4194304` | Former flow-store tuning; FlowStore body limits. |
-| `capture.preview_text_chars`, `capture.compress_bodies`, `capture.queue_max` | Integer/Boolean/integer; `8192`, `true`, `500` | Former flow-store tuning and `SAFEYOLO_FLOW_QUEUE_MAX`; native body preview/storage and recorder queue. |
+| `capture.preview_text_chars`, `capture.compress_bodies`, `capture.queue_max` | Integer/Boolean/integer; `8192`, `true`, `500` | Former flow-store tuning and `SAFEYOLO_FLOW_QUEUE_MAX`; body preview/storage and recorder queue. |
 | `trace.ttl_s`, `trace.global_max`, `trace.per_agent_max` | Integers; `300`, `1000`, `200` | Former trace environment inputs; existing TraceStore retention and capacity. |
 | `trace.steps_max`, `trace.details_max_bytes` | Integers; `128`, `4096` | Former trace environment inputs; existing TraceStore step/detail bounds. |
 | `audit.queue_max`, `audit.max_bytes`, `audit.backups` | Integers; `10000`, `50000000`, `5` | Former audit environment inputs; existing audit queue/rotation. `max_bytes` replaces the MB-valued environment input. Existing owner handling of zero/negative limits remains. |
-| `agent_launcher.default`, `agent_launcher.tmux_session` | Optional string/string; absent, `safeyolo` | Former config.yaml readers; native host lifecycle now reads the same TOML loader. An explicit agent launcher wins, then the host default, then the existing built-in selection. #817 owns installed host launch preparation and root/asset binding. |
-| `command_centre.enabled`, `command_centre.events_port` | Boolean/integer; `false`, `9091` | Former Command Centre inputs/environment; native Admin preparation and authenticated event listener. Fresh init creates `data/instance_id`. |
-| `command_centre.share`, `command_centre.tailnet_admin_port`, `command_centre.tailnet_events_port` | String/integers; `local`, `9443`, `9444` | Former Command Centre inputs; existing native Tailnet publication. Share is `local` or `tailnet`; the Tailnet ports must be nonzero and distinct. #817 owns the complete operator sharing workflow. |
-| `desktop.size`, `desktop.present_host_port` | String/integer; `auto`, `0` | Native host lifecycle and desktop presentation consume the retained geometry/port settings. `agent present NAME` and Commander use the same native presentation owner. #817's physical installed result retains its recorded revision; final package applicability remains with #822. The Python presentation is removed. |
-| `web.host`, `web.port`, `web.tailnet_enabled`, `web.tailnet_port` | String/integer/Boolean/integer; `127.0.0.1`, `8081`, `false`, `443` | Former `proxy.web_*` inputs. The new loader preserves their values; #817 owns native web/share startup and helpers. |
+| `agent_launcher.default`, `agent_launcher.tmux_session` | Optional string/string; absent, `safeyolo` | Former config.yaml readers; host lifecycle now reads the same TOML loader. An explicit agent launcher wins, then the host default, then the existing built-in selection. #817 owns installed host launch preparation and root/asset binding. |
+| `command_centre.enabled`, `command_centre.events_port` | Boolean/integer; `false`, `9091` | Former Command Centre inputs/environment; Admin preparation and authenticated event listener. Fresh init creates `data/instance_id`. |
+| `command_centre.share`, `command_centre.tailnet_admin_port`, `command_centre.tailnet_events_port` | String/integers; `local`, `9443`, `9444` | Former Command Centre inputs; existing Tailnet publication. Share is `local` or `tailnet`; the Tailnet ports must be nonzero and distinct. #817 owns the complete operator sharing workflow. |
+| `desktop.size`, `desktop.present_host_port` | String/integer; `auto`, `0` | host lifecycle and desktop presentation consume the retained geometry/port settings. `agent present NAME` and Commander use the same presentation owner. #817's physical installed result retains its recorded revision; final package applicability remains with #822. The Python presentation is removed. |
+| `web.host`, `web.port`, `web.tailnet_enabled`, `web.tailnet_port` | String/integer/Boolean/integer; `127.0.0.1`, `8081`, `false`, `443` | Former `proxy.web_*` inputs. The new loader preserves their values; #817 owns web/share startup and helpers. |
 
 `reload_id` is a string used by the existing host listener writer to correlate
 an accepted reload. It is generated state, not a second policy input. The writer
-preserves TOML settings when changing native listeners. #817 retains responsibility
+preserves TOML settings when changing listeners. #817 retains responsibility
 for installed host lifecycle and helper provisioning.
 
 Sandbox service inputs remain in their existing concrete owners: host-to-service
@@ -267,23 +273,23 @@ standard error output.
 The following fields replace the effective detector settings. They use the shared
 policy compiler and existing detector implementations. Explicit fields override
 these defaults. `policy show` identifies each control field's source, including
-nested credential settings. Native `/config`, `/trace`, `/stats`, audit envelopes
+nested credential settings. `/config`, `/trace`, `/stats`, audit envelopes
 and runtime diagnostics use control names. The Agent API `/config` returns the
 existing sensor rules and named controls; operator service bindings and agent
 settings remain in `policy show`. Raw context and evidence values are preserved.
 
 | New policy.toml key | Type and default | Starting input and consumer |
 | --- | --- | --- |
-| `controls.network.enabled`, `action`, `homoglyph` | Boolean/action/Boolean; `true`, `block`, `true` | Network enabled/mode/native flags; existing NetworkGuard. `action` is `block` or `warn`. |
-| `controls.credentials.enabled`, `action` | Boolean/action; `true`, `block` | Credential enabled/mode/native flags; existing CredentialGuard. Network permission remains separate. |
+| `controls.network.enabled`, `action`, `homoglyph` | Boolean/action/Boolean; `true`, `block`, `true` | Network enabled/mode/flags; existing NetworkGuard. `action` is `block` or `warn`. |
+| `controls.credentials.enabled`, `action` | Boolean/action; `true`, `block` | Credential enabled/mode/flags; existing CredentialGuard. Network permission remains separate. |
 | `controls.credentials.detection_level` | String; `standard` | Existing detection level; CredentialGuard recognizes `standard` and `paranoid`. |
 | `controls.credentials.standard_auth_headers` | String array; authorization, x-api-key, api-key, x-auth-token, apikey, x-goog-api-key | Existing detector header names; CredentialGuard header detection. |
-| `controls.credentials.use_default_credential_rules` | Boolean; `true` | Existing native detector input; CredentialGuard default rules. |
+| `controls.credentials.use_default_credential_rules` | Boolean; `true` | Existing detector input; CredentialGuard default rules. |
 | `controls.credentials.safe_headers.safe_patterns` | String array; `[]` | Existing effective safe-pattern input; CredentialGuard exclusions. |
 | `controls.credentials.entropy.min_length`, `min_charset_diversity`, `min_shannon_entropy` | Numbers; `20`, `0.5`, `3.5` | Existing entropy tuning; CredentialGuard heuristic. |
-| `controls.patterns.enabled`, `builtin_sets` | Boolean/string array; `true`, `[]` | Existing scanner tuning; shared Scanner compilation. The empty builtin default preserves the accepted fresh native foundation. Select `secrets` explicitly to enable that existing set. |
+| `controls.patterns.enabled`, `builtin_sets` | Boolean/string array; `true`, `[]` | Existing scanner tuning; shared Scanner compilation. The empty builtin default preserves the accepted fresh foundation. Select `secrets` explicitly to enable that existing set. |
 | `controls.patterns.request`, `response`, `websocket_request`, `websocket_response` | Actions; all `block` | Existing inspection flags; independent directional scanner enforcement. |
-| `controls.test_context.action`, `inject_declared`, `declared_ttl`, `target_hosts` | Action/Boolean/positive integer/string array; `block`, `false`, `900`, `[]` | Existing context enforcement, declaration and target inputs; shared native context owner. Target matching updates with the policy hash. |
+| `controls.test_context.action`, `inject_declared`, `declared_ttl`, `target_hosts` | Action/Boolean/positive integer/string array; `block`, `false`, `900`, `[]` | Existing context enforcement, declaration and target inputs; shared context owner. Target matching updates with the policy hash. |
 | `controls.circuits.enabled`, `failure_threshold`, `success_threshold`, `half_open_max_requests` | Boolean/integers; `true`, `5`, `2`, `3` | Existing circuit enabled/tuning inputs; shared circuit owner. |
 | `controls.circuits.timeout_seconds`, `max_timeout_seconds`, `streak_decay_seconds` | Numbers; `60`, `3600`, `3600` | Existing circuit timing inputs; shared circuit owner. |
 | `controls.circuits.use_exponential_backoff`, `backoff_multiplier`, `jitter_factor` | Boolean/numbers; `true`, `2`, `0.3` | Existing circuit recovery tuning; shared circuit owner. |
@@ -301,12 +307,12 @@ load/reload. Context never supplies trusted identity or capture authority.
 
 | Starting input | Disposition |
 | --- | --- |
-| `modes`, network/credential/test-context/circuit native enforcement flags and `inspection` | Merged into named `policy.toml` controls. Their old configuration keys are rejected. |
+| `modes`, network/credential/test-context/circuit enforcement flags and `inspection` | Merged into named `policy.toml` controls. Their old configuration keys are rejected. |
 | `addons`, `required`, old per-host `bypass`/`addons`, old `global_budget` and old internal host aliases | Removed from fresh authoring; named validation errors identify the replaced key. Use `budget`, `rate`, `allow`, `unknown_creds` and `exceptions`. |
-| `proxy.backend`, `proxy.rust_config`, `proxy.image`, `proxy.container_name`, old host `proxy.port` | Removed from the native entry point. It selects installed Rust binaries and host-owned UDS listeners. The guest proxy port remains a guest/helper input owned by #818. |
-| `version` in config.yaml, `notifications.method` | Removed: the existing native consumers do not use these settings. Source/profile identity belongs to the installed binary. Policy metadata remains `version`/`description`. |
-| Old `test.enabled` and sinkhole router/host/HTTP/HTTPS/CA settings | Removed from product configuration. Test harnesses own origins and fixture routing; native upstream/CA settings remain above. |
-| Credential `safe_headers.exact_names` and `safe_headers.patterns` | Removed from fresh settings: the starting native guard does not consume these template entries. Its effective `safe_patterns` input remains above. |
+| `proxy.backend`, `proxy.rust_config`, `proxy.image`, `proxy.container_name`, old host `proxy.port` | Removed from the entry point. It selects installed Rust binaries and host-owned UDS listeners. The guest proxy port remains a guest/helper input owned by #818. |
+| `version` in config.yaml, `notifications.method` | Removed: the existing consumers do not use these settings. Source/profile identity belongs to the installed binary. Policy metadata remains `version`/`description`. |
+| Old `test.enabled` and sinkhole router/host/HTTP/HTTPS/CA settings | Removed from product configuration. Test harnesses own origins and fixture routing; upstream/CA settings remain above. |
+| Credential `safe_headers.exact_names` and `safe_headers.patterns` | Removed from fresh settings: the starting guard does not consume these template entries. Its effective `safe_patterns` input remains above. |
 | Request-logger enabled flag and flow-store policy enabled flag | Removed as ineffective former detector flags. Logging retains its existing reached-hook behavior; runtime `flow_store_enabled` owns recorder activation. |
-| Generated native.json and legacy environment detector overrides | Removed from normal native loading; typed TOML settings supply the existing runtime representation. Embedded development callers still own their internal JSON. |
-| Python test-context command | Replaced by the installed native formatter/writer and declaration commands. The Python parser remains only as test tooling; #822 owns final production-package removal. |
+| Generated native.json and legacy environment detector overrides | Removed from normal loading; typed TOML settings supply the existing runtime representation. Embedded development callers still own their internal JSON. |
+| Python test-context command | Replaced by the installed formatter/writer and declaration commands. The Python parser remains only as test tooling; #822 owns final production-package removal. |

@@ -182,5 +182,5 @@ if [[ -n $output ]]; then
   sed "s/^release=$/release=host-$revision/" \
     "$repository/install.sh" > "$output/install-safeyolo.sh"
   chmod 0755 "$output/install-safeyolo.sh"
-  echo "Built native bundle: $output/$name.tar.gz"
-else echo "Built native bundle: $directory"; fi
+  echo "Built SafeYolo bundle: $output/$name.tar.gz"
+else echo "Built SafeYolo bundle: $directory"; fi

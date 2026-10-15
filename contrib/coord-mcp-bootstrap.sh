@@ -18,7 +18,7 @@ show_help() {
 Usage: coord-mcp-bootstrap.sh [--home DIRECTORY] [--harness claude|codex]
                               [--require-agent-local]
 
-Stage the native Coord Model Context Protocol (MCP) adapter and register its
+Stage the Coord Model Context Protocol (MCP) adapter and register its
 launcher in an agent's existing harness configuration. Run on the operator host.
 
   --home DIRECTORY       Agent home; defaults to SAFEYOLO_AGENT_HOME.
@@ -27,8 +27,8 @@ launcher in an agent's existing harness configuration. Run on the operator host.
   --require-agent-local  Require an adopted agent-local Codex login.
   -h, --help             Show this help.
 
-First run the harness host setup. Use the installed native host safeyolo-coord
-and its matching Linux guest artifact. Native agent create/configure --host-script
+First run the harness host setup. Use the installed host safeyolo-coord
+and its matching Linux guest artifact. Agent create/configure --host-script
 selects these inputs. For direct invocation, set SAFEYOLO_COORD_EXECUTABLE and
 SAFEYOLO_COORD_GUEST_BINARY, or put the installed ROOT/bin on PATH. The default
 guest artifact is ROOT/assets/guest/safeyolo-coord with its version/checksum receipts.
@@ -41,7 +41,7 @@ Stop the agent before changing its home, then restart it to load the MCP setting
   ROOT/bin/safeyolo --root ROOT start
   ROOT/bin/safeyolo --root ROOT agent start NAME
 
-See contrib/HOST_SCRIPT_GUIDE.md for native create/configure --host-script setup.
+See contrib/HOST_SCRIPT_GUIDE.md for agent create/configure --host-script setup.
 HELP
 }
 
@@ -115,4 +115,4 @@ install -m 0755 "$LAUNCHER_SRC" "$AGENT_HOME/.safeyolo/safeyolo-coord-mcp-launch
 state_args=(stage-mcp "$AGENT_HOME" "$HARNESS")
 if [ "$REQUIRE_AGENT_LOCAL" -eq 1 ]; then state_args+=(--require-agent-local); fi
 "$coord_host" "${state_args[@]}"
-echo "coord-mcp-bootstrap: $HARNESS native runtime staged at $AGENT_HOME/.safeyolo/"
+echo "coord-mcp-bootstrap: $HARNESS runtime staged at $AGENT_HOME/.safeyolo/"

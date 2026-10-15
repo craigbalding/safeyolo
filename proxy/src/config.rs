@@ -284,7 +284,7 @@ impl Config {
             return Err("flow_pruner_max and flow_pruner_max_body_bytes must be positive".into());
         }
         if self.policy_file.is_none() {
-            return Err("native proxy requires policy_file".into());
+            return Err("proxy requires policy_file".into());
         }
         if self.gateway_builtin_services_dir.is_some() != self.gateway_services_dir.is_some() {
             return Err(
@@ -292,7 +292,7 @@ impl Config {
             );
         }
         if self.gateway_builtin_services_dir.is_some() && self.policy_file.is_none() {
-            return Err("service catalog requires native policy_file".into());
+            return Err("service catalog requires policy_file".into());
         }
         let mut paths = HashSet::new();
         for listener in &self.listeners {

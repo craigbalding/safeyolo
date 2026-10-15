@@ -12,9 +12,9 @@ The preferred operator command is:
 safeyolo agent present AGENT
 ```
 
-It uses the existing native desktop/presentation owner to start or reuse the
+It uses the existing desktop/presentation owner to start or reuse the
 guest desktop and open its token-gated host view. Set remembered geometry
-and an explicitly permitted host presentation port in native desktop settings.
+and an explicitly permitted host presentation port in desktop settings.
 
 Inside the guest, inspect or start the desktop with:
 
@@ -23,8 +23,7 @@ Inside the guest, inspect or start the desktop with:
 /safeyolo/guest-desktop start
 ```
 
-A guest-side start creates Xvfb, the window manager, x11vnc, and the native
-noVNC HTTP/WebSocket bridge. The rootfs supplies the graphical packages and
+A guest-side start creates Xvfb, the window manager, x11vnc, and the noVNC HTTP/WebSocket bridge. The rootfs supplies the graphical packages and
 noVNC web assets; `/safeyolo/safeyolo-guest` supplies the bridge. The start
 cannot create the host preview. Ask the operator to run the host command printed
 by the launcher. Do not expose guest ports 5900 or 6080 directly.
@@ -63,8 +62,8 @@ workflow requires operator control.
 - `status` distinguishes the Xvfb, x11vnc, and noVNC layers.
 - Browser startup errors are written to `/tmp/chrome.log` by the core launcher.
 - Bridge startup and connection errors are written to `/tmp/desktop-bridge.log`.
-- A missing native bridge indicates stale guest assets; ask the operator to
-  stop and run the agent with the current native package.
+- A missing bridge indicates stale guest assets; ask the operator to
+  stop and run the agent with the current SafeYolo package.
 - A missing `/safeyolo/guest-desktop` indicates stale or incomplete per-run
   guest files; ask the operator to stop and run the agent with current SafeYolo.
 

@@ -20,7 +20,7 @@ below; do not invoke a Demo-specific workflow.
 
 ## Respect the controller bootstrap
 
-The operator runs the installed native `safeyolo lab` entry. It asks for the
+The operator runs the installed `safeyolo lab` entry. It asks for the
 objective, provisions or selects the owned guest, checks Codex authentication,
 and enters the viewer. Repeating the command reattaches to the same controller
 and evidence. `--recover` restarts an owned dead controller; `--relaunch`

@@ -1,8 +1,7 @@
-# Native credentials and service access
+# Credentials and service access
 
-Run these commands as the operator on the host. Start a fresh installed native
-instance with the [native installation and listener instructions](native-policy.md#install-and-start).
-The examples use `$HOME/.safeyolo-native`, a running proxy, and its trusted
+Run these commands as the operator on the host. Start a fresh installed instance with the [installation and listener instructions](installation.md#install-and-start).
+The examples use `$HOME/.safeyolo`, a running proxy, and its trusted
 listener for Alice. Commands below edit and activate service policy through the
 private Admin API. Keep the operator token, credential files and provider
 authentication on the host.
@@ -21,11 +20,11 @@ still applies to the injected value.
 In a host terminal, inspect the running service definition, then add the token:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" services show slack
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" credentials add slack-account
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" credentials list
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" services authorize alice slack --capability reader --credential slack-account --account operator --allow-host-network
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" services authorized alice
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services show slack
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials add slack-account
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials list
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-account --account operator --allow-host-network
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorized alice
 ```
 
 `credentials add` prompts without terminal echo. It also accepts `--value-file`,
@@ -56,20 +55,20 @@ Local setup remains independent of this optional configuration.
 
 Replace `/absolute/path/to/op` with that host executable. Replace
 `op://VAULT/ITEM/FIELD` with the item's nonsecret reference. Configure the
-executable, then restart the native proxy using the installation instructions
+executable, then restart the proxy using the installation instructions
 so the running process inherits the host's authentication environment:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" credentials provider --executable /absolute/path/to/op
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials provider --executable /absolute/path/to/op
 ```
 
 After restart, register the reference and authorize Alice:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" credentials reference slack-external --provider onepassword --reference op://VAULT/ITEM/FIELD
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" credentials list
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" services authorize alice slack --capability reader --credential slack-external --account operator --allow-host-network
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" services authorized alice
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials reference slack-external --provider onepassword --reference op://VAULT/ITEM/FIELD
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials list
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-external --account operator --allow-host-network
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorized alice
 ```
 
 SafeYolo stores the reference in the same encrypted store. The proxy invokes the
@@ -119,7 +118,7 @@ the service mapping uses its hostname.
 
 ## Catalogue changes and removals
 
-The native installer selects built-in definitions in `assets/services` and
+The installer selects built-in definitions in `assets/services` and
 operator definitions in `data/services`, relative to the instance root.
 Standalone `safeyolo init` creates `builtin-services` and `services` instead.
 The two configured catalogue paths select the directories the proxy watches.
@@ -134,17 +133,17 @@ use, run the first command below. To remove the credential itself, run the
 second command. Both changes affect subsequent requests without a proxy restart:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" services revoke alice slack
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" credentials remove slack-account
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services revoke alice slack
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials remove slack-account
 ```
 
 Revocation stops use of that service binding. Credential removal causes remaining
 bindings to fail without injecting a stale value. Other permitted nonsecret
-requests remain usable. The native commands replace Python `vault`, `services`
+requests remain usable. The commands replace Python `vault`, `services`
 and `agent authorize/revoke`; no vault migration is provided.
 
 For retained OAuth, `credentials add --type oauth2` accepts an expired access
 token and host files for `--refresh-token-file` and `--client-secret-file`, plus
 `--token-url`, `--client-id` and `--expires-at`. A service definition with
-`refresh_on_401: true` uses the existing native refresh owner before injection.
+`refresh_on_401: true` uses the existing refresh owner before injection.
 The name retains the existing behavior: refresh occurs on expiry before delivery.

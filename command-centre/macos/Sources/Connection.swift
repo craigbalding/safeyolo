@@ -202,7 +202,7 @@ enum ConnectionError: LocalizedError {
         case .missingTerminalTarget:
             return "The remote terminal target is unavailable. Tailscale uses the connected host and its reported username. For an SSH tunnel or a different login, set user@host or an SSH alias in Connection Settings. Run Agent does not need SSH."
         case .missingNativeInstallation:
-            return "The connected SafeYolo server did not report an installed native executable and instance root. Install the native CLI for that instance, then retry. Terminal attachment uses that installation. Run Agent does not need SSH."
+            return "The connected SafeYolo server did not report an installed executable and instance root. Install the SafeYolo CLI for that instance, then retry. Terminal attachment uses that installation. Run Agent does not need SSH."
         case .missingCredential(let instanceID):
             return "No Keychain credential is stored for \(instanceID)"
         case .requestFailed(let status):

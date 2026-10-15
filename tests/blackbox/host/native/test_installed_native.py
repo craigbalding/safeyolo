@@ -31,7 +31,7 @@ def _request(
 class TestInstalledNative:
     """The installed native listener serves real host requests during the guest run.
 
-    Why: An isolation pass cannot name a native proxy if its host requests ran
+    Why: An isolation pass cannot name a Rust proxy if its host requests ran
     through a different process or never reached an origin.
     """
 

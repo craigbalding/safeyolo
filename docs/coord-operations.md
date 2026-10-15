@@ -1,8 +1,171 @@
 # Coord operations
 
-SafeYolo runs a host-local, authenticated NATS server for retained coord room
-messages. SafeYolo owns its lifecycle; operators should not launch a second
-server or edit the generated NATS configuration.
+Use the installed CLI to send an operator message, chat with agents, or
+watch a room's messages and harness events. These commands use the instance's
+existing Coord store and NATS runtime. Host credentials stay on the host.
+Guest `safeyolo-coord` calls retain agent attribution.
+SafeYolo owns the host-local, authenticated NATS server's lifecycle. Do not
+launch a second server or edit its generated configuration.
+
+## Send and converse
+
+Run commands as the host account that owns your
+[instance](installation.md#install-and-start). The following examples
+use `$HOME/.safeyolo`. Agent `alice` must already be configured in that
+instance. Starting Coord acquires its pinned NATS binary if needed. Creating
+`chat` grants the operator room access; the next command grants `alice` access.
+`--to alice` sends attention only to that receive-authorized member.
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord start
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord room create chat
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord grant chat alice
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord send chat 'Please inspect the failing command.' --to alice
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord history chat
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord chat chat --to alice
+```
+
+Send reports its sequence, attention intent and delivery status. History emits
+canonical messages as JSON Lines (JSONL). The marker has `sender_kind` set to
+`operator` and no agent identity. A guest cannot select operator attribution.
+
+Interactive chat requires both standard input and standard output to be terminals.
+If either is piped or redirected, the command exits before connecting. It does
+not consume input or emit terminal cursor controls. Use `--observe` for a
+non-interactive room stream.
+
+Chat displays arriving messages above the editable `op>` prompt. The draft and
+cursor remain intact. Enter sends the draft; `:q`, Ctrl-D or Ctrl-C detaches.
+`:paste` (or `:p`) reads the host clipboard. `:edit` (or `:e`) opens `$VISUAL`,
+then `$EDITOR`, with `vi` as the fallback. Clipboard/editor composition requires
+confirmation. No chat transcript or draft is saved separately from room history.
+Clipboard and editor input replace malformed UTF-8 bytes with the replacement
+character. Clipboard commands retain their ten-second timeout.
+Use `chat --observe` for a read-only stream without a terminal prompt.
+
+Scripted send accepts exactly one UTF-8 source: text, `--file FILE`, or `--stdin`.
+It preserves the selected payload, including trailing newlines and controls.
+Empty/whitespace-only input, multiple sources, unreadable/non-UTF-8 input and
+invalid notification targets fail without publication. `--content-type` accepts
+`text/markdown` (default) or `text/plain`. Repeat `--to` for several members.
+Without `--to`, scripted send notifies the room. Interactive chat also defaults
+to room attention, unless an approved Factory snapshot selects one
+operator-input agent. An explicit `--to` overrides that default.
+The command reports authorization, room, target and provider errors without
+printing credentials. `dispatch-trigger` remains the separate command for
+Dispatch publication requests.
+
+If publication acknowledgment is lost, the command reports acceptance as
+**UNKNOWN**. It does not resend automatically. Inspect history before deciding
+whether to send the message again. A later independent send remains available.
+Accepted messages with pending or lost attention retain that diagnosis.
+
+## Read and update a trusted brief
+
+On the owning host account, select an existing room in the instance.
+The following examples use `chat` from the setup above. Read its current brief:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord brief show chat
+```
+
+The JSON output contains the exact Markdown, revision and SHA-256 content hash.
+If the room has no brief, the output has `state: "none"`, revision `0`, and
+null Markdown and hash. A missing room or unavailable store produces an error;
+neither result means that a brief is absent.
+
+To create a brief after observing revision `0`, write your standing context
+in a UTF-8 file named `brief.md` in your current directory. The input must be
+nonempty and no larger than 65,536 UTF-8 bytes. This command creates revision
+`1` only if the room still has no brief:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord brief set chat --file brief.md --expected-revision 0
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord brief show chat
+```
+
+For a later update, read the current brief and use its revision as
+`--expected-revision`. Inspect the existing text before replacing it. Set accepts
+exactly one source: a Markdown argument, `--file FILE`, or `--stdin`. It preserves
+the input bytes, including trailing newlines. A stale revision fails without
+changing the brief or emitting brief-change attention. If a command's result
+is uncertain, read the canonical brief before deciding whether to write again.
+
+Successful writes report the new revision/hash and attention count. Each write
+retains operator attribution and notifies current receive-authorized members
+through `brief_changed`. Agents can read authorized briefs but cannot update
+them. A brief is optional standing context: it does not assign work, require a
+terminal response, or change workflow state. See [Factory authority and
+intake](factories.md#authority-and-intake).
+
+## Observe messages and harness events
+
+On the same host, watch the existing room with:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord watch chat
+```
+
+Watch displays the last 30 retained messages and then follows the room. It
+renders ordinary messages and existing Codex/Pi session, turn, reasoning, tool,
+usage, stderr and supervisor events. Tool summaries show routing arguments;
+they do not dump tool request bodies or results. Unknown events appear with
+`--show-unknown`. Oversize summaries retain the omitted-middle marker.
+
+Text is complete by default. `--max-text COUNT` limits rendered text only.
+`--history COUNT` selects the retained tail; `--once` prints it and exits.
+`--since SEQUENCE` reads every message after the selected cursor. A live watcher
+retains its rendered cursor during NATS reconnection and reports loss/recovery.
+Terminal controls are shown as visible text in chat, rendered and raw modes.
+Bidirectional text controls are also named visibly.
+
+`--raw` displays message bodies without event summarization. `--json` emits
+canonical envelopes and exact payloads as JSONL, with controls JSON-escaped.
+`--redact` optionally hides common credential patterns and URL queries in each
+mode; stored messages are unchanged. `--no-color` or `NO_COLOR` disables color.
+`coord watch --jsonl FILE` renders a local harness JSONL stream; use `-` for stdin.
+
+`--compact` selects a concise transcript. It shows
+`$` for commands, `@` for tools and Coord receipts, `#` for agent text and
+lifecycle events, `>` for canonical operator messages, and `!` for failures.
+The operator marker comes from the Coord envelope. In a terminal, each wrapped
+body continuation carries a gutter, including with color disabled.
+Matching successful completions do not
+repeat their start line. A completion whose start precedes the selected history
+is still shown. Failed commands include a redacted final output line. Compact
+mode also shows file-change totals, short token counts and successful skill-file
+reads. A file-read line confirms the read, not that the agent followed the skill.
+Use `--plain` as an alias for `--no-color`. Raw, JSON and compact modes are
+mutually exclusive.
+
+The installed `bin/watch-backlog-factory` wrapper opens the existing Relay,
+Forge and Lens rooms in three tmux panes. Run it inside your operator tmux
+session. Set `SAFEYOLO_FACTORY_CONFIG_DIR` to the instance root first.
+Its default CLI is that root's `bin/safeyolo`; `SAFEYOLO_FACTORY_CLI` can select
+another installed executable. `SAFEYOLO_FACTORY_NATIVE_CONFIG` can select a
+different configuration file. The wrapper starts observers; it does not
+start or resume a factory. Its panes select `--compact --redact`.
+
+## Focused proof and remaining work
+
+`tests/proxy_contracts/test_native_coord_operator.py` binds the installed G5
+PTY, input, publication-count and observer scenarios to real disposable NATS.
+Only the test driver uses Python. For the required Ubuntu systrap observation,
+`tests/nested-linux/operator_coord_acceptance.py` uses an already running
+disposable installed proxy and guest. Supply their root, guest name and exact
+commit with `--root`, `--agent` and `--commit`. It observes guest
+send/read, guest arrival during a PTY draft, exact operator/agent attribution
+and the room timeline, then stops
+that guest, proxy and Coord. It needs the matching guest helper staged
+at `/home/agent/.safeyolo/safeyolo-coord`. A host-only probe does not prove that
+guest boundary.
+
+Use the same installed CLI for [Dispatch period requests](dispatch-publication.md)
+and [generation/site validation](dispatch-generation.md), and for
+[Mattermost exchange and semantic actions](coord-mattermost.md). The [responsibility map](settings.md#operator-entry-responsibilities)
+records the accepted Ubuntu G2/G4 exchange and physical VZ G7 result at their
+actual driver/package revisions. Final whole-product packaging and
+execution coverage remain with #822.
 
 ## Room storage
 
@@ -22,28 +185,6 @@ make storage unlimited. Rooms compete for the shared budget. If actual stored
 data exhausts that budget, new writes can fail across rooms. The server does
 not evict another room's history to make space for a write.
 
-## Credential lifecycle
-
-On the first coord start, SafeYolo generates a random password and stores it at
-`~/.safeyolo/data/coord/nats/creds`. The host account that runs SafeYolo owns
-the credential. The `nats` directory is mode `0700` and the credential file is
-mode `0600`.
-
-`SAFEYOLO_COORD_DATA_DIR` is the coord-specific path override. When it is set,
-the credential is at `$SAFEYOLO_COORD_DATA_DIR/nats/creds`. Setting only
-`SAFEYOLO_CONFIG_DIR` does **not** relocate coord data in the current release;
-for an isolated non-default instance, also set `SAFEYOLO_COORD_DATA_DIR` to the
-intended coord directory and use the same environment for every `safeyolo`
-lifecycle command.
-
-The credential is reused across ordinary `safeyolo stop` / `safeyolo start`
-cycles. It is not rotated on restart or on a schedule. If the credential file
-is absent at startup, SafeYolo atomically generates a replacement. The
-generated `nats.conf` contains an environment-variable reference, not the
-password; the password is supplied only in the managed NATS child process's
-environment. Retained JetStream data lives separately under
-`nats/jetstream`.
-
 ## Reconcile a running proxy
 
 If the proxy is already running, `safeyolo start` reconciles the managed Coord
@@ -57,7 +198,33 @@ reports that Coord is degraded and gives diagnostic commands and log paths. It
 does not restart the proxy, and the proxy remains available. Run `safeyolo
 doctor` and inspect the reported log before you retry.
 
-## Manual rotation
+## Historical Python credential lifecycle
+
+The following credential and rotation procedures describe the earlier Python
+installation. They do not convert old state. For current instance commands,
+use [send and converse](#send-and-converse).
+
+On the first coord start, SafeYolo generates a random password and stores it at
+`~/.safeyolo/data/coord/nats/creds`. The host account that runs SafeYolo owns
+the credential. The `nats` directory is mode `0700` and the credential file is
+mode `0600`.
+
+`SAFEYOLO_COORD_DATA_DIR` is the coord-specific path override. When it is set,
+the credential is at `$SAFEYOLO_COORD_DATA_DIR/nats/creds`. In that Python release, setting only
+`SAFEYOLO_CONFIG_DIR` does **not** relocate coord data;
+for an isolated non-default instance, also set `SAFEYOLO_COORD_DATA_DIR` to the
+intended coord directory and use the same environment for every `safeyolo`
+lifecycle command.
+
+The credential is reused across ordinary `safeyolo stop` / `safeyolo start`
+cycles. It is not rotated on restart or on a schedule. If the credential file
+is absent at startup, SafeYolo atomically generates a replacement. The
+generated `nats.conf` contains an environment-variable reference, not the
+password; the password is supplied only in the managed NATS child process's
+environment. Retained JetStream data lives separately under
+`nats/jetstream`.
+
+### Manual rotation
 
 Rotation is disruptive and has no old/new overlap or grace period. Stop the
 whole SafeYolo instance first, fail closed unless both stop checks prove the
@@ -124,53 +291,11 @@ safeyolo coord room list
 
 `safeyolo status` should report `Coord (nats-server)` as healthy. Confirm the
 expected rooms remain registered. This check does not prove
-message history. Native operator communication uses the separate fresh
-instance described below.
+message history. Current operator communication uses the separate fresh
+instance described in [send and converse](#send-and-converse).
 
-## Native interactive chat requires a terminal
 
-Install the [native CLI](native-policy.md#install-and-start) and use its fresh
-instance for chat and scripted sends. These examples select
-`$HOME/.safeyolo-native`; replace `ROOM_NAME` with an existing room in that
-instance. Legacy credential rotation instructions apply to their earlier
-Python installation; they do not convert it into a native instance.
-
-The default `"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord chat ROOM_NAME` mode is an editable prompt and
-requires both standard input and standard output to be terminals. If either
-stream is piped or redirected, the command exits before connecting to Coord
-with an actionable error; it does not consume the input or emit terminal
-cursor-control bytes into the caller's shell. Use `--observe` when a
-non-interactive room tail is needed, or run interactive chat from a terminal.
-
-## Scriptable operator sends
-
-Use native `coord send` when a trusted operator must send one ordinary Coord
-message without opening an interactive terminal session. The command requires
-exactly one body source:
-
-```bash
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord send ROOM_NAME "Operator direction"
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord send ROOM_NAME --file direction.md --to relay --to lens
-printf '%s\n' "Operator direction" | "$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" coord send ROOM_NAME --stdin --to relay
-```
-
-A positional `TEXT`, `--file`, and `--stdin` are mutually exclusive. The
-command rejects a missing, empty, or whitespace-only body. The file and stdin
-sources use UTF-8. Use `--content-type text/plain` when the receiver requires
-plain text; the default is `text/markdown`.
-
-Without `--to`, the command requests room-wide attention. Repeat `--to` to
-request targeted attention for multiple agents. Each target must be an active,
-receive-authorized member of the named room. The command uses the same
-SafeYolo-generated operator attribution and native publication/grant checks as
-interactive chat. It reports authorization, invalid-room, invalid-target,
-provider, and publish-outcome errors without printing credentials.
-
-`coord send` is separate from `coord chat --observe`. The `--observe` flag
-remains read-only, and `dispatch-trigger` remains the specialized Dispatch
-publication command rather than a generic message interface.
-
-## Secret-handling boundary
+### Historical secret-handling boundary
 
 Status, doctor output, lifecycle diagnostics, generated configuration, and
 logs must never contain the raw credential. Do not print, copy into a command

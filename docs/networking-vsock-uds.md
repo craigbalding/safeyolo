@@ -10,7 +10,7 @@ microVMs. Release acceptance is recorded in
 Each sandbox has no direct external network interface. Agent HTTP clients use
 the guest forwarder at `127.0.0.1:8080`. The host gives each agent a private
 Unix domain socket (UDS) at
-`~/.safeyolo/data/sockets/<ip>_<agent>/proxy.sock`. The native Rust proxy binds
+`~/.safeyolo/data/sockets/<ip>_<agent>/proxy.sock`. The Rust proxy binds
 that socket; it has no public TCP traffic listener.
 
 ```text
@@ -42,7 +42,7 @@ address is `10.200.{(N+1) / 256}.{(N+1) % 256}`, using integer division.
 Slot 0 has `10.200.0.1`. The live `~/.safeyolo/data/agent_map.json` entry is
 authoritative for an agent's assigned IP and socket path. The CLI creates a
 listener entry with
-`agent_id`, `source_id`, and `socket_path` in the native configuration.
+`agent_id`, `source_id`, and `socket_path` in the configuration.
 
 The Rust proxy binds each configured path with `tokio::net::UnixListener`.
 On accept, it attaches the configured agent and source identity to the
@@ -54,7 +54,7 @@ programming interface (API) traffic uses a separate listener.
 
 When the CLI starts or stops an agent sandbox, it updates `agent_map.json` and
 reconciles its managed listener entries with the running Rust proxy.
-After writing the updated native configuration, the CLI signals a running
+After writing the updated configuration, the CLI signals a running
 proxy with SIGHUP. It waits up to five seconds for the matching `reload_id`
 in the readiness marker. Listener synchronization fails if the proxy does not
 acknowledge the update. If the proxy is unavailable, the CLI saves the
@@ -66,14 +66,14 @@ Built-in support for operator-created external ingress bindings is proposed in
 
 ## Diagnose a broken path
 
-On the host, use the installed native CLI for the selected instance and named
+On the host, use the installed CLI for the selected instance and named
 agent. These observations remain available when the proxy or listener is absent:
 
 ```sh
 safeyolo agent diagnostics syone
 ```
 
-The native diagnostic reports runtime, control, coding-agent, terminal, and
+The diagnostic reports runtime, control, coding-agent, terminal, and
 proxy attachment state separately. On macOS, it also queries private helper
 control and tests the shell bridge for an SSH banner. On Linux, shell readiness
 uses exec control in the recorded namespaces. Inspect the failed dimension and
@@ -83,8 +83,7 @@ A ready proxy attachment confirms that the host can connect to the configured
 UDS. It does not verify guest egress or Agent API health. From inside the agent
 guest, use the authenticated [first health check](AGENTS.md#first-health-check)
 and require `"agent_api": "ok"` in the response. A generic HTTP response does
-not prove API health. See [agent debugging](agent-debugging.md) for the native
-failed-shell workflow.
+not prove API health. See [agent debugging](agent-debugging.md) for the failed-shell workflow.
 
 For decision and audit events on the host, run:
 
@@ -93,7 +92,7 @@ safeyolo logs --lines 50
 ```
 
 `safeyolo logs` reads the JSON Lines file selected by `audit_log_path` in the
-native configuration. The default is `logs/audit.jsonl` under the instance root.
+configuration. The default is `logs/audit.jsonl` under the instance root.
 It is not a complete packet capture or a substitute for the diagnostic probes.
 On macOS, the VM helper's guest console and relay messages are in
 `~/.safeyolo/agents/<name>/serial.log`. On Linux, guest boot output is in
@@ -105,7 +104,7 @@ it does not enable tracing across every proxy stage.
 | --- | --- |
 | Agent cannot connect to the proxy | Run `safeyolo agent diagnostics <name>`; inspect proxy state and the agent's proxy attachment separately from runtime state. |
 | Proxy transport passes but Agent API fails | Run the authenticated [first health check](AGENTS.md#first-health-check) inside the agent guest and require `"agent_api": "ok"`. Socket reachability or a generic HTTP response does not prove API health. |
-| Agent request is attributed to the wrong identity | Compare the host `agent_map.json` entry with the native listener and the named socket. Do not rely on a guest-supplied header. |
+| Agent request is attributed to the wrong identity | Compare the host `agent_map.json` entry with the listener and the named socket. Do not rely on a guest-supplied header. |
 | macOS shell hangs | Run `safeyolo agent diagnostics <name>`; inspect private control and the shell SSH-banner result before choosing recovery. |
 
 ## Platform and configuration notes
@@ -126,7 +125,7 @@ For the current component overview, see
 [architecture](ARCHITECTURE.md#sandbox-runtime-and-networking) and
 [developer architecture](DEVELOPERS.md#architecture-overview). For isolation
 checks, see [security verification](security-verification.md). Relevant
-sources are [native instance paths](../proxy/src/host_platform.rs),
-[native listener reconciliation](../proxy/src/host_lifecycle.rs),
+sources are [instance paths](../proxy/src/host_platform.rs),
+[listener reconciliation](../proxy/src/host_lifecycle.rs),
 [Rust listener ownership](../proxy/src/lib.rs), and the
 [macOS proxy relay](../vm/Sources/SafeYoloVM/VSockProxyRelay.swift).

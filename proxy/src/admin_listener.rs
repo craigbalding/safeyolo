@@ -119,7 +119,7 @@ impl Prepared {
                 .as_ref()
                 .is_some_and(|host| host.events_port().is_some())
             {
-                return Err("Command Centre events require a native Admin listener".into());
+                return Err("Command Centre events require an Admin listener".into());
             }
             return Ok(None);
         };

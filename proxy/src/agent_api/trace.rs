@@ -20,7 +20,7 @@ pub(super) fn respond(request: Request<'_>, context: Option<TraceContext<'_>>) -
     let Some(context) = context else {
         let mut outcome = response(
             503,
-            json!({"error":"Agent API endpoint unavailable in native development mode"}),
+            json!({"error":"Agent API endpoint unavailable in development mode"}),
         );
         outcome.failure = Some(Failure::DevelopmentEndpoint);
         return outcome;

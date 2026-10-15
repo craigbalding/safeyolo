@@ -3,26 +3,30 @@
 Install SafeYolo on your host, create an agent for an owned workspace, and
 choose its access policy. The installed `safeyolo` command starts and stops the
 proxy and agents, opens terminals, and reads traffic and access requests. For
-an inspect and approval walkthrough, use the [operator guide](native-operator.md).
+an inspect and approval walkthrough, use the [operator guide](operator-guide.md).
 
-Use [native operator communication](native-coord.md) for scripted sends,
+Use [operator communication](coord-operations.md) for scripted sends,
 draft-safe chat and room/harness-event observation.
 
 ## Install and start
 
 On supported Ubuntu or Apple Silicon macOS, use your ordinary host account.
 Download a production archive for your host from the published
-[native release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
+[release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
 source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use this explicit release;
 GitHub's Latest selector still points to an earlier product. This guide also
 covers newer source builds. Check the source commit in your bundle: newer
 source features are absent from the linked older release.
-Source builds are an [alternative](#build-a-native-bundle).
+Source builds are an [alternative](#build-a-bundle).
 Existing wheel downloads belong to the earlier Python CLI.
 A bundle's `package-info` records its source, profile, platform and actual
-minimum glibc or macOS version. The published archives require glibc 2.39 on
-Linux and macOS 26.0 on Apple Silicon. Unpacking and installation need Bash, tar and
+minimum glibc or macOS version. A production bundle contains release Rust
+executables; a debug bundle contains dev executables. The macOS development
+helper has the `get-task-allow`
+entitlement for authorized debugging.
+The published archives require glibc 2.39 on Linux and macOS 26.0 on Apple Silicon.
+Unpacking and installation need Bash, tar and
 the host's SHA-256 tool. They need no compiler, Python, wheel, virtual
 environment or uv tool installation.
 
@@ -69,10 +73,10 @@ launchers, skills, host scripts and service definitions are under `assets`.
 macOS bundles also contain the signed VM helper, metadata and symbols, and the
 Linux terminal helper. This package/install/start path uses no first-party
 Python execution. Remaining helper and workflow dependencies are listed in the
-[entry responsibility map](native-settings.md#operator-entry-responsibilities).
+[entry responsibility map](settings.md#operator-entry-responsibilities).
 
 Before startup, make curl and tar available and permit the configured network
-route to acquire the pinned NATS runtime. Native Coord verifies the archive,
+route to acquire the pinned NATS runtime. Coord verifies the archive,
 binary and instance ownership. Its existing `coord start --binary PATH` option
 can supply the same pinned executable when acquisition is unavailable.
 
@@ -110,6 +114,54 @@ Stop each agent separately; the top-level command leaves its sandbox intact.
 safeyolo stop
 ```
 
+## Public bootstrap availability
+
+The source producer also writes `install-safeyolo.sh` beside the host archive.
+An authorized host publication must include that file and the release's
+`SHA256SUMS`. The bootstrap is bound to that host release. The currently
+published host release does not include this bootstrap asset.
+
+For Ubuntu AMD64, Ubuntu ARM64 and Apple Silicon macOS, the bootstrap route
+uses the same two commands below. Run them in your ordinary host terminal,
+in a writable directory, only when the selected public release includes
+`install-safeyolo.sh`. Bash, curl, tar and the host's SHA-256 tool must be
+available. Stop if the download fails. Do not run a previous file left at that
+name. The installer downloads the production host package and compatible
+guest, then creates the default instance at `$HOME/.safeyolo`, unless
+`SAFEYOLO_CONFIG_DIR` or `SAFEYOLO_HOME` selects another root. It exposes
+`safeyolo` in `$HOME/.local/bin` or `/usr/local/bin` when that directory is
+already on PATH. It can request sudo for the command entry and Linux guest
+ownership. Existing unrelated commands are preserved.
+
+Host preparation, runtime selection and first-agent launch remain required
+for the complete onboarding path. This acquisition sequence alone does not
+meet the total two-command install-to-first-agent budget. Bootstrap publication
+and that composition are still pending. The explicit bundle path in
+[install and start](#install-and-start) remains available.
+
+Trust comes from HTTPS delivery by the official
+`github.com/craigbalding/safeyolo` publisher. A checksum from the same release
+checks integrity; it does not independently authenticate that publisher.
+The bootstrap does not use a remote shell pipe or a package-manager install.
+
+```sh
+curl --fail --location --proto '=https' --proto-redir '=https' --output install-safeyolo.sh https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
+bash install-safeyolo.sh
+```
+
+## Repeat and retry with the current installer
+
+These behaviors are in the current source installer. The published release
+linked above still requires a fresh root.
+
+A matching installation made with the current installer can be repeated.
+Repeat retains its host, policy, credentials, identity, agent state and selected
+guest without checking Latest or upgrading. An older or conflicting installation
+is preserved; use its installed command or choose a separate `--root` and
+`--command-dir`. A download failure leaves verified cache inputs available for
+retry. Partial downloads are not activated. An interrupted final file move can
+leave incomplete files; the next invocation reports them and preserves them.
+
 ## Other installation paths
 
 The ordinary commands use `$HOME/.safeyolo`. To install a separate instance,
@@ -146,7 +198,7 @@ it prevents discovery; the new instance files remain available for recovery.
 ## Guest prerequisites
 
 For the linked `host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796` release,
-prepare the platform inputs below before creating an agent. That native package
+prepare the platform inputs below before creating an agent. That package
 does not run a Python bootstrap or provision the host operating system. On
 Ubuntu, the host administrator supplies runsc, uidmap, acl, iproute2 and
 util-linux; subordinate user ID (UID) and group ID (GID) ranges must
@@ -155,8 +207,7 @@ administrator installs the [retained runsc profile](../cli/src/safeyolo/template
 It permits user namespaces for runsc at `/usr/local/bin/runsc`. If your runtime
 is elsewhere, adjust that executable path in the profile before loading it.
 From a host directory where you can save the profile, download the version
-shipped with the published host release, then copy and load it. The native
-installer does not perform this host administration:
+shipped with the published host release, then copy and load it. The installer does not perform this host administration:
 
 ```sh
 curl -fL -o apparmor-safeyolo-runsc https://raw.githubusercontent.com/craigbalding/safeyolo/7a38dff14e7e4eacb4095da732ffe06d7c7c5796/cli/src/safeyolo/templates/apparmor-safeyolo-runsc
@@ -168,8 +219,7 @@ For the Kernel-based Virtual Machine (KVM) platform, the host administrator
 grants the operator and subordinate UID 100000 read/write access to `/dev/kvm`.
 These steps preserve the existing namespace and hardware isolation setup.
 
-Automatic acquisition uses the [OCI guest contract](guest-oci.md) and the native
-registry client. No registry account, Docker, ORAS or local guest build is
+Automatic acquisition uses the [OCI guest contract](guest-oci.md) and the registry client. No registry account, Docker, ORAS or local guest build is
 needed. The installer stores verified blobs and prepared trees in
 `$HOME/.local/share/safeyolo/guests`. Blobs use their archive digest; new Linux
 source builds also distinguish prepared trees by their UID/GID mapping.
@@ -296,7 +346,7 @@ safeyolo agent start work --foreground
 ```
 
 Keep this guest shell open and use a second host terminal for
-[inspection and approval](native-operator.md#start-with-an-installed-instance).
+[inspection and approval](operator-guide.md#start-with-an-installed-instance).
 The setup assigns a durable agent ID; you do not need to invent one.
 
 To start a persistent background command, set `--command` when creating or
@@ -330,7 +380,7 @@ it requires a running guest and idle command supervision, without SSH or a model
 If control recovery is unavailable, `agent stop work` still uses verified backend
 identity. It does not signal an unrelated PID from a stale record.
 
-Commander discovers the installed native executable from its authenticated
+Commander discovers the installed executable from its authenticated
 instance endpoint. Named launch and status use the Admin API. Remote terminal
 operations require the configured SSH route separately; the admin token supplies
 no SSH access. Closing a terminal or Commander does not stop the background run.
@@ -338,7 +388,7 @@ no SSH access. Closing a terminal or Commander does not stop the background run.
 ## Check, show and apply
 
 Open another terminal on the same host and account. The commands use the
-default installation, as in the [operator guide](native-operator.md#start-with-an-installed-instance).
+default installation, as in the [operator guide](operator-guide.md#start-with-an-installed-instance).
 Check the installed policy and read the effective policy from the running process:
 
 ```sh
@@ -444,7 +494,7 @@ sees a complete old or new value. Validation or replacement failure returns
 nonzero and preserves the previous file. Context is annotation; the listener
 still supplies the trusted agent identity and evidence owner.
 
-For declarations, use the private `data/agent_token` created by native init,
+For declarations, use the private `data/agent_token` created by init,
 and the chosen agent socket. This token has Agent API scope and cannot replace
 the operator token. The following commands declare context on Alice's listener,
 read it back, then clear it:
@@ -486,20 +536,20 @@ reusable network access for Worker at the recorded host and port until explicitl
 removed. Rejection records a terminal disposition and leaves permissions unchanged.
 
 This is the optional shared-approval protocol described in the
-[Helper setup](native-operator.md#optional-ask-another-agent-for-help). Worker
+[Helper setup](operator-guide.md#optional-ask-another-agent-for-help). Worker
 means the requesting agent; Helper means a separate assisting agent. The
 examples here use configured names `worker` and `helper`; replace them with
 your agents' names from `safeyolo status`. `agent create` assigns each durable
 `agent_id` in the policy metadata. Keep those identities when editing policy.
 Helper uses its normal Agent API token. Keep `data/admin_token` on the host.
 
-First, read Worker's pending request with the native operator client:
+First, read Worker's pending request with the operator client:
 
 ```sh
 safeyolo approvals list --agent worker
 ```
 
-A native network prompt records `request_id` and
+A network prompt records `request_id` and
 `details.network_action`. The action binds Worker's durable identity, the host,
 the port and the relevant network-policy revision. Historical prompts without
 that binding remain available through their existing operator actions.
@@ -511,9 +561,9 @@ diagnostic and approval reads:
 safeyolo approvals share REQUEST_ID --agent worker --helper helper
 ```
 
-The existing native policy operation records only those selected reads. It
+The existing policy operation records only those selected reads. It
 retains the rest of the policy and does not grant network permission. See the
-[Helper commands](native-operator.md#optional-ask-another-agent-for-help) to read the evidence,
+[Helper commands](operator-guide.md#optional-ask-another-agent-for-help) to read the evidence,
 prepare the exact action, and return it to the human decision.
 
 For operators editing policy directly, the saved schema remains available. This
@@ -531,7 +581,7 @@ evidence_reads = [{reader_id="ag-22222222222222222222222222222222", agent="worke
 ```
 
 To use the policy-editing path, save the candidate as `selected-policy.toml` on
-the host and apply it through the existing native command:
+the host and apply it through the existing command:
 
 ```sh
 safeyolo policy apply selected-policy.toml
@@ -556,8 +606,7 @@ through Helper's configured proxy; operator routes use the host Admin API.
 | Operator | `POST /admin/approvals/ID/readers` with `{"helper":"helper","helper_id":"CURRENT_DURABLE_ID"}` | Idempotent selected diagnostic and approval reads; no network grant. |
 | Operator | `POST /admin/approvals/ID` with `{"decision":"approve"}` or `{"decision":"reject"}` | Canonical terminal disposition and exact action; the resolver does not accept caller-supplied scope. |
 
-CLI and Commander network decisions use this common resolver for bound native
-prompts. Repeat or concurrent decisions return the first terminal disposition.
+CLI and Commander network decisions use this common resolver for bound prompts. Repeat or concurrent decisions return the first terminal disposition.
 A relevant policy change or recreated Worker makes a pending action stale;
 approval returns 409 and needs a new request and human decision. The operator
 can still reject that stale request without changing permissions. A changed
@@ -579,15 +628,15 @@ advanced host rules, service policy and named controls. The fresh loader does
 not read `addons.yaml`. Replaced fields, such as `addons`, `required`, `bypass`
 and `global_budget`, produce named validation errors.
 
-The [settings reference](native-settings.md) lists retained keys, defaults,
+The [settings reference](settings.md) lists retained keys, defaults,
 precedence, consumers and remaining host/helper owners. Capture, trace and audit
 storage settings use their runtime tables in `config.toml`. Scanner, circuit and
-test-context settings use named controls in `policy.toml`. Native help, effective
+test-context settings use named controls in `policy.toml`. Help, effective
 policy, API reports and audit envelopes use these control names.
 
 Check resolves named list files relative to the checked policy. Apply records
 those file references as absolute paths so saving the candidate under the
-instance root does not change which list the native process loads.
+instance root does not change which list the process loads.
 Show displays the loaded members in `effective.lists`, their file paths in
 `sources`, and each referenced file's current status in `list_files`. A changed
 or unreadable list produces a saved/live mismatch, including changes that retain
@@ -612,16 +661,16 @@ The alternative `warn` action records a finding while permitting forwarding.
 Networking permission does not grant credential permission. An approved
 credential remains scoped to its destination and fingerprint; show includes
 the actual saved grant in the effective host entry. Existing service and
-approval operations retain their separate native owners.
+approval operations retain their separate owners.
 
-## Build a native bundle
+## Build a bundle
 
 From a clean committed checkout on the target host, use Bash and the Rust
 toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
 ldd, curl and a tar with zstd support for the pinned gVisor payload. The
 assembler verifies the downloaded archive and reuses its checked cache.
 macOS needs Command Line Tools and a signed VM helper build. Prepared
-runtime inputs contain the native `tmux` executable for this host. The assembler
+runtime inputs contain the `tmux` executable for this host. The assembler
 copies its resolved non-system libraries. This Ubuntu example selects
 `/usr/bin/tmux`, so `/usr/bin` is the runtime input directory.
 For prepared runtime inputs, keep their required notices in a `licenses`
@@ -629,7 +678,7 @@ directory alongside `tmux`. The assembler includes those notices and the
 project's license in the bundle.
 
 ```sh
-./scripts/build_host_packages.sh --output "$HOME/native-packages" --runtime-artifacts /usr/bin
+./scripts/build_host_packages.sh --output "$HOME/safeyolo-packages" --runtime-artifacts /usr/bin
 ```
 
 The command builds the three host executables and matching Linux guest helpers,

@@ -15,8 +15,8 @@ and attribution labels.
 
 ## Generate and check output
 
-Use an installed native `safeyolo` executable on your command path. See
-[native installation](native-policy.md#install-and-start) if it is not installed.
+Use an installed `safeyolo` executable on your command path. See
+[installation](installation.md#install-and-start) if it is not installed.
 Run generation from the SafeYolo repository root, using the checked-in source
 below or an independently edited public manifest. Generation needs neither a
 running proxy nor Coord, operator credentials, Python, or network access.
@@ -161,5 +161,5 @@ branch, also use `--publication-base REVISION`, replacing `REVISION` with the
 publication PR's base commit. The checker uses Git to reject changes outside the
 fixed site content paths. It ignores links shown as inert examples in fenced
 code or escaped prose; actual Markdown links still need valid destinations.
-The publication and Pages workflows invoke this same native checker before the
+The publication and Pages workflows invoke this same checker before the
 existing Jekyll build.

@@ -10,7 +10,7 @@ normal.
 
 ## Consume and verify
 
-Use native `safeyolo-coord completion-notes ROOM SEQUENCE` and
+Use `safeyolo-coord completion-notes ROOM SEQUENCE` and
 `safeyolo-coord proposals` through the staged Agent API connection. On the host,
 use `safeyolo --root ROOT coord` with the same command arguments. Both readers
 fetch the exact retained sequence; neither accepts an envelope file or sender override:
@@ -83,10 +83,10 @@ apply the recommendation.
 
 ## Small ledger and statuses
 
-The mode-0600 atomic JSON ledger defaults to the host native data directory
+The mode-0600 atomic JSON ledger defaults to the host data directory
 plus `coord/factory-proposals.json`, or guest `$SAFEYOLO_COORD_DATA_DIR` plus
 `factory-proposals.json` (otherwise `~/.safeyolo/data/coord/factory-proposals.json`).
-Use `--ledger FILE` for a disposable ledger. Native state starts fresh; no
+Use `--ledger FILE` for a disposable ledger. State starts fresh; no
 historical conversion is provided. It contains only the stable
 proposal/fingerprint, normalized evidence, first/last seen, status, and the
 last-presented revision. It is bounded and locked across threads/processes;

@@ -591,7 +591,7 @@ Approvals are stored in the policy file as host entries:
 The Python credential guard registers `credguard_scan_urls` and
 `credguard_scan_bodies` with a default of `false`, but its request hook does not
 read them. Setting either option to `true` does not enable credential scanning
-of URLs or request bodies. The native proxy has no equivalent options. The
+of URLs or request bodies. The Rust proxy has no equivalent options. The
 separate pattern scanner has its own URL and body rules and inspection limits.
 The Python addon also does not register `credguard_log_path`; that setting
 cannot select a separate log file.
@@ -729,7 +729,7 @@ are required. The canonical optional dimensions, in formatter order, are
 `role`, `suite`, `subject`, `step`, `test`, `intent`, and `expect`. Additional
 safe fields may follow them. Keys and values must match `[A-Za-z0-9_.:-]+`.
 
-Use the installed native helper described in [native policy commands](native-policy.md).
+Use the installed native helper described in [native policy commands](installation.md).
 The example below assumes that installation at `$HOME/.safeyolo-native`:
 
 ```bash

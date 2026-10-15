@@ -249,7 +249,12 @@ def test_denied_runtime_permission_reports_changes_and_retry_is_idempotent(nativ
     assert "Host changes and attempted operations: none" in declined.stderr and not settings.exists()
     denied = command(native_cli, *arguments, env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"})
     assert denied.returncode != 0 and "fixture sudo denied" in denied.stderr
-    assert "attempted allow UID" in denied.stderr
+    first_change = declined.stderr.split("SafeYolo needs these host changes:\n", 1)[1].splitlines()[0].strip()
+    if "AppArmor profile" in first_change:
+        assert "attempted load this runtime's AppArmor profile" in denied.stderr
+    else:
+        assert first_change.startswith("allow the selected sandbox-root UID")
+        assert "attempted allow UID" in denied.stderr
     assert denied.stderr.index("SafeYolo needs these host changes") < denied.stderr.index("fixture sudo denied")
     assert "Host changes and attempted operations:" in denied.stderr and not settings.exists()
     retry = command(native_cli, *arguments)

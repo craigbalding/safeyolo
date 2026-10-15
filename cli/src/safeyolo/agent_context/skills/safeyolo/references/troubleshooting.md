@@ -68,7 +68,7 @@ test -r /usr/local/share/ca-certificates/safeyolo.crt
 
 ## Logs and correlation
 
-The audit JSONL lives at the selected native audit_log_path and is not
+The audit JSONL lives at the selected audit_log_path and is not
 mounted into the sandbox. Ask the operator to use the CLI rather than guessing
 its filesystem path:
 
@@ -96,7 +96,7 @@ Request the narrowest relevant host-side action and explain the evidence:
 |---|---|
 | `safeyolo inspect` | A 428, gateway request, contract binding, risky route, credential, or plumb chat awaits approval |
 | `safeyolo agent diagnostics <name>` | Runtime control, the shell bridge, or proxy attachment may be unavailable |
-| `safeyolo doctor` | Proxy dependencies, native runtime, image, CA, or isolation may be unhealthy |
+| `safeyolo doctor` | Proxy dependencies, runtime, image, CA, or isolation may be unhealthy |
 | `safeyolo status` | You need the reconciled runtime, control, coding-agent and terminal observations |
 | `safeyolo logs --lines 20` | You need recent security decisions |
 | `safeyolo policy show` | You need to view enforcement modes; never ask the agent to change them |
@@ -105,7 +105,7 @@ Request the narrowest relevant host-side action and explain the evidence:
 | `safeyolo policy show` | You need capability, route, auth-header, or risk details |
 
 If the guest sudo helper is missing or broken, report that specific prerequisite
-for operator repair. The native shell command has no guest-root flag. Do not use
+for operator repair. The shell command has no guest-root flag. Do not use
 a recovery request to bypass a policy or approval block.
 
 Do not tell the operator merely to "disable SafeYolo" or switch a guard to

@@ -332,7 +332,7 @@ async fn absent_owner_and_store_checks_follow_method_auth_and_request_id_validat
         (
             request(&path),
             503,
-            "Agent API endpoint unavailable in native development mode",
+            "Agent API endpoint unavailable in development mode",
         ),
     ] {
         let outcome = call(input, &token, None, 1000.0).await;
