@@ -32,7 +32,10 @@ impl OwnedRun {
     pub fn start(root: &Path) -> Self {
         // Namespace checks read real host allocations, including when a caller
         // removes system tools from PATH to test a missing executable.
-        symlink("/usr/bin/getent", root.join("bin/getent")).unwrap();
+        let getent = root.join("bin/getent");
+        if !getent.exists() {
+            symlink("/usr/bin/getent", getent).unwrap();
+        }
         let directory = root.join("agents/alice");
         fs::create_dir_all(directory.join("config-share")).unwrap();
         let generation = uuid::Uuid::new_v4().simple().to_string();
