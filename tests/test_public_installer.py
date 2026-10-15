@@ -247,6 +247,26 @@ def test_download_then_install_and_launch_keeps_host_consent_and_repeat_state(pu
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("public_release", ["native"], indirect=True)
+def test_downloaded_composition_launches_from_relative_root_starting_with_dash(public_release, tmp_path):
+    _contents, requests, _faults, environment, bootstrap, default_root, base, archive = public_release
+    root = tmp_path / "-instance"
+    arguments = ["bash", str(bootstrap), "--root", root.name, "--no-guest-download", "--launch", "--help"]
+    result = run(*arguments, cwd=tmp_path, env=environment)
+    assert result.returncode == 0, result.stderr
+    assert "agent launch [WORKSPACE]" in result.stdout
+    assert (root / "config.toml").is_file() and not default_root.exists()
+    assert requests.count(f"{base}/{archive.name}") == 1
+    instance_id = (root / "data/instance_id").read_bytes()
+    before = list(requests)
+    repeated = run(*arguments, cwd=tmp_path, env=environment)
+    assert repeated.returncode == 0, repeated.stderr
+    assert "agent launch [WORKSPACE]" in repeated.stdout
+    assert requests == before
+    assert (root / "data/instance_id").read_bytes() == instance_id
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
 def test_composed_install_failure_and_launch_failure_recover_without_reinstallation(public_release, tmp_path):
     contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
     workspace = tmp_path / "workspace"

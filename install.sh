@@ -49,6 +49,7 @@ esac
 if [[ -n $release && ! $release =~ ^host-[0-9a-f]{40}$ ]]; then
   echo '--release must name an official host release: host- followed by its full commit.' >&2; exit 2
 fi
+[[ $root == /* ]] || root=$PWD/$root
 install_and_launch() {
   "$@" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
   if $launch; then
