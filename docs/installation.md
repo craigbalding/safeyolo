@@ -121,10 +121,12 @@ An authorized host publication must include that file and the release's
 `SHA256SUMS`. The bootstrap is bound to that host release. The currently
 published host release does not include this bootstrap asset.
 
-For Ubuntu AMD64, Ubuntu ARM64 and Apple Silicon macOS, the bootstrap route
-uses the same two commands below. Run them in your ordinary host terminal,
-in a writable directory, only when the selected public release includes
-`install-safeyolo.sh`. Bash, curl, tar and the host's SHA-256 tool must be
+For Ubuntu AMD64, Ubuntu ARM64 and Apple Silicon macOS, the source bootstrap
+supports the two commands below. Run them in your ordinary host terminal,
+from the workspace you want the agent to read and change, only when the
+selected public release includes the current `install-safeyolo.sh`, host
+preparation, bundled runtime and `agent launch` operation. Bash, curl, tar
+and the host's SHA-256 tool must be
 available. Stop if the download fails. Do not run a previous file left at that
 name. The installer downloads the production host package and compatible
 guest, then creates the default instance at `$HOME/.safeyolo`, unless
@@ -133,11 +135,13 @@ guest, then creates the default instance at `$HOME/.safeyolo`, unless
 already on PATH. It can request sudo for the command entry and Linux guest
 ownership. Existing unrelated commands are preserved.
 
-Host preparation, runtime selection and first-agent launch remain required
-for the complete onboarding path. This acquisition sequence alone does not
-meet the total two-command install-to-first-agent budget. Bootstrap publication
-and that composition are still pending. The explicit bundle path in
-[install and start](#install-and-start) remains available.
+The installer explains Linux package, mapping and AppArmor changes before
+requesting consent. It then invokes the installed `agent launch` operation
+in this terminal. Launch asks before workspace setup and optional copying of
+host Claude authentication and settings. Claude and guest commands can read
+copied authentication. Have a Claude account ready; decline the copy to use
+Claude's `/login` instead. SafeYolo's trusted approval choices retain their
+displayed scope. In tmux, press Ctrl-b then d to return to those choices.
 
 Trust comes from HTTPS delivery by the official
 `github.com/craigbalding/safeyolo` publisher. A checksum from the same release
@@ -146,8 +150,20 @@ The bootstrap does not use a remote shell pipe or a package-manager install.
 
 ```sh
 curl --fail --location --proto '=https' --proto-redir '=https' --output install-safeyolo.sh https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
-bash install-safeyolo.sh
+bash install-safeyolo.sh --launch
 ```
+
+Put installer options before `--launch`. Arguments after it go to the existing
+`agent launch` command, for example `--launch . --name work --harness claude`.
+Omitting `--launch` installs only. `--yes` accepts host preparation; launch
+still asks for setup, workspace access and optional authentication copying.
+The command entry is usable immediately after installation.
+
+This composition is source functionality. Bootstrap publication, clean-host
+first-agent results and complete cold timings remain pending. The two entered
+commands do not imply two interactions or a measured 15-second result.
+The explicit bundle path in [install and start](#install-and-start) remains
+available until a release contains the complete route.
 
 ## Repeat and retry with the current installer
 

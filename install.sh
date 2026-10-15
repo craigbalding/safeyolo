@@ -5,9 +5,16 @@ repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 release=
 bundle=
+stage=
 install_arguments=()
+launch=false
+launch_arguments=()
 while (($#)); do
   case "$1" in
+    --launch)
+      launch=true; shift
+      launch_arguments=("$@")
+      break;;
     --root|--release)
       option=$1
       (($# >= 2)) || { echo "$option requires a value" >&2; exit 2; }
@@ -23,11 +30,12 @@ while (($#)); do
       install_arguments+=("$1" "$2"); shift 2;;
     --no-guest-download|--yes) install_arguments+=("$1"); shift;;
     --help)
-      echo 'Usage: bash install-safeyolo.sh [--root DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download] [--system-runsc PATH] [--yes]'
+      echo 'Usage: bash install-safeyolo.sh [--root DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download] [--system-runsc PATH] [--yes] [--launch [WORKSPACE] [AGENT_LAUNCH_OPTIONS...]]'
       echo 'Downloads the production host package from the official GitHub release and runs its installer. The default instance is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat uses the installed package without checking Latest or upgrading.'
       echo 'Trust source: HTTPS from the official github.com/craigbalding/safeyolo release, including its install-safeyolo.sh bootstrap. Same-release SHA256SUMS checks integrity; it is not independent publisher authentication.'
       echo 'Ubuntu AMD64/ARM64 and Apple Silicon macOS use the same download-and-run route. No package manager or build toolchain is needed for host acquisition. Host preparation, runtime and first-agent launch must also be available in the selected release.'
       echo 'Contributor builds and --bundle, --platform-assets, --no-guest-download and --command-dir remain available from the source or unpacked bundle.'
+      echo '--launch runs the installed agent launch operation after installation succeeds. Put installer options first; all arguments after --launch go to agent launch. Workspace defaults to the current directory, harness to Claude. Setup, workspace access, copied authentication and approvals retain their interactive host choices; --yes only accepts host preparation.'
       exit 0;;
     *) echo "Unknown argument: $1" >&2; exit 2;;
   esac
@@ -41,12 +49,25 @@ esac
 if [[ -n $release && ! $release =~ ^host-[0-9a-f]{40}$ ]]; then
   echo '--release must name an official host release: host- followed by its full commit.' >&2; exit 2
 fi
+install_and_launch() {
+  "$@" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
+  if $launch; then
+    # The installed command owns its state. Download staging is no longer
+    # needed during the interactive session, and installer locks are released.
+    if [[ -n $stage ]]; then
+      rm -rf -- "$stage"
+      trap - EXIT
+    fi
+    echo 'SafeYolo: launching the first agent from the installed instance.' >&2
+    exec "$root/bin/safeyolo" --root "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
+  fi
+}
 if [[ -f $repository/scripts/install_native.sh && -z $release ]]; then
-  "$repository/scripts/install_native.sh" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
+  install_and_launch "$repository/scripts/install_native.sh"
   exit
 fi
 if [[ -n $bundle ]]; then
-  "$bundle/install_native.sh" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
+  install_and_launch "$bundle/install_native.sh"
   exit
 fi
 # Use the retained installer before any network request. Older or unrelated
@@ -59,7 +80,7 @@ if [[ -e $root/config.toml || -L $root/config.toml || -e $root/policy.toml || -L
   if [[ -n $release ]] && ! grep -qx "source_commit=${release#host-}" "$root/package-info"; then
     echo "Release differs from the installed host at $root. Repeat is not an upgrade; use the installed command or a separate --root and --command-dir." >&2; exit 1
   fi
-  "$root/install_native.sh" --root "$root" --bundle "$root" ${install_arguments[@]+"${install_arguments[@]}"}
+  install_and_launch "$root/install_native.sh" --bundle "$root"
   exit
 fi
 for tool in curl tar; do
@@ -128,4 +149,4 @@ for field in guest_compatibility guest_repository guest_discovery_tag; do
 done
 source "$package/native_package.sh"
 verify_native_package "$package"
-"$package/install.sh" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
+install_and_launch "$package/install.sh"

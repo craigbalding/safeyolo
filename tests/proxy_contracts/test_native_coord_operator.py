@@ -140,12 +140,14 @@ async def stream_control(instance, no_ack=None):
 
 
 @contextmanager
-def terminal(instance, arguments=None, *, cwd=None):
+def terminal(instance, arguments=None, *, cwd=None, command=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     process = subprocess.Popen(
-        [str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
-         *(arguments if arguments is not None else ["coord", "chat", ROOM, "--to", "bob"])],
+        command if command is not None else [
+            str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+            *(arguments if arguments is not None else ["coord", "chat", ROOM, "--to", "bob"]),
+        ],
         cwd=cwd if cwd is not None else instance.root.parent, env=instance.environment,
         stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
     )
