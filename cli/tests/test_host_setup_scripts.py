@@ -3166,6 +3166,72 @@ def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script
         assert settings["skipDangerousModePermissionPrompt"] is True
 
 
+@pytest.mark.parametrize("copy", ["0", "1"])
+@pytest.mark.parametrize("source_kind", ["directory", "directory_link"])
+def test_claude_host_state_choice_controls_auth_preferences_and_extensions(tmp_path, copy, source_kind):
+    operator, agent = tmp_path / "operator", tmp_path / "agent"
+    host = operator / ".claude"
+    (host / "plugins").mkdir(parents=True)
+    secret = "synthetic-claude-auth-do-not-print"
+    (host / ".credentials.json").write_text(json.dumps({"fixture": secret}))
+    (host / "settings.json").write_text('{"model":"host-choice"}')
+    (operator / ".claude.json").write_text('{"userID":"selected-fixture-user"}')
+    # A copied extension is not a supervisor checkpoint. Preserve the previous
+    # copy operation's ability to carry ordinary files larger than two MiB.
+    extension = b"x" * (2 * 1024 * 1024 + 1)
+    (host / "plugins/large.txt").write_bytes(extension)
+    if source_kind == "directory_link":
+        (host / "plugins").rename(operator / "linked-plugins")
+        (host / "plugins").symlink_to(operator / "linked-plugins", target_is_directory=True)
+    result = _run_setup("claude-host-setup.sh", operator, agent, tmp_path,
+                        extra_env={"SAFEYOLO_CLAUDE_COPY_HOST_STATE": copy})
+    assert secret not in result.stdout + result.stderr
+    config = json.loads((agent / ".claude.json").read_text())
+    settings = json.loads((agent / ".claude/settings.json").read_text())
+    if copy == "1":
+        credentials = agent / ".claude/.credentials.json"
+        assert credentials.read_bytes() == (host / ".credentials.json").read_bytes()
+        assert credentials.stat().st_mode & 0o777 == 0o600
+        assert config["userID"] == "selected-fixture-user"
+        assert settings["model"] == "host-choice"
+        assert not (agent / ".claude/plugins").is_symlink()
+        assert (agent / ".claude/plugins/large.txt").read_bytes() == extension
+    else:
+        assert not (agent / ".claude/.credentials.json").exists()
+        assert not (agent / ".claude/plugins").exists()
+        assert "userID" not in config and "model" not in settings
+    assert settings["permissions"]["defaultMode"] == "bypassPermissions"
+    assert "safeyolo-coord" in config["mcpServers"]
+
+
+@pytest.mark.parametrize("redirect", ["credential", "extension", "command"])
+def test_claude_setup_does_not_write_through_guest_created_host_links(tmp_path, redirect):
+    operator, agent = tmp_path / "operator", tmp_path / "agent"
+    source, destination = operator / ".claude", agent / ".claude"
+    (source / "plugins").mkdir(parents=True)
+    destination.mkdir(parents=True)
+    (source / ".credentials.json").write_text('{"fixture":"synthetic-private-state"}')
+    (source / "plugins/example").write_text("extension")
+    canary = tmp_path / "host-canary"
+    canary.write_text("keep host bytes")
+    if redirect == "credential":
+        (destination / ".credentials.json").symlink_to(canary)
+    elif redirect == "extension":
+        (destination / "plugins").symlink_to(tmp_path, target_is_directory=True)
+    else:
+        (agent / ".safeyolo-command").symlink_to(canary)
+    result = _run_setup("claude-host-setup.sh", operator, agent, tmp_path, check=False)
+    assert canary.read_text() == "keep host bytes"
+    assert not (tmp_path / "example").exists()
+    assert "synthetic-private-state" not in result.stdout + result.stderr
+    if redirect == "credential":
+        assert result.returncode == 0, result.stderr
+        assert not (destination / ".credentials.json").is_symlink()
+        assert (destination / ".credentials.json").stat().st_mode & 0o777 == 0o600
+    else:
+        assert result.returncode != 0 and "unsafe" in result.stderr
+
+
 def test_claude_native_setup_preserves_selected_identity_settings_and_mcp_on_reapply(tmp_path):
     operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
     operator_home.mkdir()

@@ -140,12 +140,13 @@ async def stream_control(instance, no_ack=None):
 
 
 @contextmanager
-def terminal(instance):
+def terminal(instance, arguments=None, *, cwd=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     process = subprocess.Popen(
-        [str(instance.root / "bin/safeyolo"), "--root", str(instance.root), "coord", "chat", ROOM, "--to", "bob"],
-        cwd=instance.root.parent, env=instance.environment,
+        [str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+         *(arguments if arguments is not None else ["coord", "chat", ROOM, "--to", "bob"])],
+        cwd=cwd if cwd is not None else instance.root.parent, env=instance.environment,
         stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
     )
     os.close(slave)
@@ -163,7 +164,8 @@ def terminal(instance):
                     # Linux reports EIO when the PTY slave has closed. Expose
                     # captured diagnostics instead of losing the failure.
                     raise AssertionError(bytes(buffer)) from None
-            assert process.poll() is None, bytes(buffer)
+            if marker not in buffer:
+                assert process.poll() is None, bytes(buffer)
         assert marker in buffer, bytes(buffer)
         captured = bytes(buffer)
         buffer.clear()

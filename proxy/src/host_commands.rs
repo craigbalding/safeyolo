@@ -418,8 +418,11 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             )?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nConfiguration changes apply at the next sandbox start. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional host-state copying require host consent. Detach from the agent terminal to review requests here. Configuration changes apply at the next sandbox start. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
         ),
+        [kind, operation, rest @ ..] if kind == "agent" && operation == "launch" => {
+            return crate::host_launch::run(rest).await;
+        }
         [kind, operation, name, rest @ ..]
             if kind == "agent" && matches!(operation.as_str(), "create" | "configure") =>
         {

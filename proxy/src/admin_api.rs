@@ -904,6 +904,38 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
 
 fn pending_approvals(path: &Path) -> Value {
     let events = read_audit_events(path);
+    let mut pending = pending_approval_events(&events);
+    let mut events_by_request: std::collections::HashMap<&str, Vec<&Value>> =
+        std::collections::HashMap::new();
+    for event in &events {
+        if event["event"] == "security.credential_guard"
+            && event["approval"]["approval_type"] == "credential"
+            && let Some(id) = event["request_id"].as_str()
+        {
+            events_by_request.entry(id).or_default().push(event);
+        }
+    }
+    let credential_actions: std::collections::HashMap<_, _> = events_by_request
+        .into_iter()
+        .filter_map(|(id, events)| {
+            approvals::credential_view(events, id)
+                .ok()
+                .flatten()
+                .map(|mut view| (id, view["action"].take()))
+        })
+        .collect();
+    for event in pending.as_array_mut().expect("pending approval array") {
+        if let Some(action) = event["request_id"]
+            .as_str()
+            .and_then(|id| credential_actions.get(id))
+        {
+            event["action"] = action.clone();
+        }
+    }
+    pending
+}
+
+fn pending_approval_events(events: &[Value]) -> Value {
     let mut durable_resolutions = std::collections::HashSet::new();
     let mut pending: std::collections::HashMap<String, (usize, Value)> =
         std::collections::HashMap::new();
@@ -2040,6 +2072,37 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 ));
             }
         };
+        if let Some(expected) = fields.get("approval_action") {
+            let current = match (
+                audit,
+                policy,
+                fields.get("approval_request_id").and_then(Value::as_str),
+            ) {
+                (Some(writer), Some(policy), Some(id)) => {
+                    approvals::credential_record(writer, policy, id)
+                }
+                _ => Err("credential approval evidence unavailable"),
+            };
+            match current {
+                Ok(Some(view))
+                    if view["status"] == "pending"
+                        && view["action"] == *expected
+                        && view["action"]["host"] == destination
+                        && view["action"]["credentials"] == json!(credentials) => {}
+                Ok(_) => {
+                    return Ok(response(
+                        StatusCode::CONFLICT,
+                        json!({"error":"credential request is resolved or changed; inspect the pending requests again before deciding"}),
+                    ));
+                }
+                Err(error) => {
+                    return Ok(response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error":error}),
+                    ));
+                }
+            }
+        }
         let tier = fields
             .get("tier")
             .and_then(Value::as_str)
