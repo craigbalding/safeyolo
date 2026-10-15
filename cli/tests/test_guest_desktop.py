@@ -31,7 +31,7 @@ def test_guest_desktop_reports_missing_rootfs_capabilities(tmp_path: Path) -> No
     assert "desktop capability unavailable" in result.stderr
     assert "Xvfb" in result.stderr
     assert "x11vnc" in result.stderr
-    assert "native desktop bridge (/safeyolo/safeyolo-guest)" in result.stderr
+    assert "desktop bridge (/safeyolo/safeyolo-guest)" in result.stderr
     assert "window manager" in result.stderr
     assert "noVNC web assets" in result.stderr
 
