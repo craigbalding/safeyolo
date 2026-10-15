@@ -184,7 +184,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap zstd
-          sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+          getsubids "$USER"
+          getsubids -g "$USER"
 
       - name: Test workflow, fixture, deletion, and blackbox runner boundaries
         run: |
@@ -380,7 +381,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap
-          sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+          getsubids "$USER"
+          getsubids -g "$USER"
 
       - name: Install macOS native terminal test dependency
         if: matrix.os == 'macos-latest'

@@ -510,26 +510,84 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
             std::io::Error::last_os_error()
         ).into());
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    wait_for_pidfd_exit(&backend, Duration::from_secs(5))
+        .await
+        .map_err(|error| {
+            format!("could not observe the owned runsc workload exit: {error}; backend state was preserved; run agent diagnostics {name}")
+        })?;
+    // The verified sentry has exited. Without its namespaces runsc cannot
+    // delete its stale metadata; retire only this incarnation's state/lock
+    // files before reporting the owned stop complete.
+    remove_runsc_state(&root, &id)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn wait_for_pidfd_exit(
+    process: &std::os::fd::OwnedFd,
+    timeout: Duration,
+) -> std::io::Result<()> {
+    use std::{io, os::fd::AsRawFd};
+
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let mut exit = libc::pollfd {
-            fd: backend.as_raw_fd(),
+            fd: process.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
         let ready = unsafe { libc::poll(&mut exit, 1, 0) };
         if ready > 0 && exit.revents & libc::POLLIN != 0 {
-            // The verified sentry has exited. Without its namespaces runsc
-            // cannot delete its stale metadata; retire only this incarnation's
-            // state/lock files before reporting the owned stop complete.
-            return remove_runsc_state(&root, &id);
+            return Ok(());
         }
         if ready < 0 {
-            return Err(std::io::Error::last_os_error().into());
+            return Err(io::Error::last_os_error());
+        }
+        if ready > 0 {
+            return Err(io::Error::other(format!(
+                "unexpected process-handle poll events: {}",
+                exit.revents
+            )));
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err("owned runsc workload did not stop; backend state was preserved; run agent diagnostics".into());
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "process did not exit before the stop deadline",
+            ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    #[tokio::test]
+    async fn pidfd_exit_wait_times_out_without_signalling_then_observes_exit() {
+        let mut child = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id().unwrap(), 0) };
+        assert!(fd >= 0);
+        let process = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        assert_eq!(
+            wait_for_pidfd_exit(&process, Duration::from_millis(50))
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert!(child.try_wait().unwrap().is_none());
+        let stop = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            child.kill().await.unwrap();
+        });
+        wait_for_pidfd_exit(&process, Duration::from_secs(5))
+            .await
+            .unwrap();
+        stop.await.unwrap();
     }
 }

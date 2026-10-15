@@ -28,6 +28,41 @@ pub fn process_token(pid: u32) -> String {
     format!("linux:{}:{pid}:{ticks}", boot.trim())
 }
 
+pub fn subordinate_bases() -> (u32, u32) {
+    let account = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+    assert!(account.status.success());
+    let account = std::str::from_utf8(&account.stdout).unwrap().trim();
+    let base = |group| {
+        let mut command = Command::new("/usr/bin/getsubids");
+        if group {
+            command.arg("-g");
+        }
+        let output = command.arg(account).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        // These fixtures use one complete allocation per ID kind. Keep the
+        // legacy base when owned, otherwise use the lowest owned range, as
+        // the production selector does. Production still validates ownership
+        // and rejects conflicts before it can control this namespace.
+        std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let start = fields.get(2)?.parse::<u32>().ok()?;
+                let count = fields.get(3)?.parse::<u32>().ok()?;
+                let end = start.checked_add(count)?;
+                (count >= 65536).then_some(if start <= 100000 && end >= 165536 {
+                    100000
+                } else {
+                    start
+                })
+            })
+            .min_by_key(|start| (*start != 100000, *start))
+            .expect("native fixture requires an owned range of 65536 subordinate IDs")
+    };
+    (base(false), base(true))
+}
+
 impl OwnedRun {
     pub fn start(root: &Path) -> Self {
         // Namespace checks read real host allocations, including when a caller
@@ -36,6 +71,7 @@ impl OwnedRun {
         if !getent.exists() {
             symlink("/usr/bin/getent", getent).unwrap();
         }
+        let (uid_base, gid_base) = subordinate_bases();
         let directory = root.join("agents/alice");
         fs::create_dir_all(directory.join("config-share")).unwrap();
         let generation = uuid::Uuid::new_v4().simple().to_string();
@@ -75,14 +111,15 @@ impl OwnedRun {
         }
         // Use direct mapping when CAP_SETUID/CAP_SETGID permits it. Ordinary
         // rootless hosts use the same ID helpers as native sandbox startup.
-        for (kind, identity) in [
-            ("uid", unsafe { libc::getuid() }),
-            ("gid", unsafe { libc::getgid() }),
+        for (kind, identity, base) in [
+            ("uid", unsafe { libc::getuid() }, uid_base),
+            ("gid", unsafe { libc::getgid() }, gid_base),
         ] {
             if kind == "gid" {
                 fs::write(proc.join("setgroups"), "deny").unwrap();
             }
-            let mapping = format!("0 100000 1000\n1000 {identity} 1\n1001 101001 64534\n");
+            let tail = base + 1001;
+            let mapping = format!("0 {base} 1000\n1000 {identity} 1\n1001 {tail} 64535\n");
             if let Err(error) = fs::write(proc.join(format!("{kind}_map")), &mapping) {
                 assert_eq!(
                     error.kind(),
@@ -93,17 +130,17 @@ impl OwnedRun {
                     .args([
                         run.child.id().to_string(),
                         "0".into(),
-                        "100000".into(),
+                        base.to_string(),
                         "1000".into(),
                         "1000".into(),
                         identity.to_string(),
                         "1".into(),
                         "1001".into(),
-                        "101001".into(),
-                        "64534".into(),
+                        tail.to_string(),
+                        "64535".into(),
                     ])
                     .status()
-                    .expect("native fixture requires uidmap and subordinate IDs 100000–165535");
+                    .expect("native fixture requires uidmap and owned subordinate IDs");
                 assert!(status.success(), "{kind} mapping failed");
             }
         }

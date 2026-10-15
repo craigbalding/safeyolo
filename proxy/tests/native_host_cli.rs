@@ -1019,9 +1019,10 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     // The temporary parent is private. Permit owned fixture cleanup after
     // assigning the staging directory's required subordinate root UID/GID.
     fs::set_permissions(&rootfs, fs::Permissions::from_mode(0o777)).unwrap();
+    let (uid_base, gid_base) = owned_run::subordinate_bases();
     assert!(
         Command::new("sudo")
-            .args(["-n", "chown", "100000:100000"])
+            .args(["-n", "chown", &format!("{uid_base}:{gid_base}")])
             .arg(&rootfs)
             .status()
             .unwrap()
@@ -2142,7 +2143,7 @@ fn an_exited_backend_with_or_without_runsc_state_can_be_cleaned() {
         if retain_state {
             assert_eq!(fs::read(&state).unwrap(), metadata);
             assert!(lock.exists());
-            // Production runsc writes mode 0640 as subordinate UID/GID 100000.
+            // Production runsc writes mode 0640 as the mapped root UID/GID.
             // Matching dead metadata must not require host-readable contents.
             fs::set_permissions(&state, fs::Permissions::from_mode(0o0)).unwrap();
             if unsafe { libc::geteuid() } != 0 {

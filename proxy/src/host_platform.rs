@@ -1477,6 +1477,13 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
             io::Error::last_os_error()
         )));
     }
+    crate::host_runs::wait_for_pidfd_exit(&holder, Duration::from_secs(5))
+        .await
+        .map_err(|error| {
+            io::Error::other(format!(
+                "could not observe the verified holder exit: {error}; state was preserved; run agent diagnostics {name}"
+            ))
+        })?;
     let directory = config_dir().join("agents").join(name);
     let _ = std::fs::remove_file(directory.join("userns.pid"));
     let _ = std::fs::remove_file(directory.join("container.pid"));
@@ -3132,9 +3139,10 @@ esac
             let after = log.metadata().unwrap();
             let observed = unsafe { libc::fcntl(log.as_raw_fd(), libc::F_GETFL) };
             if inherited {
+                let mapping = crate::linux_host::selected_mapping().unwrap();
                 assert_eq!(
                     (after.uid(), after.gid(), after.mode() & 0o777),
-                    (100000, 100000, 0o640)
+                    (mapping.uid_base, mapping.gid_base, 0o640)
                 );
                 assert_eq!(observed, flags | libc::O_NONBLOCK);
                 assert_eq!(
