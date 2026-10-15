@@ -627,6 +627,14 @@ impl CredentialGuard {
                 .map(|rule| rule.allowed_hosts.clone())
                 .unwrap_or_default();
             let mut details = json!({"rule":detection.finding.rule,"location":format!("header:{}",detection.finding.header),"fingerprint":fingerprint,"confidence":detection.finding.confidence,"tier":detection.finding.tier,"project_id":project,"reason_codes":decision.codes,"method":request.method,"port":request.port,"connection_id":request.connection_id});
+            // Bind new operator prompts to the policy's current identity. The
+            // first-launch picker must not attribute an older agent's prompt
+            // to a recreated name. No credential value enters this evidence.
+            if let (Pdp::Ready(policy), Some(agent)) = (&pdp, agent)
+                && let Some(id) = policy.evidence_agent_id(agent)
+            {
+                details["agent_id"] = json!(id);
+            }
             let (audit_decision, severity, summary, approval) = if decision.effect
                 == PdpEffect::Allow
             {

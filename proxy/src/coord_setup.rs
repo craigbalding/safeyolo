@@ -330,12 +330,61 @@ pub fn stage_mcp(home: &Path, harness: &str, require_local: bool) -> Result<(), 
     }
 }
 
-/// Merge the selected operator identity and preferences into the agent's
-/// retained Claude configuration. Authentication files remain shell-staged.
+/// Copy only the selected Claude state. Atomic file replacement prevents an
+/// agent-written destination link from redirecting a host write.
+fn copy_claude_file(source: &Path, destination: &Path, mode: u32) -> Result<(), Error> {
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(destination.parent().ok_or("Claude copy has no parent")?)?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))?;
+    std::io::copy(&mut fs::File::open(source)?, &mut temporary)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(destination)?;
+    Ok(())
+}
+
+fn copy_claude_path(source: &Path, destination: &Path) -> Result<(), Error> {
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        directory(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_claude_path(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else if metadata.is_file() {
+        copy_claude_file(
+            source,
+            destination,
+            0o600 | (metadata.permissions().mode() & 0o100),
+        )?;
+    } else if metadata.file_type().is_symlink() {
+        let temporary = tempfile::NamedTempFile::new_in(
+            destination.parent().ok_or("Claude copy has no parent")?,
+        )?
+        .into_temp_path();
+        fs::remove_file(&temporary)?;
+        std::os::unix::fs::symlink(fs::read_link(source)?, &temporary)?;
+        temporary.persist(destination)?;
+    }
+    Ok(())
+}
+
+/// Merge selected operator identity, preferences, authentication and extensions
+/// into the agent's retained Claude configuration.
 pub fn claude_state(home: &Path, operator_home: &Path) -> Result<(), Error> {
+    stage_claude_state(home, Some(operator_home))
+}
+
+fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), Error> {
     safe(home, true, None)?
         .then_some(())
         .ok_or("agent home is missing")?;
+    safe(&home.join(".safeyolo-command"), false, None)?;
     let claude = home.join(".claude");
     match fs::symlink_metadata(&claude) {
         Ok(metadata) if !metadata.is_dir() => return Err("unsafe Claude directory".into()),
@@ -374,7 +423,8 @@ pub fn claude_state(home: &Path, operator_home: &Path) -> Result<(), Error> {
     // The previous setup deliberately ignored missing, unreadable or malformed
     // host identity metadata. Preserve that best-effort selection, including
     // arbitrary JSON values in the selected keys.
-    if let Ok(bytes) = fs::read(operator_home.join(".claude.json"))
+    if let Some(operator_home) = operator_home
+        && let Ok(bytes) = fs::read(operator_home.join(".claude.json"))
         && let Ok(Value::Object(host)) = serde_json::from_slice::<Value>(&bytes)
     {
         for key in [
@@ -421,9 +471,9 @@ pub fn claude_state(home: &Path, operator_home: &Path) -> Result<(), Error> {
     } else {
         json!({})
     };
-    let host_settings_path = operator_home.join(".claude/settings.json");
-    let host_settings = if host_settings_path.is_file() {
-        serde_json::from_slice::<Value>(&fs::read(&host_settings_path)?).ok()
+    let host_settings_path = operator_home.map(|home| home.join(".claude/settings.json"));
+    let host_settings = if let Some(path) = host_settings_path.filter(|path| path.is_file()) {
+        serde_json::from_slice::<Value>(&fs::read(path)?).ok()
     } else {
         None
     };
@@ -480,7 +530,36 @@ pub fn claude_state(home: &Path, operator_home: &Path) -> Result<(), Error> {
         &settings_path,
         &serde_json::to_value(settings)?,
         settings_mode,
-    )
+    )?;
+    if let Some(operator_home) = operator_home {
+        let source = operator_home.join(".claude");
+        if source.join(".credentials.json").is_file() {
+            // DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
+            copy_claude_file(
+                &source.join(".credentials.json"),
+                &claude.join(".credentials.json"),
+                0o600,
+            )?;
+        }
+        for name in ["plugins", "commands", "agents"] {
+            copy_claude_path(&source.join(name), &claude.join(name))?;
+        }
+        if source.join("skills").is_dir() {
+            directory(&claude.join("skills"))?;
+            for entry in fs::read_dir(source.join("skills"))? {
+                let entry = entry?;
+                if entry.file_name() == "safeyolo" {
+                    eprintln!("Skipped host Claude skill 'safeyolo' (reserved by SafeYolo)");
+                    continue;
+                }
+                copy_claude_path(
+                    &entry.path(),
+                    &claude.join("skills").join(entry.file_name()),
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn sorted_json(value: &Value) -> Value {
@@ -710,6 +789,7 @@ pub fn run(arguments: &[OsString]) -> Result<(), Error> {
         }
         [kind,home,source] if kind=="stage-runtime"=>stage_runtime(Path::new(home),Path::new(source)),
         [kind,home,operator_home] if kind=="claude-state"=>claude_state(Path::new(home),Path::new(operator_home)),
+        [kind,home] if kind=="claude-state"=>stage_claude_state(Path::new(home),None),
         [kind,home,harness,rest @ ..] if kind=="stage-mcp"=>{
             if !rest.is_empty() && rest!=["--require-agent-local"] { return Err("unknown stage-mcp argument".into()); }
             stage_mcp(Path::new(home),argument_text(harness)?,!rest.is_empty())

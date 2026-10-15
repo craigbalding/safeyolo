@@ -143,6 +143,7 @@ pub(crate) fn validate_script_for_agent(agent: &Agent, script: &str) -> Result<(
 pub(crate) async fn setup(
     agent: &Agent,
     factory: Option<(&Path, &str, bool)>,
+    copy_host_state: Option<bool>,
 ) -> Result<(), Error> {
     let root = config_dir();
     let home = root.join("agents").join(&agent.name).join("home");
@@ -178,6 +179,12 @@ pub(crate) async fn setup(
             "SAFEYOLO_COORD_GUEST_BINARY",
             root.join("assets/guest/safeyolo-coord"),
         );
+    if let Some(copy) = copy_host_state {
+        command.env(
+            "SAFEYOLO_CLAUDE_COPY_HOST_STATE",
+            if copy { "1" } else { "0" },
+        );
+    }
     // Bind only this setup invocation. Process-global environment changes
     // would race another instance or another role's approved snapshot.
     if let Some((snapshot, role, preparing)) = factory {

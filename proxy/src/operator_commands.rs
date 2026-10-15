@@ -19,6 +19,7 @@ safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
 safeyolo [--root ROOT] approvals list|show ID|approve ID|reject ID [--agent NAME] [--json]
+safeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
@@ -190,17 +191,66 @@ async fn admin(_root: &Path, path: &str, method: Method, body: Value) -> Result<
     .await
 }
 
+fn credential_view(events: &Value, id: &str) -> Result<Option<Value>, Error> {
+    let matching: Vec<_> = events["approvals"]
+        .as_array()
+        .ok_or("pending approvals unavailable")?
+        .iter()
+        .filter(|event| {
+            event["request_id"] == id
+                && event["addon"] == "credential-guard"
+                && event["approval"]["approval_type"] == "credential"
+        })
+        .collect();
+    let Some(first) = matching.first() else {
+        return Ok(None);
+    };
+    let agent = first["agent"]
+        .as_str()
+        .ok_or("credential request has no agent")?;
+    let agent_id = first["details"]["agent_id"].as_str().ok_or("credential request predates identity binding; use direct credential policy controls or make a new request")?;
+    let host = first["approval"]["target"]
+        .as_str()
+        .ok_or("credential request has no destination")?;
+    let mut credentials = Vec::new();
+    for event in &matching {
+        if event["agent"] != agent
+            || event["details"]["agent_id"] != agent_id
+            || event["approval"]["target"] != host
+        {
+            return Err(
+                "credential request has conflicting scope; use direct policy controls".into(),
+            );
+        }
+        let key = event["approval"]["key"]
+            .as_str()
+            .filter(|key| key.starts_with("hmac:") && key.len() > 5)
+            .ok_or("credential request has no fingerprint")?;
+        if !credentials.iter().any(|saved| saved == key) {
+            credentials.push(key.to_owned());
+        }
+    }
+    Ok(Some(json!({"request_id":id,"status":"pending",
+        "action":{"kind":"credential_allow","agent":agent,"agent_id":agent_id,"host":host,"credentials":credentials},
+        "effect":format!("Allow these credential fingerprints to {} for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed. Existing network rules still apply.", safe(host))})))
+}
+
 pub(crate) async fn approval(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
     if !crate::agent_api::valid_request_id(id) {
         return Err("invalid request ID".into());
     }
-    let view = admin(
-        root,
-        &format!("/admin/approvals/{}", encoded(id)),
-        Method::GET,
-        Value::Null,
-    )
-    .await?;
+    let events = admin(root, "/admin/approvals", Method::GET, Value::Null).await?;
+    let view = if let Some(view) = credential_view(&events, id)? {
+        view
+    } else {
+        admin(
+            root,
+            &format!("/admin/approvals/{}", encoded(id)),
+            Method::GET,
+            Value::Null,
+        )
+        .await?
+    };
     if let Some(name) = agent {
         let current = selected_agent(root, name)?;
         if view["action"]["agent"] != name || view["action"]["agent_id"] != current["agent_id"] {
@@ -217,6 +267,15 @@ fn show_approval(view: &Value) -> Result<(), Error> {
         safe(text(&view["status"])),
         safe(text(&view["effect"]))
     );
+    if view["action"]["kind"] == "credential_allow" {
+        println!(
+            "Credential fingerprints: {}",
+            serde_json::to_string(&view["action"]["credentials"])?
+        );
+        println!(
+            "Reject records a refusal and keeps the current policy denial. It grants no access."
+        );
+    }
     if let Some(reason) = view["untrusted_reason_text"].as_str() {
         // A quoted JSON string stays visibly separate, including forged
         // Markdown/HTML headings and all terminal controls.
@@ -237,6 +296,34 @@ pub(crate) async fn resolve(
     let preview = approval(root, id, agent).await?;
     if preview["status"] != "pending" {
         return Ok(preview);
+    }
+    if preview["action"]["kind"] == "credential_allow" {
+        if !matches!(decision, "approve" | "reject") {
+            return Err("choose approve or reject".into());
+        }
+        let action = &preview["action"];
+        if decision == "approve" {
+            admin(root, "/admin/policy/baseline/approve", Method::POST,
+                json!({"destination":action["host"],"cred_id":action["credentials"]})).await
+                .map_err(|error| format!("credential decision not confirmed: {error}; inspect approvals and policy before deciding again"))?;
+        } else {
+            for credential in action["credentials"]
+                .as_array()
+                .ok_or("credential scope is unavailable")?
+            {
+                admin(root, "/admin/policy/baseline/deny", Method::POST,
+                    json!({"destination":action["host"],"cred_id":credential,"approval_request_id":id})).await
+                    .map_err(|error| format!("credential refusal not confirmed: {error}; inspect approvals before deciding again"))?;
+            }
+        }
+        let mut resolved = preview;
+        resolved["status"] = if decision == "approve" {
+            "approved"
+        } else {
+            "rejected"
+        }
+        .into();
+        return Ok(resolved);
     }
     let path = format!("/admin/approvals/{}", encoded(id));
     match admin(root, &path, Method::POST, json!({"decision":decision})).await {
@@ -290,6 +377,63 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
         *view = json!({"request_id":view["request_id"],"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"]});
     }
     Ok(value)
+}
+
+/// Select canonical requests without copying a request ID or fingerprint.
+/// The guest terminal has returned before this host-owned interaction begins.
+pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error> {
+    if !std::io::stdin().is_terminal() {
+        return Err("approval review requires a host terminal; direct approvals show/approve/reject remain available".into());
+    }
+    loop {
+        let pending = pending(root, Some(agent)).await?;
+        let entries = pending["approvals"]
+            .as_array()
+            .ok_or("pending approvals unavailable")?;
+        if entries.is_empty() {
+            println!("No pending requests for {}.", safe(agent));
+            return Ok(());
+        }
+        println!("SafeYolo host — pending requests for {}", safe(agent));
+        for (index, entry) in entries.iter().enumerate() {
+            println!(
+                "{}: {}",
+                index + 1,
+                serde_json::to_string(&entry["summary"])?
+            );
+        }
+        let Some(answer) = crate::host_launch::input("Request number (Enter returns): ")? else {
+            return Ok(());
+        };
+        if answer.is_empty() {
+            return Ok(());
+        }
+        let Some(entry) = answer
+            .parse::<usize>()
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| entries.get(index))
+        else {
+            println!("Choose a displayed request number.");
+            continue;
+        };
+        let id = entry["request_id"]
+            .as_str()
+            .ok_or("request ID unavailable")?;
+        let view = approval(root, id, Some(agent)).await?;
+        show_approval(&view)?;
+        match crate::host_launch::input("approve / reject / Enter to leave unchanged: ")?.as_deref()
+        {
+            Some(decision @ ("approve" | "reject")) => {
+                let current = approval(root, id, Some(agent)).await?;
+                if current["action"] != view["action"] {
+                    return Err("request scope changed; inspect it again before deciding".into());
+                }
+                show_approval(&resolve(root, id, decision, Some(agent)).await?)?;
+            }
+            _ => println!("Request unchanged."),
+        }
+    }
 }
 
 async fn flows(root: &Path, options: &Options) -> Result<Value, Error> {
@@ -671,6 +815,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 }
                 "pending" => print_json(&pending(root, Some(name)).await?),
                 "approval" => show_approval(&approval(root, rest, Some(name)).await?),
+                "review" => review_pending(root, name).await,
                 "approve" | "reject" => {
                     show_approval(&approval(root, rest, Some(name)).await?)?;
                     show_approval(&resolve(root, rest, command, Some(name)).await?)
@@ -729,6 +874,16 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                 .collect::<Vec<_>>()
                 .as_slice()
             {
+                ["review"] => {
+                    return review_pending(
+                        root,
+                        options
+                            .agent
+                            .as_deref()
+                            .ok_or("approval review requires --agent NAME")?,
+                    )
+                    .await;
+                }
                 [] | ["list"] => pending(root, options.agent.as_deref()).await?,
                 ["show", id] => approval(root, id, options.agent.as_deref()).await?,
                 [decision @ ("approve" | "reject"), id] => {

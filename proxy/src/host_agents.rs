@@ -129,6 +129,18 @@ pub(crate) async fn configure(
     create: bool,
     factory: Option<(&Path, &str, bool)>,
 ) -> Result<Agent, Error> {
+    configure_with_host_state(name, options, create, factory, None).await
+}
+
+/// The first-launch host prompt supplies a scoped choice. Existing explicit
+/// host-script callers keep their current staging behavior.
+pub(crate) async fn configure_with_host_state(
+    name: &str,
+    options: &[(String, String)],
+    create: bool,
+    factory: Option<(&Path, &str, bool)>,
+    copy_host_state: Option<bool>,
+) -> Result<Agent, Error> {
     if !crate::host_platform::valid_agent_name(name) {
         return Err("invalid agent name".into());
     }
@@ -216,7 +228,7 @@ pub(crate) async fn configure(
         if crate::host_runs::observe(name).await["runtime_state"] != "stopped" {
             return Err("stop the agent before applying a host setup script; saved configuration is unchanged".into());
         }
-        crate::host_boot::setup(&agent, factory).await?;
+        crate::host_boot::setup(&agent, factory, copy_host_state).await?;
     }
     save_document(&path, &document)?;
     Ok(agent)
