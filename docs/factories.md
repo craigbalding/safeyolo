@@ -88,7 +88,7 @@ natural-language parser; they cannot overlap a handoff request or response.
 unreachable from that operator edge; old source-only v1 snapshots therefore
 fail closed instead of starting an inert factory.
 
-The native operator entry targets the coordinator selected by this approved
+The operator entry targets the coordinator selected by this approved
 Factory. Use `factory send NAME TEXT` for natural-language direction and
 `factory history NAME` for retained replies. Send requires an active,
 receive-authorized room member; unknown, revoked and send-only targets fail
@@ -105,7 +105,7 @@ receive-authorized room member; unknown, revoked, and send-only targets fail
 before the message is accepted. Targeting changes only attention delivery.
 Send confirmation and operator-visible retained history show the canonical
 attention mode (`targeted`, `room`, or `none`) without exposing recipient IDs
-or unrelated membership. See [native operator chat](native-coord.md) for the
+or unrelated membership. See [operator chat](coord-operations.md) for the
 interactive controls.
 
 The room brief is a separate operator-authored standing-context channel.
@@ -113,7 +113,7 @@ Canonical `brief_changed` attention updates every receive-authorized factory
 role's bounded checkpoint, and preflight refreshes the current brief after a
 restart. Brief updates are not handoffs: they create no in-flight request,
 need no terminal response, and cause no automatic runtime transition.
-Use [the native brief commands](native-coord.md#read-and-update-a-trusted-brief)
+Use [the brief commands](coord-operations.md#read-and-update-a-trusted-brief)
 to read or replace that context with an explicit expected revision.
 
 ## Authority and intake
@@ -153,7 +153,7 @@ constraints, but the backlog factory does not require one.
 
 ## Fresh setup, check, approve, and run
 
-Use the [installed native product](native-policy.md#install-and-start) on the
+Use the [installed product](installation.md#install-and-start) on the
 owning host account. Its guest runtime must be prepared for that host.
 Preparation requires a running proxy; the `start` command below starts it.
 Select an operator-authored Factory TOML and the workspaces for its roles.
@@ -192,7 +192,7 @@ Factory. `prepare` creates or checks the declared agents and their staging,
 shared room, private agent rooms and required send/receive grants. Existing
 room history and unrelated memberships remain. It starts no model.
 
-Establish each role's own login through the native entry. For the shipped
+Establish each role's own login through the entry. For the shipped
 contract, authenticate the coordinator, owner and reviewer:
 
 ```sh
@@ -223,17 +223,17 @@ checkpoint that could bypass confirmation on retry. Valid checkpoints resume
 without this option, and preparation reapplication preserves their state.
 
 `run` stages the approved supervised roles, provisions missing declared room
-access and starts them through the existing native agent lifecycle. It reports
+access and starts them through the existing agent lifecycle. It reports
 `Started Factory` only after observed runtime, role binding, executable,
 authentication, checkpoint and room checks pass. Approval alone is not
 readiness. If a role is already running, its staging must match the selected
 snapshot; run reuses its existing launch. Stop the Factory before changing a
 workspace or selecting different role instructions.
 
-Native preparation checks workspace ownership. Use
+Preparation checks workspace ownership. Use
 `--dangerously-allow-unowned` only when you intentionally share an unowned
 workspace. Agent memory, additional mounts and direct recovery remain available
-through the native `agent` commands; the Factory does not grant itself host
+through the `agent` commands; the Factory does not grant itself host
 privileges.
 
 ## Operator direction and ordinary restart
@@ -247,8 +247,8 @@ local operator and wakes that role only:
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory history backlog
 ```
 
-For an interactive terminal conversation in the same instance, use native
-chat. The approved snapshot selects the coordinator without pane discovery:
+For an interactive terminal conversation in the same instance, use chat.
+The approved snapshot selects the coordinator without pane discovery:
 
 ```sh
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord chat backlog
@@ -270,7 +270,7 @@ Stop affects the selected role runtimes. It retains the approved contract,
 agent identities, role homes, supervisor checkpoints and existing Coord
 messages. It leaves the instance proxy, Coord transport and unrelated agents
 running. Restart uses those same records; completed work is not a new task.
-This is continuity within fresh native state. Old Python state is not imported
+This is continuity within fresh state. Old Python state is not imported
 or converted.
 
 ## Direct diagnosis and recovery
@@ -290,7 +290,7 @@ Use `factory prepare` with the selected workspace arguments to repair declared
 agents and grants. Failed startup retains reached role state and evidence for
 diagnosis; it does not report a running Factory or delete unrelated work.
 Pending human decisions remain visible through the normal operator approval
-commands and [native inspect](native-operator.md). Doctor reports pending
+commands and [inspect](operator-guide.md). Doctor reports pending
 Factory decisions as warnings; they do not prevent readiness or instruct the
 operator to approve them.
 
@@ -339,7 +339,7 @@ after recovery. Stop the roles before changing their staged instructions or work
 
 ## Diagnose an approved or running factory
 
-Use the [native diagnosis and recovery commands](#direct-diagnosis-and-recovery).
+Use the [diagnosis and recovery commands](#direct-diagnosis-and-recovery).
 The approved snapshot and each staged role binding are checked separately.
 A stopped Factory has retained configuration and checkpoints, but is not ready.
 A trusted room brief carries operator-owned live context; it does not approve
@@ -373,7 +373,7 @@ State the identity relationship, not only the identity. State override
 semantics separately for `NEXT` and `PRIORITY`. An override does not bypass an
 unstated filter. Keep no more work in flight than the stated maximum.
 
-## Reconfigure a native Factory
+## Reconfigure a Factory
 
 Stop the Factory before selecting changed role contracts or workspaces. Check
 and approve the changed TOML and role Markdown, then run the same Factory. The
@@ -381,7 +381,7 @@ entry preserves existing role homes, identities, checkpoints and Coord history.
 It does not convert old Python product state or legacy supervisor checkpoints.
 A refused checkpoint remains available for direct inspection and recovery.
 
-To restore an earlier native contract, stop the roles, check and approve that
+To restore an earlier contract, stop the roles, check and approve that
 contract and its exact role Markdown, then run again. Approval selects content;
 it does not cancel outstanding work or grant a different role authority over it.
 Resolve any affected assignments through their existing handoffs or explicit

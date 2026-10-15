@@ -14,7 +14,7 @@ if [ ! -r "$PROXY_ENV_FILE" ]; then
     exit 1
 fi
 if [ ! -x "$LAUNCHER_DIR/safeyolo-coord" ]; then
-    echo "safeyolo-coord-mcp-launcher: missing native executable $LAUNCHER_DIR/safeyolo-coord" >&2
+    echo "safeyolo-coord-mcp-launcher: missing Coord executable $LAUNCHER_DIR/safeyolo-coord" >&2
     exit 1
 fi
 

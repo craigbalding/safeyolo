@@ -2,23 +2,23 @@
 
 The installed `safeyolo` command controls the proxy, agents, policy, operator
 evidence and Coord. It uses your default installation at `$HOME/.safeyolo`.
-For another instance, use the [custom-instance reference](../docs/native-policy.md#other-installation-paths).
+For another instance, use the [custom-instance reference](../docs/installation.md#other-installation-paths).
 The configuration is `config.toml`; policy and agent settings are in
 `policy.toml`. No Python CLI, wheel or generated YAML configuration is loaded.
 
 ## Installation
 
-Use [SafeYolo installation](../docs/native-policy.md#install-and-start) on a
+Use [SafeYolo installation](../docs/installation.md#install-and-start) on a
 supported host. The unpacked bundle and the repository's `install.sh` invoke
 the same installer. Supply a fresh root and either `--bundle UNPACKED_BUNDLE`
 or the prepared build inputs described in the
-[source build instructions](../docs/native-policy.md#build-a-native-bundle).
-Prepare the [guest runtime](../docs/native-policy.md#guest-prerequisites)
+[source build instructions](../docs/installation.md#build-a-bundle).
+Prepare the [guest runtime](../docs/installation.md#guest-prerequisites)
 before starting an agent. There is no migration or Python-package rollback
 operation in this fresh-state product.
 
 From a source checkout on the owning host account, this example consumes an
-unpacked bundle at `$HOME/native-bundle` and prepared guest inputs at
+unpacked bundle at `$HOME/safeyolo-bundle` and prepared guest inputs at
 `$HOME/safeyolo-platform`. Replace those two supplied paths. The example root
 `$HOME/.safeyolo` must have no existing instance configuration. If it is in use,
 preserve it and follow the custom-instance reference. Installation makes
@@ -26,7 +26,7 @@ preserve it and follow the custom-instance reference. Installation makes
 for your normal sudo password to create the command entry.
 
 ```sh
-./install.sh --root "$HOME/.safeyolo" --bundle "$HOME/native-bundle" --platform-assets "$HOME/safeyolo-platform"
+./install.sh --root "$HOME/.safeyolo" --bundle "$HOME/safeyolo-bundle" --platform-assets "$HOME/safeyolo-platform"
 safeyolo start
 safeyolo status
 safeyolo doctor
@@ -41,7 +41,7 @@ error and `logs/proxy.log` before retrying. Version reports source and profile.
 
 Create an agent with an existing owned workspace and a trusted host script.
 Installed scripts are under `ROOT/assets/contrib`. Relative saved paths are
-resolved by the native configuration owner, not by the later shell's directory.
+resolved by the configuration owner, not by the later shell's directory.
 
 ```sh
 safeyolo agent create work --workspace "$HOME/code" --host-script "$HOME/.safeyolo/assets/contrib/codex-host-setup.sh"
@@ -61,9 +61,9 @@ Attach only reconnects to an existing terminal. `agent shell --persistent NAME`
 opens an independent persistent shell. Supported launcher choices and explicit
 supervision are in [agent launchers](../docs/agent-launchers.md).
 
-`agent present NAME` opens the running native desktop through the existing
+`agent present NAME` opens the running desktop through the existing
 operator presentation owner. Set remembered geometry and permitted host port
-in the [desktop settings](../docs/native-settings.md#runtime-settings).
+in the [desktop settings](../docs/settings.md#runtime-settings).
 Guest desktop/browser commands remain described in the
 [desktop skill](src/safeyolo/agent_context/skills/safeyolo/references/desktop.md).
 
@@ -74,7 +74,7 @@ to delete a persistent home or erase forensic evidence.
 
 ## Policy and service gateway
 
-[Native policy commands](../docs/native-policy.md) validate, show and apply
+[Policy commands](../docs/installation.md#check-show-and-apply) validate, show and apply
 host-centred policy. Controls keep their existing network, credential, pattern,
 test-context and circuit semantics. Lists resolve relative to their policy.
 Edit a candidate TOML file, check it, then apply it to the running instance:
@@ -86,32 +86,31 @@ safeyolo policy show
 ```
 
 Show reports loaded effective policy and saved/live differences. Network
-permission does not grant credential permission. [Native credentials and
-services](../docs/native-credentials.md) store local values or host-controlled
+permission does not grant credential permission. [Credentials and
+services](../docs/credentials.md) store local values or host-controlled
 1Password references, then authorize the selected service capability. OAuth
 credentials accept the operator's token and refresh fields; refresh uses the
-same native store. Service authorization, contract binding, credential approval
+same store. Service authorization, contract binding, credential approval
 and risky-route approval remain distinct. See [service discovery](../docs/SERVICE_DISCOVERY.md)
-and [the responsibility map](../docs/native-settings.md#operator-entry-responsibilities).
+and [the responsibility map](../docs/settings.md#operator-entry-responsibilities).
 
 ## Operator evidence and approvals
 
-Use [native operator commands](../docs/native-operator.md) for `inspect`,
+Use [operator commands](../docs/operator-guide.md) for `inspect`,
 `traffic`, `approvals`, `logs`, `diagnose` and `helper`. They use explicit
 instance/agent selection and the existing evidence and decision authorities.
 Logs and diagnosis remain available when the Admin API is down. The retained
 exports are raw, raw_request, raw_response, curl, httpie, har and zhar.
-Commander provides the Mac GUI with the same native owners.
+Commander provides the Mac GUI with the same owners.
 
 ## Coord and factories
 
-[Coord operations](../docs/coord-operations.md) and
-[native communication](../docs/native-coord.md) cover room setup, scripted
-send, chat, canonical history and event observation. The installed native
+[Coord operations](../docs/coord-operations.md) covers room setup, scripted
+send, chat, canonical history and event observation. The installed
 `safeyolo-coord` supplies guest commands, MCP stdio and bounded supervision.
 [Factories](../docs/factories.md) reuse these rooms and role contracts.
 [Mattermost](../docs/coord-mattermost.md) and [Dispatch](../docs/dispatch-generation.md)
-retain their selected native adapter paths.
+retain their selected adapter paths.
 
 ## Demo
 
@@ -124,16 +123,15 @@ the files after stopping. It is independent of Lab and needs no pane setup.
 
 ## Lab
 
-[The native Lab](../docs/nested-linux-lab.md) prepares and observes controlled
+[The Lab](../docs/nested-linux-lab.md) prepares and observes controlled
 experiments in an owned agent. Use `safeyolo lab --help` for workspace,
-objective, existing-agent, status and teardown options. Guest evidence capture
-is native; selected test instruments may use Python outside the product.
+objective, existing-agent, status and teardown options. The Rust guest helper captures evidence; selected test instruments may use Python outside the product.
 
 ## Repository tests
 
 Python `>=3.12,<3.14` is required only for repository tests and black-box
 drivers. `uv sync --frozen --group dev` prepares a non-package test environment;
 it does not publish a `safeyolo` entry point. Retained behavior references
-under `tests/reference` construct protocol/storage fixtures. Native behavior
+under `tests/reference` construct protocol/storage fixtures. Product behavior
 is tested through `proxy/tests`, `tests/proxy_contracts` and the
 [installed suite](../tests/blackbox/README.md).

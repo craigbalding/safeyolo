@@ -452,8 +452,7 @@ impl State {
             || !unique(&self.recent_attention_ids)
         {
             return Err(
-                "invalid native Coord checkpoint; old-product checkpoint conversion is unsupported"
-                    .into(),
+                "invalid Coord checkpoint; old-product checkpoint conversion is unsupported".into(),
             );
         }
         let mut ids = BTreeSet::new();
@@ -594,7 +593,7 @@ fn validate_brief(room: &str, brief: &Value) -> Result<(), Error> {
 }
 pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
     if bytes.len() > MAX_STATE {
-        return Err("native checkpoint exceeds two MiB".into());
+        return Err("Coord checkpoint exceeds two MiB".into());
     }
     let parent = path
         .parent()
@@ -1432,7 +1431,7 @@ pub(crate) fn lock_state(path: &Path) -> Result<fs::File, Error> {
 
 pub fn inspect(path: &Path) -> Result<Value, Error> {
     if !path.is_file() {
-        return Err("native supervisor state does not exist".into());
+        return Err("supervisor state does not exist".into());
     }
     let state = State::load(path)?;
     Ok(

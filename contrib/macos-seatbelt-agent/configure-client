@@ -16,7 +16,7 @@ cli=$(cd -- "$(dirname -- "$cli")" && pwd)/$(basename -- "$cli")
 identity_line=$("$cli" --version)
 case "$identity_line" in
   'safeyolo '*|'safeyolo-coord '*) ;;
-  *) echo 'Selected executable is not the native SafeYolo CLI/Coord runtime' >&2; exit 1;;
+  *) echo 'Selected executable is not the SafeYolo CLI/Coord runtime' >&2; exit 1;;
 esac
 "$cli" ssh-proxy --help >/dev/null
 read -r -p 'Operator-approved Mac host/IP, as seen by the proxy: ' host

@@ -1,6 +1,6 @@
 # Historical Python service discovery
 
-For current native credential and service setup, use [native credential setup](native-credentials.md).
+For current native credential and service setup, use [native credential setup](credentials.md).
 
 This document records the removed Python/mitmproxy service-discovery addon.
 Its addon settings and troubleshooting steps do not configure the current Rust

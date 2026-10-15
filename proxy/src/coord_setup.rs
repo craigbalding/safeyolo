@@ -73,7 +73,7 @@ pub fn stage_runtime(home: &Path, source: &Path) -> Result<(), Error> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(source)?;
     if !input.metadata()?.is_file() {
-        return Err("native Coord artifact must be a regular file".into());
+        return Err("Coord artifact must be a regular file".into());
     }
     let mut header = [0u8; 20];
     input.read_exact(&mut header)?;

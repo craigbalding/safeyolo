@@ -223,7 +223,7 @@ if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
     COMMAND_SUPERVISOR_SCRIPT=/safeyolo/safeyolo-guest
 fi
 if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
-    echo 'FATAL: required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2
+    echo 'FATAL: required guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2
     exit 127
 fi
 

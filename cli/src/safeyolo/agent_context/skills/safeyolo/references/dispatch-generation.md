@@ -82,12 +82,12 @@ in `docs/dispatch-generation.md`. Daily, weekly, and monthly output share one
 content model. Topic updates require a new semantic `state_key`; same-key copy
 and evidence corrections are allowed when the material state is unchanged.
 
-From the repository root, use the installed native `safeyolo` executable:
+From the repository root, use the installed `safeyolo` executable:
 `safeyolo dispatch generate SOURCE --output-root site`, then repeat it with
 `--check` to verify bytes without writing. Replace `SOURCE` with the final public
 JSON manifest. Run `safeyolo dispatch check-site` before the publication PR.
 On a `dispatch/<date>` branch, pass `--publication-base REVISION` with the PR's
-base commit to check the fixed content-path boundary. The native generator
+base commit to check the fixed content-path boundary. The generator
 never invokes completion-note ingestion or renders private nominations.
 
 The generator rejects obvious secrets, credentials, private coord identifiers,

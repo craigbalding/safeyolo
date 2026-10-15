@@ -11,6 +11,12 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
 
 ## Owner priorities
 
+- **Use one product name.** Under #1053, the product is SafeYolo. Use
+  `SafeYolo`, `proxy`, `installer`, `release` and `settings` as appropriate.
+  Do not describe a separate “native” edition. This owner decision takes
+  precedence over the generic instruction to preserve existing terminology.
+  Keep Rust, Swift and native terminology when they explain a real implementation
+  distinction, an operating-system facility or historical evidence.
 - **Write reusable contribution documentation.** Use the contribution's defaults
   and supported customization path. Avoid assuming the owner's particular Mac,
   account history, or personal setup.
@@ -50,3 +56,7 @@ VM boot; keep that distinction when discussing native virtualization workloads.
 Report missing setup automation or transport integration as implementation work.
 Do not hide those gaps by adding warnings, inventing commands, or claiming that
 existing helpers perform checks they do not implement.
+For SafeYolo onboarding, identify the concrete gap and its linked owner under
+#237. Keep the actual prerequisites visible until #1050–#1052 and #239 supply
+the accepted first-agent path and tested commands. Terminology changes alone
+do not establish the two-command or 15-second outcome.

@@ -94,7 +94,7 @@ _check_capability() {
     _find_window_manager >/dev/null || missing+=("window manager (fluxbox or openbox)")
     _find_web_root >/dev/null || missing+=("noVNC web assets (vnc.html)")
     if ! /safeyolo/safeyolo-guest desktop-bridge check >/dev/null 2>&1; then
-        missing+=("native desktop bridge (/safeyolo/safeyolo-guest); restage the installed guest assets")
+        missing+=("desktop bridge (/safeyolo/safeyolo-guest); restage the installed guest assets")
     fi
 
     if [ "${#missing[@]}" -gt 0 ]; then

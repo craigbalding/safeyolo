@@ -26,13 +26,13 @@ collaboration.
 
 ## Prerequisites
 
-Use an already prepared [native instance](native-coord.md). Replace `ROOT`
+Use an already prepared [instance](coord-operations.md). Replace `ROOT`
 with its absolute directory in every command below. Its proxy and Coord must
 be running, and `wake-test-bob` must already have the approved Claude Code
-launcher, authentication and registered native `safeyolo-coord` MCP adapter.
-This runbook does not prepare that harness. The shipped Claude host setup
-still uses inline Python, as recorded in the
-[responsibility map](native-settings.md#operator-entry-responsibilities).
+launcher, authentication and registered `safeyolo-coord` MCP adapter.
+This runbook does not prepare that harness. The shipped Claude host setup stages the matching Coord executable and uses
+its `claude-state` operation. See the
+[responsibility map](settings.md#operator-entry-responsibilities).
 
 Create the fixture room and grant the configured agent before starting it:
 

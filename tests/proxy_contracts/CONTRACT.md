@@ -1,6 +1,6 @@
-# Native proxy contracts
+# Rust proxy contracts
 
-`tests/proxy_contracts/` exercises the native proxy through owned processes,
+`tests/proxy_contracts/` exercises the Rust proxy through owned processes,
 per-agent Unix domain sockets (UDS), authenticated application programming
 interfaces (APIs) and local origins. Each fixture owns its configuration,
 policy, state, logs, certificate authority (CA), credentials and listeners.
@@ -11,8 +11,7 @@ host and guest compositions.
 ## Run a focused selection
 
 On Linux or macOS, start in a clean checkout of the candidate. Install the
-locked test dependencies with `uv sync --frozen --group dev`. Build the native
-binary with the repository Cargo wrapper. The factory uses one build job and
+locked test dependencies with `uv sync --frozen --group dev`. Build the binary with the repository Cargo wrapper. The factory uses one build job and
 keeps a 20 GiB filesystem reserve.
 
 ```sh
@@ -21,15 +20,15 @@ uv run --frozen pytest -q tests/proxy_contracts/test_http_contract.py \
   --proxy-backend rust
 ```
 
-The selected fixtures start and stop their own native processes. A missing or
+The selected fixtures start and stop their own processes. A missing or
 unusable selected binary fails preparation; it does not select another runtime.
 `SAFEYOLO_RUST_PROXY=/absolute/path/to/safeyolo-proxy` selects another built
 binary. Preserve the proxy and CA environment when launching the test tools.
-The default backend is native Rust; `--proxy-backend rust` is the sole explicit
+The default backend is Rust; `--proxy-backend rust` is the sole explicit
 selection. Historical Python and combined-backend selectors are retired.
 
 The existing shell entry point records the selected binary's identity and a
-JUnit result. From the repository root, supply the native binary and a focused
+JUnit result. From the repository root, supply the binary and a focused
 pytest expression after `--`:
 
 ```sh
@@ -50,7 +49,7 @@ pull-request gate. Normal pull requests run quick checks and relevant platform
 checks for platform changes. The [existing assurance map](../../docs/assurance-map.toml)
 identifies current production and test owners.
 
-The real native fixtures cover these distinct boundaries:
+The real fixtures cover these distinct boundaries:
 
 - Trusted listener attribution, owner-scoped flow/query/detail, test context,
   policy reload, operator approvals and revocation, and cross-agent denial.
@@ -67,7 +66,7 @@ The real native fixtures cover these distinct boundaries:
 - Server-Sent Events (SSE), WebSocket and opaque CONNECT admission, cancellation,
   exact wire bytes, compression, repeated bounded mixed-traffic batches,
   authenticated operator controls and same-state restart.
-- Native circuit completion, bypass, reload, persistence and recovery; readiness,
+- Circuit completion, bypass, reload, persistence and recovery; readiness,
   actual process identity, socket ownership, cleanup and bounded external process
   observations. Linux `/proc` measurements remain unavailable on other platforms;
   an unavailable measurement is not evidence of bounded memory.
@@ -82,12 +81,12 @@ The completed migration's [audited contract](https://github.com/craigbalding/saf
 and [baseline records](https://github.com/craigbalding/safeyolo/blob/e91f69ef85df55341db530bab421f67c4afb83f5/tests/proxy_migration/baseline.json)
 preserve the original commands, source identities, measurements, normalization
 rules, temporary adapters, full-production Python results and explicit gaps.
-Those instructions describe their named historical revisions. The native harness
+Those instructions describe their named historical revisions. The harness
 no longer launches that comparator or supplies capture/compare executors.
 Do not restore the retired proxy to run a current feature check.
 
 [Lens's replacement receipt for #320](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164)
-records the independently observed native provider/header, approval-body, TLS
+records the independently observed provider/header, approval-body, TLS
 chain and CA-import replacements and Linux installed continuity. Matching
 historical observations were pruned only after that verification. Guest access,
 guest lifecycle, actual preparation reuse/state separation, current macOS package

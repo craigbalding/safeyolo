@@ -58,7 +58,7 @@ silent passthrough. Credential requests that require approval return HTTP 428;
 explicit denials return HTTP 403. The Rust proxy loads and validates policy
 before it binds agent listeners or publishes readiness.
 The Agent API virtual hostname is also contained independently of its handler.
-The native request path dispatches that hostname to the local handler before
+The request path dispatches that hostname to the local handler before
 network and credential checks. If the handler is disabled or returns an error,
 the proxy returns a local diagnostic 5xx. The bearer token and query stay local.
 A separate final transport guard refuses the reserved destination
@@ -137,7 +137,7 @@ As a safety net, the credential guard detects credentials in request headers via
 | **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
 | **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
-| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. The native proxy has no options to enable these scans. |
+| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. The proxy has no options to enable these scans. |
 
 ## Reporting Security Issues
 

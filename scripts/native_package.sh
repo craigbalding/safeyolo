@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared checks for the native bundle producer and the ordinary installer.
 
-package_error() { echo "Native package: $*" >&2; return 1; }
+package_error() { echo "SafeYolo package: $*" >&2; return 1; }
 
 host_platform() {
   case "$(uname -s)-$(uname -m)" in
@@ -128,7 +128,7 @@ verify_native_package() {
     [[ $profile != debug ]] || helper_profile=development
     "$package/bin/safeyolo-vm" verify --profile "$helper_profile" --source "$source" || return
   fi
-  echo "Verified native package: $source $platform $profile"
+  echo "Verified SafeYolo package: $source $platform $profile"
 }
 
 # Both acquired and explicitly supplied inputs use the maintained backend layout.

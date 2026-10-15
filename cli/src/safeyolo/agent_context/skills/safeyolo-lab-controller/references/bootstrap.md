@@ -4,7 +4,7 @@ Read this reference when the operator starts or reconnects to a SafeYolo lab.
 
 ## Operator workflow
 
-On the native instance host, run `safeyolo lab`. The entry asks for the
+On the instance host, run `safeyolo lab`. The entry asks for the
 objective before preparing its guest and checking its own Codex authentication.
 The operator does not enter a guest shell or discover a controller pane first.
 

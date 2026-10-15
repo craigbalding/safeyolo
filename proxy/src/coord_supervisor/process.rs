@@ -238,9 +238,9 @@ async fn cleanup(owned: &mut Owned, grace: u64) -> Result<(), Error> {
 #[cfg(target_os = "linux")]
 fn require_pid_handles() -> Result<(), Error> {
     let pid = std::process::id() as i32;
-    let expected = token(pid).ok_or("native supervisor cannot identify itself")?;
+    let expected = token(pid).ok_or("supervisor cannot identify itself")?;
     if pid_handle(pid, &expected).is_none() {
-        return Err("native supervisor requires Linux PID handles".into());
+        return Err("supervisor requires Linux PID handles".into());
     }
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
         return Err(std::io::Error::last_os_error().into());

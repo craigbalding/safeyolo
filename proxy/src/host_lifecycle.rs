@@ -174,7 +174,7 @@ pub(crate) fn recover_guest_probe(
     let home = directory.join("home");
     let share = directory.join("config-share");
     if !home.is_dir() || !share.join("safeyolo-guest").is_file() {
-        return Err("required native guest helper/home is missing; stage the installed guest assets and boot this agent first".into());
+        return Err("required guest helper/home is missing; stage the installed guest assets and boot this agent first".into());
     }
     let _setup = SetupLock::acquire_in(&directory, Some(deadline))?;
     let _launch = LaunchLock::acquire_in(&directory, Some(deadline))?;
@@ -1079,8 +1079,7 @@ async fn checked_supervisor_state(
     .await?;
     if !output.status.success() {
         return Err(
-            "native guest supervisor check failed; run agent diagnostics to inspect command state"
-                .into(),
+            "guest supervisor check failed; run agent diagnostics to inspect command state".into(),
         );
     }
     let supervisor: Value = serde_json::from_slice(&output.stdout)?;
@@ -1670,7 +1669,7 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         return Ok(());
     }
     if !path.is_absolute() {
-        return Err("native proxy config path must be absolute".into());
+        return Err("proxy config path must be absolute".into());
     }
     let _same_process_lock = LISTENER_LOCK.lock().await;
     let lock_path = crate::host_platform::config_dir().join("data/native-listeners.lock");
@@ -1691,13 +1690,13 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
     let entries = config
         .get("listeners")
         .and_then(Value::as_array)
-        .ok_or("native listeners must be an array")?;
+        .ok_or("agent listeners must be an array")?;
     let mut retained = Vec::new();
     for entry in entries {
         let socket = entry
             .get("socket_path")
             .and_then(Value::as_str)
-            .ok_or("native listeners need socket_path strings")?;
+            .ok_or("agent listeners need socket_path strings")?;
         let path = PathBuf::from(socket);
         let path = if path.is_absolute() {
             path
@@ -1747,7 +1746,7 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
     config["listeners"] = Value::Array(retained);
     config["reload_id"] = requested.clone().into();
     let mode = std::fs::metadata(&path)?.permissions().mode();
-    let parent = path.parent().ok_or("native config has no parent")?;
+    let parent = path.parent().ok_or("configuration has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     if native {
         let mut document: toml_edit::DocumentMut = std::str::from_utf8(&source)?.parse()?;
@@ -1795,7 +1794,7 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
     let readiness = config
         .get("readiness_file")
         .and_then(Value::as_str)
-        .ok_or("native readiness file is missing")?;
+        .ok_or("readiness file is missing")?;
     let readiness = PathBuf::from(readiness);
     let readiness = if readiness.is_absolute() {
         readiness
@@ -1812,7 +1811,7 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    Err("native listener update was not acknowledged".into())
+    Err("listener update was not acknowledged".into())
 }
 
 async fn invoke_launcher(agent: &Agent, record: &Value) -> Result<(), Error> {

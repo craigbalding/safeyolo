@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_NAME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
-: "${SAFEYOLO_AGENT_HOME:?run via native agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
+: "${SAFEYOLO_AGENT_NAME:?run via agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
+: "${SAFEYOLO_AGENT_HOME:?run via agent create/configure --host-script (see HOST_SCRIPT_GUIDE.md)}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 mkdir -p "$AGENT_HOME"

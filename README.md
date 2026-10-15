@@ -21,8 +21,8 @@ choose. Works with Claude Code, OpenAI Codex, Pi and other coding agents.
   scoped exports and capture/retention limits. Commander provides the Mac GUI.
 - Controlled labs, canonical Coord messaging and supervised factories.
 
-SafeYolo is pre-v1. The native product uses Rust, with a signed Swift VM helper
-on macOS. Native production downloads are available in the release linked below;
+SafeYolo is pre-v1. It uses Rust and a signed Swift VM helper on macOS.
+Production downloads are available in the release linked below;
 published Python CLI packages describe the earlier product. Python is used by
 repository tests and black-box instruments. Automatic and later release
 publication remain stopped.
@@ -33,7 +33,7 @@ publication remain stopped.
 
 Use your ordinary account on Ubuntu 24.04 or an Apple Silicon Mac with macOS
 26.0 or later. Download the production archive for your host from the published
-[native release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
+[release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 
 | Host | Production download |
 | --- | --- |
@@ -48,7 +48,7 @@ Ubuntu setup below.
 
 Use a fresh `$HOME/.safeyolo`, the default installation directory. Preserve any
 existing installation; this path does not convert earlier state. Other roots
-are an [optional installation path](docs/native-policy.md#other-installation-paths).
+are an [optional installation path](docs/installation.md#other-installation-paths).
 The installer creates configuration, trust and private tokens, checks the bundle
 internally and downloads the compatible public guest. It may ask for sudo to
 create the command entry or preserve Linux guest ownership. Instance files
@@ -69,8 +69,8 @@ cat /etc/subgid
 Each row is `account:first-ID:count`; its last ID is `first-ID + count - 1`.
 Your account's name or numeric user ID from `id` needs a range covering
 100000–165535 in both files, for example `your-login:100000:65536`.
-If another account owns any part of that range, stop: this native
-release cannot select a different range. Use a host where the range is available;
+If another account owns any part of that range, stop: this release cannot
+select a different range. Use a host where the range is available;
 do not overlap another account's allocation. If your account already has a
 covering range, keep it. Only when a file lacks your range and the range is free,
 run its corresponding command:
@@ -188,7 +188,7 @@ safeyolo agent stop work
 ## Everyday commands
 
 These commands use your default installation. For another instance, use the
-[custom-instance reference](docs/native-policy.md#other-installation-paths).
+[custom-instance reference](docs/installation.md#other-installation-paths).
 
 | Task | Command |
 | --- | --- |
@@ -229,7 +229,7 @@ already compromised host or replace service authentication. Host scripts that
 intentionally copy authentication into an agent have a different boundary from
 host-vault service credentials. See [the security model](SECURITY.md).
 
-- [Configuration](docs/CONFIGURATION.md) and [native settings](docs/native-settings.md)
+- [Configuration](docs/CONFIGURATION.md) and [settings](docs/settings.md#runtime-settings)
 - [Proxy architecture](docs/DEVELOPERS.md#architecture-overview) and [platform runtimes](docs/ARCHITECTURE.md#sandbox-runtime-and-networking)
 - [Network routing and identity](docs/networking-vsock-uds.md)
 - [Historical Python addons](docs/ADDONS.md)

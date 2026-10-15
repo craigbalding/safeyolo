@@ -23,7 +23,7 @@ fn directory(root: &Path) -> Result<PathBuf, Error> {
     let config = crate::native_config::read(&config_path)?;
     Ok(config
         .data_dir
-        .ok_or("native data directory is missing")?
+        .ok_or("data directory is missing")?
         .join("coord"))
 }
 fn now() -> i64 {
@@ -51,9 +51,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
             |row| row.get(0),
         )?;
         if tables != 0 {
-            return Err(
-                "native Coord requires fresh state; old-store conversion is unsupported".into(),
-            );
+            return Err("Coord requires fresh state; old-store conversion is unsupported".into());
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
@@ -64,7 +62,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     }
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
-        return Err("Coord identity differs from this native instance; preserve the store and select its owning root".into());
+        return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
     }
     transaction.commit()?;
     fs::set_permissions(data.join("v0.db"), fs::Permissions::from_mode(0o600))?;
@@ -586,9 +584,9 @@ pub fn grant(
         .native_config_path
         .as_ref()
         .and_then(|p| p.parent())
-        .ok_or("native root is missing")?;
+        .ok_or("instance root is missing")?;
     bootstrap(root)?;
-    let policy = fs::read_to_string(config.policy_file.ok_or("native policy path is missing")?)?
+    let policy = fs::read_to_string(config.policy_file.ok_or("policy path is missing")?)?
         .parse::<toml_edit::DocumentMut>()?;
     let id = policy
         .get("agents")
@@ -652,7 +650,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     {
         return crate::coord_operator::run(config, arguments).await;
     }
-    let root = config.parent().ok_or("native root is missing")?;
+    let root = config.parent().ok_or("instance root is missing")?;
     let result = match arguments {
         [kind, options @ ..]
             if kind == "brief" && (options.is_empty() || options == ["--help"]) =>
@@ -719,7 +717,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         [kind, room, agent] if kind == "revoke" => grant(config, room, agent, &[], true)?,
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nNative instance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
@@ -740,7 +738,7 @@ pub(crate) async fn ensure_factory_rooms(
     room: &str,
     agents: &[String],
 ) -> Result<(), Error> {
-    let root = config.parent().ok_or("native root is missing")?;
+    let root = config.parent().ok_or("instance root is missing")?;
     let mut rooms = vec![room.to_owned()];
     rooms.extend(agents.iter().map(|agent| format!("{agent}-agent")));
     for name in rooms {

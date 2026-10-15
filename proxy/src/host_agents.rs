@@ -95,7 +95,7 @@ fn policy_path() -> Result<PathBuf, Error> {
     if path.is_file() {
         return crate::native_config::read(&path)?
             .policy_file
-            .ok_or_else(|| "native policy_file is missing".into());
+            .ok_or_else(|| "policy_file is missing".into());
     }
     Ok(crate::host_platform::config_dir().join("policy.toml"))
 }

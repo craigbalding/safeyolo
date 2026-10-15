@@ -6,13 +6,13 @@ descriptors and annotations are the sole guest release catalogue. Public guest
 artifacts use `ghcr.io/craigbalding/safeyolo-guest` in GitHub Container Registry
 (GHCR).
 
-This document defines the source contract for publication, native acquisition
-and explicit guest upgrades. The [native Rust validator](../proxy/src/guest_oci.rs)
+This document defines the source contract for publication, guest acquisition
+and explicit guest upgrades. The [Rust validator](../proxy/src/guest_oci.rs)
 and its [focused tests](../proxy/src/guest_oci/tests.rs) implement the shared
 rules. The default-guest archive producer and ORAS publisher are described
-below. [Native acquisition](../proxy/src/guest_acquisition.rs) and the
+below. [Guest acquisition](../proxy/src/guest_acquisition.rs) and the
 [existing installer](../scripts/install_native.sh) obtain and install the
-selected guest. The native `guest upgrade` and `guest rollback` commands change
+selected guest. The `guest upgrade` and `guest rollback` commands change
 the default guest selection for existing instances under issue #238.
 Issue #239 owns installed-platform and independent-update proof. The source
 contract does not establish those outcomes or authorize public publication.
@@ -38,7 +38,7 @@ The publisher owns serialization of promotion, conflicting-version refusal
 and retention of supported releases and rollback content. OCI tagging alone
 does not enforce immutability or compare-and-swap promotion. These publication
 controls are implemented by the #211 publisher. The initial guest release,
-`guest-2026-10-12.1`, is public. Anonymous native acquisition and installation
+`guest-2026-10-12.1`, is public. Anonymous guest acquisition and installation
 have been independently assessed for all three consumer platforms under
 [#239](https://github.com/craigbalding/safeyolo/issues/239).
 These results do not complete that issue's installed and independent-update
@@ -140,7 +140,7 @@ platform config and typed archive, then `manifest index create` from exact
 child digests. Set the required index annotations and artifact type explicitly.
 Do not combine `--config` with the mutually exclusive `--artifact-platform`.
 
-Native acquisition uses pinned `oci-client` 0.18.0 with the existing ring TLS
+Guest acquisition uses pinned `oci-client` 0.18.0 with the existing ring TLS
 provider, system/configured certificate authority (CA) roots and proxy route.
 Client construction uses fallible `Client::try_from(ClientConfig)`.
 `pull_manifest_raw` resolves discovery once; subsequent references pin the
@@ -173,7 +173,7 @@ Atomic activation and rollback must preserve policy, credentials and agent state
 Initial installed inputs remain under `share/`. An upgraded selection's
 `installed_assets` points to its separate backend files under
 `share/guest-versions/sha256/<archive-digest>/`. `previous` retains the prior
-selection in the same JSON file. Each native boot reads one complete selection
+selection in the same JSON file. Each guest boot reads one complete selection
 and stages that selection's backend inputs. Existing per-agent rootfs and cache
 overrides keep their precedence. Activation does not replace the initial files
 or inputs used by an earlier sandbox incarnation.
@@ -235,21 +235,21 @@ commands with its configured name.
 For another instance, put `--root /absolute/instance/path` before `guest`.
 For a specific release, pass `--index sha256:DIGEST` to `guest upgrade`, replacing
 `sha256:DIGEST` with the complete OCI index digest from that guest's publication.
-The native consumer verifies that index and pins its selected child and blob;
+The Rust consumer verifies that index and pins its selected child and blob;
 it does not read the moving compatibility tag. Upgrade reuses the persistent
 store chosen during installation. A registry, compatibility, verification or staging failure preserves
 the selected guest. An interrupted command can be repeated; activation replaces
 the complete current/previous selection atomically.
 
 Custom guest profiles and host/component-pair upgrades are outside these
-commands. Local source controls cover selection, native boot staging, failure
+commands. Local source controls cover selection, guest boot staging, failure
 recovery and state preservation. Public GHCR and clean booted-platform proof
 remain under #239.
 
 ## Prepare and publish a default guest release
 
 The [manual repository workflow](../.github/workflows/guest-oci.yml) prepares
-releases without registry writes by default. The authorized one-time native
+releases without registry writes by default. The authorized one-time
 host release (H) and initial guest release (G1) have been published.
 The workflow's explicit `publish_initial_g1` mode supports only that original
 G1 and identical recovery retries. Automatic and later publication remain held
@@ -359,7 +359,7 @@ manifests or blobs. It leaves other compatibility generations unchanged.
 
 After the first authorized publication, the package owner must make the GHCR
 package public in its settings and verify all three targets anonymously with
-an empty ORAS registry configuration. Ordinary native consumers require no
+an empty ORAS registry configuration. Ordinary Rust consumers require no
 personal token or registry account. See GitHub's
 [package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
 The retained run reported compressed default archives of 229,345,953 bytes for

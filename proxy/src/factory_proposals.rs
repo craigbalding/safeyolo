@@ -437,8 +437,7 @@ impl Ledger {
                 let document: Document = serde_json::from_value(value)?;
                 if document.version != LEDGER_VERSION {
                     return Err(
-                        "unsupported native proposal ledger version; no historical conversion"
-                            .into(),
+                        "unsupported proposal ledger version; no historical conversion".into(),
                     );
                 }
                 for (key, item) in &document.proposals {

@@ -253,7 +253,7 @@ nodes:
           sha256: 1c2703b8685a4a312f07d8b3271b0a9ecd9ca42fcaabe560d95fe9f45ba90231
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
-      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/native-policy.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && runsc --version && safeyolo doctor"
       run:
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"

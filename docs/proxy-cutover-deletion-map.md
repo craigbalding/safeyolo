@@ -9,8 +9,8 @@ states now include the subsequent production Python retirement under
 retained at B1 identify that earlier state explicitly. #620 and #640 are
 closed and integrated; their issue comments retain exact release acceptance.
 Their historical rollback and platform gates are not new requirements for
-the fresh native product. Remaining product responsibilities and final proof
-belong to the existing [native responsibility map](native-settings.md)
+SafeYolo. Remaining product responsibilities and final proof
+belong to the existing [responsibility map](settings.md)
 and #815/#822, respectively. This ledger does not accept those outcomes.
 
 ## Responsibility groups
