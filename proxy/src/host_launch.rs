@@ -135,12 +135,22 @@ fn select(
     let current = agents.iter().find(|agent| agent.name == name);
     if let Some(agent) = current {
         host_agents::by_id(&agents, &agent.id)?;
-        if !matches(agent, workspace, script)
-            || options
-                .launcher
-                .as_ref()
-                .is_some_and(|launcher| agent.launcher.as_ref() != Some(launcher))
-        {
+        // Compare the effective existing launcher. An omitted agent setting
+        // can already resolve to the explicitly requested built-in or host
+        // default; that case needs no configuration change.
+        let launcher_matches = if let Some(requested) = options.launcher.as_deref() {
+            let selected = host_lifecycle::selected_launcher(agent)?;
+            match selected["kind"].as_str() {
+                Some("script") => selected["script"].as_str() == Some(requested),
+                Some("manager") => requested
+                    .strip_prefix("manager:")
+                    .is_some_and(|path| selected["script"].as_str() == Some(path)),
+                kind => kind == Some(requested),
+            }
+        } else {
+            true
+        };
+        if !matches(agent, workspace, script) || !launcher_matches {
             return Err(format!("agent {name} has a different workspace, harness or launcher; its configuration is unchanged. Choose another --name or use its configured workspace").into());
         }
     }
@@ -442,6 +452,24 @@ mod tests {
                 name: Some("chosen".into()),
                 ..Default::default()
             };
+            let effective_default = Options {
+                name: Some("chosen".into()),
+                launcher: Some("tmux-window".into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                select(&effective_default, &folder, &script)
+                    .unwrap()
+                    .1
+                    .unwrap()
+                    .id,
+                original.id
+            );
+            let different = Options {
+                launcher: Some("tmux-pane".into()),
+                ..effective_default
+            };
+            assert!(select(&different, &folder, &script).is_err());
             assert!(select(&explicit, temp.path(), &script).is_err());
             assert_eq!(std::fs::read(&policy).unwrap(), saved);
             document["agents"]["chosen"]["folder"] =

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 import tomllib
@@ -96,7 +97,8 @@ headers=["authorization"]
         assert origin.accepts == 0 and not instance.show()["effective"]["hosts"].get("127.0.0.1")
 
 
-def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path):
+@pytest.mark.parametrize("choice", ["decline", "interrupt"])
+def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice):
     artifacts, _, _ = native_inputs()
     binary = artifacts / "safeyolo"
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
@@ -115,9 +117,13 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path):
         output = until(b"Run this setup and share this workspace?")
         assert b"guest can read and write" in output
         assert str(workspace).encode() in output
-        os.write(master, b"n\n")
-        until(b"Setup declined")
-        assert process.wait(timeout=5) == 0
+        if choice == "decline":
+            os.write(master, b"n\n")
+            until(b"Setup declined")
+            assert process.wait(timeout=5) == 0
+        else:
+            process.send_signal(signal.SIGINT)
+            assert process.wait(timeout=5) in (-signal.SIGINT, 130)
     assert (root / "policy.toml").read_bytes() == policy
     assert not (root / "agents").exists()
     assert not (root / "data/proxy-process.json").exists()
@@ -143,7 +149,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
             policy_before_setup = instance.policy.read_bytes()
             receipt.rename(missing)
             try:
-                with terminal(instance, ["agent", "launch", str(workspace), "--name", "first"]) as (process, master, until):
+                with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", "--harness", "claude"]) as (process, master, until):
                     until(b"Run this setup and share this workspace?")
                     os.write(master, b"y\n")
                     until(b"Copy this selected host authentication and settings?")
@@ -168,7 +174,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
             command_bytes = command.read_bytes()
             # The actual default selection finds the intended named agent.
             # It neither reapplies setup nor creates a second identity.
-            with terminal(instance, ["agent", "launch", str(workspace)]) as (process, _, until):
+            with terminal(instance, ["agent", "launch", str(workspace), "--launcher", "tmux-window"]) as (process, _, until):
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Reusing agent first" in output
                 assert b"Preparing the shipped harness setup" not in output
@@ -192,6 +198,8 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
             assert instance.process.poll() is None
             target = f"http://127.0.0.1:{origin.server_address[1]}/unrelated-agent"
             assert request(instance.paths["alice"], target)[0] == 200
+            launcher_conflict = instance.cli("agent", "launch", str(workspace), "--name", "first", "--launcher", "tmux-pane")
+            assert launcher_conflict.returncode != 0 and "different workspace, harness or launcher" in launcher_conflict.stderr
             other = tmp_path / "other-workspace"
             other.mkdir()
             conflict = instance.cli("agent", "launch", str(other), "--name", "first")
