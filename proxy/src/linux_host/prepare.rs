@@ -375,6 +375,15 @@ fn permissions(value: &str) -> u32 {
     })
 }
 
+fn permission_text(bits: u32) -> String {
+    format!(
+        "{}{}{}",
+        if bits & 4 != 0 { 'r' } else { '-' },
+        if bits & 2 != 0 { 'w' } else { '-' },
+        if bits & 1 != 0 { 'x' } else { '-' }
+    )
+}
+
 fn read_acl(path: &Path) -> Result<String, Error> {
     let output = Command::new("getfacl").args(["-ncp"]).arg(path).output()?;
     if !output.status.success() {
@@ -417,6 +426,38 @@ fn acl_allows(metadata: &fs::Metadata, acl: &str, uid: u32, groups: &[u32], need
     !matched_group && bits & needed == needed
 }
 
+fn acl_grants(acl: &str, grants: &[(String, u32)]) -> String {
+    let mask = acl
+        .lines()
+        .find_map(|line| line.strip_prefix("mask::"))
+        .map(permissions)
+        .unwrap_or(7);
+    let new_mask = grants.iter().fold(mask, |mask, (_, rights)| mask | rights);
+    let mut entries: Vec<_> = grants
+        .iter()
+        .map(|(prefix, rights)| format!("{prefix}{}", permission_text(*rights)))
+        .collect();
+    entries.push(format!("m::{}", permission_text(new_mask)));
+    // A mask increase must not expose another user's or group's masked rights.
+    for line in acl
+        .lines()
+        .filter(|line| !grants.iter().any(|(prefix, _)| line.starts_with(prefix)))
+    {
+        let mut fields = line.split(':');
+        let (Some(kind), Some(id), Some(value)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if kind == "group" || kind == "user" && !id.is_empty() {
+            let raw = permissions(value);
+            if raw & new_mask != raw & mask {
+                entries.push(format!("{kind}:{id}:{}", permission_text(raw & mask)));
+            }
+        }
+    }
+    entries.join(",")
+}
+
 fn access_change(
     path: &Path,
     uid: u32,
@@ -429,14 +470,6 @@ fn access_change(
         Err(error) => return Err(error.into()),
     };
     let bits = metadata.permissions().mode();
-    let permission_text = |bits: u32| {
-        format!(
-            "{}{}{}",
-            if bits & 4 != 0 { 'r' } else { '-' },
-            if bits & 2 != 0 { 'w' } else { '-' },
-            if bits & 1 != 0 { 'x' } else { '-' }
-        )
-    };
     if metadata.uid() == uid {
         let owner = (bits >> 6) & 7;
         return Ok((owner & needed != needed).then(|| {
@@ -451,11 +484,6 @@ fn access_change(
     // ACL even when the mode permits other users to traverse the directory.
     let text = read_acl(path)?;
     let prefix = format!("user:{uid}:");
-    let mask = text
-        .lines()
-        .find_map(|line| line.strip_prefix("mask::"))
-        .map(permissions)
-        .unwrap_or(7);
     if acl_allows(&metadata, &text, uid, groups, needed) {
         return Ok(None);
     }
@@ -465,36 +493,16 @@ fn access_change(
         .sum::<u32>();
     // other:: permissions were not subject to the old mask. Preserve them
     // when moving this UID into the masked named-user class.
-    let new_mask = mask | old | needed;
-    let mut entries = vec![
-        format!("u:{uid}:{}", permission_text(old | needed)),
-        format!("m::{}", permission_text(new_mask)),
-    ];
-    // Widen only the selected user's effective access. A mask increase must
-    // not expose previously masked rights of another user or group.
-    for line in text.lines().filter(|line| !line.starts_with(&prefix)) {
-        let mut fields = line.split(':');
-        let (Some(kind), Some(id), Some(value)) = (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if kind == "group" || kind == "user" && !id.is_empty() {
-            let raw = permissions(value);
-            if raw & new_mask != raw & mask {
-                entries.push(format!("{kind}:{id}:{}", permission_text(raw & mask)));
-            }
-        }
-    }
     Ok(Some((
         path.to_owned(),
-        entries.join(","),
+        acl_grants(&text, &[(prefix, old | needed)]),
         metadata.uid() != unsafe { libc::getuid() },
     )))
 }
 
 fn grant_access(
     change: (PathBuf, String, bool),
-    uid: u32,
+    identity: &str,
     applied: &mut Vec<String>,
 ) -> Result<(), Error> {
     let (path, acl, needs_sudo) = change;
@@ -506,7 +514,7 @@ fn grant_access(
     execute(
         command.args(["--no-mask", "-m", &acl]).arg(&path),
         &format!(
-            "allow UID {uid} required access to {} while preserving other ACL permissions",
+            "allow {identity} required access to {} while preserving other ACL permissions",
             path.display()
         ),
         applied,
@@ -519,14 +527,82 @@ fn runtime_access(
     applied: &mut Vec<String>,
 ) -> Result<(), Error> {
     for change in runtime_access_changes(runtime, mapping)? {
-        grant_access(change, mapping.uid_base, applied)?;
+        grant_access(change, &format!("UID {}", mapping.uid_base), applied)?;
     }
     Ok(())
 }
 
+fn kvm_access_change(
+    path: &Path,
+    mapping: Mapping,
+) -> Result<Option<(PathBuf, String, bool)>, Error> {
+    let metadata = fs::metadata(path)?;
+    if metadata.uid() == mapping.uid_base {
+        return access_change(path, mapping.uid_base, &[mapping.gid_base], 6);
+    }
+    let acl = read_acl(path)?;
+    let user = format!("user:{}:", mapping.uid_base);
+    // Named-user device ACLs can be reset independently of group access.
+    // Use the existing mapped root group, without changing namespace mappings.
+    let without_user = acl
+        .lines()
+        .filter(|line| !line.starts_with(&user))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut grants = Vec::new();
+    let mask = acl
+        .lines()
+        .find_map(|line| line.strip_prefix("mask::"))
+        .map(permissions)
+        .unwrap_or(7);
+    if !acl_allows(
+        &metadata,
+        &without_user,
+        mapping.uid_base,
+        &[mapping.gid_base],
+        6,
+    ) {
+        let group = if metadata.gid() == mapping.gid_base {
+            "group::".to_owned()
+        } else {
+            format!("group:{}:", mapping.gid_base)
+        };
+        let old = acl
+            .lines()
+            .find_map(|line| line.strip_prefix(&group))
+            .map(permissions)
+            .unwrap_or(0)
+            & mask;
+        grants.push((group, old | 6));
+    }
+    if let Some(rights) = acl
+        .lines()
+        .find_map(|line| line.strip_prefix(&user))
+        .map(permissions)
+        && rights & mask & 6 != 6
+    {
+        // A named user denial takes precedence over the group grant.
+        grants.push((user, (rights & mask) | 6));
+    }
+    Ok((!grants.is_empty()).then(|| {
+        (
+            path.to_owned(),
+            acl_grants(&acl, &grants),
+            metadata.uid() != unsafe { libc::getuid() },
+        )
+    }))
+}
+
 fn kvm_access(path: &Path, mapping: Mapping, applied: &mut Vec<String>) -> Result<(), Error> {
-    if let Some(change) = access_change(path, mapping.uid_base, &[mapping.gid_base], 6)? {
-        grant_access(change, mapping.uid_base, applied)?;
+    if let Some(change) = kvm_access_change(path, mapping)? {
+        grant_access(
+            change,
+            &format!(
+                "mapped root GID {} (UID {})",
+                mapping.gid_base, mapping.uid_base
+            ),
+            applied,
+        )?;
     }
     check_kvm_access(path, mapping)
 }
@@ -767,9 +843,13 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     if kvm
         && (command_path("getfacl").is_none()
             || planned_mapping
-                .is_none_or(|mapping| check_kvm_access(Path::new("/dev/kvm"), mapping).is_err()))
+                .map(|mapping| kvm_access_change(Path::new("/dev/kvm"), mapping))
+                .transpose()?
+                .flatten()
+                .is_some()
+            || planned_mapping.is_none())
     {
-        changes.push("allow only the selected sandbox-root UID to read and write /dev/kvm for the selected KVM backend".into());
+        changes.push("allow the selected sandbox-root GID to read and write /dev/kvm; repair a selected root UID denial if required, while preserving other ACL permissions".into());
     }
     if !changes.is_empty() {
         eprintln!(
@@ -983,8 +1063,9 @@ mod tests {
         assert_eq!(applied.len(), 1);
         check_kvm_access(file.path(), mapping).unwrap();
         let acl = read_acl(file.path()).unwrap();
-        assert!(acl.contains("user:100000:rw-"), "{acl}");
+        assert!(acl.contains("group:300000:rw-"), "{acl}");
         assert!(acl.contains("user::---") && acl.contains("other::---"));
+        assert!(!acl.contains("user:100000:"), "{acl}");
         assert!(!acl.contains(&format!("user:{}:", mapping.host_uid)));
         if mapping.host_uid != 0 {
             let denied = fs::OpenOptions::new()
@@ -999,6 +1080,48 @@ mod tests {
         kvm_access(file.path(), mapping, &mut applied).unwrap();
         assert!(applied.is_empty());
         assert_eq!(read_acl(file.path()).unwrap(), acl);
+
+        // Repair an earlier user-only grant even while it currently permits
+        // launch. A later named-user reset must leave mapped group access.
+        assert!(
+            Command::new("setfacl")
+                .args(["--set", "u::---,u:100000:rw-,g::---,m::rw-,o::---"])
+                .arg(file.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        kvm_access(file.path(), mapping, &mut applied).unwrap();
+        assert!(read_acl(file.path()).unwrap().contains("group:300000:rw-"));
+        assert!(
+            Command::new("setfacl")
+                .args(["-x", "u:100000"])
+                .arg(file.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        check_kvm_access(file.path(), mapping).unwrap();
+        applied.clear();
+        kvm_access(file.path(), mapping, &mut applied).unwrap();
+        assert!(applied.is_empty());
+
+        // Increasing the mask must not expose another principal's masked
+        // rights. A selected named-user denial must still be repaired.
+        assert!(Command::new("setfacl").args(["--set", "u::---,u:100000:---,u:200000:rwx,g::rwx,g:300000:r--,g:400000:rwx,m::r--,o::---"]).arg(file.path()).status().unwrap().success());
+        assert!(check_kvm_access(file.path(), mapping).is_err());
+        kvm_access(file.path(), mapping, &mut applied).unwrap();
+        let repaired = read_acl(file.path()).unwrap();
+        for entry in [
+            "user:100000:rw-",
+            "user:200000:r--",
+            "group::r--",
+            "group:300000:rw-",
+            "group:400000:r--",
+        ] {
+            assert!(repaired.contains(entry), "{repaired}");
+        }
+        check_kvm_access(file.path(), mapping).unwrap();
 
         assert!(
             Command::new("setfacl")

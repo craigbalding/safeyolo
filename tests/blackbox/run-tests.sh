@@ -63,6 +63,9 @@ export SAFEYOLO_SUBNET_BASE=75
 # don't pollute production logs/flows.sqlite3.
 export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
 export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
+# Native start can start Coord in every selection, including after a restart.
+# Use the existing dynamic-port option in this disposable root.
+export SAFEYOLO_NATS_TEST_INSTANCE="${SAFEYOLO_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
 # Generated public certificates and private keys also belong to the test
 # instance. Keeping both outside the checkout and the source instance makes
 # --force regeneration harmless to production state and the worktree.
@@ -502,8 +505,6 @@ path.write_text(tomlkit.dumps(document))
 PY_POLICY
 safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
 if [ "$ACCESS" = true ]; then
-    export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
-    export SAFEYOLO_NATS_TEST_INSTANCE="${SAFEYOLO_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
     python3 "$SCRIPT_DIR/access_setup.py" "$SAFEYOLO_CONFIG_DIR" --native-cli "$SAFEYOLO_NATIVE_CLI"
 fi
 

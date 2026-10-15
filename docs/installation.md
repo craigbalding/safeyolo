@@ -275,16 +275,26 @@ directories. It preserves other users' and groups' effective file permissions.
 It keeps AppArmor enabled and does not change global namespace
 policy. For an explicitly selected KVM backend, set
 `SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
-requires `/dev/kvm` and grants only the mapped root UID required read/write
-access. If device permissions reset, run preparation again before creating
-another sandbox. An already running KVM sandbox retains its open virtual
-machine descriptor. `SAFEYOLO_RUNSC_PLATFORM=systrap` needs no KVM device.
+requires `/dev/kvm` and grants the mapped root GID required read/write access.
+It repairs a selected root UID denial if required and preserves other ACL
+permissions. The group grant remains when named-user ACL entries are reset.
+If the device or its group permissions reset, run preparation again before
+creating another sandbox. An already running KVM sandbox retains its open
+virtual machine descriptor. `SAFEYOLO_RUNSC_PLATFORM=systrap` needs no KVM device.
 
-To check or retry an installed source bundle after a host change, run:
+To check or retry an installed source bundle after a host change, use the
+commands for the backend you selected. For the default backend selection, run:
 
 ```sh
 safeyolo host prepare
 safeyolo doctor
+```
+
+For an explicitly selected KVM backend, run:
+
+```sh
+SAFEYOLO_RUNSC_PLATFORM=kvm safeyolo host prepare
+SAFEYOLO_RUNSC_PLATFORM=kvm safeyolo doctor
 ```
 
 Doctor's `linux` result gives the selected runtime path, version and origin,

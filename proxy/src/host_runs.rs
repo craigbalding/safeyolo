@@ -97,14 +97,19 @@ fn process_matches(name: &str, run: &Value, key: &str) -> bool {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn saved_backend_is_dead(run: &Value) -> bool {
-    let Some(pid) = run["backend_pid"]
+    saved_process_is_dead(run, "backend")
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn saved_process_is_dead(run: &Value, key: &str) -> bool {
+    let Some(pid) = run[format!("{key}_pid")]
         .as_i64()
         .and_then(|pid| i32::try_from(pid).ok())
         .filter(|pid| *pid > 0)
     else {
         return false;
     };
-    let Some(token) = run["backend_token"].as_str() else {
+    let Some(token) = run[format!("{key}_token")].as_str() else {
         return false;
     };
     let mut fields = token.split(':');
@@ -164,6 +169,29 @@ fn saved_backend_is_dead(run: &Value) -> bool {
     {
         false
     }
+}
+
+#[cfg(target_os = "linux")]
+fn stopped_before_backend(
+    name: &str,
+    run: &Value,
+    root: &std::path::Path,
+    id: &str,
+) -> Result<bool, Error> {
+    if run["state"] != "stopped"
+        || !run["backend_pid"].is_null()
+        || !run["backend_token"].is_null()
+        || !saved_process_is_dead(run, "holder")
+        || runsc_metadata_present(root, id)?
+    {
+        return Ok(false);
+    }
+    for handle in ["userns.pid", "container.pid"] {
+        if backend_path_present(&config_dir().join("agents").join(name).join(handle))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) async fn control(name: &str, mut request: Value) -> Result<Value, Error> {
@@ -439,7 +467,9 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
             return Err("current-run record has an invalid sandbox generation; backend absence is unverified".into());
         }
         #[cfg(target_os = "linux")]
-        if !saved_backend_is_dead(run) {
+        if !saved_backend_is_dead(run)
+            && !stopped_before_backend(name, run, &crate::host_platform::runsc_root(), &id(name)?)?
+        {
             return Err("runsc backend absence is unverified; the saved handle is incomplete or identifies a live unrelated process".into());
         }
     }
@@ -472,7 +502,7 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     let id = id(name)?;
     let root = crate::host_platform::runsc_root();
     if run["run_id"].as_str() == Some(id.trim_start_matches("safeyolo-"))
-        && saved_backend_is_dead(&run)
+        && (saved_backend_is_dead(&run) || stopped_before_backend(name, &run, &root, &id)?)
     {
         // The owner may have exited before stop acquired its lock. Only
         // matching dead metadata is retired; no process needs signalling.
@@ -562,6 +592,61 @@ pub(crate) async fn wait_for_pidfd_exit(
 mod tests {
     use super::*;
     use std::os::fd::{FromRawFd, OwnedFd};
+
+    #[tokio::test]
+    async fn cleaned_failed_start_requires_dead_holder_and_absent_backend_state() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let name = "failed";
+            let directory = config_dir().join("agents").join(name);
+            std::fs::create_dir_all(directory.join("config-share")).unwrap();
+            let generation = "0123456789abcdef0123456789abcdef";
+            std::fs::write(directory.join("config-share/host-launch-context.json"), json!({"generation":generation}).to_string()).unwrap();
+            let mut holder = tokio::process::Command::new("/bin/sleep").arg("30").kill_on_drop(true).spawn().unwrap();
+            let pid = holder.id().unwrap();
+            let token = crate::host_lifecycle::process_token(i64::from(pid)).unwrap();
+            let stopped = json!({"run_id":generation,"state":"stopped","holder_pid":pid,"holder_token":token});
+            save(name, &stopped).unwrap();
+            assert_eq!(observe(name).await["runtime_state"], "unknown");
+            assert!(stop_without_holder(name).await.is_err());
+            assert!(holder.try_wait().unwrap().is_none(), "an unverified live holder was signalled");
+            holder.kill().await.unwrap();
+            holder.wait().await.unwrap();
+
+            for defect in ["starting", "missing-token", "bad-token", "metadata", "handle", "generation"] {
+                let mut run = stopped.clone();
+                let metadata = crate::host_platform::runsc_root().join(format!("safeyolo-{generation}_sandbox:safeyolo-{generation}.state"));
+                match defect {
+                    "starting" => run["state"] = "starting".into(),
+                    "missing-token" => run["holder_token"] = Value::Null,
+                    "bad-token" => run["holder_token"] = "not-a-process-birth".into(),
+                    "metadata" => { std::fs::create_dir_all(metadata.parent().unwrap()).unwrap(); std::fs::write(&metadata, b"unverified").unwrap(); },
+                    "handle" => { std::os::unix::fs::symlink("absent", directory.join("userns.pid")).unwrap(); },
+                    "generation" => run["run_id"] = "fedcba9876543210fedcba9876543210".into(),
+                    _ => unreachable!(),
+                }
+                save(name, &run).unwrap();
+                assert_eq!(observe(name).await["runtime_state"], "unknown", "{defect}");
+                assert!(stop_without_holder(name).await.is_err(), "{defect}");
+                assert_eq!(read(name).unwrap().unwrap(), run, "{defect}");
+                if defect == "metadata" { std::fs::remove_file(metadata).unwrap(); }
+                if defect == "handle" { std::fs::remove_file(directory.join("userns.pid")).unwrap(); }
+            }
+            let mut foreign = tokio::process::Command::new("/bin/sleep").arg("30").kill_on_drop(true).spawn().unwrap();
+            let mut run = stopped.clone();
+            run["backend_pid"] = foreign.id().unwrap().into();
+            run["backend_token"] = crate::host_lifecycle::process_token(i64::from(foreign.id().unwrap())).unwrap().into();
+            save(name, &run).unwrap();
+            assert_eq!(observe(name).await["runtime_state"], "unknown");
+            assert!(stop_without_holder(name).await.is_err());
+            assert!(foreign.try_wait().unwrap().is_none(), "a foreign process was signalled");
+            foreign.kill().await.unwrap();
+            save(name, &stopped).unwrap();
+            assert_eq!(observe(name).await["runtime_state"], "stopped");
+            stop_without_holder(name).await.unwrap();
+            assert_eq!(read(name).unwrap().unwrap(), stopped);
+        }).await;
+    }
 
     #[tokio::test]
     async fn pidfd_exit_wait_times_out_without_signalling_then_observes_exit() {

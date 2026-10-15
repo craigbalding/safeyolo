@@ -1200,10 +1200,24 @@ pub(crate) async fn start_sandbox(
     }
     .await;
     if let Err(error) = result {
+        let failed_run = crate::host_runs::read(name).map_err(io::Error::other)?;
         if let Err(cleanup) = stop_sandbox(name).await {
             return Err(io::Error::other(format!(
                 "{error}; sandbox cleanup failed: {cleanup}"
             )));
+        }
+        if let Some(mut run) = failed_run
+            && crate::host_runs::read(name)
+                .map_err(io::Error::other)?
+                .as_ref()
+                == Some(&run)
+            && run["run_id"].as_str().map(|id| format!("safeyolo-{id}"))
+                == Some(crate::host_runs::id(name).map_err(io::Error::other)?)
+        {
+            // Cleanup proved this attempt stopped, including a failure before
+            // runsc create could produce a backend receipt. Retain diagnostics.
+            run["state"] = "stopped".into();
+            crate::host_runs::save(name, &run).map_err(io::Error::other)?;
         }
         return Err(error);
     }
@@ -2880,6 +2894,9 @@ esac
                     assert!(directory.join("userns.pid").is_file());
                 } else {
                     assert!(!directory.join("userns.pid").exists());
+                    assert_eq!(crate::host_runs::read("alice").unwrap().unwrap()["state"], "stopped");
+                    assert_eq!(crate::host_runs::observe("alice").await["runtime_state"], "stopped");
+                    stop_sandbox("alice").await.unwrap();
                 }
             }).await;
             return;

@@ -1101,6 +1101,61 @@ def test_kvm_lane_delegates_mapping_and_access_to_product_preparation():
     assert 'safeyolo bootstrap' not in lane
 
 
+@pytest.mark.parametrize("instance", [None, "retained-disposable-instance"])
+def test_blackbox_native_autostart_receives_disposable_coord_binding(tmp_path, instance):
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    probe = tmp_path / "coord-environment.sh"
+    probe.write_text(runner[:runner.index("# Test instance ports")]
+                     + f'\n{shlex.quote(sys.executable)} -c '
+                     + shlex.quote("import json, os; print(json.dumps({k: os.environ[k] for k in ('SAFEYOLO_NATS_TEST_INSTANCE', 'SAFEYOLO_COORD_DATA_DIR')}))") + "\n")
+    root = tmp_path / "disposable"
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR"}}
+    env["SAFEYOLO_TEST_CONFIG_DIR"] = str(root)
+    if instance:
+        env["SAFEYOLO_NATS_TEST_INSTANCE"] = instance
+    result = subprocess.run(["bash", str(probe)], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["SAFEYOLO_COORD_DATA_DIR"] == str(root / "data/coord")
+    if instance:
+        assert observed["SAFEYOLO_NATS_TEST_INSTANCE"] == instance
+    else:
+        assert len(observed["SAFEYOLO_NATS_TEST_INSTANCE"]) == 32
+
+
+def test_blackbox_coord_binding_reaches_real_native_start_and_restart(tmp_path):
+    cli = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
+    nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if not cli or not nats:
+        pytest.skip("requires the native CLI and pinned NATS binary")
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    probe = tmp_path / "coord-start.sh"
+    probe.write_text(runner[:runner.index("# Test instance ports")]
+                     + '\nexec "$SELECTED_NATIVE_CLI" --root "$SAFEYOLO_CONFIG_DIR" coord start --binary "$SELECTED_NATS"\n')
+    root = tmp_path / "disposable"
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR", "SAFEYOLO_NATIVE_CONFIG_PATH"}}
+    env.update(SAFEYOLO_TEST_CONFIG_DIR=str(root), SELECTED_NATIVE_CLI=cli, SELECTED_NATS=nats)
+    subprocess.run([cli, "--root", str(root), "init"], env=env,
+                   capture_output=True, text=True, timeout=10, check=True)
+    try:
+        for _ in range(2):
+            result = subprocess.run(["bash", str(probe)], env=env, capture_output=True, text=True, timeout=20)
+            assert result.returncode == 0, result.stderr
+            process = json.loads(result.stdout)
+            assert process["client_port"] not in {4222, 8222}
+            assert process["monitor_port"] not in {4222, 8222, process["client_port"]}
+            status = subprocess.run([cli, "--root", str(root), "coord", "status"], env=env,
+                                    capture_output=True, text=True, timeout=10, check=True)
+            assert json.loads(status.stdout)["process"] == process
+            subprocess.run([cli, "--root", str(root), "coord", "stop"], env=env,
+                           capture_output=True, text=True, timeout=10, check=True)
+    finally:
+        subprocess.run([cli, "--root", str(root), "coord", "stop"], env=env,
+                       capture_output=True, text=True, timeout=10, check=True)
+
+
 @pytest.mark.parametrize("lane,acl_exit,expected", [("kvm", 0, 0), ("kvm", 7, 7), ("systrap", 0, 2)])
 def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tmp_path, lane, acl_exit, expected):
     device = tmp_path / "kvm-device"
