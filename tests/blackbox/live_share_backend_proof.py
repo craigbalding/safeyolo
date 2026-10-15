@@ -175,6 +175,8 @@ def run_proof(root: Path, base: Path):
               f"grep -q 'readonly:host-before' {readonly}/host.txt")
         refused = guest(f"printf forbidden > {readonly}/forbidden", check=False)
         assert refused.returncode != 0 and not (base / "readonly/forbidden").exists()
+        guest(f"grep -q 'live:host-before' {target}/host.txt && "
+              f"grep -q 'kept:host-before' {exports}/kept/host.txt")
         for number, mode in ((3, "file"), (5, "cwd"), (7, "mmap")):
             handle, identity = holder(mode)
             ordinary = guest(f"sudo -n umount {target}", check=False)

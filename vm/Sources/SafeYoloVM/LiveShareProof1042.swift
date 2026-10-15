@@ -13,6 +13,10 @@ final class LiveShareProof1042 {
     private let vm: VZVirtualMachine
     private var timer: DispatchSourceTimer?
     private var applied = 0
+    private lazy var liveDirectory = VZSharedDirectory(
+        url: directory.appendingPathComponent("live"), readOnly: false)
+    private lazy var readonlyDirectory = VZSharedDirectory(
+        url: directory.appendingPathComponent("readonly"), readOnly: true)
 
     static func prepare(_ configuration: VZVirtualMachineConfiguration) throws -> URL? {
         guard let path = ProcessInfo.processInfo.environment["SAFEYOLO_1042_PROOF_DIR"] else { return nil }
@@ -65,13 +69,18 @@ final class LiveShareProof1042 {
             var names = ["kept"]
             switch step {
             case 1...12:
-                var directories = ["kept": shared("kept", false)]
+                guard let kept = (exports.share as? VZMultipleDirectoryShare)?.directories["kept"] else {
+                    throw Self.failure("the unrelated kept export is missing")
+                }
+                // Preserve each existing directory object when the export set
+                // changes. The first probe lost a bind after recreating them.
+                var directories = ["kept": kept]
                 if [1, 2, 4, 6, 8, 10].contains(step) {
-                    directories["live"] = shared("live", false)
+                    directories["live"] = liveDirectory
                     names.append("live")
                 }
                 if (2...11).contains(step) {
-                    directories["readonly"] = shared("readonly", true)
+                    directories["readonly"] = readonlyDirectory
                     names.append("readonly")
                 }
                 exports.share = VZMultipleDirectoryShare(directories: directories)
