@@ -5,7 +5,7 @@ use std::{
     fs,
     net::Ipv4Addr,
     os::unix::fs::{PermissionsExt, symlink},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
@@ -43,6 +43,9 @@ fn fixture(root: &Path) {
     fs::create_dir(&bin).unwrap();
     let script = bin.join("runsc");
     fs::write(&script, r#"#!/bin/sh
+printf 'runsc=%s uid=%s gid=%s userns=%s netns=%s\n' "$0" "$(/usr/bin/id -u)" "$(/usr/bin/id -g)" "$(/usr/bin/readlink /proc/self/ns/user)" "$(/usr/bin/readlink /proc/self/ns/net)" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
+printf 'argv <%s>\n' "$@" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
+trap 'printf "runsc exit=%s\n" "$?" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"' EXIT
 case "$3" in
   state)
     if [ -e "$SAFEYOLO_CONFIG_DIR/agent-stopped" ]; then exit 1; fi
@@ -240,6 +243,16 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         std::env::set_var("SAFEYOLO_PREVIEW_SCREEN_SIZE", "1920x1080");
     }
     let mut run = OwnedRun::start(root.path());
+    // Keep the real namespace entry and pass its stderr through while also
+    // recording it for a missing desktop marker.
+    fs::write(
+        root.path().join("bin/nsenter"),
+        r#"#!/bin/bash
+printf 'nsenter argv <%s>\n' "$@" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
+exec /usr/bin/nsenter --preserve-credentials "$@" 2> >(/usr/bin/tee -a "$SAFEYOLO_CONFIG_DIR/desktop-child.trace" >&2)
+"#,
+    )
+    .unwrap();
     // A stale launch projection must not deny an independently live runtime.
     fs::write(
         root.path().join("agents/alice/current-launch.json"),
@@ -317,7 +330,32 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     assert_eq!(first["reused"], false);
     let resolved = request(admin_port, "GET", "/admin/approvals", &admin_headers, b"").await;
     assert_eq!(body(&resolved)["approvals"], json!([]));
-    assert!(root.path().join("desktop-ready").exists());
+    assert!(
+        root.path().join("desktop-ready").exists(),
+        "desktop start missing: host UID/GID={}/{}, account={:?}, helper={:?}, observations={:?}",
+        unsafe { libc::getuid() },
+        unsafe { libc::getgid() },
+        Command::new("/usr/bin/getent")
+            .args(["passwd", &unsafe { libc::getuid() }.to_string()])
+            .output()
+            .map(|output| (
+                output.status,
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            )),
+        std::env::var_os("SAFEYOLO_DESKTOP_GUEST"),
+        [
+            PathBuf::from("/etc/subuid"),
+            PathBuf::from("/etc/subgid"),
+            PathBuf::from(format!("/proc/{}/uid_map", run.child.id())),
+            PathBuf::from(format!("/proc/{}/gid_map", run.child.id())),
+            root.path().join("desktop-child.trace"),
+        ]
+        .map(|path| {
+            let observed =
+                fs::read_to_string(&path).map(|text| text.chars().take(4096).collect::<String>());
+            (path, observed)
+        }),
+    );
     assert!(
         root.path()
             .join("agents/alice/config-share/guest-desktop")
