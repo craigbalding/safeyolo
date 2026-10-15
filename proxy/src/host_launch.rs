@@ -2,7 +2,7 @@
 
 use std::{
     io::{IsTerminal, Write},
-    os::unix::ffi::OsStrExt,
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -13,12 +13,12 @@ use serde_json::Value;
 use crate::{Error, host_agents, host_boot, host_commands, host_lifecycle, host_platform};
 
 pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER] [--dangerously-allow-unowned]
-WORKSPACE defaults to the current directory. Claude is the first shipped harness.
+WORKSPACE defaults to the current directory. This launch command currently supports Claude.
 Launch starts the installed services, asks before host setup and optional host-state copying,
 and opens the agent terminal. In tmux, press Ctrl-b then d to return here for approvals.
 Numbered requests use the existing inspect/approve/reject operations. Network approval is
 agent-specific and reusable; credential approval changes persistent instance-shared policy.
-Repeat launch keeps the same agent, home and workspace. Quit leaves its sandbox running.
+Repeat launch keeps the same agent, home and workspace. Quit preserves the current sandbox state.
 Use agent stop NAME when you want to stop that agent.";
 
 #[derive(Default)]
@@ -78,8 +78,8 @@ fn default_name(workspace: &Path) -> String {
         .to_string_lossy()
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
-                c
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
             } else {
                 '-'
             }
@@ -93,7 +93,11 @@ fn default_name(workspace: &Path) -> String {
         .collect();
     format!(
         "{}-{suffix}",
-        if stem.is_empty() { "workspace" } else { &stem }
+        if stem.trim_matches('-').is_empty() {
+            "workspace"
+        } else {
+            stem.trim_matches('-')
+        }
     )
 }
 
@@ -160,10 +164,27 @@ fn phase(name: &str, error: impl std::fmt::Display) -> Error {
     format!("First-agent {name} failed: {error}. Saved agent state is retained. Repair this phase, then repeat agent launch with the same workspace/name; use agent diagnostics for runtime failures").into()
 }
 
+fn current_selection(agent: &host_agents::Agent) -> Result<host_agents::Agent, Error> {
+    let current = host_agents::refresh(agent)?;
+    if current.folder != agent.folder
+        || current.host_script != agent.host_script
+        || current.launcher != agent.launcher
+    {
+        return Err("the selected agent's workspace, harness or launcher changed; its saved configuration and current run are unchanged. Repeat launch with the intended selection".into());
+    }
+    Ok(current)
+}
+
 async fn start(agent: &host_agents::Agent) -> Result<(), Error> {
+    let directory = host_platform::config_dir().join("agents").join(&agent.name);
+    let lock = tokio::task::spawn_blocking(move || {
+        host_lifecycle::SetupLock::acquire_in(&directory, None)
+    })
+    .await??;
+    let current = current_selection(agent)?;
     // An interactive launch never replays saved task arguments. The existing
     // lifecycle still reuses a live command, regardless of this empty override.
-    let observed = host_lifecycle::start(agent, "start", None, Some(&[]), false).await?;
+    let observed = host_lifecycle::start(&current, "start", Some(lock), Some(&[]), false).await?;
     if let Some(error) = observed["error"].as_str() {
         return Err(error.into());
     }
@@ -203,18 +224,38 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     let displayed_workspace =
         crate::network_guard::sanitize_with_limit(&workspace.to_string_lossy(), usize::MAX);
     println!("SafeYolo host — agent {name}, workspace {displayed_workspace}");
-    let agent = if let Some(agent) = existing {
+    let create = existing.is_none();
+    let command = root
+        .join("agents")
+        .join(&name)
+        .join("home/.safeyolo-command");
+    let command_exists = command
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0);
+    let repair = if let Some(agent) = &existing
+        && !command_exists
+    {
+        !host_lifecycle::reuses_current_launch(&host_lifecycle::runtime(agent).await?)
+    } else {
+        false
+    };
+    let agent = if let Some(agent) = existing.filter(|_| !repair) {
         println!(
             "Reusing agent {} ({}) and its persistent home.",
             agent.name, agent.id
         );
         agent
     } else {
+        if repair {
+            println!(
+                "The stopped agent's harness command is missing or not executable. Setup will repair it and retain the agent identity and home."
+            );
+        }
         println!(
             "Setup runs the shipped {harness} host script as your host account. The script writes this agent's persistent home, SafeYolo context and MCP settings. The guest can read and write {displayed_workspace} at /workspace. Claude may run tools without per-tool prompts inside this sandbox; SafeYolo network and credential policy still applies.",
         );
         if !consent("Run this setup and share this workspace? [y/N] ")? {
-            println!("Setup declined; no agent or services were started.");
+            println!("Setup declined; saved agents and services are unchanged.");
             return Ok(0);
         }
         println!(
@@ -232,7 +273,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             settings.push(("dangerously_allow_unowned".into(), "true".into()));
         }
         println!("Preparing the shipped harness setup…");
-        host_agents::configure_with_host_state(&name, &settings, true, None, Some(copy))
+        host_agents::configure_with_host_state(&name, &settings, create, None, Some(copy))
             .await
             .map_err(|error| phase("host setup", error))?
     };
@@ -280,7 +321,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     }
     let mut attach = true;
     loop {
-        host_agents::refresh(&agent)?;
+        current_selection(&agent)?;
         if attach {
             let result = host_lifecycle::attach(&agent).await;
             // Guest output stays inside the attached terminal. Host prompts
@@ -297,9 +338,25 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
                 ),
                 _ => {}
             }
+            let observed = host_lifecycle::runtime(&agent).await?;
+            if matches!(
+                observed["agent_state"].as_str(),
+                Some("failed" | "exited" | "stopped")
+            ) {
+                println!(
+                    "Harness session: {}. Sandbox: {}. Exit status: {}.",
+                    observed["agent_state"], observed["runtime_state"], observed["exit_code"]
+                );
+                if let Some(error) = observed["error"].as_str() {
+                    eprintln!("{}", phase("harness session", error));
+                }
+                println!(
+                    "If installation or login failed, inspect pending requests before retrying. The retry opens an interactive session; check any previous task's effects before giving it again."
+                );
+            }
         }
         println!(
-            "SafeYolo host controls — {} ({})\nEnter: return to agent | a: inspect pending requests | r: retry a stopped harness | q: leave sandbox running",
+            "SafeYolo host controls — {} ({})\nEnter: return to agent | a: inspect pending requests | r: retry a stopped harness | q: keep current state and exit",
             agent.name, agent.id
         );
         match input("SafeYolo host> ")?.as_deref() {
@@ -346,6 +403,11 @@ mod tests {
         assert!(host_platform::valid_agent_name(&default_name(Path::new(
             "/"
         ))));
+        for folder in ["/a/My_Project", "/a/.project", "/a/---", "/a/项目"] {
+            assert!(host_platform::valid_agent_name(&default_name(Path::new(
+                folder
+            ))));
+        }
     }
 
     #[tokio::test]
@@ -374,13 +436,22 @@ mod tests {
             std::fs::write(&policy, document.to_string()).unwrap();
             let saved = std::fs::read(&policy).unwrap();
             let (_, selected) = select(&Options::default(), &folder, &script).unwrap();
-            assert_eq!(selected.unwrap().id, original.id);
+            let selected = selected.unwrap();
+            assert_eq!(selected.id, original.id);
             let explicit = Options {
                 name: Some("chosen".into()),
                 ..Default::default()
             };
             assert!(select(&explicit, temp.path(), &script).is_err());
             assert_eq!(std::fs::read(&policy).unwrap(), saved);
+            document["agents"]["chosen"]["folder"] =
+                toml_edit::value(temp.path().to_string_lossy().as_ref());
+            std::fs::write(&policy, document.to_string()).unwrap();
+            let reconfigured = std::fs::read(&policy).unwrap();
+            assert!(current_selection(&selected).is_err());
+            assert_eq!(std::fs::read(&policy).unwrap(), reconfigured);
+            document["agents"]["chosen"]["folder"] =
+                toml_edit::value(folder.to_string_lossy().as_ref());
             document["agents"]["other"] = document["agents"]["chosen"].clone();
             document["agents"]["other"]["agent_id"] = toml_edit::value("ag-other");
             std::fs::write(&policy, document.to_string()).unwrap();

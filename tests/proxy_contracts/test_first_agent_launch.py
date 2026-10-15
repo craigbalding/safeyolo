@@ -157,6 +157,17 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 assert process.wait(timeout=5) != 0
             assert instance.policy.read_bytes() == policy_bytes
             assert command.stat().st_ino == previous.st_ino and command.read_bytes() == command_bytes
+            command.unlink()
+            with terminal(instance, ["agent", "launch", str(workspace)]) as (process, master, until):
+                output = until(b"Run this setup and share this workspace?")
+                assert b"harness command is missing" in output
+                os.write(master, b"y\n")
+                until(b"Copy this selected host authentication and settings?")
+                os.write(master, b"n\n")
+                until(b"First-agent sandbox/harness startup failed", timeout=30)
+                assert process.wait(timeout=5) != 0
+            assert command.read_bytes() == command_bytes
+            assert instance.policy.read_bytes() == policy_bytes
             assert json.loads(instance.cli("coord", "status").stdout)["process"] == nats
             assert instance.process.poll() is None
             target = f"http://127.0.0.1:{origin.server_address[1]}/unrelated-agent"

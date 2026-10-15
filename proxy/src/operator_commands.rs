@@ -198,7 +198,7 @@ fn credential_view(events: &Value, id: &str) -> Result<Option<Value>, Error> {
         .iter()
         .filter(|event| {
             event["request_id"] == id
-                && event["addon"] == "credential-guard"
+                && event["event"] == "security.credential_guard"
                 && event["approval"]["approval_type"] == "credential"
         })
         .collect();
