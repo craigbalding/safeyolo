@@ -213,7 +213,7 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: 058d024d5ecec8ad9df29c557a6fd0ee53b1ff36355db94b31b3c331d2686f58
+          sha256: 5b5ec39705b64c0b7e228e62e72aa7e01af3df424974d9476d315ac99ef3d440
         - path: tests/blackbox/run-lane.sh
           sha256: be7a48fabb58fc6a107f998b06cd7700d623a656ec166ba46eda2e3db51bc37f
         - path: tests/blackbox/run-tests.sh
@@ -248,9 +248,9 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 12b822f6047e9860d6cf801315f479bb922dcd0c468feb0837c3a4751c54fc89
         - path: proxy/src/host_platform.rs
-          sha256: 48acd66dfae6a243d9759d0df98b01bf6811254351b82c1021ed2de4c2274e77
+          sha256: 266b9a4e31524db8a6c40cb660e144d265cb65ae7e6b4d5e2abe529bb44e228e
         - path: proxy/src/host_boot.rs
-          sha256: 1c2703b8685a4a312f07d8b3271b0a9ecd9ca42fcaabe560d95fe9f45ba90231
+          sha256: 3ed9db585a408fffe263219c22296bbf0f2f7533ef6abe14debee05e7b68734e
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
@@ -309,7 +309,7 @@ nodes:
         - path: proxy/tests/native_coord.rs
           sha256: 37dc10a5696b8bbcfa71f56781f7a29eb9ff752eb8b21c7b5e49f72d559cd42b
         - path: proxy/src/coord_rooms.rs
-          sha256: 198f554785c17ae496308831b24194570641e9e4c88c4156ad1e3f588158588e
+          sha256: 751d00acdaaa5e843479a15db03891c0c8990e5e59672f4dc9402a774f681a39
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
       verify: "sha256sum proxy/tests/native_coord.rs proxy/src/coord_rooms.rs && cargo --version"
       run: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord"
@@ -328,7 +328,7 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: 8f09414634e4d0a5bf178c69acbc7eda10363e4620b558669cf0a365e99f3326
+          sha256: 9ab5adfa35ef0b38fbaf62fd82766ccb97c95eeaf5a121baf4a035831e7b4c27
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 0e4955002840bb0a393490800b042ee13bb03aeeccccddf62bbcd7edc5023918
         - path: tests/proxy_contracts/test_native_factory_cli.py
@@ -355,7 +355,7 @@ nodes:
       obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
-          sha256: 2209225d7335edf11c0e0374a83084fa094676f3f9cd3f398af3d4c183fea135
+          sha256: 66622b5e2e34add24c4ed087d233032c882d34d016e1c539f0d1f36e28904597
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/capture-evidence.sh
           sha256: 5983a28e4a9eb1c48197c64f8511f7e18cffef001a81690e4a9c8e61e2b96c9d
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-snapshot.sh
@@ -445,7 +445,7 @@ nodes:
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: 110903178946c6f06b11882932593ae68528aaa0a42ad6cddfc8c497e66c05f0
+          sha256: 844ed26c419c11627368c651a4b87aa54c560253a0e766e9ceb092b20b32b1a3
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:

@@ -47,6 +47,7 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
         ".github/workflows/guest-test-inputs.yml",
         ".github/workflows/ci.yml",
         "scripts/cargo_with_space.sh",
+        "scripts/rust_cache_command.sh",
     ):
         assert path in paths
 
@@ -177,7 +178,7 @@ def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
     assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step.get("name"): step for step in job["steps"]}
-    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == (
+    assert steps["Test the Rust proxy"]["timeout-minutes"] == (
         "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     )
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
@@ -205,7 +206,7 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     installation = named["Install the native CLI test environment"]["run"]
     assert "uv python install 3.12.14" in installation
     assert "uv sync --frozen --group dev --python 3.12.14" in installation
-    assert named["Test and build the Rust proxy"]["env"]["SAFEYOLO_PYTHON"] == (
+    assert named["Test the Rust proxy"]["env"]["SAFEYOLO_PYTHON"] == (
         "${{ github.workspace }}/.venv/bin/python"
     )
     rendered = str(steps)
@@ -213,6 +214,111 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     assert "-- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
+
+
+def test_existing_graph_integrity_check_runs_for_quick_cli_and_before_guest_compilation():
+    ci = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
+    inputs = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    for job, check_name, following in (
+        (ci["jobs"]["test-cli"], "Check acceptance tool source bindings", "Quick CLI checks"),
+        (inputs["jobs"]["build"], "Check acceptance tool source bindings before compilation", "Build Linux guest executables and receipts"),
+    ):
+        steps = {step.get("name"): step for step in job["steps"]}
+        check = steps[check_name]
+        assert "if" not in check
+        assert 'runpy.run_path("cli/tests/test_host_setup_scripts.py")' in check["run"]
+        assert 'test_safeyolo_acceptance_graph_tool_hashes_match_sources' in check["run"]
+        assert job["steps"].index(check) < job["steps"].index(steps[following])
+    producer = inputs["jobs"]["build"]["steps"]
+    check = next(step for step in producer if step.get("name") == "Check acceptance tool source bindings before compilation")
+    assert "uv export --frozen --only-group dev" in check["run"]
+    assert '"--require-hashes"' in check["run"]
+    assert 'if package["name"] in ("pytest", "pyyaml")' in check["run"]
+    assert "uv sync" not in check["run"]
+
+
+def test_native_producers_and_consumers_share_the_existing_compatible_dependency_cache():
+    """The pinned action's shared-key replaces its automatic per-job prefix."""
+    shared = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    for workflow in (rust_workflow(), shared):
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if not str(step.get("uses", "")).startswith("Swatinem/rust-cache@"):
+                    continue
+                options = step["with"]
+                expected = "production-focused-pr" if workflow is not shared else "${{ inputs.profile }}-focused-pr"
+                assert options["shared-key"] == expected
+                assert "key" not in options  # The pinned action ignores key when shared-key is set.
+                assert options["workspaces"].splitlines() == ["proxy -> target", "guest/command -> target"]
+                assert options["cache-bin"] is False
+                assert "add-rust-environment-hash-key" not in options
+                assert "env-vars" not in options
+
+
+def test_rust_caches_use_the_selected_compiler_without_disabling_compatibility_hashes():
+    for path in WORKFLOW.parent.glob("*.yml"):
+        workflow = yaml.safe_load(path.read_text())
+        for job in workflow["jobs"].values():
+            for index, step in enumerate(job.get("steps", [])):
+                if not str(step.get("uses", "")).startswith("Swatinem/rust-cache@"):
+                    continue
+                options = step["with"]
+                assert options["cmd-format"] == (
+                    'bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}'
+                )
+                assert options.get("add-rust-environment-hash-key", True) is True
+                selection = next(
+                    previous for previous in job["steps"][:index]
+                    if previous.get("name") == "Install the pinned Rust toolchain"
+                )
+                assert selection["working-directory"] == "proxy"
+                assert "rustup show active-toolchain" in selection["run"]
+                assert "RUSTUP_TOOLCHAIN=%s" in selection["run"]
+                assert selection.get("if") == step.get("if")
+
+
+@pytest.mark.parametrize("ambient", ["1.98.1", "1.99.0"])
+def test_rust_cache_inventory_ignores_unselected_installed_compilers(tmp_path, ambient):
+    rustup = tmp_path / "rustup"
+    rustup.write_text('#!/bin/sh\nprintf "%s\\n" "$RUSTUP_TOOLCHAIN" "$AMBIENT_TOOLCHAIN"\n')
+    rustup.chmod(0o755)
+    selected = "1.94.0-aarch64-apple-darwin"
+    command = WORKFLOW.parents[2] / "scripts/rust_cache_command.sh"
+    environment = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}",
+                       RUSTUP_TOOLCHAIN=selected, AMBIENT_TOOLCHAIN=ambient, BASH_ENV="")
+    installed = subprocess.run(
+        ["rustup", "toolchain", "list", "--quiet"],
+        env=environment, text=True, capture_output=True, check=True,
+    )
+    assert installed.stdout == f"{selected}\n{ambient}\n"
+    inventory = subprocess.run(
+        ["bash", str(command), "rustup", "toolchain", "list", "--quiet"],
+        env=environment, text=True, capture_output=True, check=True,
+    )
+    assert inventory.stdout == f"{selected}\n"
+    # Without the job's explicit compiler, a cache failure must stay visible.
+    environment.pop("RUSTUP_TOOLCHAIN")
+    missing = subprocess.run(
+        ["bash", str(command), "rustup", "toolchain", "list", "--quiet"],
+        env=environment, text=True, capture_output=True,
+    )
+    assert missing.returncode != 0
+    assert "Set RUSTUP_TOOLCHAIN" in missing.stderr
+
+
+def test_rust_cache_command_preserves_metadata_arguments_environment_and_failure(tmp_path):
+    command = WORKFLOW.parents[2] / "scripts/rust_cache_command.sh"
+    probe = tmp_path / "metadata command"
+    probe.write_text('#!/bin/sh\nprintf "%s\\n" "$RUSTFLAGS" "$CARGO_PROFILE_RELEASE_LTO" "$PWD" "$@"\nexit 23\n')
+    probe.chmod(0o755)
+    arguments = ["metadata", "--manifest-path", "path with spaces/Cargo.toml", "--locked"]
+    result = subprocess.run(
+        ["bash", str(command), str(probe), *arguments], cwd=tmp_path,
+        env=dict(os.environ, RUSTFLAGS="-C opt-level=2", CARGO_PROFILE_RELEASE_LTO="thin"),
+        text=True, capture_output=True,
+    )
+    assert result.returncode == 23
+    assert result.stdout.splitlines() == ["-C opt-level=2", "thin", str(tmp_path), *arguments]
 
 
 def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix():
@@ -240,10 +346,11 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     (".github/workflows/proxy-rust.yml", {"rust": "true", "macos": "true"}, "available"),
     (".github/workflows/guest-test-inputs.yml", {"rust": "true", "macos": "true"}, "available"),
     (".github/workflows/ci.yml", {"rust": "true", "macos": "true"}, "available"),
+    ("scripts/rust_cache_command.sh", {"rust": "true", "macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {}, "missing"),
     ("proxy/src/host_platform.rs", {}, "failing"),
 ], ids=["linux-only", "mac-only", "shared-native", "docs-only", "dispatch-content", "dispatch-workflow",
-        "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "missing-grep", "failing-grep"])
+        "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "rust-cache-command", "missing-grep", "failing-grep"])
 def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected, matcher):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
