@@ -241,6 +241,9 @@ host target as the production input producers for Clippy, tests and builds.
 It retains the host target's Coord test runner. Production compilation, test
 compilation and test execution have separate bounded steps. A successful
 Clippy check does not supply the executable outputs needed by those steps.
+The input producers and native checks share the existing quick-job dependency
+cache namespace for each profile. The pinned cache action still separates
+operating systems, architectures, Rust toolchains, flags and lockfile inputs.
 
 Normal and isolated candidates use the same wrapper:
 

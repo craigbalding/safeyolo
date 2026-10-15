@@ -227,6 +227,24 @@ def test_existing_graph_integrity_check_runs_for_quick_cli_and_before_guest_comp
         assert job["steps"].index(check) < job["steps"].index(steps[following])
 
 
+def test_native_producers_and_consumers_share_the_existing_compatible_dependency_cache():
+    """The pinned action's shared-key replaces its automatic per-job prefix."""
+    shared = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    for workflow in (rust_workflow(), shared):
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if not str(step.get("uses", "")).startswith("Swatinem/rust-cache@"):
+                    continue
+                options = step["with"]
+                expected = "production-focused-pr" if workflow is not shared else "${{ inputs.profile }}-focused-pr"
+                assert options["shared-key"] == expected
+                assert "key" not in options  # The pinned action ignores key when shared-key is set.
+                assert options["workspaces"].splitlines() == ["proxy -> target", "guest/command -> target"]
+                assert options["cache-bin"] is False
+                assert "add-rust-environment-hash-key" not in options
+                assert "env-vars" not in options
+
+
 def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix():
     jobs = rust_workflow()["jobs"]
     job = jobs["macos-pr"]

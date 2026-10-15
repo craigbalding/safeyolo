@@ -137,7 +137,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
-          key: production
+          shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
 
@@ -333,7 +333,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
-          key: production
+          shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
 
@@ -557,7 +557,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
-          key: production
+          shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
 

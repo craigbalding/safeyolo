@@ -49,7 +49,7 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
-          key: ${{ inputs.profile }}
+          shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
       - name: Build Linux guest executables and receipts
         run: scripts/build_guest_command.sh
@@ -117,8 +117,10 @@ jobs:
           printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: proxy -> target
-          key: ${{ inputs.profile }}
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
