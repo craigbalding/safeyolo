@@ -583,6 +583,7 @@ mod package_tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
         fs::write(root.join("config.toml"), "").unwrap();
+        let mapping = crate::linux_host::mapping_for_root(root).unwrap();
         let platform = if std::env::consts::ARCH == "aarch64" {
             "arm64"
         } else {
@@ -634,12 +635,14 @@ mod package_tests {
                 format!("/var/cache/{version}\n"),
             )
             .unwrap();
-            // Synthetic staging inputs, not an archive-ownership witness.
+            // Synthetic staging inputs use the selected host mapping.
+            // Archive ownership is checked separately.
             let tree = inputs.join("rootfs-tree");
             fs::set_permissions(&tree, fs::Permissions::from_mode(0o777)).unwrap();
             assert!(
                 std::process::Command::new("sudo")
-                    .args(["-n", "chown", "100000:100000"])
+                    .args(["-n", "chown"])
+                    .arg(format!("{}:{}", mapping.uid_base, mapping.gid_base))
                     .arg(&tree)
                     .status()
                     .unwrap()

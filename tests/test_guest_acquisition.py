@@ -237,6 +237,21 @@ def install(binary, root, store, environment, package_info):
     return result
 
 
+def owned_root_ids(tree):
+    """Check prepared root ownership against the account's real allocations."""
+    metadata = tree.stat()
+    account = subprocess.check_output(["id", "-un"], text=True).strip()
+    for arguments, base in (([], metadata.st_uid), (["-g"], metadata.st_gid)):
+        output = subprocess.check_output(["getsubids", *arguments, account], text=True)
+        ranges = sorted(tuple(map(int, line.split()[2:4])) for line in output.splitlines())
+        end = base
+        for start, count in ranges:
+            if start <= end:
+                end = max(end, start + count)
+        assert end >= base + 65536, f"root ID {base} is outside the account's owned ranges: {output}"
+    return metadata.st_uid, metadata.st_gid
+
+
 @pytest.fixture
 def package_info(tmp_path):
     architecture = "amd64" if os.uname().machine == "x86_64" else "arm64"
@@ -265,9 +280,10 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     if prepared_host:
         initialized = subprocess.run([str(native_cli), "--root", str(source), "init"], capture_output=True, text=True)
         assert initialized.returncode == 0, initialized.stderr
+        uid_base, gid_base = owned_root_ids(source / "share/rootfs-tree")
         with (source / "config.toml").open("a") as configuration:
             configuration.write(f'\n[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n'
-                                f'uid_base=100000\ngid_base=100000\nrunsc={json.dumps(str(source / "libexec/runsc"))}\n'
+                                f'uid_base={uid_base}\ngid_base={gid_base}\nrunsc={json.dumps(str(source / "libexec/runsc"))}\n'
                                 'runsc_origin="bundled"\napparmor_profile="safeyolo-runsc-retained"\n')
         (source / "SHA256SUMS").write_text("retained package integrity input\n")
         original = (source / "config.toml").read_bytes()
@@ -294,7 +310,7 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
 
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, faults, environment = registry
-    first = release(compressed_archive())
+    first = release(compressed_archive(child_owner=101000))
     second = release(compressed_archive(content=b"new guest bytes"), version="guest-2026-10-12.2")
     contents.update(first)
     faults["advance"] = second
@@ -308,7 +324,8 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert requests.count(PREFIX + "manifests/compat-v1") == 1
     assert (root / "share/rootfs-tree").is_symlink()
     tree = root / "share/rootfs-tree"
-    assert tree.stat().st_uid == tree.stat().st_gid == 100000
+    owned_root_ids(tree)
+    assert ((tree / "command").stat().st_uid, (tree / "command").stat().st_gid) == (os.getuid(), os.getgid())
     assert (tree / "command").stat().st_mode & 0o777 == 0o751
     assert (tree / "hard").stat().st_ino == (tree / "command").stat().st_ino
     assert (tree / "symbolic").readlink() == Path("command")

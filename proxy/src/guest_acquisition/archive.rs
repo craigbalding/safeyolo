@@ -255,6 +255,7 @@ pub(super) fn prepare(
     let parent = destination.parent().ok_or("guest tree has no parent")?;
     let stage = tempfile::Builder::new()
         .prefix("extract-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?
         .keep();
     let result = extract(input, &stage, platform, mapping)

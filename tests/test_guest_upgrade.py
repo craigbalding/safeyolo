@@ -90,7 +90,7 @@ def test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_st
     assert all(path.startswith(PREFIX) or path in ("/v2/", "/token") for path in requests[before:])
     selected_tree = Path(g2["installed_assets"]) / "rootfs-tree"
     assert selected_tree.is_symlink() and selected_tree.resolve() != old_root
-    assert selected_tree.stat().st_uid == selected_tree.stat().st_gid == 100000
+    assert (selected_tree.stat().st_uid, selected_tree.stat().st_gid) == acquisition.owned_root_ids(old_root)
     assert old_root.stat().st_ino == old_inode
     assert (root / "share/rootfs-tree").resolve() == old_root
     assert_preserved(root, original)
