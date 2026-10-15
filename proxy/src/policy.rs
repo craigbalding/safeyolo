@@ -1372,7 +1372,7 @@ impl Policy {
                     "capability" => condition.capability = Some(string(value, key)?.to_owned()),
                     _ => {
                         return Err(unsupported(format!(
-                            "native policy condition is not implemented: {key}"
+                            "policy condition is not implemented: {key}"
                         )));
                     }
                 }
@@ -2730,7 +2730,7 @@ fn json_value(source: &str, reject_duplicates: bool, depth: usize) -> serde_json
     }
 }
 
-/// One YAML frontend for native policy consumers. Event scalar styles and tags
+/// One YAML frontend for policy consumers. Event scalar styles and tags
 /// preserve the distinctions erased by a generic JSON deserializer.
 pub(crate) fn parse_yaml(source: &str) -> Result<Value> {
     Ok(parse_yaml_node(source)?.value)

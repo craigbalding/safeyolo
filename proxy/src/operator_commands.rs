@@ -556,7 +556,7 @@ async fn attach(root: &Path, agent: &str) -> Result<(), Error> {
         .status()
         .await?;
     if !status.success() {
-        return Err("native terminal attachment failed or is unavailable; the selected target is retained. #817 owns the host attach operation".into());
+        return Err("terminal attachment failed or is unavailable; the selected target is retained. #817 owns the host attach operation".into());
     }
     Ok(())
 }

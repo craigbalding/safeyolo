@@ -1,15 +1,15 @@
 # Supervised factory workers
 
 The `@codex-coord` and `@pi-coord` host setups run factory roles under the same
-native `safeyolo-coord supervise` command. The ordinary `@codex` and `@pi` setups stay
+`safeyolo-coord supervise` command. The ordinary `@codex` and `@pi` setups stay
 interactive and have no supervisor. A role's factory TOML selects its harness;
 that choice does not create another queue or state machine.
 
-Use the installed native product and its matching Linux guest Coord executable.
+Use the installed SafeYolo and its matching Linux guest Coord executable.
 Set up the worker's own login before enabling supervision, as described in
 [factory setup](factories.md#fresh-setup-check-approve-and-run).
 
-For a Factory, use the [native Factory preparation](factories.md#fresh-setup-check-approve-and-run); it provisions these declared inputs. For a standalone supervised worker, configure its agent through the native host commands, then create a room and grant access:
+For a Factory, use the [Factory preparation](factories.md#fresh-setup-check-approve-and-run); it provisions these declared inputs. For a standalone supervised worker, configure its agent through the host commands, then create a room and grant access:
 
 ```bash
 safeyolo --root INSTANCE coord start
@@ -21,7 +21,7 @@ safeyolo --root INSTANCE coord grant backlog worker
 Room grants use the configured agent identities. The guest client uses the
 Agent API and its own token; it receives no NATS or operator credentials.
 Old-product rooms and checkpoints are not converted. These commands prepare
-new native state and do not switch an existing running factory.
+new state and do not switch an existing running factory.
 
 Before the first supervised start, use a fresh agent identity or fresh room
 memberships that have never received targeted attention in any configured
@@ -59,8 +59,7 @@ migration or automatic start-from-now operation.
 
 Each supervised setup uses its normal harness setup first and preserves that
 agent's own subscription login, SafeYolo instructions, proxy, and TLS
-environment. Codex uses the bundled Coord MCP adapter. Pi uses a small native
-`send` and `read_room` extension. Neither setup imports a host credential.
+environment. Codex uses the bundled Coord MCP adapter. Pi uses a small `send` and `read_room` extension. Neither setup imports a host credential.
 The only changed boundary is the foreground command: the guest runs the common supervisor,
 which runs bounded JSON-mode harness turns.
 
@@ -99,8 +98,7 @@ turn sends its declared response to every role in the handoff's `response_to`
 list and exits. It does not call or re-arm `wait_for_coord`; waiting is
 supervisor transport behavior rather than an agent task.
 
-Codex and Pi expose the same canonical `send` operation through their native
-tool interfaces. The supervisor normalizes each successful result into one
+Codex and Pi expose the same canonical `send` operation through their tool interfaces. The supervisor normalizes each successful result into one
 outbound-send event before it evaluates a terminal response or records an
 outbound handoff. Downstream behavior does not depend on the selected harness.
 
@@ -128,7 +126,7 @@ events to this room. Harness stderr is retained as labelled stderr events. It
 does not emit idle or heartbeat messages. An abruptly killed supervisor cannot
 report its own death; runtime supervision is a separate concern.
 
-On the operator host, use the installed native CLI. Replace `ROOT` with the
+On the operator host, use the installed CLI. Replace `ROOT` with the
 selected instance root and `AGENT` with the supervised agent name. Render the
 retained stream and continue watching it with:
 
@@ -248,7 +246,7 @@ recorded descendants.
 On Linux, the supervisor also acts as a child subreaper, so repeated recovery
 does not accumulate orphaned code-mode children or zombies. The supervisor
 requires Linux PID handles and fails closed before recovery if the kernel does
-not provide them. The native command uses the Linux PID-handle syscalls. Supervision runs in
+not provide them. The command uses the Linux PID-handle syscalls. Supervision runs in
 the Linux guest; host staging also runs on macOS.
 
 ### Restart recovery
@@ -264,7 +262,7 @@ turn. A restart after an interrupted turn cleans up the owned invocation and
 marks its work uncertain. The recovery prompt requires inspection of retained
 Coord history and the working tree before another write. A saved terminal
 checkpoint deduplicates the completed attention and does not dispatch it again.
-The native product starts with fresh state. It does not convert Python-era
+SafeYolo starts with fresh state. It does not convert Python-era
 checkpoints or import old credentials. This replacement does not upgrade or
 restart an already running factory.
 
@@ -337,7 +335,7 @@ Selection and expiry appear in the agent room.
 The selected turn is instructed to finish after its handoff. The next task uses
 ordinary arguments and a fresh session. This is model selection, not a sandbox
 restriction: the model still has the agent's ordinary tools and workspace.
-Native checkpoints use `safeyolo.coord-supervisor/v1`. Repair selection keeps
+Checkpoints use `safeyolo.coord-supervisor/v1`. Repair selection keeps
 the same declared role routes and exact task correlation.
 
 ### Runtime settings
@@ -364,7 +362,7 @@ supervisor-owned wait. The supervisor rejects invalid or unbounded values.
 
 ## Debugging with a fake Codex harness
 
-The native command reports failures on stderr. Use `inspect-state FILE` to
+The command reports failures on stderr. Use `inspect-state FILE` to
 read the bounded checkpoint summary. This command does not change state or
 release work. `supervise --once` runs one external-wait cycle and at most one
 model invocation. A successful process exit does not establish task completion.
@@ -397,9 +395,9 @@ an already installed Pi package directory. This checks model-visible history,
 pagination metadata, cancellation, errors, and send results. It does not prove
 that a model chooses to recover history in a live task.
 
-## Native room setup and MCP use
+## Room setup and MCP use
 
-On the operator host, use a fresh native instance with registered agent
+On the operator host, use a fresh instance with registered agent
 identities. Replace `worker` with that instance's registered worker name. The
 commands below start the instance's owned NATS process, create one room and
 grant that agent send and receive permission:

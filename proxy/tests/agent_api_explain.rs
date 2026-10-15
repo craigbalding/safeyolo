@@ -183,7 +183,7 @@ async fn method_auth_id_identity_and_control_order_leave_body_unread() {
             request(&valid),
             false,
             503,
-            "Agent API endpoint unavailable in native development mode",
+            "Agent API endpoint unavailable in development mode",
         ),
     ] {
         let outcome = call(input, &token, available.then_some(&writer)).await;

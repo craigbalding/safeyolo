@@ -185,7 +185,7 @@ impl Default for Web {
 /// the operator must maintain.
 pub fn read(path: &Path) -> Result<Config, Error> {
     if path.extension().and_then(|value| value.to_str()) != Some("toml") {
-        return Err("native configuration requires config.toml".into());
+        return Err("configuration requires config.toml".into());
     }
     let root = path
         .parent()
@@ -216,7 +216,7 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     ] {
         if fields.contains_key(key) {
             return Err(format!(
-                "config.toml: unsupported field '{key}'; use named controls in policy.toml and native runtime keys"
+                "config.toml: unsupported field '{key}'; use named controls in policy.toml and runtime keys"
             )
             .into());
         }
@@ -429,7 +429,7 @@ pub(crate) fn host_settings() -> Result<Settings, Error> {
         Err(error) => Err(error.into()),
         Ok(_) => read(&path)?
             .native_settings
-            .ok_or_else(|| "native settings are missing".into()),
+            .ok_or_else(|| "settings are missing".into()),
     }
 }
 

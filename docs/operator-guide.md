@@ -9,16 +9,16 @@ You can manage an individual agent without a factory or an assistant agent.
 ## Start with an installed instance
 
 Use your ordinary account on the Ubuntu or Apple Silicon macOS host that owns
-the instance. For a new installation, follow [install and start](native-policy.md#install-and-start),
+the instance. For a new installation, follow [install and start](installation.md#install-and-start),
 including its platform prerequisites and prepared guest assets. Then follow
-[configure and use an agent](native-policy.md#configure-and-use-an-agent).
+[configure and use an agent](installation.md#configure-and-use-an-agent).
 That example creates `work` and opens its guest shell. A shell is sufficient
 for the access example below; no model login is required.
 
 Open a second terminal on the same host, under the same account. The installed
 command uses `$HOME/.safeyolo` automatically. These examples use that default
 installation. For another instance, use the
-[custom-instance reference](native-policy.md#other-installation-paths) and the
+[custom-instance reference](installation.md#other-installation-paths) and the
 matching file paths. Do not reinstall over existing state.
 
 ```sh
@@ -120,7 +120,7 @@ This example requests human approval at `example.com` port 80 for agents in
 this instance. It is a policy choice for the fresh example, not an installation
 requirement. Each resulting approval still grants access only to its requesting
 agent. In an existing instance, agent-specific overrides take precedence; use
-[per-agent policy](native-policy.md#check-show-and-apply) when you want a
+[per-agent policy](installation.md#check-show-and-apply) when you want a
 different rule for one agent.
 
 Check and apply the candidate on the host. Applying it replaces the saved
@@ -134,7 +134,7 @@ safeyolo policy show
 
 Check reports `Policy is valid`. Apply returns `status: active`; show lets you
 verify the effective `work` host entry. If activation fails or saved and active
-state differ, use [policy recovery](native-policy.md#check-show-and-apply)
+state differ, use [policy recovery](installation.md#check-show-and-apply)
 before continuing.
 
 Now switch to the **guest shell for `work`** from setup. The following command
@@ -213,7 +213,7 @@ the `work` grant for `example.com:80` to your intended `prompt` or `deny` value,
 then check and apply it. The resolver saves this agent-specific grant in
 `agents`, separately from the instance-wide `hosts` entry. Use the current
 policy so you retain decisions made since setup.
-See [policy configuration](native-policy.md#check-show-and-apply).
+See [policy configuration](installation.md#check-show-and-apply).
 
 ## Read traffic and save evidence
 
@@ -306,7 +306,7 @@ live state. Local evidence does not confirm the active policy or a decision.
 For a stopped proxy, inspect the named startup error and
 `$HOME/.safeyolo/logs/proxy.log`; repair the named input or occupied
 endpoint, then use `safeyolo start` and `safeyolo policy show`. For agent runtime
-or shell failures, follow [agent diagnosis and recovery](native-policy.md#configure-and-use-an-agent).
+or shell failures, follow [agent diagnosis and recovery](installation.md#configure-and-use-an-agent).
 Keep the selected root and executable when retrying. Direct human decisions
 remain usable when an optional assistant's model is unavailable.
 
@@ -329,7 +329,7 @@ prepare a reason for your decision. The requesting agent is called the Worker
 in the shared-approval protocol. Helper cannot approve, reject or grant itself
 reads. You can decide directly without using a Helper.
 
-First create a separate agent through [agent setup](native-policy.md#configure-and-use-an-agent).
+First create a separate agent through [agent setup](installation.md#configure-and-use-an-agent).
 Use `adviser` as the new name in those setup commands and select its workspace;
 do not recreate the existing `work` agent.
 For a model-assisted diagnosis, choose its [host setup script and login](../contrib/HOST_SCRIPT_GUIDE.md#bundled-setups).
@@ -354,7 +354,7 @@ safeyolo agent start adviser
 
 On macOS, the host executable is a macOS executable and cannot run in the Linux guest.
 Supply a Linux `safeyolo` built from the selected source for the guest's
-architecture through the [Linux bundle build](native-policy.md#build-a-native-bundle),
+architecture through the [Linux bundle build](installation.md#build-a-bundle),
 then copy that executable to the same stopped agent's share. A macOS bundle
 does not supply this additional Linux executable. Do not copy an Admin API credential
 into the guest. The read-only share appears at `/safeyolo` there.
@@ -367,7 +367,7 @@ safeyolo approvals share REQUEST_ID --agent work --helper adviser
 ```
 
 Sharing reports whether the Helper session is available or unverified. It
-grants no network permission. The [selected-evidence reference](native-policy.md#selected-evidence-and-network-approvals)
+grants no network permission. The [selected-evidence reference](installation.md#selected-evidence-and-network-approvals)
 describes the exact read scope, durable identities and withdrawal behavior.
 
 Inside **`adviser`'s guest**, use the staged client with the same full request

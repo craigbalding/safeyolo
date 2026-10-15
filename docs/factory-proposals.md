@@ -41,7 +41,7 @@ The commands neither publish a message nor perform a proposed change.
    decision appears in retained history. The command checks its actual envelope
    attribution and exact body. It records status only.
 
-For host examples, first select the existing native instance with `--root ROOT`.
+For host examples, first select the existing instance with `--root ROOT`.
 For guest examples, retain the staged Agent API connection and token-file
 settings. `--ledger FILE` selects a disposable ledger when needed. `list` and
 `pending` read local state without requiring a live Coord connection.
@@ -72,7 +72,7 @@ verified material delivery/review impact, not nomination urgency.
 The observation requires `correlation_key`, `task_key`, `facts`, `inference`,
 `recommendation`, `recommendation_key` and `evidence`. `impact`, `confidence`
 and `material` are optional; materiality defaults to false. Evidence requires
-`kind`, `ref` and `task_key`. The native operation adds nomination evidence
+`kind`, `ref` and `task_key`. The operation adds nomination evidence
 from canonical provenance; verified input cannot supply nomination provenance.
 No command independently authenticates Relay's facts or performs the issue
 lookup. Those checks remain Relay's responsibility, as with the replaced
@@ -159,10 +159,10 @@ recommendation or create follow-up work.
 ## Deliberately small persistence
 
 The host ledger defaults to `coord/factory-proposals.json` in the selected
-native data directory. The guest ledger defaults to
+data directory. The guest ledger defaults to
 `$SAFEYOLO_COORD_DATA_DIR/factory-proposals.json`, or
 `~/.safeyolo/data/coord/factory-proposals.json` when that variable is unset.
-Native state starts fresh; historical ledger conversion is unsupported. Each entry stores only the
+State starts fresh; historical ledger conversion is unsupported. Each entry stores only the
 stable proposal and fingerprint, normalized evidence set, first/last canonical
 send times, status, last-presented revision, and the minimal canonical source
 marker needed for deterministic proposal selection. It is a bounded atomic JSON

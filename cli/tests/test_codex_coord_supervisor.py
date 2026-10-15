@@ -260,7 +260,7 @@ def test_invalid_checkpoint_is_not_reinitialized_by_confirmation(binary, fixture
     harness_script(harness, binary, capture)
     result = run(binary, fixture, confirm_fresh_identity=confirmed)
     assert result.returncode != 0
-    assert "invalid native Coord checkpoint" in result.stderr
+    assert "invalid Coord checkpoint" in result.stderr
     assert state.read_bytes() == saved
     assert coord.requests == []
     assert not list(capture.iterdir())

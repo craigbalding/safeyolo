@@ -17,8 +17,8 @@ native_config=${SAFEYOLO_FACTORY_NATIVE_CONFIG:-$SAFEYOLO_CONFIG_DIR/config.toml
 die() { printf 'watch-backlog-factory: %s\n' "$*" >&2; exit 2; }
 
 [[ -n ${TMUX:-} ]] || die "run this command inside the operator's tmux session"
-[[ -x $viewer ]] || die "native CLI not found: $viewer; set SAFEYOLO_FACTORY_CLI to the installed safeyolo executable"
-[[ -f $native_config ]] || die "native configuration not found: $native_config"
+[[ -x $viewer ]] || die "SafeYolo CLI not found: $viewer; set SAFEYOLO_FACTORY_CLI to the installed safeyolo executable"
+[[ -f $native_config ]] || die "configuration not found: $native_config"
 
 session=$(tmux display-message -p '#S')
 target="$session:$window_name"

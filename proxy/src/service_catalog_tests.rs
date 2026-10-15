@@ -59,13 +59,13 @@ fn catalog_configuration_requires_a_pair_and_native_policy() {
     settings.policy_file = None;
     assert_eq!(
         settings.validate().unwrap_err().to_string(),
-        "native proxy requires policy_file"
+        "proxy requires policy_file"
     );
     settings.gateway_builtin_services_dir = None;
     settings.gateway_services_dir = None;
     assert_eq!(
         settings.validate().unwrap_err().to_string(),
-        "native proxy requires policy_file"
+        "proxy requires policy_file"
     );
 }
 

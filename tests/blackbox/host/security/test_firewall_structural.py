@@ -20,7 +20,7 @@ class TestProcessSecrecy:
 
     Why: Process command lines are readable by any local user via
     `ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
-    the native proxy invocation, a non-root user on the host (or a
+    the Rust proxy invocation, a non-root user on the host (or a
     process that escaped the sandbox) can read them and gain full
     admin control. Tokens must be passed via file or env var instead.
     """

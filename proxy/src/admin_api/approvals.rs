@@ -90,7 +90,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     let (Some(state), Some(owner)) = (state, service_audit) else {
         return Ok(response(
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"native approval resolver unavailable"}),
+            json!({"error":"approval resolver unavailable"}),
         ));
     };
     let (state, writer, id) = (state.clone(), writer.clone(), id.to_owned());

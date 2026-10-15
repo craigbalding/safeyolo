@@ -12,7 +12,7 @@ existence or a successful start request.
 - `agent shell NAME` opens a separate guest shell. It does not attach to the agent.
 - `agent stop NAME` stops that agent and sandbox, not unrelated terminal sessions.
 
-For ordinary agents, set shared defaults in the native instance's `config.toml`
+For ordinary agents, set shared defaults in the instance's `config.toml`
 under `[agent_launcher]`. `agent configure NAME --launcher tmux-pane` sets a
 per-agent override. Remove that agent's `launcher` entry from `policy.toml` to
 restore inheritance. The running session retains its original launcher when

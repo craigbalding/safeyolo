@@ -204,7 +204,7 @@ The historical engineering entrypoint `uv run python -m tools.policy_chaos`
 is available only from the pinned pre-cutover checkout
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`. Its temporary-policy and
 guarded disposable-VM fault results describe the Python implementation.
-The current native release still needs generated policy transaction and
+The current release still needs generated policy transaction and
 failure-stage checks before those assurance claims can be accepted.
 
 ## Review trigger

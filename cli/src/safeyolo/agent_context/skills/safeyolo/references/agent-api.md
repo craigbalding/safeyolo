@@ -15,7 +15,7 @@ SafeYolo runs three separate planes. Endpoints on the Agent API are windows
 into different planes, and misreading which plane an endpoint reports on is
 the most common cause of wrong-diagnosis loops.
 
-**1. Detection plane.** Native detectors inspect requests and attach metadata
+**1. Detection plane.** Detectors inspect requests and attach metadata
 without making policy decisions. Examples: `test_context` looks for the
 canonical `X-SafeYolo-Test-Context` header and, if valid, tags the flow with
 `test_context`; the credentials detector identifies
@@ -54,7 +54,7 @@ plane; a 428 with `X-Blocked-By` is a policy-plane action; a `/api/flows/search`
 
 ## Calling the API
 
-The native proxy intercepts the virtual host `_safeyolo.proxy.internal`;
+The proxy intercepts the virtual host `_safeyolo.proxy.internal`;
 the request never goes upstream. Always use plain HTTP and read the
 agent token at request time:
 
@@ -113,15 +113,15 @@ ambiguous — the two are complementary, not redundant. See
 
 ## Trace wire vocabulary
 
-Native `/trace` identifies each step with `control` and `hook`. Branch on
+`/trace` identifies each step with `control` and `hook`. Branch on
 that selector and its literal `state`, `reason` and `outcome`, rather than
 on a detector name in an audit event. Named controls include `network`,
 `credentials`, `patterns`, `circuits`, `test_context` and `services`.
-The native response has no `addon` selector.
+The response has no `addon` selector.
 
 The implementation is in `proxy/src/trace.rs`, `proxy/src/request_trace.rs`
 and the reached HTTP hooks. `proxy/src/policy/native.rs` names controls on
-the response in `proxy/src/http.rs`. The existing native consumer
+the response in `proxy/src/http.rs`. The existing consumer
 `tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_declare_injection_expiry_clear_and_evidence`
 checks named trace steps and foreign-owner refusal. These source references
 are for repository contributors; an installed agent diagnoses the returned
@@ -265,7 +265,7 @@ Flow recording is **opt-in per request**, not automatic. A request is
 written to the FlowStore only when both hold:
 
 1. It carries the canonical `X-SafeYolo-Test-Context` header, parsed and accepted
-   by the native test-context detector. The native contract is implemented in
+   by the test-context detector. The contract is implemented in
    `proxy/src/test_context.rs`; presence alone is not enough.
 2. The active policy has a non-empty `controls.test_context.target_hosts` list,
    which activates context enforcement. On those target hosts, a missing
@@ -303,7 +303,7 @@ provenance marker is produced by the host-side operator-provenance check;
 request headers and guest metadata cannot set it. When trusted identity is
 unavailable or conflicting, the request and response remain in JSONL with
 `details.attribution.attribution_status` and bounded provenance, and FlowStore omits them because
-the records have no safe agent partition. Native service discovery also
+the records have no safe agent partition. Service discovery also
 emits a dedicated operator-visible event for each unavailable or conflicting
 identity. Attribution is captured at the request boundary and reused by the
 terminal response and policy audit events. If a trusted source changes or
@@ -401,7 +401,7 @@ header on the final proxy response.
 The host operator can issue one separate read-only credential for this GET
 route. The proxy reads `flow_read_token` beside its host-side `agent_token`
 on each lookup. The installed default path is
-`~/.safeyolo/data/flow_read_token`; for a custom native data directory, use
+`~/.safeyolo/data/flow_read_token`; for a custom data directory, use
 that directory instead. The proxy never creates this token or mounts it into
 an agent by default. Give it only to an explicitly selected client that can
 reach the proxy. The agent token and host admin token do not grant read-all

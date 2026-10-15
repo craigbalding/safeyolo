@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retain debug outputs from CI; native product packages use the shell producer."""
+"""Retain debug outputs from CI; SafeYolo packages use the shell producer."""
 
 from __future__ import annotations
 

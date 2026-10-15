@@ -31,6 +31,24 @@ def make_repo(tmp_path: Path, monkeypatch):
 
 
 class TestCheckRule:
+    @pytest.mark.parametrize(("surface", "phrase"), [
+        ("README.md", "Native production downloads"),
+        ("cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md", "native product"),
+        ("proxy/src/bin/safeyolo.rs", "native settings"),
+    ])
+    def test_obsolete_product_qualifier_is_caught(self, make_repo, surface, phrase):
+        rule = next(r for r in mod._load_rules() if r["name"] == "one-safeyolo-product-name")
+        for relative in rule["docs"]:
+            path = make_repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("SafeYolo uses Rust and native macOS facilities.\n")
+        assert mod._check_rule(rule) == []
+        (make_repo / surface).write_text(phrase + "\n")
+        problems = mod._check_rule(rule)
+        assert len(problems) == 1
+        assert surface in problems[0]
+        assert "#1053" in problems[0]
+
     def test_absent_phrase_passes(self, make_repo):
         (make_repo / "doc.md").write_text("This is fine prose.\n")
         problems = mod._check_rule({

@@ -699,7 +699,7 @@ fn require_policy_path(path: Option<&Path>) -> Result<&Path, Box<Outcome>> {
     path.ok_or_else(|| {
         Box::new(response(
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"native policy path is unavailable"}),
+            json!({"error":"policy path is unavailable"}),
         ))
     })
 }
@@ -1347,7 +1347,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         let Some(passthrough) = passthrough else {
             return Ok(response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"native passthrough configuration unavailable"}),
+                json!({"error":"passthrough configuration unavailable"}),
             ));
         };
         let data = match read_json(request).await? {
@@ -1918,7 +1918,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             let Some(state) = task_state else {
                 return Ok(response(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    json!({"error":"native runtime is unavailable"}),
+                    json!({"error":"runtime is unavailable"}),
                 ));
             };
             let state = state.clone();
@@ -2151,7 +2151,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             let (Some(state), Some(audit)) = (task_state, service_audit) else {
                 return Ok(response(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    json!({"error":"native runtime is unavailable"}),
+                    json!({"error":"runtime is unavailable"}),
                 ));
             };
             let state = state.clone();

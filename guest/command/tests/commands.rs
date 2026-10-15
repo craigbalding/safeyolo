@@ -509,7 +509,9 @@ fn supervisor_check_refuses_a_foreign_parent_and_its_real_child() {
         String::from_utf8_lossy(&refused.stdout)
     );
     assert!(refused.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("native helper"));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains(
+        "guest supervisor executable is not the installed guest helper; command state is unknown"
+    ));
     assert!(unchanged && foreign_live);
 }
 

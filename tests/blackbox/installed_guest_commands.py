@@ -113,7 +113,7 @@ def run(args):
         helper.rename(held)
         try:
             missing = shell("/home/agent/.safeyolo-command", valid=False)
-            assert missing.returncode == 127 and "Required native guest helper is missing" in missing.stderr
+            assert missing.returncode == 127 and "Required guest helper is missing" in missing.stderr
         finally:
             held.rename(helper)
         recovery = subprocess.run([args.native_cli, "--root", str(root), "agent", "recover", args.agent],

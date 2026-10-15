@@ -402,7 +402,7 @@ struct MutationPlan: Equatable {
               event.approval.approvalType == "desktop_present"
         else {
             throw ClientError.invalidApproval(
-                "This native client does not handle \(event.approval.approvalType)"
+                "Commander does not handle \(event.approval.approvalType)"
             )
         }
 

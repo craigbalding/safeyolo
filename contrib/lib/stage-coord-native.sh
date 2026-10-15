@@ -13,7 +13,7 @@ stage_coord_native() {
         coord_host=$SCRIPT_DIR/../bin/safeyolo-coord
     fi
     if [[ -z $coord_host || ! -x $coord_host ]]; then
-        echo 'Native Coord host executable is missing; install the native product or set SAFEYOLO_COORD_EXECUTABLE' >&2
+        echo 'Coord host executable is missing; install SafeYolo or set SAFEYOLO_COORD_EXECUTABLE' >&2
         return 1
     fi
     coord_guest=${SAFEYOLO_COORD_GUEST_BINARY:-}

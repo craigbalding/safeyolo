@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] lab [--objective TEXT] [--workspace PATH] [--agent NAME] [--nested-assets PATH] [--dangerously-allow-unowned] [--yes]\nsafeyolo [--root ROOT | --config FILE] lab [--agent NAME] --status [--json]\nsafeyolo [--root ROOT | --config FILE] lab [--agent NAME] --recover|--relaunch|--teardown [--keep-agent]\n\nStart from an experiment objective, or reattach to the same owned Lab. The installed instance needs its prepared guest runtime and Lab assets. Codex tools are prepared in the Lab's own guest home; normal authentication remains an operator choice.\nExiting the viewer retains the controller, workspace and evidence. --recover restarts an owned dead controller. --relaunch explicitly replaces it. --teardown captures redacted evidence and removes the owned session, then stops its guest unless --keep-agent is selected. Workspace, authentication and evidence files remain for inspection.\nOn Linux, Lab reuses this instance's installed CLI and proxy as inner inputs when available. --nested-assets selects another prepared native Linux installation. Only its CLI and proxy are copied into the guest read-only share at /safeyolo/lab-native; instance credentials and policy are not copied. The controller proposes the experiment before changing its inner instance. Outer policy is unchanged. Use --agent to choose among multiple Labs. Other agents and sessions are not adopted.";
+pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] lab [--objective TEXT] [--workspace PATH] [--agent NAME] [--nested-assets PATH] [--dangerously-allow-unowned] [--yes]\nsafeyolo [--root ROOT | --config FILE] lab [--agent NAME] --status [--json]\nsafeyolo [--root ROOT | --config FILE] lab [--agent NAME] --recover|--relaunch|--teardown [--keep-agent]\n\nStart from an experiment objective, or reattach to the same owned Lab. The installed instance needs its prepared guest runtime and Lab assets. Codex tools are prepared in the Lab's own guest home; normal authentication remains an operator choice.\nExiting the viewer retains the controller, workspace and evidence. --recover restarts an owned dead controller. --relaunch explicitly replaces it. --teardown captures redacted evidence and removes the owned session, then stops its guest unless --keep-agent is selected. Workspace, authentication and evidence files remain for inspection.\nOn Linux, Lab reuses this instance's installed CLI and proxy as inner inputs when available. --nested-assets selects another prepared SafeYolo Linux installation. Only its CLI and proxy are copied into the guest read-only share at /safeyolo/lab-native; instance credentials and policy are not copied. The controller proposes the experiment before changing its inner instance. Outer policy is unchanged. Use --agent to choose among multiple Labs. Other agents and sessions are not adopted.";
 
 #[derive(Default)]
 struct Options {
@@ -199,7 +199,7 @@ fn stage_nested_inputs(inputs: &Path, share: &Path) -> Result<(), Error> {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&source)?;
         if !input.metadata()?.is_file() {
-            return Err("nested input must be a regular native executable".into());
+            return Err("nested input must be a regular executable".into());
         }
         let mut header = [0; 20];
         input.read_exact(&mut header)?;
@@ -211,7 +211,7 @@ fn stage_nested_inputs(inputs: &Path, share: &Path) -> Result<(), Error> {
         if &header[..6] != b"\x7fELF\x02\x01"
             || u16::from_le_bytes([header[18], header[19]]) != machine
         {
-            return Err("nested inputs must be matching native Linux artifacts".into());
+            return Err("nested inputs must be matching SafeYolo Linux artifacts".into());
         }
         let mut file = tempfile::NamedTempFile::new_in(&bin)?;
         file.as_file()

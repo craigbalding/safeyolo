@@ -7,11 +7,11 @@ or real privilege and policy choices. Do not ask the operator to repeat the
 objective. Use the safeyolo-lab-controller skill for visible execution,
 evidence before interpretation, reversible changes and direct intervention.
 
-If prepared native Linux inputs are staged at /safeyolo/lab-native, use
+If prepared Linux inputs are staged at /safeyolo/lab-native, use
 scripts/prepare-nested.sh for a proxy-only request experiment.
-That helper prepares an independently owned native inner instance in this
+That helper prepares an independently owned inner instance in this
 guest. It needs no second controller or inner guest for this experiment.
-Use its native CLI and normal policy commands. The outer proxy, authentication
+Use its CLI and normal policy commands. The outer proxy, authentication
 and policy remain the containment boundary. Never change the outer policy to
 make an inner experiment pass.
 

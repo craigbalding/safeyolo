@@ -483,7 +483,7 @@ fn check_native_supervisor(paths: &Paths, pid: i32) -> Result<(), Error> {
             || executable_digest(executable)?.as_ref() != executable_digest(helper)?.as_ref())
     {
         return Err(
-            "guest supervisor executable is not the native helper; command state is unknown".into(),
+            "guest supervisor executable is not the installed guest helper; command state is unknown".into(),
         );
     }
     let cmdline = fs::read(proc.join("cmdline"))?;

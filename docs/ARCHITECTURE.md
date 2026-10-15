@@ -8,7 +8,7 @@ durable `agent_id` plus runtime `run_id` are documented in the
 
 ## Overview
 
-The current host CLI launches the packaged Rust proxy. The native process
+The current host CLI launches the packaged Rust proxy. The process
 handles network policy, credential and pattern inspection, local Agent and
 Admin APIs, flow evidence, and the read-only terminal inspector. The CLI owns
 host setup and sandbox lifecycle. See [developer architecture](DEVELOPERS.md#architecture-overview)
@@ -25,7 +25,7 @@ accepted differences and first-release traffic scope.
 
 Each agent runs in an isolated Linux sandbox without an external network
 interface. Requests go through the guest forwarder and a host-owned,
-per-agent Unix domain socket (UDS) to the native Rust proxy:
+per-agent Unix domain socket (UDS) to the Rust proxy:
 
 ```text
 Agent sandbox -> guest forwarder -> per-agent UDS -> Rust proxy -> upstream
@@ -58,8 +58,8 @@ and a read-only configuration share.
   go to a per-agent file-backed overlay and persist across stop and run.
   `--ephemeral` selects a memory-backed overlay whose rootfs writes are
   discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
-- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by the native host prerequisites in `docs/native-policy.md` and surfaced in `safeyolo doctor`.
-- **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by the native host prerequisites in `docs/native-policy.md`.
+- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. `safeyolo doctor` reports the selected runtime.
+- **One-time setup**: The published release requires the host administrator to prepare runsc, subordinate IDs and any required AppArmor profile or `/dev/kvm` access. Follow the [host prerequisites](installation.md#guest-prerequisites). The published installer does not perform this host preparation.
 
 
 See the [macOS microVM architecture](microvm-architecture.md) and

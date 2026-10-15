@@ -34,7 +34,7 @@ Existing agents receive it by reapplying their normal `@claude` or `@codex`
 host setup on a subsequent run. The harness must start after that config is
 staged; no coord server, proxy, or addon restart is required.
 
-The native product stages the matching Linux `safeyolo-coord` executable and
+SafeYolo stages the matching Linux `safeyolo-coord` executable and
 runs its `mcp` command for this adapter. It uses the existing Agent API and
 reads the caller's agent token for each request; no Python MCP package or raw
 NATS credential is needed. Supervised Codex/Pi roles use its `supervise`
@@ -87,7 +87,7 @@ send(room_name="work", body="Room action needed.", notify="room")
 send(room_name="work", body="Review needed.", notify=["alice", "bob"])
 ```
 
-On the owning host account, the native operator CLI uses `--to` to select
+On the owning host account, the operator CLI uses `--to` to select
 agents. With the installed `safeyolo` on PATH, these examples send to `work`
 in the default instance. Use the same room and agent-name replacements as the
 MCP examples.
@@ -97,7 +97,7 @@ safeyolo coord send work 'Room action needed.'
 safeyolo coord send work 'Review needed.' --to alice --to bob
 ```
 
-The first native command notifies the room; the second notifies only the named
+The first command notifies the room; the second notifies only the named
 agents. For `notify=none`, use MCP or the raw Agent API. Notification does not
 change retained-message visibility; room receive permissions control who can
 read the message.

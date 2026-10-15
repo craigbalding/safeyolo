@@ -1,6 +1,6 @@
-# Native Mattermost Coord adapter
+# Mattermost Coord adapter
 
-The optional native Mattermost adapter projects selected Coord rooms to one operator.
+The optional Mattermost adapter projects selected Coord rooms to one operator.
 Coord remains authoritative. Mattermost is neither a coordination backend nor
 a coord principal, and message text, usernames, thread IDs, and button labels
 are never trust evidence.
@@ -14,8 +14,8 @@ message attachments](https://developers.mattermost.com/integrate/plugins/interac
 which remain compatible with Mattermost 11.9.x and the stock Android client.
 No Mattermost plugin or PikaPods-specific feature is required.
 
-Use the native CLI installed with your [native instance](native-policy.md#install-and-start).
-Run the adapter as the host account that owns that instance. The native bundle's
+Use the CLI installed with your [instance](installation.md#install-and-start).
+Run the adapter as the host account that owns that instance. The bundle's
 `bin/safeyolo` supplies the adapter; no Python package, guest helper or additional
 Mattermost executable is required. The retired Python CLI no longer registers
 `coord mattermost`.
@@ -141,11 +141,11 @@ normal member of every mapped channel, and do not grant it System Admin.
 
 Keep these operator-owned files outside the repository:
 
-1. `~/.safeyolo-native/mattermost-bot-token`, mode `0600`, containing only the bot
+1. `~/.safeyolo/mattermost-bot-token`, mode `0600`, containing only the bot
    token.
-2. `~/.safeyolo-native/coord-mattermost.toml`, containing the adapter configuration.
+2. `~/.safeyolo/coord-mattermost.toml`, containing the adapter configuration.
 
-Start with a new state filename. The native adapter refuses an older Python
+Start with a new state filename. The adapter refuses an older Python
 adapter database and does not convert it. Preserve the old database. Changing
 the action configuration also requires a fresh state path because that
 configuration is part of the adapter's durable identity:
@@ -153,10 +153,10 @@ configuration is part of the adapter's durable identity:
 ```toml
 version = 1
 server_url = "https://YOUR-MATTERMOST-ORIGIN"
-bot_token_file = "~/.safeyolo-native/mattermost-bot-token"
+bot_token_file = "~/.safeyolo/mattermost-bot-token"
 bot_user_id = "26_CHARACTER_MATTERMOST_BOT_USER_ID"
 operator_user_id = "26_CHARACTER_MATTERMOST_OPERATOR_USER_ID"
-state_file = "~/.safeyolo-native/data/coord-mattermost-actions.sqlite3"
+state_file = "~/.safeyolo/data/coord-mattermost-actions.sqlite3"
 poll_interval_seconds = 2.0
 
 action_listener_host = "127.0.0.1"
@@ -173,14 +173,14 @@ backfill = false
 
 Use the exact HTTPS Mattermost origin and exact IDs returned by the server.
 Read the designated coordinator's `sender_agent_id` from its canonical message
-envelope with the installed native CLI's `coord history ROOM_NAME`. Do not copy
+envelope with the installed CLI's `coord history ROOM_NAME`. Do not copy
 an ID from message text. Every Coord room and channel may appear only once.
 The local Coord operator must already have `send,receive` on each room.
 Coord and its NATS server must be running for this instance; start them with
-the installed native CLI's `coord start` command if needed.
+the installed CLI's `coord start` command if needed.
 
 Without `--config`, the adapter reads `coord-mattermost.toml` beside the selected
-native instance configuration. Relative token and state paths resolve against
+instance configuration. Relative token and state paths resolve against
 the adapter TOML file's directory. `~/` paths resolve against the host account's
 home directory. The explicit commands below select the example instance and
 adapter configuration.
@@ -239,17 +239,17 @@ cannot reach the loopback listener until ingress is restored.
 
 ## Validate, run, stop, and restart
 
-On the host, use the account that owns the initialized native instance at
-`$HOME/.safeyolo-native`. Its Coord runtime must be running and the bot must
+On the host, use the account that owns the initialized instance at
+`$HOME/.safeyolo`. Its Coord runtime must be running and the bot must
 belong to every mapped channel. Keep configured proxy and Certificate Authority
 (CA) environment settings, including `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and
 `NODE_EXTRA_CA_CERTS`. Validate credentials, identities, Coord grants, strict
 configuration, private state and the callback socket:
 
 ```sh
-chmod 600 "$HOME/.safeyolo-native/mattermost-bot-token"
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" \
-  coord mattermost check --config "$HOME/.safeyolo-native/coord-mattermost.toml"
+chmod 600 "$HOME/.safeyolo/mattermost-bot-token"
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" \
+  coord mattermost check --config "$HOME/.safeyolo/coord-mattermost.toml"
 ```
 
 `check` briefly binds and releases the configured loopback port. It cannot
@@ -258,8 +258,8 @@ prove the independently operated public tunnel. A successful check prints
 under the operator's normal host supervisor:
 
 ```sh
-"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" \
-  coord mattermost run --config "$HOME/.safeyolo-native/coord-mattermost.toml"
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" \
+  coord mattermost run --config "$HOME/.safeyolo/coord-mattermost.toml"
 ```
 
 Status checks for the example prefix are:
@@ -313,13 +313,12 @@ operator deliberately replaces a stopped mapping after reconciling its pending
 effects, use a fresh state path with `backfill = false` to skip existing room
 history and establish a new channel baseline. Preserve the previous store.
 
-The native client-contract tests in
-`tests/proxy_contracts/test_native_mattermost.py` exercise installed native
-commands, a controlled HTTPS Mattermost server and real NATS. They cover
+The client-contract tests in
+`tests/proxy_contracts/test_native_mattermost.py` exercise installed commands, a controlled HTTPS Mattermost server and real NATS. They cover
 exchange, authority, hostile text, expiry/replay, publication counts, uncertain
 outcomes and owned stop/restart. Rust units cover private state, WAL, leases,
 replacement guards and rendering. These checks establish the selected client
 contract; live-account/mobile deployment acceptance is outside that scope.
 The older Python fixtures and macOS probe scripts remain repository test
 tooling under `tests/legacy_mattermost` and `scripts/accept_mattermost_macos*.py`.
-They are excluded from production packages and do not establish native behavior.
+They are excluded from production packages and do not establish behavior.

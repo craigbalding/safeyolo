@@ -7,7 +7,7 @@ instance=${1:-$HOME/.safeyolo/lab-inner}
 if (($# > 1)); then echo 'Usage: prepare-nested.sh [NEW_INSTANCE_DIRECTORY]' >&2; exit 2; fi
 for binary in safeyolo safeyolo-proxy; do
     if [[ ! -x $inputs/bin/$binary ]]; then
-        echo "Prepared native Linux input is missing: $inputs/bin/$binary; select Lab --nested-assets" >&2
+        echo "Prepared SafeYolo Linux input is missing: $inputs/bin/$binary; select Lab --nested-assets" >&2
         exit 1
     fi
 done
@@ -49,5 +49,5 @@ listeners = [{ agent_id = "lab-client", socket_path = "data/lab-client.sock", so
 EOF
 cp -- "$instance/policy.toml" "$instance/policy-original.toml"
 "$instance/bin/safeyolo" config check "$instance/config.toml"
-printf 'Prepared native inner instance: %s\nRequest identity: lab-client\nRequest socket: %s/data/lab-client.sock\nOriginal policy: %s/policy-original.toml\n' "$instance" "$instance" "$instance"
-printf '%s\n' 'Start and change only this inner instance with its native CLI. All external traffic still traverses the outer proxy. This prepares a proxy-only experiment; it does not start an inner sandbox.'
+printf 'Prepared inner instance: %s\nRequest identity: lab-client\nRequest socket: %s/data/lab-client.sock\nOriginal policy: %s/policy-original.toml\n' "$instance" "$instance" "$instance"
+printf '%s\n' 'Start and change only this inner instance with its CLI. All external traffic still traverses the outer proxy. This prepares a proxy-only experiment; it does not start an inner sandbox.'

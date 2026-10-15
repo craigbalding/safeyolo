@@ -1,7 +1,7 @@
 # Installed blackbox tests
 
 Use this suite to check the installed SafeYolo package, real guest isolation,
-agent workloads, access approvals and lifecycle. Native proxy process and
+agent workloads, access approvals and lifecycle. Rust proxy process and
 protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
 A hosted process or package result does not prove KVM or Apple VZ isolation.
 
@@ -9,7 +9,7 @@ Run installed acceptance on a disposable supported host, from a clean checkout
 of the exact commit being tested. Install uv and select Rust 1.94.0 from
 [`proxy/rust-toolchain.toml`](../../proxy/rust-toolchain.toml); Cargo must be on
 `PATH`. Linux preparation needs noninteractive host sudo, subordinate IDs
-covering 100000–165535, and the [native guest prerequisites](../../docs/native-policy.md#guest-prerequisites). The workloads
+covering 100000–165535, and the [guest prerequisites](../../docs/installation.md#guest-prerequisites). The workloads
 section additionally needs `dpkg-deb` and `openssh-server` on its host. KVM
 requires a fresh libvirt guest with usable `/dev/kvm`. VZ requires physical
 Apple Silicon and the Swift helper build prerequisites in the
@@ -38,8 +38,8 @@ On the physical Apple Silicon host:
 ```
 
 The runner creates a disk-backed directory under the operator's home. It calls
-`run-lane.sh --prepare-only` once: the supported native `install.sh`, locked
-host test dependencies and verified NATS input. Supply prepared native bundles
+`run-lane.sh --prepare-only` once: the supported `install.sh`, locked
+host test dependencies and verified NATS input. Supply prepared bundles
 with `SAFEYOLO_NATIVE_BUNDLE`, or matching host/guest/runtime inputs with
 `SAFEYOLO_NATIVE_ARTIFACTS`, `SAFEYOLO_NATIVE_GUEST_ARTIFACTS` and
 `SAFEYOLO_NATIVE_RUNTIME_ARTIFACTS`; macOS also uses
@@ -56,7 +56,7 @@ succeed. Systrap is explicitly selected even when the host exposes KVM. KVM
 must pass actual detection instead of forcing a KVM label.
 
 Each section then borrows the same compatible guest artifacts and installed
-CLI/native executable. Each gets a fresh agent, config, data, logs, public and
+CLI/executable. Each gets a fresh agent, config, data, logs, public and
 private fixture certificates, overlay, origins, captures, approvals, tokens,
 Coord test instance and writable state. The lifecycle section's separate live
 owner also gets its own instance. Sharing preparation does not share live
@@ -78,10 +78,10 @@ For example, run access on the software-isolation host:
 ```
 
 For the continuous Ubuntu or physical Mac operator/guest path, select the
-prepared native bundle and a desktop-capable `SAFEYOLO_PLATFORM_ASSETS` tree. The guest must already
+prepared bundle and a desktop-capable `SAFEYOLO_PLATFORM_ASSETS` tree. The guest must already
 contain Xvfb, x11vnc, a supported window manager and noVNC web assets. Use the
 graphical builders or the [desktop rootfs instructions](../../contrib/ROOTFS_SCRIPT_GUIDE.md#optional-desktop).
-The installed native guest helper supplies the HTTP/WebSocket-to-VNC bridge;
+The installed guest helper supplies the HTTP/WebSocket-to-VNC bridge;
 the procedure checks these inputs and does not install guest packages. No proxy
 or guest needs to be running. From the clean test checkout on Ubuntu, run:
 
@@ -90,8 +90,7 @@ or guest needs to be running. From the clean test checkout on Ubuntu, run:
 ```
 
 On a physical Apple Silicon Mac, the platform assets must include the kernel,
-initramfs and desktop-capable `rootfs-base.ext4`. Verify that the selected native
-shell works under the test account before the journey. The VZ fixture uses
+initramfs and desktop-capable `rootfs-base.ext4`. Verify that the selected shell works under the test account before the journey. The VZ fixture uses
 46370/46372 for owned NATS, 46371 for Admin, 46373/46374 for HTTP/HTTPS and
 46375 for desktop presentation. Those TCP ports must be permitted and free.
 From the clean test checkout on that Mac, run:
@@ -101,7 +100,7 @@ From the clean test checkout on that Mac, run:
 ```
 
 This selection uses one installed instance and agent for access, terminal
-attachment plus an independent shell, native Admin desktop presentation and
+attachment plus an independent shell, Admin desktop presentation and
 missing-target reporting, then stop/restart and fresh traffic. It runs an owned
 shell marker command, with no model or simulated login. Desktop observations
 cover the unlocked noVNC page and a live VNC banner; they do not prove visual
@@ -128,14 +127,14 @@ with no markers cannot clear an inner cleanup failure that already detected a
 surviving owned process. Stop the proxy and each disposable guest: `safeyolo stop`
 alone does not stop a guest.
 
-## Native journey with Python unavailable
+## Journey with Python unavailable
 
-This bounded R5 preparation exercises native installation, start/status/doctor,
+This bounded R5 preparation exercises installation, start/status/doctor,
 the installed host Coord identity, one systrap guest's boot-helper identity and
 authenticated Agent API health, then owned stop. It also keeps a second
 disposable proxy live through the subject's
-stop and checks its process receipt, policy and native Admin response. It uses
-the ordinary bundle installer and native agent shell. The ordinary guest has
+stop and checks its process receipt, policy and Admin response. It uses
+the ordinary bundle installer and agent shell. The ordinary guest has
 `/safeyolo/safeyolo-guest`; it does not stage `/safeyolo/safeyolo-coord`.
 Harness setup stages Coord at `/home/agent/.safeyolo/safeyolo-coord` through
 `contrib/lib/stage-coord-native.sh`. The existing installed Factory staging
@@ -144,10 +143,10 @@ This journey does not select a harness, final candidate F or the full release la
 
 Use an owned, isolated Ubuntu host provisioned without Python interpreters or
 embedded Python libraries, and a separate prepared guest `rootfs-tree` with the
-same property. Preserve the native guest prerequisites and UID 100000 ownership.
+same property. Preserve the guest prerequisites and UID 100000 ownership.
 The normal [guest builder](../../guest/build-rootfs.sh) includes Python; its
-unchanged output does not supply this input. Stage matching native bundles and
-only the required shell/native tools. Do not mount development environments,
+unchanged output does not supply this input. Stage matching bundles and
+only the required shell/tools. Do not mount development environments,
 Python caches or operator homes into either boundary. Provisioning and package
 metadata must establish the filesystem boundary; changing `PATH` or searching
 for `.py` files does not establish it. This preparation does not remove Python
@@ -158,7 +157,7 @@ trace reader run on the external harness host, outside both product filesystems.
 The runtime owner must bind a noninterfering host execution observer before
 claiming Python absence. Its scope must include the launched descendants:
 installation, CLI, proxy, Coord and host launch tools.
-The separate guest trace covers the selected native shell/helper/API lineage.
+The separate guest trace covers the selected shell/helper/API lineage.
 The guest trace does not cover PID-1 boot, supervision/recovery, models, ordinary
 workloads or launches delegated to an existing systemd owner. A tracer that cannot decode executable filenames is unavailable
 evidence. In particular, nested ARM64 gVisor can return an address instead of
@@ -171,7 +170,7 @@ Supply the unpacked bundle at `/home/agent/r5/bundle`, prepared assets at
 full source commit, which may differ from this test entry's revision. Both
 host and guest need Bash and curl; the guest also needs `strace`. The host needs
 the Linux prerequisites above. Permit the configured pinned NATS acquisition route, or
-set `SAFEYOLO_COORD_NATS_BINARY` to an already checked native binary. Preserve
+set `SAFEYOLO_COORD_NATS_BINARY` to an already checked binary. Preserve
 the proxy and certificate environment. Keep execution logs private; they can
 contain command arguments. The following commands are the control and product
 entries to observe. The host control deliberately exits 97; its stderr must
@@ -217,8 +216,8 @@ without it, `shebang_lookup` is false and only executable names are checked.
 An explicitly supplied missing path or ordinary file returns exit 2.
 Do not replace an unreadable filename with `argv[0]`.
 
-Reconcile this reached path with the existing [production-use map](../../docs/native-settings.md#operator-entry-responsibilities),
-bundle `package-info`/`SHA256SUMS`, native producer/installer, staged guest
+Reconcile this reached path with the existing [production-use map](../../docs/settings.md#operator-entry-responsibilities),
+bundle `package-info`/`SHA256SUMS`, producer/installer, staged guest
 scripts and OCI mounts, Cargo lockfiles and resolved ELF dependencies. The
 reader detects named Python/PyPy paths and Python shebangs in readable retained
 files. Renamed interpreters, embedded libraries and unobserved guest paths
@@ -229,7 +228,7 @@ reconciliation and three final platform lanes remain open.
 ## Cadence and hardware evidence
 
 Normal PRs run quick checks and relevant platform tests for platform changes.
-Complete retained Python/CLI and native component families run overnight on
+Complete retained Python/CLI and component families run overnight on
 supported hosts. The full Mac proxy protocol family runs once, in
 [`proxy-rust.yml`](../../.github/workflows/proxy-rust.yml). The separate hosted
 Mac installed job runs the short package witness below. Full-suite success is
@@ -261,17 +260,17 @@ Historical #640 receipts remain historical acceptance; #320 does not reopen them
 
 ## Existing single-section entry points
 
-`run-lane.sh` remains the supported native installation plus one test selection
+`run-lane.sh` remains the supported installation plus one test selection
 entry point, including the full installed isolation lane used by acceptance
 hosts. From the repository root on the matching disposable host, set
-`SAFEYOLO_CONFIG_DIR` to a fresh installation root and supply the native and
+`SAFEYOLO_CONFIG_DIR` to a fresh installation root and supply the and
 platform inputs above before running:
 
 ```sh
 ./tests/blackbox/run-lane.sh systrap --verbose
 ```
 
-If the native product and platform inputs are already prepared, run a section without
+If SafeYolo and platform inputs are already prepared, run a section without
 reinstalling. `SAFEYOLO_CONFIG_DIR` names the prepared source instance;
 `SAFEYOLO_TEST_CONFIG_DIR` names the separate live test instance:
 
@@ -281,18 +280,18 @@ SAFEYOLO_TEST_CONFIG_DIR=/path/to/disposable-test \
   ./tests/blackbox/run-tests.sh --expect-platform systrap --verbose
 ```
 
-The native Rust package is the default. The runner refuses to use its source
+The Rust package is the default. The runner refuses to use its source
 instance, the operator's normal instance or an ambiguous live config as test
 state. It links compatible `share/` and `bin/` inputs, creates fresh writable
-state, verifies actual native guest metadata for platform selection, and records the
+state, verifies actual guest metadata for platform selection, and records the
 installed source/profile, packaged executable, actual process/start identity, authenticated Admin
 runtime identity and per-agent listener before guest assertions. `--workloads`,
 `--access`, `--lifecycle` and KVM `--ingress` select procedures and exit before
 the full pytest phases. `run-lane.sh` supplies their selected source checkout.
 For a direct prepared procedural run, also set
 `SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT` to the checkout that produced the installed
-native layout and executable. The runner resolves its HEAD; `--install-commit FULL_SHA`
-must match that checkout before setup. The installed native executables, package metadata and live runtime
+layout and executable. The runner resolves its HEAD; `--install-commit FULL_SHA`
+must match that checkout before setup. The installed executables, package metadata and live runtime
 are checked against the same selection. For pytest selections, pass arguments
 after `--`; the runner forwards argument boundaries without shell reinterpretation.
 
@@ -305,7 +304,7 @@ pruning scope remain in the
 [approved disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
 Lens's [physical replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767)
 records the VZ isolation, access and lifecycle observations at their actual
-commits, including the five unexecuted isolation assertions. Fresh native installation and direct recovery commands are in the
+commits, including the five unexecuted isolation assertions. Fresh installation and direct recovery commands are in the
 [CLI guide](../../cli/README.md); there is no old-package rollback operation.
 
 ## What each installed selection observes
@@ -337,7 +336,7 @@ owned and cleaned up. The key fixture never borrows an operator credential.
 Access owns the plain-WS exchange through the same guest handshake, payload and
 close helper, with matching origin and inspector observations.
 
-**Access** stays one composition with two live guests, an operator, native proxy,
+**Access** stays one composition with two live guests, an operator, Rust proxy,
 NATS and inspector. It checks service approval, contract binding and risky-route
 approval/retry, exact credential injection, live peer denial, test context and
 trace, populated exact owner-positive/live-peer-negative flow search/detail,
@@ -359,18 +358,17 @@ receipt, process start identity, UDS and guest cleanup. The VZ guest verifies
 its actual vsock forwarder instead of requiring a Linux socket mount.
 
 **Continuity** selects `installed_state_transition.py` in its own
-host instance without booting guests. Four identified native processes write,
+host instance without booting guests. Four identified processes write,
 replace, revoke and deliberately recover access. Return processes must retain
 SQLite ownership, exact bodies, tags and correlated audit; enforce an open
 circuit before operator reset and avoid resurrecting it afterward; retain
 catalogue, policy, grants and scoped host/service revocations; preserve Coord
-messages/attention and the provider-owned lease snapshot; the fresh native
-process must report unknown lease state without inventing held ownership.
+messages/attention and the provider-owned lease snapshot; the fresh process must report unknown lease state without inventing held ownership.
 It retains approved Plumb messages before close returns 403. The same sequence
 checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
 0600 private state and process-local task reset. Each process, listener, NATS
 server and owned origin must stop. The historical cross-backend executor was
-retired after [Lens verified the native Linux replacement](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).
+retired after [Lens verified the Linux replacement](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).
 Current macOS package and guest replacements still need their own observations
 before matching duplicate pruning. Accepted historical migration receipts remain
 in their original issues; they are not recurring execution requirements.
@@ -387,9 +385,9 @@ alias, as prepared by the workflow.
 ./tests/blackbox/run-installed-package.sh
 ```
 
-This installs the current native layout without a guest rootfs build, uses the
+This installs the current layout without a guest rootfs build, uses the
 normal launcher/configuration, authenticates exact running identity, observes
-native allow/deny at two authorities on one owned HTTP listener and verifies
+allow/deny at two authorities on one owned HTTP listener and verifies
 stop/cleanup. The allowed IP and denied localhost authorities both reach that
 known-live fixture before the policy probe. Success
 is for this host-package claim; no guest boots and guest isolation is explicitly
@@ -397,7 +395,7 @@ unproved. It then runs the three existing `test_https_origin_verification` nodes
 against the packaged executable: trusted localhost reaches the origin, wrong
 SAN and untrusted origin return 502 without origin delivery. It does not repeat
 the complete component matrix against the package.
-The same prepared product then runs the separate native host-continuity
+The same prepared product then runs the separate host-continuity
 procedure above, with fresh config/data/cert/log/origin state.
 
 If a prepared-package witness requires fixed ports, `installed_host_smoke.py`
@@ -416,7 +414,7 @@ Each procedure keeps its own
 state and verifies owned cleanup before another procedure runs.
 
 `SAFEYOLO_TEST_SOCKET_DIR` selects an existing short, writable directory for
-native contract sockets when the default temporary directory is unavailable.
+contract sockets when the default temporary directory is unavailable.
 The harness creates a private temporary directory there and removes it after
 each case.
 
@@ -469,7 +467,7 @@ the transfer exceeding 2 GiB. The workflow publishes no host or guest artifacts.
 
 ## Owned origins and observation fidelity
 
-The native runner routes synthetic hosts through its owned parent and sinkhole,
+The runner routes synthetic hosts through its owned parent and sinkhole,
 chains other destinations through the instance's configured parent, adds its
 owned test CA to upstream trust and restores the previous route/trust. Host-side
 control inspection is separate from guest traffic. Guest traffic uses the real
@@ -500,10 +498,9 @@ roots and isolated test-context configuration never change an operator's live
 CA or policy. Approved writable mounts remain operator data; these tests do not
 create a new restriction on what an operator may mount.
 
-## Native component development and adding tests
+## Component development and adding tests
 
-From the repository root, prepare the locked development environment and native
-binary, then select a relevant test module:
+From the repository root, prepare the locked development environment and binary, then select a relevant test module:
 
 ```sh
 uv sync --frozen --group dev
@@ -512,8 +509,8 @@ SAFEYOLO_RUST_PROXY="$PWD/proxy/target/release/safeyolo-proxy" \
   uv run --frozen pytest -q tests/proxy_contracts/test_https_contract.py --proxy-backend rust
 ```
 
-Component fixtures run separate real native processes, UDS, origins, policy,
-audit and cleanup. They make no guest isolation claim. Put a native protocol/API
+Component fixtures run separate real processes, UDS, origins, policy,
+audit and cleanup. They make no guest isolation claim. Put a protocol/API
 contract there; retain installed/guest/approval compositions here. Add meaningful
 negative controls and exact origin observations, use the production API rather
 than reimplementing decisions, and declare Title/What/Why in blackbox pytest
@@ -528,14 +525,14 @@ This contributor procedure exercises the shared-approval protocol. Worker is
 the requesting test guest; Helper is the separate assisting guest. The driver's
 default names are `worker` and `helper`. If the owned setup uses other names,
 add `--worker NAME --helper NAME` to the invocations below. For ordinary access
-decisions, use the [operator guide](../../docs/native-operator.md).
+decisions, use the [operator guide](../../docs/operator-guide.md).
 
 Run from this checkout on the existing owned Ubuntu/systrap fixture. The selected
-native proxy and two guests must already be running. The marked disposable root
+Rust proxy and two guests must already be running. The marked disposable root
 must expose each guest's existing read-only `config-share` mount. Supply the
 full product commit and installed CLI/proxy/guest assets with matching source
 and build profile. Keep the installation's `package-info` beside its `bin`
-directory. The driver checks the native process receipt, kernel process birth,
+directory. The driver checks the process receipt, kernel process birth,
 selected executable/configuration and authenticated runtime identity before
 guest work. It resolves readiness and Admin token paths from `config.toml`.
 Missing, stale or foreign ownership refuses the run. `TRANSPORT_CLI` is the
@@ -546,7 +543,7 @@ For the real Helper mode, Helper must already have its ordinary Codex launcher,
 model access and guest authentication. The probe imports no host credential and
 does not select another model. It preserves the configured model route and
 credential controls. Start Helper's sandbox with `agent start helper
---sandbox-only`; the probe launches its one Codex command through native `agent
+--sandbox-only`; the probe launches its one Codex command through `agent
 start helper --foreground`. It preserves an already active coding session by
 refusing to replace it. Before the run, verify the ordinary launcher version and
 login status inside Helper. An operator may privately copy an existing
@@ -554,7 +551,7 @@ provisioned Codex token into this owned test home under the standing test
 authority. Keep the managed configuration and proxy/CA settings. Do not copy
 the Admin API credential into Helper.
 
-`TRANSPORT_CLI` is the installed native CLI for this root. `FULL_COMMIT` identifies
+`TRANSPORT_CLI` is the installed CLI for this root. `FULL_COMMIT` identifies
 the installed CLI/proxy/guest source, separately from the checkout containing
 the test driver. `ROOM` is an existing ordinary Coord room in this disposable
 instance, with Helper send/receive and Worker receive permission. Keep it
@@ -583,21 +580,21 @@ uv run --frozen --no-sync python tests/blackbox/installed_shared_approvals.py \
   --operator-timeout 600 --reconcile-seconds 120
 ```
 
-The result requires native diagnostic/show/preparation commands executed by
+The result requires diagnostic/show/preparation commands executed by
 Codex, a canonical Helper-attributed typed preparation, unchanged network
 permission before the human decision, two exact Worker marker deliveries,
 refusal for Helper and the second port, and owned cleanup. The driver prints
-the native trusted scope and separately quoted Helper diagnosis before the
-human decides. Helper's successful native preparation does not grant network
+the trusted scope and separately quoted Helper diagnosis before the
+human decides. Helper's successful preparation does not grant network
 permission. Rejection, an expired decision window or a changed action stops
 the journey without a Worker retry. Model prose and a successful process exit
 do not establish U3.
 
 The fixed disclosure inputs place a synthetic secret in selected raw evidence
 and a separate peer record outside Helper's reads. Helper responses, routine
-native logs and the shared-room notification must exclude both. A deterministic
+logs and the shared-room notification must exclude both. A deterministic
 Helper call appends the fixed terminal-control/Markdown/HTML reason to the
-real diagnosis on the same typed action. The native display quotes that reason;
+real diagnosis on the same typed action. The display quotes that reason;
 the shared notification carries only the permitted canonical projection.
 Raw evidence remains available to its authorized owner.
 
@@ -632,7 +629,7 @@ uv run --frozen --no-sync python tests/blackbox/installed_shared_approvals.py \
   --commit FULL_COMMIT --interfaces --model-unavailable
 ```
 
-The probe prepares the selected pending action with deterministic native Helper
+The probe prepares the selected pending action with deterministic Helper
 calls. It uses its second owned listener at `127.0.0.3` as a model endpoint
 returning HTTP 503. Only Helper receives fixture access to that listener. A
 command-scoped Codex provider override selects that endpoint without changing
@@ -646,7 +643,7 @@ the selected request, an initialized Codex thread and the matching failed-turn
 diagnosis. A missing launcher, authentication failure or successful process exit
 cannot supply this result. The printed `model_unavailable` phase contains the
 diagnosis and pending action. Raw events and stderr retain private permissions.
-The native CLI then displays the trusted scope and directly approves through
+The CLI then displays the trusted scope and directly approves through
 the common resolver. The final result requires the approved canonical action,
 exact Worker marker deliveries, refused Helper/second-port controls and owned
 cleanup. The model failure itself must leave the action pending and policy
@@ -656,5 +653,5 @@ make the direct decision instead of the fixture's explicit operator call.
 Commander can run on approved Tart against the same Ubuntu pending item.
 Physical-host GUI placement is not a prerequisite. A client source test does
 not establish the actual cross-client journey.
-See the [entry responsibility map](../../docs/native-settings.md#operator-entry-responsibilities)
+See the [entry responsibility map](../../docs/settings.md#operator-entry-responsibilities)
 for the retained component boundaries.

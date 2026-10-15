@@ -134,7 +134,7 @@ reports a setuid/nosuid error, or cannot find `/usr/bin/setpriv` on Linux, the
 agent likely uses an older or incomplete rootfs. Report the exact error and
 ask the operator to rebuild the image with the current SafeYolo guest helper.
 
-Native `agent shell` has no guest-root flag. `agent recover` runs a fixed health
+`agent shell` has no guest-root flag. `agent recover` runs a fixed health
 probe through PID 1 as the ordinary guest account, without SSH. It cannot repair
 a broken sudo helper or provide guest-root access. Rebuilding the guest image
 is not a remedy for proxy policy, approval, or budget blocks.

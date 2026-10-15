@@ -666,7 +666,7 @@ def test_setup_missing_environment_names_the_native_caller(script_name, missing)
     result = subprocess.run([str(REPO_ROOT / "contrib" / script_name)], env=env,
                             capture_output=True, text=True)
     assert result.returncode != 0
-    assert missing in result.stderr and "native agent create/configure --host-script" in result.stderr
+    assert missing in result.stderr and "agent create/configure --host-script" in result.stderr
     assert "agent add" not in result.stderr and "agent run" not in result.stderr
 
 

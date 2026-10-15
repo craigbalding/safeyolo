@@ -3,7 +3,7 @@
 Rootfs scripts replace SafeYolo's default Debian-trixie base rootfs with a
 custom distribution. The source can be an Open Container Initiative (OCI)
 image or a rootfs tarball. Prepare the custom image on a Linux builder with the shell inputs below,
-then supply the result to an installed native instance. The native CLI does
+then supply the result to an installed instance. The CLI does
 not run a Python rootfs builder or accept the retired --rootfs-script flag.
 Existing shell builders and guest support files remain usable.
 The default builder pins the architecture-specific official Debian trixie
@@ -39,7 +39,7 @@ chooses outputs and owns their temporary work directory and cleanup:
 | `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image (set when the host running SafeYolo is macOS). Not set on Linux. |
 | `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** as a directory (set when the host is Linux). gVisor reads it as OCI root.path. Not set on macOS. |
 | `SAFEYOLO_ROOTFS_WORK_DIR` | An empty disk-backed scratch directory owned by this build; clean it after the command finishes. |
-| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to SafeYolo's guest support files: the source checkout's `guest/` directory with matching native guest support. Contains `safeyolo-guest-init`, `safeyolo-sudo`, and `install-guest-common.sh`. |
+| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to SafeYolo's guest support files: the source checkout's `guest/` directory with matching guest support. Contains `safeyolo-guest-init`, `safeyolo-sudo`, and `install-guest-common.sh`. |
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
 | `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
@@ -54,7 +54,7 @@ Handle both branches if the script supports both host platforms. Always create
 should persist.
 
 For example, from the trusted source checkout on Linux, prepare an Alpine
-tree for a fresh native installation. Select the architecture for the actual
+tree for a fresh installation. Select the architecture for the actual
 runtime and keep host inputs separate from agent-writable files:
 
 ```sh
@@ -72,17 +72,17 @@ SAFEYOLO_ROOTFS_OUT_CACHE_PATHS="$work/platform/cache-paths.txt" \
 On failure, retain stderr and the build inputs; resolve the cause before retrying. Keep
 privileged commands in the foreground and use an EXIT trap for owned mounts.
 The builder must return zero and produce the expected nonempty image/tree.
-Supply `--platform-assets "$work/platform"` to the native installer. The
+Supply `--platform-assets "$work/platform"` to the installer. The
 existing Linux boot owner requires sandbox-root UID 100000 ownership and
 host-traversable bind targets; the maintained builders perform that preparation.
 Do not replace a tree in use by a running sandbox.
 
 For a per-agent custom tree, prepare `ROOT/agents/NAME/rootfs` while that agent
-is stopped; native `host_boot.rs` selects it before the shared default.
+is stopped; `host_boot.rs` selects it before the shared default.
 On macOS the existing VM owner selects `ROOT/agents/NAME/rootfs.ext4` before
 `ROOT/share/rootfs-base.ext4`. Build ext4 on Linux using OUT_EXT4 rather than
 OUT_TREE and provide the matching kernel/initramfs as ordinary platform inputs.
-These paths reuse native boot selection and introduce no automatic conversion.
+These paths reuse boot selection and introduce no automatic conversion.
 
 ## Optional desktop
 
@@ -105,7 +105,7 @@ bash guest/install-novnc-assets.sh "$TREE" "$CACHE"
 This verifies noVNC 1.6.0 and installs its pages, JavaScript, images and license
 notices under `/usr/share/novnc`. It excludes upstream launchers and build/test
 tools. It does not install an interpreter or start a service. Supply the finished
-image to the native installation as described above, then start the agent.
+image to the installation as described above, then start the agent.
 On the host, open its authenticated desktop with `safeyolo agent present NAME`.
 Inside that guest, `/safeyolo/guest-desktop check` reports missing inputs and
 `/safeyolo/guest-desktop status` reports display, VNC and bridge readiness.
@@ -141,9 +141,9 @@ must meet these requirements:
      the agent's existing namespace capabilities on rootless Linux gVisor;
      PID 1 uses `prlimit` to set the open-file limit on its numeric process)
 
-   Additional project tools can be installed in the guest. Native boot,
+   Additional project tools can be installed in the guest. Boot,
    control, terminal, Coord and diagnostics do not require a Python package.
-   Use `safeyolo agent diagnostics NAME` on the host for the owned native hops.
+   Use `safeyolo agent diagnostics NAME` on the host for the owned hops.
 
 Everything else (systemd, SELinux policy, unit files, distro-specific
 boot choreography) is ignored because our init runs instead of the
@@ -226,7 +226,7 @@ Run `guest/build-all.sh` for the default images. For a custom image, run the
 selected script explicitly on an owned Linux builder, with the inputs from
 this guide. Supply `SAFEYOLO_ROOTFS_OUT_EXT4` for the output image, then transfer
 it to the stopped agent's `ROOT/agents/NAME/rootfs.ext4`. Reuse the separately
-prepared kernel and initramfs. Native `agent add` does not invoke a custom
+prepared kernel and initramfs. `agent add` does not invoke a custom
 script or create a Lima builder.
 
 On Linux, use an owned disk-backed scratch directory and the tree outputs
@@ -277,13 +277,12 @@ rootfs.
 
 ## Reusing a built custom rootfs
 
-Prepared immutable platform assets can be shared by several fresh native
-installations. Linux installations link the same prepared tree and keep each
+Prepared immutable platform assets can be shared by several fresh installations. Linux installations link the same prepared tree and keep each
 agent's writable overlay, home, workspace, credentials and caches independent.
 For separate custom per-agent trees, an operator can use an ownership-preserving
 `sudo cp -a --reflink=auto` on Linux. On APFS use `cp -c` for an ext4 image so
 the new file retains independent writes. Stop affected guests before replacing
-boot inputs. Native installation does not copy another agent's mutable state.
+boot inputs. Installation does not copy another agent's mutable state.
 
 ## Using an agent to write rootfs scripts
 

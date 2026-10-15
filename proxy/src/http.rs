@@ -1255,10 +1255,7 @@ async fn decide(
     request: &PolicyRequest<'_>,
     trace: Option<&Arc<RequestTrace>>,
 ) -> Result<PolicyDecision, Error> {
-    let policy = runtime
-        .policy
-        .as_ref()
-        .ok_or("native policy is not configured")?;
+    let policy = runtime.policy.as_ref().ok_or("policy is not configured")?;
     {
         use crate::network_guard::{Options, OutcomeKind, Pdp, Request};
 
@@ -2623,7 +2620,7 @@ where
         let guard = runtime
             .credential_guard
             .as_ref()
-            .ok_or("native credential guard is unavailable")?;
+            .ok_or("credential guard is unavailable")?;
         let guard_trace = trace.as_ref().and_then(|trace| {
             trace.hook(
                 "credential-guard",
@@ -3113,7 +3110,7 @@ where
         let guard = runtime
             .credential_guard
             .as_ref()
-            .ok_or("native credential guard is unavailable")?;
+            .ok_or("credential guard is unavailable")?;
         // The incoming request was already evaluated before gateway selection.
         // Re-evaluate only the header whose value the gateway replaced or
         // added. Replaying every incoming field here would charge budgets and

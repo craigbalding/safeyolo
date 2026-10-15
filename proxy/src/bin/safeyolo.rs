@@ -35,7 +35,7 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
         .extension()
         .is_none_or(|extension| extension != "toml")
     {
-        return Err("native configuration requires a TOML file".into());
+        return Err("configuration requires a TOML file".into());
     }
     if config.exists() || root.join("policy.toml").exists() {
         return Err("instance already has configuration; choose a fresh root".into());
@@ -109,7 +109,7 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
     ] {
         write_new(name, source)?;
     }
-    println!("Initialized native instance: {}", root.display());
+    println!("Initialized SafeYolo instance: {}", root.display());
     Ok(())
 }
 
