@@ -171,13 +171,42 @@ fn pipe() -> io::Result<(File, File)> {
     Ok(unsafe { (File::from_raw_fd(pair[0]), File::from_raw_fd(pair[1])) })
 }
 
-fn keep_sandbox_cgroup(run: &Run, command: &mut Command) -> Result<(), Error> {
+fn scoped_gofer_command(scope: &str, cgroup: &str) -> Command {
+    let mut command = Command::new("/bin/sh");
+    // A login session is outside the user manager's delegated subtree. Only
+    // systemd can move this child across that boundary. Attach to the existing
+    // scope, then verify membership before nsenter or any Gofer work. The
+    // shell execs the launcher, so its PID and inherited descriptors survive.
+    command.args([
+        "-eu",
+        "-c",
+        r#"busctl --user --timeout=10s --allow-interactive-authorization=no call \
+    org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+    org.freedesktop.systemd1.Manager AttachProcessesToUnit ssau "$1" "" 1 "$$"
+joined=no
+while IFS= read -r actual; do
+    if [ "$actual" = "$2" ]; then joined=yes; fi
+done < /proc/self/cgroup
+if [ "$joined" != yes ]; then
+    printf '%s\n' "share Gofer did not join the sandbox's resource scope" >&2
+    exit 1
+fi
+shift 2
+exec "$@""#,
+        "share-gofer",
+        scope,
+        cgroup,
+    ]);
+    command
+}
+
+fn gofer_command(run: &Run) -> Result<Command, Error> {
     let pid = run.receipt["backend_pid"]
         .as_u64()
         .ok_or("sandbox PID is missing")?;
     let selected = fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
     if selected == fs::read_to_string("/proc/self/cgroup")? {
-        return Ok(());
+        return Ok(Command::new("nsenter"));
     }
     // systemd-run places the original sentry and Gofer in one delegated
     // cgroup. Keep additional Gofers under those same MemoryMax/CPUQuota
@@ -193,29 +222,15 @@ fn keep_sandbox_cgroup(run: &Run, command: &mut Command) -> Result<(), Error> {
     {
         return Err("invalid sandbox cgroup path".into());
     }
-    let members = OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(
-            Path::new("/sys/fs/cgroup")
-                .join(relative)
-                .join("cgroup.procs"),
-        )
-        .map_err(|error| {
-            format!("cannot place share Gofer under the sandbox's resource limits: {error}")
-        })?;
+    let scope = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| name.ends_with(".scope"))
+        .ok_or("cannot retain sandbox resource limits: its systemd scope is missing")?;
     run.check()?;
-    unsafe {
-        command.as_std_mut().pre_exec(move || {
-            // cgroup.procs interprets zero as this child. The descriptor was
-            // opened before fork and closes on exec; no PID lookup is used.
-            if libc::write(members.as_raw_fd(), b"0".as_ptr().cast(), 1) != 1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Ok(())
+    let mut command = scoped_gofer_command(scope, &format!("0::{path}"));
+    command.arg("nsenter");
+    Ok(command)
 }
 
 /// Connect as namespace root without changing credentials in a host thread.
@@ -518,8 +533,7 @@ pub(crate) async fn attach(
     let (connection, gofer) = std::os::unix::net::UnixStream::pair()?;
     let (_rpc_host, rpc_gofer) = std::os::unix::net::UnixStream::pair()?;
     let (mounts, mounts_gofer) = pipe()?;
-    let mut command = Command::new("nsenter");
-    keep_sandbox_cgroup(&run, &mut command)?;
+    let mut command = gofer_command(&run)?;
     host_platform::pin_namespace_arguments(name, &mut command)?;
     command
         .args([
@@ -822,6 +836,84 @@ pub(crate) async fn cleanup_stopped(name: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+
+    #[tokio::test]
+    async fn scope_join_checks_placement_before_exec_and_preserves_descriptors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let busctl = fixture.path().join("busctl");
+        fs::write(
+            &busctl,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CALL_RECORD\"\nexit \"$BUS_EXIT\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&busctl, fs::Permissions::from_mode(0o755)).unwrap();
+        let cgroups = fs::read_to_string("/proc/self/cgroup").unwrap();
+        let cgroup = cgroups.lines().last().unwrap();
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(b"inherited Gofer connection").unwrap();
+
+        for (manager_exit, selected, success) in [
+            (0, cgroup, true),
+            (42, cgroup, false),
+            (0, "0::/unjoined.scope", false),
+        ] {
+            let record = fixture.path().join("call");
+            let mut command = scoped_gofer_command("selected.scope", selected);
+            command
+                .args([
+                    "/bin/sh",
+                    "-c",
+                    "exec /bin/cat \"/proc/self/fd/$SOURCE_FD\"",
+                ])
+                .env("PATH", fixture.path())
+                .env("CALL_RECORD", &record)
+                .env("BUS_EXIT", manager_exit.to_string())
+                .env("SOURCE_FD", source.as_raw_fd().to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            inherit(&mut command, vec![source.as_raw_fd()]);
+            let child = command.spawn().unwrap();
+            let pid = child.id().unwrap();
+            let result = child.wait_with_output().await.unwrap();
+            let arguments = fs::read_to_string(record).unwrap();
+            let arguments: Vec<_> = arguments.lines().collect();
+            assert_eq!(
+                arguments[..10],
+                [
+                    "--user",
+                    "--timeout=10s",
+                    "--allow-interactive-authorization=no",
+                    "call",
+                    "org.freedesktop.systemd1",
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.systemd1.Manager",
+                    "AttachProcessesToUnit",
+                    "ssau",
+                    "selected.scope",
+                ]
+            );
+            assert_eq!(arguments[10..], ["", "1", &pid.to_string()]);
+            assert_eq!(result.status.success(), success, "{result:?}");
+            if success {
+                assert_eq!(result.stdout, b"inherited Gofer connection");
+            } else {
+                assert!(
+                    result.stdout.is_empty(),
+                    "Gofer command ran before placement"
+                );
+            }
+            if manager_exit != 0 {
+                assert_eq!(result.status.code(), Some(manager_exit));
+            } else if !success {
+                assert!(
+                    String::from_utf8_lossy(&result.stderr)
+                        .contains("did not join the sandbox's resource scope")
+                );
+            }
+        }
+    }
 
     #[test]
     fn destinations_preserve_static_mounts_and_valid_children() {

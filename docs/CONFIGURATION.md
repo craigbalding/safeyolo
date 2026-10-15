@@ -129,6 +129,9 @@ On Linux, new sandbox starts attach extra directories before guest setup and
 workloads start. If an attachment fails, startup fails and cleans up that attempt.
 This route requires runsc filesystem mount control;
 `release-20261005.0` is the tested runtime input.
+If the sandbox uses a systemd user scope, each share helper joins that same
+scope before namespace entry. This path requires host `busctl` and the running
+user manager. A failed scope join fails the attachment.
 This backend support does not add a live add/remove command or change saved
 configuration. Existing running sandboxes with startup Open Container
 Initiative (OCI) binds cannot safely remove those shares live. The host must
