@@ -33,6 +33,7 @@ on:
       - ".github/workflows/guest-test-inputs.yml"
       - ".github/workflows/ci.yml"
       - "scripts/cargo_with_space.sh"
+      - "scripts/rust_cache_command.sh"
   push:
     branches: [master, main]
 
@@ -92,7 +93,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^(proxy/|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -110,7 +111,7 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
-          if grep -Eq '^(\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -134,6 +135,7 @@ jobs:
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
           workspaces: |
             proxy -> target
             guest/command -> target
@@ -330,6 +332,7 @@ jobs:
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
           workspaces: |
             proxy -> target
             guest/command -> target
@@ -557,6 +560,7 @@ jobs:
         if: needs.focused-pr.outputs.rust == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
           workspaces: |
             proxy -> target
             guest/command -> target

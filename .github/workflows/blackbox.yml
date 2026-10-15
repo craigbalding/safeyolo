@@ -49,6 +49,7 @@ jobs:
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
           workspaces: |
             proxy -> target
             guest/command -> target
@@ -114,6 +115,7 @@ jobs:
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
           workspaces: |
             proxy -> target
             guest/command -> target
