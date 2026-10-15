@@ -905,11 +905,31 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
 fn pending_approvals(path: &Path) -> Value {
     let events = read_audit_events(path);
     let mut pending = pending_approval_events(&events);
-    for event in pending.as_array_mut().expect("pending approval array") {
-        if let Some(id) = event["request_id"].as_str()
-            && let Ok(Some(view)) = approvals::credential_view(&events, id)
+    let mut events_by_request: std::collections::HashMap<&str, Vec<&Value>> =
+        std::collections::HashMap::new();
+    for event in &events {
+        if event["event"] == "security.credential_guard"
+            && event["approval"]["approval_type"] == "credential"
+            && let Some(id) = event["request_id"].as_str()
         {
-            event["action"] = view["action"].clone();
+            events_by_request.entry(id).or_default().push(event);
+        }
+    }
+    let credential_actions: std::collections::HashMap<_, _> = events_by_request
+        .into_iter()
+        .filter_map(|(id, events)| {
+            approvals::credential_view(events, id)
+                .ok()
+                .flatten()
+                .map(|mut view| (id, view["action"].take()))
+        })
+        .collect();
+    for event in pending.as_array_mut().expect("pending approval array") {
+        if let Some(action) = event["request_id"]
+            .as_str()
+            .and_then(|id| credential_actions.get(id))
+        {
+            event["action"] = action.clone();
         }
     }
     pending

@@ -3,9 +3,12 @@
 use super::*;
 use crate::approvals::network_action;
 
-pub(super) fn credential_view(events: &[Value], id: &str) -> Result<Option<Value>, &'static str> {
+pub(super) fn credential_view<'a>(
+    events: impl IntoIterator<Item = &'a Value>,
+    id: &str,
+) -> Result<Option<Value>, &'static str> {
     let matching: Vec<_> = events
-        .iter()
+        .into_iter()
         .filter(|event| {
             event["request_id"] == id
                 && event["event"] == "security.credential_guard"

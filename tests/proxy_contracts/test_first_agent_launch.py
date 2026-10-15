@@ -224,6 +224,45 @@ headers=["authorization", "x-api-key"]
 ''' + AGENTS
 
 
+def test_pending_credential_list_keeps_all_requests_in_a_retained_audit(tmp_path):
+    with origin_server() as origin, native_instance(tmp_path, source=CREDENTIAL_RETRY_POLICY) as instance:
+        target = f"http://127.0.0.1:{origin.server_address[1]}/pending"
+        assert request(instance.paths["alice"], target,
+                       headers={"Authorization": "Bearer first-launch-key"})[0] == 428
+        audit = instance.root / "logs/audit.jsonl"
+        seed = next(row for row in map(json.loads, audit.read_text().splitlines())
+                    if row.get("event") == "security.credential_guard")
+        prompts = []
+        for index in range(4000):
+            fingerprint = f"hmac:{index:016x}"
+            prompts.append({**seed, "request_id": f"req-{index:032x}",
+                            "approval": {**seed["approval"], "key": fingerprint},
+                            "details": {**seed["details"], "fingerprint": fingerprint}})
+        # One request has two fingerprints. Both pending rows must retain its
+        # complete action when the list groups the audit by request ID.
+        prompts.append({**prompts[0],
+                        "approval": {**seed["approval"], "key": "hmac:second"},
+                        "details": {**seed["details"], "fingerprint": "hmac:second"}})
+        audit.write_text("".join(json.dumps(row) + "\n" for row in prompts))
+        before = instance.policy.read_bytes()
+        pending = instance.admin("GET", "/admin/approvals")["approvals"]
+        listed = instance.cli("approvals", "list", "--agent", "alice", "--json")
+        assert listed.returncode == 0, listed.stderr
+        listed = json.loads(listed.stdout)["approvals"]
+        assert [(row["request_id"], row["action"]) for row in listed] == [
+            (row["request_id"], row["action"]) for row in pending]
+        assert len(pending) == 4001
+        assert {row["request_id"] for row in pending} == {row["request_id"] for row in prompts}
+        for row in pending:
+            credentials = [row["approval"]["key"]]
+            if row["request_id"] == prompts[0]["request_id"]:
+                credentials = [prompts[0]["approval"]["key"], "hmac:second"]
+            assert row["action"] == {"kind": "credential_allow", "agent": "alice",
+                                     "agent_id": "ag-" + "a" * 32, "host": "127.0.0.1",
+                                     "credentials": sorted(credentials)}
+        assert instance.policy.read_bytes() == before and origin.accepts == 0
+
+
 @pytest.mark.parametrize("surface", ["approvals", "inspect"])
 @pytest.mark.parametrize("window", ["list", "detail"])
 @pytest.mark.parametrize("decision", ["approve", "reject"])
