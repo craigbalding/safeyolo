@@ -58,8 +58,11 @@ def rpc_child(arguments):
     elif method == "Fs.Mount":
         # release-20261005.0 rejects the historical "cache=remote" spelling.
         # Shared host/guest writes need the runtime's revalidating cache mode.
+        # Match the normal DirectFS Gofer. Without this option the sentry
+        # starts LisaFS channels, whose ftruncate the DirectFS filter excludes.
         argument = {"container_id": container_id, "source": "proof1042", "target": target,
-                    "fs_type": "gofer", "flags": 6 | int(mode), "data": "cache=remote_revalidating"}
+                    "fs_type": "gofer", "flags": 6 | int(mode),
+                    "data": "cache=remote_revalidating,directfs"}
     else:
         raise ValueError("the probe supports only Fs.Mount and Fs.Umount")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
