@@ -174,7 +174,7 @@ def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
     assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step.get("name"): step for step in job["steps"]}
-    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == (
+    assert steps["Test the Rust proxy"]["timeout-minutes"] == (
         "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     )
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
@@ -202,7 +202,7 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     installation = named["Install the native CLI test environment"]["run"]
     assert "uv python install 3.12.14" in installation
     assert "uv sync --frozen --group dev --python 3.12.14" in installation
-    assert named["Test and build the Rust proxy"]["env"]["SAFEYOLO_PYTHON"] == (
+    assert named["Test the Rust proxy"]["env"]["SAFEYOLO_PYTHON"] == (
         "${{ github.workspace }}/.venv/bin/python"
     )
     rendered = str(steps)
@@ -210,6 +210,21 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     assert "-- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
+
+
+def test_existing_graph_integrity_check_runs_for_quick_cli_and_before_guest_compilation():
+    ci = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
+    inputs = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    for job, check_name, following in (
+        (ci["jobs"]["test-cli"], "Check acceptance tool source bindings", "Quick CLI checks"),
+        (inputs["jobs"]["build"], "Check acceptance tool source bindings before compilation", "Build Linux guest executables and receipts"),
+    ):
+        steps = {step.get("name"): step for step in job["steps"]}
+        check = steps[check_name]
+        assert "if" not in check
+        assert 'runpy.run_path("cli/tests/test_host_setup_scripts.py")' in check["run"]
+        assert 'test_safeyolo_acceptance_graph_tool_hashes_match_sources' in check["run"]
+        assert job["steps"].index(check) < job["steps"].index(steps[following])
 
 
 def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix():

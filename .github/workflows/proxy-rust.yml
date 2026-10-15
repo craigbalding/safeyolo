@@ -343,7 +343,9 @@ jobs:
           ../scripts/cargo_with_space.sh fmt --all -- --check
           host_target="$(rustc -vV | sed -n 's/^host: //p')"
           test -n "$host_target"
-          ../scripts/cargo_with_space.sh clippy --release --locked --target "$host_target" --all-targets -- -D warnings
+          runner_target="$(printf '%s' "$host_target" | tr '[:lower:]-' '[:upper:]_')"
+          printf 'CARGO_TARGET_%s_RUNNER=%s/proxy/tests/coord_test_runner.sh\n' "$runner_target" "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -387,6 +389,40 @@ jobs:
         run: |
           brew install tmux
           tmux -V
+
+      # Match the production producers' implicit host target and cache layout.
+      # Clippy metadata, production binaries and test binaries are distinct outputs.
+      - name: Compile production native executables
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 15 }}
+        working-directory: proxy
+        run: |
+          ../scripts/cargo_with_space.sh build --release --locked --bins
+          rust_proxy="$GITHUB_WORKSPACE/proxy/target/release/safeyolo-proxy"
+          test -x "$rust_proxy"
+          printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
+          native_cli="$GITHUB_WORKSPACE/proxy/target/release/safeyolo"
+          test -x "$native_cli"
+          printf 'SAFEYOLO_NATIVE_CLI=%s\n' "$native_cli" >> "$GITHUB_ENV"
+          printf 'SAFEYOLO_NATIVE_ARTIFACTS=%s\n' "$(dirname "$native_cli")" >> "$GITHUB_ENV"
+
+      - name: Download matching Linux guest test inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
+          path: guest/command/target/release
+
+      - name: Restore Linux guest executable permissions
+        run: |
+          chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
+          source scripts/native_package.sh
+          verify_native_artifacts "$SAFEYOLO_NATIVE_ARTIFACTS" guest/command/target/release production "$(host_platform)"
+
+      - name: Compile Rust contract executables
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 15 }}
+        working-directory: proxy
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: ../scripts/cargo_with_space.sh test --release --locked --no-run
 
       - name: Start the Python-owned Coord fixture
         env:
@@ -434,7 +470,7 @@ jobs:
           fi
           exit 1
 
-      - name: Test and build the Rust proxy
+      - name: Test the Rust proxy
         timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 15 }}
         working-directory: proxy
         env:
@@ -442,21 +478,7 @@ jobs:
         run: |
           export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
           export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
-          host_target="$(rustc -vV | sed -n 's/^host: //p')"
-          test -n "$host_target"
-          runner_target="$(printf '%s' "$host_target" | tr '[:lower:]-' '[:upper:]_')"
-          runner_variable="CARGO_TARGET_${runner_target}_RUNNER"
-          export CARGO_BUILD_TARGET="$host_target"
-          export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
           ../scripts/cargo_with_space.sh test --release --locked
-          ../scripts/cargo_with_space.sh build --release --locked
-          rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/release/safeyolo-proxy"
-          test -x "$rust_proxy"
-          printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
-          native_cli="$GITHUB_WORKSPACE/proxy/target/$host_target/release/safeyolo"
-          test -x "$native_cli"
-          printf 'SAFEYOLO_NATIVE_CLI=%s\n' "$native_cli" >> "$GITHUB_ENV"
-          printf 'SAFEYOLO_NATIVE_ARTIFACTS=%s\n' "$(dirname "$native_cli")" >> "$GITHUB_ENV"
 
       - name: Stop the Python-owned Coord fixture
         if: always()
@@ -488,15 +510,6 @@ jobs:
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.3
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
           /sbin/ifconfig lo0 | grep -F '127.0.0.3'
-
-      - name: Download matching Linux guest test inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
-          path: guest/command/target/release
-
-      - name: Restore Linux guest executable permissions
-        run: chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
 
       - name: Download macOS package terminal input
         if: matrix.os == 'macos-latest'

@@ -97,6 +97,8 @@ jobs:
         run: |
           chmod +x proxy/target/release/safeyolo proxy/target/release/safeyolo-coord proxy/target/release/safeyolo-proxy
           chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
+          source scripts/native_package.sh
+          verify_native_artifacts proxy/target/release guest/command/target/release production "$(host_platform)"
 
       - name: All retained Python tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -151,6 +153,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
+      - name: Check acceptance tool source bindings
+        run: >-
+          uv run --frozen python -c
+          'import runpy; runpy.run_path("cli/tests/test_host_setup_scripts.py")["test_safeyolo_acceptance_graph_tool_hashes_match_sources"]()'
+
       - name: Stage-0 two-revision coord upgrade acceptance
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
@@ -193,6 +200,8 @@ jobs:
         run: |
           chmod +x proxy/target/release/safeyolo proxy/target/release/safeyolo-coord proxy/target/release/safeyolo-proxy
           chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
+          source scripts/native_package.sh
+          verify_native_artifacts proxy/target/release guest/command/target/release production "$(host_platform)"
 
       - name: All retained CLI tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
