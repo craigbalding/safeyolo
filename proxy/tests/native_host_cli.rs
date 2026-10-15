@@ -1017,11 +1017,11 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     )
     .unwrap();
     // The temporary parent is private. Permit owned fixture cleanup after
-    // assigning the staging directory's required subordinate root UID.
+    // assigning the staging directory's required subordinate root UID/GID.
     fs::set_permissions(&rootfs, fs::Permissions::from_mode(0o777)).unwrap();
     assert!(
         Command::new("sudo")
-            .args(["-n", "chown", "100000"])
+            .args(["-n", "chown", "100000:100000"])
             .arg(&rootfs)
             .status()
             .unwrap()
@@ -1060,7 +1060,11 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     fs::write(marker_directory, b"occupied directory").unwrap();
     let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
     assert!(!failed.status.success());
-    assert!(String::from_utf8_lossy(&failed.stderr).contains("File exists"));
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("File exists"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
     assert!(!root.join("agents/marker/runtime.json").exists());
     assert_eq!(
         value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],

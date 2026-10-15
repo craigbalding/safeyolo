@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -30,6 +30,9 @@ pub fn process_token(pid: u32) -> String {
 
 impl OwnedRun {
     pub fn start(root: &Path) -> Self {
+        // Namespace checks read real host allocations, including when a caller
+        // removes system tools from PATH to test a missing executable.
+        symlink("/usr/bin/getent", root.join("bin/getent")).unwrap();
         let directory = root.join("agents/alice");
         fs::create_dir_all(directory.join("config-share")).unwrap();
         let generation = uuid::Uuid::new_v4().simple().to_string();

@@ -2724,6 +2724,9 @@ mod tests {
             let share = directory.join("config-share");
             std::fs::create_dir_all(&share).unwrap();
             std::fs::create_dir(root.join("bin")).unwrap();
+            // Restricted PATH cases omit the mapper or aa-exec, but still
+            // need account lookup before reaching the intended failure.
+            std::os::unix::fs::symlink("/usr/bin/getent", root.join("bin/getent")).unwrap();
             std::fs::write(share.join("guest-init"), b"fixture").unwrap();
             std::fs::write(
                 directory.join("config.json"),
