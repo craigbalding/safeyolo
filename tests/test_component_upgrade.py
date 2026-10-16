@@ -232,7 +232,7 @@ def test_legacy_guest_locations_allow_mapping_specific_upgrade_reuse_and_rollbac
     assert inputs.name == assets.name and inputs.name.startswith(legacy_assets.name + "-uid")
     assert (inputs / "rootfs-tree").resolve() == assets / "rootfs-tree"
     assert (assets / "rootfs-tree").stat().st_ino != legacy_inode
-    assert (inputs / "rootfs-tree/command").read_bytes() == b"G2 base"
+    assert subprocess.check_output(["sudo", "-n", "cat", str(inputs / "rootfs-tree/command")]) == b"G2 base"
     assert g2["previous"] == g1
     expected_host = "b" * 40 if caller == "complete-pair" else original["current"]["host"]["source_commit"]
     assert upgrade(native_cli, root, environment, "status")["current"]["host"]["source_commit"] == expected_host
@@ -261,10 +261,17 @@ def test_legacy_guest_locations_allow_mapping_specific_upgrade_reuse_and_rollbac
         assert upgrade(native_cli, root, environment, "status")["current"] == original["current"]
         link.unlink()
         link.symlink_to(assets / "rootfs-tree")
+    retried = command(native_cli, root, environment, *arguments)
+    assert retried.returncode == 0, retried.stderr
+    assert [path.stat().st_ino for path in (assets, assets / "rootfs-tree", inputs)] == identities
+    assert not any("/blobs/" in path for path in requests[before:])
+    restored = command(native_cli, root, environment, *rollback)
+    assert restored.returncode == 0, restored.stderr
+    assert upgrade(native_cli, root, environment, "status")["current"] == original["current"]
     assert os.readlink(legacy_inputs / "rootfs-tree") == legacy_link
     assert (legacy_assets / "rootfs-tree").stat().st_ino == legacy_inode
-    assert (legacy_inputs / "rootfs-tree/command").read_bytes() == b"G2 base"
-    assert (root / "share/rootfs-tree/command").read_bytes() == b"guest bytes"
+    assert subprocess.check_output(["sudo", "-n", "cat", str(legacy_inputs / "rootfs-tree/command")]) == b"G2 base"
+    assert subprocess.check_output(["sudo", "-n", "cat", str(root / "share/rootfs-tree/command")]) == b"guest bytes"
     assert_preserved(root, saved)
 
 
