@@ -12,7 +12,14 @@ pub(super) fn install_inputs(
 ) -> Result<PathBuf, Error> {
     let parent = root.join("share/guest-versions/sha256");
     fs::create_dir_all(&parent)?;
-    let destination = parent.join(guest_oci::sha256_hex(&selection.archive.digest)?);
+    let mapping = crate::linux_host::mapping_for_root(root)?;
+    let digest = guest_oci::sha256_hex(&selection.archive.digest)?;
+    // Match Linux acquisition's mapping identity without retargeting legacy links.
+    let destination = if platform == ConsumerPlatform::DarwinArm64 {
+        parent.join(digest)
+    } else {
+        parent.join(mapping.tree_name(digest))
+    };
     if destination.try_exists()? {
         let mut retained = selection.clone();
         retained.installed_assets = Some(destination.clone());
@@ -45,11 +52,7 @@ pub(super) fn install_inputs(
         )?;
         fs::File::open(stage.path().join("cache-paths.txt"))?.sync_all()?;
     }
-    archive::validate_assets(
-        stage.path(),
-        platform,
-        crate::linux_host::mapping_for_root(root)?,
-    )?;
+    archive::validate_assets(stage.path(), platform, mapping)?;
     fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o755))?;
     fs::File::open(stage.path())?.sync_all()?;
     fs::rename(stage.path(), &destination)?;
