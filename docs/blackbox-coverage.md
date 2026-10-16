@@ -4,7 +4,7 @@ Generated from native pytest selections and installed procedures in `tests/black
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**83 distinct pytest methods across 24 threat categories.**
+**84 distinct pytest methods across 25 threat categories.**
 
 This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and private-key isolation. Private-key scans run under both identities; public-cert checks run as the ordinary user. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
 
@@ -209,11 +209,10 @@ shell history. On Linux the memory-backed overlay silently
 discarded those writes before the OCI bind-mount landed; this
 test guards against a regression to that behavior.
 
-- **`test_home_persists_across_restart`** — Marker written to /home/agent is still there after stop/start.
-  - *Probe:* Write a random-token marker file to /home/agent from
-inside the running agent, stop the sandbox, start it again,
-read the marker back from the fresh sandbox, assert the
-content is identical.
+- **`test_home_persists_across_restart`** — Home, workspace and a deferred mise tool survive stop/start.
+  - *Probe:* Install Node through mise, write markers to the home and
+workspace, and check both markers and the same tool after restart.
+Read the workspace marker on the host too.
   - *Consequence if unasserted:* A missing file or mismatched content means writes to
 /home/agent landed somewhere ephemeral (the memory overlay
 on Linux, or an un-mounted location on either platform) —
@@ -338,6 +337,20 @@ exhaust operator attention.
   - *Consequence if unasserted:* /policy is a read-only diagnostic endpoint. A 200 would
 indicate method-router confusion — another mutation surface
 silently opened.
+
+### `tests/blackbox/isolation/test_guest_ssh.py`
+
+#### TestGuestSSH — The default guest retains working key-only SSH access.
+
+**Threat:** Linux agent shell uses runsc, so a shell or SSH banner alone does
+not prove that the shipped SSH server can authenticate an agent.
+
+- **`test_guest_server_accepts_owned_key_and_refuses_unknown_key`** — Guest SSH executes a command only with an authorized key.
+  - *Probe:* Add a disposable public key to the owned agent's authorized
+keys, pin the guest's existing public host key, and connect on loopback.
+Check the reached UID and an unknown-key refusal, then restore the keys.
+  - *Consequence if unasserted:* Both SSH packages and the existing authentication controls must
+work on gVisor and VZ after the image package reduction.
 
 ### `tests/blackbox/isolation/test_key_isolation.py`
 

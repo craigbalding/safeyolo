@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 
 if __package__:
-    from .guest_exec import guest_command_args
+    from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import (
         _agent_map,
@@ -37,7 +37,7 @@ if __package__:
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
-    from guest_exec import guest_command_args
+    from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import (
         _agent_map,
@@ -211,6 +211,7 @@ def stop_guest(cli: str, config_dir: Path, agent: str) -> None:
 
 def start_guest(cli: str, config_dir: Path, agent: str) -> Path:
     checked([cli, "agent", "start", agent, "--sandbox-only"], timeout=120)
+    prepare_guest_tests(cli, agent)
     listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == agent)
     path = Path(listener["path"])
     assert path.is_socket(), f"restarted guest has no native listener: {path}"
@@ -254,6 +255,7 @@ def prepare_owner(
         checked([cli, "coord", "start", "--client-port", "46377", "--monitor-port", "46378"], env=env)
     checked([cli, "start"], env=env)
     checked([cli, "agent", "start", "bbowner", "--sandbox-only"], timeout=120, env=env)
+    prepare_guest_tests(cli, "bbowner", env=env)
     checked(
         [
             "python3",
@@ -444,6 +446,7 @@ def main() -> None:
         checked([cli, "agent", "create", PEER, "--workspace", str(Path(__file__).resolve().parents[2])])
         peer_added = True
         checked([cli, "agent", "start", PEER, "--sandbox-only"], timeout=120)
+        prepare_guest_tests(cli, PEER)
         peer_listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == PEER)
         peer_socket = Path(peer_listener["path"])
         assert peer_socket.is_socket() and peer_socket != Path(first_listener["path"])

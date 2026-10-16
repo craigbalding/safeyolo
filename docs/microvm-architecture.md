@@ -140,7 +140,7 @@ general outbound network access.
 Built via a Lima VM on macOS for ARM64 cross-compilation (see `guest/README.md`):
 
 - **Kernel**: Linux 6.12, minimal defconfig. Virtio-vsock built in; virtio-net still available for local development but not attached by the runtime.
-- **Rootfs**: Debian trixie minbase, 2GB ext4 (sparse). Includes: git, curl, jq, build-essential, gnupg, openssh-server, mise, gh CLI, and package-manager proxy/cache support
+- **Rootfs**: Debian trixie base, 2GB ext4 (sparse). Includes Git, curl, SSH client/server support, mise, fd, gh, guest sudo and package-manager proxy/cache support. Language runtimes and development tools are installed on demand.
 - **Initramfs**: busybox-static + e2fsck + resize2fs. Mounts root, `switch_root` to stub init. Network configuration is a no-op — there is no eth0.
 
 Artifacts stored at `~/.safeyolo/share/`: `Image`, `initramfs.cpio.gz`, `rootfs-base.ext4`.

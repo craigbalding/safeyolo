@@ -279,8 +279,10 @@ That small build file becomes the child's build-base annotation; it is not a
 published catalogue or a file in the backend archive. Host-shipped executable
 source/profile receipts remain separate and unchanged.
 
-Each successful archive step prints its actual compressed byte size. The
-workflow returns `verified-guest-oci-layout`, containing standard OCI objects
+Each successful archive step prints the compressed payload bytes, apparent
+filesystem bytes and allocated disk bytes separately. The apparent size of a
+sparse ext4 image includes unused capacity; it is not the compressed download
+size. The workflow returns `verified-guest-oci-layout`, containing standard OCI objects
 and all three opaque archives. The verifier checks every advertised child,
 config and blob, including distinct Mac/Linux arm64 archive identities.
 Preparation does not prove public retrieval, bootable platform content, native

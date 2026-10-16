@@ -24,12 +24,20 @@ Debian's signed repositories, rather than a fixed package snapshot.
 The skopeo reference uses `docker://docker.io/library/debian@sha256:<digest>`;
 combining the `trixie` tag with the digest is not supported by skopeo 1.18.0.
 
-The default Debian rootfs intentionally keeps language ecosystems out of the
-base image. Agents pull those in via `mise`. What is baked in are the things
-agents need immediately on first boot and cannot sensibly replace with `mise`:
-PTY/shared-memory correctness, SSH/socat plumbing, and a compact baseline of
-search/debug/archive tools such as `ripgrep`, `fd-find`, `file`, `unzip`,
-`zip`, `tmux`, `lsof`, `strace`, and Python venv support.
+The default guest includes mise, fd, the GitHub CLI (`gh`), Git, curl, SSH
+client/server support, and the packages needed for startup, proxy transport,
+certificate trust and guest administration. Git is included so `gh repo clone`
+and repository checks need no separate Git installation on first use or after
+restart. The image includes Git's package size and acquisition cost.
+
+Install language runtimes through mise. Its tools and configuration live in the
+persistent agent home. Compilers, Python, Python test packages and optional
+development tools are not installed in the default image. Install OS packages
+with guest `sudo` when needed, or include them in a custom rootfs. Linux uses
+a per-agent directory overlay by default. With `--ephemeral`, unpacked OS
+packages disappear on stop and must be installed again; package downloads have
+separate persistent caches. The [rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md) explains the
+available choices. The blackbox runner installs its own Python test dependencies.
 
 ## Quick start
 
@@ -152,7 +160,10 @@ What each is for (expect a fair number of transitive deps on a fresh Debian inst
 - `busybox-static`, `pax-utils` — initramfs construction (BusyBox provides the userland; `lddtree` from pax-utils walks dynamic deps).
 - `cpio`, `xz-utils` — initramfs packaging format.
 
-`build-rootfs.sh` doesn't need a Debian keyring — skopeo fetches the OCI image, not `.deb` packages, so the host's apt trust chain is irrelevant. Extras beyond the minbase image (ssh, socat, python3, the dev toolkit) are apt-installed **inside the unpacked rootfs tree** via chroot; those use the rootfs's own apt sources (debian:trixie's baked-in `deb.debian.org` mirror).
+`build-rootfs.sh` doesn't need a Debian keyring. skopeo fetches the OCI image,
+not `.deb` packages. Extra packages, including SSH, Git and socat, are installed
+inside the unpacked rootfs through chroot. They use the rootfs's own signed
+Debian repositories.
 
 On Linux, `./build-all.sh` skips kernel + initramfs by default (gVisor doesn't need them). Set `BUILD_KERNEL=1` to build all three (required when producing artifacts for macOS consumers).
 
@@ -171,7 +182,7 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 ## Individual scripts
 
 - `build-rootfs.sh` — digest-pinned Debian trixie via `skopeo`, `umoci`, chroot apt and `rootfs-customize-hook.sh`; writes the ext4 image, UID 100000 tree, cache paths and actual build-base reference. `DEBIAN_IMAGE` overrides remain available for contributor builds. Floating tags and non-registry transports do not emit publication provenance. A cached pre-change build needs a rebuild before it can be published.
-- `archive-default.sh` — on a Linux builder with GNU tar, zstd and guest sudo, archives finished backend files with numeric owners, modes, links, extended attributes and sparse-image handling. See the [OCI publication instructions](../docs/guest-oci.md#prepare-and-publish-a-default-guest-release).
+- `archive-default.sh` — on a Linux builder with GNU tar, zstd and guest sudo, archives finished backend files with numeric owners, modes, links, extended attributes and sparse-image handling. Reports compressed bytes, apparent filesystem bytes and allocated disk bytes separately. A sparse ext4 image's apparent size includes its unused capacity. See the [OCI publication instructions](../docs/guest-oci.md#prepare-and-publish-a-default-guest-release).
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
 - `build-all.sh` — platform-aware driver; calls the above three. Must be executed (`./build-all.sh`), not sourced.
@@ -196,7 +207,9 @@ The build scripts keep a persistent cache of upstream downloads under `out/.down
 - `out/.download-cache/mise-v<ver>-linux-<arch>.tar.gz` — pinned mise release
 - `out/.download-cache/gh_<ver>_linux_<arch>.tar.gz` — pinned gh CLI release
 
-The chroot-apt-install step (~80 MiB of extras: ripgrep, build-essential, python3-pip, tmux, etc.) currently re-fetches on each rebuild — apt's own archive cache isn't preserved across builds in this pipeline. Previous mmdebstrap pipeline kept an `apt-archives/` cache; skopeo+chroot doesn't yet. Follow-up optimization.
+The chroot package installation downloads Debian packages on each rebuild.
+The builder does not preserve apt's archive cache between builds. This differs
+from the per-agent runtime package caches.
 
 To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush artifacts but keep the download cache: `sudo rm -rf guest/out/rootfs-base.ext4 guest/out/rootfs-tree guest/out/Image guest/out/initramfs.cpio.gz` (sudo because the tree is owned by uid 100000).
 
@@ -207,7 +220,7 @@ directory under `TMPDIR` (or `/tmp` by default) and its selected output director
 The publication workflow sets `TMPDIR` to disk-backed runner storage:
 
 1. `umoci unpack` — preserves real uid/gid ownership in the unpacked tree, which `mkfs.ext4 -d` needs to read back cleanly at packaging time.
-2. `chroot ... apt-get install` — installs extras (socat, openssh-server, python3-pip, ripgrep, etc.) inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
+2. `chroot ... apt-get install` — installs runtime packages, including socat and openssh-server, inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
 3. `mkfs.ext4 -d` on the packaged output — reads the root-owned tree.
 4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt-proxy config) — also needs root-in-chroot for the same reasons as (2).
 5. `chown -R 100000:100000` on the emitted `out/rootfs-tree/` — the tree ships pre-owned by the subuid-root so SafeYolo's rootless gVisor sandbox-root can write to tree paths via the overlay.

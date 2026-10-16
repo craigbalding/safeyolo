@@ -249,7 +249,7 @@ def run(args: argparse.Namespace) -> None:
                         "#!/bin/sh\n"
                         'for arg in "$@"; do\n'
                         '  case "$arg" in --version) echo deterministic-codex-completion-fixture; exit 0;;\n'
-                        '    login) exit 0;; exec) cp /home/agent/.local/bin/demo-completion-app.py /workspace/app.py; exec python3 /workspace/app.py;; esac\n'
+                        '    login) exit 0;; exec) mise use -g python@3.12 >&2; cp /home/agent/.local/bin/demo-completion-app.py /workspace/app.py; exec python3 /workspace/app.py;; esac\n'
                         "done\nexit 42\n"
                     )
                     completion_agent = fixture_name

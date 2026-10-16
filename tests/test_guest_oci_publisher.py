@@ -51,6 +51,16 @@ def publisher_tools():
 def archive(platform, source, destination):
     result = run(str(ROOT / "guest/archive-default.sh"), platform, str(source), str(destination))
     assert result.returncode == 0, result.stderr
+    metrics = dict(field.split("=", 1) for field in result.stdout.split()[1:])
+    assert int(metrics["archive_bytes"]) == (destination / "guest.tar.zst").stat().st_size
+    files = ["rootfs-tree", "cache-paths.txt"] if platform.startswith("linux/") else [
+        "Image", "initramfs.cpio.gz", "rootfs-base.ext4",
+    ]
+    paths = [str(source / name) for name in files]
+    for field, options in (("apparent_bytes", ["--apparent-size"]), ("allocated_bytes", [])):
+        measured = run("sudo", "-n", "du", "-sc", "-B1", *options, "--", *paths)
+        assert measured.returncode == 0, measured.stderr
+        assert int(metrics[field]) == int(measured.stdout.splitlines()[-1].split()[0])
     return destination / "guest.tar.zst"
 
 

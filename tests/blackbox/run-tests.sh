@@ -1102,6 +1102,10 @@ if [ "$RUN_ISOLATION" = true ]; then
         echo "ERROR: VM did not become ready"
         exit 2
     fi
+    if ! python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" --prepare-tests; then
+        echo "ERROR: test guest dependencies could not be prepared" >&2
+        exit 2
+    fi
 fi
 
 # Inspect the running backend, not a host prerequisite prediction from doctor.

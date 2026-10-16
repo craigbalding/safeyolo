@@ -261,10 +261,10 @@ path-include /usr/share/locale/locale.alias
 NODOC
 
 # --- Chroot apt-get install ------------------------------------------------
-# debian:trixie OCI is minimal. We need a baseline toolkit that the
-# customize-hook (mise/gh/sshd/useradd/pip3) and the agent runtime
+# debian:trixie OCI is minimal. Keep the packages that the
+# customize-hook (mise/gh/sshd/useradd) and the agent runtime
 # (socat for proxy forwarding, openssh-server for `safeyolo agent shell`)
-# depend on, plus the small developer toolkit agents benefit from.
+# depend on. Language runtimes and development tools are installed on demand.
 #
 # A conventional host resolver is useful when the chroot connects directly.
 # A SafeYolo guest deliberately has no /etc/resolv.conf: its build traffic
@@ -313,32 +313,21 @@ echo "=== apt-get update (inside chroot) ==="
 sudo chroot "$ROOTFS" /usr/bin/apt-get update
 
 echo "=== Installing base packages ==="
-# build-essential is back in the default base. Rationale: under rootless
-# gVisor, the rootfs overlay is memory-backed (dir= is silently ignored),
-# so runtime `apt-get install` lands in the memory upper and vanishes on
-# agent stop. An on-demand install of build-essential would cost ~20–30s
-# of dpkg unpacking on every agent start that needed a compiler. Since
-# the rootfs tree is shared across ALL agents (/share/rootfs-tree,
-# mounted read-only via the overlay lower), the ~250 MB cost is paid
-# once globally, not per-agent. Keeping the compiler in the shared base
-# is the better tradeoff.
-#
-# Agents that need OTHER packages at runtime can still install them as
+# Git stays available for gh repository commands and agent edits/checks.
+# SSH client and server remain available on both gVisor and VZ.
+# curl and xz support tool downloads; BusyBox supplies nc/hexdump and poweroff.
+# Agents that need development packages at runtime can install them as
 # namespace-root without host sudo. The SafeYolo sudo shim uses the sandbox's
 # CAP_SETUID/CAP_SETGID path; /etc/apt/apt.conf.d/99safeyolo-proxy plus the
 # /var/cache/apt + /var/lib/apt/lists cache binds keep traffic mediated and
-# downloads warm. The unpacked install does not survive restart.
+# downloads warm. Default Linux directory overlays retain installed files;
+# --ephemeral guests must unpack packages again after a stop.
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends \
-    ca-certificates curl git jq build-essential gnupg \
-    openssh-server iproute2 iputils-ping procps util-linux less xz-utils \
-    libgomp1 libatomic1 \
-    python3 python3-pip python3-venv \
-    busybox-static socat file pkg-config \
-    ripgrep fd-find unzip zip lsof strace tmux \
-    sudo
+    ca-certificates curl git openssh-client openssh-server \
+    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo
 
-# --- SafeYolo customize-hook (unchanged from mmdebstrap era) --------------
+# --- SafeYolo customize hook ---------------------------------------------
 CUSTOMIZE_HOOK_SCRIPT="$SCRIPT_DIR/rootfs-customize-hook.sh"
 [ -r "$CUSTOMIZE_HOOK_SCRIPT" ] || {
     echo "Missing $CUSTOMIZE_HOOK_SCRIPT" >&2; exit 1
@@ -402,11 +391,9 @@ sudo chown "$(id -u):$(id -g)" "$OUTPUT_EXT4"
 echo "ext4:  $OUTPUT_EXT4 ($(du -sh "$OUTPUT_EXT4" | cut -f1))"
 
 # --- Emit: package cache paths (Linux bridge) ----------------------------
-# On Linux gVisor the root overlay is memory-backed (dir= is silently
-# ignored, see cli/src/safeyolo/platform/linux.py), so runtime writes to
-# /var/cache/apt etc. vanish on agent stop. SafeYolo bind-mounts a
-# per-agent host dir onto each listed path so `apt install` hits a warm
-# cache after restart. Macro contract: one absolute in-rootfs path per
+# SafeYolo bind-mounts a per-agent host directory onto each listed path so
+# package downloads remain available even when an ephemeral root overlay
+# is discarded. Contract: one absolute in-rootfs path per
 # line; see contrib/ROOTFS_SCRIPT_GUIDE.md.
 cat > "$OUTPUT_DIR/cache-paths.txt" <<'CACHE_PATHS'
 /var/cache/apt
