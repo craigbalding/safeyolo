@@ -19,6 +19,8 @@ stress = [
 
 [tool.uv]
 package = false
+# Semgrep 1.179.0 pins MCP 1.29.0; 1.30.0 fixes GHSA-84m7-p3x7-pcfv.
+override-dependencies = ["mcp==1.30.0"]
 
 [tool.mypy]
 # The existing repository is not yet clean under mypy. Lens uses this profile
