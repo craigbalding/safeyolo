@@ -3,25 +3,44 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 
-# Sandbox uid 0 maps to host uid 100000. Hosted runner ranges may differ.
+# Retained host archives need the original fixed mapping. Current native
+# installations use this account's existing ranges and a separate mapped tree.
+fixed_ids=false
+case "$*" in
+    '') ;;
+    --fixed-rootfs-ids) fixed_ids=true ;;
+    *) echo 'Usage: prepare-systrap-host.sh [--fixed-rootfs-ids]' >&2; exit 2 ;;
+esac
 has_range() {
-    awk -F: -v user="$USER" '
-      $1 == user && $2 <= 100000 && ($2 + $3) >= 165536 { found = 1 }
+    awk -F: -v user="$USER" -v uid="$(id -u)" '
+      ($1 == user || $1 == uid) && $2 <= 100000 && ($2 + $3) >= 165536 { found = 1 }
       END { exit !found }
     ' "$1"
 }
-if ! has_range /etc/subuid; then
-    sudo -n usermod --add-subuids 100000-165535 "$USER"
+if $fixed_ids; then
+    # Check both files before granting either range. Preserve other accounts.
+    for allocation in /etc/subuid /etc/subgid; do
+        awk -F: -v user="$USER" -v uid="$(id -u)" '
+          $1 != user && $1 != uid && $2 < 165536 && ($2 + $3) > 100000 {
+            printf "Retained host requires exclusive IDs 100000-165535 in %s; allocation for %s overlaps. Allocation files were preserved.\n", FILENAME, $1 > "/dev/stderr"
+            conflict = 1
+          }
+          END { exit conflict }
+        ' "$allocation"
+    done
+    if ! has_range /etc/subuid; then
+        sudo -n usermod --add-subuids 100000-165535 "$USER"
+    fi
+    if ! has_range /etc/subgid; then
+        sudo -n usermod --add-subgids 100000-165535 "$USER"
+    fi
 fi
-if ! has_range /etc/subgid; then
-    sudo -n usermod --add-subgids 100000-165535 "$USER"
-fi
-grep -F "$USER:" /etc/subuid
-grep -F "$USER:" /etc/subgid
 
 sudo -n apt-get update -qq
 sudo -n apt-get install -y -qq --no-install-recommends \
     openssh-server uidmap acl util-linux iproute2 tmux curl gnupg ca-certificates
+getsubids "$USER"
+getsubids -g "$USER"
 # Use the same signed gVisor repository as the nightly source lane.
 curl -fsSL https://gvisor.dev/archive.key | \
     sudo -n gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg

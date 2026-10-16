@@ -122,7 +122,10 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert set(nightly["jobs"]) == {"guest-inputs", "systrap", "macos-package"}
     assert all("if" not in job for job in nightly["jobs"].values())
     preparation = step("Prepare the supported systrap host")["run"]
-    assert preparation in [item.get("run") for item in nightly["jobs"]["systrap"]["steps"]]
+    assert preparation == "tests/blackbox/prepare-systrap-host.sh --fixed-rootfs-ids"
+    source_preparation = next(item for item in nightly["jobs"]["systrap"]["steps"]
+                              if item.get("name") == "Prepare the supported systrap host")
+    assert source_preparation["run"] == "tests/blackbox/prepare-systrap-host.sh"
 
 
 @pytest.fixture
@@ -455,12 +458,15 @@ def test_logical_index_native_verification_and_actual_extraction(tmp_path, guest
     assert (extracted / "cache-paths.txt").read_text() == "/var/cache/apt\n"
 
 
-@pytest.mark.parametrize("restricted,existing,failure", [
-    (False, True, None), (False, False, None), (True, True, None), (True, False, None),
-    (False, False, "usermod"), (False, True, "runsc"),
-    (False, True, "unshare"), (True, True, "aa-exec"),
+@pytest.mark.parametrize("restricted,existing,failure,fixed", [
+    (False, True, None, True), (False, False, None, True),
+    (True, True, None, True), (True, False, None, True),
+    (False, False, "usermod", True), (False, True, "runsc", True),
+    (False, True, "unshare", True), (True, True, "aa-exec", True),
+    (False, False, None, False), (True, False, None, False),
+    (False, False, "collision-uid", True), (False, False, "collision-gid", True),
 ])
-def test_shared_host_preparation_keeps_mapping_trust_and_namespace_failures(tmp_path, restricted, existing, failure):
+def test_shared_host_preparation_keeps_mapping_trust_and_namespace_failures(tmp_path, restricted, existing, failure, fixed):
     scripts = tmp_path / "tests/blackbox"
     scripts.mkdir(parents=True)
     template = tmp_path / "cli/src/safeyolo/templates"
@@ -469,11 +475,17 @@ def test_shared_host_preparation_keeps_mapping_trust_and_namespace_failures(tmp_
     helper = scripts / "prepare-systrap-host.sh"
     text = (ROOT / "tests/blackbox/prepare-systrap-host.sh").read_text()
     # Supply the helper's real OS-file reads without changing this test host.
-    for name, content in {
-        "/etc/subuid": "fixture:100000:65536\n" if existing else "other:200000:65536\n",
-        "/etc/subgid": "fixture:100000:65536\n" if existing else "other:200000:65536\n",
+    allocations = "fixture:100000:65536\n" if existing else "other:500000:65536\n"
+    if not fixed:
+        allocations = "packer:100000:65536\nfixture:165536:65536\n"
+    contents = {
+        "/etc/subuid": allocations,
+        "/etc/subgid": allocations,
         "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1\n" if restricted else "0\n",
-    }.items():
+    }
+    if failure in {"collision-uid", "collision-gid"}:
+        contents["/etc/sub" + failure.removeprefix("collision-")] += "packer:100000:65536\n"
+    for name, content in contents.items():
         path = tmp_path / Path(name).name
         path.write_text(content)
         text = text.replace(name, str(path))
@@ -503,16 +515,32 @@ elif name == 'curl':
     print('fixture public signing key')
 elif name == 'dpkg':
     print('arm64')
+elif name == 'getsubids':
+    path = Path(os.environ['RUNNER_TEMP']) / ('subgid' if '-g' in args else 'subuid')
+    for index, row in enumerate(path.read_text().splitlines()):
+        owner, start, count = row.split(':')
+        if owner == 'fixture':
+            print(f'{index}: {owner} {start} {count}')
 ''')
     command.chmod(0o755)
-    for name in ("sudo", "curl", "dpkg", "runsc", "tmux", "newuidmap", "newgidmap", "setfacl", "unshare", "aa-exec"):
+    for name in ("sudo", "curl", "dpkg", "runsc", "tmux", "newuidmap", "newgidmap", "getsubids", "setfacl", "unshare", "aa-exec"):
         (tools / name).symlink_to(command)
     env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "RUNNER_TEMP": str(tmp_path),
            "USER": "fixture", "COMMANDS": str(tmp_path / "commands"), "FAILURE": failure or ""}
-    result = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True, timeout=10)
+    result = subprocess.run(["bash", str(helper), *(["--fixed-rootfs-ids"] if fixed else [])],
+                            env=env, text=True, capture_output=True, timeout=10)
     assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
+    if failure in {"collision-uid", "collision-gid"}:
+        assert "Retained host requires exclusive IDs 100000-165535" in result.stderr
+        assert "allocation for packer overlaps" in result.stderr
+        assert not (tmp_path / "commands").exists()
+        for name in ("subuid", "subgid"):
+            assert (tmp_path / name).read_text() == contents["/etc/" + name]
+        return
     calls = [json.loads(line) for line in (tmp_path / "commands").read_text().splitlines()]
-    assert bool([row for row in calls if "usermod" in row]) == (not existing)
+    assert bool([row for row in calls if "usermod" in row]) == (fixed and not existing)
+    if not fixed:
+        assert (tmp_path / "subuid").read_text() == (tmp_path / "subgid").read_text() == allocations
     if failure is None:
         assert ["curl", "-fsSL", "https://gvisor.dev/archive.key"] in calls
         assert ["sudo", "-n", "gpg", "--dearmor", "--yes", "-o", "/usr/share/keyrings/gvisor-archive-keyring.gpg"] in calls

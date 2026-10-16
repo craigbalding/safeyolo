@@ -365,6 +365,74 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
 
 
+@pytest.mark.parametrize("macos", [False, True], ids=["linux", "macos"])
+@pytest.mark.parametrize("package_exit", [0, 19], ids=["prepared", "refused"])
+def test_overnight_harness_callers_receive_prepared_native_inputs(tmp_path, macos, package_exit):
+    job = rust_workflow()["jobs"]["contracts"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    consumer = steps["Run native proxy component contracts"]
+    assert consumer["shell"] == "bash"
+    assert "if" not in consumer
+    for producer in ("Compile production native executables", "Restore Linux guest executable permissions",
+                     "Start the Python-owned Coord fixture", "Prepare macOS VM package inputs"):
+        assert job["steps"].index(steps[producer]) < job["steps"].index(consumer)
+
+    commands, scripts = tmp_path / "commands", tmp_path / "scripts"
+    commands.mkdir()
+    scripts.mkdir()
+    calls = tmp_path / "calls.jsonl"
+    recorder = (
+        f"#!{sys.executable}\nimport json, os, pathlib, sys\n"
+        f"with pathlib.Path({str(calls)!r}).open('a') as output:\n"
+        "    output.write(json.dumps({'command': pathlib.Path(sys.argv[0]).name, 'args': sys.argv[1:],\n"
+        "        'inputs': {key: os.environ.get(key) for key in "
+        "('SAFEYOLO_TEST_NATIVE_CLI', 'SAFEYOLO_NATIVE_BUNDLE', 'SAFEYOLO_COORD_NATS_BINARY')}}) + '\\n')\n"
+    )
+    package = scripts / "build_host_packages.sh"
+    package.write_text(recorder + f"raise SystemExit({package_exit})\n")
+    uv = commands / "uv"
+    uv.write_text(recorder)
+    for path in (package, uv, commands / "tmux", tmp_path / "nats-server"):
+        if not path.exists():
+            path.touch()
+        path.chmod(0o755)
+    # Match hosted Bash without the sandbox's PATH-changing startup file.
+    environment = dict(os.environ, BASH_ENV=os.devnull,
+                       PATH=f"{commands}:{os.environ['PATH']}", RUNNER_TEMP=str(tmp_path),
+                       SAFEYOLO_NATIVE_ARTIFACTS="/prepared/host", SAFEYOLO_GUEST_ARTIFACTS="/prepared/guest",
+                       SAFEYOLO_NATIVE_VM_ARTIFACTS="/prepared/vm" if macos else "",
+                       SAFEYOLO_NATIVE_CLI="/prepared/host/safeyolo",
+                       SAFEYOLO_COORD_NATS_BINARY=str(tmp_path / "nats-server"))
+    result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", consumer["run"]],
+                            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode == package_exit, result.stderr
+    observed = [json.loads(line) for line in calls.read_text().splitlines()]
+    bundle = str(tmp_path / "native-contract-bundle")
+    assert observed[0]["command"] == "build_host_packages.sh"
+    assert observed[0]["args"] == [
+        "--directory", bundle, "--artifacts", "/prepared/host", "--guest-artifacts", "/prepared/guest",
+        "--runtime-artifacts", str(commands), "--profile", "production",
+    ] + (["--vm-artifacts", "/prepared/vm"] if macos else [])
+    if package_exit:
+        assert len(observed) == 1
+        return
+    assert len(observed) == 3
+    for call in observed[1:]:
+        assert call["inputs"] == {"SAFEYOLO_TEST_NATIVE_CLI": "/prepared/host/safeyolo",
+                                  "SAFEYOLO_NATIVE_BUNDLE": bundle,
+                                  "SAFEYOLO_COORD_NATS_BINARY": str(tmp_path / "nats-server")}
+    assert observed[1]["args"] == ["run", "--frozen", "pytest", "-q"] + [
+        f"tests/test_blackbox_harness.py::{name}" for name in (
+            "test_prepared_inputs_reach_native_lifecycle_with_fresh_state",
+            "test_shared_approval_transport_keeps_owned_selection_when_preparation_fails",
+            "test_blackbox_coord_binding_reaches_real_native_start_and_restart",
+            "test_access_launcher_targets_match_selected_guest_requests",
+            "test_lifecycle_owner_prepares_pinned_nats_on_independent_ports",
+        )
+    ]
+    assert observed[2]["args"] == ["run", "--frozen", "pytest", "-q", "tests/proxy_contracts", "--proxy-backend", "rust"]
+
+
 def test_existing_graph_integrity_check_runs_for_quick_cli_and_before_guest_compilation():
     ci = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
     inputs = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())

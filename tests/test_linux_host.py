@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests import test_guest_acquisition as acquisition
 from tests.test_host_packages import executable
@@ -44,6 +45,63 @@ def owned_stage():
 
 def own(path, uid, gid):
     subprocess.run(["sudo", "-n", "chown", "-h", f"{uid}:{gid}", str(path)], check=True)
+
+
+@pytest.mark.parametrize("bases", [(231072, 400000), (100000, 100000), None],
+                         ids=["alternate", "fixed-preferred", "missing"])
+def test_source_systrap_caller_remaps_only_its_private_copy(native_cli, owned_stage, bases):
+    parent, _ = owned_stage
+    source = parent / "blackbox-platform"
+    tree = source / "rootfs-tree"
+    tree.mkdir(parents=True)
+    (tree / "root").write_bytes(b"published root")
+    (tree / "hard").hardlink_to(tree / "root")
+    (tree / "symbolic").symlink_to("root")
+    (tree / "agent").write_bytes(b"guest user")
+    for path in (tree / "root", tree / "symbolic", tree):
+        own(path, 100000, 100000)
+    own(tree / "agent", 101000, 101000)
+    (source / "cache-paths.txt").write_text("/var/cache/apt\n")
+    tools = parent / "tools"
+    tools.mkdir()
+    subids = tools / "getsubids"
+    subids.write_text("#!/bin/sh\n" + ("exit 0\n" if bases is None else
+        f"printf '0: fixture 500000 65536\\n1: fixture %s 65536\\n' \"$([ \"$1\" = -g ] && echo {bases[1]} || echo {bases[0]})\"\n"))
+    subids.chmod(0o755)
+    bundle = parent / "bundle"
+    (bundle / "bin").mkdir(parents=True)
+    (bundle / "bin/safeyolo").symlink_to(native_cli)
+    workflow = yaml.safe_load((acquisition.REPO / ".github/workflows/blackbox.yml").read_text())
+    steps = {step.get("name"): step for step in workflow["jobs"]["systrap"]["steps"]}
+    assert steps["Prepare the supported systrap host"]["run"] == "tests/blackbox/prepare-systrap-host.sh"
+    consumer = steps["Prepare once and run independent systrap sections"]
+    assert "SAFEYOLO_PLATFORM_ASSETS" not in consumer.get("env", {})
+    mapping = steps["Prepare a private rootfs for the runner's owned IDs"]
+    assert mapping["shell"] == "bash"
+    output = parent / "github-env"
+    result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", mapping["run"]],
+                            env=dict(os.environ, BASH_ENV=os.devnull, RUNNER_TEMP=str(parent), GITHUB_ENV=str(output),
+                                     SAFEYOLO_NATIVE_BUNDLE=str(bundle), PATH=f"{tools}:{os.environ['PATH']}"),
+                            capture_output=True, text=True, timeout=30)
+    assert (tree.stat().st_uid, tree.stat().st_gid) == (100000, 100000)
+    assert (tree / "agent").stat().st_uid == 101000
+    if bases is None:
+        assert result.returncode != 0 and "needs an owned range" in result.stderr
+        assert not output.exists()
+        assert list(parent.glob("extract-????????")) == []
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    assets = Path(output.read_text().strip().removeprefix("SAFEYOLO_PLATFORM_ASSETS="))
+    assert assets.stat().st_uid == os.getuid() and stat.S_IMODE(assets.stat().st_mode) == 0o700
+    assert (assets / "rootfs-tree").stat().st_uid == bases[0]
+    assert (assets / "rootfs-tree").stat().st_gid == bases[1]
+    copied = assets / "rootfs-tree/root"
+    assert copied.read_bytes() == b"published root"
+    assert copied.stat().st_ino != (tree / "root").stat().st_ino
+    assert copied.stat().st_ino == (assets / "rootfs-tree/hard").stat().st_ino
+    assert (assets / "rootfs-tree/symbolic").readlink() == Path("root")
+    assert (assets / "rootfs-tree/agent").stat().st_uid == os.getuid()
+    assert (assets / "cache-paths.txt").read_bytes() == (source / "cache-paths.txt").read_bytes()
 
 
 def payload(path):
