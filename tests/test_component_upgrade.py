@@ -84,7 +84,7 @@ def exchange_available(parent):
                 path.rmdir()
 
 
-def installation(binary, root, bundle, store, environment, *, legacy=False):
+def installation(binary, root, bundle, store, environment, *, legacy=False, omitted_installers=False):
     shutil.copytree(bundle, root, symlinks=True)
     acquired = install(binary, root, store, environment, root / "package-info")
     assert acquired.returncode == 0, acquired.stderr
@@ -97,6 +97,10 @@ def installation(binary, root, bundle, store, environment, *, legacy=False):
     (root / "agents/retained/home").mkdir(parents=True)
     (root / "agents/retained/home/keep").write_bytes(b"keep agent home")
     (root / "logs/audit-canary").write_bytes(b"keep audit")
+    if omitted_installers:
+        # The original shipped installer omitted these three bundle files.
+        for name in ("install.sh", "install_native.sh", "native_package.sh"):
+            (root / name).unlink()
     if not legacy and not exchange_available(root):
         # gVisor's mounted filesystem lacks directory exchange. Start these
         # controls from the already-imported layout, using stopped fixtures.
@@ -106,6 +110,8 @@ def installation(binary, root, bundle, store, environment, *, legacy=False):
         (root / "current").symlink_to(initial)
         for name in ("bin", "libexec", "lib", "assets", "package-info", "SHA256SUMS", "LICENSE",
                      "install.sh", "install_native.sh", "native_package.sh", "share"):
+            if omitted_installers and name in ("install.sh", "install_native.sh", "native_package.sh"):
+                continue
             target = initial / name if name == "share" else initial / "host" / name
             (root / name).rename(target)
             alias = root / "current" / name if name == "share" else root / "current/host" / name
@@ -116,6 +122,50 @@ def upgrade(binary, root, environment, *arguments):
     result = command(binary, root, environment, "upgrade", *map(str, arguments))
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def test_original_installer_layout_upgrades_and_rolls_back_without_rewriting_receipts(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, second = host_pair
+    contents, requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment, omitted_installers=True)
+    original = upgrade(native_cli, root, environment, "status")["current"]
+    saved = state_files(root)
+    receipt = (root / "SHA256SUMS").read_bytes()
+    before = len(requests)
+    selected = upgrade(native_cli, root, environment, "--bundle", second)
+    assert selected["previous"] == original
+    assert selected["current"]["guest"] == original["guest"]
+    restored = upgrade(native_cli, root, environment, "rollback")
+    assert restored["current"] == original
+    assert (root / "SHA256SUMS").read_bytes() == receipt
+    assert len(requests) == before
+    assert_preserved(root, saved)
+
+
+@pytest.mark.parametrize("damage", ["legacy-runtime", "one-installer", "dangling-installer"])
+def test_installed_layout_still_refuses_missing_or_changed_payload(
+        native_cli, host_pair, registry, guest_store, tmp_path, damage):
+    first, second = host_pair
+    contents, _requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment,
+                 omitted_installers=damage == "legacy-runtime")
+    if damage == "legacy-runtime":
+        (root / "assets/guest/guest-sudo").write_bytes(b"changed runtime")
+    else:
+        (root / "install.sh").unlink()
+        if damage == "dangling-installer":
+            (root / "install.sh").symlink_to("missing-script")
+    original = upgrade(native_cli, root, environment, "status")
+    saved = preserved(root)
+    refused = command(native_cli, root, environment, "upgrade", "--bundle", str(second))
+    assert refused.returncode != 0
+    assert upgrade(native_cli, root, environment, "status") == original
+    assert_preserved(root, saved)
 
 
 def state_files(root):
@@ -195,7 +245,7 @@ def test_complete_target_pair_and_guest_only_interface_share_retained_inputs(
     assert_preserved(root, saved)
 
 
-@pytest.mark.parametrize("fault", ["checksum", "omitted-checksum", "helper-source", "compatibility", "duplicate-metadata", "guest-blob", "upgrader-path"])
+@pytest.mark.parametrize("fault", ["checksum", "omitted-checksum", "omitted-installers", "helper-source", "compatibility", "duplicate-metadata", "guest-blob", "upgrader-path"])
 def test_bad_component_targets_leave_active_pair_and_state_unchanged(
         native_cli, host_pair, registry, guest_store, tmp_path, fault):
     first, second = host_pair
@@ -213,6 +263,9 @@ def test_bad_component_targets_leave_active_pair_and_state_unchanged(
         sums = second / "SHA256SUMS"
         sums.write_text("".join(line for line in sums.read_text().splitlines(keepends=True)
                                 if not line.endswith("./assets/guest/guest-sudo\n")))
+    elif fault == "omitted-installers":
+        for name in ("install.sh", "install_native.sh", "native_package.sh"):
+            (second / name).unlink()
     elif fault == "helper-source":
         (second / "assets/guest/safeyolo-guest.version").write_text("safeyolo-guest 0.1.0 commit=" + "c" * 40 + " profile=debug\n")
         checksums(second)

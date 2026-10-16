@@ -27,6 +27,23 @@ def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
 
+def test_only_installed_layout_allows_original_installer_omissions(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    command = ("bash", "-c", 'source "$1"; verify_native_package "$2" "${3:-}"',
+               "verify", str(REPO / "scripts/native_package.sh"), str(bundle))
+    for name in ("install.sh", "install_native.sh", "native_package.sh"):
+        (bundle / name).unlink()
+    assert run(*command).returncode != 0
+    installed = run(*command, "--installed")
+    assert installed.returncode == 0, installed.stderr
+    # This exception never hides a present, changed script or a dangling link.
+    (bundle / "install.sh").write_text("changed packaging script\n")
+    assert run(*command, "--installed").returncode != 0
+    (bundle / "install.sh").unlink()
+    (bundle / "install.sh").symlink_to("missing-script")
+    assert run(*command, "--installed").returncode != 0
+
+
 def executable(path, identity, guest_exit=None, guest_assets=None):
     # Real ELF header/architecture, controlled identity; never a runtime witness.
     source = path.with_suffix(".c")
@@ -122,6 +139,9 @@ def package_inputs(tmp_path, request, monkeypatch):
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "package fixture"], check=True)
     revision = run("git", "-C", str(source), "rev-parse", "HEAD").stdout.strip()
+    # This producer and its executables belong to the committed fixture.
+    # CI's inherited revision identifies the separately built real CLI.
+    monkeypatch.setenv("SAFEYOLO_BUILD_REVISION", revision)
     host, guest, runtime = (tmp_path / name for name in ("host", "guest", "runtime"))
     for directory in (host, guest, runtime):
         directory.mkdir()
@@ -612,6 +632,14 @@ def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, t
     result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
     assert result.returncode != 0
     assert "guest" in result.stderr.lower()
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_producer_rejects_a_different_build_revision(package_inputs, tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_BUILD_REVISION", "b" * 40)
+    result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
+    assert result.returncode != 0
+    assert "build revision differs from this source" in result.stderr
     assert not (tmp_path / "bundle").exists()
 
 

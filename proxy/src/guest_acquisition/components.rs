@@ -32,6 +32,15 @@ const HOST_PATHS: &[&str] = &[
     "native_package.sh",
 ];
 
+const INSTALLER_FILES: &[&str] = &["install.sh", "install_native.sh", "native_package.sh"];
+
+fn legacy_installer_omissions(package: &Path) -> bool {
+    INSTALLER_FILES.iter().all(|name| {
+        fs::symlink_metadata(package.join(name))
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
 fn hash_file(path: &Path) -> Result<String, Error> {
     let mut input = fs::File::open(path)?;
     let mut hash = Context::new(&SHA256);
@@ -103,8 +112,9 @@ fn payload_files(
     Ok(())
 }
 
-fn verify_package(package: &Path) -> Result<PackageGuest, Error> {
+fn verify_package(package: &Path, installed: bool) -> Result<PackageGuest, Error> {
     let metadata = PackageGuest::read(&package.join("package-info"))?;
+    let legacy_installed = installed && legacy_installer_omissions(package);
     let mut checked = BTreeSet::new();
     for line in fs::read_to_string(package.join("SHA256SUMS"))?.lines() {
         let (hash, name) = line
@@ -119,6 +129,9 @@ fn verify_package(package: &Path) -> Result<PackageGuest, Error> {
         {
             return Err("invalid or duplicate host package checksum path".into());
         }
+        if legacy_installed && INSTALLER_FILES.contains(&name) {
+            continue;
+        }
         if hash_file(&package.join(path))? != hash {
             return Err(format!("host package checksum differs: {name}").into());
         }
@@ -127,11 +140,17 @@ fn verify_package(package: &Path) -> Result<PackageGuest, Error> {
     // when its target is one of the hashed files (for example license aliases).
     let checked = checked
         .iter()
+        .filter(|path| {
+            !legacy_installed || !INSTALLER_FILES.iter().any(|name| *path == Path::new(name))
+        })
         .map(|path| package.join(path).canonicalize())
         .collect::<Result<BTreeSet<_>, _>>()?;
     let mut files = BTreeSet::new();
     let mut visited = BTreeSet::new();
     for name in HOST_PATHS.iter().filter(|name| **name != "SHA256SUMS") {
+        if legacy_installed && INSTALLER_FILES.contains(name) {
+            continue;
+        }
         if *name == "lib" && !package.join(name).exists() {
             continue;
         }
@@ -147,10 +166,11 @@ fn verify_package(package: &Path) -> Result<PackageGuest, Error> {
         .args(["--noprofile", "--norc", "-c"])
         .arg(concat!(
             include_str!("../../../scripts/native_package.sh"),
-            "\nverify_native_package \"$1\"\n"
+            "\nverify_native_package \"$1\" \"$2\"\n"
         ))
         .arg("verify-host-package")
-        .arg(package);
+        .arg(package)
+        .arg(if installed { "--installed" } else { "" });
     checked_command(command, "host package verification")?;
     Ok(metadata)
 }
@@ -286,6 +306,7 @@ fn import_path(root: &Path, initial: &Path, name: &str, host: bool) -> Result<()
 }
 
 fn import_installation(root: &Path) -> Result<PathBuf, Error> {
+    let legacy_installed = legacy_installer_omissions(root);
     let initial = root.join("versions/initial");
     if current_set(root)?.is_none() && initial.try_exists()? {
         let existing = fs::read_dir(&initial)?.collect::<Result<Vec<_>, _>>()?;
@@ -308,6 +329,9 @@ fn import_installation(root: &Path) -> Result<PathBuf, Error> {
     // An interrupted first upgrade resumes these same exchanges. Every path
     // still supplies the original bytes until the complete target is selected.
     for name in HOST_PATHS {
+        if legacy_installed && INSTALLER_FILES.contains(name) {
+            continue;
+        }
         import_path(root, &initial, name, true)?;
     }
     import_path(root, &initial, "share", false)?;
@@ -333,7 +357,7 @@ fn stage_host(root: &Path, package: &Path) -> Result<PathBuf, Error> {
     fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))?;
     let destination = parent.join(hash_file(&package.join("SHA256SUMS"))?);
     if destination.try_exists()? {
-        verify_package(&destination)?;
+        verify_package(&destination, false)?;
         return Ok(destination);
     }
     let stage = tempfile::Builder::new()
@@ -351,7 +375,7 @@ fn stage_host(root: &Path, package: &Path) -> Result<PathBuf, Error> {
             .arg(stage.path().join(name));
         checked_command(command, "host package staging")?;
     }
-    verify_package(stage.path())?;
+    verify_package(stage.path(), false)?;
     fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o755))?;
     sync_payload(stage.path())?;
     fs::rename(stage.path(), &destination)?;
@@ -556,7 +580,7 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
         let current = current_set(&root)?.ok_or("no previous host/guest pair is installed")?;
         if current.join("previous").try_exists()? {
             let previous = current.join("previous").canonicalize()?;
-            let package = verify_package(&previous.join("host"))?;
+            let package = verify_package(&previous.join("host"), true)?;
             verify_configuration(&root, &previous.join("host"))?;
             if previous.join("share/guest-selection.json").try_exists()? {
                 let guest: GuestSelection = serde_json::from_slice(&fs::read(
@@ -573,12 +597,12 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
     if current_set(&root)?.as_deref() == Some(root.join("versions/initial").as_path()) {
         // Until import finishes, the top-level aliases and original paths
         // together still form the complete original package.
-        verify_package(&root)?;
+        verify_package(&root, true)?;
         import_installation(&root)?;
     }
     let current = current_set(&root)?;
     let current_host = host_path(&root, current.as_deref());
-    let old_package = verify_package(&current_host)?;
+    let old_package = verify_package(&current_host, true)?;
     let old_guest = installed(&root, &old_package)?;
     let downloads = tempfile::Builder::new()
         .prefix("upgrade-")
@@ -596,7 +620,7 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
         bundle = Some(target);
     }
     let target = bundle.as_deref().unwrap_or(&current_host);
-    let package = verify_package(target)?;
+    let package = verify_package(target, bundle.is_none())?;
     let selected = if let Some(index) = index {
         Some(prepare_guest(&root, &package, old_guest.as_ref(), index).await?)
     } else {
