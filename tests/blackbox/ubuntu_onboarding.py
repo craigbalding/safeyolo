@@ -12,6 +12,7 @@ The observer owns its attempted installation; it borrows the runner and its tool
 
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -24,9 +25,13 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness.process_identity import child_exited, process_start_token
 
 SOURCE = "c9ecb66b462c2ba0c499f2322f6cfc5c142012da"
 BOOTSTRAP = "45d8853a202c04c9f5f8ca772df410ae8ced1844"
@@ -101,11 +106,10 @@ def capture(dest, key, action):
 
 def birth(pid):
     try:
-        fields = Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()
-        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        return f"linux:{boot}:{pid}:{fields[19]}"
-    except (OSError, ValueError, IndexError):
+        pid = int(pid)
+    except (TypeError, ValueError):
         return None
+    return process_start_token(pid)
 
 
 def observe(label, args, timeout=20):
@@ -326,6 +330,18 @@ def login_label(data):
 def console_group(pid):
     """Read live members of the owned PTY group while its leader remains waitable."""
     members = []
+    if sys.platform == "darwin":
+        observed = subprocess.run(["ps", "-axo", "pid=,pgid=,stat="],
+                                  check=True, capture_output=True, text=True, timeout=3)
+        leader_seen = False
+        for line in observed.stdout.splitlines():
+            member, group, state = line.split()
+            leader_seen |= member == str(pid)
+            if group == str(pid) and not state.startswith(("Z", "X")):
+                members.append({"pid": int(member), "birth": birth(int(member)), "state": state})
+        if not leader_seen:
+            raise ChildProcessError(f"Owned console {pid} was not observed before reaping")
+        return members
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
@@ -340,15 +356,16 @@ def console_group(pid):
 
 
 def stop_console_group(pid, row):
-    row["observer_terminated_viewer"] = stamp()
     shutdown = {"pgid": pid, "verified": False, "started": stamp()}
     row["console_group_shutdown"] = shutdown
     save()
     # pty.fork created this session/group. Keep its direct child unreaped so
     # its PID and group ID cannot be reused while the group is signalled.
-    os.killpg(pid, signal.SIGTERM)
     limit = time.monotonic() + 3
     remaining = console_group(pid)
+    if remaining:
+        row["observer_terminated_viewer"] = stamp()
+        os.killpg(pid, signal.SIGTERM)
     while remaining and time.monotonic() < limit - 1:
         time.sleep(0.05)
         remaining = console_group(pid)
@@ -384,22 +401,28 @@ def entered(phase, seconds):
     status = None
     detached = False
     captured = False
+    terminal_open = True
     completed = set()
     states = None
     try:
         with (private / (phase + ".terminal")).open("wb") as log:
             while True:
                 sample_files(phase)
-                if select.select([fd], [], [], 0.25)[0]:
+                if select.select([fd] if terminal_open else [], [], [], 0.25)[0]:
                     try:
                         chunk = os.read(fd, 65536)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
-                    log.write(chunk)
-                    log.flush()
-                    pending = (pending + chunk)[-60000:]
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        # Linux PTYs report EIO when the last slave closes.
+                        chunk = b""
+                    if chunk:
+                        log.write(chunk)
+                        log.flush()
+                        pending = (pending + chunk)[-60000:]
+                    else:
+                        terminal_open = False
+                        deadline = min(deadline, time.monotonic() + 3)
                 for label, phrase in PHASE_TEXT:
                     if label not in completed and phrase.encode() in pending:
                         x["phase_observations"].append({"phase": phase, "boundary": label, **stamp()})
@@ -410,7 +433,7 @@ def entered(phase, seconds):
                     ("setup", "Run this setup and share this workspace? [y/N]", "y\n"),
                     ("auth", "Copy this selected host authentication and settings? [y/N]", "n\n"),
                 ]:
-                    if label not in completed and prompt.encode() in pending:
+                    if terminal_open and label not in completed and prompt.encode() in pending:
                         seen = stamp()
                         os.write(fd, answer.encode())
                         x["interactions"].append({"phase": phase, "prompt": prompt,
@@ -419,7 +442,7 @@ def entered(phase, seconds):
                         pending = b""
                         save()
                 theme = theme_prompt(pending)
-                if phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
+                if terminal_open and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
                     seen = stamp()
                     os.write(fd, b"\r")
                     x["interactions"].append({"phase": phase, "kind": "guest display choice",
@@ -429,7 +452,7 @@ def entered(phase, seconds):
                     save()
                 labels = login_label(pending)
                 expired = time.monotonic() >= deadline
-                if not captured and (labels or expired):
+                if terminal_open and not captured and (labels or expired):
                     if labels:
                         row["signed_out_label"] = {"labels": labels, **stamp()}
                     else:
@@ -446,7 +469,7 @@ def entered(phase, seconds):
                     pending = b""
                     deadline = time.monotonic() + 30
                     save()
-                if detached and b"SafeYolo host> " in pending and "q" not in completed:
+                if terminal_open and detached and b"SafeYolo host> " in pending and "q" not in completed:
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
                     completed.add("q")
@@ -460,11 +483,10 @@ def entered(phase, seconds):
                     match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
                     if match:
                         row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
-                exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 # The shell can exit while its final discovery/version bytes remain queued.
-                if exited is not None and not select.select([fd], [], [], 0)[0]:
+                if child_exited(pid) and (not terminal_open or not select.select([fd], [], [], 0)[0]):
                     break
-                if captured and time.monotonic() >= deadline:
+                if time.monotonic() >= deadline:
                     break
     finally:
         # Viewer EOF or any classification error must still leave reached live operands.
@@ -476,8 +498,7 @@ def entered(phase, seconds):
                 row["final_capture_error"] = repr(error)
                 save()
         try:
-            exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-            if exited is None or not row.get("ordinary_q"):
+            if not child_exited(pid) or not row.get("ordinary_q") or console_group(pid):
                 stop_console_group(pid, row)
         finally:
             waited, code = os.waitpid(pid, os.WNOHANG)

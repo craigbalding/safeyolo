@@ -12,6 +12,7 @@ import socketserver
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,7 +34,8 @@ def smoke_module(monkeypatch):
     return module
 
 
-def _executable(path: Path, output: str, *, doctor: dict | None = None, run: bool = False) -> Path:
+def _executable(path: Path, output: str, *, doctor: dict | None = None, run: bool = False,
+                exit_code: int = 0) -> Path:
     # Controlled native identity, never a real runtime witness.
     source = path.with_suffix('.c')
     source.write_text(
@@ -41,7 +43,7 @@ def _executable(path: Path, output: str, *, doctor: dict | None = None, run: boo
         + (f'if(argc>1 && !strcmp(argv[argc-1],"doctor")){{puts({json.dumps(json.dumps(doctor))});return 0;}}'
            if doctor is not None else '')
         + ('if(argc>1 && !strcmp(argv[1],"--config")){for(;;)pause();}' if run else '')
-        + 'puts(' + json.dumps(output) + ');return 0;}\n'
+        + 'puts(' + json.dumps(output) + f');return {exit_code};}}\n'
     )
     subprocess.run(['cc', str(source), '-o', str(path)], check=True, timeout=15)
     source.unlink()
@@ -391,11 +393,15 @@ def test_missing_required_substrate_is_not_a_discovery_pass(smoke_module) -> Non
 
 
 @pytest.fixture
-def attached_instance(tmp_path, smoke_module):
-    root = tmp_path / "i"
+def attached_instance(smoke_module, request):
+    # Keep the complete listener operand short even under a long ambient TMPDIR.
+    parent = tempfile.TemporaryDirectory(prefix="sy-att-", dir="/tmp")
+    request.addfinalizer(parent.cleanup)
+    root = Path(parent.name).resolve() / "i"
     (root / "bin").mkdir(parents=True)
     data = root / "data"
     uds = data / "sockets/10.0.0.2_alice/proxy.sock"
+    assert len(os.fsencode(uds)) < 104, uds
     uds.parent.mkdir(parents=True)
     revision = "a" * 40
     (root / "package-info").write_text(f"source_commit={revision}\nprofile=debug\n")
@@ -451,6 +457,16 @@ def attached_instance(tmp_path, smoke_module):
 
 
 @pytest.mark.parametrize("diagnosis", [
+    {"state": "ready", "helper": "ready"},
+    {"state": "unavailable", "helper": "missing",
+     "error": "safeyolo-vm is not installed in the selected instance"},
+    {"state": "unavailable", "helper": "not-executable",
+     "error": "safeyolo-vm is not installed in the selected instance"},
+    {"state": "unavailable", "helper": "exit17",
+     "error": "safeyolo-vm version check failed (exit 17)"},
+    {"state": "unavailable", "helper": "empty",
+     "error": "safeyolo-vm version check failed (exit 0)"},
+] if sys.platform == "darwin" else [
     {"state": "ready"},
     {"state": "unavailable", "error": "mapped root UID 100000 cannot read and write /dev/kvm"},
     {"state": "unavailable", "error": "host UID 1000 cannot read and write /dev/kvm"},
@@ -459,6 +475,13 @@ def attached_instance(tmp_path, smoke_module):
 ])
 def test_attached_checks_current_runtime_and_retains_future_launch_diagnosis(attached_instance, diagnosis):
     instance = attached_instance
+    if sys.platform == "darwin" and diagnosis["helper"] != "missing":
+        # Exercise Mac discovery through its real helper caller, without a VM.
+        helper = _executable(instance.root / "bin/safeyolo-vm",
+                             "" if diagnosis["helper"] == "empty" else "controlled-vm-version",
+                             exit_code=17 if diagnosis["helper"] == "exit17" else 0)
+        if diagnosis["helper"] == "not-executable":
+            helper.chmod(0o600)
     cli = _executable(instance.root / "bin/safeyolo",
                       f"safeyolo 0.1.0 commit={instance.revision} profile=debug", doctor={"linux": diagnosis})
     output = instance.root / "report.json"

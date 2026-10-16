@@ -7,6 +7,7 @@ import this test instrument; it needs only the standard library.
 import ctypes
 import errno
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -86,3 +87,16 @@ def process_start_token(process_id: int) -> str | None:
             return token
 
     return None
+
+
+def child_exited(process_id: int) -> bool:
+    """Observe an owned child's exit without reaping its PID or process group."""
+    if sys.platform == "darwin":
+        # proc_pidinfo returns ESRCH for zombies. ps still exposes their state.
+        observed = subprocess.run(["ps", "-o", "stat=", "-p", str(process_id)],
+                                  check=True, capture_output=True, text=True, timeout=3)
+        state = observed.stdout.strip()
+        if not state:
+            raise ChildProcessError(f"Owned child {process_id} was not observed before reaping")
+        return state.startswith("Z")
+    return os.waitid(os.P_PID, process_id, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
