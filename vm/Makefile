@@ -56,6 +56,8 @@ UNAME := $(shell uname)
 # On Linux: native cross-compile via gcc-aarch64-linux-gnu.
 # On macOS: run the cross-compile inside the same Lima VM used for guest
 # image builds (see guest/lima.yaml). Requires Lima (brew install lima).
+# Static glibc's files NSS backend matches the default guest's /etc/group.
+# External NSS modules have runtime dependencies; see docs/microvm-architecture.md.
 guest-tools: $(BUILD_DIR)/vsock-term
 
 $(BUILD_DIR)/vsock-term: $(GUEST_DIR)/vsock-term.c

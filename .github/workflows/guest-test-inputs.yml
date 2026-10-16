@@ -95,6 +95,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends gcc-aarch64-linux-gnu
           make -C vm guest-tools
+          sudo .venv-source-bindings/bin/python -m pytest -q -rs tests/test_vsock_term.py
           mkdir -p "$RUNNER_TEMP/guest-terminal"
           install -m 0755 vm/.build/release/vsock-term "$RUNNER_TEMP/guest-terminal/vsock-term"
           printf 'vsock-term commit=%s\n' "$SAFEYOLO_BUILD_REVISION" > "$RUNNER_TEMP/guest-terminal/vsock-term.version"

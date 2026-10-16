@@ -77,6 +77,23 @@ The VM terminal uses vsock (virtio socket) with a proper PTY:
 
 **Guest side (`vsock-term`)**: Listens on vsock port 1024 (data) and 1025 (resize). On host connection: `openpty()` with the host's window dimensions, `fork()`, `setsid()`, `TIOCSCTTY`, `dup2` slave to 0/1/2, drop privileges, `execvp` the agent binary directly. No shell wrapper — this preserves `process.stdout.isTTY` for Node.js TUI apps.
 
+Before command execution, the child changes directory, sets the primary group,
+loads the `agent` user's supplementary groups, and sets the user ID. If any
+of these four operations fails, the child reports the operation and system
+error through the PTY and exits with status 1. It does not execute the command.
+
+`make -C vm guest-tools` builds this Linux ARM64 executable with static glibc.
+Linux builds use `aarch64-linux-gnu-gcc`; macOS builds use the same compiler
+inside the Debian Lima builder. The default Debian guest selects `group: files`
+in `/etc/nsswitch.conf`, so `initgroups` reads the local `/etc/group` database.
+The static build includes glibc's files backend. Keep the linker's `initgroups`
+warning visible: a static ELF file alone does not establish compatibility with
+other Name Service Switch (NSS) backends. A custom guest that selects external
+NSS modules needs those modules and shared libraries from the glibc version
+used to link the terminal executable. The macOS package carries this guest
+executable with its source and checksum receipts; the guest init selects the
+config-share copy before the rootfs fallback.
+
 **Host side (`VSockTerminal.swift`)**: Connects to vsock after VM boots. Full `cfmakeraw` terminal mode. `write_all()` with retry to prevent split ANSI sequences. SIGWINCH → 4-byte resize message on control channel. Drains PTY output before closing.
 
 For persistent agents (`safeyolo agent start NAME`), a configured host launcher owns the agent terminal, or an explicit supervisor owns headless harness turns. `--sandbox-only` boots without a coding agent. The separate `safeyolo agent shell` route uses SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd; see [agent launchers](agent-launchers.md).
