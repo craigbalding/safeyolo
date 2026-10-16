@@ -336,7 +336,7 @@ jobs:
           uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
             tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
             --basetemp "$RUNNER_TEMP/native-factory"
-          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
+          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_component_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
 
       - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
