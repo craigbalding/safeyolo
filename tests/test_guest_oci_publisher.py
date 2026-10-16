@@ -416,7 +416,7 @@ def test_workflow_retained_source_artifacts_and_token_narrow(retained_publisher)
     assert len(downloads) == 2
     for download, ids, path in zip(downloads, ["GUEST_ARCHIVE_IDS", "GUEST_LAYOUT_ID"],
                                    ["archives", "retained-guest-oci"]):
-        assert download["uses"] == "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        assert download["uses"] == "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131"
         assert download["with"] == {
             "artifact-ids": "${{ env." + ids + " }}", "run-id": "${{ env.GUEST_RUN_ID }}",
             "repository": "craigbalding/safeyolo",

@@ -32,6 +32,14 @@ EXPECTED_ACTIONS = {
         "20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
         "v10.0.1",
     ),
+    "actions/upload-artifact": (
+        "b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+        "v6.0.0",
+    ),
+    "actions/download-artifact": (
+        "37930b1c2abaa49bbe596cd826c3c89aef350131",
+        "v7.0.0",
+    ),
 }
 
 
