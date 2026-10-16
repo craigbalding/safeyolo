@@ -77,7 +77,7 @@ jobs:
           [[ $(sha256sum "$archive" | cut -d ' ' -f 1) == "$HOST_SHA256" ]] || { echo 'Retained host archive checksum differs.' >&2; exit 1; }
       - name: Transfer only bound host inputs
         id: host-inputs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: retained-arm64-host-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -111,7 +111,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download the bound host inputs from this run
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           artifact-ids: ${{ needs.acquire-host.outputs.artifact-id }}
           merge-multiple: true
@@ -150,7 +150,7 @@ jobs:
             "$HOST_RELEASE_ID" "$HOST_REVISION" "$HOST_SHA256" "$HOST_BYTES" | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/host-input.txt"
       # The retained complete layout already contains the exact archive blobs.
       # Download it once; do not rebuild or repackage the original G1.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           artifact-ids: '11747551391'
           run-id: 38248401312
@@ -233,7 +233,7 @@ jobs:
           } 2>&1 | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/installed-smoke.txt"
       - name: Upload reports and individual suite outcomes
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: installed-arm64-${{ github.run_id }}
           path: ${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}
@@ -300,7 +300,7 @@ jobs:
           fi
       - name: Upload public onboarding observations, including failures
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: public-install-arm64-${{ github.run_id }}-${{ github.run_attempt }}
           # Explicit files only: never upload PTY logs, instance state or authentication.

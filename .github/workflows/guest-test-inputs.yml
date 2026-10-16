@@ -80,7 +80,7 @@ jobs:
           verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
       - name: Upload Linux host test inputs
         if: inputs.host_inputs && inputs.architecture == 'amd64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: linux-host-${{ inputs.architecture }}-${{ inputs.profile }}
           path: |
@@ -102,12 +102,12 @@ jobs:
           sha256sum "$RUNNER_TEMP/guest-terminal/vsock-term" | awk '{print $1}' > "$RUNNER_TEMP/guest-terminal/vsock-term.sha256"
       - name: Upload Linux guest terminal input
         if: inputs.architecture == 'arm64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: linux-guest-terminal-arm64-${{ inputs.profile }}
           path: ${{ runner.temp }}/guest-terminal
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: linux-guest-${{ inputs.architecture }}-${{ inputs.profile }}
           path: |
@@ -139,7 +139,7 @@ jobs:
             guest/command -> target
           shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: linux-guest-arm64-${{ inputs.profile }}
           path: guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}
@@ -153,7 +153,7 @@ jobs:
           scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy "${options[@]}"
           source scripts/native_package.sh
           verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: darwin-host-arm64-${{ inputs.profile }}
           path: |

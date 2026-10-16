@@ -69,7 +69,7 @@ jobs:
           if [[ "$ARCH" == arm64 ]]; then
             ./guest/archive-default.sh darwin/arm64 "$RUNNER_TEMP/guest-build" "$RUNNER_TEMP/archives/darwin-arm64"
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: guest-archives-${{ matrix.architecture }}
           path: ${{ runner.temp }}/archives
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: guest-archives-*
           merge-multiple: true
@@ -104,7 +104,7 @@ jobs:
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
             --verifier proxy/target/release/examples/verify_guest_oci
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: verified-guest-oci-layout
           path: ${{ runner.temp }}/guest-oci
@@ -162,7 +162,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.PUBLISHER_REVISION }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           artifact-ids: ${{ env.GUEST_ARCHIVE_IDS }}
           run-id: ${{ env.GUEST_RUN_ID }}
@@ -170,7 +170,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: true
           path: ${{ runner.temp }}/archives
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           artifact-ids: ${{ env.GUEST_LAYOUT_ID }}
           run-id: ${{ env.GUEST_RUN_ID }}
