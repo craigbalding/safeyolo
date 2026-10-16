@@ -217,7 +217,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 9164786f26e33387d1a06c558b3beb2d412a55ffa223f200d6a75c49e8fa7262
         - path: tests/blackbox/run-tests.sh
-          sha256: 47aeea593cf39429f6bf78fa951f40064ca6e642ce9076807c57678814039db1
+          sha256: e514aa190788d5a694a5453d73f9fdbafed405bfa9b7ef7bbee02da2e2dc3301
         - path: uv.lock
           sha256: 2c96939bc5c21255e1392db817c9cb30d681327ad3d92aa34f907d6c1c2947b3
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
@@ -246,13 +246,13 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 9164786f26e33387d1a06c558b3beb2d412a55ffa223f200d6a75c49e8fa7262
         - path: tests/blackbox/run-tests.sh
-          sha256: 47aeea593cf39429f6bf78fa951f40064ca6e642ce9076807c57678814039db1
+          sha256: e514aa190788d5a694a5453d73f9fdbafed405bfa9b7ef7bbee02da2e2dc3301
         - path: proxy/src/host_platform.rs
           sha256: 571126066d7114c9ab94c7152a169b4b05ede39836ec40907b0cf07f75df6946
         - path: proxy/src/host_boot.rs
           sha256: 7d7b1d9cfdedb1713bfe0426552b5fba834cbe2198287332fd1ee42912cd8525
         - path: guest/build-rootfs.sh
-          sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
+          sha256: 82c67084d91d770fde892f8ab0084dd6327b0b6809fe2c0c72efb5e6cce408b0
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
@@ -415,9 +415,9 @@ nodes:
         - path: guest/build-all.sh
           sha256: 49f6de7f07ca960f79b04758ba88f37e7fc91fd318ae08d4117e8e4b967e6d3f
         - path: guest/build-rootfs.sh
-          sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
+          sha256: 82c67084d91d770fde892f8ab0084dd6327b0b6809fe2c0c72efb5e6cce408b0
         - path: guest/rootfs-customize-hook.sh
-          sha256: 2c48131abab82e6b38f50c404da187be15ec6f4f5cc4d1173ebc98e860ab4dfa
+          sha256: d52bf35604b820a26fe24b1dbc4e47d7e976232a2209f4597d29411a0712a6d4
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."
       verify: "sha256sum guest/build-all.sh guest/build-rootfs.sh guest/rootfs-customize-hook.sh && skopeo --version && umoci --version && mkfs.ext4 -V"
       run:
@@ -441,7 +441,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 47aeea593cf39429f6bf78fa951f40064ca6e642ce9076807c57678814039db1
+          sha256: e514aa190788d5a694a5453d73f9fdbafed405bfa9b7ef7bbee02da2e2dc3301
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
