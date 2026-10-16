@@ -346,8 +346,22 @@ fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
     );
     let token = macos_process_token_detail(i64::from(pid))
         .map_err(|error| format!("{error}; {expected}"))?;
-    let arguments = macos_process_arguments_detail(pid, &executable)
-        .map_err(|error| format!("{error}; observed_birth={token}; {expected}"))?;
+    // A host upgrade retains the old executable while this VM keeps running.
+    // Keep the same PID/birth and private control-argument checks for that file.
+    let mut arguments = macos_process_arguments_detail(pid, &executable);
+    if arguments.is_err()
+        && let Ok(binaries) =
+            crate::guest_acquisition::retained_host_binaries(&config_dir(), "safeyolo-vm")
+    {
+        for binary in binaries.into_iter().skip(1) {
+            if let Ok(retained) = macos_process_arguments_detail(pid, &binary) {
+                arguments = Ok(retained);
+                break;
+            }
+        }
+    }
+    let arguments =
+        arguments.map_err(|error| format!("{error}; observed_birth={token}; {expected}"))?;
     if !arguments
         .windows(2)
         .any(|pair| pair[0] == b"--control-socket" && pair[1] == control.as_os_str().as_bytes())
@@ -2076,8 +2090,13 @@ pub(crate) async fn start_sandbox(
         .join(format!("{ip}_{name}/proxy.sock"));
     let runner = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER");
     let runner_timeout = std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS");
+    let host_package = launch_context
+        .get("host_package")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.clone());
     let mut command = vz_helper_command(
-        &config.join("bin/safeyolo-vm"),
+        &host_package.join("bin/safeyolo-vm"),
         runner.as_deref(),
         runner_timeout.as_deref(),
     )?;

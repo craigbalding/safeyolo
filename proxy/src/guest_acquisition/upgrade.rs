@@ -5,7 +5,7 @@ use std::{os::unix::fs::PermissionsExt, process::Command};
 use super::*;
 
 /// Reuse the installer's Linux links and Darwin image clones in a new directory.
-fn install_inputs(
+pub(super) fn install_inputs(
     root: &Path,
     selection: &GuestSelection,
     platform: ConsumerPlatform,
