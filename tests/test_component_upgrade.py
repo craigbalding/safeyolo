@@ -195,7 +195,7 @@ def test_complete_target_pair_and_guest_only_interface_share_retained_inputs(
     assert_preserved(root, saved)
 
 
-@pytest.mark.parametrize("fault", ["checksum", "omitted-checksum", "helper-source", "compatibility", "duplicate-metadata", "guest-blob"])
+@pytest.mark.parametrize("fault", ["checksum", "omitted-checksum", "helper-source", "compatibility", "duplicate-metadata", "guest-blob", "upgrader-path"])
 def test_bad_component_targets_leave_active_pair_and_state_unchanged(
         native_cli, host_pair, registry, guest_store, tmp_path, fault):
     first, second = host_pair
@@ -221,6 +221,8 @@ def test_bad_component_targets_leave_active_pair_and_state_unchanged(
         text = metadata.read_text()
         metadata.write_text(text.replace("v1", "v2") if fault == "compatibility" else text + "guest_compatibility=v1\n")
         checksums(second)
+    elif fault == "upgrader-path":
+        (root / "safeyolo-upgrade").write_bytes(b"operator file; preserve")
     else:
         g2 = release(compressed_archive(content=b"new"), version="guest-2026-10-16.2")
         contents.update(g2)
@@ -234,6 +236,8 @@ def test_bad_component_targets_leave_active_pair_and_state_unchanged(
     assert refused.returncode != 0
     assert upgrade(native_cli, root, environment, "status") == original
     assert_preserved(root, saved)
+    if fault == "upgrader-path":
+        assert (root / "safeyolo-upgrade").read_bytes() == b"operator file; preserve"
 
 
 def test_explicit_incompatible_host_and_guest_change_together_and_roll_back(

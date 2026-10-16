@@ -265,6 +265,8 @@ async fn run() -> Result<(), Error> {
                     .then(|| {
                         std::env::current_exe()
                             .ok()?
+                            .canonicalize()
+                            .ok()?
                             .ancestors()
                             .nth(3)
                             .map(Path::to_path_buf)
