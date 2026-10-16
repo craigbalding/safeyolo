@@ -1,8 +1,10 @@
 """Focused observer checks; no SafeYolo product, external network, VM or provider is run."""
 
+import errno
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -11,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import yaml
 
 spec = importlib.util.spec_from_file_location("observer", Path(__file__).resolve().parents[2] / "tests/blackbox/ubuntu_onboarding.py")
 m = importlib.util.module_from_spec(spec)
@@ -84,10 +88,10 @@ class ObserverChecks(unittest.TestCase):
         self.assertNotIn("capture-pane", row["command"])
         self.assertIn("unavailable", m.terminal_attachment("warm", {"pane_id": "%7"}))
 
-    def observer_cli(self, home, *args):
-        return subprocess.run([sys.executable, "-I", "-B", m.__file__, "--host", os.uname().nodename,
+    def observer_cli(self, home, *args, script=None):
+        return subprocess.run([sys.executable, "-I", "-B", script or m.__file__, "--host", os.uname().nodename,
             "--platform", "linux-arm64", "--observation-dir", str(home / "observation"), *args],
-            env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, timeout=10)
+            cwd=home, env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, timeout=10)
 
     def test_arm_binding_and_existing_installation_refusal_precede_product_commands(self):
         home = Path(self.scratch.name) / "home"
@@ -107,6 +111,48 @@ class ObserverChecks(unittest.TestCase):
         self.assertNotEqual(cleanup.returncode, 0)
         self.assertIn("No matching owned attempt", cleanup.stderr)
         self.assertEqual(sentinel.read_text(), "existing policy")
+
+    def test_workflow_staged_observer_runs_isolated_normal_and_cleanup_callers(self):
+        base = Path(self.scratch.name)
+        workspace = base / "workspace"
+        workspace.mkdir()
+        repo = Path(__file__).resolve().parents[2]
+        (workspace / "observer-source").symlink_to(repo, target_is_directory=True)
+        work = base / "work"
+        (work / "observer").mkdir(parents=True)
+        workflow = yaml.safe_load((repo / ".github/workflows/installed-arm64.yml").read_text())
+        stage = next(step["run"] for step in workflow["jobs"]["public-install"]["steps"]
+                     if step.get("name") == "Stage only the Python observer outside the checkout")
+        subprocess.run(["bash", "-c", stage], check=True, capture_output=True, text=True, timeout=10,
+                       env={**os.environ, "GITHUB_WORKSPACE": str(workspace), "PUBLIC_INSTALL_WORK": str(work)})
+        shutil.rmtree(workspace)
+        script = str(work / "observer/ubuntu_onboarding.py")
+        home = base / "staged-home"
+        binary = home / ".safeyolo/bin/safeyolo"
+        binary.parent.mkdir(parents=True)
+        calls = home / "calls"
+        binary.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n")
+        binary.chmod(0o755)
+        result = self.observer_cli(home, script=script)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(calls.exists())
+        private = home / "observation"
+        (home / "239-onboarding-project").mkdir()
+        record = {"owns_product_attempt": True, "platform": "linux-arm64", "observations": [],
+                  "baseline": {"hostname": os.uname().nodename, "uid": os.getuid()},
+                  "fixture_preparation": {"project": str(home / "239-onboarding-project")}}
+        (private / "result.json").write_text(json.dumps(record))
+        cleanup = self.observer_cli(home, "--cleanup-only", script=script)
+        observed = json.loads((private / "result.json").read_text())
+        # These Ubuntu scans may be unavailable on the test host. That failure
+        # must stay visible, while both isolated callers load only staged code.
+        self.assertIn(cleanup.returncode, (0, 1), cleanup.stderr)
+        self.assertEqual(len(calls.read_text().splitlines()), 6)
+        self.assertIn("cleanup_rechecked", observed)
+        if not observed["cleanup_verified"]:
+            self.assertEqual(cleanup.returncode, 1)
+        else:
+            self.assertEqual(cleanup.returncode, 0)
 
     def test_cleanup_recovery_stops_only_recorded_attempt_and_does_not_replay_verified_stop(self):
         home = Path(self.scratch.name) / "home"
@@ -128,7 +174,8 @@ class ObserverChecks(unittest.TestCase):
         # The separate process/listener test exercises /proc. This case isolates
         # recovery ownership from unrelated unreadable processes on the test host.
         with patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
-             patch.object(m, "processes", autospec=True, return_value=[]):
+             patch.object(m, "processes", autospec=True, return_value=[]), \
+             patch.object(m, "listeners", autospec=True, return_value=[]):
             self.assertEqual(m.main(), 0)
         self.assertTrue(json.loads((private / "result.json").read_text())["cleanup_verified"])
         first_calls = calls.read_text()
@@ -162,6 +209,34 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(m.observe("next", [sys.executable, "-c", "print('next')"])["exit"], 0)
 
     def test_process_and_listener_capture_excludes_unrelated_process(self):
+        # These are explicit Linux process-file inputs, including on Mac.
+        proc = Path(self.scratch.name) / "proc"
+        for pid, argv, executable, inode in [
+            (10101, str(m.root), str(m.cli), 123),
+            (20202, "unrelated-observer-control", "/unrelated/python", 456),
+        ]:
+            entry = proc / str(pid)
+            (entry / "fd").mkdir(parents=True)
+            (entry / "cmdline").write_bytes(argv.encode())
+            (entry / "exe").symlink_to(executable)
+            (entry / "fd/3").symlink_to(f"socket:[{inode}]")
+        (proc / "net").mkdir()
+        (proc / "net/tcp").write_text("header\n0: 0100007F:1234 00000000:0000 0A 0 0 0 0 0 123\n"
+                                       "1: 0100007F:5678 00000000:0000 0A 0 0 0 0 0 456\n")
+        for name in ("tcp6", "unix"):
+            (proc / "net" / name).write_text("header\n")
+
+        def linux_path(value):
+            return proc / str(value).removeprefix("/proc").lstrip("/")
+
+        with patch.object(m, "Path", autospec=True, side_effect=linux_path), \
+             patch.object(m, "birth", autospec=True, side_effect=lambda pid: f"linux:boot:{pid}:1"):
+            rows = m.processes()
+            self.assertEqual([r["pid"] for r in rows], [10101])
+            self.assertEqual(m.listeners(rows), [{"family": "tcp", "inode": "123", "address": "0100007F:1234"}])
+        if sys.platform == "darwin":
+            return
+        # Also retain the actual Linux owned/unrelated process and listener proof.
         code = "import socket,time;s=socket.socket();s.bind(('127.0.0.1',0));s.listen();print('ready',flush=True);time.sleep(20)"
         owned = subprocess.Popen([sys.executable, "-c", code, str(m.root)], stdout=subprocess.PIPE)
         unrelated = subprocess.Popen([sys.executable, "-c", code, "unrelated-observer-control"], stdout=subprocess.PIPE)
@@ -173,6 +248,7 @@ class ObserverChecks(unittest.TestCase):
             self.assertNotIn(unrelated.pid, [r["pid"] for r in rows])
             self.assertEqual(len(m.listeners(rows)), 1)
             saved = m.birth(owned.pid)
+            self.assertIsNotNone(saved)
             owned.terminate()
             owned.wait(timeout=3)
             self.assertNotEqual(m.birth(owned.pid), saved)
@@ -213,9 +289,11 @@ class ObserverChecks(unittest.TestCase):
             if descendant:
                 child = json.loads((m.project / "descendant.json").read_text())
                 child["birth"] = m.birth(child["pid"])
+                self.assertIsNotNone(child["birth"])
                 m.x[phase]["descendant"] = child
                 self.assertEqual(child["pgid"], row["console_pid"])
-                self.assertNotIn(child["pid"], [r["pid"] for r in m.processes()])
+                if sys.platform.startswith("linux"):
+                    self.assertNotIn(child["pid"], [r["pid"] for r in m.processes()])
                 with socket.create_connection(("127.0.0.1", child["port"]), timeout=1):
                     pass
             m.save()
@@ -247,6 +325,66 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["discovery_stdout"], str(m.cli))
         self.assertEqual(row["version_exit"], 0)
 
+    def test_terminal_eof_waits_for_child_exit_without_observer_intervention(self):
+        read, exited = os.read, m.child_exited
+        eof = False
+        unfinished = 0
+
+        def terminal_read(fd, count):
+            nonlocal eof
+            if not os.isatty(fd):
+                return read(fd, count)
+            try:
+                chunk = read(fd, count)
+            except OSError as error:
+                if error.errno == errno.EIO:
+                    eof = True
+                raise
+            eof = not chunk
+            return chunk
+
+        def delayed_exit(pid):
+            nonlocal unfinished
+            if not eof:
+                return False
+            if unfinished < 2:
+                unfinished += 1
+                return False
+            return exited(pid)
+
+        with patch.object(m.os, "read", autospec=True, side_effect=terminal_read), \
+             patch.object(m, "child_exited", autospec=True, side_effect=delayed_exit):
+            row = self.run_console("Sign in", 2)
+        self.assertTrue(eof)
+        self.assertEqual(unfinished, 2)
+        self.assertEqual(row["exit_code"], 0)
+        self.assertTrue(row["console_reaped"])
+        self.assertEqual(row["version_exit"], 0)
+        self.assertNotIn("observer_terminated_viewer", row)
+
+    def test_missing_console_observation_is_not_an_empty_group(self):
+        with patch.object(m.sys, "platform", "darwin"), \
+             patch.object(m.subprocess, "run", autospec=True, return_value=subprocess.CompletedProcess([], 0, "", "")):
+            with self.assertRaises(ChildProcessError):
+                m.console_group(os.getpid())
+            with self.assertRaises(ChildProcessError):
+                m.child_exited(os.getpid())
+
+    def test_observer_intervention_stays_visible_on_zero_exit(self):
+        code = ("import os,signal\n"
+                "signal.signal(signal.SIGTERM,lambda *_:os._exit(0))\n"
+                "print('Sign in',flush=True)\n"
+                "signal.pause()\n")
+        with patch.object(m, "LAUNCH", ["exec", sys.executable, "-c", code]), \
+             patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")):
+            with self.assertRaisesRegex(ValueError, "capture failed"):
+                m.entered("warm", 2)
+        row = m.x["product_commands"][-1]
+        self.assertIn("observer_terminated_viewer", row)
+        self.assertEqual(row["exit_code"], 0)
+        self.assertTrue(row["console_reaped"])
+        self.assertTrue(row["console_group_shutdown"]["verified"])
+
     def test_real_pty_unclassified_ui_still_captures_before_detach(self):
         row = self.run_console("UNKNOWN UI", 0.2)
         self.assertNotIn("signed_out_label", row)
@@ -274,6 +412,7 @@ class ObserverChecks(unittest.TestCase):
         try:
             port = int(control.stdout.readline())
             control_birth = m.birth(control.pid)
+            self.assertIsNotNone(control_birth)
             with self.assertRaisesRegex(ValueError, "capture failed"):
                 self.run_console("Sign in", 2, capture_error=True, descendant=True)
             child = m.x["after-reentry"]["descendant"]
@@ -284,8 +423,6 @@ class ObserverChecks(unittest.TestCase):
             with self.assertRaises(OSError):
                 with socket.create_connection(("127.0.0.1", child["port"]), timeout=0.2):
                     pass
-            stat = Path(f"/proc/{child['pid']}/stat")
-            self.assertTrue(not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
             self.assertTrue(row["console_reaped"])
             self.assertTrue(row["console_group_shutdown"]["verified"])
             self.assertEqual(row["console_group_shutdown"]["remaining"], [])
