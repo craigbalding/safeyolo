@@ -71,6 +71,12 @@ jobs:
       - name: Install source rootfs builder prerequisites
         run: sudo -n apt-get install -y -qq --no-install-recommends skopeo umoci e2fsprogs rsync
 
+      - name: Prepare the matching native host bundle
+        run: |
+          scripts/build_host_packages.sh --directory "$RUNNER_TEMP/blackbox-native" \
+            --runtime-artifacts "$(dirname "$(command -v tmux)")"
+          printf 'SAFEYOLO_NATIVE_BUNDLE=%s\n' "$RUNNER_TEMP/blackbox-native" >> "$GITHUB_ENV"
+
       - name: Build matching Linux guest rootfs
         env:
           OUTPUT_DIR: ${{ runner.temp }}/blackbox-platform
@@ -80,9 +86,33 @@ jobs:
           test -x "$OUTPUT_DIR/rootfs-tree/usr/local/bin/safeyolo-guest-init"
           test "$(stat -c '%u:%g' "$OUTPUT_DIR/rootfs-tree")" = 100000:100000
 
+      - name: Prepare a private rootfs for the runner's owned IDs
+        shell: bash
+        run: |
+          owned_base() {
+            getsubids "$@" "$USER" | awk '
+              $4 >= 65536 {
+                if ($3 <= 100000 && $3 + $4 >= 165536) preferred = 100000
+                if (!base || $3 < base) base = $3
+              }
+              END {
+                if (preferred) print preferred
+                else if (base) print base
+                else { print "The runner needs an owned range of 65536 subordinate IDs" > "/dev/stderr"; exit 1 }
+              }'
+          }
+          uid_base=$(owned_base)
+          gid_base=$(owned_base -g)
+          assets=$(mktemp -d "$RUNNER_TEMP/extract-XXXXXXXX")
+          sudo -n cp -a --reflink=auto "$RUNNER_TEMP/blackbox-platform/rootfs-tree" "$assets/"
+          cp "$RUNNER_TEMP/blackbox-platform/cache-paths.txt" "$assets/"
+          sudo -n "$SAFEYOLO_NATIVE_BUNDLE/bin/safeyolo" host remap-rootfs \
+            "$assets/rootfs-tree" "$uid_base" "$gid_base" "$(id -u)" "$(id -g)"
+          test "$(stat -c '%u:%g' "$RUNNER_TEMP/blackbox-platform/rootfs-tree")" = 100000:100000
+          test "$(stat -c '%u:%g' "$assets/rootfs-tree")" = "$uid_base:$gid_base"
+          printf 'SAFEYOLO_PLATFORM_ASSETS=%s\n' "$assets" >> "$GITHUB_ENV"
+
       - name: Prepare once and run independent systrap sections
-        env:
-          SAFEYOLO_PLATFORM_ASSETS: ${{ runner.temp }}/blackbox-platform
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           ./tests/blackbox/run-installed.sh systrap --install-commit "$GITHUB_SHA"

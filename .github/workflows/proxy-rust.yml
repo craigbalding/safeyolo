@@ -583,11 +583,33 @@ jobs:
           make -C vm PROFILE=production install-helper INSTALL_DIR="$RUNNER_TEMP/native-contract-vm"
 
       - name: Run native proxy component contracts
+        shell: bash
         env:
           PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
           SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
           SAFEYOLO_NATIVE_VM_ARTIFACTS: ${{ matrix.os == 'macos-latest' && format('{0}/native-contract-vm', runner.temp) || '' }}
-        run: uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
+        run: |
+          bundle_arguments=(
+            --directory "$RUNNER_TEMP/native-contract-bundle"
+            --artifacts "$SAFEYOLO_NATIVE_ARTIFACTS"
+            --guest-artifacts "$SAFEYOLO_GUEST_ARTIFACTS"
+            --runtime-artifacts "$(dirname "$(command -v tmux)")"
+            --profile production
+          )
+          if [[ -n "$SAFEYOLO_NATIVE_VM_ARTIFACTS" ]]; then
+            bundle_arguments+=(--vm-artifacts "$SAFEYOLO_NATIVE_VM_ARTIFACTS")
+          fi
+          scripts/build_host_packages.sh "${bundle_arguments[@]}"
+          export SAFEYOLO_NATIVE_BUNDLE="$RUNNER_TEMP/native-contract-bundle"
+          export SAFEYOLO_TEST_NATIVE_CLI="$SAFEYOLO_NATIVE_CLI"
+          test -x "$SAFEYOLO_COORD_NATS_BINARY"
+          uv run --frozen pytest -q \
+            tests/test_blackbox_harness.py::test_prepared_inputs_reach_native_lifecycle_with_fresh_state \
+            tests/test_blackbox_harness.py::test_shared_approval_transport_keeps_owned_selection_when_preparation_fails \
+            tests/test_blackbox_harness.py::test_blackbox_coord_binding_reaches_real_native_start_and_restart \
+            tests/test_blackbox_harness.py::test_access_launcher_targets_match_selected_guest_requests \
+            tests/test_blackbox_harness.py::test_lifecycle_owner_prepares_pinned_nats_on_independent_ports
+          uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
   macos-pr:
     name: Relevant macOS platform checks

@@ -218,7 +218,7 @@ jobs:
           uv python install 3.13
           uv sync --frozen --python 3.13
       - name: Prepare the supported systrap host
-        run: tests/blackbox/prepare-systrap-host.sh
+        run: tests/blackbox/prepare-systrap-host.sh --fixed-rootfs-ids
       - name: Run the installed production archive smoke
         run: |
           set -o pipefail
