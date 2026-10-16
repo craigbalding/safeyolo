@@ -94,11 +94,13 @@ def test_setup_uv_preserves_v5_cache_pruning_behavior() -> None:
 def test_proxy_rust_compilation_and_execution_have_platform_limits() -> None:
     workflow = yaml.safe_load((WORKFLOW_DIR / "proxy-rust.yml").read_text(encoding="utf-8"))
     steps = workflow["jobs"]["contracts"]["steps"]
-    for name in ("Compile production native executables", "Compile Rust contract executables", "Test the Rust proxy"):
+    for name in ("Compile production native executables", "Test the Rust proxy"):
         bounded_step = next(step for step in steps if step.get("name") == name)
         assert bounded_step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     named = {step.get("name"): step for step in steps}
-    assert "test --release --locked --no-run" in named["Compile Rust contract executables"]["run"]
+    test_compilation = named["Compile Rust contract executables"]
+    assert test_compilation["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 25 }}"
+    assert "test --release --locked --no-run --timings --verbose" in test_compilation["run"]
     assert "build --release --locked --bins" in named["Compile production native executables"]["run"]
     assert "test --release --locked" in named["Test the Rust proxy"]["run"]
     assert "build --release --locked --bins" in named["Test the Rust proxy"]["run"]
