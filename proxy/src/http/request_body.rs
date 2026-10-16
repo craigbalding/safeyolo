@@ -36,16 +36,40 @@ pub(super) struct ReplayBody<B> {
 /// Buffer until a body terminal or the source encoded-body streaming threshold.
 /// Known large or explicitly streamed bodies are returned without polling them.
 pub(super) async fn prepare<B>(
-    mut body: B,
+    body: B,
     content_length: Option<u64>,
     streamed: bool,
 ) -> Result<Prepared<B>, B::Error>
 where
     B: Body<Data = Bytes> + Unpin,
 {
+    prepare_limited(
+        body,
+        content_length,
+        streamed,
+        crate::http_content::BUFFERED_BODY_THRESHOLD,
+    )
+    .await
+}
+
+/// A smaller capture limit for an observed token response. Exceeding the limit
+/// keeps normal streaming and replay; it does not reject the upstream response.
+pub(super) async fn prepare_limited<B>(
+    mut body: B,
+    content_length: Option<u64>,
+    streamed: bool,
+    limit: usize,
+) -> Result<Prepared<B>, B::Error>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
     let remaining_hint = body.size_hint();
     let terminal_visible = body.is_end_stream();
-    let mut content = BufferedContent::new(content_length, streamed);
+    let mut content = BufferedContent::new(
+        content_length,
+        streamed || content_length.is_some_and(|length| length > limit as u64),
+    );
+    let mut captured_length = 0;
     let mut frames = VecDeque::new();
     let mut buffered_data = BytesMut::new();
     let mut source_terminal = false;
@@ -56,6 +80,12 @@ where
         };
         let frame = frame?;
         if let Some(data) = frame.data_ref() {
+            if data.len() > limit - captured_length {
+                flush_data(&mut buffered_data, &mut frames);
+                frames.push_back(frame);
+                break;
+            }
+            captured_length += data.len();
             content.push(data);
             if !content.is_streamed() {
                 // Copy adjacent payloads into one allocation. Keeping each
@@ -231,6 +261,36 @@ mod tests {
 
     fn data(bytes: &'static [u8]) -> Result<Frame<Bytes>, &'static str> {
         Ok(Frame::data(Bytes::from_static(bytes)))
+    }
+
+    #[tokio::test]
+    async fn smaller_capture_limit_replays_complete_known_and_chunked_bodies() {
+        for exact in [false, true] {
+            for overflow in [false, true] {
+                let expected = if overflow {
+                    b"abcde".as_slice()
+                } else {
+                    b"abcd".as_slice()
+                };
+                let mut source =
+                    Source::new([data(b"ab"), data(if overflow { b"cde" } else { b"cd" })]);
+                if exact {
+                    source.hint = SizeHint::with_exact(expected.len() as u64);
+                }
+                let prepared =
+                    prepare_limited(source, exact.then_some(expected.len() as u64), false, 4)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    prepared.unvalidated_content.as_deref().map(Vec::as_slice),
+                    (!overflow).then_some(expected)
+                );
+                assert_eq!(
+                    prepared.body.collect().await.unwrap().to_bytes().as_ref(),
+                    expected
+                );
+            }
+        }
     }
 
     #[tokio::test]

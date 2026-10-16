@@ -46,6 +46,51 @@ An allowed request receives the service's response. Bob, another destination,
 and a method or path outside the capability cannot use Alice's token. An upstream
 service can still reject a token whose vendor permissions are insufficient.
 
+## Pull public images and OCI artifacts from GHCR
+
+With default credential policy, public pulls from GitHub Container Registry
+(GHCR) need no credential approval when the client obtains its anonymous bearer
+token through the same running SafeYolo proxy. This applies to images and
+Open Container Initiative (OCI) artifacts. Ordinary network permission must
+allow the download destinations.
+The client follows the registry's authentication challenge and requests its
+own token. SafeYolo does not obtain or refresh tokens for the client.
+
+SafeYolo recognises a token only after a verified HTTPS exchange at
+`https://ghcr.io/token`. The final GET request sent upstream must have an empty
+body, no authentication headers, cookies or injected credential, service
+`ghcr.io`, and repository scopes that each request only `pull`. A token with no
+repository scope can cover registry discovery only. The standard `client_id`
+and boolean `offline_token` parameters and an empty `account` are supported.
+Other query parameters do not establish anonymous issuance. An authenticated
+exchange or a token's shape alone does
+not establish anonymous issuance.
+
+The exact observed bearer can then be reused for HTTPS GET and HEAD requests
+to GHCR's registry discovery endpoint and the named repositories' manifests,
+blobs and tag lists. Replacement tokens from qualifying exchanges work the
+same way, including concurrent requests. Redirects do not extend the token's
+trusted origin or credential destination. Explicit credential permissions,
+network policy and inspection of other secrets still apply. Authenticated or
+private pulls, other destinations, other repositories and write operations
+retain ordinary credential-policy handling.
+
+Recognition stores only token fingerprints and repository scopes in memory,
+with at most 256 tokens, 16 repository scopes per exchange, and a 15-minute
+local retention window. An earlier expiry reported by GHCR shortens that
+window. GHCR can omit expiry metadata; the local window is a cache limit,
+not a verified token lifetime. Tokens are opaque and their internals are not
+decoded. Token response capture is limited to 64 KiB and token values to
+16 KiB; larger or malformed responses retain ordinary handling. Recognition
+does not add token fingerprints to persistent policy or approvals.
+
+A token cached by a client before SafeYolo observed its issuance, after cache
+eviction, or across a proxy restart retains ordinary credential-policy
+handling. Clear that client's cached registry token or start a fresh client
+session, then repeat its anonymous token exchange through the proxy to restore
+automatic recognition. Registry login credentials and personal access tokens
+retain their existing approval requirements.
+
 ## Use a 1Password reference
 
 On the host, follow [1Password's installation and authentication instructions](https://developer.1password.com/docs/cli/get-started/)

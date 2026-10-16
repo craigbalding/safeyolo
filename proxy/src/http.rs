@@ -3419,6 +3419,26 @@ where
         outbound.http2,
         outbound.h1_request_form,
     )?;
+    // Select only after all request mutation, including gateway injection and
+    // body preparation, and after verified upstream TLS. No redirect is followed
+    // here; the response is bound to this exact request and destination.
+    let ghcr_exchange = runtime
+        .credential_guard
+        .as_ref()
+        .map(|guard| {
+            guard.ghcr_exchange(
+                &destination.scheme,
+                &destination.host,
+                destination.port,
+                request.method(),
+                &destination.path,
+                request.headers(),
+                request.body().size_hint().exact() == Some(0),
+                gateway_injected_header.is_some(),
+            )
+        })
+        .transpose()?
+        .flatten();
     request.extensions_mut().insert(recording.clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
@@ -3619,6 +3639,44 @@ where
         return Err("upstream transfer coding cannot be relayed to this client protocol".into());
     }
     let (mut parts, body) = upstream.into_parts();
+    let body = body.boxed();
+    let body = if let Some(exchange) =
+        ghcr_exchange.filter(|_| parts.status == StatusCode::OK && !has_non_chunked_transfer_coding)
+    {
+        let prepared = request_body::prepare_limited(
+            body,
+            response_length,
+            false,
+            crate::credential_guard::ghcr::RESPONSE_LIMIT,
+        )
+        .await?;
+        if let Some(content) = &prepared.unvalidated_content {
+            // Body EOF alone is insufficient (notably H2 NO_ERROR reset).
+            // Register before any buffered response bytes reach the client.
+            if completion.response_complete() {
+                let encoding = test_context::combined(&parts.headers, header::CONTENT_ENCODING)?;
+                if let Ok(decoded) = crate::http_content::decode_prefix_with_size(
+                    content,
+                    &encoding,
+                    crate::credential_guard::ghcr::RESPONSE_LIMIT,
+                ) && decoded.total_bytes <= crate::credential_guard::ghcr::RESPONSE_LIMIT
+                {
+                    runtime
+                        .credential_guard
+                        .as_ref()
+                        .expect("selected credential guard")
+                        .observe_ghcr_response(
+                            exchange,
+                            &decoded.content,
+                            crate::policy::current_time_ms(),
+                        )?;
+                }
+            }
+        }
+        prepared.body.boxed()
+    } else {
+        body
+    };
     parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
     if has_non_chunked_transfer_coding {
