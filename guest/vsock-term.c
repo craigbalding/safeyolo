@@ -209,12 +209,24 @@ int main(int argc, char *argv[]) {
         /* Source proxy/agent env if present */
         /* These were written to /etc/environment by the guest init */
 
-        chdir(cwd);
+        if (chdir(cwd) < 0) {
+            perror("vsock-term: chdir");
+            _exit(1);
+        }
 
         /* Drop privileges */
-        setgid(gid);
-        initgroups("agent", gid);
-        setuid(uid);
+        if (setgid(gid) < 0) {
+            perror("vsock-term: setgid");
+            _exit(1);
+        }
+        if (initgroups("agent", gid) < 0) {
+            perror("vsock-term: initgroups");
+            _exit(1);
+        }
+        if (setuid(uid) < 0) {
+            perror("vsock-term: setuid");
+            _exit(1);
+        }
 
         /* Exec the command directly -- no shell wrapper */
         execvp(argv[cmd_start], &argv[cmd_start]);
