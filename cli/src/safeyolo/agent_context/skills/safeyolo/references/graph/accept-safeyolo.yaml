@@ -250,7 +250,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: adac6d18ea9262821655a151c9002b1ad316ffcd31138b18516d95e14a477700
         - path: proxy/src/host_boot.rs
-          sha256: a502639bb7b49794ab55fcb97f09b2a50eba9bd822474ef87c3118063bc730c9
+          sha256: 7ed09b5d8091c41e78b2d3806af0d54191cdbd81103615acd94acbbc193febf7
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."

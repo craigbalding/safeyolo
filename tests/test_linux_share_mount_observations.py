@@ -1,14 +1,17 @@
-"""Check the Linux share driver's removal assertion against real mountinfo format."""
+"""Check the live-share driver's mount observations and holder release."""
 
 from __future__ import annotations
 
+import json
 import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
 
 DRIVER = Path(__file__).parent / "nested-linux/live_mount_backend_proof.py"
-assert_mount_removed = runpy.run_path(str(DRIVER))["assert_mount_removed"]
+driver = runpy.run_path(str(DRIVER))
+assert_mount_removed = driver["assert_mount_removed"]
 
 # The installed 02d0f474 run emitted source "none", without the share UUID.
 ROOT = "18 1 0:18 / / rw - overlay none rw\n"
@@ -39,3 +42,31 @@ def test_mountpoint_comparison_preserves_escaped_directory_names():
     assert_mount_removed(target, ROOT + row, ROOT)
     with pytest.raises(AssertionError, match="survived removal"):
         assert_mount_removed(target, ROOT + row, ROOT + row)
+
+
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_holder_release_observes_the_command_exit(tmp_path, exit_code):
+    script = tmp_path / "holder script.py"
+    script.write_text(driver["GUEST_HOLDER"] if exit_code == 0 else "raise SystemExit(17)\n")
+    result = tmp_path / "marker's result"
+    command = driver["holder_command"](script, "marker", str(tmp_path), result)
+    with subprocess.Popen(["sh", "-c", command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
+        try:
+            identity = (json.loads(driver["wait_file"](result.with_suffix(".ready")))
+                        if exit_code == 0 else None)
+            observation = driver["release_holder"](result)
+            stdout, stderr = child.communicate(timeout=5)
+            assert child.returncode == observation["exit"] == exit_code, (stdout, stderr)
+            if exit_code == 0:
+                assert observation["identity"] == identity
+                assert observation["accessible"] is True
+                assert observation["data"] == "marker survived"
+            else:
+                assert observation == {"exit": exit_code}
+        finally:
+            result.with_suffix(".release").touch()
+            try:
+                child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate(timeout=5)

@@ -89,6 +89,20 @@ def wait_file(path, timeout=20):
     return path.read_text()
 
 
+def holder_command(script, mode, target, result):
+    invocation = shlex.join(["python3", "-I", "-B", str(script), mode, target, str(result)])
+    return (invocation + '; code=$?; printf \'%s\' "$code" > ' +
+            shlex.quote(str(result.with_suffix(".exit"))) + '; exit "$code"')
+
+
+def release_holder(result):
+    result.with_suffix(".release").touch()
+    code = int(wait_file(result.with_suffix(".exit")))
+    observation = (json.loads(result.with_suffix(".result").read_text())
+                   if result.with_suffix(".result").exists() else {})
+    return {**observation, "exit": code}
+
+
 
 def process_state(pid):
     try:
@@ -203,20 +217,11 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
 
     def holder(mode, target):
         result = base / "workspace" / (mode + "-holder")
-        guest("( python3 -I -B /workspace/holder.py " + " ".join(map(shlex.quote,
-              [mode, target, "/workspace/" + result.name])) +
-              f'; printf \'%s\' "$?" > /workspace/{mode}-holder.exit )' +
+        guest("( " + holder_command("/workspace/holder.py", mode, target, Path("/workspace") / result.name) + " )" +
               f" </dev/null > /workspace/{mode}.log 2>&1 &")
         identity = json.loads(wait_file(result.with_suffix(".ready")))
         handles[mode] = result
         return result, identity
-
-    def release(result):
-        result.with_suffix(".release").touch()
-        code = int(wait_file(result.with_suffix(".exit")))
-        observation = (json.loads(result.with_suffix(".result").read_text())
-                       if result.with_suffix(".result").exists() else {})
-        return {**observation, "exit": code}
 
     def share_processes(share):
         return [{"kind": kind, "pid": share[kind + "_pid"], "token": process_start_token(share[kind + "_pid"]),
@@ -328,7 +333,8 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
                  "--mount", f"{base}/unrelated:/mnt/proof1042unrelated"]
         if native_test is None:
             configure_primary.extend(["--launcher", "supervisor", "--command",
-                                      "exec python3 -I -B /workspace/holder.py marker /workspace/marker-holder"])
+                                      holder_command("/workspace/holder.py", "marker", "/workspace",
+                                                     Path("/workspace/marker-holder"))])
         command(configure_primary)
         created.append(agent)
         command([*cli, "agent", "start", agent, *(["--sandbox-only"] if native_test else [])], timeout=150)
@@ -399,7 +405,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
                 changed.write((mode + ":host-after-refusal").ljust(64, "."))
                 changed.flush()
                 os.fsync(changed.fileno())
-            observation = release(handle)
+            observation = release_holder(handle)
             report.setdefault("busy", []).append({"kind": mode, "identity": identity,
                                                    "remove": removed, "access_after": observation})
             save()
@@ -465,7 +471,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             assert report["launch_after"]["agent_state"] == "running"
             assert report["launch_after"]["launch_id"] == report["launch_before"]["launch_id"]
         assert report["final"]["marker_heartbeat"] != before_heartbeat
-        report["marker_after"] = release(marker)
+        report["marker_after"] = release_holder(marker)
         assert report["marker_after"]["identity"] == marker_identity and report["marker_after"]["exit"] == 0
         for selected in (agent, second):
             same_run(selected)
