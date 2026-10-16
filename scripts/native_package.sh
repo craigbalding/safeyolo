@@ -89,6 +89,15 @@ verify_native_artifacts() {
 verify_native_package() {
   local package=$1 key value source= profile= platform= minimum= identity binary
   local compatibility= repository= discovery= seen=$'\n' runsc_version= runsc_source= runsc_origin=
+  local legacy_installed=false file line
+  if [[ ${2:-} == --installed ]]; then
+    # The original installer copied runtime files but omitted all three
+    # packaging scripts. Only an installed layout may have those omissions.
+    legacy_installed=true
+    for file in install.sh install_native.sh native_package.sh; do
+      if [[ -e $package/$file || -L $package/$file ]]; then legacy_installed=false; fi
+    done
+  fi
   require_file "$package/package-info" && require_file "$package/SHA256SUMS" || return
   while IFS='=' read -r key value || [[ -n $key ]]; do
     case "$seen" in *$'\n'"$key"$'\n'*) package_error "duplicate package field: $key"; return 1;; esac
@@ -131,7 +140,17 @@ verify_native_package() {
   for binary in tmux-common tmux-window tmux-pane; do
     require_file "$package/assets/launchers/$binary.sh" || return
   done
-  (cd "$package"; if command -v sha256sum >/dev/null 2>&1; then sha256sum --check --status SHA256SUMS; else shasum -a 256 --check --status SHA256SUMS; fi) || {
+  (cd "$package"; while IFS= read -r line || [[ -n $line ]]; do
+    if $legacy_installed; then
+      case "$line" in
+        *'  ./install.sh'|*'  ./install_native.sh'|*'  ./native_package.sh') continue;;
+      esac
+    fi
+    printf '%s\n' "$line"
+  done < SHA256SUMS | {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum --check --status;
+    else shasum -a 256 --check --status; fi
+  }) || {
     package_error 'bundle checksum verification failed'; return 1;
   }
   if [[ -n $runsc_version ]]; then

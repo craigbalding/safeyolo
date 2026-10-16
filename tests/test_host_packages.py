@@ -27,6 +27,23 @@ def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
 
+def test_only_installed_layout_allows_original_installer_omissions(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    command = ("bash", "-c", 'source "$1"; verify_native_package "$2" "${3:-}"',
+               "verify", str(REPO / "scripts/native_package.sh"), str(bundle))
+    for name in ("install.sh", "install_native.sh", "native_package.sh"):
+        (bundle / name).unlink()
+    assert run(*command).returncode != 0
+    installed = run(*command, "--installed")
+    assert installed.returncode == 0, installed.stderr
+    # This exception never hides a present, changed script or a dangling link.
+    (bundle / "install.sh").write_text("changed packaging script\n")
+    assert run(*command, "--installed").returncode != 0
+    (bundle / "install.sh").unlink()
+    (bundle / "install.sh").symlink_to("missing-script")
+    assert run(*command, "--installed").returncode != 0
+
+
 def executable(path, identity, guest_exit=None, guest_assets=None):
     # Real ELF header/architecture, controlled identity; never a runtime witness.
     source = path.with_suffix(".c")
