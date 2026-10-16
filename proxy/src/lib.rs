@@ -51,9 +51,12 @@ pub mod host_commands;
 mod host_events;
 mod host_launch;
 mod host_lifecycle;
+mod host_mounts;
 mod host_runs;
 pub mod lab;
 pub mod linux_host;
+#[cfg(target_os = "macos")]
+mod macos_mounts;
 pub mod mattermost;
 
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.

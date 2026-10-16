@@ -52,9 +52,9 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
         || guest
             .components()
             .any(|part| part == std::path::Component::ParentDir)
-        || ["/", "/home/agent", "/workspace"]
+        || ["/home/agent", "/workspace"]
             .iter()
-            .any(|root| guest == Path::new(root))
+            .any(|root| Path::new(root).starts_with(guest))
         || ["/dev", "/proc", "/sys", "/safeyolo", "/safeyolo-status"]
             .iter()
             .any(|root| guest.starts_with(root))
@@ -253,7 +253,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         .unwrap_or(Value::Null);
     let context = json!({"generation":run_id,"agent_id":agent.id,"ip":ip,"workspace":workspace,"memory_mb":agent.memory_mb.unwrap_or(4096),
         "guest_inputs":guest_inputs,
-        "extra_shares":shares.iter().map(|(host,_,ro)| json!({"host_path":host,"read_only":ro})).collect::<Vec<_>>(),
+        "extra_shares":shares.iter().map(|(host,guest,ro)| json!({"host_path":host,"guest_path":guest,"read_only":ro})).collect::<Vec<_>>(),
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});
     crate::guest_commands::stage(&home, &share, &root.join("assets/guest"), context.clone())?;
@@ -303,6 +303,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
             .collect::<String>(),
     )?;
     fs::create_dir_all(share.join("proxy"))?;
+    fs::create_dir_all(share.join("extra-mounts"))?;
     #[cfg(target_os = "linux")]
     {
         let rootfs = if directory.join("rootfs").is_dir() {
@@ -637,6 +638,7 @@ mod mount_tests {
         for guest in [
             "relative",
             "/",
+            "/home",
             "/home/agent",
             "/workspace",
             "/dev/file",

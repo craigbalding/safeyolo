@@ -90,7 +90,7 @@ impl Agent {
     }
 }
 
-fn policy_path() -> Result<PathBuf, Error> {
+pub(crate) fn policy_path() -> Result<PathBuf, Error> {
     let path = crate::host_platform::config_path();
     if path.is_file() {
         return crate::native_config::read(&path)?

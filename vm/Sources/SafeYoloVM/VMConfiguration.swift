@@ -109,6 +109,11 @@ struct VMConfiguration {
                 createFileSystemDevice(hostPath: share.hostPath, tag: share.tag, readOnly: share.readOnly)
             }
         }
+        // Prepare one empty device on an explicit start. Runtime updates add
+        // only named directories, never a broad parent directory.
+        let extra = VZVirtioFileSystemDeviceConfiguration(tag: ExtraDirectories.tag)
+        extra.share = VZMultipleDirectoryShare(directories: [:])
+        vmConfig.directorySharingDevices.append(extra)
 
         // vsock (for terminal and host-guest IPC)
         vmConfig.socketDevices = [VZVirtioSocketDeviceConfiguration()]

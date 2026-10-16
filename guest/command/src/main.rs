@@ -2,6 +2,7 @@
 
 mod desktop_bridge;
 mod desktop_probe;
+mod extra_mount;
 mod lab_evidence;
 mod observation;
 mod probe;
@@ -181,6 +182,7 @@ fn run() -> Result<i32, Error> {
         [desktop, rest @ ..] if desktop == "desktop-bridge" => desktop_bridge::run(rest),
         [desktop] if desktop == "desktop-probe" => desktop_probe::run(),
         [lab, rest @ ..] if lab == "lab-evidence" => lab_evidence::run(rest),
+        [mount, rest @ ..] if mount == "extra-mount" => extra_mount::run(&paths, rest),
         [observe, check] if observe == "observe" && check == "check" => observation::check(&paths),
         [observe, exec, separator, command @ ..]
             if observe == "observe"

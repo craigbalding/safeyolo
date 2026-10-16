@@ -372,10 +372,12 @@ do {
 
     let relayLoops = [proxyRelay?.loop, shellBridge?.loop].compactMap { $0 }
     var control: VMControl?
+    let extraDirectories = ExtraDirectories(vm: vm, queue: vmQueue)
     if !config.controlSocketPath.isEmpty {
         control = try VMControl(path: config.controlSocketPath, ledger: relayLedger,
             runtime: runner.runtimeStatus, refreshVM: { runner.refreshRuntimeStatus() },
-            wakeRelays: { relayLoops.forEach { $0.wake() } })
+            wakeRelays: { relayLoops.forEach { $0.wake() } },
+            changeShare: { request, completion in extraDirectories.request(request, completion: completion) })
         control?.start()
     }
 

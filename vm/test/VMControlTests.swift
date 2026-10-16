@@ -64,7 +64,13 @@ struct VMControlTests {
         let proxy = try SocketRelayLoop(kind: "proxy", ledger: ledger)
         let shell = try SocketRelayLoop(kind: "shell", ledger: ledger)
         let control = try VMControl(path: path, ledger: ledger, runtime: runtime,
-            refreshVM: {}, wakeRelays: { proxy.wake(); shell.wake() })
+            refreshVM: {}, wakeRelays: { proxy.wake(); shell.wake() },
+            changeShare: { request, completion in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+                    if request.operation == "fail" { completion(nil, "injected export failure") }
+                    else { completion(["prepared": true, "request_id": request.id ?? "list"], nil) }
+                }
+            })
         control.start()
         var peerFDs: [Int32] = []
         var ids: [UInt64] = []
@@ -123,6 +129,30 @@ struct VMControlTests {
         var auditInfo = stat()
         precondition(lstat(path + ".audit.jsonl", &auditInfo) == 0 && auditInfo.st_mode & 0o777 == 0o600)
         print("PASS paging, stale-instance refusal, live-path ownership and audited cancellation")
+
+        let staleShare = try request(path, ["operation": "extra-mount", "instance": "old",
+            "share": ["operation": "list"]])
+        precondition(staleShare["ok"] as? Bool == false)
+        let pending = try connect(path)
+        var shareData = try JSONSerialization.data(withJSONObject: ["operation": "extra-mount",
+            "instance": control.instance, "share": ["operation": "add", "id": "lost-response"]])
+        shareData.append(10)
+        precondition(shareData.withUnsafeBytes { Darwin.write(pending, $0.baseAddress!, $0.count) } == shareData.count)
+        let shareStarted = ProcessInfo.processInfo.systemUptime
+        _ = try request(path, ["operation": "status"])
+        precondition(ProcessInfo.processInfo.systemUptime - shareStarted < 0.25,
+            "a queued VM share operation blocked diagnostics")
+        Darwin.close(pending)
+        let repeated = try request(path, ["operation": "extra-mount", "instance": control.instance,
+            "share": ["operation": "add", "id": "new-client"]])
+        precondition(repeated["ok"] as? Bool == true)
+        precondition(repeated["request_id"] as? String == "new-client",
+            "a lost response was delivered to a reused descriptor")
+        let failed = try request(path, ["operation": "extra-mount", "instance": control.instance,
+            "share": ["operation": "fail"]])
+        precondition(failed["ok"] as? Bool == false)
+        precondition(failed["error"] as? String == "injected export failure")
+        print("PASS asynchronous share control, stale instance, lost response and backend refusal")
 
         // The first partial request expires independently of all other clients.
         precondition(Darwin.read(stalledClient, &byte, 1) == 0)

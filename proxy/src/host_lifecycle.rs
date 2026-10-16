@@ -1175,6 +1175,27 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
         },
         Err(error) => json!({"state":"unknown","error":error.to_string()}),
     };
+    let live_mounts = if sandbox["runtime_state"] == "stopped" {
+        json!([])
+    } else {
+        match crate::host_runs::read(&agent.name) {
+            Ok(run) => run
+                .filter(|run| run["run_id"] == sandbox["run_id"])
+                .map_or(Value::Null, |run| crate::host_mounts::recorded(&run)),
+            Err(error) => json!({"state":"unknown","error":error.to_string()}),
+        }
+    };
+    let effective_mounts = live_mounts.as_array().map_or_else(
+        || live_mounts.clone(),
+        |shares| {
+            json!(
+                shares
+                    .iter()
+                    .filter(|share| share["state"] != "removed")
+                    .collect::<Vec<_>>()
+            )
+        },
+    );
     let effective_configuration = if sandbox["runtime_state"] == "stopped" {
         Value::Null
     } else {
@@ -1187,7 +1208,7 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
         .map_or(Value::Null, |context| {
             json!({
                 "workspace":context["workspace"], "memory_mb":context["memory_mb"],
-                "extra_shares":context["extra_shares"]
+                "extra_shares":if effective_mounts.is_null() {context["extra_shares"].clone()} else {effective_mounts.clone()}
             })
         })
     };
@@ -1374,6 +1395,7 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
         "exec":sandbox["exec"],"port_forward":sandbox["port_forward"],
         "proxy_attachment":proxy_attachment,"traffic":{"state":"unknown","source":"proxy traffic telemetry"},
         "effective_configuration":effective_configuration,
+        "live_mounts":live_mounts,"live_mounts_source":"current-run receipts; partial states require retry or explicit stop/start",
         "next_start_configuration":{"workspace":agent.folder,"memory_mb":agent.memory_mb.unwrap_or(4096),"mounts":agent.mounts},
         "terminal_state":if attachable {"running"} else {"absent"},
         "agent_state":state,"launcher":launcher,"attachable":attachable,
@@ -1897,6 +1919,22 @@ pub(crate) fn validate_host_script(path: &std::path::Path) -> Result<(), Error> 
                     writable.push(PathBuf::from(
                         mount.as_str().ok_or("invalid staged writable mount")?,
                     ));
+                }
+            }
+        }
+        if let Some(run) = crate::host_runs::read(&agent.name)?
+            && !crate::host_runs::saved_process_is_dead(&run, "backend")
+        {
+            let shares = crate::host_mounts::recorded(&run);
+            if !shares.is_null() {
+                for share in shares.as_array().ok_or("invalid live mount metadata")? {
+                    if share["state"] != "removed" && share["read_only"] == false {
+                        writable.push(PathBuf::from(
+                            share["host_path"]
+                                .as_str()
+                                .ok_or("invalid live mount source")?,
+                        ));
+                    }
                 }
             }
         }
