@@ -3433,7 +3433,7 @@ where
                 request.method(),
                 &destination.path,
                 request.headers(),
-                request.body().size_hint().exact() == Some(0),
+                context.request_body_empty(),
                 gateway_injected_header.is_some(),
             )
         })

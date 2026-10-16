@@ -25,6 +25,17 @@ pub(super) struct Prepared<B> {
     pub(super) unvalidated_content: Option<Zeroizing<Vec<u8>>>,
 }
 
+impl<B> Prepared<B> {
+    /// Body EOF with neither payload nor trailer frames. The caller must still
+    /// cross the independent parser barrier before trusting this capture.
+    pub(super) fn unvalidated_empty_body(&self) -> bool {
+        self.unvalidated_content
+            .as_ref()
+            .is_some_and(|content| content.is_empty())
+            && self.body.frames.is_empty()
+    }
+}
+
 pub(super) struct ReplayBody<B> {
     source: B,
     frames: VecDeque<Frame<Bytes>>,

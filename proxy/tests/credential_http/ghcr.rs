@@ -68,8 +68,11 @@ impl Fixture {
                                 let service=service_fn(move |request:Request<Incoming>| {
                                     let seen=seen.clone(); let counter=counter.clone(); let host=host.clone(); let response_mode=response_mode.clone();
                                     async move {
-                                        let path=request.uri().path_and_query().unwrap().as_str().to_owned();
-                                        let authenticated=request.headers().contains_key("authorization") || request.headers().contains_key("x-final-auth");
+                                        let (request,body)=request.into_parts();
+                                        let body=body.collect().await.unwrap();
+                                        let path=request.uri.path_and_query().unwrap().as_str().to_owned();
+                                        let authenticated=request.headers.contains_key("authorization") || request.headers.contains_key("x-final-auth")
+                                            || body.trailers().is_some_and(|trailers|trailers.contains_key("authorization"));
                                         seen.lock().unwrap().push((host.clone(),path.clone(),authenticated));
                                         let (status,body,location) = if path.starts_with("/token") {
                                             let token=if counter.fetch_add(1,Ordering::SeqCst).is_multiple_of(2) {FIRST} else {SECOND};
@@ -86,7 +89,7 @@ impl Fixture {
                                         } else {(200,"small-public-blob".to_owned(),None)};
                                         let mut reply=hyper::Response::builder().status(status).header("content-type","application/json");
                                         if let Some(location)=location {reply=reply.header("location",location);}
-                                        let body=if request.method()==hyper::Method::HEAD {String::new()} else {body};
+                                        let body=if request.method==hyper::Method::HEAD {String::new()} else {body};
                                         Ok::<_,Infallible>(reply.body(Full::new(Bytes::from(body))).unwrap())
                                     }
                                 });
@@ -688,6 +691,68 @@ async fn discovery_token_without_repository_scope_cannot_read_a_repository() {
         428
     );
     proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn h2_empty_data_is_anonymous_but_authentication_trailers_are_not() {
+    use hyper::{HeaderMap, body::Frame};
+    for authenticated in [false, true] {
+        let fixture = Fixture::new(default_policy()).await;
+        let proxy = Proxy::start(fixture.config.clone()).await.unwrap();
+        let tls = connect_h2_through_proxy(
+            &fixture.config.listeners[0].socket_path,
+            "ghcr.io:443",
+            "ghcr.io",
+            fixture.ca.clone(),
+        )
+        .await;
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+        let mut frames = vec![Ok::<_, Infallible>(Frame::data(Bytes::new()))];
+        if authenticated {
+            let mut trailers = HeaderMap::new();
+            trailers.insert(
+                "authorization",
+                "Bearer private-trailing-auth".parse().unwrap(),
+            );
+            frames.push(Ok(Frame::trailers(trailers)));
+        }
+        let response = sender
+            .send_request(
+                Request::builder()
+                    .uri(format!("https://ghcr.io{QUERY}"))
+                    .header("content-length", "0")
+                    .body(http_body_util::StreamBody::new(futures_util::stream::iter(
+                        frames,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let _ = response.collect().await.unwrap();
+        let auth = format!("Bearer {FIRST}");
+        assert_eq!(
+            fixture
+                .fetch("ghcr.io", "GET", READ, &[("authorization", &auth)], true)
+                .await
+                .0,
+            if authenticated { 428 } else { 200 }
+        );
+        assert!(
+            fixture
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path, auth)| path == QUERY && *auth == authenticated)
+        );
+        connection.abort();
+        proxy.shutdown().await;
+    }
 }
 
 /// Manual online witness. The candidate runs in this process and uses the

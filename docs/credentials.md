@@ -57,9 +57,10 @@ The client follows the registry's authentication challenge and requests its
 own token. SafeYolo does not obtain or refresh tokens for the client.
 
 SafeYolo recognises a token only after a verified HTTPS exchange at
-`https://ghcr.io/token`. The final GET request sent upstream must have an empty
-body, no authentication headers, cookies or injected credential, service
-`ghcr.io`, and repository scopes that each request only `pull`. A token with no
+`https://ghcr.io/token`. The final GET request sent upstream must have no body
+or trailing headers. It must have no authentication headers, cookies or
+injected credential. Its service must be `ghcr.io`, and each repository scope
+must request only `pull`. A token with no
 repository scope can cover registry discovery only. The standard `client_id`
 and boolean `offline_token` parameters and an empty `account` are supported.
 Other query parameters do not establish anonymous issuance. An authenticated
