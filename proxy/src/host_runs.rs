@@ -101,7 +101,7 @@ fn saved_backend_is_dead(run: &Value) -> bool {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn saved_process_is_dead(run: &Value, key: &str) -> bool {
+pub(crate) fn saved_process_is_dead(run: &Value, key: &str) -> bool {
     let Some(pid) = run[format!("{key}_pid")]
         .as_i64()
         .and_then(|pid| i32::try_from(pid).ok())
@@ -331,7 +331,10 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                     if state["status"] == "running" || state["status"] == "created" {
                         let run_id = id.trim_start_matches("safeyolo-");
                         let recorded = run.is_some_and(|run| run["run_id"] == run_id);
-                        let ready = state["status"] == "running";
+                        let ready = state["status"] == "running"
+                            && run.is_none_or(|run| {
+                                run["linux"]["extra_share_startup"] != "starting"
+                            });
                         return Ok(
                             json!({"runtime_state":if !recorded || !holder {"degraded"} else if ready {"running"} else {"starting"},"control_state":if holder {"ready"} else {"recovered"},
                         "run_id":run_id,"exec":ready,"port_forward":ready,"backend":state,

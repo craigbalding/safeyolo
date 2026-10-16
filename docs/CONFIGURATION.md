@@ -125,6 +125,21 @@ host's existing ownership override; it is not required for an owned
 project. A launcher can be `tmux-window`, `tmux-pane`, `supervisor` or a trusted
 script. [Agent launchers](agent-launchers.md) describe selection and attach.
 
+On Linux, new sandbox starts attach extra directories before guest setup and
+workloads start. If an attachment fails, startup fails and cleans up that attempt.
+This route requires runsc filesystem mount control;
+`release-20261005.0` is the tested runtime input.
+If the sandbox uses a systemd user scope, each share helper joins that same
+scope before namespace entry. This path requires host `busctl` and the running
+user manager. A failed scope join fails the attachment.
+This backend support does not add a live add/remove command or change saved
+configuration. Existing running sandboxes with startup Open Container
+Initiative (OCI) binds cannot safely remove those shares live. The host must
+report that limit and leave the sandbox running. An operator can explicitly
+stop and start the sandbox to use the new route. Safe backend removal refuses
+busy mounts, including open files, working directories and memory mappings.
+It does not erase files copied into the guest or bytes already read into memory.
+
 `desktop.size` retains `auto` or an explicit `WIDTHxHEIGHT` preference;
 `desktop.present_host_port` selects the permitted loopback presentation port.
 Use `safeyolo agent present work` for the running desktop. Web and Commander

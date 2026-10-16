@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -209,6 +211,62 @@ def test_linux_input_retention_requires_successful_producers_after_test_failure(
         assert job["steps"].index(host_build) < job["steps"].index(upload)
         assert job["steps"].index(guest_build) < job["steps"].index(upload)
     assert not job.get("continue-on-error")
+
+
+@pytest.mark.parametrize("failure", [None, "compiler", "missing", "ambiguous", "entry"])
+def test_installed_share_test_staging_refuses_incomplete_compiler_output(tmp_path, failure):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    stage = next(step for step in steps if step.get("id") == "linux_share_test")
+    upload = next(step for step in steps
+                  if step.get("with", {}).get("name") == "linux-share-test-amd64-production")
+    assert upload["if"] == "${{ !cancelled() && steps.linux_share_test.outcome == 'success' }}"
+    assert upload["with"]["path"] == "${{ runner.temp }}/linux-share-test/native-library-test"
+    assert steps.index(stage) < steps.index(upload)
+    focused = next(step for step in steps if step.get("name") == "Test focused native boundaries")
+    for artifact in ("linux-host-amd64-production", "linux-guest-amd64-production", "linux-share-test-amd64-production"):
+        retained = next(step for step in steps if step.get("with", {}).get("name") == artifact)
+        producer = stage if artifact == "linux-share-test-amd64-production" else next(
+            step for step in steps if step.get("id") == "linux_host_inputs"
+        )
+        assert steps.index(producer) < steps.index(retained) < steps.index(focused)
+    for directory in ("scripts", ".venv/bin", "proxy/target", "runner temp", "commands"):
+        (tmp_path / directory).mkdir(parents=True)
+    (tmp_path / ".venv/bin/python").symlink_to(sys.executable)
+    for name in ("rustc", "cargo"):
+        compiler = tmp_path / "commands" / name
+        compiler.write_text('#!/bin/sh\nprintf "fixture compiler\\n"\n')
+        compiler.chmod(0o755)
+    test_binary = tmp_path / "library test"
+    entry = "other::test" if failure == "entry" else "linux_host::shares::tests::installed_share_operation"
+    test_binary.write_text(f'#!/bin/sh\n[ "$1" = --list ] && [ "$2" = --exact ] || exit 31\nprintf "%s: test\\n" {shlex.quote(entry)}\n')
+    test_binary.chmod(0o755)
+    artifact = {"reason": "compiler-artifact", "target": {"name": "safeyolo_proxy"},
+                "profile": {"test": True}, "executable": str(test_binary)}
+    rows = [{**artifact, "target": {"name": "safeyolo"}}, {**artifact, "executable": None}]
+    if failure != "missing":
+        rows.append(artifact)
+    if failure == "ambiguous":
+        rows.append(artifact)
+    output = tmp_path / "compiler-output.jsonl"
+    output.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    cargo = tmp_path / "scripts/cargo_with_space.sh"
+    cargo.write_text('#!/bin/sh\ncat "$FIXTURE_CARGO_OUTPUT"\nexit "$FIXTURE_CARGO_EXIT"\n')
+    cargo.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", stage["run"]], cwd=tmp_path,
+        env=dict(os.environ, BASH_ENV="", RUNNER_TEMP=str(tmp_path / "runner temp"),
+                 PATH=f"{tmp_path / 'commands'}:{os.environ['PATH']}",
+                 FIXTURE_CARGO_OUTPUT=str(output), FIXTURE_CARGO_EXIT="17" if failure == "compiler" else "0"),
+        capture_output=True, text=True,
+    )
+    retained = tmp_path / "runner temp/linux-share-test/native-library-test"
+    if failure is None:
+        assert result.returncode == 0, result.stderr
+        assert retained.read_bytes() == test_binary.read_bytes()
+        assert os.access(retained, os.X_OK)
+    else:
+        assert result.returncode != 0, result.stdout
+        assert not retained.exists()
 
 
 @pytest.mark.parametrize("failure", ["build", "tests"])

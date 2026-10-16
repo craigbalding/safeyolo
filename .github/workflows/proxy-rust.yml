@@ -20,6 +20,7 @@ on:
       - "tests/test_blackbox_harness.py"
       - "tests/test_proxy_rust_coord_fixture.py"
       - "tests/test_proxy_rust_ci_events.py"
+      - "tests/test_linux_share_mount_observations.py"
       - "tests/test_proxy_cutover_deletion_map.py"
       - "tests/blackbox/sinkhole/server.py"
       - "tests/test_blackbox_sinkhole.py"
@@ -163,6 +164,34 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
 
+      # Make matching inputs available while the remaining checks continue.
+      # Failed runs retain successful matching builds for diagnosis, not release.
+      - name: Retain built Linux production inputs
+        if: >-
+          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
+              steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-host-amd64-production
+          path: |
+            proxy/target/release/safeyolo
+            proxy/target/release/safeyolo-coord
+            proxy/target/release/safeyolo-proxy
+          retention-days: 7
+          if-no-files-found: error
+      - name: Retain matching Linux guest inputs
+        if: >-
+          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
+              steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-guest-amd64-production
+          path: |
+            guest/command/target/release/safeyolo-guest*
+            guest/command/target/release/safeyolo-coord*
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Check native guest command operations
         if: steps.changes.outputs.guest == 'true'
         run: |
@@ -204,6 +233,7 @@ jobs:
             tests/proxy_contracts/test_readiness.py \
             tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
+            tests/test_linux_share_mount_observations.py \
             tests/test_proxy_cutover_deletion_map.py \
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_workflow_action_pins.py
@@ -225,6 +255,38 @@ jobs:
         if: steps.changes.outputs.linux == 'true' && steps.changes.outputs.rust == 'true'
         working-directory: proxy
         run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency
+
+      - name: Prepare the installed Linux share test executable
+        id: linux_share_test
+        if: steps.changes.outputs.rust == 'true'
+        env:
+          SAFEYOLO_CARGO_RESERVE_GIB: "10"
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+          printf 'CARGO_BUILD_TARGET=%s\nCARGO_TARGET_DIR=%s\nRUSTFLAGS=%s\nCARGO_ENCODED_RUSTFLAGS=%s\n' \
+            "${CARGO_BUILD_TARGET:-}" "${CARGO_TARGET_DIR:-}" "${RUSTFLAGS:-}" "${CARGO_ENCODED_RUSTFLAGS:-}"
+          df -Pk proxy/target
+          du -sk proxy/target
+          executable=$(
+            scripts/cargo_with_space.sh test --release --manifest-path proxy/Cargo.toml --locked --lib --no-run --message-format=json |
+            .venv/bin/python -c 'import json,sys; rows=(json.loads(line) for line in sys.stdin); hits=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="safeyolo_proxy" and r.get("profile",{}).get("test") and r.get("executable")]; assert len(hits)==1,hits; print(hits[0])'
+          )
+          "$executable" --list --exact linux_host::shares::tests::installed_share_operation | grep -Fx 'linux_host::shares::tests::installed_share_operation: test'
+          mkdir "$RUNNER_TEMP/linux-share-test"
+          install -m 0755 "$executable" "$RUNNER_TEMP/linux-share-test/native-library-test"
+          df -Pk proxy/target
+          du -sk proxy/target
+
+      - name: Retain the installed Linux share test executable
+        if: ${{ !cancelled() && steps.linux_share_test.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-share-test-amd64-production
+          path: ${{ runner.temp }}/linux-share-test/native-library-test
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Test focused native boundaries
         if: steps.changes.outputs.rust == 'true'
@@ -275,33 +337,6 @@ jobs:
             tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
             --basetemp "$RUNNER_TEMP/native-factory"
           uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
-
-      # Failed runs retain successful matching builds for diagnosis, not release.
-      - name: Retain built Linux production inputs
-        if: >-
-          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
-              steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: linux-host-amd64-production
-          path: |
-            proxy/target/release/safeyolo
-            proxy/target/release/safeyolo-coord
-            proxy/target/release/safeyolo-proxy
-          retention-days: 7
-          if-no-files-found: error
-      - name: Retain matching Linux guest inputs
-        if: >-
-          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
-              steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: linux-guest-amd64-production
-          path: |
-            guest/command/target/release/safeyolo-guest*
-            guest/command/target/release/safeyolo-coord*
-          retention-days: 7
-          if-no-files-found: error
 
       - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
