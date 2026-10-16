@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_retained_g2:
+        description: Publish the accepted retained guest-2026-10-16.1 without rebuilding guests
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -28,7 +33,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ !inputs.publish_initial_g1 }}
+    if: ${{ !inputs.publish_initial_g1 && !inputs.publish_retained_g2 }}
     strategy:
       fail-fast: false
       matrix:
@@ -106,44 +111,69 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # Craig authorized the initial H then G1 sequence. Relay dispatches this
-    # fixed G1 only after H publication; other publication remains held.
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_initial_g1 }}
+    # Relay dispatches an accepted retained release. Craig's #237 publication
+    # authority includes G2 and its compatibility channel; preparation stays default.
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_initial_g1 || inputs.publish_retained_g2) }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
       packages: write
-    env:
-      GUEST_VERSION: guest-2026-10-12.1
-      GUEST_COMPATIBILITY: v1
-      GUEST_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
-      GUEST_INDEX: sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
     steps:
-      - name: Refuse conflicting initial guest inputs
+      - name: Select retained release and refuse conflicting inputs
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           REQUESTED_COMPATIBILITY: ${{ inputs.compatibility }}
+          PUBLISH_INITIAL_G1: ${{ inputs.publish_initial_g1 }}
+          PUBLISH_RETAINED_G2: ${{ inputs.publish_retained_g2 }}
         run: |
-          if [[ "$REQUESTED_VERSION" != "$GUEST_VERSION" || "$REQUESTED_COMPATIBILITY" != "$GUEST_COMPATIBILITY" ]]; then
-            echo 'Initial G1 publication requires version guest-2026-10-12.1 and compatibility v1.' >&2
+          case "$PUBLISH_INITIAL_G1/$PUBLISH_RETAINED_G2" in
+            true/false)
+              version=guest-2026-10-12.1
+              revision=8234a047d810d543d8c4d1cb1fa9859987be035b
+              index=sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
+              run_id=38248401312
+              archive_ids=11748025327,11746464998
+              layout_id=11747551391
+              publisher_revision=$revision
+              ;;
+            false/true)
+              version=guest-2026-10-16.1
+              revision=ee291fba78ab34e4dca630d529ac8083ec29802f
+              index=sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b
+              run_id=38897452318
+              archive_ids=12044318477,12044582213
+              layout_id=12045630940
+              publisher_revision=$GITHUB_SHA
+              ;;
+            *)
+              echo 'Select exactly one retained guest publication mode.' >&2
+              exit 1
+              ;;
+          esac
+          if [[ "$REQUESTED_VERSION" != "$version" || "$REQUESTED_COMPATIBILITY" != v1 ]]; then
+            echo "Retained publication requires version $version and compatibility v1." >&2
             exit 1
           fi
+          printf '%s\n' "GUEST_VERSION=$version" "GUEST_COMPATIBILITY=v1" \
+            "GUEST_REVISION=$revision" "GUEST_INDEX=$index" "GUEST_RUN_ID=$run_id" \
+            "GUEST_ARCHIVE_IDS=$archive_ids" "GUEST_LAYOUT_ID=$layout_id" \
+            "PUBLISHER_REVISION=$publisher_revision" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 8234a047d810d543d8c4d1cb1fa9859987be035b
+          ref: ${{ env.PUBLISHER_REVISION }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: 11748025327,11746464998
-          run-id: 38248401312
+          artifact-ids: ${{ env.GUEST_ARCHIVE_IDS }}
+          run-id: ${{ env.GUEST_RUN_ID }}
           repository: craigbalding/safeyolo
           github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: true
           path: ${{ runner.temp }}/archives
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: '11747551391'
-          run-id: 38248401312
+          artifact-ids: ${{ env.GUEST_LAYOUT_ID }}
+          run-id: ${{ env.GUEST_RUN_ID }}
           repository: craigbalding/safeyolo
           github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: true
@@ -155,9 +185,9 @@ jobs:
       - name: Build the shared native OCI verifier
         env:
           CARGO_BUILD_JOBS: "1"
-          SAFEYOLO_BUILD_REVISION: 8234a047d810d543d8c4d1cb1fa9859987be035b
+          SAFEYOLO_BUILD_REVISION: ${{ env.PUBLISHER_REVISION }}
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
-      - name: Verify original retained inputs before registry authentication
+      - name: Verify retained inputs before registry authentication
         run: |
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
           proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"

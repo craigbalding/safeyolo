@@ -324,39 +324,58 @@ def test_invalid_release_refused_before_upload(tmp_path, artifacts, publisher_to
     assert not registry[4]
 
 
-@pytest.fixture
-def initial_publisher():
+@pytest.fixture(params=["g1", "g2"])
+def retained_publisher(request, tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
-    return workflow["jobs"]["publish"]
+    job = workflow["jobs"]["publish"]
+    inputs = {
+        "PUBLISH_INITIAL_G1": str(request.param == "g1").lower(),
+        "PUBLISH_RETAINED_G2": str(request.param == "g2").lower(),
+        "REQUESTED_VERSION": "guest-2026-10-12.1" if request.param == "g1" else "guest-2026-10-16.1",
+        "REQUESTED_COMPATIBILITY": "v1",
+    }
+    env_file = tmp_path / "selected-release"
+    result = run("bash", "-euo", "pipefail", "-c", job["steps"][0]["run"], cwd=tmp_path,
+                 env={**os.environ, **inputs, "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file)})
+    assert result.returncode == 0, result.stderr
+    env = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+    return SimpleNamespace(job=job, env=env, inputs=inputs, generation=request.param)
 
 
 @pytest.mark.parametrize("event", ["workflow_dispatch", "push", "release", "schedule", "pull_request"])
 @pytest.mark.parametrize("initial", [None, False, True])
-def test_workflow_initial_publication_routing(event, initial):
+@pytest.mark.parametrize("retained", [None, False, True])
+def test_workflow_retained_publication_routing(event, initial, retained):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["publish_initial_g1"] == {
         "description": "Publish only the retained original guest-2026-10-12.1 after host publication",
         "required": False, "default": False, "type": "boolean",
     }
+    assert inputs["publish_retained_g2"] == {
+        "description": "Publish the accepted retained guest-2026-10-16.1 without rebuilding guests",
+        "required": False, "default": False, "type": "boolean",
+    }
     context = {"__builtins__": {}, "github": SimpleNamespace(event_name=event),
-               "inputs": SimpleNamespace(publish_initial_g1=initial)}
+               "inputs": SimpleNamespace(publish_initial_g1=initial, publish_retained_g2=retained)}
     jobs = workflow["jobs"]
     # These conditions use only boolean operations and string equality. Evaluate
-    # both branches, then check dependencies so skipped preparation cannot hold G1.
+    # both branches, then check dependencies so skipped preparation cannot hold publication.
     publish_condition = jobs["publish"]["if"].removeprefix("${{").removesuffix("}}").strip()
     build_condition = jobs["build"]["if"].removeprefix("${{").removesuffix("}}").strip()
-    assert bool(eval(publish_condition.replace("&&", " and "), context)) == (
-        event == "workflow_dispatch" and initial is True
+    assert bool(eval(publish_condition.replace("&&", " and ").replace("||", " or "), context)) == (
+        event == "workflow_dispatch" and (initial is True or retained is True)
     )
-    assert bool(eval(build_condition.replace("!", "not "), context)) == (initial is not True)
+    assert bool(eval(build_condition.replace("!", "not ").replace("&&", " and "), context)) == (
+        initial is not True and retained is not True
+    )
     # GitHub skips prepare when its build dependency is skipped. Publication
     # must have no such dependency, including when preparation fails.
     assert jobs["prepare"]["needs"] == "build" and "if" not in jobs["prepare"]
     assert "needs" not in jobs["publish"]
 
 
-def test_workflow_initial_source_artifacts_and_token_narrow(initial_publisher):
+def test_workflow_retained_source_artifacts_and_token_narrow(retained_publisher):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     # PyYAML's YAML1.1 loader maps the Actions 'on' key to boolean True.
     assert set(workflow.get("on", workflow.get(True))) == {"workflow_dispatch"}
@@ -367,27 +386,45 @@ def test_workflow_initial_source_artifacts_and_token_narrow(initial_publisher):
             if name == "publish" else {"contents": "read"}
         )
     assert workflow["concurrency"] == {"group": "default-guest-publication", "cancel-in-progress": False}
-    assert initial_publisher["env"] == {
-        "GUEST_VERSION": "guest-2026-10-12.1", "GUEST_COMPATIBILITY": "v1",
-        "GUEST_REVISION": "8234a047d810d543d8c4d1cb1fa9859987be035b",
-        "GUEST_INDEX": "sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e",
+    expected = {
+        "g1": {
+            "GUEST_VERSION": "guest-2026-10-12.1", "GUEST_COMPATIBILITY": "v1",
+            "GUEST_REVISION": "8234a047d810d543d8c4d1cb1fa9859987be035b",
+            "GUEST_INDEX": "sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e",
+            "GUEST_RUN_ID": "38248401312", "GUEST_ARCHIVE_IDS": "11748025327,11746464998",
+            "GUEST_LAYOUT_ID": "11747551391", "PUBLISHER_REVISION": "8234a047d810d543d8c4d1cb1fa9859987be035b",
+        },
+        "g2": {
+            "GUEST_VERSION": "guest-2026-10-16.1", "GUEST_COMPATIBILITY": "v1",
+            "GUEST_REVISION": "ee291fba78ab34e4dca630d529ac8083ec29802f",
+            "GUEST_INDEX": "sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b",
+            "GUEST_RUN_ID": "38897452318", "GUEST_ARCHIVE_IDS": "12044318477,12044582213",
+            "GUEST_LAYOUT_ID": "12045630940", "PUBLISHER_REVISION": REVISION,
+        },
     }
-    steps = initial_publisher["steps"]
-    assert steps[0]["name"] == "Refuse conflicting initial guest inputs"
+    assert retained_publisher.env == expected[retained_publisher.generation]
+    steps = retained_publisher.job["steps"]
+    assert steps[0]["name"] == "Select retained release and refuse conflicting inputs"
+    assert steps[0]["env"] == {
+        "REQUESTED_VERSION": "${{ inputs.version }}", "REQUESTED_COMPATIBILITY": "${{ inputs.compatibility }}",
+        "PUBLISH_INITIAL_G1": "${{ inputs.publish_initial_g1 }}",
+        "PUBLISH_RETAINED_G2": "${{ inputs.publish_retained_g2 }}",
+    }
     checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
-    assert checkout["with"]["ref"] == initial_publisher["env"]["GUEST_REVISION"]
+    assert checkout["with"]["ref"] == "${{ env.PUBLISHER_REVISION }}"
     downloads = [step for step in steps if step.get("uses", "").startswith("actions/download-artifact@")]
     assert len(downloads) == 2
-    for download, ids, path in zip(downloads, ["11748025327,11746464998", "11747551391"],
+    for download, ids, path in zip(downloads, ["GUEST_ARCHIVE_IDS", "GUEST_LAYOUT_ID"],
                                    ["archives", "retained-guest-oci"]):
         assert download["uses"] == "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
         assert download["with"] == {
-            "artifact-ids": ids, "run-id": 38248401312, "repository": "craigbalding/safeyolo",
+            "artifact-ids": "${{ env." + ids + " }}", "run-id": "${{ env.GUEST_RUN_ID }}",
+            "repository": "craigbalding/safeyolo",
             "github-token": "${{ secrets.GITHUB_TOKEN }}", "merge-multiple": True,
             "path": "${{ runner.temp }}/" + path,
         }
     build = next(step for step in steps if step.get("name") == "Build the shared native OCI verifier")
-    assert build["env"]["SAFEYOLO_BUILD_REVISION"] == initial_publisher["env"]["GUEST_REVISION"]
+    assert build["env"]["SAFEYOLO_BUILD_REVISION"] == "${{ env.PUBLISHER_REVISION }}"
     assert build["env"]["CARGO_BUILD_JOBS"] == "1"
     assert build["run"] == "scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci"
     assert not any("guest/build" in step.get("run", "") for step in steps)
@@ -395,7 +432,7 @@ def test_workflow_initial_source_artifacts_and_token_narrow(initial_publisher):
     assert authenticate["env"] == {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
     assert authenticate["run"] == 'printf \'%s\' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin'
     names = [step.get("name") for step in steps]
-    assert names.index("Verify original retained inputs before registry authentication") < names.index(
+    assert names.index("Verify retained inputs before registry authentication") < names.index(
         "Authenticate with the linked repository token"
     ) < names.index("Upload, verify and promote the complete guest release")
     text = json.dumps(workflow)
@@ -405,27 +442,44 @@ def test_workflow_initial_source_artifacts_and_token_narrow(initial_publisher):
 
 
 @pytest.mark.parametrize("version,compatibility", [
-    ("guest-2026-10-12.2", "v1"), ("guest-2026-10-12.1", "v2"),
-    ("", "v1"), ("guest-2026-10-12.1", ""),
+    ("guest-2026-10-12.2", "v1"), (None, "v2"),
+    ("", "v1"), (None, ""),
     ("$(touch forbidden-write)", "v1"),
 ])
-def test_initial_workflow_refuses_conflicting_inputs(tmp_path, initial_publisher, version, compatibility):
-    step = initial_publisher["steps"][0]
-    assert step["env"] == {"REQUESTED_VERSION": "${{ inputs.version }}",
-                           "REQUESTED_COMPATIBILITY": "${{ inputs.compatibility }}"}
+def test_retained_workflow_refuses_conflicting_inputs(tmp_path, retained_publisher, version, compatibility):
+    step = retained_publisher.job["steps"][0]
+    env_file = tmp_path / "refused-release"
     result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
-        **os.environ, **initial_publisher["env"], "REQUESTED_VERSION": version,
-        "REQUESTED_COMPATIBILITY": compatibility,
+        **os.environ, **retained_publisher.inputs,
+        "REQUESTED_VERSION": retained_publisher.env["GUEST_VERSION"] if version is None else version,
+        "REQUESTED_COMPATIBILITY": compatibility, "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
     })
-    assert result.returncode != 0 and "Initial G1 publication requires" in result.stderr
-    assert not list(tmp_path.iterdir())
+    assert result.returncode != 0 and "Retained publication requires" in result.stderr
+    assert not env_file.exists() and not (tmp_path / "forbidden-write").exists()
+
+
+@pytest.mark.parametrize("initial,retained", [(True, True), (False, False), (True, False), (False, True)])
+def test_retained_workflow_refuses_conflicting_modes_or_release(tmp_path, initial, retained):
+    # For one enabled mode, require the other release's version to fail too.
+    version = "guest-2026-10-16.1" if initial else "guest-2026-10-12.1"
+    env_file = tmp_path / "refused-release"
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = workflow["jobs"]["publish"]["steps"][0]
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
+        **os.environ, "PUBLISH_INITIAL_G1": str(initial).lower(), "PUBLISH_RETAINED_G2": str(retained).lower(),
+        "REQUESTED_VERSION": version, "REQUESTED_COMPATIBILITY": "v1",
+        "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
+    })
+    assert result.returncode != 0
+    assert not env_file.exists()
 
 
 @pytest.mark.parametrize("defect", [None, "missing-layout", "wrong-index", "missing-blob",
                                   "corrupt-index", "corrupt-child", "corrupt-config", "corrupt-archive",
-                                  "missing-archive", "changed-archive", "changed-provenance"])
-def test_initial_workflow_verifies_retained_inputs_before_authentication(
-    tmp_path, artifacts, publisher_tools, initial_publisher, defect,
+                                  "missing-archive", "changed-archive", "changed-provenance",
+                                  "wrong-revision", "wrong-version", "wrong-compatibility"])
+def test_retained_workflow_verifies_inputs_before_authentication(
+    tmp_path, artifacts, publisher_tools, retained_publisher, defect,
 ):
     oras, verifier = publisher_tools
     source = tmp_path / "source"
@@ -443,7 +497,7 @@ def test_initial_workflow_verifies_retained_inputs_before_authentication(
     runner.mkdir()
     shutil.move(artifacts, runner / "archives")
     retained = runner / "retained-guest-oci"
-    env = {**os.environ, **initial_publisher["env"], "RUNNER_TEMP": str(runner), "ORAS": oras,
+    env = {**os.environ, **retained_publisher.env, "RUNNER_TEMP": str(runner), "ORAS": oras,
            "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
     prepared = run(str(scripts / "publish_guest_oci.sh"), "--artifacts", str(runner / "archives"),
                    "--layout", str(retained), "--version", env["GUEST_VERSION"],
@@ -458,7 +512,7 @@ def test_initial_workflow_verifies_retained_inputs_before_authentication(
     if defect == "missing-layout":
         shutil.rmtree(retained)
     elif defect == "wrong-index":
-        env["GUEST_INDEX"] = initial_publisher["env"]["GUEST_INDEX"]
+        env["GUEST_INDEX"] = retained_publisher.env["GUEST_INDEX"]
     elif defect in {"missing-blob", "corrupt-index", "corrupt-child", "corrupt-config", "corrupt-archive"}:
         blobs = retained / "blobs/sha256"
         index_path = blobs / env["GUEST_INDEX"].removeprefix("sha256:")
@@ -486,8 +540,14 @@ def test_initial_workflow_verifies_retained_inputs_before_authentication(
         (runner / "archives/linux-amd64/build-base.txt").write_text(
             "docker.io/library/debian@sha256:" + "c" * 64 + "\n"
         )
-    step = next(step for step in initial_publisher["steps"] if step.get("name") ==
-                "Verify original retained inputs before registry authentication")
+    elif defect == "wrong-revision":
+        env["GUEST_REVISION"] = "c" * 40
+    elif defect == "wrong-version":
+        env["GUEST_VERSION"] = "guest-2026-10-12.2"
+    elif defect == "wrong-compatibility":
+        env["GUEST_COMPATIBILITY"] = "v2"
+    step = next(step for step in retained_publisher.job["steps"] if step.get("name") ==
+                "Verify retained inputs before registry authentication")
     reached_auth = runner / "authentication-reached"
     result = run("bash", "-euo", "pipefail", "-c",
                  step["run"] + '\ntouch "$RUNNER_TEMP/authentication-reached"', cwd=source, env=env)
@@ -504,7 +564,7 @@ def test_initial_workflow_verifies_retained_inputs_before_authentication(
             "#!/usr/bin/env python3\nimport json, os, sys\n"
             "with open(os.environ['PUBLISHER_ARGS'], 'w') as output:\n    json.dump(sys.argv[1:], output)\n"
         )
-        upload = next(step for step in initial_publisher["steps"] if step.get("name") ==
+        upload = next(step for step in retained_publisher.job["steps"] if step.get("name") ==
                       "Upload, verify and promote the complete guest release")
         invoked = run("bash", "-euo", "pipefail", "-c", upload["run"], cwd=source,
                       env={**env, "PUBLISHER_ARGS": str(args_file)})

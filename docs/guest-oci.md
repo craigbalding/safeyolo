@@ -42,8 +42,8 @@ controls are implemented by the #211 publisher. The initial guest release,
 have been independently assessed for all three consumer platforms under
 [#239](https://github.com/craigbalding/safeyolo/issues/239).
 These results do not complete that issue's installed and independent-update
-proof or the publisher's ongoing retention obligations. Automatic and later
-publication remain held.
+proof or the publisher's ongoing retention obligations. The manual workflow
+supports the accepted retained G2 described below. Publication stays off by default.
 
 ## OCI objects
 
@@ -261,12 +261,16 @@ The [manual repository workflow](../.github/workflows/guest-oci.yml) prepares
 releases without registry writes by default. The authorized one-time
 host release (H) and initial guest release (G1) have been published.
 The workflow's explicit `publish_initial_g1` mode supports only that original
-G1 and identical recovery retries. Automatic and later publication remain held
-under #1003. Preparation does not restart automatic host releases or change Latest.
+G1 and identical recovery retries. Craig's 16 October authorization for #237
+and its children supersedes #1003's publication hold within that scope.
+The `publish_retained_g2` mode publishes the accepted retained G2 and
+advances `compat-v1` without rebuilding guests or the host. No new publication
+approval is needed. Relay owns dispatch after exact source review and integrity
+checks. Preparation does not restart automatic host releases or change Latest.
 
 For a maintainer with repository Actions access, select the approved source
 revision in **Prepare default guest OCI release**, and enter a new guest version
-and its compatibility identifier. Leave `publish_initial_g1` disabled. The
+and its compatibility identifier. Leave both publication options disabled. The
 workflow builds amd64 and arm64 outputs with the maintained builders. The
 arm64 build also supplies the Mac kernel,
 initramfs and ext4 image. The builders use architecture-specific Debian manifest
@@ -349,6 +353,33 @@ Missing or corrupt inputs stop before uploads. Successful publication prints
 an identical recovery retry; the mode cannot select another version, run or
 registry repository.
 
+For G2 publication, use the same authenticated maintainer account and integrated,
+independently accepted workflow on `master`. Select `publish_retained_g2` alone:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f version=guest-2026-10-16.1 -f compatibility=v1 -F publish_retained_g2=true
+```
+
+The run skips guest builds and downloads the accepted outputs of
+[run 38897452318](https://github.com/craigbalding/safeyolo/actions/runs/38897452318):
+archive artifacts `12044318477` and `12044582213`, and verified layout
+`12045630940`. They expire on 14 January 2027. The guest payload revision stays
+`ee291fba78ab34e4dca630d529ac8083ec29802f`. The publisher, pinned ORAS installer
+and compiled native verifier use the workflow's selected source commit. That
+producer revision is separate from the retained guest payload revision.
+
+Before downloads, the workflow rejects conflicting modes, versions or compatibility
+inputs. Before registry authentication, it verifies the complete retained layout
+and reconstructs the same index from the retained archives. Both layouts must
+resolve to `sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b`.
+The job uses the same repository-owned token permissions as G1. Success prints
+`Published ghcr.io/craigbalding/safeyolo-guest:guest-2026-10-16.1` and verifies that
+`compat-v1` resolves to that index. G1 and rollback content remain retained.
+This mode accepts only that G2; normal preparation remains available for other
+versions. Public retrieval and the installed G1-to-G2 update remain separate
+proof under #239 and #238.
+
 The shared concurrency group serializes all versions and generations, with
 cancellation disabled. Direct publisher invocations must use the same exclusive
 publication window; OCI tags do not provide compare-and-swap.
@@ -373,8 +404,9 @@ personal token or registry account. See GitHub's
 [package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
 The retained run reported compressed default archives of 229,345,953 bytes for
 darwin/arm64, 233,300,853 bytes for linux/amd64 and 223,000,369 bytes for
-linux/arm64. Anonymous GHCR retrieval, native filesystem sparsity and installed
-platform evidence remain pending until those runs occur.
+linux/arm64. Those sizes do not establish the transfer exceeding 2 GiB, native
+filesystem sparsity or complete installed-platform proof. Issue #239 records
+the independently accepted public G1 portions and remaining proof.
 Keep supported versions and rollback content out of registry cleanup jobs.
 GHCR's documented blob limit or timeout must be observed with an actual default
 payload before considering another distribution scheme.
@@ -391,9 +423,10 @@ ORAS="$HOME/.local/bin/oras" GUEST_OCI_VERIFIER="$PWD/proxy/target/debug/example
 
 The tests check archive metadata, real OCI creation, upload/readback ordering,
 immutable-version conflicts/retries, incomplete and corrupt content refusal,
-older-channel retention and default-off initial-G1 workflow controls. The
+older-channel retention and default-off retained-release workflow controls. The
 workflow controls also execute pre-authentication validation with native-verified
-fixtures and challenge missing, corrupt and mismatched retained inputs. The
+fixtures for G1 and G2. They check source/run/artifact bindings and challenge
+conflicting modes, versions, compatibility, and missing or corrupt retained inputs. The
 sparse-map test reports a skip if the filesystem cannot supply its required sparse fixture.
 The metadata test stages only a few KiB on the guest filesystem to exercise
 numeric ownership; archives and registry data use the disk-backed basetemp.
