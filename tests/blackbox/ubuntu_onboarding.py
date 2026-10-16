@@ -323,6 +323,45 @@ def login_label(data):
     return [label for label in ["/login", "sign in"] if label.encode() in plain]
 
 
+def console_group(pid):
+    """Read live members of the owned PTY group while its leader remains waitable."""
+    members = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+        except (FileNotFoundError, ProcessLookupError):
+            # A process that disappeared cannot hold the group's listener open.
+            continue
+        if fields[2] == str(pid) and fields[0] not in {"Z", "X"}:
+            members.append({"pid": int(entry.name), "birth": birth(int(entry.name)), "state": fields[0]})
+    return members
+
+
+def stop_console_group(pid, row):
+    row["observer_terminated_viewer"] = stamp()
+    shutdown = {"pgid": pid, "verified": False, "started": stamp()}
+    row["console_group_shutdown"] = shutdown
+    save()
+    # pty.fork created this session/group. Keep its direct child unreaped so
+    # its PID and group ID cannot be reused while the group is signalled.
+    os.killpg(pid, signal.SIGTERM)
+    limit = time.monotonic() + 3
+    remaining = console_group(pid)
+    while remaining and time.monotonic() < limit - 1:
+        time.sleep(0.05)
+        remaining = console_group(pid)
+    if remaining:
+        shutdown["sigkill"] = stamp()
+        os.killpg(pid, signal.SIGKILL)
+        while remaining and time.monotonic() < limit:
+            time.sleep(0.05)
+            remaining = console_group(pid)
+    shutdown.update(remaining=remaining, verified=not remaining, ended=stamp())
+    save()
+
+
 def entered(phase, seconds):
     row = {"command": LAUNCH, "phase": phase, **stamp()}
     row["post_return_diagnostics"] = [["command", "-v", "safeyolo"], ["safeyolo", "--version"]]
@@ -339,6 +378,7 @@ def entered(phase, seconds):
         os.execvpe("bash", ["bash", "-c", script], os.environ)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
     row["console_pid"] = pid
+    row["console_reaped"] = False
     deadline = time.monotonic() + seconds
     pending = b""
     status = None
@@ -420,12 +460,9 @@ def entered(phase, seconds):
                     match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
                     if match:
                         row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
-                if status is None:
-                    waited, code = os.waitpid(pid, os.WNOHANG)
-                    if waited:
-                        status = code
+                exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 # The shell can exit while its final discovery/version bytes remain queued.
-                if status is not None and not select.select([fd], [], [], 0)[0]:
+                if exited is not None and not select.select([fd], [], [], 0)[0]:
                     break
                 if captured and time.monotonic() >= deadline:
                     break
@@ -438,26 +475,18 @@ def entered(phase, seconds):
                 # Preserve the error but always reap this owned viewer below.
                 row["final_capture_error"] = repr(error)
                 save()
-        if status is None:
+        try:
+            exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if exited is None or not row.get("ordinary_q"):
+                stop_console_group(pid, row)
+        finally:
             waited, code = os.waitpid(pid, os.WNOHANG)
             if waited:
                 status = code
-        if status is None:
-            row["observer_terminated_viewer"] = stamp()
-            os.killpg(pid, signal.SIGTERM)
-            limit = time.monotonic() + 3
-            while time.monotonic() < limit:
-                waited, code = os.waitpid(pid, os.WNOHANG)
-                if waited:
-                    status = code
-                    break
-                time.sleep(0.05)
-            if status is None:
-                os.killpg(pid, signal.SIGKILL)
-                _, status = os.waitpid(pid, 0)
-        os.close(fd)
-        row.update(exit_code=os.waitstatus_to_exitcode(status), ended=stamp())
-        save()
+                row["console_reaped"] = True
+            os.close(fd)
+            row.update(exit_code=os.waitstatus_to_exitcode(status) if status is not None else None, ended=stamp())
+            save()
     return row, states
 
 
@@ -503,6 +532,8 @@ def cleanup():
     x["tracked_births_still_live"] = {saved: pid for saved, pid in tracked.items() if saved and birth(pid) == saved}
     x["cleanup_verified"] = (isinstance(before_stop, list) and not x["tracked_births_still_live"] and x.get("remaining_owned_processes") == []
         and not x.get("latest_process_scan", {}).get("unreadable_pids")
+        and all(row.get("console_reaped", True) and row.get("console_group_shutdown", {}).get("verified", True)
+                for row in x.get("product_commands", []))
         and x.get("remaining_owned_listeners") == [] and bool(x["cleanup"])
         and all(row.get("exit") == 0 and not row.get("timeout") for row in x["cleanup"]))
     save()

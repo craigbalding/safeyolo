@@ -1,8 +1,10 @@
-"""Focused observer checks; no SafeYolo product, network, VM or provider is run."""
+"""Focused observer checks; no SafeYolo product, external network, VM or provider is run."""
 
 import importlib.util
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -144,6 +146,15 @@ class ObserverChecks(unittest.TestCase):
             m.cleanup()
         self.assertFalse(m.x["cleanup_verified"])
 
+    def test_unfinished_console_group_keeps_cleanup_unverified(self):
+        for console in [{"console_reaped": False},
+                        {"console_reaped": True, "console_group_shutdown": {"verified": False}}]:
+            m.x["product_commands"] = [console]
+            with patch.object(m, "processes", autospec=True, return_value=[]), \
+                 patch.object(m, "listeners", autospec=True, return_value=[]):
+                m.cleanup()
+            self.assertFalse(m.x["cleanup_verified"])
+
     def test_timed_out_diagnostic_preserves_result_and_next_command_runs(self):
         row = m.observe("timeout", [sys.executable, "-c", "import time;print('reached',flush=True);time.sleep(10)"], 0.1)
         self.assertTrue(row["timeout"])
@@ -173,12 +184,21 @@ class ObserverChecks(unittest.TestCase):
                 process.wait(timeout=3)
                 process.stdout.close()
 
-    def run_console(self, message, seconds, phase="warm", theme=False, capture_error=False):
+    def run_console(self, message, seconds, phase="warm", theme=False, capture_error=False, descendant=False):
         stub = m.project / "console.py"
         display_choice = ("print('Starting or resuming claude.',flush=True)\n"
             "print('Choose the text style that looks best with your terminal\\r\\n> 1. Dark mode',flush=True)\n"
             "assert os.read(0,100)==b'\\r'\n") if theme else ""
-        stub.write_text("import os,sys,tty\ntty.setraw(0)\n" + display_choice +
+        helper = ("import json,os,signal,socket,time\n"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            "signal.signal(signal.SIGHUP,signal.SIG_IGN)\n"
+            "s=socket.socket();s.bind(('127.0.0.1',0));s.listen()\n"
+            "print(json.dumps({'pid':os.getpid(),'pgid':os.getpgrp(),'port':s.getsockname()[1]}),flush=True)\n"
+            "time.sleep(30)\n")
+        descendant_start = ("import json,subprocess\n"
+            f"helper=subprocess.Popen([sys.executable,'-c',{helper!r}],stdout=subprocess.PIPE)\n"
+            f"open({str(m.project / 'descendant.json')!r},'w').write(helper.stdout.readline().decode())\n") if descendant else ""
+        stub.write_text("import os,sys,tty\ntty.setraw(0)\n" + descendant_start + display_choice +
             f"print({message!r},flush=True)\n"
             "pending=b''\n"
             "while b'\\x02d' not in pending:pending+=os.read(0,100)\n"
@@ -190,6 +210,14 @@ class ObserverChecks(unittest.TestCase):
             self.assertIsNotNone(m.birth(row["console_pid"]))
             self.assertNotIn("viewer_detach", row)
             m.x[phase] = {"captured_before_detach": True}
+            if descendant:
+                child = json.loads((m.project / "descendant.json").read_text())
+                child["birth"] = m.birth(child["pid"])
+                m.x[phase]["descendant"] = child
+                self.assertEqual(child["pgid"], row["console_pid"])
+                self.assertNotIn(child["pid"], [r["pid"] for r in m.processes()])
+                with socket.create_connection(("127.0.0.1", child["port"]), timeout=1):
+                    pass
             m.save()
             if capture_error:
                 raise ValueError("capture failed after retaining reached operands")
@@ -227,13 +255,56 @@ class ObserverChecks(unittest.TestCase):
         self.assertIn("ordinary_q", row)
         self.assertNotIn("observer_terminated_viewer", row)
 
-    def test_real_pty_capture_error_reaps_only_its_owned_console(self):
-        with self.assertRaisesRegex(ValueError, "capture failed"):
-            self.run_console("Sign in", 2, capture_error=True)
-        row = m.x["product_commands"][-1]
-        self.assertIn("observer_terminated_viewer", row)
+    def test_real_pty_early_exit_is_captured_and_reaped(self):
+        with patch.object(m, "LAUNCH", [sys.executable, "-c", "raise SystemExit(3)"]), \
+             patch.object(m, "witness", autospec=True, return_value={}), \
+             patch.dict(os.environ, {"PATH": str(m.cli.parent) + ":" + os.environ["PATH"]}):
+            row, _ = m.entered("cold", 0.2)
+        self.assertEqual(row["exit_code"], 3)
+        self.assertTrue(row["console_reaped"])
+        self.assertTrue(row["console_group_shutdown"]["verified"])
         self.assertIsNone(m.birth(row["console_pid"]))
-        self.assertTrue(m.x["after-reentry"]["captured_before_detach"])
+
+    def test_real_pty_capture_error_stops_descendant_listener_and_preserves_unrelated_control(self):
+        control = subprocess.Popen([sys.executable, "-c",
+            "import socket,time;s=socket.socket();s.bind(('127.0.0.1',0));s.listen();"
+            "print(s.getsockname()[1],flush=True);time.sleep(30)"],
+            stdout=subprocess.PIPE, start_new_session=True)
+        child = None
+        try:
+            port = int(control.stdout.readline())
+            control_birth = m.birth(control.pid)
+            with self.assertRaisesRegex(ValueError, "capture failed"):
+                self.run_console("Sign in", 2, capture_error=True, descendant=True)
+            child = m.x["after-reentry"]["descendant"]
+            row = m.x["product_commands"][-1]
+            self.assertIn("observer_terminated_viewer", row)
+            self.assertIsNone(m.birth(row["console_pid"]))
+            self.assertTrue(m.x["after-reentry"]["captured_before_detach"])
+            with self.assertRaises(OSError):
+                with socket.create_connection(("127.0.0.1", child["port"]), timeout=0.2):
+                    pass
+            stat = Path(f"/proc/{child['pid']}/stat")
+            self.assertTrue(not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
+            self.assertTrue(row["console_reaped"])
+            self.assertTrue(row["console_group_shutdown"]["verified"])
+            self.assertEqual(row["console_group_shutdown"]["remaining"], [])
+            self.assertIn("sigkill", row["console_group_shutdown"])
+            self.assertEqual(m.birth(control.pid), control_birth)
+            self.assertIsNone(control.poll())
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                pass
+        finally:
+            child = child or m.x.get("after-reentry", {}).get("descendant")
+            if child and m.birth(child["pid"]) == child["birth"]:
+                try:
+                    os.kill(child["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    # The test child exited between its birth check and cleanup.
+                    pass
+            control.terminate()
+            control.wait(timeout=3)
+            control.stdout.close()
 
     def test_real_pty_cold_theme_default_is_counted_before_signed_out_capture(self):
         row = self.run_console("Sign in", 2, phase="cold", theme=True)
