@@ -222,6 +222,13 @@ def test_installed_share_test_staging_refuses_incomplete_compiler_output(tmp_pat
     assert upload["if"] == "${{ !cancelled() && steps.linux_share_test.outcome == 'success' }}"
     assert upload["with"]["path"] == "${{ runner.temp }}/linux-share-test/native-library-test"
     assert steps.index(stage) < steps.index(upload)
+    focused = next(step for step in steps if step.get("name") == "Test focused native boundaries")
+    for artifact in ("linux-host-amd64-production", "linux-guest-amd64-production", "linux-share-test-amd64-production"):
+        retained = next(step for step in steps if step.get("with", {}).get("name") == artifact)
+        producer = stage if artifact == "linux-share-test-amd64-production" else next(
+            step for step in steps if step.get("id") == "linux_host_inputs"
+        )
+        assert steps.index(producer) < steps.index(retained) < steps.index(focused)
     for directory in ("scripts", ".venv/bin", "proxy/target", "runner temp", "commands"):
         (tmp_path / directory).mkdir(parents=True)
     (tmp_path / ".venv/bin/python").symlink_to(sys.executable)

@@ -95,6 +95,18 @@ def process_state(pid):
         return None  # An exited owned process can disappear during observation.
 
 
+def assert_mount_removed(target, before, after):
+    # mountinfo escapes spaces, tabs, newlines and backslashes. CR is literal.
+    escaped = target.replace("\\", r"\134").replace(" ", r"\040").replace("\t", r"\011").replace("\n", r"\012")
+    before_rows = [line.split(" ") for line in before.split("\n") if line]
+    after_rows = [line.split(" ") for line in after.split("\n") if line]
+    mount_ids = {row[0] for row in before_rows if row[4] == escaped}
+    assert mount_ids, f"share mount was not observed before removal: {target!r}"
+    assert not any(row[4] == escaped or row[0] in mount_ids for row in after_rows), (
+        f"share mount survived removal: {target!r}"
+    )
+
+
 def run_proof(root: Path, base: Path, native_test: Path):
     base.mkdir(mode=0o755)
     report = {"root": str(root), "base": str(base), "commands": [], "operations": []}
@@ -348,7 +360,7 @@ def run_proof(root: Path, base: Path, native_test: Path):
             assert removed["success"], removed
             assert before["access_exit"] == 0 and before["identity_exit"] == 0
             assert after["access_exit"] != 0 and after["identity_exit"] != 0
-            assert "safeyolo-share-" + receipt["id"] not in after["mountinfo"]
+            assert_mount_removed(target, before["mountinfo"], after["mountinfo"])
             assert all(process["after_state"] in (None, "Z", "X") for process in observed)
             same_run()
             same_run(second)

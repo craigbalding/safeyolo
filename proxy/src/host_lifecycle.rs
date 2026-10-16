@@ -1481,7 +1481,12 @@ pub(crate) async fn start(
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
         let run_id = uuid::Uuid::new_v4().simple().to_string();
         crate::host_boot::stage(agent, &ip, &run_id).await?;
-        let run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"});
+        let mut run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"});
+        if cfg!(target_os = "linux") {
+            // An observer can retain this receipt across its runsc state query.
+            // Mark the new run unready from its first publication.
+            run["linux"] = json!({"extra_share_startup":"starting"});
+        }
         let prepared: Result<(), Error> = async {
             crate::host_runs::save(&agent.name, &run)?;
             crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;

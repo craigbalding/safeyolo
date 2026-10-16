@@ -1170,6 +1170,14 @@ pub(crate) async fn start_sandbox(
             stderr.take(4096).read_to_string(&mut detail)?;
             return Err(io::Error::other(format!("runsc create failed: {}", detail)));
         }
+        // Status and shell calls do not hold the startup lock. Publish this
+        // gate before runsc can report running, including while start awaits.
+        let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("sandbox runtime record disappeared"))?;
+        run["linux"] = crate::linux_host::runsc_report();
+        run["linux"]["platform"] = platform.into();
+        run["linux"]["extra_share_startup"] = "starting".into();
+        crate::host_runs::save(name, &run).map_err(io::Error::other)?;
         let start = userns_command(name, "runsc")?
             .arg("--ignore-cgroups")
             .arg("--root")
@@ -1188,12 +1196,6 @@ pub(crate) async fn start_sandbox(
         let backend = value.get("pid").and_then(serde_json::Value::as_u64)
             .and_then(|pid| u32::try_from(pid).ok()).ok_or(io::Error::other("runsc did not identify its backend"))?;
         crate::host_runs::remember_process(name, "backend", backend).map_err(io::Error::other)?;
-        let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
-            .ok_or_else(|| io::Error::other("sandbox runtime record disappeared"))?;
-        run["linux"] = crate::linux_host::runsc_report();
-        run["linux"]["platform"] = platform.into();
-        run["linux"]["extra_share_startup"] = "starting".into();
-        crate::host_runs::save(name, &run).map_err(io::Error::other)?;
         std::fs::write(
             directory.join("container.pid"),
             value
@@ -2841,12 +2843,23 @@ exec "$@"
 case " $* " in
   *" create "*)
     /bin/cp '{0}/runtime.json' '{0}/fixture-holder.json'
+    if [ "$SAFEYOLO_TEST_FAILED_START_STOP" = after-running ]; then exit 0; fi
     if [ "$SAFEYOLO_TEST_FAILED_START_STOP" = failed ]; then
       printf '{{"run_id":"changed"}}' > '{0}/runtime.json'
     fi
     printf 'fixture boot failure' >&2
     exit 17;;
-  *" state "*) printf '{{"id":"safeyolo-{run_id}","status":"stopped"}}';;
+  *" start "*)
+    : > '{0}/fixture-running'
+    while [ ! -f '{0}/fixture-resume' ]; do /bin/sleep 0.02; done
+    printf 'fixture start failure' >&2
+    exit 17;;
+  *" state "*)
+    if [ -f '{0}/fixture-running' ] && [ ! -f '{0}/fixture-resume' ]; then
+      printf '{{"id":"safeyolo-{run_id}","status":"running"}}'
+    else
+      printf '{{"id":"safeyolo-{run_id}","status":"stopped"}}'
+    fi;;
   *" delete "*) exit 0;;
   *) exit 2;;
 esac
@@ -2863,7 +2876,36 @@ esac
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             in_instance(root.clone(), async {
-                let error = start_sandbox("alice", "10.200.0.1", 4096, true).await.unwrap_err();
+                let starting = start_sandbox("alice", "10.200.0.1", 4096, true);
+                let inspect = async {
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                    while !directory.join("fixture-running").exists() {
+                        assert!(tokio::time::Instant::now() < deadline, "runsc did not reach start");
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    let observed = crate::host_runs::observe("alice").await;
+                    let exec = guest_exec_available("alice").await;
+                    let original = crate::host_runs::read("alice").unwrap().unwrap();
+                    let mut ready = original.clone();
+                    ready["linux"]["extra_share_startup"] = "ready".into();
+                    crate::host_runs::save("alice", &ready).unwrap();
+                    let ready_status = crate::host_runs::observe("alice").await;
+                    ready.as_object_mut().unwrap().remove("linux");
+                    crate::host_runs::save("alice", &ready).unwrap();
+                    let legacy_status = crate::host_runs::observe("alice").await;
+                    crate::host_runs::save("alice", &original).unwrap();
+                    // Release before assertions so even a regression permits
+                    // the ordinary failed-start cleanup to finish.
+                    std::fs::write(directory.join("fixture-resume"), b"").unwrap();
+                    (observed, exec, ready_status, legacy_status)
+                };
+                let (started, observation) = if stop == "after-running" {
+                    let (started, observation) = tokio::join!(starting, inspect);
+                    (started, Some(observation))
+                } else {
+                    (starting.await, None)
+                };
+                let error = started.unwrap_err();
                 eprintln!("failed-start {launch}/{stop}: {error}");
                 let record = std::fs::read(directory.join("fixture-holder.json"))
                     .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();
@@ -2921,7 +2963,25 @@ esac
                     assert!(!directory.join("userns.pid").exists());
                     return;
                 }
-                assert!(error.contains("runsc create failed: fixture boot failure"), "{error}");
+                let expected = if stop == "after-running" {
+                    "runsc start failed: fixture start failure"
+                } else {
+                    "runsc create failed: fixture boot failure"
+                };
+                assert!(error.contains(expected), "{error}");
+                if let Some((observed, exec, ready, legacy)) = observation {
+                    assert_eq!(observed["backend"]["status"], "running", "{observed}");
+                    assert_eq!(observed["runtime_state"], "starting", "{observed}");
+                    assert_eq!(observed["exec"], false, "{observed}");
+                    assert_eq!(observed["port_forward"], false, "{observed}");
+                    assert!(!exec);
+                    for status in [ready, legacy] {
+                        assert_eq!(status["runtime_state"], "running", "{status}");
+                        assert_eq!(status["exec"], true, "{status}");
+                    }
+                    assert!(!share.join("per-run-go").exists());
+                    assert!(!directory.join("status/per-run-started").exists());
+                }
                 let failed_stop = stop == "failed";
                 assert_eq!(error.contains("sandbox cleanup failed"), failed_stop, "{error}");
                 assert_eq!(holder_live, failed_stop, "{error}");
@@ -2939,6 +2999,7 @@ esac
             return;
         }
         for (launch, stop) in [
+            ("direct", "after-running"),
             ("native", "succeeded"),
             ("native", "failed"),
             ("native", "missing-mapper"),

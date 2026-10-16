@@ -411,12 +411,15 @@ struct GuestTarget {
 }
 
 impl GuestTarget {
+    // Emit the descriptor's path directly: command substitution strips trailing
+    // newlines, and line readers cannot preserve every valid directory name.
+    const SCRIPT: &str = r#"set -eu; if [ "$2" = create ]; then mkdir -p -- "$1"; fi; exec 3<"$1"; printf '%s\0' "$$"; readlink -f --zero -- /proc/self/fd/3; read -r release"#;
+
     async fn open(run: &Run, target: &str, parent: bool) -> Result<Self, Error> {
         // Hold a guest directory descriptor while the host mounts. Fs.Mount
         // follows this pinned dentry, so a concurrent guest rename/symlink
         // replacement cannot redirect a validated target onto control mounts.
-        const SCRIPT: &str = "set -eu; if [ \"$2\" = create ]; then mkdir -p -- \"$1\"; fi; exec 3<\"$1\"; printf '%s\\n%s\\n' \"$$\" \"$(readlink -f -- /proc/self/fd/3)\"; read -r release";
-        let mut child = host_platform::runsc_command(&run.name)?
+        let child = host_platform::runsc_command(&run.name)?
             .args([
                 "exec",
                 "--user",
@@ -430,7 +433,7 @@ impl GuestTarget {
                 "--noprofile",
                 "--norc",
                 "-c",
-                SCRIPT,
+                Self::SCRIPT,
                 "share-target",
                 target,
                 if parent { "parent" } else { "create" },
@@ -440,28 +443,36 @@ impl GuestTarget {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
+        let target = Self::receive(child).await?;
+        run.check()?;
+        Ok(target)
+    }
+
+    async fn receive(mut child: Child) -> Result<Self, Error> {
         let output = async {
             let stdout = child
                 .stdout
                 .take()
                 .ok_or("share target output is unavailable")?;
-            let mut lines = tokio::io::BufReader::new(stdout.take(8192)).lines();
-            let pid = lines
-                .next_line()
-                .await?
-                .ok_or("could not open the guest share target")?;
-            let pid: u32 = pid.parse()?;
-            let resolved = lines
-                .next_line()
-                .await?
-                .ok_or("could not resolve the guest share target")?;
+            let mut output = tokio::io::BufReader::new(stdout.take(8192));
+            let mut pid = Vec::new();
+            output.read_until(0, &mut pid).await?;
+            if pid.pop() != Some(0) {
+                return Err("could not open the guest share target".into());
+            }
+            let pid: u32 = std::str::from_utf8(&pid)?.parse()?;
+            let mut resolved = Vec::new();
+            output.read_until(0, &mut resolved).await?;
+            if resolved.pop() != Some(0) {
+                return Err("could not resolve the guest share target".into());
+            }
+            let resolved = String::from_utf8(resolved)?;
             if pid == 0 || resolved.is_empty() {
                 return Err("invalid guest share target".into());
             }
             Ok::<_, Error>((resolved, format!("/proc/{pid}/fd/3")))
         };
         let (resolved, path) = tokio::time::timeout(Duration::from_secs(10), output).await??;
-        run.check()?;
         Ok(Self {
             child,
             resolved,
@@ -854,6 +865,72 @@ pub(crate) async fn cleanup_stopped(name: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+
+    #[tokio::test]
+    async fn guest_target_preserves_directory_names_and_symlink_destinations() {
+        let fixture = tempfile::tempdir().unwrap();
+        for component in [
+            "ordinary",
+            "\r",
+            "a\nb",
+            "trailing\n",
+            "\n\n",
+            "quoted '\" \\\t",
+        ] {
+            let directory = fixture.path().join(component);
+            fs::create_dir(&directory).unwrap();
+            let directory = fs::canonicalize(directory).unwrap();
+            let alias = fixture.path().join("ordinary-reference");
+            std::os::unix::fs::symlink(&directory, &alias).unwrap();
+            for requested in [&directory, &alias] {
+                let child = Command::new("/bin/bash")
+                    .args([
+                        "--noprofile",
+                        "--norc",
+                        "-c",
+                        GuestTarget::SCRIPT,
+                        "share-target",
+                    ])
+                    .arg(requested)
+                    .arg("create")
+                    .env("BASH_ENV", "")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                let target = GuestTarget::receive(child).await.unwrap();
+                assert_eq!(Path::new(&target.resolved), directory, "{requested:?}");
+                let held = fs::metadata(&target.path).unwrap();
+                let selected = fs::metadata(&directory).unwrap();
+                assert_eq!((held.dev(), held.ino()), (selected.dev(), selected.ino()));
+                target.close().await.unwrap();
+            }
+            fs::remove_file(alias).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn guest_target_refuses_incomplete_or_invalid_descriptor_fields() {
+        for script in [
+            "printf '123\\0/unterminated'",
+            "printf '123'",
+            "printf '0\\0/directory\\0'",
+            "printf '123\\0\\0'",
+            "printf 'not-a-pid\\0/directory\\0'",
+        ] {
+            let child = Command::new("/bin/bash")
+                .args(["--noprofile", "--norc", "-c", script])
+                .env("BASH_ENV", "")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            assert!(GuestTarget::receive(child).await.is_err(), "{script}");
+        }
+    }
 
     #[tokio::test]
     async fn gofer_source_selection_checks_identity_and_closes_the_host_descriptor() {
