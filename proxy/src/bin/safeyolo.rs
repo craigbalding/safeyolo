@@ -224,6 +224,11 @@ async fn context_command(arguments: &[String]) -> Result<(), Error> {
 
 async fn run() -> Result<(), Error> {
     let mut arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let upgrade_command = std::env::args_os().next().is_some_and(|path| {
+        Path::new(&path)
+            .file_name()
+            .is_some_and(|name| name == "safeyolo-upgrade")
+    });
     let explicit_config = arguments.first().is_some_and(|value| value == "--config");
     let explicit_root = arguments.first().is_some_and(|value| value == "--root");
     let selected = if explicit_config || explicit_root {
@@ -255,6 +260,17 @@ async fn run() -> Result<(), Error> {
         std::env::var_os("SAFEYOLO_CONFIG_DIR")
             .or_else(|| std::env::var_os("SAFEYOLO_HOME"))
             .map(PathBuf::from)
+            .or_else(|| {
+                upgrade_command
+                    .then(|| {
+                        std::env::current_exe()
+                            .ok()?
+                            .ancestors()
+                            .nth(3)
+                            .map(Path::to_path_buf)
+                    })
+                    .flatten()
+            })
             .unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".safeyolo")
             })
@@ -266,6 +282,12 @@ async fn run() -> Result<(), Error> {
     };
     // Proposal file options retain Unix filename bytes through the shared
     // parser, as do the native guest CLI's existing path-taking commands.
+    if upgrade_command && !matches!(arguments.as_slice(), [version] if version == "--version") {
+        return safeyolo_proxy::guest_acquisition::upgrade_components(&root, &arguments).await;
+    }
+    if arguments.first().is_some_and(|value| value == "upgrade") {
+        return safeyolo_proxy::guest_acquisition::upgrade_components(&root, &arguments[1..]).await;
+    }
     if arguments.first().is_some_and(|value| value == "guest") {
         return safeyolo_proxy::guest_acquisition::run(&root, &arguments[1..]).await;
     }
@@ -334,6 +356,10 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::demo::HELP);
             println!("{}", safeyolo_proxy::guest_acquisition::HELP);
+            println!(
+                "{}",
+                safeyolo_proxy::guest_acquisition::COMPONENT_UPGRADE_HELP
+            );
             #[cfg(target_os = "linux")]
             println!("{}", safeyolo_proxy::linux_host::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);

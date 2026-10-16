@@ -6,6 +6,7 @@ root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 release=
 bundle=
 stage=
+download_only=
 install_arguments=()
 launch=false
 launch_arguments=()
@@ -15,12 +16,13 @@ while (($#)); do
       launch=true; shift
       launch_arguments=("$@")
       break;;
-    --root|--release)
+    --root|--release|--download-only)
       option=$1
       (($# >= 2)) || { echo "$option requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$option requires a nonempty value" >&2; exit 2; }
       case "$option" in
         --root) root=$2;; --release) release=$2;;
+        --download-only) download_only=$2;;
       esac
       shift 2;;
     --bundle|--platform-assets|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
@@ -63,7 +65,13 @@ install_and_launch() {
     exec "$root/bin/safeyolo" --root "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
   fi
 }
-if [[ -f $repository/scripts/install_native.sh && -z $release ]]; then
+if [[ -n $download_only ]]; then
+  [[ -n $release && -z $bundle && ${#install_arguments[@]} == 0 && $launch == false ]] || {
+    echo '--download-only requires an explicit --release and no installation or launch options.' >&2; exit 2
+  }
+  [[ ! -e $download_only && ! -L $download_only ]] || { echo 'The download destination already exists.' >&2; exit 1; }
+fi
+if [[ -z $download_only && -f $repository/scripts/install_native.sh && -z $release ]]; then
   install_and_launch "$repository/scripts/install_native.sh"
   exit
 fi
@@ -73,7 +81,7 @@ if [[ -n $bundle ]]; then
 fi
 # Use the retained installer before any network request. Older or unrelated
 # roots are preserved rather than converted or replaced with Latest.
-if [[ -e $root/config.toml || -L $root/config.toml || -e $root/policy.toml || -L $root/policy.toml || -e $root/data/admin_token ]]; then
+if [[ -z $download_only ]] && [[ -e $root/config.toml || -L $root/config.toml || -e $root/policy.toml || -L $root/policy.toml || -e $root/data/admin_token ]]; then
   if [[ ! -f $root/install_native.sh || ! -f $root/native_package.sh ]]; then
     echo "Existing installation at $root was preserved. Use its installed command, or choose a separate --root and --command-dir; this installer does not convert older state." >&2
     exit 1
@@ -150,4 +158,9 @@ for field in guest_compatibility guest_repository guest_discovery_tag; do
 done
 source "$package/native_package.sh"
 verify_native_package "$package"
+if [[ -n $download_only ]]; then
+  mv "$package" "$download_only"
+  echo "Downloaded SafeYolo package: $download_only"
+  exit
+fi
 install_and_launch "$package/install.sh"

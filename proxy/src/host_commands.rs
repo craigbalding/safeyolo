@@ -81,12 +81,20 @@ pub(crate) fn proxy_live() -> bool {
                 .zip(record["token"].as_str())
                 .is_some_and(|(pid, token)| {
                     host_lifecycle::process_token(pid).as_deref() == Some(token)
-                        && host_platform::process_has_path_argument(
-                            pid,
-                            &host_platform::config_dir().join("bin/safeyolo-proxy"),
-                            b"--config",
-                            &host_platform::config_path(),
+                        && crate::guest_acquisition::retained_host_binaries(
+                            &host_platform::config_dir(),
+                            "safeyolo-proxy",
                         )
+                        .is_ok_and(|binaries| {
+                            binaries.iter().any(|binary| {
+                                host_platform::process_has_path_argument(
+                                    pid,
+                                    binary,
+                                    b"--config",
+                                    &host_platform::config_path(),
+                                )
+                            })
+                        })
                 })
         })
 }
@@ -580,6 +588,99 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrade_proxy_identity_child() {
+        let Some(directory) = std::env::var_os("SAFEYOLO_TEST_UPGRADE_PROXY") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        fs::write(directory.join("ready"), "ready").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !directory.join("finish").exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[tokio::test]
+    async fn host_upgrade_preserves_proxy_identity_and_config_ownership() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        fs::create_dir(root.join("bin")).unwrap();
+        fs::create_dir(root.join("data")).unwrap();
+        fs::write(root.join("config.toml"), "").unwrap();
+        std::os::unix::fs::symlink(
+            std::env::current_exe().unwrap(),
+            root.join("bin/safeyolo-proxy"),
+        )
+        .unwrap();
+        let mut child = tokio::process::Command::new(root.join("bin/safeyolo-proxy"))
+            .args([
+                "--exact",
+                "host_commands::tests::upgrade_proxy_identity_child",
+                "--nocapture",
+                "--",
+                "--config",
+            ])
+            .arg(root.join("config.toml"))
+            .env("SAFEYOLO_TEST_UPGRADE_PROXY", root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !root.join("ready").exists() {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "identity child exited before readiness"
+            );
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let pid = i64::from(child.id().unwrap());
+        let token = host_lifecycle::process_token(pid).unwrap();
+        crate::guest_commands::write_json(
+            &root.join("data/proxy-process.json"),
+            &json!({"pid":pid,"token":token}),
+        )
+        .unwrap();
+        assert!(host_platform::with_config(
+            root.join("config.toml"),
+            proxy_live
+        ));
+        fs::create_dir_all(root.join("versions/initial/host")).unwrap();
+        fs::rename(root.join("bin"), root.join("versions/initial/host/bin")).unwrap();
+        fs::create_dir(root.join("bin")).unwrap();
+        fs::copy("/bin/sleep", root.join("bin/safeyolo-proxy")).unwrap();
+        assert!(host_platform::with_config(
+            root.join("config.toml"),
+            proxy_live
+        ));
+        assert!(!host_platform::with_config(
+            root.join("another.toml"),
+            proxy_live
+        ));
+        crate::guest_commands::write_json(
+            &root.join("data/proxy-process.json"),
+            &json!({"pid":pid,"token":"wrong birth"}),
+        )
+        .unwrap();
+        assert!(!host_platform::with_config(
+            root.join("config.toml"),
+            proxy_live
+        ));
+        fs::write(root.join("finish"), "finish").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+    }
+
     #[test]
     fn local_start_arguments_keep_defaults_distinct_from_an_empty_override() {
         let empty = Vec::new();

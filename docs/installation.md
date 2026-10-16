@@ -178,6 +178,85 @@ is preserved; use its installed command or choose a separate `--root` and
 retry. Partial downloads are not activated. An interrupted final file move can
 leave incomplete files; the next invocation reports them and preserves them.
 
+## Upgrade host and guest components
+
+The current source adds explicit component upgrades. Use a host release that
+contains `safeyolo upgrade`, or run that release's unpacked `bin/safeyolo`
+against an existing instance with `--root`. Do not run the fresh-instance
+installer to replace an existing host.
+
+In your host terminal, inspect the selected host and guest before choosing a
+target. The following commands use the default instance. For another instance,
+put `--root ROOT` before `upgrade` and replace `ROOT` with its directory.
+
+```sh
+safeyolo upgrade status
+```
+
+The result shows the host source, build profile and package checksum identity.
+It also shows the guest version, compatibility identifier and separate Open
+Container Initiative (OCI) index, child-manifest and archive digests. A retained
+previous pair appears after the first component change.
+
+For a host-only upgrade, choose an official `host-COMMIT` release from the
+[release list](https://github.com/craigbalding/safeyolo/releases). Replace
+`COMMIT` below with that release's full 40-character commit. The command
+downloads the changed host package. It retains the selected guest if the target
+host is compatible. It does not discover, download or extract another guest.
+The host package includes its own guest-side command helpers. Those helpers
+must match the target host's source and profile, independently of guest-base
+compatibility.
+
+Use a maintenance window to stop the proxy, change the selected host and start
+the proxy. Running agents keep their existing guest inputs. Stop and start an
+agent when you want that agent to use the new selection.
+
+```sh
+safeyolo stop
+safeyolo upgrade --release host-COMMIT
+safeyolo start
+safeyolo upgrade status
+```
+
+To select a host and guest together, add `--guest-index sha256:DIGEST` to the
+upgrade command. Replace `DIGEST` with the complete immutable guest index
+digest. The target index must declare the compatibility identifier required by
+the target host. A host that requires another identifier is refused unless you
+explicitly select its compatible guest. Guest-only upgrades retain their
+existing [guest upgrade and rollback commands](guest-oci.md).
+
+For an already unpacked target, use `upgrade --bundle UNPACKED_DIRECTORY`
+instead of `--release`. Replace `UNPACKED_DIRECTORY` with the verified host
+bundle directory. Both paths check complete package hashes, source/profile
+identities, platform requirements, guest compatibility and the existing
+configuration before activation. Repeating the same target retains the current
+selection and reuses verified cached host archives and guest inputs.
+
+The first host upgrade retains a separate `safeyolo-upgrade` executable in the
+instance directory. It keeps recovery available after selecting an older host
+that has no `upgrade` command. If the new host cannot start, use this executable
+to restore the previous complete host/guest pair, then start the proxy. For the
+default instance:
+
+```sh
+"$HOME/.safeyolo/safeyolo-upgrade" rollback
+safeyolo start
+```
+
+For a custom instance, run its `safeyolo-upgrade` with `--root ROOT` before
+`rollback`. Rollback makes no network request. Configuration, policy,
+credentials, audit/log data and agent homes stay in the instance throughout
+upgrade and rollback. Rollback does not undo user-state changes made while the
+new pair was selected.
+
+Activation changes one directory link after staging the complete pair. The
+initial adoption requires a filesystem with atomic directory exchange, such as
+the supported native Linux and macOS filesystems. A failed check, interrupted
+download or unsupported exchange leaves the prior pair selected. Retry the same
+upgrade command to finish interrupted staging or adoption. Keep the instance's
+`versions`, `host-packages` and `upgrade-tools` directories and the persistent
+guest store: current and rollback selections use their files.
+
 ## Other installation paths
 
 The ordinary commands use `$HOME/.safeyolo`. To install a separate instance,

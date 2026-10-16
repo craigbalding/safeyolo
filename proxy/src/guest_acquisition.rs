@@ -25,8 +25,17 @@ use crate::{
 
 #[path = "guest_acquisition/archive.rs"]
 mod archive;
+#[path = "guest_acquisition/components.rs"]
+mod components;
 #[path = "guest_acquisition/upgrade.rs"]
 mod upgrade;
+
+/// Select a complete installed host/guest pair without initializing state.
+pub async fn upgrade_components(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
+    components::run(root, arguments).await
+}
+
+pub const COMPONENT_UPGRADE_HELP: &str = components::HELP;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn validate_prepared_linux_assets(
@@ -410,17 +419,29 @@ impl GuestSelection {
 }
 
 /// Read one complete local selection. Boot never performs registry discovery.
-pub(crate) fn selected_inputs(root: &Path) -> Result<PathBuf, Error> {
-    if !root.join("share/guest-selection.json").try_exists()? {
-        return Ok(root.join("share"));
+pub(crate) fn selected_boot_inputs(root: &Path) -> Result<(PathBuf, PathBuf), Error> {
+    let (host, share) = components::installed_paths(root)?;
+    let guest = selected_inputs_at(&host, &share)?;
+    Ok((host, guest))
+}
+
+pub(crate) fn retained_host_binaries(root: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
+    components::retained_host_binaries(root, name)
+}
+
+fn selected_inputs_at(host: &Path, share: &Path) -> Result<PathBuf, Error> {
+    if !share.join("guest-selection.json").try_exists()? {
+        return Ok(share.to_path_buf());
     }
-    let package = PackageGuest::read(&root.join("package-info"))?;
+    let package = PackageGuest::read(&host.join("package-info"))?;
     let selection: GuestSelection =
-        serde_json::from_slice(&fs::read(root.join("share/guest-selection.json"))?)?;
+        serde_json::from_slice(&fs::read(share.join("guest-selection.json"))?)?;
     selection.validate(&package)?;
     // Boot validates the inputs it consumes. Explicit per-agent files may
     // replace default files, and do not require unused cached inputs.
-    Ok(selection.inputs(root))
+    Ok(selection
+        .installed_assets
+        .unwrap_or_else(|| share.to_path_buf()))
 }
 
 fn write_selection(selection: &GuestSelection, path: &Path) -> Result<(), Error> {

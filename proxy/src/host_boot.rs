@@ -209,7 +209,7 @@ pub(crate) async fn setup(
 pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value, Error> {
     validate_sandbox(agent)?;
     let root = config_dir();
-    let guest_inputs = crate::guest_acquisition::selected_inputs(&root)?;
+    let (host_package, guest_inputs) = crate::guest_acquisition::selected_boot_inputs(&root)?;
     let directory = root.join("agents").join(&agent.name);
     let home = directory.join("home");
     let share = directory.join("config-share");
@@ -252,12 +252,17 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
     let previous = crate::guest_commands::read_state(&share.join("host-launch-context.json"))?
         .unwrap_or(Value::Null);
     let context = json!({"generation":run_id,"agent_id":agent.id,"ip":ip,"workspace":workspace,"memory_mb":agent.memory_mb.unwrap_or(4096),
-        "guest_inputs":guest_inputs,
+        "guest_inputs":guest_inputs,"host_package":host_package,
         "extra_shares":shares.iter().map(|(host,guest,ro)| json!({"host_path":host,"guest_path":guest,"read_only":ro})).collect::<Vec<_>>(),
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});
-    crate::guest_commands::stage(&home, &share, &root.join("assets/guest"), context.clone())?;
-    stage_skills(&root.join("assets/skills"), &share).await?;
+    crate::guest_commands::stage(
+        &home,
+        &share,
+        &host_package.join("assets/guest"),
+        context.clone(),
+    )?;
+    stage_skills(&host_package.join("assets/skills"), &share).await?;
     for name in ["agent_token", "authorized_keys"] {
         let source = if name == "agent_token" {
             crate::native_config::read(&crate::host_platform::config_path())?
@@ -275,9 +280,9 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         root.join("certs/mitmproxy-ca-cert.pem"),
         share.join("mitmproxy-ca-cert.pem"),
     )?;
-    if root.join("assets/guest/guest-sudo").is_file() {
+    if host_package.join("assets/guest/guest-sudo").is_file() {
         fs::copy(
-            root.join("assets/guest/guest-sudo"),
+            host_package.join("assets/guest/guest-sudo"),
             share.join("guest-sudo"),
         )?;
     }
@@ -826,6 +831,72 @@ mod package_tests {
             stage(&agent, "10.200.0.1", &"3".repeat(32)).await.unwrap();
             let restored: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
             assert_eq!(restored["root"]["path"], old_spec["root"]["path"]);
+
+            // A complete host/guest switch must capture both from the same
+            // retained pair, even when the old top-level receipt differs.
+            for (name, compatibility, guest) in [("one", "v1", &g1), ("two", "v2", &g2)] {
+                let pair = root.join("versions").join(name);
+                fs::create_dir_all(pair.join("host/assets/guest")).unwrap();
+                fs::create_dir(pair.join("share")).unwrap();
+                fs::write(
+                    pair.join("host/package-info"),
+                    fs::read_to_string(root.join("package-info"))
+                        .unwrap()
+                        .replace("v1", compatibility),
+                )
+                .unwrap();
+                for entry in fs::read_dir(root.join("assets/guest")).unwrap() {
+                    let entry = entry.unwrap();
+                    fs::copy(
+                        entry.path(),
+                        pair.join("host/assets/guest").join(entry.file_name()),
+                    )
+                    .unwrap();
+                }
+                fs::write(pair.join("host/assets/guest/guest-init"), compatibility).unwrap();
+                std::os::unix::fs::symlink(
+                    root.join("assets/skills"),
+                    pair.join("host/assets/skills"),
+                )
+                .unwrap();
+                std::os::unix::fs::symlink(
+                    root.join("g1/rootfs-tree"),
+                    pair.join("share/rootfs-tree"),
+                )
+                .unwrap();
+                fs::copy(
+                    root.join("g1/cache-paths.txt"),
+                    pair.join("share/cache-paths.txt"),
+                )
+                .unwrap();
+                let mut guest = guest.clone();
+                guest["compatibility"] = json!(compatibility);
+                fs::write(
+                    pair.join("share/guest-selection.json"),
+                    serde_json::to_vec(&guest).unwrap(),
+                )
+                .unwrap();
+            }
+            let one = root.join("versions/one");
+            let two = root.join("versions/two");
+            std::os::unix::fs::symlink(&one, root.join("current")).unwrap();
+            let first = stage(&agent, "10.200.0.1", &"5".repeat(32)).await.unwrap();
+            assert_eq!(first["host_package"], json!(one.join("host")));
+            assert_eq!(first["guest_inputs"], json!(one.join("share")));
+            assert_eq!(
+                fs::read_to_string(root.join("agents/alice/config-share/guest-init")).unwrap(),
+                "v1"
+            );
+            std::os::unix::fs::symlink(&two, root.join("next")).unwrap();
+            fs::rename(root.join("next"), root.join("current")).unwrap();
+            let second = stage(&agent, "10.200.0.1", &"6".repeat(32)).await.unwrap();
+            assert_eq!(second["host_package"], json!(two.join("host")));
+            assert_eq!(second["guest_inputs"], json!(root.join("g2")));
+            assert_eq!(
+                fs::read_to_string(root.join("agents/alice/config-share/guest-init")).unwrap(),
+                "v2"
+            );
+            assert_eq!(first["host_package"], json!(one.join("host")));
         })
         .await;
     }
