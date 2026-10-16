@@ -180,10 +180,17 @@ leave incomplete files; the next invocation reports them and preserves them.
 
 ## Upgrade host and guest components
 
-The current source adds explicit component upgrades. Use a host release that
-contains `safeyolo upgrade`, or run that release's unpacked `bin/safeyolo`
-against an existing instance with `--root`. Do not run the fresh-instance
-installer to replace an existing host.
+Use a host release that contains `safeyolo upgrade`. For an older installed
+host, download and unpack a release that provides this command. Set `BUNDLE`
+to its absolute bundle directory and `ROOT` to the existing instance directory.
+Then run the new command against that instance:
+
+```sh
+"$BUNDLE/bin/safeyolo" --root "$ROOT" upgrade --bundle "$BUNDLE"
+```
+
+The command selects the new host and retains the installed guest if compatible.
+Do not run the fresh-instance installer to replace an existing host.
 
 In your host terminal, inspect the selected host and guest before choosing a
 target. The following commands use the default instance. For another instance,
