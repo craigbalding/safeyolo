@@ -139,6 +139,9 @@ def package_inputs(tmp_path, request, monkeypatch):
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "package fixture"], check=True)
     revision = run("git", "-C", str(source), "rev-parse", "HEAD").stdout.strip()
+    # This producer and its executables belong to the committed fixture.
+    # CI's inherited revision identifies the separately built real CLI.
+    monkeypatch.setenv("SAFEYOLO_BUILD_REVISION", revision)
     host, guest, runtime = (tmp_path / name for name in ("host", "guest", "runtime"))
     for directory in (host, guest, runtime):
         directory.mkdir()
@@ -629,6 +632,14 @@ def test_producer_rejects_incomplete_or_different_guest_inputs(package_inputs, t
     result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
     assert result.returncode != 0
     assert "guest" in result.stderr.lower()
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_producer_rejects_a_different_build_revision(package_inputs, tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_BUILD_REVISION", "b" * 40)
+    result = run(*package_inputs[4], "--directory", str(tmp_path / "bundle"))
+    assert result.returncode != 0
+    assert "build revision differs from this source" in result.stderr
     assert not (tmp_path / "bundle").exists()
 
 
