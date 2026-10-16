@@ -4,7 +4,7 @@ Every test is a direct probe from the adversary's perspective.
 These tests assert OUTCOMES, not mechanisms. They never reference pf,
 iptables, feth, or any platform-specific detail.
 
-Dependencies: pytest (installed in rootfs), curl, sudo, modprobe,
+Dependencies: pytest (installed by test setup), curl, sudo, modprobe,
 python3 stdlib (os, socket, ctypes, subprocess).
 """
 

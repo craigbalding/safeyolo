@@ -14,9 +14,10 @@ import os
 import secrets
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
-from guest_exec import guest_command_args
+from guest_exec import guest_command_args, prepare_guest_tests
 
 
 class TestAgentHomePersistence:
@@ -64,13 +65,12 @@ class TestAgentHomePersistence:
             time.sleep(1)
         return False
 
-    def test_home_persists_across_restart(self):
-        """Marker written to /home/agent is still there after stop/start.
+    def test_home_persists_across_restart(self, request):
+        """Home, workspace and a deferred mise tool survive stop/start.
 
-        What: Write a random-token marker file to /home/agent from
-        inside the running agent, stop the sandbox, start it again,
-        read the marker back from the fresh sandbox, assert the
-        content is identical.
+        What: Install Node through mise, write markers to the home and
+        workspace, and check both markers and the same tool after restart.
+        Read the workspace marker on the host too.
         Why: A missing file or mismatched content means writes to
         /home/agent landed somewhere ephemeral (the memory overlay
         on Linux, or an un-mounted location on either platform) —
@@ -89,17 +89,29 @@ class TestAgentHomePersistence:
 
         marker_path = "/home/agent/.safeyolo-home-persist-probe"
         marker_token = secrets.token_hex(16)
+        workspace_name = f".safeyolo-persist-{marker_token}"
+        host_marker = Path(__file__).resolve().parents[4] / workspace_name
+        request.addfinalizer(lambda: host_marker.unlink(missing_ok=True))
+        tool = self._safeyolo(
+            "agent", "shell", agent_name, "-c",
+            "mise use -g node@22 >&2 && node --version && command -v node", timeout=300,
+        )
+        assert tool.returncode == 0, tool.stderr
+        assert tool.stdout.splitlines()[0].startswith("v22."), tool.stdout
+        assert tool.stdout.splitlines()[1].startswith("/home/agent/.mise/"), tool.stdout
 
         # 1. Write marker from inside the agent.
         write = self._safeyolo(
             "agent", "shell", agent_name, "-c",
-            f"printf '%s' '{marker_token}' > {marker_path}",
+            f"printf '%s' '{marker_token}' > {marker_path} && "
+            f"printf '%s' '{marker_token}' > /workspace/{workspace_name}",
             timeout=15,
         )
         assert write.returncode == 0, (
             f"Failed to write marker inside agent: rc={write.returncode} "
             f"stdout={write.stdout!r} stderr={write.stderr!r}"
         )
+        assert host_marker.read_text() == marker_token
 
         # 2. Stop the sandbox.
         stop = self._safeyolo("agent", "stop", agent_name, timeout=30)
@@ -116,6 +128,7 @@ class TestAgentHomePersistence:
             f"agent start --sandbox-only failed: rc={start.returncode} "
             f"stderr={start.stderr!r}"
         )
+        prepare_guest_tests("safeyolo", agent_name)
         assert self._wait_for_shell(agent_name, timeout=60), (
             f"Agent '{agent_name}' did not become reachable within 60s "
             f"after restart — can't verify persistence"
@@ -139,3 +152,12 @@ class TestAgentHomePersistence:
             f"/home/agent is persisting the wrong bytes (cross-agent "
             f"leak? stale cache? inode reuse?)"
         )
+        workspace = self._safeyolo(
+            "agent", "shell", agent_name, "-c", f"cat /workspace/{workspace_name}", timeout=15,
+        )
+        assert workspace.returncode == 0 and workspace.stdout == marker_token, workspace.stderr
+        assert host_marker.read_text() == marker_token
+        restored_tool = self._safeyolo(
+            "agent", "shell", agent_name, "-c", "node --version && command -v node", timeout=15,
+        )
+        assert restored_tool.returncode == 0 and restored_tool.stdout == tool.stdout, restored_tool.stderr

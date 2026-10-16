@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import subprocess
 import sys
 
 
@@ -29,21 +30,37 @@ def guest_command_args(
     return [*selected, "agent", "shell", agent, "-c", command]
 
 
+def prepare_guest_tests(cli: str, agent: str, *, env: dict[str, str] | None = None) -> None:
+    """Install test dependencies in the owned test guest after each boot.
+
+    Ephemeral guests discard OS package files on stop. Keep this outside the
+    production image and prepare restarted guests, peers and lifecycle owners.
+    """
+    command = "bash /workspace/tests/blackbox/prepare-guest-tests.sh"
+    subprocess.run(guest_command_args(cli, agent, command, guest_root=True, env=env),
+                   env=env, check=True, timeout=300)
+
+
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent")
-    parser.add_argument("-c", "--command", required=True)
+    operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("-c", "--command")
+    operation.add_argument("--prepare-tests", action="store_true")
     parser.add_argument("--user", choices=("agent", "root"), default="agent")
     parser.add_argument("--cli", help="installed native CLI")
     args = parser.parse_args(arguments)
-    command = guest_command_args(args.cli or os.environ.get("SAFEYOLO_CLI", "safeyolo"),
-                                 args.agent, args.command, guest_root=args.user == "root")
+    cli = args.cli or os.environ.get("SAFEYOLO_CLI", "safeyolo")
+    if args.prepare_tests:
+        prepare_guest_tests(cli, args.agent)
+        return 0
+    command = guest_command_args(cli, args.agent, args.command, guest_root=args.user == "root")
     os.execvp(command[0], command)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, RuntimeError) as error:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Guest command failed: {error}", file=sys.stderr)
         sys.exit(1)

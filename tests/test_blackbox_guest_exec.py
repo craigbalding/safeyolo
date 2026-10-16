@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import venv
@@ -65,7 +66,7 @@ def test_guest_dispatcher_does_not_import_an_ambient_package_or_select_path_deco
 def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_path):
     source = Path('tests/blackbox/run-tests.sh').read_text().splitlines()
     selected = [line.strip() for line in source if '"$SCRIPT_DIR/guest_exec.py"' in line]
-    assert len(selected) == 3
+    assert len(selected) == 4
     cli = tmp_path / 'safeyolo'
     record = tmp_path / 'calls'
     cli.write_text(f'#!{sys.executable}\nimport json,sys\n'
@@ -76,7 +77,9 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
                        INSTALLED_CLI=str(cli), AGENT_NAME='marker', SAFEYOLO_CONFIG_DIR=str(root))
     calls = []
     for line in selected:
-        if line.startswith('if '):
+        if '--prepare-tests' in line:
+            invocation = line.removeprefix('if ! ').removesuffix('; then')
+        elif line.startswith('if '):
             invocation = line.removeprefix('if ').removesuffix('; then')
         else:
             invocation = line.removesuffix('\\') + " 'printf literal'"
@@ -86,9 +89,56 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
         calls.append(json.loads(record.read_text().splitlines()[-1]))
     prefix = ['--root', str(root), 'agent', 'shell', 'marker', '-c']
     assert calls[0] == [*prefix, 'true']
-    assert calls[1] == [*prefix, 'printf literal']
-    assert calls[2][:-1] == prefix
-    assert shlex.split(calls[2][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
+    assert calls[1][:-1] == prefix
+    assert shlex.split(calls[1][-1]) == [
+        'exec', 'sudo', '-n', '/bin/bash', '-lc',
+        'bash /workspace/tests/blackbox/prepare-guest-tests.sh',
+    ]
+    assert calls[2] == [*prefix, 'printf literal']
+    assert calls[3][:-1] == prefix
+    assert shlex.split(calls[3][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
+
+
+@pytest.mark.parametrize('install_exit', [0, 17])
+def test_guest_test_setup_uses_lock_and_stops_on_package_failure(tmp_path, install_exit):
+    """An interpreter-free guest installs test tools; a failed apt step stops it."""
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    for name in ('mktemp', 'rm'):
+        (tools / name).symlink_to(shutil.which(name))
+    record = tmp_path / 'calls'
+    python = tools / 'python3'
+    python.write_text(f'''#!{sys.executable}
+import json, os, sys
+arguments = sys.argv[1:]
+with open({str(record)!r}, 'a') as out: out.write(json.dumps(['python3', *arguments]) + '\\n')
+if arguments == ['-m', 'pip', '--version']:
+    sys.exit(1)
+if arguments == ['-']:
+    os.execv({sys.executable!r}, [{sys.executable!r}, '-'])
+if arguments[:3] == ['-m', 'pip', 'install']:
+    import tomllib
+    from pathlib import Path
+    versions = {{p['name']: p['version'] for p in tomllib.loads(Path('uv.lock').read_text())['package']}}
+    constraints = set(Path(arguments[arguments.index('-c') + 1]).read_text().splitlines())
+    for name in ('pytest', 'httpx', 'pytest-timeout'):
+        assert name + '==' + versions[name] in constraints
+    assert arguments[-3:] == ['pytest', 'httpx', 'pytest-timeout']
+''')
+    python.chmod(0o755)
+    apt = tools / 'apt-get'
+    apt.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                   f'with open({str(record)!r}, "a") as out: out.write(json.dumps(["apt-get", *sys.argv[1:]]) + "\\n")\n'
+                   f'sys.exit({install_exit})\n')
+    apt.chmod(0o755)
+    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh'],
+                            env=dict(os.environ, PATH=str(tools)), text=True,
+                            capture_output=True, timeout=10)
+    assert result.returncode == install_exit, result.stderr
+    calls = [json.loads(line) for line in record.read_text().splitlines()]
+    assert ['apt-get', 'update'] in calls
+    installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
+    assert bool(installs) == (install_exit == 0)
 
 
 def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeypatch):
@@ -174,6 +224,9 @@ with (root / 'calls').open('a') as output:
     output.write(json.dumps(arguments) + '\\n')
 if arguments[:2] == ['agent', 'shell']:
     request = shlex.split(arguments[-1])
+    if request[-1] == 'bash /workspace/tests/blackbox/prepare-guest-tests.sh':
+        assert request[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
+        sys.exit(0)
     assert request[request.index('--platform') + 1] == {platform!r}, 'wrong guest bridge selected'
     phase = request[request.index('--phase') + 1]
     marker = request[request.index('--marker') + 1]

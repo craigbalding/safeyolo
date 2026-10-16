@@ -29,13 +29,13 @@ import uuid
 from pathlib import Path
 
 if __package__:
-    from .guest_exec import guest_command_args
+    from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _agent_map, _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
-    from guest_exec import guest_command_args
+    from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _agent_map, _native_config, _sha256
     from installed_ingress import installed_identity, runsc_identity
@@ -389,6 +389,7 @@ def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: di
         checked([*prefix, "coord", "start", "--client-port", "46370", "--monitor-port", "46372"])
     checked([*prefix, "start"], timeout=60)
     checked([*prefix, "agent", "start", agent], timeout=130)
+    prepare_guest_tests(cli, agent)
     returned = json.loads(checked([*prefix, "agent", "status", agent]).stdout)
     assert returned["runtime_state"] == "running" and returned["agent_id"] == terminal["agent_id"], returned
     assert returned["run_id"] != terminal["run_id"], "restart reused the stopped guest run"
@@ -466,6 +467,7 @@ def main() -> None:
         checked([cli, "agent", "create", PEER, "--workspace", str(repository)], timeout=30)
         peer_added = True
         checked([cli, "agent", "start", PEER, "--sandbox-only"], timeout=120)
+        prepare_guest_tests(cli, PEER)
         peer_listeners = [item for item in _agent_map(config_dir) if item["agent_id"] == PEER]
         assert len(peer_listeners) == 1 and peer_listeners[0]["path"] != listener["path"]
         peer_socket = Path(peer_listeners[0]["path"])

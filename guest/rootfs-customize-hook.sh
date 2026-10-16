@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# mmdebstrap customize-hook -- runs inside the fresh Debian rootfs after
+# Runs against the fresh Debian rootfs after
 # package installation, adds SafeYolo-specific tooling and configuration.
 #
-# Invoked by guest/build-rootfs.sh via --customize-hook=<this-script>.
+# Invoked by guest/build-rootfs.sh with the rootfs path as its argument.
 # $1 is the path to the unpacked rootfs.
 #
 # Environment variables consumed (set by build-rootfs.sh):
@@ -81,6 +81,7 @@ fi
 tar -xzf "$ROOTFS/tmp/mise.tar.gz" -C "$ROOTFS/tmp"
 cp "$ROOTFS/tmp/mise/bin/mise" "$ROOTFS/usr/local/bin/mise"
 chmod +x "$ROOTFS/usr/local/bin/mise"
+install -D -m 0644 "$ROOTFS/tmp/mise/LICENSE" "$ROOTFS/usr/share/doc/mise/copyright"
 rm -rf "$ROOTFS/tmp/mise.tar.gz" "$ROOTFS/tmp/mise"
 
 cat > "$ROOTFS/etc/profile.d/00-path.sh" <<'PATH_PROFILE'
@@ -123,16 +124,14 @@ fi
 tar -xzf "$ROOTFS/tmp/gh.tar.gz" -C "$ROOTFS/tmp"
 cp "$ROOTFS/tmp/gh_${GH_VERSION}_linux_${DEB_ARCH}/bin/gh" "$ROOTFS/usr/local/bin/gh"
 chmod +x "$ROOTFS/usr/local/bin/gh"
+install -D -m 0644 "$ROOTFS/tmp/gh_${GH_VERSION}_linux_${DEB_ARCH}/LICENSE" \
+    "$ROOTFS/usr/share/doc/gh/copyright"
 rm -rf "$ROOTFS/tmp/gh.tar.gz" "$ROOTFS/tmp/gh_${GH_VERSION}_linux_${DEB_ARCH}"
 
 # ---------------------------------------------------------------------------
 # Users, sshd, init stub, hostname, DNS
 # ---------------------------------------------------------------------------
 chroot "$ROOTFS" useradd -m -s /bin/bash agent 2>/dev/null || true
-
-echo "--- Installing Python test deps ---"
-chroot "$ROOTFS" pip3 install --break-system-packages --quiet \
-    pytest httpx pytest-timeout
 
 # sshd config: pubkey only, no passwords
 sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" "$ROOTFS/etc/ssh/sshd_config"
@@ -163,17 +162,17 @@ for busybox_path in /bin/busybox /usr/bin/busybox; do
 done
 
 # ---------------------------------------------------------------------------
-# Apt cleanup + sweep any residual docs that escaped the essential-hook's
-# dpkg nodoc rules. Sources of residual docs: tarballs (mise, gh), pip
-# installs, package maintainer scripts that force-create doc dirs.
+# Apt cleanup + sweep any residual docs that escaped the builder's
+# dpkg nodoc rules. Sources of residual docs: tarball installs (mise, gh)
+# and package maintainer scripts that force-create doc directories.
 # ---------------------------------------------------------------------------
 chroot "$ROOTFS" /usr/bin/apt-get clean
 rm -rf "$ROOTFS/var/lib/apt/lists/"*
 rm -rf "$ROOTFS/var/cache/apt/archives/"*.deb 2>/dev/null || true
 
 # Strip everything in /usr/share/doc EXCEPT copyright files (kept for
-# Debian redistribution compliance). The essential-hook's dpkg rules
-# should have prevented most of this at install time, but pip and tarball
+# Debian redistribution compliance). The builder's dpkg rules
+# should have prevented most of this at install time, but tarball
 # installs (mise, gh) don't honor dpkg config.
 find "$ROOTFS/usr/share/doc" -mindepth 2 -type f ! -name 'copyright' -delete 2>/dev/null || true
 find "$ROOTFS/usr/share/doc" -mindepth 1 -type d -empty -delete 2>/dev/null || true
@@ -182,9 +181,6 @@ rm -rf "$ROOTFS/usr/share/man/"*
 rm -rf "$ROOTFS/usr/share/info/"*
 find "$ROOTFS/usr/share/locale" -maxdepth 1 ! -name "en*" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Python pyc caches -- pip leaves __pycache__ dirs everywhere.
-find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-
 # ---------------------------------------------------------------------------
 # Runtime apt support.
 #
@@ -192,7 +188,7 @@ find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 # error stubs on the premise that "agents install tools via mise, not
 # apt." That was over-restrictive: guest-proxy-forwarder + the
 # per-agent proxy UDS give apt a clear path, and the /var/cache/apt
-# + /var/lib/apt/lists bind mounts (cli/src/safeyolo/platform/linux.py)
+# + /var/lib/apt/lists bind mounts (proxy/src/host_boot.rs)
 # let downloads persist across agent restarts. So apt stays usable —
 # compilers and system libs can be pulled on demand instead of living
 # in the shipped base.
@@ -207,13 +203,11 @@ find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 # `safeyolo agent shell NAME --root` remains an operator recovery path, not
 # a requirement for routine package installation.
 #
-# Important caveat: the install itself persists only for the life of
-# the sandbox. The Linux overlay is memory-backed (gVisor silently
-# ignores dir=), so unpacked package files in /usr vanish on agent
-# stop. The per-agent /var/cache/apt bind means the re-download is
-# free on restart, but the dpkg unpack cost recurs. Heavy toolkits
-# (build-essential, pentest tools, etc.) belong in the base image;
-# lightweight one-offs are fine to install ad-hoc.
+# Default Linux guests use a persistent directory overlay. An --ephemeral
+# guest discards installed OS package files on stop; its package cache remains
+# available, but unpacking must run again. Mise tools live under the persistent
+# agent home. Custom rootfs images can include development packages when
+# repeated unpacking would be costly.
 #
 # apt itself ignores HTTP_PROXY / HTTPS_PROXY — it reads its own
 # Acquire::*::Proxy from /etc/apt/apt.conf.d/. Point it at the in-VM

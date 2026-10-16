@@ -15,10 +15,19 @@ references that combine a tag and digest.
 
 ## Why this is safe to skip for most users
 
-The standard Debian-trixie image includes `ripgrep`, `fd-find`, `file`, `unzip`,
-`zip`, `tmux`, `lsof`, `strace`, `jq`, `less`, Python virtual-environment support,
-and BusyBox-backed `nc` and `hexdump` shims. Install project language runtimes
-through mise.
+The standard Debian-trixie image includes mise, `fd-find` with an `fd` command,
+`gh`, Git, curl, SSH client/server support, guest `sudo`, and BusyBox-backed
+`nc` and `hexdump` commands. It keeps the required Debian base packages and
+runtime dependencies. Install project language runtimes through mise.
+
+Inside an agent, use `mise use -g python@3.12` for Python or
+`mise use -g ripgrep` for `rg`. Mise installs live in the persistent agent home.
+For compilers and system libraries, use guest `sudo -n apt-get update` followed
+by `sudo -n apt-get install -y build-essential pkg-config`. Linux uses a
+per-agent directory overlay by default. With `--ephemeral`, unpacked OS
+packages disappear on stop. Their download cache remains, so a later
+installation repeats unpacking. A custom rootfs can include packages when
+that repeated work is costly.
 
 You don't need a custom rootfs unless you actually want a different
 distro. The default base (Debian trixie with `mise` plus a compact
