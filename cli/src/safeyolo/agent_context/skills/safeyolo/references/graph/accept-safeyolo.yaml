@@ -213,7 +213,7 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: a13ed22882dfd2e929c77625b06cbbd5234f8c539ae0025e45652b5fd7d2409a
+          sha256: a008b83f118b9d9a947e4dcc5852f7112d50dd8008ddc62185f6bf573056c6a0
         - path: tests/blackbox/run-lane.sh
           sha256: 9164786f26e33387d1a06c558b3beb2d412a55ffa223f200d6a75c49e8fa7262
         - path: tests/blackbox/run-tests.sh
@@ -248,9 +248,9 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 47aeea593cf39429f6bf78fa951f40064ca6e642ce9076807c57678814039db1
         - path: proxy/src/host_platform.rs
-          sha256: adac6d18ea9262821655a151c9002b1ad316ffcd31138b18516d95e14a477700
+          sha256: 571126066d7114c9ab94c7152a169b4b05ede39836ec40907b0cf07f75df6946
         - path: proxy/src/host_boot.rs
-          sha256: 7ed09b5d8091c41e78b2d3806af0d54191cdbd81103615acd94acbbc193febf7
+          sha256: 7d7b1d9cfdedb1713bfe0426552b5fba834cbe2198287332fd1ee42912cd8525
         - path: guest/build-rootfs.sh
           sha256: 9449c26bf9f131a6feca5477e996790d44afe8aaf81d35a33e99cc0c6e8aa91c
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
