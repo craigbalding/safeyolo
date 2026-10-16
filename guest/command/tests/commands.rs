@@ -23,6 +23,104 @@ struct Guest {
     records: PathBuf,
 }
 
+#[test]
+fn extra_mount_pin_holds_native_directory_descriptors_and_preserves_names() {
+    use std::io::{BufRead, BufReader, Write};
+    let guest = Guest::new();
+    for name in [
+        "ordinary",
+        "\r",
+        "a\nb",
+        "trailing\n",
+        "\n\n",
+        "quoted '\" \\\t",
+    ] {
+        let directory = guest.directory.path().join(name);
+        fs::create_dir(&directory).unwrap();
+        let alias = guest.directory.path().join("source-alias");
+        std::os::unix::fs::symlink(&directory, &alias).unwrap();
+        for path in [&directory, &alias] {
+            let mut child = guest
+                .command()
+                .args(["extra-mount", "command-fixture-run", "pin"])
+                .arg(path)
+                .arg("create")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut reader = BufReader::new(child.stdout.take().unwrap());
+            let mut fields = Vec::new();
+            for _ in 0..3 {
+                let mut field = Vec::new();
+                reader.read_until(0, &mut field).unwrap();
+                assert_eq!(field.pop(), Some(0));
+                fields.push(String::from_utf8(field).unwrap());
+            }
+            assert_eq!(fields[0], child.id().to_string());
+            assert_eq!(PathBuf::from(&fields[1]), directory.canonicalize().unwrap());
+            let pinned = fs::metadata(format!("/proc/{}/fd/{}", fields[0], fields[2])).unwrap();
+            let original = fs::metadata(&directory).unwrap();
+            assert_eq!(
+                (pinned.dev(), pinned.ino()),
+                (original.dev(), original.ino())
+            );
+            child.stdin.take().unwrap().write_all(b"release\n").unwrap();
+            assert!(child.wait().unwrap().success());
+        }
+        fs::remove_file(alias).unwrap();
+    }
+}
+
+#[test]
+fn extra_mount_refuses_stale_generation_and_resolved_control_paths() {
+    let guest = Guest::new();
+    let target = guest.directory.path().join("future-directory");
+    let refused = guest
+        .command()
+        .args(["extra-mount", "old-run", "prepare"])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("generation changed"));
+    assert!(!target.exists());
+    std::os::unix::fs::symlink("/proc", guest.directory.path().join("control-alias")).unwrap();
+    let refused = guest
+        .command()
+        .args(["extra-mount", "command-fixture-run", "prepare"])
+        .arg(
+            guest
+                .directory
+                .path()
+                .join("control-alias/extra-mount-refusal"),
+        )
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("reserved"));
+    let result = success(
+        guest
+            .command()
+            .args(["extra-mount", "command-fixture-run", "inspect"])
+            .arg(guest.directory.path())
+            .output()
+            .unwrap(),
+    );
+    assert!(result["mount"].is_null());
+    let result = success(
+        guest
+            .command()
+            .args(["extra-mount", "command-fixture-run", "unmount"])
+            .arg(guest.directory.path())
+            .arg(u64::MAX.to_string())
+            .output()
+            .unwrap(),
+    );
+    assert!(result["expected_mount"].is_null());
+    assert!(guest.directory.path().is_dir());
+}
+
 impl Guest {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();

@@ -1,6 +1,19 @@
 import Foundation
 import Darwin
 
+struct ExtraDirectoryRequest: Decodable {
+    let operation: String
+    let id: String?
+    let hostPath: String?
+    let readOnly: Bool?
+    let tag: String?
+    enum CodingKeys: String, CodingKey {
+        case operation, id, tag
+        case hostPath = "host_path"
+        case readOnly = "read_only"
+    }
+}
+
 /// One newline-delimited JSON request and response per private host connection.
 /// This thread never waits for a VM/relay executor or uses the global GCD pool.
 final class VMControl {
@@ -11,6 +24,7 @@ final class VMControl {
         let after: UInt64?
         let limit: Int?
         let reason: String?
+        let share: ExtraDirectoryRequest?
     }
 
     private final class Client {
@@ -20,6 +34,7 @@ final class VMControl {
         var input = Data()
         var output = Data()
         var answered = false
+        var pendingShare = false
         init(endpoint: RelayEndpoint, uid: uid_t) { self.endpoint = endpoint; self.uid = uid }
     }
 
@@ -39,11 +54,16 @@ final class VMControl {
     private var stalledLoops: Set<String> = []
     private let stopLock = NSLock()
     private var stopping = false
+    private let changeShare: ((ExtraDirectoryRequest, @escaping ([String: Any]?, String?) -> Void) -> Void)?
+    private let shareReplyLock = NSLock()
+    private var shareReplies: [(Client, [String: Any]?, String?)] = []
 
     init(path: String, ledger: RelayLedger, runtime: VMRuntimeStatus,
-         refreshVM: @escaping () -> Void, wakeRelays: @escaping () -> Void) throws {
+         refreshVM: @escaping () -> Void, wakeRelays: @escaping () -> Void,
+         changeShare: ((ExtraDirectoryRequest, @escaping ([String: Any]?, String?) -> Void) -> Void)? = nil) throws {
         self.path = path; self.ledger = ledger; self.runtime = runtime
         self.refreshVM = refreshVM; self.wakeRelays = wakeRelays
+        self.changeShare = changeShare
         let lockFD = open(path + ".lock", O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard lockFD >= 0 else { throw RelaySocket.posix("open control lock") }
         pathLock = RelayEndpoint(fd: lockFD)
@@ -101,6 +121,15 @@ final class VMControl {
 
     private func run() {
         while !shouldStop() {
+            shareReplyLock.lock()
+            let replies = shareReplies; shareReplies.removeAll()
+            shareReplyLock.unlock()
+            for (client, payload, error) in replies {
+                if clients[client.endpoint.fd] === client, client.pendingShare {
+                    client.pendingShare = false
+                    respond(client, payload: payload ?? [:], error: error)
+                }
+            }
             let now = ProcessInfo.processInfo.systemUptime
             if now >= nextRefresh {
                 refreshVM(); monitorRelays(now: now); nextRefresh = now + 0.5
@@ -108,7 +137,7 @@ final class VMControl {
             for (fd, client) in clients where now - client.accepted >= 2 { client.endpoint.close(); clients.removeValue(forKey: fd) }
             var descriptors = [pollfd(fd: listener.fd, events: Int16(POLLIN), revents: 0)]
             for client in clients.values {
-                descriptors.append(pollfd(fd: client.endpoint.fd, events: Int16(client.answered ? POLLOUT : POLLIN), revents: 0))
+                descriptors.append(pollfd(fd: client.endpoint.fd, events: client.pendingShare ? 0 : Int16(client.answered ? POLLOUT : POLLIN), revents: 0))
             }
             if poll(&descriptors, nfds_t(descriptors.count), 100) < 0 {
                 if errno == EINTR { continue }
@@ -118,6 +147,10 @@ final class VMControl {
                 if descriptor.fd == listener.fd { acceptReady(); continue }
                 guard let client = clients[descriptor.fd] else { continue }
                 if descriptor.revents & Int16(POLLERR | POLLNVAL) != 0 { close(client); continue }
+                if client.pendingShare {
+                    if descriptor.revents & Int16(POLLHUP) != 0 { close(client) }
+                    continue
+                }
                 if client.answered { writeReady(client) } else { readReady(client) }
             }
         }
@@ -156,6 +189,17 @@ final class VMControl {
         guard let newline = client.input.firstIndex(of: 10) else { return }
         do {
             let request = try JSONDecoder().decode(Request.self, from: client.input.prefix(upTo: newline))
+            if request.operation == "extra-mount" {
+                guard request.instance == instance else { throw invalid("helper instance changed; no export was changed") }
+                guard let share = request.share, let changeShare else { throw invalid("helper does not support live extra directories; use the current helper on an explicit future start") }
+                client.pendingShare = true
+                changeShare(share) { [self] payload, error in
+                    shareReplyLock.lock()
+                    shareReplies.append((client, payload, error))
+                    shareReplyLock.unlock()
+                }
+                return
+            }
             let response = try execute(request, uid: client.uid)
             respond(client, payload: response)
         } catch { respond(client, error: error.localizedDescription) }

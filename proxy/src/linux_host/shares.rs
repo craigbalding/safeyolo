@@ -1,7 +1,7 @@
 //! Ordinary Linux extra directories, each served outside the root Gofer tree.
 //!
-//! Callers hold the agent's existing SetupLock across these operations. There
-//! is deliberately no guest or operator API here. runtime.json owns the share
+//! Callers, including operator commands, hold the agent's existing SetupLock
+//! across these operations. runtime.json owns the share
 //! receipts along with the sandbox's other process receipts.
 
 use crate::{Error, host_boot, host_platform, host_runs};
@@ -95,6 +95,10 @@ impl Run {
         let entries = current["linux"]["extra_shares"]
             .as_array_mut()
             .ok_or("isolated share receipts are missing")?;
+        // runtime.json describes current resources, not a history of every
+        // previous export. Keep the last completed removal for an immediate
+        // retry without growing this bounded record on repeated add/remove.
+        entries.retain(|entry| entry["state"] != "removed" || entry["id"] == share["id"]);
         if let Some(entry) = entries.iter_mut().find(|entry| entry["id"] == share["id"]) {
             *entry = share.clone();
         } else {
@@ -411,10 +415,6 @@ struct GuestTarget {
 }
 
 impl GuestTarget {
-    // Emit the descriptor's path directly: command substitution strips trailing
-    // newlines, and line readers cannot preserve every valid directory name.
-    const SCRIPT: &str = r#"set -eu; if [ "$2" = create ]; then mkdir -p -- "$1"; fi; exec 3<"$1"; printf '%s\0' "$$"; readlink -f --zero -- /proc/self/fd/3; read -r release"#;
-
     async fn open(run: &Run, target: &str, parent: bool) -> Result<Self, Error> {
         // Hold a guest directory descriptor while the host mounts. Fs.Mount
         // follows this pinned dentry, so a concurrent guest rename/symlink
@@ -426,15 +426,13 @@ impl GuestTarget {
                 "0:0",
                 "--cwd",
                 "/",
-                "--env",
-                "BASH_ENV=",
                 &run.id,
-                "/bin/bash",
-                "--noprofile",
-                "--norc",
-                "-c",
-                Self::SCRIPT,
-                "share-target",
+                crate::guest_commands::HELPER,
+                "extra-mount",
+                run.receipt["run_id"]
+                    .as_str()
+                    .ok_or("sandbox generation is missing")?,
+                "pin",
                 target,
                 if parent { "parent" } else { "create" },
             ])
@@ -467,10 +465,16 @@ impl GuestTarget {
                 return Err("could not resolve the guest share target".into());
             }
             let resolved = String::from_utf8(resolved)?;
-            if pid == 0 || resolved.is_empty() {
+            let mut descriptor = Vec::new();
+            output.read_until(0, &mut descriptor).await?;
+            if descriptor.pop() != Some(0) {
+                return Err("share target descriptor is incomplete".into());
+            }
+            let descriptor: u32 = std::str::from_utf8(&descriptor)?.parse()?;
+            if pid == 0 || resolved.is_empty() || descriptor < 3 {
                 return Err("invalid guest share target".into());
             }
-            Ok::<_, Error>((resolved, format!("/proc/{pid}/fd/3")))
+            Ok::<_, Error>((resolved, format!("/proc/{pid}/fd/{descriptor}")))
         };
         let (resolved, path) = tokio::time::timeout(Duration::from_secs(10), output).await??;
         Ok(Self {
@@ -511,6 +515,30 @@ pub(crate) async fn attach(
     if current["linux"]["extra_share_mode"] != MODE {
         return Err("this sandbox uses baked-in startup binds; live removal is unsupported. An explicit future stop/start is required; this run was left intact".into());
     }
+    if let Some(share) = current["linux"]["extra_shares"]
+        .as_array()
+        .and_then(|shares| {
+            shares
+                .iter()
+                .rev()
+                .find(|share| share["guest_path"] == target && share["state"] != "removed")
+        })
+    {
+        if share["host_path"] == json!(source)
+            && share["read_only"] == read_only
+            && share["state"] == "mounted"
+        {
+            let observed = crate::host_mounts::guest(name, expected, &["inspect", &target]).await?;
+            if observed["mount"]["filesystem"] == "9p"
+                && share
+                    .get("mount_id")
+                    .is_none_or(|id| *id == observed["mount"]["mount_id"])
+            {
+                return Ok(share.clone());
+            }
+        }
+        return Err("extra mount destination is already recorded; inspect agent status. An uncertain attachment requires an explicit stop/start; no duplicate export was created".into());
+    }
     if current["linux"]["extra_shares"]
         .as_array()
         .ok_or("share receipts are missing")?
@@ -524,6 +552,9 @@ pub(crate) async fn attach(
     {
         return Err("extra mount destination is already in use".into());
     }
+    // Validate existing guest parents and mount collisions before mkdir can
+    // follow an alias. The subsequent descriptor pins the actual destination.
+    crate::host_mounts::guest(name, expected, &["prepare", &target]).await?;
     let source_fd = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -650,16 +681,17 @@ pub(crate) async fn attach(
         return Err(error);
     }
     close?;
+    let observed = crate::host_mounts::guest(name, expected, &["inspect", &target]).await?;
+    share["mount_id"] = observed["mount"]["mount_id"].clone();
+    if !share["mount_id"].is_u64() || observed["mount"]["filesystem"] != "9p" {
+        return Err(
+            "share mounted, but its guest mount identity is unknown; inspect agent status".into(),
+        );
+    }
+    run.save_share(&share)?;
     Ok(share)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Internal removal prerequisite; the public live-mount command is separate work"
-    )
-)]
 pub(crate) async fn remove(name: &str, expected: &str, target: &str) -> Result<Value, Error> {
     let run = Run::open(name, expected)?;
     let current = run.check()?;
@@ -670,15 +702,49 @@ pub(crate) async fn remove(name: &str, expected: &str, target: &str) -> Result<V
         .as_array()
         .ok_or("share receipts are missing")?
         .iter()
-        .find(|share| share["guest_path"] == target && share["state"] == "mounted")
+        .rev()
+        .find(|share| share["guest_path"] == target)
         .cloned()
-        .ok_or("this extra share is not recorded as mounted")?;
-    let resolved = Path::new(
+        .ok_or("this extra share is not recorded in the current run")?;
+    if share["state"] == "removed" {
+        return Ok(share);
+    }
+    if share["state"] == "unmounted" {
+        release_gofer(&share, &share_bundle(name, expected, &share)?).await?;
+        share["state"] = "removed".into();
+        run.save_share(&share)?;
+        return Ok(share);
+    }
+    if !matches!(share["state"].as_str(), Some("mounted" | "unmounting")) {
+        return Err("attachment outcome is uncertain; owned resources were retained. Use an explicit stop/start to release this run safely".into());
+    }
+    let resolved = PathBuf::from(
         share["resolved_path"]
             .as_str()
             .ok_or("share target is missing")?,
     );
     let parent = resolved.parent().ok_or("share parent is missing")?;
+    let id = share["mount_id"].as_u64().map(|id| id.to_string());
+    let mut inspect = vec!["inspect", resolved.to_str().ok_or("invalid share target")?];
+    if let Some(id) = &id {
+        inspect.push(id);
+    }
+    let observation = crate::host_mounts::guest(name, expected, &inspect).await?;
+    if id.is_some() && observation["expected_mount"].is_null() {
+        share["state"] = "unmounted".into();
+        run.save_share(&share)?;
+        release_gofer(&share, &share_bundle(name, expected, &share)?).await?;
+        share["state"] = "removed".into();
+        run.save_share(&share)?;
+        return Ok(share);
+    }
+    if observation["mount"]["filesystem"] != "9p"
+        || observation["resolved_path"] != share["resolved_path"]
+        || id.is_some() && observation["mount"]["mount_id"] != share["mount_id"]
+    {
+        return Err("share mount identity or destination changed; removal was refused".into());
+    }
+    share["mount_id"] = observation["mount"]["mount_id"].clone();
     let guest =
         GuestTarget::open(&run, parent.to_str().ok_or("invalid share parent")?, true).await?;
     if Path::new(&guest.resolved) != parent {
@@ -693,6 +759,8 @@ pub(crate) async fn remove(name: &str, expected: &str, target: &str) -> Result<V
             .to_str()
             .ok_or("invalid share target")?
     );
+    share["state"] = "unmounting".into();
+    run.save_share(&share)?;
     let response = rpc(
         &run,
         json!({"method":"Fs.Umount","arg":{"container_id":run.id,"target":pinned,"flags":0}}),
@@ -702,11 +770,23 @@ pub(crate) async fn remove(name: &str, expected: &str, target: &str) -> Result<V
     let close = guest.close().await;
     let response = response?;
     if response["success"] != true {
+        share["state"] = "mounted".into();
+        run.save_share(&share)?;
         return Err(format!(
             "extra mount removal refused; share remains available: {}",
             response["err"]
         )
         .into());
+    }
+    let id = share["mount_id"]
+        .as_u64()
+        .ok_or("share mount ID is missing")?
+        .to_string();
+    let observation = crate::host_mounts::guest(name, expected, &["inspect", target, &id]).await?;
+    if !observation["expected_mount"].is_null() {
+        return Err(
+            "unmount returned but the selected mount remains; its resources were retained".into(),
+        );
     }
     // Ordinary Umount has succeeded before this share's Gofer is released.
     // No shared root Gofer, guest workload or unrelated share is signalled.
@@ -867,7 +947,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[tokio::test]
-    async fn guest_target_preserves_directory_names_and_symlink_destinations() {
+    async fn guest_target_decoder_preserves_names_and_pinned_descriptors() {
         let fixture = tempfile::tempdir().unwrap();
         for component in [
             "ordinary",
@@ -888,7 +968,7 @@ mod tests {
                         "--noprofile",
                         "--norc",
                         "-c",
-                        GuestTarget::SCRIPT,
+                        r#"set -eu; exec 3<"$1"; printf '%s\0' "$$"; readlink -f --zero -- /proc/self/fd/3; printf '3\0'; read -r release"#,
                         "share-target",
                     ])
                     .arg(requested)
@@ -919,6 +999,8 @@ mod tests {
             "printf '0\\0/directory\\0'",
             "printf '123\\0\\0'",
             "printf 'not-a-pid\\0/directory\\0'",
+            "printf '123\\0/directory\\0invalid\\0'",
+            "printf '%s\\0' 123 /directory 2",
         ] {
             let child = Command::new("/bin/bash")
                 .args(["--noprofile", "--norc", "-c", script])
@@ -1220,8 +1302,8 @@ mod tests {
         }).await;
     }
 
-    /// The existing installed Python driver uses this test-only typed entry to
-    /// exercise the internal backend. No product add/remove command is added.
+    /// Retain the typed backend witness. Product acceptance uses the same
+    /// maintained driver without --native-test-binary, through public commands.
     #[tokio::test]
     #[ignore = "requires the owned real Linux fixture selected by the existing backend driver"]
     async fn installed_share_operation() {

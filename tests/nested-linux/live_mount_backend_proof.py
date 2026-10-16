@@ -1,17 +1,19 @@
-"""Check isolated startup and late shares in a fresh installed Linux fixture.
+"""Check public live-directory actions on an owned Linux or physical Mac instance.
 
-Run from this checkout as the ordinary prepared Linux host account. ROOT must
-be a fresh installation of this candidate with its proxy and Coord running.
-BASE must not exist. TEST_BINARY is the same candidate's native library test
-executable, built with --release. The driver creates three synthetic agents,
-starts no model, and stops its agents and proxy on every exit.
+Run as the prepared host account. ROOT must be a fresh candidate installation
+with its proxy and Coord running. BASE must not exist and must be outside ROOT.
+On Mac, use the signed candidate helper, the approved VZ runner and a positive
+SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS deadline. The guest helper must be this candidate.
+The driver creates two synthetic agents, starts no model, and stops its agents
+and proxy on every exit. It deliberately restarts the primary at the end to
+check saved versus live-only intent. The earlier same-session proof is retained.
 
-    .venv/bin/python tests/nested-linux/live_mount_backend_proof.py \
+    python3 tests/nested-linux/live_mount_backend_proof.py \
         --root /owned/fresh-instance --base /owned/new-result-directory \
-        --native-test-binary /owned/candidate/native-library-test
+        --candidate FULL_COMMIT
 
-The test-only typed entry calls production share functions under the existing
-lifecycle lock. It adds no product command or general host execution service.
+The optional --native-test-binary retains the earlier Linux-only backend
+witness. Omit it for product acceptance through the public commands.
 """
 
 from __future__ import annotations
@@ -107,7 +109,13 @@ def assert_mount_removed(target, before, after):
     )
 
 
-def run_proof(root: Path, base: Path, native_test: Path):
+def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate: str | None = None):
+    if root == base or root in base.parents or base in root.parents:
+        raise ValueError("ROOT and BASE must be separate owned directories")
+    if list((root / "agents").glob("*")):
+        raise RuntimeError("ROOT has retained agent state; use a fresh disposable instance")
+    process_kinds = ("backend",) if sys.platform == "darwin" else ("holder", "backend")
+    receipt_backend = "macos" if sys.platform == "darwin" else "linux"
     base.mkdir(mode=0o755)
     report = {"root": str(root), "base": str(base), "commands": [], "operations": []}
     cli = [str(root / "bin/safeyolo"), "--root", str(root)]
@@ -119,9 +127,17 @@ def run_proof(root: Path, base: Path, native_test: Path):
     def save():
         (base / "observed.json").write_text(json.dumps(report, indent=2) + "\n")
 
-    def command(argv, *, check=True, timeout=40, environment=None):
-        result = subprocess.run(list(map(str, argv)), capture_output=True, text=True,
-                                timeout=timeout, env=environment)
+    def command(argv, *, check=True, timeout=40, environment=None, drop_response=False):
+        if drop_response:
+            child = subprocess.Popen(list(map(str, argv)), stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, env=environment)
+            child.stdout.close()
+            child.stdout = None
+            _, stderr = child.communicate(timeout=timeout)
+            result = subprocess.CompletedProcess(argv, child.returncode, "", stderr)
+        else:
+            result = subprocess.run(list(map(str, argv)), capture_output=True, text=True,
+                                    timeout=timeout, env=environment)
         report["commands"].append({"argv": list(map(str, argv)), "exit": result.returncode,
                                    "stdout": result.stdout, "stderr": result.stderr})
         save()
@@ -137,30 +153,49 @@ def run_proof(root: Path, base: Path, native_test: Path):
 
     def same_run(selected=agent):
         current, before = runtime(selected), initial[selected]
-        for key in ("run_id", "holder_pid", "holder_token", "backend_pid", "backend_token"):
+        for key in ("run_id", "backend_pid", "backend_token", *( ("helper_instance",) if sys.platform == "darwin" else ("holder_pid", "holder_token") )):
             assert current.get(key) == before.get(key), (selected, key)
         context = root / "agents" / selected / "config-share/host-launch-context.json"
         assert json.loads(context.read_text())["generation"] == before["run_id"]
-        for kind in ("holder", "backend"):
+        for kind in process_kinds:
             assert process_start_token(current[kind + "_pid"]) == current[kind + "_token"]
-            assert process_state(current[kind + "_pid"]) not in (None, "Z", "X")
+            if sys.platform != "darwin":
+                assert process_state(current[kind + "_pid"]) not in (None, "Z", "X")
+        if selected == agent and "launch_before" in report:
+            launch = json.loads((root / "agents" / agent / "current-launch.json").read_text())
+            assert launch["launch_id"] == report["launch_before"]["launch_id"]
 
     def operation(kind, operand, *, generation=None):
         same_run()
-        environment = dict(os.environ, SAFEYOLO_SHARE_TEST_ROOT=str(root),
-                           SAFEYOLO_SHARE_TEST_REVISION=report["candidate"],
-                           SAFEYOLO_SHARE_TEST_AGENT=agent,
-                           SAFEYOLO_SHARE_TEST_GENERATION=generation or initial[agent]["run_id"],
-                           SAFEYOLO_SHARE_TEST_OPERATION=kind,
-                           SAFEYOLO_SHARE_TEST_OPERAND=operand)
-        result = command([native_test, "--exact", "linux_host::shares::tests::installed_share_operation",
-                          "--ignored", "--nocapture"], environment=environment)
-        rows = [line.split("SHARE_RESULT=", 1)[1] for line in result.stdout.splitlines()
-                if "SHARE_RESULT=" in line]
-        if len(rows) != 1:
-            raise RuntimeError("native share operation did not return exactly one result")
-        value = json.loads(rows[0])
-        assert value["commit"] == report["candidate"] and value["profile"] == "production"
+        if native_test is not None:
+            environment = dict(os.environ, SAFEYOLO_SHARE_TEST_ROOT=str(root),
+                               SAFEYOLO_SHARE_TEST_REVISION=report["candidate"],
+                               SAFEYOLO_SHARE_TEST_AGENT=agent,
+                               SAFEYOLO_SHARE_TEST_GENERATION=generation or initial[agent]["run_id"],
+                               SAFEYOLO_SHARE_TEST_OPERATION=kind,
+                               SAFEYOLO_SHARE_TEST_OPERAND=operand)
+            result = command([native_test, "--exact", "linux_host::shares::tests::installed_share_operation",
+                              "--ignored", "--nocapture"], environment=environment)
+            rows = [line.split("SHARE_RESULT=", 1)[1] for line in result.stdout.splitlines()
+                    if "SHARE_RESULT=" in line]
+            if len(rows) != 1:
+                raise RuntimeError("native share operation did not return exactly one result")
+            value = json.loads(rows[0])
+            assert value["commit"] == report["candidate"] and value["profile"] == "production"
+        else:
+            if generation is not None:
+                result = guest("sudo -n /safeyolo/safeyolo-guest extra-mount " +
+                               shlex.quote(generation) + " inspect /mnt/stale", check=False)
+                value = {"success": result.returncode == 0, "error": result.stderr}
+            else:
+                action = "mount" if kind == "add" else "unmount"
+                result = command([*cli, "agent", action, agent, operand], check=False)
+                value = json.loads(result.stdout) if result.stdout.strip() else {"ok": False, "error": result.stderr}
+                value["success"] = value["ok"]
+                assert value["success"] == (result.returncode == 0)
+                if "saved_configuration_changed" in value:
+                    assert value["saved_configuration_changed"] is False
+                    assert (root / "policy.toml").read_bytes() == saved_policy
         report["operations"].append({"operation": kind, "operand": operand, "result": value})
         save()
         same_run()
@@ -186,7 +221,7 @@ def run_proof(root: Path, base: Path, native_test: Path):
     def share_processes(share):
         return [{"kind": kind, "pid": share[kind + "_pid"], "token": process_start_token(share[kind + "_pid"]),
                  "cgroup": Path(f"/proc/{share[kind + '_pid']}/cgroup").read_text()}
-                for kind in ("launcher", "gofer")]
+                for kind in ("launcher", "gofer") if kind + "_pid" in share]
 
     def file_observation(target):
         access = guest("cat -- " + shlex.quote(target + "/host.txt"), check=False)
@@ -201,10 +236,10 @@ def run_proof(root: Path, base: Path, native_test: Path):
         for selected, before in initial.items():
             try:
                 observation = {"runtime": runtime(selected), "processes": {}}
-                for kind in ("holder", "backend"):
+                for kind in process_kinds:
                     pid = before[kind + "_pid"]
                     observation["processes"][kind] = {"pid": pid, "token": process_start_token(pid),
-                                                        "state": process_state(pid)}
+                                                        "state": process_state(pid) if sys.platform != "darwin" else None}
                 check = ("test -d /workspace && test -d /home/agent && test -r /safeyolo/host-mounts && "
                          "cat /proc/uptime && cat /mnt/proof1042unrelated/host.txt" if selected == agent
                          else "cat /mnt/proof1042second/host.txt")
@@ -235,45 +270,51 @@ def run_proof(root: Path, base: Path, native_test: Path):
         (base / "workspace/holder.py").write_text(GUEST_HOLDER)
         report["os"] = command(["uname", "-a"]).stdout.strip()
         report["host_version"] = command([root / "bin/safeyolo", "--version"]).stdout.strip()
-        report["candidate"] = command(["git", "-C", Path(__file__).resolve().parents[2], "rev-parse", "HEAD"]).stdout.strip()
+        report["candidate"] = candidate or command(["git", "-C", Path(__file__).resolve().parents[2], "rev-parse", "HEAD"]).stdout.strip()
         assert "commit=" + report["candidate"] in report["host_version"]
         assert "profile=production" in report["host_version"]
-        settings = tomllib.loads((root / "config.toml").read_text())["linux"]
-        report["runsc_version"] = command([settings["runsc"], "--version"]).stdout.strip()
+        if sys.platform == "darwin":
+            report["helper_version"] = json.loads(command([root / "bin/safeyolo-vm", "version", "--json"]).stdout)
+            assert report["helper_version"]["git_sha"] == report["candidate"]
+            assert report["helper_version"]["build_profile"] == "production"
+        else:
+            settings = tomllib.loads((root / "config.toml").read_text())["linux"]
+            report["runsc_version"] = command([settings["runsc"], "--version"]).stdout.strip()
         report["host_before"] = {name: {"device": (base / name / "host.txt").stat().st_dev,
                                           "inode": (base / name / "host.txt").stat().st_ino}
                                  for name in sources}
-        # First attach one share, then fail a second attachment at an existing
-        # non-directory guest parent. This exercises cleanup of partial work.
-        command([*cli, "agent", "create", failed, "--workspace", base / "failed-workspace", "--memory", "512",
-                 "--mount", f"{base}/failed:/mnt/failure-first", "--mount", f"{base}/failed:/etc/hostname/impossible"])
-        created.append(failed)
-        failed_start = command([*cli, "agent", "start", failed, "--sandbox-only"], check=False, timeout=150)
-        failed_run = runtime(failed)
-        status = command([*cli, "agent", "status", failed], check=False)
-        directory = root / "agents" / failed
-        report["failed_start"] = {"exit": failed_start.returncode, "runtime": failed_run, "status": status.stdout,
-                                  "processes": {kind: {"pid": failed_run[kind + "_pid"], "state": process_state(failed_run[kind + "_pid"])}
-                                                for kind in ("holder", "backend")},
-                                  "share_processes": [{"kind": kind, "pid": share[kind + "_pid"], "state": process_state(share[kind + "_pid"])}
-                                                      for share in failed_run.get("linux", {}).get("extra_shares", [])
-                                                      for kind in ("launcher", "gofer") if kind + "_pid" in share],
-                                  "per_run_go": (directory / "config-share/per-run-go").exists(),
-                                  "per_run_started": (directory / "status/per-run-started").exists(),
-                                  "static_init_done": (directory / "status/static-init-done").exists()}
-        save()
-        assert failed_start.returncode != 0
-        assert "/etc/hostname/impossible" in failed_start.stderr
-        assert len(failed_run["linux"]["extra_shares"]) == 1, "first attachment must have reached its Gofer"
-        assert failed_run["linux"]["extra_shares"][0]["state"] == "removed"
-        assert "error" not in failed_run["linux"]["extra_shares"][0], "the first share must have attached before the injected failure"
-        assert not any(report["failed_start"][key] for key in ("per_run_go", "per_run_started", "static_init_done"))
-        failed_status = json.loads(status.stdout)
-        assert failed_status["runtime_state"] == "stopped" and failed_status["exec"] is False
-        assert not (root / "run" / ("runsc-safeyolo-" + failed_run["run_id"] + ".sock")).exists()
-        for kind in ("holder", "backend"):
-            assert process_state(failed_run[kind + "_pid"]) in (None, "Z", "X")
-        assert all(process["state"] in (None, "Z", "X") for process in report["failed_start"]["share_processes"])
+        if native_test is not None:
+            # First attach one share, then fail a second attachment at an existing
+            # non-directory guest parent. This exercises cleanup of partial work.
+            command([*cli, "agent", "create", failed, "--workspace", base / "failed-workspace", "--memory", "512",
+                     "--mount", f"{base}/failed:/mnt/failure-first", "--mount", f"{base}/failed:/etc/hostname/impossible"])
+            created.append(failed)
+            failed_start = command([*cli, "agent", "start", failed, "--sandbox-only"], check=False, timeout=150)
+            failed_run = runtime(failed)
+            status = command([*cli, "agent", "status", failed], check=False)
+            directory = root / "agents" / failed
+            report["failed_start"] = {"exit": failed_start.returncode, "runtime": failed_run, "status": status.stdout,
+                                      "processes": {kind: {"pid": failed_run[kind + "_pid"], "state": process_state(failed_run[kind + "_pid"])}
+                                                    for kind in ("holder", "backend")},
+                                      "share_processes": [{"kind": kind, "pid": share[kind + "_pid"], "state": process_state(share[kind + "_pid"])}
+                                                          for share in failed_run.get("linux", {}).get("extra_shares", [])
+                                                          for kind in ("launcher", "gofer") if kind + "_pid" in share],
+                                      "per_run_go": (directory / "config-share/per-run-go").exists(),
+                                      "per_run_started": (directory / "status/per-run-started").exists(),
+                                      "static_init_done": (directory / "status/static-init-done").exists()}
+            save()
+            assert failed_start.returncode != 0
+            assert "/etc/hostname/impossible" in failed_start.stderr
+            assert len(failed_run["linux"]["extra_shares"]) == 1, "first attachment must have reached its Gofer"
+            assert failed_run["linux"]["extra_shares"][0]["state"] == "removed"
+            assert "error" not in failed_run["linux"]["extra_shares"][0], "the first share must have attached before the injected failure"
+            assert not any(report["failed_start"][key] for key in ("per_run_go", "per_run_started", "static_init_done"))
+            failed_status = json.loads(status.stdout)
+            assert failed_status["runtime_state"] == "stopped" and failed_status["exec"] is False
+            assert not (root / "run" / ("runsc-safeyolo-" + failed_run["run_id"] + ".sock")).exists()
+            for kind in process_kinds:
+                assert process_state(failed_run[kind + "_pid"]) in (None, "Z", "X")
+            assert all(process["state"] in (None, "Z", "X") for process in report["failed_start"]["share_processes"])
 
         command([*cli, "agent", "create", second, "--workspace", base / "second-workspace", "--memory", "512",
                  "--mount", f"{base}/second:/mnt/proof1042second"])
@@ -281,19 +322,26 @@ def run_proof(root: Path, base: Path, native_test: Path):
         command([*cli, "agent", "start", second, "--sandbox-only"], timeout=150)
         initial[second] = runtime(second)
         (base / "startup-link").symlink_to(base / "startup", target_is_directory=True)
-        command([*cli, "agent", "create", agent, "--workspace", base / "workspace", "--memory", "1024",
+        configure_primary = [*cli, "agent", "create", agent, "--workspace", base / "workspace", "--memory", "1024",
                  "--mount", f"{base}/startup-link:/mnt/proof1042startup",
                  "--mount", f"{base}/startup-ro:/mnt/proof1042startupro:ro",
-                 "--mount", f"{base}/unrelated:/mnt/proof1042unrelated"])
+                 "--mount", f"{base}/unrelated:/mnt/proof1042unrelated"]
+        if native_test is None:
+            configure_primary.extend(["--launcher", "supervisor", "--command",
+                                      "exec python3 -I -B /workspace/holder.py marker /workspace/marker-holder"])
+        command(configure_primary)
         created.append(agent)
-        command([*cli, "agent", "start", agent, "--sandbox-only"], timeout=150)
+        command([*cli, "agent", "start", agent, *(["--sandbox-only"] if native_test else [])], timeout=150)
         initial[agent] = runtime(agent)
         report["initial_runs"] = initial
-        holder_pid = initial[agent]["holder_pid"]
-        report["uid_map"] = Path(f"/proc/{holder_pid}/uid_map").read_text()
-        report["gid_map"] = Path(f"/proc/{holder_pid}/gid_map").read_text()
-        report["sandbox_cgroup"] = Path(f"/proc/{initial[agent]['backend_pid']}/cgroup").read_text()
+        if sys.platform != "darwin":
+            holder_pid = initial[agent]["holder_pid"]
+            report["uid_map"] = Path(f"/proc/{holder_pid}/uid_map").read_text()
+            report["gid_map"] = Path(f"/proc/{holder_pid}/gid_map").read_text()
+            report["sandbox_cgroup"] = Path(f"/proc/{initial[agent]['backend_pid']}/cgroup").read_text()
         report["guest_kernel"] = guest("uname -a").stdout.strip()
+        saved_policy = (root / "policy.toml").read_bytes()
+        assert "commit=" + report["candidate"] in guest("/safeyolo/safeyolo-guest --version").stdout
         same_run(second)
         guest("grep -q startup:host-before /mnt/proof1042startup/host.txt && "
               "grep -q startup-ro:host-before /mnt/proof1042startupro/host.txt && "
@@ -301,31 +349,49 @@ def run_proof(root: Path, base: Path, native_test: Path):
         assert (base / "startup/guest.txt").read_text() == "startup-write"
         refused = guest("printf forbidden > /mnt/proof1042startupro/forbidden", check=False)
         assert refused.returncode != 0 and not (base / "startup-ro/forbidden").exists()
-        marker, marker_identity = holder("marker", "/workspace")
+        if native_test is None:
+            marker = base / "workspace/marker-holder"
+            marker_identity = json.loads(wait_file(marker.with_suffix(".ready")))
+            handles["marker"] = marker
+            report["launch_before"] = json.loads(command([*cli, "agent", "status", agent]).stdout)
+            assert report["launch_before"]["agent_state"] == "running"
+            assert report["launch_before"]["launcher"]["kind"] == "supervisor"
+        else:
+            marker, marker_identity = holder("marker", "/workspace")
         report["marker_before"] = marker_identity
         before_heartbeat = marker.with_suffix(".heartbeat").read_text()
         before_receipts = runtime(agent)
         stale = operation("add", f"{base}/live:/mnt/stale", generation="0" * 32)
-        assert not stale["success"] and "incarnation changed" in stale["error"]
+        assert not stale["success"] and ("incarnation changed" in stale["error"] or "generation changed" in stale["error"])
         assert runtime(agent) == before_receipts
         invalid = operation("add", f"{base}/live/host.txt:/mnt/file-source")
         assert not invalid["success"] and "regular file" in invalid["error"]
         command([*cli, "mount", "protect", base / "readonly"])
         invalid = operation("add", f"{base}/readonly:/mnt/protected-writable")
         assert not invalid["success"] and "protected" in invalid["error"]
+        (base / "live-link").symlink_to(base / "live", target_is_directory=True)
         for name, target, suffix in (("live", "/mnt/proof1042live", ""), ("readonly", "/mnt/proof1042ro", ":ro")):
-            added = operation("add", f"{base}/{name}:{target}{suffix}")
+            source = base / ("live-link" if name == "live" else name)
+            added = operation("add", f"{source}:{target}{suffix}")
             assert added["success"], added
             guest("grep -q " + name + ":host-before " + target + "/host.txt")
+        before_duplicate = runtime(agent)[receipt_backend]["extra_shares"]
         duplicate = operation("add", f"{base}/live:/mnt/proof1042live")
-        assert not duplicate["success"] and "already in use" in duplicate["error"]
+        assert duplicate["success"]
+        assert runtime(agent)[receipt_backend]["extra_shares"] == before_duplicate
         guest("printf guest-write > /mnt/proof1042live/guest.txt")
         assert (base / "live/guest.txt").read_text() == "guest-write"
         refused = guest("printf forbidden > /mnt/proof1042ro/forbidden", check=False)
         assert refused.returncode != 0 and not (base / "readonly/forbidden").exists()
         guest("ln -s /safeyolo /workspace/control-alias")
         refused = operation("add", f"{base}/live:/workspace/control-alias")
-        assert not refused["success"] and "reserved mount" in refused["error"]
+        assert not refused["success"] and "reserved" in refused["error"]
+        before_invalid = runtime(agent)
+        for spec in (f"{base}/missing:/mnt/missing", f"{base}/readonly:/mnt/proof1042live:ro",
+                     f"{base}/live:/workspace", f"{base}/live:/mnt", f"{base}/live:/mnt/mode:rw"):
+            refused = operation("add", spec)
+            assert not refused["success"], refused
+            assert runtime(agent) == before_invalid
         for mode in ("file", "cwd", "mmap"):
             handle, identity = holder(mode, "/mnt/proof1042live")
             removed = operation("remove", "/mnt/proof1042live")
@@ -344,11 +410,34 @@ def run_proof(root: Path, base: Path, native_test: Path):
                       "sudo -n mount --bind /mnt/proof1042live /mnt/proof1042alias", check=False)
         report["bind_alias"] = {"exit": alias.returncode, "stderr": alias.stderr}
         save()
-        assert alias.returncode != 0, "a successful alias needs a separate safe-removal assessment"
+        if sys.platform != "darwin":
+            assert alias.returncode != 0, "a successful Linux alias needs a safe-removal assessment"
+        if native_test is None:
+            lost = command([*cli, "agent", "mount", agent, f"{base}/live:/mnt/proof1042lost"],
+                           check=False, drop_response=True)
+            report["lost_public_response"] = {"exit": lost.returncode, "stderr": lost.stderr}
+            retried = operation("add", f"{base}/live:/mnt/proof1042lost")
+            assert retried["success"]
+            matches = [entry for entry in runtime(agent)[receipt_backend]["extra_shares"]
+                       if entry["guest_path"] == "/mnt/proof1042lost" and entry["state"] != "removed"]
+            assert len(matches) == 1
+            assert operation("remove", "/mnt/proof1042lost")["success"]
+            socket = (root / "data/vm-control" / (agent + ".sock") if sys.platform == "darwin" else
+                      root / "run" / ("runsc-safeyolo-" + initial[agent]["run_id"] + ".sock"))
+            offline = socket.with_name(socket.name + ".proof-offline")
+            socket.rename(offline)
+            try:
+                failed_control = operation("add", f"{base}/live:/mnt/proof1042controlfailure")
+                report["failed_control"] = failed_control
+                assert not failed_control["success"]
+            finally:
+                offline.rename(socket)
+            same_run()
         for target in ("/mnt/proof1042live", "/mnt/proof1042ro", "/mnt/proof1042startup", "/mnt/proof1042startupro"):
-            receipt = next(share for share in runtime(agent)["linux"]["extra_shares"] if share["guest_path"] == target)
+            receipt = next(share for share in runtime(agent)[receipt_backend]["extra_shares"] if share["guest_path"] == target)
             processes = share_processes(receipt)
-            assert all(process["cgroup"] == report["sandbox_cgroup"] for process in processes)
+            if sys.platform != "darwin":
+                assert all(process["cgroup"] == report["sandbox_cgroup"] for process in processes)
             before = file_observation(target)
             removed = operation("remove", target)
             after = file_observation(target)
@@ -358,13 +447,23 @@ def run_proof(root: Path, base: Path, native_test: Path):
                                                        "after": after, "processes": observed})
             save()
             assert removed["success"], removed
+            assert operation("remove", target)["success"]
             assert before["access_exit"] == 0 and before["identity_exit"] == 0
             assert after["access_exit"] != 0 and after["identity_exit"] != 0
             assert_mount_removed(target, before["mountinfo"], after["mountinfo"])
             assert all(process["after_state"] in (None, "Z", "X") for process in observed)
             same_run()
             same_run(second)
+        if alias.returncode == 0:
+            access = guest("cat /mnt/proof1042alias/host.txt; printf forbidden > /mnt/proof1042alias/forbidden", check=False)
+            report["bind_alias"]["after_removal"] = {"exit": access.returncode, "stdout": access.stdout, "stderr": access.stderr}
+            assert access.returncode != 0 and not (base / "live/forbidden").exists()
+            guest("sudo -n umount /mnt/proof1042alias")
         capture_final()
+        if native_test is None:
+            report["launch_after"] = json.loads(command([*cli, "agent", "status", agent]).stdout)
+            assert report["launch_after"]["agent_state"] == "running"
+            assert report["launch_after"]["launch_id"] == report["launch_before"]["launch_id"]
         assert report["final"]["marker_heartbeat"] != before_heartbeat
         report["marker_after"] = release(marker)
         assert report["marker_after"]["identity"] == marker_identity and report["marker_after"]["exit"] == 0
@@ -379,6 +478,40 @@ def run_proof(root: Path, base: Path, native_test: Path):
                 assert observed["data"] == (name + ":host-before").ljust(4096, ".")
             else:
                 assert observed["data"] == report["live_before_removals"]
+        if native_test is None:
+            assert operation("add", f"{base}/live:/mnt/proof1042unsaved")["success"]
+            command([*cli, "agent", "configure", agent, "--mount", f"{base}/live:/mnt/proof1042saved"])
+            saved_policy = (root / "policy.toml").read_bytes()
+            assert guest("test -r /mnt/proof1042saved/host.txt", check=False).returncode != 0
+            assert guest("test -r /mnt/proof1042unsaved/host.txt").returncode == 0
+            overlap = []
+            for arguments in ([*cli, "agent", "mount", agent, f"{base}/live:/mnt/proof1042overlap"],
+                              [*cli, "agent", "stop", agent],
+                              [*cli, "agent", "start", agent, "--sandbox-only"]):
+                overlap.append((arguments, subprocess.Popen(list(map(str, arguments)),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)))
+            report["overlap"] = []
+            for arguments, child in overlap:
+                try:
+                    stdout, stderr = child.communicate(timeout=180)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.communicate()
+                    raise
+                observed = {"argv": list(map(str, arguments)), "exit": child.returncode,
+                            "stdout": stdout, "stderr": stderr}
+                report["overlap"].append(observed)
+                save()
+                if arguments[-2:] == ["stop", agent]:
+                    assert child.returncode == 0, observed
+            command([*cli, "agent", "start", agent, "--sandbox-only"], timeout=150)
+            replacement = runtime(agent)
+            report["persistence"] = {"old_run_id": initial[agent]["run_id"], "new_run": replacement}
+            assert replacement["run_id"] != initial[agent]["run_id"]
+            guest("test -r /mnt/proof1042saved/host.txt && test -r /mnt/proof1042startup/host.txt")
+            assert guest("test -r /mnt/proof1042unsaved/host.txt", check=False).returncode != 0
+            assert (root / "policy.toml").read_bytes() == saved_policy
+            same_run(second)
         report["backend_operations_completed"] = True
         save()
     finally:
@@ -416,6 +549,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--base", type=Path, required=True)
-    parser.add_argument("--native-test-binary", type=Path, required=True)
+    parser.add_argument("--native-test-binary", type=Path)
+    parser.add_argument("--candidate")
     args = parser.parse_args()
-    run_proof(args.root.resolve(strict=True), args.base.resolve(), args.native_test_binary.resolve(strict=True))
+    run_proof(args.root.resolve(strict=True), args.base.resolve(),
+              args.native_test_binary.resolve(strict=True) if args.native_test_binary else None, args.candidate)

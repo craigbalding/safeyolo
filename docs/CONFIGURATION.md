@@ -405,6 +405,72 @@ Cleanup clears stopped runtime records and retains the persistent home. Keep
 the separate output directory and any retained copies. Deleting those files
 is a separate explicit operator action.
 
+## Change an extra directory while an agent runs
+
+On the host, use the account that owns the selected instance. Agent `work`
+must already be running. The host directories in these examples must exist.
+Use `--root ROOT` before `agent` for another instance.
+
+```sh
+safeyolo agent mount work "$HOME/reference:/reference:ro"
+safeyolo agent mount work "$HOME/agent-dropboxes/work:/dropbox"
+safeyolo agent status work
+safeyolo agent unmount work /reference
+safeyolo agent unmount work /dropbox
+```
+
+`mount` makes that directory available now, at the requested guest path.
+The default is read/write. An explicit `:ro` makes the export read-only.
+Directory symlinks resolve to their host targets. Regular files are refused.
+Sources, protected directories and guest destinations are checked at each
+live operation. Home, workspace, root and control mounts cannot be replaced.
+A destination cannot hide another mount, including through a guest symlink.
+
+Both commands affect only the current sandbox. They preserve the virtual
+machine or sandbox, coding process and session. They do not change the saved
+`mounts` array. Results include `live_mounts`, `saved_mounts` and
+`saved_configuration_changed=false`. Status shows current-run receipts in
+`live_mounts` and saved intent in `next_start_configuration.mounts`.
+
+After a later stop/start, saved mounts apply again. A live-added mount that
+was not saved disappears. A live-removed startup mount returns. To make an
+addition persistent, also use the existing `agent configure --mount` command.
+To make removal persistent, remove that destination's entry from the agent's
+`mounts` array in the selected `policy.toml`. Preserve other entries and their
+`:ro` suffixes. Ordinary `configure --mount` still changes only the next start.
+
+Unmount first removes the ordinary guest mount, then removes that mapping's
+backend export and owned helper, if present. Host files and unrelated shares
+are retained. Open files, a working directory in the share, memory mappings
+or child mounts can make normal unmount fail with a busy error. Close those
+uses and retry. SafeYolo does not force or lazily detach a mount, kill the
+workload or restart the sandbox. A repeated identical add or completed remove
+does not create another export or remove another share.
+
+Removal does not erase copied files or bytes already resident in guest memory.
+On the tested Mac backend, withdrawing the export stopped further access
+through a guest bind alias, but resident mapped bytes remained readable. On
+the tested Linux configuration, guest bind-alias creation was denied. These
+observations do not establish erasure or complete revocation of prior data.
+
+If a command fails, inspect its error, current-run receipts and saved mounts.
+Partial states such as `exporting`, `exported`, `mounting`, `unmounting` and
+`unmounted` are not completed mounts or removals. Retry the same action when
+the error permits it. A lost Linux mount-control response can leave an
+uncertain attachment. SafeYolo retains that share's owned process and receipt
+instead of creating a duplicate or killing a possibly mounted file server.
+An explicit stop/start safely releases that run. No failed command performs
+that restart automatically.
+
+Linux requires runsc dynamic mount control, proved with `release-20261005.0`,
+and startup extras prepared through isolated per-share Gofers. Older running
+sandboxes with baked-in startup binds do not support safe live removal.
+macOS requires a runtime VirtioFS device prepared by the current helper on
+an explicit start. Changing a VM configuration object does not prepare a
+device in an already running VM. Both platforms require the current guest
+helper's `extra-mount` operation. A missing prerequisite produces an error;
+update the installed inputs and select a future stop/start explicitly.
+
 ## Protected host directories
 
 Run these commands on the host as the account that owns the instance. They use
@@ -429,16 +495,18 @@ safeyolo agent configure work --mount "$HOME/reference:/reference:ro"
 ```
 
 Writable extra mounts of a protected directory or descendant are refused
-before configuration is saved and before guest startup. The error names the
-resolved source and protection and gives an explicit `:ro` remedy. Unrelated
+before configuration is saved, before guest startup and at live addition.
+The error names the resolved source and protection and gives an explicit `:ro` remedy. Unrelated
 sibling directories keep their requested access. If an agent already has a
 saved writable mount of a newly protected directory, add `:ro` to that entry
 in its `mounts` array in `policy.toml`, or remove the entry, before starting it.
 Rejected mount configuration is not saved.
 
 Protection affects extra mounts. It does not change workspace sharing or
-access in an already running sandbox. Stop and start that sandbox after
-correcting its saved mounts to apply the new access.
+access through existing shares. To change access now, unmount an idle share
+and add it again with explicit `:ro`. Update its saved entry as well to keep
+that mode after restart. You can also stop and start the sandbox after
+correcting its saved mounts.
 
 To remove a designation:
 
