@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -170,6 +171,101 @@ def test_installed_layout_still_refuses_missing_or_changed_payload(
 
 def state_files(root):
     return {name: data for name, data in preserved(root).items() if name != "package-info"}
+
+
+def use_legacy_guest_location(root):
+    """Seed the digest-only paths written by the original shipped host."""
+    record = root / "share/guest-selection.json"
+    selection = json.loads(record.read_bytes())
+    archive_hex = selection["archive"]["digest"].removeprefix("sha256:")
+    assets = Path(selection["assets"])
+    legacy_assets = assets.with_name(archive_hex)
+    assets.rename(legacy_assets)
+    selection["assets"] = str(legacy_assets)
+    inputs = Path(selection.get("installed_assets", root / "share"))
+    if "installed_assets" in selection:
+        legacy_inputs = inputs.with_name(archive_hex)
+        inputs.rename(legacy_inputs)
+        inputs = legacy_inputs
+        selection["installed_assets"] = str(inputs)
+    (inputs / "rootfs-tree").unlink()
+    (inputs / "rootfs-tree").symlink_to(legacy_assets / "rootfs-tree")
+    record.write_text(json.dumps(selection))
+    return selection
+
+
+@pytest.mark.parametrize("caller", ["guest", "complete-pair"])
+def test_legacy_guest_locations_allow_mapping_specific_upgrade_reuse_and_rollback(
+        native_cli, host_pair, registry, guest_store, tmp_path, caller):
+    first, second = host_pair
+    contents, requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    g1 = use_legacy_guest_location(root)
+    g2_release = release(compressed_archive(content=b"G2 base"), version="guest-2026-10-16.2")
+    contents.update(g2_release)
+    prepared = command(native_cli, root, environment, "guest", "upgrade")
+    assert prepared.returncode == 0, prepared.stderr
+    legacy_g2 = use_legacy_guest_location(root)
+    rolled = command(native_cli, root, environment, "guest", "rollback")
+    assert rolled.returncode == 0, rolled.stderr
+    assert json.loads(rolled.stdout) == g1
+    legacy_assets = Path(legacy_g2["assets"])
+    legacy_inputs = Path(legacy_g2["installed_assets"])
+    legacy_link = os.readlink(legacy_inputs / "rootfs-tree")
+    legacy_inode = (legacy_assets / "rootfs-tree").stat().st_ino
+    saved = state_files(root)
+    original = upgrade(native_cli, root, environment, "status")
+    active = (root / "share/guest-selection.json").read_bytes()
+    index = digest(g2_release["manifests/compat-v1"])
+    contents["manifests/" + index] = g2_release["manifests/compat-v1"]
+    arguments = (["guest", "upgrade", "--index", index] if caller == "guest" else
+                 ["upgrade", "--bundle", str(second), "--guest-index", index])
+    rollback = ["guest", "rollback"] if caller == "guest" else ["upgrade", "rollback"]
+    before = len(requests)
+    selected = command(native_cli, root, environment, *arguments)
+    assert selected.returncode == 0, selected.stderr
+    g2 = json.loads((root / "share/guest-selection.json").read_bytes())
+    assets, inputs = Path(g2["assets"]), Path(g2["installed_assets"])
+    assert assets != legacy_assets and inputs != legacy_inputs
+    assert inputs.name == assets.name and inputs.name.startswith(legacy_assets.name + "-uid")
+    assert (inputs / "rootfs-tree").resolve() == assets / "rootfs-tree"
+    assert (assets / "rootfs-tree").stat().st_ino != legacy_inode
+    assert (inputs / "rootfs-tree/command").read_bytes() == b"G2 base"
+    assert g2["previous"] == g1
+    expected_host = "b" * 40 if caller == "complete-pair" else original["current"]["host"]["source_commit"]
+    assert upgrade(native_cli, root, environment, "status")["current"]["host"]["source_commit"] == expected_host
+    identities = [path.stat().st_ino for path in (assets, assets / "rootfs-tree", inputs)]
+    repeated = command(native_cli, root, environment, *arguments)
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout) == json.loads(selected.stdout)
+    assert [path.stat().st_ino for path in (assets, assets / "rootfs-tree", inputs)] == identities
+    assert not any("/blobs/" in path for path in requests[before:])
+    restored = command(native_cli, root, environment, *rollback)
+    assert restored.returncode == 0, restored.stderr
+    assert upgrade(native_cli, root, environment, "status")["current"] == original["current"]
+
+    # An existing mapping-specific location must still match the exact cached
+    # root and its ownership. Neither refusal may change the active selection.
+    unowned = guest_store / "unowned-root"
+    unowned.mkdir()
+    for target, error in ((legacy_assets / "rootfs-tree", "installed rootfs tree differs"),
+                          (unowned, "prepared rootfs-tree must be a directory owned by")):
+        link = inputs / "rootfs-tree"
+        link.unlink()
+        link.symlink_to(target)
+        refused = command(native_cli, root, environment, *arguments)
+        assert refused.returncode != 0 and error in refused.stderr
+        assert (root / "share/guest-selection.json").read_bytes() == active
+        assert upgrade(native_cli, root, environment, "status")["current"] == original["current"]
+        link.unlink()
+        link.symlink_to(assets / "rootfs-tree")
+    assert os.readlink(legacy_inputs / "rootfs-tree") == legacy_link
+    assert (legacy_assets / "rootfs-tree").stat().st_ino == legacy_inode
+    assert (legacy_inputs / "rootfs-tree/command").read_bytes() == b"G2 base"
+    assert (root / "share/rootfs-tree/command").read_bytes() == b"guest bytes"
+    assert_preserved(root, saved)
 
 
 def test_host_only_reuses_guest_and_retains_complete_pair_and_upgrader(
