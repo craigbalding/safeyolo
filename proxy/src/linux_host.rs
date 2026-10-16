@@ -78,6 +78,7 @@ impl Mapping {
         Ok(self)
     }
 
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn entries(base: u32, operator: u32) -> [(u32, u32, u32); 3] {
         [
             (0, base, 1000),
