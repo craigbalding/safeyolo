@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_transport_fixture:
+        description: Generate and publish the nonbootable >2 GiB transport fixture by digest only
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -33,7 +38,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ !inputs.publish_initial_g1 && !inputs.publish_retained_g2 }}
+    if: ${{ !inputs.publish_initial_g1 && !inputs.publish_retained_g2 && !inputs.publish_transport_fixture }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,9 +116,9 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # Relay dispatches an accepted retained release. Craig's #237 publication
-    # authority includes G2 and its compatibility channel; preparation stays default.
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_initial_g1 || inputs.publish_retained_g2) }}
+    # Relay dispatches an accepted release or the digest-only transport fixture.
+    # Craig's #237 publication authority includes both; preparation stays default.
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_initial_g1 || inputs.publish_retained_g2 || inputs.publish_transport_fixture) }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -126,9 +131,10 @@ jobs:
           REQUESTED_COMPATIBILITY: ${{ inputs.compatibility }}
           PUBLISH_INITIAL_G1: ${{ inputs.publish_initial_g1 }}
           PUBLISH_RETAINED_G2: ${{ inputs.publish_retained_g2 }}
+          PUBLISH_TRANSPORT_FIXTURE: ${{ inputs.publish_transport_fixture }}
         run: |
-          case "$PUBLISH_INITIAL_G1/$PUBLISH_RETAINED_G2" in
-            true/false)
+          case "$PUBLISH_INITIAL_G1/$PUBLISH_RETAINED_G2/$PUBLISH_TRANSPORT_FIXTURE" in
+            true/false/false)
               version=guest-2026-10-12.1
               revision=8234a047d810d543d8c4d1cb1fa9859987be035b
               index=sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
@@ -137,7 +143,7 @@ jobs:
               layout_id=11747551391
               publisher_revision=$revision
               ;;
-            false/true)
+            false/true/false|false/false/true)
               version=guest-2026-10-16.1
               revision=ee291fba78ab34e4dca630d529ac8083ec29802f
               index=sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b
@@ -147,12 +153,16 @@ jobs:
               publisher_revision=$GITHUB_SHA
               ;;
             *)
-              echo 'Select exactly one retained guest publication mode.' >&2
+              echo 'Select exactly one guest publication mode.' >&2
               exit 1
               ;;
           esac
-          if [[ "$REQUESTED_VERSION" != "$version" || "$REQUESTED_COMPATIBILITY" != v1 ]]; then
-            echo "Retained publication requires version $version and compatibility v1." >&2
+          expected_version=$version
+          if [[ "$PUBLISH_TRANSPORT_FIXTURE" == true ]]; then
+            expected_version=guest-2026-10-16.239
+          fi
+          if [[ "$REQUESTED_VERSION" != "$expected_version" || "$REQUESTED_COMPATIBILITY" != v1 ]]; then
+            echo "Selected publication requires version $expected_version and compatibility v1." >&2
             exit 1
           fi
           printf '%s\n' "GUEST_VERSION=$version" "GUEST_COMPATIBILITY=v1" \
@@ -163,6 +173,7 @@ jobs:
         with:
           ref: ${{ env.PUBLISHER_REVISION }}
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: ${{ !inputs.publish_transport_fixture }}
         with:
           artifact-ids: ${{ env.GUEST_ARCHIVE_IDS }}
           run-id: ${{ env.GUEST_RUN_ID }}
@@ -188,6 +199,7 @@ jobs:
           SAFEYOLO_BUILD_REVISION: ${{ env.PUBLISHER_REVISION }}
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
       - name: Verify retained inputs before registry authentication
+        if: ${{ !inputs.publish_transport_fixture }}
         run: |
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
           proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
@@ -196,14 +208,38 @@ jobs:
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
             --verifier proxy/target/release/examples/verify_guest_oci
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
+      - name: Prepare and verify the nonbootable transport fixture
+        id: prepare_transport_fixture
+        if: ${{ inputs.publish_transport_fixture }}
+        run: |
+          python3 scripts/prepare_guest_transport_fixture.py \
+            --seed-layout "$RUNNER_TEMP/retained-guest-oci" --seed-index "$GUEST_INDEX" \
+            --output "$RUNNER_TEMP/transport-fixture" --revision "$GITHUB_SHA" \
+            --verifier proxy/target/release/examples/verify_guest_oci
       - name: Authenticate with the linked repository token
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Upload, verify and promote the complete guest release
+        if: ${{ !inputs.publish_transport_fixture }}
         run: |
           scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
             --verifier proxy/target/release/examples/verify_guest_oci \
             --publish ghcr.io/craigbalding/safeyolo-guest
+      - name: Upload the transport fixture without production tags
+        if: ${{ inputs.publish_transport_fixture }}
+        run: |
+          index=$(jq -r '.index.digest' "$RUNNER_TEMP/transport-fixture/fixture.json")
+          scripts/publish_guest_transport_fixture.sh "$RUNNER_TEMP/transport-fixture/layout" \
+            "$index" proxy/target/release/examples/verify_guest_oci \
+            ghcr.io/craigbalding/safeyolo-guest "$RUNNER_TEMP/transport-fixture/publication"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() && inputs.publish_transport_fixture && steps.prepare_transport_fixture.outcome == 'success' }}
+        with:
+          name: guest-transport-fixture-result
+          path: |
+            ${{ runner.temp }}/transport-fixture/fixture.json
+            ${{ runner.temp }}/transport-fixture/publication
+          if-no-files-found: error

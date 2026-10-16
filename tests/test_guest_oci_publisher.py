@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 
+from scripts import prepare_guest_transport_fixture
+
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
 BASE = "docker.io/library/debian@sha256:" + "b" * 64
@@ -157,7 +159,7 @@ def artifacts(tmp_path, built):
 def registry():
     """Disposable Distribution API store: ORAS supplies all OCI objects and transfer."""
     blobs, manifests, tags, uploads, events = {}, {}, {}, {}, []
-    faults = {"blob": False, "index": False}
+    faults = {"blob": False, "index": False, "upload": False}
 
     class Registry(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -217,6 +219,8 @@ def registry():
             if "/manifests/" in path:
                 reference = path.rsplit("/", 1)[1]
                 if self.command == "PUT":
+                    if faults["upload"]:
+                        return self.reply(400)
                     digest = "sha256:" + hashlib.sha256(body).hexdigest()
                     manifests[digest] = body
                     if not reference.startswith("sha256:"):
@@ -331,6 +335,7 @@ def retained_publisher(request, tmp_path):
     inputs = {
         "PUBLISH_INITIAL_G1": str(request.param == "g1").lower(),
         "PUBLISH_RETAINED_G2": str(request.param == "g2").lower(),
+        "PUBLISH_TRANSPORT_FIXTURE": "false",
         "REQUESTED_VERSION": "guest-2026-10-12.1" if request.param == "g1" else "guest-2026-10-16.1",
         "REQUESTED_COMPATIBILITY": "v1",
     }
@@ -345,7 +350,8 @@ def retained_publisher(request, tmp_path):
 @pytest.mark.parametrize("event", ["workflow_dispatch", "push", "release", "schedule", "pull_request"])
 @pytest.mark.parametrize("initial", [None, False, True])
 @pytest.mark.parametrize("retained", [None, False, True])
-def test_workflow_retained_publication_routing(event, initial, retained):
+@pytest.mark.parametrize("fixture", [None, False, True])
+def test_workflow_retained_publication_routing(event, initial, retained, fixture):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["publish_initial_g1"] == {
@@ -356,18 +362,23 @@ def test_workflow_retained_publication_routing(event, initial, retained):
         "description": "Publish the accepted retained guest-2026-10-16.1 without rebuilding guests",
         "required": False, "default": False, "type": "boolean",
     }
+    assert inputs["publish_transport_fixture"] == {
+        "description": "Generate and publish the nonbootable >2 GiB transport fixture by digest only",
+        "required": False, "default": False, "type": "boolean",
+    }
     context = {"__builtins__": {}, "github": SimpleNamespace(event_name=event),
-               "inputs": SimpleNamespace(publish_initial_g1=initial, publish_retained_g2=retained)}
+               "inputs": SimpleNamespace(publish_initial_g1=initial, publish_retained_g2=retained,
+                                         publish_transport_fixture=fixture)}
     jobs = workflow["jobs"]
     # These conditions use only boolean operations and string equality. Evaluate
     # both branches, then check dependencies so skipped preparation cannot hold publication.
     publish_condition = jobs["publish"]["if"].removeprefix("${{").removesuffix("}}").strip()
     build_condition = jobs["build"]["if"].removeprefix("${{").removesuffix("}}").strip()
     assert bool(eval(publish_condition.replace("&&", " and ").replace("||", " or "), context)) == (
-        event == "workflow_dispatch" and (initial is True or retained is True)
+        event == "workflow_dispatch" and (initial is True or retained is True or fixture is True)
     )
     assert bool(eval(build_condition.replace("!", "not ").replace("&&", " and "), context)) == (
-        initial is not True and retained is not True
+        initial is not True and retained is not True and fixture is not True
     )
     # GitHub skips prepare when its build dependency is skipped. Publication
     # must have no such dependency, including when preparation fails.
@@ -409,6 +420,7 @@ def test_workflow_retained_source_artifacts_and_token_narrow(retained_publisher)
         "REQUESTED_VERSION": "${{ inputs.version }}", "REQUESTED_COMPATIBILITY": "${{ inputs.compatibility }}",
         "PUBLISH_INITIAL_G1": "${{ inputs.publish_initial_g1 }}",
         "PUBLISH_RETAINED_G2": "${{ inputs.publish_retained_g2 }}",
+        "PUBLISH_TRANSPORT_FIXTURE": "${{ inputs.publish_transport_fixture }}",
     }
     checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ env.PUBLISHER_REVISION }}"
@@ -454,7 +466,7 @@ def test_retained_workflow_refuses_conflicting_inputs(tmp_path, retained_publish
         "REQUESTED_VERSION": retained_publisher.env["GUEST_VERSION"] if version is None else version,
         "REQUESTED_COMPATIBILITY": compatibility, "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
     })
-    assert result.returncode != 0 and "Retained publication requires" in result.stderr
+    assert result.returncode != 0 and "Selected publication requires" in result.stderr
     assert not env_file.exists() and not (tmp_path / "forbidden-write").exists()
 
 
@@ -467,6 +479,7 @@ def test_retained_workflow_refuses_conflicting_modes_or_release(tmp_path, initia
     step = workflow["jobs"]["publish"]["steps"][0]
     result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
         **os.environ, "PUBLISH_INITIAL_G1": str(initial).lower(), "PUBLISH_RETAINED_G2": str(retained).lower(),
+        "PUBLISH_TRANSPORT_FIXTURE": "false",
         "REQUESTED_VERSION": version, "REQUESTED_COMPATIBILITY": "v1",
         "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
     })
@@ -575,6 +588,214 @@ def test_retained_workflow_verifies_inputs_before_authentication(
             "--verifier", "proxy/target/release/examples/verify_guest_oci",
             "--publish", "ghcr.io/craigbalding/safeyolo-guest",
         ]
+
+
+@pytest.mark.parametrize("initial,retained,version,compatibility", [
+    (False, False, "guest-2026-10-16.239", "v1"),
+    (True, False, "guest-2026-10-16.239", "v1"),
+    (False, True, "guest-2026-10-16.239", "v1"),
+    (True, True, "guest-2026-10-16.239", "v1"),
+    (False, False, "guest-2026-10-16.1", "v1"),
+    (False, False, "$(touch forbidden-write)", "v1"),
+    (False, False, "guest-2026-10-16.239", "v2"),
+])
+def test_transport_workflow_admission(tmp_path, initial, retained, version, compatibility):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = workflow["jobs"]["publish"]["steps"][0]
+    env_file = tmp_path / "selected-release"
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
+        **os.environ, "PUBLISH_INITIAL_G1": str(initial).lower(), "PUBLISH_RETAINED_G2": str(retained).lower(),
+        "PUBLISH_TRANSPORT_FIXTURE": "true", "REQUESTED_VERSION": version,
+        "REQUESTED_COMPATIBILITY": compatibility, "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
+    })
+    admitted = not initial and not retained and version == prepare_guest_transport_fixture.VERSION and compatibility == "v1"
+    assert (result.returncode == 0) == admitted, result.stderr
+    assert env_file.exists() == admitted
+    assert not (tmp_path / "forbidden-write").exists()
+    if admitted:
+        selected = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+        assert selected["GUEST_INDEX"] == "sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b"
+        assert selected["GUEST_RUN_ID"] == "38897452318" and selected["GUEST_LAYOUT_ID"] == "12045630940"
+        assert selected["PUBLISHER_REVISION"] == REVISION
+
+
+@pytest.mark.parametrize("fixture", [False, True])
+def test_transport_workflow_effective_steps(fixture):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    context = {"__builtins__": {}, "inputs": SimpleNamespace(publish_transport_fixture=fixture),
+               "steps": SimpleNamespace(prepare_transport_fixture=SimpleNamespace(outcome="success")),
+               "cancelled": lambda: False}
+    enabled = []
+    for step in workflow["jobs"]["publish"]["steps"]:
+        expression = step.get("if", "${{ True }}").removeprefix("${{").removesuffix("}}").strip()
+        if eval(expression.replace("!", "not ").replace("&&", " and "), context):
+            enabled.append(step)
+    names = [step.get("name") for step in enabled]
+    assert ("Prepare and verify the nonbootable transport fixture" in names) == fixture
+    assert ("Upload the transport fixture without production tags" in names) == fixture
+    assert ("Verify retained inputs before registry authentication" in names) != fixture
+    assert ("Upload, verify and promote the complete guest release" in names) != fixture
+    downloads = [step for step in enabled if "actions/download-artifact@" in step.get("uses", "")]
+    assert len(downloads) == (1 if fixture else 2)
+    if fixture:
+        assert downloads[0]["with"]["artifact-ids"] == "${{ env.GUEST_LAYOUT_ID }}"
+        assert names.index("Prepare and verify the nonbootable transport fixture") < names.index(
+            "Authenticate with the linked repository token"
+        ) < names.index("Upload the transport fixture without production tags")
+        upload = next(step for step in enabled if "actions/upload-artifact@" in step.get("uses", ""))
+        assert upload["with"]["name"] == "guest-transport-fixture-result"
+        assert upload["with"]["path"].splitlines() == [
+            "${{ runner.temp }}/transport-fixture/fixture.json", "${{ runner.temp }}/transport-fixture/publication",
+        ]
+
+
+def test_transport_workflow_upload_uses_generated_index(tmp_path):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    upload = next(step for step in workflow["jobs"]["publish"]["steps"] if step.get("name") ==
+                  "Upload the transport fixture without production tags")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    command = scripts / "publish_guest_transport_fixture.sh"
+    command.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
+                       "with open(os.environ['CAPTURE_ARGS'], 'w') as target: json.dump(sys.argv[1:], target)\n")
+    command.chmod(0o755)
+    fixture = tmp_path / "transport-fixture"
+    fixture.mkdir()
+    index = "sha256:" + "c" * 64
+    (fixture / "fixture.json").write_text(json.dumps({"index": {"digest": index}}))
+    captured = tmp_path / "args.json"
+    result = run("bash", "-euo", "pipefail", "-c", upload["run"], cwd=tmp_path,
+                 env={**os.environ, "RUNNER_TEMP": str(tmp_path), "CAPTURE_ARGS": str(captured)})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(captured.read_text()) == [
+        str(fixture / "layout"), index, "proxy/target/release/examples/verify_guest_oci",
+        "ghcr.io/craigbalding/safeyolo-guest", str(fixture / "publication"),
+    ]
+
+
+@pytest.fixture
+def transport_seed(tmp_path, built, publisher_tools):
+    (built / "rootfs-tree/etc").mkdir()
+    (built / "rootfs-tree/etc/os-release").write_text("ID=debian\n")
+    artifacts = tmp_path / "seed-archives"
+    for platform in ("darwin/arm64", "linux/amd64", "linux/arm64"):
+        (built / "rootfs-tree/command").write_text(platform)
+        archive(platform, built, artifacts / platform.replace("/", "-"))
+    result = publish(tmp_path, artifacts, publisher_tools, version="guest-2026-10-16.1")
+    assert result.returncode == 0, result.stderr
+    layout = tmp_path / "layout-guest-2026-10-16.1"
+    index = run(publisher_tools[0], "resolve", "--oci-layout", str(layout) + ":guest-2026-10-16.1").stdout.strip()
+    return SimpleNamespace(artifacts=artifacts, layout=layout, index=index)
+
+
+@pytest.fixture
+def transport_step(tmp_path, transport_seed, publisher_tools):
+    source = tmp_path / "workflow-source"
+    scripts = source / "scripts"
+    scripts.mkdir(parents=True)
+    # Exercise the effective workflow command and the real producer with a small
+    # random image. The dispatch has no size override; it always uses 2049 MiB.
+    (scripts / "prepare_guest_transport_fixture.py").write_text(
+        f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+        "from scripts import prepare_guest_transport_fixture as fixture\n"
+        "fixture.RANDOM_IMAGE_BYTES = 65536\nfixture.MINIMUM_ARCHIVE_BYTES = 32768\nfixture.main()\n"
+    )
+    examples = source / "proxy/target/release/examples"
+    examples.mkdir(parents=True)
+    (examples / "verify_guest_oci").symlink_to(Path(publisher_tools[1]).resolve())
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    (runner / "retained-guest-oci").symlink_to(transport_seed.layout, target_is_directory=True)
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["publish"]["steps"] if step.get("id") == "prepare_transport_fixture")
+    env = {**os.environ, "ORAS": publisher_tools[0], "RUNNER_TEMP": str(runner),
+           "GUEST_INDEX": transport_seed.index, "GITHUB_SHA": REVISION}
+    return SimpleNamespace(source=source, runner=runner, step=step, env=env)
+
+
+@pytest.mark.parametrize("defect", [None, "corrupt-seed", "small-archive", "existing-output", "low-disk"])
+def test_transport_preparation_and_failure_before_authentication(transport_step, transport_seed, defect):
+    output = transport_step.runner / "transport-fixture"
+    driver = transport_step.source / "scripts/prepare_guest_transport_fixture.py"
+    if defect == "corrupt-seed":
+        child = json.loads(prepare_guest_transport_fixture.blob(transport_seed.layout, transport_seed.index).read_bytes())["manifests"][0]
+        path = prepare_guest_transport_fixture.blob(transport_seed.layout, child["digest"])
+        path.chmod(0o644)
+        path.write_bytes(b"corrupt")
+    elif defect == "small-archive":
+        driver.write_text(driver.read_text().replace("32768", "2147483648"))
+    elif defect == "existing-output":
+        output.mkdir()
+        (output / "retained").write_text("do not overwrite")
+    elif defect == "low-disk":
+        driver.write_text(driver.read_text().replace("fixture.main()", "from types import SimpleNamespace\n"
+                         "fixture.shutil.disk_usage = lambda path: SimpleNamespace(free=0)\nfixture.main()"))
+    result = run("bash", "-euo", "pipefail", "-c",
+                 transport_step.step["run"] + '\ntouch "$RUNNER_TEMP/authentication-reached"',
+                 cwd=transport_step.source, env=transport_step.env, timeout=30)
+    assert (result.returncode == 0) == (defect is None), result.stderr
+    assert (transport_step.runner / "authentication-reached").exists() == (defect is None)
+    assert (output / "fixture.json").exists() == (defect is None)
+    if defect == "existing-output":
+        assert (output / "retained").read_text() == "do not overwrite"
+    if defect is not None:
+        return
+    record = json.loads((output / "fixture.json").read_text())
+    assert record["revision"] == REVISION and record["seed_index"] == transport_seed.index
+    assert record["version"] == "guest-2026-10-16.239" and record["compatibility"] == "v1"
+    assert "Never boot" in record["scope"]
+    assert set(record["platforms"]) == {"darwin/arm64", "linux/amd64", "linux/arm64"}
+    for descriptors in [record, *record["platforms"].values()]:
+        for descriptor in descriptors.values():
+            if isinstance(descriptor, dict) and "digest" in descriptor:
+                raw = prepare_guest_transport_fixture.blob(output / "layout", descriptor["digest"]).read_bytes()
+                assert len(raw) == descriptor["size"]
+                assert "sha256:" + hashlib.sha256(raw).hexdigest() == descriptor["digest"]
+    assert not (output / "built/darwin-arm64/rootfs-base.ext4").exists()
+
+
+@pytest.mark.parametrize("fault", [None, "index", "blob", "upload", "missing-tag"])
+def test_actual_oras_transport_publication_preserves_production_and_has_small_readbacks(
+    tmp_path, transport_step, transport_seed, publisher_tools, registry, fault,
+):
+    repository, blobs, manifests, tags, events, faults = registry
+    oras, verifier = publisher_tools
+    for version in ("guest-2026-10-12.1", "guest-2026-10-16.1"):
+        result = publish(tmp_path, transport_seed.artifacts, publisher_tools, repository, version=version)
+        assert result.returncode == 0, result.stderr
+    prepared = run("bash", "-euo", "pipefail", "-c", transport_step.step["run"],
+                   cwd=transport_step.source, env=transport_step.env, timeout=30)
+    assert prepared.returncode == 0, prepared.stderr
+    fixture = transport_step.runner / "transport-fixture"
+    record = json.loads((fixture / "fixture.json").read_text())
+    before_tags, before_manifests, before_blobs = dict(tags), dict(manifests), dict(blobs)
+    events.clear()
+    if fault == "missing-tag":
+        del tags["guest-2026-10-12.1"]
+        before_tags = dict(tags)
+    elif fault:
+        faults[fault] = True
+    result = run(str(ROOT / "scripts/publish_guest_transport_fixture.sh"), str(fixture / "layout"),
+                 record["index"]["digest"], verifier, repository, str(fixture / "publication"), "--plain-http",
+                 env={**os.environ, "ORAS": oras}, timeout=30)
+    assert (result.returncode == 0) == (fault is None), result.stderr
+    assert tags == before_tags
+    assert all(manifests[key] == value for key, value in before_manifests.items())
+    assert all(blobs[key] == value for key, value in before_blobs.items())
+    assert all(path.rsplit("/", 1)[1].startswith("sha256:") for method, path in events
+               if method == "PUT" and "/manifests/" in path)
+    archives = {item["archive"]["digest"] for item in record["platforms"].values()}
+    assert not any(method == "GET" and path.rsplit("/", 1)[1] in archives for method, path in events)
+    if fault is None:
+        assert record["index"]["digest"] in manifests
+        for platform in record["platforms"].values():
+            assert len(manifests[platform["child"]["digest"]]) == platform["child"]["size"]
+            for kind in ("config", "archive"):
+                assert len(blobs[platform[kind]["digest"]]) == platform[kind]["size"]
+        for tag in before_tags:
+            assert (fixture / "publication" / f"after-{tag}").read_text().strip() == before_tags[tag]
+    elif fault == "missing-tag":
+        assert not any(method == "PUT" for method, _ in events)
 
 
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])

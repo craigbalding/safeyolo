@@ -270,7 +270,7 @@ checks. Preparation does not restart automatic host releases or change Latest.
 
 For a maintainer with repository Actions access, select the approved source
 revision in **Prepare default guest OCI release**, and enter a new guest version
-and its compatibility identifier. Leave both publication options disabled. The
+and its compatibility identifier. Leave all publication options disabled. The
 workflow builds amd64 and arm64 outputs with the maintained builders. The
 arm64 build also supplies the Mac kernel,
 initramfs and ext4 image. The builders use architecture-specific Debian manifest
@@ -285,6 +285,41 @@ and all three opaque archives. The verifier checks every advertised child,
 config and blob, including distinct Mac/Linux arm64 archive identities.
 Preparation does not prove public retrieval, bootable platform content, native
 acquisition or the installed independent-update scenario.
+
+For #239's single transfer over 2 GiB, `publish_transport_fixture` uses the
+retained, verified G2 layout as seed input. The workflow does not rebuild a
+guest. It keeps the G2 kernel and initramfs and generates a 2049 MiB random
+disk file. The two Linux members are small placeholders. These inputs satisfy
+the archive contract but cannot run as guests. Never boot this fixture.
+
+After the reviewed workflow change is integrated, Relay can dispatch `master`
+with repository Actions access. From the repository checkout, run:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f version=guest-2026-10-16.239 -f compatibility=v1 \
+  -f publish_initial_g1=false -f publish_retained_g2=false \
+  -f publish_transport_fixture=true
+```
+
+Select only one publication mode. The fixture mode verifies the seed layout
+and the generated layout before registry authentication. It uses the existing
+job-local repository token and publication serialization. ORAS copies the full
+fixture graph by digest without creating a public version tag or changing
+`compat-v1`, G1 or G2. Readback compares the small index, child manifests and
+configs and checks the three production tag targets before and after upload.
+It does not download the large archive again.
+
+The run returns `guest-transport-fixture-result`. Its `fixture.json` records
+the actual index, child and archive digests and sizes, source revision and seed
+identity. The `publication/` directory contains the small registry readbacks
+and tag targets. The result is retained after a publication failure when
+preparation succeeded; a partial result is not successful publication. Each
+generation uses new random bytes. Use that run's identities for the disposable
+native consumer; do not reuse identities from an earlier fixture. Public
+publication and the anonymous packaged native download remain separate proof
+steps. This mode neither changes production host artifacts nor proves guest
+runtime support.
 
 For local preparation, use native Linux builders for each guest architecture.
 Install the [builder prerequisites](../guest/README.md#linux-setup), plus GNU
