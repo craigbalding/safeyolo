@@ -261,6 +261,8 @@ jobs:
         shell: bash
         run: |
           cp "$GITHUB_WORKSPACE/observer-source/tests/blackbox/ubuntu_onboarding.py" "$PUBLIC_INSTALL_WORK/observer/"
+          mkdir "$PUBLIC_INSTALL_WORK/observer/harness"
+          cp "$GITHUB_WORKSPACE/observer-source/tests/blackbox/harness/process_identity.py" "$PUBLIC_INSTALL_WORK/observer/harness/"
           python3 --version
           # Do not prepare the host, install tools, stage assets or change PATH here.
       - name: Observe one public bootstrap, first launch and normal repeat
