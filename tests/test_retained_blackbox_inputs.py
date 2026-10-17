@@ -44,7 +44,17 @@ def retained(tmp_path, monkeypatch):
         "producer": {"repository": selector.REPOSITORY, "workflow": selector.HOST_WORKFLOW,
                      "run_id": 10, "run_attempt": 2, "job_key": "build", "runner_name": "host-builder"},
     }
-    data = {"host": host, "head": "c" * 40, "calls": [], "status": "success", "source": SOURCE}
+    data = {"host": host, "head": "c" * 40, "calls": [], "source": SOURCE, "runs": {}, "jobs": {}}
+    for run_id, source, workflow, attempt, job_id in (
+        (10, SOURCE, selector.HOST_WORKFLOW, 2, 101),
+        (20, GUEST_SOURCE, selector.GUEST_WORKFLOW, 1, 201),
+    ):
+        data["runs"][run_id] = {"head_sha": source, "head_branch": "master", "path": workflow,
+                                "event": "schedule", "run_attempt": attempt,
+                                "status": "completed", "conclusion": "success"}
+        data["jobs"][run_id] = [{"id": job_id, "status": "completed", "conclusion": "success",
+                                 "name": "guest-inputs (arm64) / build", "runner_name": "host-builder",
+                                 "started_at": start, "completed_at": finished}]
     name = f"safeyolo-{PLATFORM}-production.tar.gz"
 
     def pack():
@@ -142,16 +152,11 @@ def retained(tmp_path, monkeypatch):
             return {"sha": data["head"]}
         if "/artifacts?" in endpoint:
             return [{"artifacts": data.get("artifacts", [data["artifact"]])}]
-        if "/jobs?" in endpoint:
-            guest = "/20/" in endpoint
-            return [{"jobs": [{"id": 201 if guest else 101, "status": "completed", "conclusion": data["status"],
-                               "name": "guest-inputs (arm64) / build", "runner_name": "host-builder",
-                               "started_at": start, "completed_at": finished}]}]
         if "/actions/runs/" in endpoint:
-            guest = endpoint.split("/actions/runs/", 1)[1].startswith("20")
-            return {"head_sha": GUEST_SOURCE if guest else SOURCE, "head_branch": data.get("branch", "master"),
-                    "path": selector.GUEST_WORKFLOW if guest else selector.HOST_WORKFLOW,
-                    "event": data.get("event", "schedule"), "run_attempt": 1 if guest else 2}
+            run_id = int(endpoint.split("/actions/runs/", 1)[1].split("/", 1)[0])
+            if run_id in data.get("unavailable_runs", set()):
+                raise subprocess.CalledProcessError(1, ["gh", "api"], stderr=b"HTTP 404")
+            return [{"jobs": data["jobs"][run_id]}] if "/jobs?" in endpoint else data["runs"][run_id]
         raise AssertionError(endpoint)
 
     def capture(*args):
@@ -204,6 +209,7 @@ def test_freeze_has_independent_sources_producers_and_quarantined_guest(retained
     assert result["default_branch_head"] == "c" * 40
     assert result["host"]["producer"]["run_attempt"] == 2
     assert result["host"]["producer"]["job_id"] == 101
+    assert result["selected_host_artifact"]["producer"] == result["host"]["producer"]
     assert 0 < result["host_build_age_seconds"] < 172800
     assert result["guest"]["index"] == retained["index"]
     frozen = (tmp_path / "selection/selection.json").read_bytes()
@@ -230,7 +236,7 @@ def test_producer_completing_during_selection_is_not_mistaken_for_future_input(r
 
 @pytest.mark.parametrize("defect,reason", [
     ("expired", "expired"), ("checksum", "ZIP checksum"), ("profile", "source/profile/platform"),
-    ("source", "package-info differs"), ("failed-job", "did not complete successfully"),
+    ("source", "package-info differs"), ("failed-job", "no retained"),
     ("untrusted", "no retained"), ("wrong-attempt", "production attempt"),
     ("missing-staging", "completed-staging receipt"), ("wrong-staging-source", "source/index differs"),
     ("future-staging", "outside its successful producer job"),
@@ -247,9 +253,9 @@ def test_selected_failure_is_visible_and_never_substitutes_older_inputs(retained
         retained["source"] = "f" * 40
         retained["pack"]()
     elif defect == "failed-job":
-        retained["status"] = "failure"
+        retained["jobs"][10][0]["conclusion"] = "failure"
     elif defect == "untrusted":
-        retained["event"] = "pull_request"
+        retained["runs"][10]["event"] = "pull_request"
     elif defect == "wrong-attempt":
         retained["host"]["producer"]["run_attempt"] = 1
         retained["pack"]()
@@ -276,11 +282,102 @@ def test_newest_build_is_selected_without_using_test_success(retained, tmp_path)
     older["id"] = 99
     older["created_at"] = (datetime.now(UTC) - timedelta(days=3)).isoformat()
     retained["artifacts"] = [older, retained["artifact"]]
-    retained["status"] = "failure"
+    retained["runs"][10]["conclusion"] = "failure"
+    retained["jobs"][10].append({"id": 102, "name": "blackbox", "runner_name": "test-runner",
+                                 "status": "completed", "conclusion": "failure"})
+    selected = selector.select(tmp_path / "attempt", PLATFORM)
+    assert selected["selected_host_artifact"]["id"] == 100
+
+
+@pytest.mark.parametrize("platform", selector.PLATFORMS)
+@pytest.mark.parametrize("status,conclusion", [("in_progress", None), ("completed", "failure")])
+def test_host_qualification_waits_for_its_production_job(retained, platform, status, conclusion):
+    name = f"nightly-host-{platform}-production"
+    retained["artifact"]["name"] = name
+    job_name = f"guest-inputs ({platform.rsplit('-', 1)[1]}) / " + ("macos-host" if platform == "darwin-arm64" else "build")
+    retained["jobs"][10][0]["name"] = job_name
+    newer = copy.deepcopy(retained["artifact"])
+    newer.update(id=101, created_at=datetime.now(UTC).isoformat())
+    newer["workflow_run"]["id"] = 11
+    retained["artifacts"] = [retained["artifact"], newer]
+    retained["runs"][11] = {**retained["runs"][10], "status": status, "conclusion": conclusion}
+    retained["jobs"][11] = [{**retained["jobs"][10][0], "id": 111, "status": status, "conclusion": conclusion},
+                             {"id": 112, "name": "blackbox", "runner_name": "test-runner",
+                              "status": "completed", "conclusion": "success"}]
+    selected = selector.select_host(platform, "master", None)
+    assert selected["id"] == 100
+    # An explicit unfinished/failed run cannot silently choose another producer.
+    retained["artifacts"] = [newer]
     with pytest.raises(ValueError, match="did not complete successfully"):
-        selector.select(tmp_path / "attempt", PLATFORM)
-    record = json.loads((tmp_path / "attempt/selection.json").read_bytes())
-    assert record["selected_host_artifact"]["id"] == 100
+        selector.select_host(platform, "master", 11)
+
+
+@pytest.mark.parametrize("missing_run", [9, 10])
+def test_host_selection_ignores_only_unselected_historical_producers(retained, tmp_path, missing_run):
+    older = copy.deepcopy(retained["artifact"])
+    older.update(id=99, created_at=(datetime.now(UTC) - timedelta(days=3)).isoformat())
+    older["workflow_run"]["id"] = 9
+    retained["artifacts"] = [older, retained["artifact"]]
+    retained["unavailable_runs"] = {missing_run}
+    if missing_run == 10:
+        with pytest.raises(subprocess.CalledProcessError):
+            selector.select(tmp_path / "selection", PLATFORM)
+        failed = json.loads((tmp_path / "selection/selection.json").read_bytes())
+        assert failed["status"] == "failed" and failed["stage"] == "host-selection"
+    else:
+        selected = selector.select(tmp_path / "selection", PLATFORM)
+        assert selected["host"]["artifact"]["id"] == 100
+    assert not any("/runs/9" in call[-1] for call in retained["calls"])
+
+
+@pytest.mark.parametrize("change", ["failed-job", "attempt", "job"])
+def test_frozen_host_producer_is_verified_again_without_reselection(retained, tmp_path, change):
+    selected = selector.select_host(PLATFORM, "master", None)
+    if change == "failed-job":
+        retained["jobs"][10][0]["conclusion"] = "failure"
+    elif change == "attempt":
+        retained["host"]["producer"]["run_attempt"] = 3
+        retained["runs"][10]["run_attempt"] = 3
+    else:
+        retained["jobs"][10][0]["id"] = 102
+    retained["pack"]()
+    # Keep the selected ZIP hash matching so this challenges producer binding.
+    selected["digest"] = retained["artifact"]["digest"]
+    with pytest.raises(ValueError, match="producer"):
+        selector.download_host(selected, tmp_path, PLATFORM, "master")
+
+
+@pytest.mark.parametrize("missing_run", [20, 21])
+def test_guest_selection_ignores_only_unselected_historical_producers(retained, tmp_path, missing_run):
+    staged = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    newest = retained["add_candidate"]("guest-2026-10-17.2", staged)
+    retained["receipts"][newest["digest"]]["producer"] = {**retained["receipt"]["producer"], "run_id": 21, "job_id": 211}
+    retained["runs"][21] = copy.deepcopy(retained["runs"][20])
+    retained["jobs"][21] = [{**retained["jobs"][20][0], "id": 211}]
+    retained["unavailable_runs"] = {missing_run}
+    if missing_run == 21:
+        with pytest.raises(ValueError, match=newest["digest"]):
+            selector.select(tmp_path / "selection", PLATFORM)
+        failed = json.loads((tmp_path / "selection/selection.json").read_bytes())
+        assert failed["status"] == "failed" and newest["digest"] in failed["failure"]
+    else:
+        selected = selector.select(tmp_path / "selection", PLATFORM)
+        assert selected["guest"]["index"] == newest
+    assert not any("/runs/20" in call[-1] for call in retained["calls"])
+
+
+@pytest.mark.parametrize("status,conclusion", [("in_progress", None), ("completed", "failure")])
+def test_guest_qualification_waits_for_successful_staging_job(retained, tmp_path, status, conclusion):
+    staged = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    newest = retained["add_candidate"]("guest-2026-10-17.2", staged)
+    retained["receipts"][newest["digest"]]["producer"] = {**retained["receipt"]["producer"], "run_id": 21, "job_id": 211}
+    retained["runs"][21] = {**retained["runs"][20], "status": status, "conclusion": conclusion}
+    retained["jobs"][21] = [{**retained["jobs"][20][0], "id": 211, "status": status, "conclusion": conclusion}]
+    selected = selector.select(tmp_path / "selection", PLATFORM)
+    assert selected["guest"]["index"] == retained["index"]
+    assert selected["guest"]["uncompleted_indexes"] == [newest["digest"]]
+    with pytest.raises(ValueError, match="did not complete successfully"):
+        selector.select(tmp_path / "explicit", PLATFORM, guest_index=newest["digest"])
 
 
 def test_newest_completed_candidate_is_tested_during_quarantine_without_older_green_substitution(retained, tmp_path):
@@ -499,7 +596,8 @@ def test_actual_oras_staging_attachment_round_trip(tmp_path, monkeypatch):
         return subprocess.check_output(command, timeout=20)
 
     monkeypatch.setattr(selector, "capture", local_oras)
-    monkeypatch.setattr(selector, "verify_producer", lambda *_args: {
+    monkeypatch.setattr(selector, "verify_producer", lambda *_args, **_kwargs: {
+        "status": "completed", "conclusion": "success",
         "started_at": (now - timedelta(seconds=1)).isoformat(), "completed_at": (now + timedelta(seconds=1)).isoformat()})
     actual = selector.select_guest("v1", PLATFORM, "master", None)
     assert actual["index"] == index and actual["staged_at"] == staging["staged_at"]

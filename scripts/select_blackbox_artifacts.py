@@ -75,7 +75,9 @@ def installed_binaries(platform: str) -> tuple[str, ...]:
     return names + (("bin/safeyolo-vm", "bin/vsock-term") if platform == "darwin-arm64" else ())
 
 
-def verify_producer(producer: dict, source: str, workflow: str, branch: str) -> dict:
+def verify_producer(producer: dict, source: str, workflow: str, branch: str,
+                    *, require_success: bool = True) -> dict | None:
+    """Verify identity; automatic qualification can skip known unsuccessful jobs."""
     if producer["repository"] != REPOSITORY or producer["workflow"] != workflow:
         raise ValueError("untrusted producer repository/workflow")
     run_id, attempt = (producer[key] for key in ("run_id", "run_attempt"))
@@ -88,35 +90,48 @@ def verify_producer(producer: dict, source: str, workflow: str, branch: str) -> 
     jobs = pages(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100", "jobs")
     if "job_id" in producer:
         selected = [job for job in jobs if job["id"] == producer["job_id"]]
+    elif "job_name" in producer:
+        selected = [job for job in jobs if job["name"] == producer["job_name"]]
     else:
         selected = [job for job in jobs if job["runner_name"] == producer["runner_name"]
                     and job["name"].split(" / ")[-1] == producer["job_key"]]
-    if len(selected) != 1 or selected[0]["status"] != "completed" or selected[0]["conclusion"] != "success":
+    if len(selected) != 1:
+        raise ValueError("the selected producer job is unavailable or ambiguous")
+    job = selected[0]
+    if job["status"] != "completed" or job["conclusion"] != "success":
+        if not require_success:
+            return None
         raise ValueError("the selected producer job did not complete successfully")
-    return selected[0]
+    return job
 
 
 def select_host(platform: str, branch: str, run_id: int | None) -> dict:
     name = f"nightly-host-{platform}-production"
     endpoint = (f"actions/runs/{run_id}/artifacts?per_page=100" if run_id else
                 f"actions/artifacts?name={name}&per_page=100")
-    artifacts = pages(endpoint, "artifacts")
-    candidates = []
-    for artifact in artifacts:
-        if artifact["name"] != name or artifact["workflow_run"]["head_branch"] != branch:
-            continue
+    candidates = [artifact for artifact in pages(endpoint, "artifacts")
+                  if artifact["name"] == name and artifact["workflow_run"]["head_branch"] == branch]
+    job_key = "macos-host" if platform == "darwin-arm64" else "build"
+    job_name = f"guest-inputs ({platform.rsplit('-', 1)[1]}) / {job_key}"
+    # Order identities first. An unavailable unselected historical run is irrelevant.
+    for artifact in sorted(candidates, key=lambda item: (utc(item["created_at"]), item["id"]), reverse=True):
         run = gh(f"actions/runs/{artifact['workflow_run']['id']}")
-        if (run["path"] == HOST_WORKFLOW and run["event"] in {"schedule", "workflow_dispatch"}
-                and run["head_branch"] == branch):
-            candidates.append(artifact)
-    if not candidates:
-        raise ValueError(f"no retained default-branch production host bundle for {platform}")
-    # Test outcomes are deliberately absent from ordering and qualification.
-    selected = max(candidates, key=lambda item: (utc(item["created_at"]), item["id"]))
-    if selected["expired"]:
-        raise ValueError(f"selected host artifact {selected['id']} has expired")
-    digest(selected["digest"])
-    return {key: selected[key] for key in ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")}
+        if (run["path"] != HOST_WORKFLOW or run["event"] not in {"schedule", "workflow_dispatch"}
+                or run["head_branch"] != branch):
+            continue
+        producer = {"repository": REPOSITORY, "workflow": HOST_WORKFLOW,
+                    "run_id": artifact["workflow_run"]["id"], "run_attempt": run["run_attempt"]}
+        job = verify_producer({**producer, "job_name": job_name}, artifact["workflow_run"]["head_sha"], HOST_WORKFLOW, branch,
+                              require_success=bool(run_id))
+        # Only production completion qualifies an upload; blackbox outcomes do not.
+        if job is None:
+            continue
+        if artifact["expired"]:
+            raise ValueError(f"selected host artifact {artifact['id']} has expired")
+        digest(artifact["digest"])
+        return {**{key: artifact[key] for key in ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
+                "producer": {**producer, "job_id": job["id"]}}
+    raise ValueError(f"no retained default-branch production host bundle for {platform}")
 
 
 def download_host(artifact: dict, directory: Path, platform: str, branch: str) -> dict:
@@ -152,6 +167,8 @@ def verify_host(artifact: dict, directory: Path, platform: str, branch: str) -> 
         raise ValueError("host build time is outside its successful producer job")
     producer = {key: build["producer"][key] for key in ("repository", "workflow", "run_id", "run_attempt")}
     producer["job_id"] = job["id"]
+    if producer != artifact["producer"]:
+        raise ValueError("host artifact producer differs from the selected production attempt/job")
     archive = directory / archive_name
     with archive.open("rb") as stream:
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -187,7 +204,7 @@ def manifest(reference: str) -> tuple[dict, dict]:
     return public_descriptor(descriptor), json.loads(raw)
 
 
-def staging_receipt(index: dict, source: str, branch: str) -> dict | None:
+def staging_receipt(index: dict, source: str) -> dict | None:
     reference = f"{GUEST_REPOSITORY}@{index['digest']}"
     discovery = json.loads(capture("oras", "discover", "--format", "json", "--depth", "1",
                                    "--artifact-type", STAGING_TYPE, reference))
@@ -210,21 +227,18 @@ def staging_receipt(index: dict, source: str, branch: str) -> dict | None:
     if (receipt["schema"] != "safeyolo.guest-staging/v1" or receipt["index_digest"] != index["digest"]
             or receipt["source_revision"] != source):
         raise ValueError("staging receipt source/index differs")
-    job = verify_producer(receipt["producer"], source, GUEST_WORKFLOW, branch)
-    staged = utc(receipt["staged_at"])
-    if not utc(job["started_at"]) <= staged <= utc(job["completed_at"]):
-        raise ValueError("verified staging time is outside its successful producer job")
     return {"staged_at": receipt["staged_at"], "producer": {
         key: receipt["producer"][key] for key in ("repository", "workflow", "run_id", "run_attempt", "job_id")},
             "receipt_manifest": descriptor, "receipt_blob": public_descriptor(layers[0])}
 
 
-def select_guest(compatibility: str, platform: str, branch: str, explicit: str | None) -> dict:
+def staged_guest_candidates(compatibility: str, explicit: str | None) -> tuple[list[tuple[dict, dict]], list[str]]:
+    """Discover immutable receipt identities and times before looking up producers."""
     references = [f"{GUEST_REPOSITORY}@{digest(explicit)}"] if explicit else [
         f"{GUEST_REPOSITORY}:{tag}" for tag in
         json.loads(capture("oras", "repo", "tags", "--format", "json", GUEST_REPOSITORY))["tags"]
         if re.fullmatch(r"guest-\d{4}-\d{2}-\d{2}\.\d+", tag)]
-    complete, unstaged = [], []
+    candidates, unstaged = [], []
     for reference in references:
         index, value = manifest(reference)
         if (value["schemaVersion"] != 2 or value["mediaType"] != "application/vnd.oci.image.index.v1+json"
@@ -240,25 +254,36 @@ def select_guest(compatibility: str, platform: str, branch: str, explicit: str |
             r"guest-\d{4}-\d{2}-\d{2}\.\d+", annotations["org.opencontainers.image.version"]
         ) is None:
             raise ValueError("guest source/version identity is malformed")
-        staged = staging_receipt(index, source, branch)
+        staged = staging_receipt(index, source)
         if staged is None:
             unstaged.append(index["digest"])
             continue
-        complete.append(({"index": index, "source_revision": source, "compatibility": compatibility,
-                          "version": annotations["org.opencontainers.image.version"], **staged}, value))
-    if not complete:
-        raise ValueError("no compatible guest has a trusted completed-staging receipt; #1104 staging input is required")
-    selected, value = max(complete, key=lambda item: (utc(item[0]["staged_at"]), item[0]["index"]["digest"]))
-    try:
-        children = value["manifests"]
-        platforms = [f"{child['platform']['os']}-{child['platform']['architecture']}" for child in children]
-        if sorted(platforms) != sorted(PLATFORMS):
-            raise ValueError("compatible guest index is partial or has duplicate platforms")
-        child = guest_child(children, platforms, platform, value["annotations"])
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-        reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-        raise ValueError(f"selected guest {selected['index']['digest']}: {reason}") from exc
-    return {**selected, **child, "uncompleted_indexes": unstaged}
+        candidates.append(({"index": index, "source_revision": source, "compatibility": compatibility,
+                            "version": annotations["org.opencontainers.image.version"], **staged}, value))
+    return candidates, unstaged
+
+
+def select_guest(compatibility: str, platform: str, branch: str, explicit: str | None) -> dict:
+    candidates, unstaged = staged_guest_candidates(compatibility, explicit)
+    for selected, value in sorted(candidates, key=lambda item: (utc(item[0]["staged_at"]), item[0]["index"]["digest"]), reverse=True):
+        try:
+            job = verify_producer(selected["producer"], selected["source_revision"], GUEST_WORKFLOW, branch,
+                                  require_success=bool(explicit))
+            if job is None:
+                unstaged.append(selected["index"]["digest"])
+                continue
+            if not utc(job["started_at"]) <= utc(selected["staged_at"]) <= utc(job["completed_at"]):
+                raise ValueError("verified staging time is outside its successful producer job")
+            children = value["manifests"]
+            platforms = [f"{child['platform']['os']}-{child['platform']['architecture']}" for child in children]
+            if sorted(platforms) != sorted(PLATFORMS):
+                raise ValueError("compatible guest index is partial or has duplicate platforms")
+            child = guest_child(children, platforms, platform, value["annotations"])
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+            reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            raise ValueError(f"selected guest {selected['index']['digest']}: {reason}") from exc
+        return {**selected, **child, "uncompleted_indexes": unstaged}
+    raise ValueError("no compatible guest has a trusted completed-staging receipt; #1104 staging input is required")
 
 
 def guest_child(children: list[dict], platforms: list[str], platform: str, annotations: dict) -> dict:
@@ -331,7 +356,7 @@ def select(directory: Path, platform: str, host_run: int | None = None, guest_in
         report["stage"] = "host-selection"
         save()
         artifact = select_host(platform, branch, host_run)
-        report["selected_host_artifact"] = {key: artifact[key] for key in ("id", "digest", "name")}
+        report["selected_host_artifact"] = {key: artifact[key] for key in ("id", "digest", "name", "producer")}
         report["stage"] = "host-download"
         save()
         host = download_host(artifact, directory, platform, branch)
