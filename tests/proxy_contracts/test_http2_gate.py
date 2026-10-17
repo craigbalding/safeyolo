@@ -261,6 +261,37 @@ condition = { agent = "alice", path_prefix = "/h2-mixed/gate/limited" }
         assert {row["agent"] for row in proxy.events("proxy.request")} == {"alice"}
 
 
+@pytest.mark.parametrize("budget", ["global", "host"])
+def test_shared_h2_charges_each_global_or_host_budget_once_and_keeps_reload_state(proxy_backend, tmp_path, budget):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    policy = ('budget = 1\n[hosts]\n"*" = { egress = "allow" }\n' if budget == "global"
+              else 'budget = 12000\n[hosts]\n"127.0.0.1" = { egress = "allow", rate = 1 }\n')
+    with origin_server(pem) as origin, launch_proxy(
+        proxy_backend, directory, policy, tls=True, upstream_ca=public,
+    ) as proxy, tls_tunnel(
+        proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+    ) as stream:
+        client = GatedClient(stream, origin.authority)
+        identifiers = client.stage(3, "shared-budget")
+        with origin.changed:
+            # CONNECT has its existing separate counter. The request budget's
+            # rate=1 burst admits two streams, each with one charge.
+            assert origin.changed.wait_for(lambda: len(origin.requests) == 2, timeout=5)
+            assert not origin.changed.wait_for(lambda: any(row.get("ended") for row in origin.requests), timeout=0.2)
+        replace_policy(proxy, proxy_backend, directory, policy + "\n# retain consumed budget\n")
+        after_reload = client.stage(1, "budget-after-reload")
+        assert client.wait(after_reload)[0]["headers"][":status"] == "429"
+        admitted = [identifiers[int(row[":path"].rsplit("/", 1)[1])] for row in origin.requests]
+        client.release(admitted)
+        assert sorted(row["headers"][":status"] for row in client.wait(identifiers)) == ["200", "200", "429"]
+        assert len(origin.requests) == 2
+        assert all(row.get("ended") for row in origin.requests)
+        assert origin.accepts == 1
+
+
 def test_upstream_settings_limit_and_request_reset_keep_staged_siblings(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()
