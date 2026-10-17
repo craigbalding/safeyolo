@@ -105,7 +105,7 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
 @pytest.mark.parametrize('failure', [None, 'package', 'pip', 'imports'])
 @pytest.mark.parametrize('ca', ['provided', 'absent'])
 def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ca):
-    """Online and offline setup retain hashes and stop on package, pip or import failures."""
+    """Setup requires working tools, retains hashes and propagates install failures."""
     install_exit = 17 if failure == 'package' else 0
     pip_exit = 19 if failure == 'pip' else 0
     import_exit = 23 if failure == 'imports' else 0
@@ -115,6 +115,7 @@ def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, i
     for name in ('dirname', 'mktemp', 'install', 'rm'):
         (tools / name).symlink_to(shutil.which(name))
     record = tmp_path / 'calls'
+    package_installed = tmp_path / 'package-installed'
     python = tools / 'python3'
     inputs = tmp_path / 'offline inputs $literal'
     for name in ('debs/python.deb', 'wheels/pytest.whl'):
@@ -125,11 +126,15 @@ def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, i
 import json, sys
 arguments = sys.argv[1:]
 with open({str(record)!r}, 'a') as out: out.write(json.dumps(['python3', *arguments]) + '\\n')
-if arguments == ['-m', 'pip', '--version']:
-    sys.exit({0 if pip_ready else 1})
+if arguments[:1] == ['-c'] and 'import sys, pip' in arguments[1]:
+    from pathlib import Path
+    if not ({pip_ready!r} or Path({str(package_installed)!r}).exists()): sys.exit(1)
+    print('Python 3.13.5\\npip 25.1.1')
+    sys.exit(0)
 if arguments[:3] == ['-m', 'pip', 'install']:
     from pathlib import Path
     assert '--require-hashes' in arguments
+    assert '--ignore-installed' in arguments
     requirements = Path(arguments[arguments.index('-r') + 1])
     assert requirements == Path('tests/blackbox/guest-requirements.txt').resolve()
     assert '--hash=sha256:' in requirements.read_text()
@@ -140,7 +145,8 @@ if arguments[:3] == ['-m', 'pip', 'install']:
         assert '--no-index' not in arguments and '--find-links' not in arguments
     sys.exit({pip_exit})
 if arguments[:1] == ['-c']:
-    assert arguments[1] == 'import pytest, httpx, pytest_timeout'
+    assert 'from pytest_timeout import pytest_configure' in arguments[1]
+    print('pytest 9.0.3\\nhttpx 0.28.1\\npytest-timeout 2.4.0')
     sys.exit({import_exit})
 ''')
     python.chmod(0o755)
@@ -154,8 +160,16 @@ if arguments[:1] == ['-c']:
                                 f'    assert public_ca.stat().st_mode & 0o777 == 0o644\n'
                                 f'    assert public_ca != Path(os.environ["SSL_CERT_FILE"])\n'
                                 f'if {offline!r}: assert os.environ["DEBIAN_FRONTEND"] == "noninteractive"\n'
+                                f'if {install_exit} == 0:\n'
+                                f'    from pathlib import Path\n'
+                                f'    Path({str(package_installed)!r}).touch()\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
+    (tools / 'pytest').write_text('#!/bin/sh\nprintf "pytest 9.0.3\\n"\n')
+    (tools / 'pytest').chmod(0o755)
+    (tools / 'sync').write_text(f'#!{sys.executable}\nimport json\n'
+                               f'with open({str(record)!r}, "a") as out: out.write(json.dumps(["sync"]) + "\\n")\n')
+    (tools / 'sync').chmod(0o755)
     arguments = [str(inputs)] if offline else []
     environment = dict(os.environ, PATH=str(tools))
     environment.pop('SSL_CERT_FILE', None)
@@ -173,7 +187,7 @@ if arguments[:1] == ['-c']:
     if offline:
         assert calls[0] == [
             'apt-get', '-o', 'Dir::Etc::sourcelist=/dev/null', '-o', 'Dir::Etc::sourceparts=-',
-            '-o', 'Dpkg::Use-Pty=0', '-y', '--no-install-recommends', 'install',
+            '-o', 'Dpkg::Use-Pty=0', '-y', '--no-install-recommends', '--reinstall', 'install',
             str(inputs / 'debs/python.deb'),
         ]
         assert ['apt-get', 'update'] not in calls
@@ -195,7 +209,9 @@ if arguments[:1] == ['-c']:
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
     installed_packages = not package_needed or install_exit == 0
     assert bool(installs) == installed_packages
-    assert (calls[-1][1:2] == ['-c']) == (installed_packages and pip_exit == 0)
+    imports = [call for call in calls if call[1:2] == ['-c'] and 'pytest_configure' in call[2]]
+    assert bool(imports) == (installed_packages and pip_exit == 0)
+    assert (calls[-1] == ['sync']) == (expected_exit == 0)
 
 
 @pytest.mark.parametrize('ca', ['missing', 'directory'])
@@ -236,6 +252,45 @@ def test_offline_guest_setup_refuses_missing_inputs_before_package_commands(tmp_
     assert result.returncode == 1
     assert 'Offline guest test inputs need' in result.stderr
     assert 'command not found' not in result.stderr
+
+
+@pytest.mark.parametrize('damage', ['python', 'pip', 'imports', 'launcher', 'wrong-version', 'sync'])
+def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, damage):
+    """A zero exit without tool output cannot make preparation succeed."""
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    for name in ('dirname',):
+        (tools / name).symlink_to(shutil.which(name))
+    inputs = tmp_path / 'offline'
+    for name in ('debs/python.deb', 'wheels/pytest.whl'):
+        path = inputs / name
+        path.parent.mkdir(parents=True)
+        path.touch()
+    # This installer models a no-op same-version install or an ineffective repair.
+    (tools / 'apt-get').write_text('#!/bin/sh\nexit 0\n')
+    python = tools / 'python3'
+    python.write_text('' if damage == 'python' else f'''#!{sys.executable}
+import sys
+arguments = sys.argv[1:]
+if arguments[:1] == ['-c']:
+    if 'import sys, pip' in arguments[1]:
+        if {damage != 'pip'!r}: print('Python 3.13.5\\npip 25.1.1')
+    elif {damage != 'imports'!r}:
+        print('pytest 9.0.3\\nhttpx 0.28.1\\npytest-timeout 2.4.0')
+''')
+    (tools / 'pytest').write_text('' if damage == 'launcher' else
+                                 '#!/bin/sh\nprintf "pytest ' + ('8.0.0' if damage == 'wrong-version' else '9.0.3') + '\\n"\n')
+    (tools / 'sync').write_text('#!/bin/sh\nexit 31\n' if damage == 'sync' else '#!/bin/sh\nexit 0\n')
+    for executable in tools.iterdir():
+        if not executable.is_symlink():
+            executable.chmod(0o755)
+    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', str(inputs)],
+                            env=dict(os.environ, PATH=str(tools)), capture_output=True, text=True, timeout=10)
+    assert result.returncode == (31 if damage == 'sync' else 1), result.stdout
+    expected = ('Python and pip' if damage in ('python', 'pip') else
+                'working imports' if damage == 'imports' else 'pytest launcher')
+    if damage != 'sync':
+        assert expected in result.stderr, result.stderr
 
 
 @pytest.mark.parametrize('agent', ['bbtest', 'bbpeer', 'bbowner'])
