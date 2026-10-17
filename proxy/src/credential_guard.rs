@@ -1,7 +1,7 @@
 //! Native HTTP credential guard over the shared policy and Python-regex adapter.
 //!
-//! The caller supplies already reconciled identity and mitmproxy-equivalent ordered,
-//! combined header strings, after service injection. No secret header or match is
+//! The caller supplies reconciled identity and the ordered fields at each
+//! enforcement boundary. No secret header or match is
 //! retained in outcomes, errors, traces or audit intents. Raw-header decoding
 //! and source-byte representation are owned by `credential_text`.
 //!
@@ -378,7 +378,7 @@ impl CredentialGuard {
             .collect::<Result<Vec<_>>>()
     }
 
-    /// Adapt parser-owned ordered/combined bytes and enforce one request in a
+    /// Adapt parser-owned ordered fields and enforce one request in a
     /// single guard call.  This is the forwarding integration seam: it never
     /// consults the post-parser `HeaderMap`, so duplicate order and original
     /// spelling remain the source view. A name conversion error is distinct
@@ -464,7 +464,7 @@ impl CredentialGuard {
             .collect()
     }
     fn detect(&self, snapshot: &Snapshot, headers: &[Header<'_>]) -> Result<Vec<Detection>> {
-        let mut detections = Vec::new();
+        let mut detections = Vec::<Detection>::new();
         for header in headers {
             let name = header.name.to_lowercase();
             if snapshot
@@ -475,49 +475,64 @@ impl CredentialGuard {
                 continue;
             }
             let raw = header.value.expose_secret();
-            let extracted = if name == "authorization" {
-                extract(raw)
+            let values = if name == "authorization" {
+                authorization_values(raw)
             } else {
-                None
+                vec![raw]
             };
-            let value = extracted.as_ref().map_or(raw, |value| value.as_str());
-            let standard = snapshot.auth_headers.contains(&name);
-            let mut matched = None;
-            if standard {
-                for rule in &snapshot.rules {
-                    if rule.headers.contains(&name)
-                        && let Some(value) = rule.find(value)?.filter(|value| !value.is_empty())
-                    {
-                        matched = Some((value, rule.name.as_str(), "high", 1));
-                        break;
+            for raw in values {
+                let extracted = if name == "authorization" {
+                    extract(raw)
+                } else {
+                    None
+                };
+                let value = extracted.as_ref().map_or(raw, |value| value.as_str());
+                let standard = snapshot.auth_headers.contains(&name);
+                let mut matched = None;
+                if standard {
+                    for rule in &snapshot.rules {
+                        if rule.headers.contains(&name)
+                            && let Some(value) = rule.find(value)?.filter(|value| !value.is_empty())
+                        {
+                            matched = Some((value, rule.name.as_str(), "high", 1));
+                            break;
+                        }
                     }
                 }
-            }
-            if matched.is_none()
-                && ((standard && ["standard", "paranoid"].contains(&snapshot.level.as_str()))
-                    || (!standard && snapshot.level == "paranoid"))
-                && looks_secret(snapshot, value)?
-            {
-                matched = Some((
-                    value,
-                    "unknown_secret",
-                    if standard { "medium" } else { "low" },
-                    2,
-                ));
-            }
-            if let Some((value, rule, confidence, tier)) = matched {
-                detections.push(Detection {
-                    classified: String::new(),
-                    value: Secret::new(value),
-                    finding: Finding {
-                        rule: rule.into(),
-                        credential_type: None,
-                        header: header.name.into(),
-                        fingerprint: self.fingerprint(value),
-                        confidence,
-                        tier,
-                    },
-                });
+                if matched.is_none()
+                    && ((standard && ["standard", "paranoid"].contains(&snapshot.level.as_str()))
+                        || (!standard && snapshot.level == "paranoid"))
+                    && looks_secret(snapshot, value)?
+                {
+                    matched = Some((
+                        value,
+                        "unknown_secret",
+                        if standard { "medium" } else { "low" },
+                        2,
+                    ));
+                }
+                if let Some((value, rule, confidence, tier)) = matched {
+                    // Repeated copies in one header use the same approval and
+                    // must not charge a credential budget more than once.
+                    if detections.iter().any(|detection| {
+                        detection.finding.header.eq_ignore_ascii_case(header.name)
+                            && detection.value.expose_secret() == value
+                    }) {
+                        continue;
+                    }
+                    detections.push(Detection {
+                        classified: String::new(),
+                        value: Secret::new(value),
+                        finding: Finding {
+                            rule: rule.into(),
+                            credential_type: None,
+                            header: header.name.into(),
+                            fingerprint: self.fingerprint(value),
+                            confidence,
+                            tier,
+                        },
+                    });
+                }
             }
         }
         Ok(detections)
@@ -802,6 +817,32 @@ fn response(status: u16, body: Value) -> Response {
         body,
     }
 }
+/// Bearer and Basic encodings cannot contain a comma. Inspect each supported
+/// entry when a sender or intermediary has already combined Authorization
+/// fields. Keep the original inspection for other authentication syntax.
+fn authorization_values(value: &str) -> Vec<&str> {
+    if !value.contains(',') {
+        return vec![value];
+    }
+    let mut values = Vec::new();
+    let mut other_syntax = false;
+    for part in value.split(',') {
+        let part = part.trim_matches(python_whitespace);
+        if ["bearer ", "basic "].iter().any(|scheme| {
+            part.get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+        }) {
+            values.push(part);
+        } else {
+            other_syntax = true;
+        }
+    }
+    if other_syntax {
+        values.insert(0, value);
+    }
+    values
+}
+
 fn extract(value: &str) -> Option<Zeroizing<String>> {
     if value
         .get(..7)
