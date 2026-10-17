@@ -187,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn live_rw_shares_preserve_other_agents_host_script_boundary() {
         use std::os::unix::fs::PermissionsExt;
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         host_platform::in_instance(fixture.path().to_owned(), async {
             let workspace = fixture.path().join("workspace");
             let scripts = fixture.path().join("scripts");

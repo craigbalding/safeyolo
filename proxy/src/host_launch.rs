@@ -422,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn selection_preserves_named_agents_and_refuses_ambiguous_or_conflicting_reuse() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         host_platform::in_instance(temp.path().to_owned(), async {
             let script = temp.path().join("claude-host-setup.sh");
             std::fs::write(&script, "#!/bin/sh\nexit 99\n").unwrap();
