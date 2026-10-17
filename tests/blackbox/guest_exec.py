@@ -37,8 +37,19 @@ def prepare_guest_tests(cli: str, agent: str, *, env: dict[str, str] | None = No
     production image and prepare restarted guests, peers and lifecycle owners.
     """
     command = "bash /workspace/tests/blackbox/prepare-guest-tests.sh"
-    subprocess.run(guest_command_args(cli, agent, command, guest_root=True, env=env),
-                   env=env, check=True, timeout=300)
+    environment = os.environ if env is None else env
+    if inputs := environment.get("SAFEYOLO_GUEST_TEST_INPUTS"):
+        # Pass the guest path inside sudo; host environment variables do not
+        # survive the native shell and guest sudo boundary automatically.
+        command += " " + shlex.quote(inputs)
+    try:
+        subprocess.run(guest_command_args(cli, agent, command, guest_root=True, env=env),
+                       env=env, check=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as error:
+        # All callers are fixture entry points. Preserve the runner's setup
+        # failure exit, including when a peer/owner/restart calls us directly.
+        print(f"Test guest dependencies could not be prepared: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
 
 
 def main(arguments: list[str] | None = None) -> int:
