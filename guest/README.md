@@ -198,6 +198,88 @@ All three scripts run on Linux only. On macOS, invoke them through `build-all.sh
 
 This produces `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-tree/` (for Linux gVisor) in one pass — `build-rootfs.sh` does not split the two outputs. Re-run after deleting either output to rebuild both.
 
+## Reduced Linux ARM64 guest size
+
+The reduced guest retains Git and SSH client/server support. The
+[normal release build](https://github.com/craigbalding/safeyolo/actions/runs/38975155518/job/117222709865)
+at guest source `33224c9fc14beeb00be30eb71bdc09f91c5aa58b` produced these
+Linux ARM64 sizes:
+
+| Measurement | Bytes | Meaning |
+| --- | ---: | --- |
+| Compressed payload | 119,728,693 | Complete pax tar archive compressed with zstd; no additional Debian layer |
+| Apparent filesystem size | 386,362,719 | Logical size of the rootfs tree and cache-paths file |
+| Allocated disk usage | 406,540,288 | Filesystem blocks used by those inputs on the release builder |
+
+Here, MB means 1,000,000 bytes; KiB means 1,024 bytes. The 119.73 MB payload
+is about 46% smaller than the approximate 223 MB baseline in
+[#1082](https://github.com/craigbalding/safeyolo/issues/1082). It is about
+24.11 MB larger than that issue's 95.62 MB experimental prototype, which
+omitted Git and Linux SSH. The prototype is a comparison, not a size limit.
+SSH remains required on every supported platform, including Linux/gVisor.
+
+### Retained packages and their cost
+
+The retained hosted ARM64 archive uses Debian manifest
+`sha256:b55910b579d6eb05ebd79fbc8468b974fa39bb0610d52e1f1390bb2177ab7614`,
+mise 2026.8.8 and gh 2.98.0. Its layer digest is
+`sha256:234c1b1fb58e58822315bf896fcfaba2618ff0bcb98e73372edcf9dccbd24aad`.
+The table below comes from that archive's dpkg metadata and tar entries,
+read without extracting or changing the rootfs.
+
+The table groups all 148 installed Debian packages without overlap, using
+the package lists in the earlier ordered removal logs.
+`Installed-Size` is the sum of Debian's package size estimates in KiB. The
+file-byte column sums the files and symlink text at each group's
+dpkg-listed paths. It counts each hard-linked file once and excludes
+directories and files removed by the build's documentation filter. Neither
+column measures compressed download cost or allocated disk usage.
+
+| Retained group | Role | Installed-Size (KiB) | Existing file bytes |
+| --- | --- | ---: | ---: |
+| Git and dependencies (12 packages) | Git-dependent gh commands and repository work; includes Perl and transfer libraries | 106,022 | 88,992,466 |
+| OpenSSH and dependencies (11 packages) | SSH client, server and file transfers; includes Debian's selected systemd dependency | 30,244 | 27,059,223 |
+| Ten explicit runtime packages listed below | Network tools, trust, downloads, search, diagnostics and guest administration | 31,055 | 21,828,190 |
+| Other 115 base and shared dependency packages | Pinned Trixie base and shared libraries, including libc, shell, account and authentication tools, apt/dpkg and TLS libraries | 155,734 | 105,946,600 |
+| mise executable, outside dpkg | Install language runtimes into the persistent agent home | — | 97,464,432 |
+| gh executable, outside dpkg | GitHub workflows | — | 38,535,330 |
+
+The ten explicit runtime packages are `ca-certificates` and `curl` for trusted
+downloads; `iproute2` for network setup; `procps` for process diagnostics;
+`socat` for proxy transport; `sudo` and `util-linux` for guest administration
+and privilege helpers; `busybox-static` for applets and shutdown; `xz-utils`
+for archive extraction; and `fd-find` for searches through the `fd` helper.
+The package rows exclude paths outside dpkg file lists, including the
+separately installed mise/gh files and licence notices. They do not total
+all rootfs files. SafeYolo uses its own guest init; an installed systemd
+dependency does not mean systemd runs as the guest's init.
+
+The three OpenSSH packages at version `1:10.0p1-7+deb13u4` account for
+9,020 KiB of package size estimates. The full SSH group is larger because
+Debian selected `systemd`, `libsystemd-shared`, `libwtmpdb0`, `libedit2`,
+`libfido2-1`, `libcbor0.10`, `runit-helper` and `ucf`. Git version
+`1:2.47.3-0+deb13u1` alone accounts for 49,556 KiB. Its group also includes
+`git-man`, Perl and the libraries removed with Git in the earlier probe.
+Shared dependencies remain in the base/shared group. Git is already in the
+payload, so first use and restart need no Git installation. Matched
+acquisition-through-first-task timing remains separate evidence.
+
+[Earlier local removal probes](https://github.com/craigbalding/safeyolo/pull/1086)
+reported 7,239,959 fewer compressed bytes after removing SSH and unused
+dependencies, then another 28,575,705 fewer bytes after removing Git and its
+remaining unused dependencies. Those ordered probes reported an
+83,913,225-byte remainder. They used a separate local sample, not the later
+clean local archive or the hosted archive. The retained removal logs identify
+the packages; the disposable probe copies are no longer retained.
+
+The 83.91 MB probe remainder is about 11.71 MB below the prototype. The
+prototype figure supplies no matched package inventory or archive settings
+for this comparison. The records therefore cannot assign that difference to
+specific files or packages. The 24.11 MB total increase over the prototype
+must not be presented as the compressed cost of SSH and Git. The package
+estimates and file sizes above explain what is retained without claiming
+exact compressed attribution to the prototype.
+
 ## Download cache
 
 The build scripts keep a persistent cache of upstream downloads under `out/.download-cache/` so rebuilds don't re-fetch:
