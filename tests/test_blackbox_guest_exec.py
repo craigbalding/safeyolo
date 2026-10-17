@@ -165,6 +165,9 @@ if arguments[:1] == ['-c']:
                                 f'    Path({str(package_installed)!r}).touch()\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
+    (tools / 'dpkg-deb').write_text(f'#!{sys.executable}\nimport json,sys\n'
+                                   f'with open({str(record)!r}, "a") as out: out.write(json.dumps(["dpkg-deb", *sys.argv[1:]]) + "\\n")\n')
+    (tools / 'dpkg-deb').chmod(0o755)
     (tools / 'pytest').write_text('#!/bin/sh\nprintf "pytest 9.0.3\\n"\n')
     (tools / 'pytest').chmod(0o755)
     (tools / 'sync').write_text(f'#!{sys.executable}\nimport json\n'
@@ -185,11 +188,13 @@ if arguments[:1] == ['-c']:
     assert result.returncode == expected_exit, result.stderr
     calls = [json.loads(line) for line in record.read_text().splitlines()]
     if offline:
-        assert calls[0] == [
+        assert [call for call in calls if call[0] == 'apt-get'] == [[
             'apt-get', '-o', 'Dir::Etc::sourcelist=/dev/null', '-o', 'Dir::Etc::sourceparts=-',
             '-o', 'Dpkg::Use-Pty=0', '-y', '--no-install-recommends', '--reinstall', 'install',
             str(inputs / 'debs/python.deb'),
-        ]
+        ]]
+        extracts = [call for call in calls if call[0] == 'dpkg-deb']
+        assert extracts == ([] if pip_ready else [['dpkg-deb', '--extract', str(inputs / 'debs/python.deb'), '/']])
         assert ['apt-get', 'update'] not in calls
     elif pip_ready:
         assert not any(call[0] in ('apt-get', 'apk') for call in calls)
@@ -254,7 +259,7 @@ def test_offline_guest_setup_refuses_missing_inputs_before_package_commands(tmp_
     assert 'command not found' not in result.stderr
 
 
-@pytest.mark.parametrize('damage', ['python', 'pip', 'imports', 'launcher', 'wrong-version', 'sync'])
+@pytest.mark.parametrize('damage', ['python', 'pip', 'imports', 'launcher', 'wrong-version', 'sync', 'extractor'])
 def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, damage):
     """A zero exit without tool output cannot make preparation succeed."""
     tools = tmp_path / 'tools'
@@ -268,8 +273,9 @@ def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, dam
         path.touch()
     # This installer models a no-op same-version install or an ineffective repair.
     (tools / 'apt-get').write_text('#!/bin/sh\nexit 0\n')
+    (tools / 'dpkg-deb').write_text('#!/bin/sh\nexit 37\n' if damage == 'extractor' else '#!/bin/sh\nexit 0\n')
     python = tools / 'python3'
-    python.write_text('' if damage == 'python' else f'''#!{sys.executable}
+    python.write_text('' if damage in ('python', 'extractor') else f'''#!{sys.executable}
 import sys
 arguments = sys.argv[1:]
 if arguments[:1] == ['-c']:
@@ -286,10 +292,10 @@ if arguments[:1] == ['-c']:
             executable.chmod(0o755)
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', str(inputs)],
                             env=dict(os.environ, PATH=str(tools)), capture_output=True, text=True, timeout=10)
-    assert result.returncode == (31 if damage == 'sync' else 1), result.stdout
+    assert result.returncode == (37 if damage == 'extractor' else 31 if damage == 'sync' else 1), result.stdout
     expected = ('Python and pip' if damage in ('python', 'pip') else
                 'working imports' if damage == 'imports' else 'pytest launcher')
-    if damage != 'sync':
+    if damage not in ('sync', 'extractor'):
         assert expected in result.stderr, result.stderr
 
 

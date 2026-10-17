@@ -24,6 +24,13 @@ if [[ -n "$offline_inputs" ]]; then
         echo "Offline guest test inputs need debs/*.deb and wheels/*.whl: $offline_inputs" >&2
         exit 1
     fi
+    if ! python_and_pip_ready >/dev/null 2>&1; then
+        # Restore payloads before APT configures Python. Its package scripts
+        # can import a damaged standard library before APT replaces that file.
+        for deb in "${debs[@]}"; do
+            dpkg-deb --extract "$deb" /
+        done
+    fi
     # Empty repository settings keep dependency resolution on local archives.
     # Reinstall because same-version status does not prove usable package files.
     DEBIAN_FRONTEND=noninteractive apt-get -o Dir::Etc::sourcelist=/dev/null \
