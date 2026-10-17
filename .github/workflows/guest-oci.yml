@@ -32,6 +32,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_reduced_default:
+        description: Publish retained guest-2026-10-16.1082 with its version tag and advance compat-v1
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -43,7 +48,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ !inputs.publish_initial_g1 && !inputs.publish_retained_g2 && !inputs.publish_transport_fixture && !inputs.publish_reduced_guest }}
+    if: ${{ !inputs.publish_initial_g1 && !inputs.publish_retained_g2 && !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
     strategy:
       fail-fast: false
       matrix:
@@ -123,7 +128,7 @@ jobs:
   publish:
     # Relay dispatches a retained guest or the digest-only transport fixture.
     # Craig's #237 publication authority covers these; preparation stays default.
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_initial_g1 || inputs.publish_retained_g2 || inputs.publish_transport_fixture || inputs.publish_reduced_guest) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_initial_g1 || inputs.publish_retained_g2 || inputs.publish_transport_fixture || inputs.publish_reduced_guest || inputs.publish_reduced_default) }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -138,9 +143,10 @@ jobs:
           PUBLISH_RETAINED_G2: ${{ inputs.publish_retained_g2 }}
           PUBLISH_TRANSPORT_FIXTURE: ${{ inputs.publish_transport_fixture }}
           PUBLISH_REDUCED_GUEST: ${{ inputs.publish_reduced_guest }}
+          PUBLISH_REDUCED_DEFAULT: ${{ inputs.publish_reduced_default }}
         run: |
-          case "$PUBLISH_INITIAL_G1/$PUBLISH_RETAINED_G2/$PUBLISH_TRANSPORT_FIXTURE/$PUBLISH_REDUCED_GUEST" in
-            true/false/false/false)
+          case "$PUBLISH_INITIAL_G1/$PUBLISH_RETAINED_G2/$PUBLISH_TRANSPORT_FIXTURE/$PUBLISH_REDUCED_GUEST/$PUBLISH_REDUCED_DEFAULT" in
+            true/false/false/false/false)
               version=guest-2026-10-12.1
               revision=8234a047d810d543d8c4d1cb1fa9859987be035b
               index=sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
@@ -149,7 +155,7 @@ jobs:
               layout_id=11747551391
               publisher_revision=$revision
               ;;
-            false/true/false/false|false/false/true/false)
+            false/true/false/false/false|false/false/true/false/false)
               version=guest-2026-10-16.1
               revision=ee291fba78ab34e4dca630d529ac8083ec29802f
               index=sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b
@@ -158,7 +164,7 @@ jobs:
               layout_id=12045630940
               publisher_revision=$GITHUB_SHA
               ;;
-            false/false/false/true)
+            false/false/false/true/false|false/false/false/false/true)
               version=guest-2026-10-16.1082
               revision=33224c9fc14beeb00be30eb71bdc09f91c5aa58b
               index=sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e
@@ -188,7 +194,7 @@ jobs:
         with:
           ref: ${{ env.PUBLISHER_REVISION }}
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest }}
+        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
         with:
           artifact-ids: ${{ env.GUEST_ARCHIVE_IDS }}
           run-id: ${{ env.GUEST_RUN_ID }}
@@ -214,7 +220,7 @@ jobs:
           SAFEYOLO_BUILD_REVISION: ${{ env.PUBLISHER_REVISION }}
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
       - name: Verify retained inputs before registry authentication
-        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest }}
+        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
         run: |
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
           proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
@@ -225,7 +231,7 @@ jobs:
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
       - name: Verify retained reduced guest before registry authentication
         id: verify_reduced_guest
-        if: ${{ inputs.publish_reduced_guest }}
+        if: ${{ inputs.publish_reduced_guest || inputs.publish_reduced_default }}
         run: |
           [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
           proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
@@ -242,10 +248,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Upload, verify and promote the complete guest release
-        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest }}
+        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
         run: |
           scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
             --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
+            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
+            --verifier proxy/target/release/examples/verify_guest_oci \
+            --publish ghcr.io/craigbalding/safeyolo-guest
+      - name: Publish the retained reduced guest as the default
+        if: ${{ inputs.publish_reduced_default }}
+        run: |
+          scripts/publish_guest_oci.sh --from-layout \
+            --layout "$RUNNER_TEMP/retained-guest-oci" --version "$GUEST_VERSION" \
             --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
             --verifier proxy/target/release/examples/verify_guest_oci \
             --publish ghcr.io/craigbalding/safeyolo-guest

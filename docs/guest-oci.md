@@ -321,16 +321,91 @@ config and blob, including distinct Mac/Linux arm64 archive identities.
 Preparation does not prove public retrieval, bootable platform content, native
 acquisition or the installed independent-update scenario.
 
-### Publish the retained reduced guest by digest
+### Publish the retained reduced guest
 
-The `publish_reduced_guest` mode publishes the complete retained layout for
+Both reduced-guest modes use the complete retained layout for
 `guest-2026-10-16.1082`. The input is Actions run `38975155518`, artifact
 `12079186556`, from guest source `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`.
 The artifact ZIP is 368559598 bytes with SHA-256
 `53ce993673eb4e118e256601d5a5f6db1c690c48e7a52774213636f09daf349a`.
 The workflow checks the pinned release index and every child, config and archive
-before registry authentication. It does not rebuild guests or recreate the
+before registry authentication. Neither mode rebuilds guests or recreates the
 layout. The existing job-local repository token supplies registry access.
+
+#### Make the reduced guest the default
+
+The `publish_reduced_default` mode creates the immutable
+`guest-2026-10-16.1082` tag and advances `compat-v1`. Normal guest discovery
+then selects the reduced guest. Existing installed selections stay unchanged
+until an explicit guest upgrade. G1, G2, other compatibility generations and
+rollback content remain available.
+
+After the reviewed workflow change is integrated on `master`, Relay runs the
+commands from the repository checkout with repository Actions access.
+Select only this publication mode. The workflow uses the original retained
+layout with `publish_guest_oci.sh --from-layout`; it needs no separate archives.
+The shared publisher fetches and verifies every uploaded child, config and
+archive in fresh local storage before setting either tag.
+
+Before dispatch, use pinned ORAS 1.3.4 to inspect the live targets from the
+maintainer's terminal. `compat-v1` can already point to the reduced index after
+an identical successful run. A version tag that exists must match its release.
+If a prior write has an uncertain result, inspect that run and these targets
+before deciding whether to retry. The publisher refuses a conflicting version.
+
+```sh
+repository=ghcr.io/craigbalding/safeyolo-guest
+for tag in compat-v1 guest-2026-10-12.1 guest-2026-10-16.1; do
+  oras resolve "$repository:$tag" || exit 1
+done
+oras repo tags "$repository" || exit 1
+```
+
+The prior G1 index is
+`sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e`.
+The prior G2 and initial `compat-v1` index is
+`sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b`.
+
+Dispatch the default publication:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f version=guest-2026-10-16.1082 -f compatibility=v1 \
+  -f publish_reduced_default=true
+```
+
+Success prints `Published ghcr.io/craigbalding/safeyolo-guest:guest-2026-10-16.1082`
+and the `compat-v1` index digest. No guest or host is rebuilt. The guest source
+stays `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`.
+
+For the completed dispatch, set `run_id` to its actual Actions run ID.
+Require a successful run, then check anonymous discovery with an empty ORAS
+registry configuration. These commands run from the same terminal. `mktemp`
+creates only a small temporary configuration file.
+
+```sh
+test "$(gh run view "$run_id" --repo craigbalding/safeyolo --json conclusion --jq .conclusion)" = success || exit 1
+registry_config=$(mktemp)
+printf '{"auths":{}}\n' > "$registry_config"
+expected=sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e
+for tag in guest-2026-10-16.1082 compat-v1; do
+  actual=$(oras resolve --registry-config "$registry_config" "$repository:$tag") || exit 1
+  test "$actual" = "$expected" || exit 1
+done
+test "$(oras resolve --registry-config "$registry_config" "$repository:guest-2026-10-12.1")" = sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e || exit 1
+test "$(oras resolve --registry-config "$registry_config" "$repository:guest-2026-10-16.1")" = sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b || exit 1
+rm -- "$registry_config"
+```
+
+Each new tag must resolve to the exact retained reduced index. The prior version
+tags must retain their original targets. Publication does not establish a new
+installation or timing result. Factory installation is a separate operation.
+
+#### Publish by digest only
+
+The `publish_reduced_guest` mode remains available for digest-only recovery
+and explicit-index consumers. It leaves the version and compatibility tags
+unchanged. Do not combine it with `publish_reduced_default`.
 
 After the reviewed workflow change is integrated on `master`, Relay can run
 this command from the repository checkout with repository Actions access:
@@ -339,7 +414,8 @@ this command from the repository checkout with repository Actions access:
 gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
   -f version=guest-2026-10-16.1082 -f compatibility=v1 \
   -f publish_initial_g1=false -f publish_retained_g2=false \
-  -f publish_transport_fixture=false -f publish_reduced_guest=true
+  -f publish_transport_fixture=false -f publish_reduced_guest=true \
+  -f publish_reduced_default=false
 ```
 
 The workflow copies the full graph by digest. It creates no public version tag
@@ -368,9 +444,8 @@ done
 
 The immutable guest input is
 `ghcr.io/craigbalding/safeyolo-guest@sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e`.
-Publication readback establishes registry availability. The selected native
-consumer must still acquire that index and complete its first production
-edit/check. Publication alone does not establish matched acquisition timing.
+Publication readback establishes registry availability. Acquisition, the first
+production edit/check and matched timing require their own runtime results.
 
 ### Publish a nonbootable transport fixture
 
@@ -516,8 +591,9 @@ index. After index readback succeeds, it assigns the guest version and advances
 `compat-<C>`. Repeating identical input is allowed; conflicting reuse of a guest
 version fails. ORAS's creation annotation is fixed to the version date so retries
 do not change content identity. Any failed verification stops before promotion.
-An interrupted upload can leave untagged content; retry with the same source
-and artifacts. The publisher never deletes prior version tags, indexes,
+An interrupted upload can leave untagged content. After checking the failed run
+and live tags, retry with the same source and artifacts or retained layout.
+The publisher never deletes prior version tags, indexes,
 manifests or blobs. It leaves other compatibility generations unchanged.
 
 After the first authorized publication, the package owner must make the GHCR
@@ -548,8 +624,12 @@ The tests check archive metadata, real OCI creation, upload/readback ordering,
 immutable-version conflicts/retries, incomplete and corrupt content refusal,
 older-channel retention and default-off retained-release workflow controls. The
 workflow controls also execute pre-authentication validation with native-verified
-fixtures for G1 and G2. They check source/run/artifact bindings and challenge
-conflicting modes, versions, compatibility, and missing or corrupt retained inputs. The
+fixtures for G1, G2 and the retained reduced guest. They check source/run/artifact bindings and challenge
+conflicting modes, versions, compatibility, and missing or corrupt retained inputs.
+The default-publication controls execute the workflow command against the local
+registry. They check complete readback before promotion, immutable conflicts,
+identical retries, recovery between version and channel writes, and preservation
+of prior versions and other generations. The
 sparse-map test reports a skip if the filesystem cannot supply its required sparse fixture.
 The metadata test stages only a few KiB on the guest filesystem to exercise
 numeric ownership; archives and registry data use the disk-backed basetemp.

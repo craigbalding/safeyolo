@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Prepare an OCI guest release; upload/promote only with an explicit destination.
+# Prepare or reuse an OCI guest release; publish only to an explicit destination.
 set -euo pipefail
 usage() {
-    echo 'Usage: publish_guest_oci.sh --artifacts DIR --layout DIR --version TAG --compatibility C --revision SHA --verifier EXECUTABLE [--publish REPOSITORY] [--plain-http]' >&2
+    echo 'Usage: publish_guest_oci.sh (--artifacts DIR | --from-layout) --layout DIR --version TAG --compatibility C --revision SHA --verifier EXECUTABLE [--publish REPOSITORY] [--plain-http]' >&2
     exit 64
 }
 artifacts= layout= version= compatibility= revision= verifier= repository=
-plain_http=0
+plain_http=0 from_layout=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --plain-http) plain_http=1; shift ;;
+        --from-layout) from_layout=1; shift ;;
         --artifacts|--layout|--version|--compatibility|--revision|--verifier|--publish)
             [[ $# -ge 2 && -n "$2" ]] || usage
             case "$1" in
@@ -22,45 +23,64 @@ while [[ $# -gt 0 ]]; do
         *) usage ;;
     esac
 done
-[[ -n "$artifacts" && -n "$layout" && -n "$version" && -n "$compatibility" && -n "$revision" && -x "$verifier" ]] || usage
+[[ -n "$layout" && -n "$version" && -n "$compatibility" && -n "$revision" && -x "$verifier" ]] || usage
+if (( from_layout )); then
+    [[ -z "$artifacts" && -d "$layout" ]] || usage
+else
+    [[ -n "$artifacts" ]] || usage
+    artifacts=$(cd -- "$artifacts" && pwd)
+    mkdir -p -- "$layout"
+fi
 oras=${ORAS:-oras}
 [[ $("$oras" version | sed -n 's/^Version: *//p') == 1.3.4 ]] || { echo 'ORAS 1.3.4 is required.' >&2; exit 1; }
-artifacts=$(cd -- "$artifacts" && pwd)
 verifier=$(realpath -- "$verifier")
-mkdir -p -- "$layout"
 layout=$(cd -- "$layout" && pwd)
 scratch=$(mktemp -d "$layout/.publish.XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
-artifact_type=application/vnd.safeyolo.guest.v1
-annotations=(
-    --annotation "org.opencontainers.image.version=$version"
-    --annotation 'org.opencontainers.image.source=https://github.com/craigbalding/safeyolo'
-    --annotation "org.opencontainers.image.revision=$revision"
-    --annotation "dev.safeyolo.guest.compatibility=$compatibility"
-    # ORAS otherwise adds the current time, making identical retries conflict.
-    --annotation "org.opencontainers.image.created=${version:6:10}T00:00:00Z"
-)
-children=()
-for platform in darwin-arm64 linux-amd64 linux-arm64; do
-    directory="$artifacts/$platform"
-    [[ -s "$directory/guest.tar.zst" && -s "$directory/build-base.txt" ]] || {
-        echo "Missing archive or pinned build provenance: $directory" >&2; exit 1;
-    }
-    build_base=$(cat "$directory/build-base.txt")
-    printf '{"os":"%s","architecture":"%s"}' "${platform%-*}" "${platform##*-}" > "$scratch/platform.json"
-    (
-        cd -- "$directory"
-        "$oras" push --oci-layout --image-spec v1.1 --artifact-type "$artifact_type" \
-            --config "$scratch/platform.json:application/vnd.safeyolo.guest.platform.v1+json" \
-            "${annotations[@]}" --annotation "dev.safeyolo.guest.build-base=$build_base" \
-            "$layout:$version-$platform" 'guest.tar.zst:application/vnd.safeyolo.guest.v1.tar+zstd' >/dev/null
+if (( ! from_layout )); then
+    artifact_type=application/vnd.safeyolo.guest.v1
+    annotations=(
+        --annotation "org.opencontainers.image.version=$version"
+        --annotation 'org.opencontainers.image.source=https://github.com/craigbalding/safeyolo'
+        --annotation "org.opencontainers.image.revision=$revision"
+        --annotation "dev.safeyolo.guest.compatibility=$compatibility"
+        # ORAS otherwise adds the current time, making identical retries conflict.
+        --annotation "org.opencontainers.image.created=${version:6:10}T00:00:00Z"
     )
-    children+=("$("$oras" resolve --oci-layout "$layout:$version-$platform")")
-done
-"$oras" manifest index create --oci-layout --artifact-type "$artifact_type" \
-    "${annotations[@]}" "$layout:$version" "${children[@]}" >/dev/null
+    children=()
+    for platform in darwin-arm64 linux-amd64 linux-arm64; do
+        directory="$artifacts/$platform"
+        [[ -s "$directory/guest.tar.zst" && -s "$directory/build-base.txt" ]] || {
+            echo "Missing archive or pinned build provenance: $directory" >&2; exit 1;
+        }
+        build_base=$(cat "$directory/build-base.txt")
+        printf '{"os":"%s","architecture":"%s"}' "${platform%-*}" "${platform##*-}" > "$scratch/platform.json"
+        (
+            cd -- "$directory"
+            "$oras" push --oci-layout --image-spec v1.1 --artifact-type "$artifact_type" \
+                --config "$scratch/platform.json:application/vnd.safeyolo.guest.platform.v1+json" \
+                "${annotations[@]}" --annotation "dev.safeyolo.guest.build-base=$build_base" \
+                "$layout:$version-$platform" 'guest.tar.zst:application/vnd.safeyolo.guest.v1.tar+zstd' >/dev/null
+        )
+        children+=("$("$oras" resolve --oci-layout "$layout:$version-$platform")")
+    done
+    "$oras" manifest index create --oci-layout --artifact-type "$artifact_type" \
+        "${annotations[@]}" "$layout:$version" "${children[@]}" >/dev/null
+fi
 index_digest=$("$oras" resolve --oci-layout "$layout:$version")
+index_file="$layout/blobs/sha256/${index_digest#sha256:}"
+# A retained layout must match the requested release, without recreating bytes.
+jq -e --arg version "$version" --arg revision "$revision" \
+    '.annotations["org.opencontainers.image.version"] == $version and
+     .annotations["org.opencontainers.image.revision"] == $revision' "$index_file" >/dev/null || {
+    echo 'Guest layout does not match the requested version and revision.' >&2; exit 1;
+}
 "$verifier" "$layout" "$index_digest" "$compatibility"
+jq -r '.manifests[].digest' "$index_file" > "$scratch/children"
+children=()
+while IFS= read -r child; do
+    children+=("$child")
+done < "$scratch/children"
 echo "Prepared $version at $index_digest"
 [[ -n "$repository" ]] || exit 0
 
@@ -89,7 +109,6 @@ roundtrip="$scratch/roundtrip"
 for child in "${children[@]}"; do
     "$oras" cp --to-oci-layout "${from_options[@]}" "$repository@$child" "$roundtrip" >/dev/null
 done
-index_file="$layout/blobs/sha256/${index_digest#sha256:}"
 cp -- "$index_file" "$roundtrip/blobs/sha256/${index_digest#sha256:}"
 "$verifier" "$roundtrip" "$index_digest" "$compatibility"
 
