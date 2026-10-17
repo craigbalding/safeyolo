@@ -2713,12 +2713,13 @@ def test_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch, 
             primary_args += ["--client-port", "46370", "--monitor-port", "46372"]
         primary = original_checked(primary_args)
         before = original_checked([cli, "--root", str(source), "coord", "status"]).stdout
-        upstream_ca = ssl.get_default_verify_paths().cafile
-        assert upstream_ca is not None and Path(upstream_ca).is_file()
+        upstream_ca = str(source / "certs/mitmproxy-ca-cert.pem")
+        assert Path(upstream_ca).is_file()
         with pytest.raises(GuestBootBoundary):
             lifecycle.prepare_owner(cli, owner, source,
                                     {"parent_proxy": "", "upstream_ca_file": upstream_ca},
                                     str(source / "bin/safeyolo-proxy"), parent / "unused.json")
+        assert tomllib.loads((owner / "config.toml").read_text())["upstream_ca_file"] == upstream_ca
         observed = json.loads(original_checked([cli, "--root", str(owner), "coord", "status"]).stdout)
         assert observed["state"] == "running", observed
         owner_status = observed["process"]
