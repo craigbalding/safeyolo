@@ -112,7 +112,8 @@ def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, i
     package_needed = offline or not pip_ready
     tools = tmp_path / 'tools'
     tools.mkdir()
-    (tools / 'dirname').symlink_to(shutil.which('dirname'))
+    for name in ('dirname', 'mktemp', 'install', 'rm'):
+        (tools / name).symlink_to(shutil.which(name))
     record = tmp_path / 'calls'
     python = tools / 'python3'
     inputs = tmp_path / 'offline inputs $literal'
@@ -146,6 +147,12 @@ if arguments[:1] == ['-c']:
     package_installer = tools / installer
     package_installer.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
                                 f'with open({str(record)!r}, "a") as out: out.write(json.dumps([{installer!r}, *sys.argv[1:]]) + "\\n")\n'
+                                f'if {installer == "apt-get" and not offline and ca == "provided"!r}:\n'
+                                f'    from pathlib import Path\n'
+                                f'    public_ca = Path(next(arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("Acquire::https::CaInfo=")))\n'
+                                f'    assert public_ca.read_text() == "selected public CA"\n'
+                                f'    assert public_ca.stat().st_mode & 0o777 == 0o644\n'
+                                f'    assert public_ca != Path(os.environ["SSL_CERT_FILE"])\n'
                                 f'if {offline!r}: assert os.environ["DEBIAN_FRONTEND"] == "noninteractive"\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
@@ -155,6 +162,7 @@ if arguments[:1] == ['-c']:
     selected_ca = tmp_path / 'selected CA $literal.pem'
     if ca == 'provided':
         selected_ca.write_text('selected public CA')
+        selected_ca.chmod(0o600)
         environment['SSL_CERT_FILE'] = str(selected_ca)
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', *arguments],
                             env=environment, text=True,
@@ -172,7 +180,13 @@ if arguments[:1] == ['-c']:
     elif pip_ready:
         assert not any(call[0] in ('apt-get', 'apk') for call in calls)
     elif installer == 'apt-get':
-        tls = ['-o', f'Acquire::https::CaInfo={selected_ca}'] if ca == 'provided' else []
+        tls = []
+        if ca == 'provided':
+            apt_ca = next(arg for call in calls for arg in call if arg.startswith('Acquire::https::CaInfo='))
+            tls = ['-o', apt_ca]
+            assert not Path(apt_ca.split('=', 1)[1]).exists()
+            assert selected_ca.read_text() == 'selected public CA'
+            assert selected_ca.stat().st_mode & 0o777 == 0o600
         assert ['apt-get', *tls, '-o', 'APT::Update::Error-Mode=any', 'update'] in calls
         if install_exit == 0:
             assert ['apt-get', *tls, 'install', '-y', '--no-install-recommends', 'python3', 'python3-pip'] in calls

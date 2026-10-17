@@ -31,7 +31,12 @@ elif ! python3 -m pip --version >/dev/null 2>&1; then
                 echo "The test guest TLS CA file is not readable: $SSL_CERT_FILE" >&2
                 exit 1
             fi
-            apt_tls_options=(-o "Acquire::https::CaInfo=$SSL_CERT_FILE")
+            # APT's _apt user cannot read an owner-only injected CA. Stage
+            # the public certificate without changing the original file.
+            apt_ca=$(mktemp /tmp/safeyolo-blackbox-ca.XXXXXX)
+            trap 'rm -f -- "$apt_ca"' EXIT
+            install -m 0644 -- "$SSL_CERT_FILE" "$apt_ca"
+            apt_tls_options=(-o "Acquire::https::CaInfo=$apt_ca")
         fi
         apt-get ${apt_tls_options[@]+"${apt_tls_options[@]}"} -o APT::Update::Error-Mode=any update
         DEBIAN_FRONTEND=noninteractive apt-get ${apt_tls_options[@]+"${apt_tls_options[@]}"} \
