@@ -128,9 +128,20 @@ impl Fixture {
     }
 
     pub(crate) async fn admin(&self, method: &str, path: &str, value: Option<Value>) -> Reply {
+        self.admin_with_token("synthetic-operator-token", method, path, value)
+            .await
+    }
+
+    pub(crate) async fn admin_with_token(
+        &self,
+        token: &str,
+        method: &str,
+        path: &str,
+        value: Option<Value>,
+    ) -> Reply {
         let body = value.map(|value| value.to_string()).unwrap_or_default();
         let mut stream = TcpStream::connect(("127.0.0.1", self.admin)).await.unwrap();
-        stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer synthetic-operator-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         receive(&mut stream).await
     }
 

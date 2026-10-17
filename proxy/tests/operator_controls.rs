@@ -446,10 +446,10 @@ use_default_credential_rules = false
     let mut stalled = connect_stalled_events(port, token).await;
     let mut observer = connect_events(port, token).await;
 
-    // Keep `stalled` connected but never read from it. Each complete selected
-    // event is 256 KiB and the burst is larger than TCP's send buffer. The
-    // second real WebSocket drains the same burst and waits for its final
-    // marker, providing a stream-tail barrier instead of a timer.
+    // Keep `stalled` unread through the control checks and owned shutdown.
+    // Each event is 256 KiB and the burst exceeds TCP's send buffer. The
+    // second WebSocket checks event order through its final marker. That
+    // marker does not establish completion of the slow subscriber's write.
     let summary = "x".repeat(256 * 1024);
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -497,12 +497,6 @@ use_default_credential_rules = false
     assert_eq!(barrier["summary"], "event stream backpressure barrier");
     assert_eq!(sequences, (0..32).collect::<Vec<_>>());
 
-    let mut discarded = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), stalled.read_to_end(&mut discarded))
-        .await
-        .expect("stalled stream did not reach EOF after the bounded server write timeout")
-        .unwrap();
-
     let stream = UnixStream::connect(directory.path().join("alice.sock"))
         .await
         .unwrap();
@@ -522,13 +516,27 @@ use_default_credential_rules = false
         "stalled event subscriber delayed enforcement"
     );
     assert_eq!(origin_count.load(Ordering::Acquire), 0);
+    assert_eq!(
+        admin(port, token, "GET", "/admin/runtime-identity", b"")
+            .await
+            .status,
+        200,
+        "stalled event subscriber blocked Admin controls"
+    );
 
     drop(sender);
     let _ = connection_task.await;
-    drop(stalled);
     drop(observer);
-    proxy.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(5), proxy.shutdown())
+        .await
+        .expect("owned shutdown did not finish with the subscriber unread");
+    let mut discarded = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stalled.read_to_end(&mut discarded))
+        .await
+        .expect("stalled stream did not reach EOF after owned shutdown")
+        .unwrap();
     origin_task.abort();
+    let _ = origin_task.await;
 }
 
 #[tokio::test]

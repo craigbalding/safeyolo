@@ -154,7 +154,14 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             match credential_record(&writer, &policy, &id) {
                 Ok(Some(view)) => return Ok(response(StatusCode::OK, view)),
                 Ok(None) => {},
-                Err(error) => return Ok(response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error}))),
+                Err(error) => {
+                    // A credential evidence failure cannot hide a committed
+                    // network grant. Audit-only records cannot supply this fallback.
+                    return Ok(match network_action::committed_record(&policy, &id) {
+                        Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
+                        _ => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error})),
+                    });
+                },
             }
             Ok(match network_action::record(&writer, &policy, &id) {
                 Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
