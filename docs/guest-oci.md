@@ -321,6 +321,59 @@ config and blob, including distinct Mac/Linux arm64 archive identities.
 Preparation does not prove public retrieval, bootable platform content, native
 acquisition or the installed independent-update scenario.
 
+### Publish the retained reduced guest by digest
+
+The `publish_reduced_guest` mode publishes the complete retained layout for
+`guest-2026-10-16.1082`. The input is Actions run `38975155518`, artifact
+`12079186556`, from guest source `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`.
+The artifact ZIP is 368559598 bytes with SHA-256
+`53ce993673eb4e118e256601d5a5f6db1c690c48e7a52774213636f09daf349a`.
+The workflow checks the pinned release index and every child, config and archive
+before registry authentication. It does not rebuild guests or recreate the
+layout. The existing job-local repository token supplies registry access.
+
+After the reviewed workflow change is integrated on `master`, Relay can run
+this command from the repository checkout with repository Actions access:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f version=guest-2026-10-16.1082 -f compatibility=v1 \
+  -f publish_initial_g1=false -f publish_retained_g2=false \
+  -f publish_transport_fixture=false -f publish_reduced_guest=true
+```
+
+The workflow copies the full graph by digest. It creates no public version tag
+and preserves `compat-v1`, G1 and G2. A successful run returns
+`reduced-guest-publication-result` with the registry's index, child manifests,
+configs and the three tag targets before and after publication. The script
+compares these metadata bytes with the retained layout. It does not download
+the archives again. Read the run's status before using its result; the workflow
+also retains partial readbacks after a publication failure.
+
+For a completed publication run, set `run_id` to that dispatch's run ID and
+`readback` to a new directory outside the checkout. From the repository checkout,
+download and check the result:
+
+```sh
+test "$(gh run view "$run_id" --repo craigbalding/safeyolo --json conclusion --jq .conclusion)" = success
+gh run download "$run_id" --repo craigbalding/safeyolo \
+  --name reduced-guest-publication-result --dir "$readback"
+printf '%s  %s\n' \
+  14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e \
+  "$readback/public-index.json" | sha256sum --check
+for tag in compat-v1 guest-2026-10-12.1 guest-2026-10-16.1; do
+  cmp "$readback/before-$tag" "$readback/after-$tag" || exit 1
+done
+```
+
+The immutable guest input is
+`ghcr.io/craigbalding/safeyolo-guest@sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e`.
+Publication readback establishes registry availability. The selected native
+consumer must still acquire that index and complete its first production
+edit/check. Publication alone does not establish matched acquisition timing.
+
+### Publish a nonbootable transport fixture
+
 For #239's single transfer over 2 GiB, `publish_transport_fixture` uses the
 retained, verified G2 layout as seed input. The workflow does not rebuild a
 guest. It keeps the G2 kernel and initramfs and generates a 2049 MiB random
