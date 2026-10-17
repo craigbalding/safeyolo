@@ -10,6 +10,7 @@ python3 stdlib (os, socket, ctypes, subprocess).
 
 import ctypes
 import ctypes.util
+import errno
 import json
 import os
 import platform as _platform
@@ -1174,34 +1175,48 @@ class TestSyscallSeccompEquivalents:
         assert ret == -1, f"{name} syscall succeeded (ret={ret})"
         assert err != 0, f"{name} returned -1 with errno=0"
 
-    def test_keyctl_blocked(self):
-        """keyctl(2) returns -1 with non-zero errno.
+    def _assert_keyring_syscall_refused(self, num: int, args: tuple, name: str) -> None:
+        libc = self._libc()
+        libc.syscall.restype = ctypes.c_long
+        getpid = self._syscall_num({"x86_64": 39, "aarch64": 172})
+        ctypes.set_errno(0)
+        assert libc.syscall(getpid) == os.getpid(), "getpid syscall positive control failed"
+        ctypes.set_errno(0)
+        ret = libc.syscall(num, *args)
+        err = ctypes.get_errno()
+        assert ret == -1, f"{name} syscall succeeded (ret={ret})"
+        assert err in (errno.ENOSYS, errno.EPERM, errno.EACCES), (
+            f"{name} returned errno={err} ({errno.errorcode.get(err, 'unknown')}); "
+            "expected an unavailable syscall or a permission refusal"
+        )
+        print(f"{name}: syscall={num} ret={ret} errno={err} ({errno.errorcode[err]}); getpid control passed")
 
-        What: Call SYS_keyctl with KEYCTL_GET_KEYRING_ID=0 and zero
-        args; assert ret == -1 and errno != 0.
-        Why: The kernel keyring is a shared store across processes.
-        CVE-2017-6074 and several related issues exploited keyctl
-        to escalate privileges — a standard target of conservative
-        container seccomp profiles.
+    def test_keyctl_blocked(self):
+        """A valid keyctl request is unavailable or permission denied.
+
+        What: Request this thread's keyring with creation enabled. Require
+        ENOSYS, EPERM or EACCES after a successful getpid syscall control.
+        Why: This valid request needs no existing key or special privilege
+        on an unrestricted kernel. Invalid arguments and a missing key do
+        not establish refusal of access to the kernel keyring.
         """
-        # SYS_keyctl: x86_64=250, aarch64=217
-        num = self._syscall_num({"x86_64": 250, "aarch64": 217})
-        # keyctl(KEYCTL_GET_KEYRING_ID=0, 0, 0, 0, 0)
-        self._assert_syscall_fails(num, (0, 0, 0, 0, 0), "keyctl")
+        num = self._syscall_num({"x86_64": 250, "aarch64": 219})
+        # KEYCTL_GET_KEYRING_ID=0, KEY_SPEC_THREAD_KEYRING=-1, create=1.
+        self._assert_keyring_syscall_refused(num, (0, ctypes.c_long(-1), 1, 0, 0), "keyctl")
 
     def test_add_key_blocked(self):
-        """add_key(2) returns -1 with non-zero errno.
+        """A valid add_key request is unavailable or permission denied.
 
-        What: Call SYS_add_key with zero args; assert ret == -1 and
-        errno != 0.
-        Why: Companion to keyctl — adds keys to the kernel keyring.
-        Same privilege-escalation exposure; a conservative container
-        seccomp baseline drops both.
+        What: Add a user key with a valid payload to this thread's keyring.
+        Require ENOSYS, EPERM or EACCES after a successful getpid control.
+        Why: Keep add_key distinct from keyctl and reject bad pointers as
+        proof that the sandbox refuses key creation.
         """
-        # SYS_add_key: x86_64=248, aarch64=217 (note: keyctl and add_key
-        # share a range; keep them separate)
         num = self._syscall_num({"x86_64": 248, "aarch64": 217})
-        self._assert_syscall_fails(num, (0, 0, 0, 0, 0), "add_key")
+        payload = b"probe"
+        self._assert_keyring_syscall_refused(
+            num, (b"user", f"safeyolo-isolation-{os.getpid()}".encode(), payload, len(payload), ctypes.c_long(-1)), "add_key",
+        )
 
     def test_pivot_root_blocked(self):
         """pivot_root(2) returns -1 with non-zero errno.

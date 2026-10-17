@@ -858,19 +858,17 @@ vehicle, ptrace process introspection. Blackbox checks confirm
 the same
 exposures are closed on the current runtime (gVisor or VZ).
 
-- **`test_keyctl_blocked`** — keyctl(2) returns -1 with non-zero errno.
-  - *Probe:* Call SYS_keyctl with KEYCTL_GET_KEYRING_ID=0 and zero
-args; assert ret == -1 and errno != 0.
-  - *Consequence if unasserted:* The kernel keyring is a shared store across processes.
-CVE-2017-6074 and several related issues exploited keyctl
-to escalate privileges — a standard target of conservative
-container seccomp profiles.
-- **`test_add_key_blocked`** — add_key(2) returns -1 with non-zero errno.
-  - *Probe:* Call SYS_add_key with zero args; assert ret == -1 and
-errno != 0.
-  - *Consequence if unasserted:* Companion to keyctl — adds keys to the kernel keyring.
-Same privilege-escalation exposure; a conservative container
-seccomp baseline drops both.
+- **`test_keyctl_blocked`** — A valid keyctl request is unavailable or permission denied.
+  - *Probe:* Request this thread's keyring with creation enabled. Require
+ENOSYS, EPERM or EACCES after a successful getpid syscall control.
+  - *Consequence if unasserted:* This valid request needs no existing key or special privilege
+on an unrestricted kernel. Invalid arguments and a missing key do
+not establish refusal of access to the kernel keyring.
+- **`test_add_key_blocked`** — A valid add_key request is unavailable or permission denied.
+  - *Probe:* Add a user key with a valid payload to this thread's keyring.
+Require ENOSYS, EPERM or EACCES after a successful getpid control.
+  - *Consequence if unasserted:* Keep add_key distinct from keyctl and reject bad pointers as
+proof that the sandbox refuses key creation.
 - **`test_pivot_root_blocked`** — pivot_root(2) returns -1 with non-zero errno.
   - *Probe:* Call SYS_pivot_root with zero args; assert ret == -1
 and errno != 0.
