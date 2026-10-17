@@ -101,6 +101,13 @@ fn saved_backend_is_dead(run: &Value) -> bool {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn process_is_absent(pid: i32) -> bool {
+    pid > 0
+        && (unsafe { libc::kill(pid, 0) }) != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn saved_process_is_dead(run: &Value, key: &str) -> bool {
     let Some(pid) = run[format!("{key}_pid")]
         .as_i64()
@@ -146,9 +153,7 @@ pub(crate) fn saved_process_is_dead(run: &Value, key: &str) -> bool {
     }
     // Failed identity lookup can mean denied inspection. Require observed
     // death; a live unrelated PID or an inspection error stays unknown.
-    if (unsafe { libc::kill(pid, 0) }) != 0
-        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-    {
+    if process_is_absent(pid) {
         return true;
     }
     #[cfg(target_os = "linux")]
