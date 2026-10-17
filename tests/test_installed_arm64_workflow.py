@@ -622,13 +622,19 @@ sys.exit(int(os.environ['SMOKE_EXIT']))
 
 
 @pytest.mark.parametrize("failure", [None, "prepare", "remap-rootfs"])
-def test_fresh_guest_mapping_uses_released_helpers_and_stops_on_failure(tmp_path, linux_workflow_stat, failure):
-    host = tmp_path / "retained-host"
-    host.mkdir()
-    bundle = tmp_path / "safeyolo-linux-arm64-production"
-    (bundle / "bin").mkdir(parents=True)
-    helper = bundle / "bin/safeyolo"
-    helper.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+def test_fresh_guest_mapping_uses_released_helpers_and_stops_on_failure(linux_workflow_stat, failure):
+    real_sudo = shutil.which("sudo")
+    if not real_sudo:
+        pytest.skip("guest sudo is required for the archive ownership control")
+    # Tiny inputs use a native filesystem so root ownership is enforced.
+    with tempfile.TemporaryDirectory(prefix="arm64-mapping-control-") as small:
+        tmp_path = Path(small)
+        host = tmp_path / "retained-host"
+        host.mkdir()
+        bundle = tmp_path / "safeyolo-linux-arm64-production"
+        (bundle / "bin").mkdir(parents=True)
+        helper = bundle / "bin/safeyolo"
+        helper.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 operation = args[3]
@@ -648,38 +654,49 @@ elif operation == 'remap-rootfs':
     assert args[5:] == ['165536', '231072', '1001', '1001']
 else:
     sys.exit(2)
-''')
-    helper.chmod(0o755)
-    with tarfile.open(host / "safeyolo-linux-arm64-production.tar.gz", "w:gz") as output:
-        output.add(bundle, arcname=bundle.name)
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    (tools / "stat").symlink_to(linux_workflow_stat)
-    sudo = tools / "sudo"
-    sudo.write_text('#!/bin/bash\n[[ $1 == -n ]] || exit 9\nshift\nexec "$@"\n')
-    sudo.chmod(0o755)
-    assets = tmp_path / "verified-extracted-assets"
-    (assets / "rootfs-tree").mkdir(parents=True)
-    (assets / "rootfs-tree/marker").write_text('owned fresh tree')
-    (assets / "cache-paths.txt").write_text('/var/cache/apt\n')
-    reports = tmp_path / "reports"
-    reports.mkdir()
-    calls = tmp_path / "calls"
-    result = execute("Prepare the fresh guest for this host account", tmp_path, {
-        "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
-        "PATH": f"{tools}:{os.environ['PATH']}", "CALLS": str(calls),
-        "MAPPING_FAILURE": failure or "",
-    })
-    assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
-    operations = [json.loads(line)[3] for line in calls.read_text().splitlines()]
-    assert operations == (["prepare"] if failure == "prepare" else ["prepare", "remap-rootfs"])
-    assert (reports / "mapped-guest-metadata.txt").exists() == (failure is None)
-    assert (assets / "cache-paths.txt").read_text() == '/var/cache/apt\n'
-    if failure != "remap-rootfs":
-        assert (assets / "rootfs-tree/marker").read_text() == 'owned fresh tree'
-    else:
-        assert not (assets / "rootfs-tree").exists()
-        assert len(list(tmp_path.glob('extract-*/rootfs-tree/marker'))) == 1
+    ''')
+        helper.chmod(0o755)
+        with tarfile.open(host / "safeyolo-linux-arm64-production.tar.gz", "w:gz") as output:
+            output.add(bundle, arcname=bundle.name)
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        (tools / "stat").symlink_to(linux_workflow_stat)
+        sudo = tools / "sudo"
+        sudo.write_text(
+            '#!/bin/bash\n'
+            + f'if [[ $2 == mv ]]; then exec {shlex.quote(real_sudo)} "$@"; fi\n'
+            + '[[ $1 == -n ]] || exit 9\nshift\nexec "$@"\n'
+        )
+        sudo.chmod(0o755)
+        assets = tmp_path / "verified-extracted-assets"
+        (assets / "rootfs-tree").mkdir(parents=True)
+        (assets / "rootfs-tree/marker").write_text('owned fresh tree')
+        (assets / "cache-paths.txt").write_text('/var/cache/apt\n')
+        reports = tmp_path / "reports"
+        reports.mkdir()
+        calls = tmp_path / "calls"
+        subprocess.run([real_sudo, "-n", "chown", "100000:100000", str(assets / "rootfs-tree")], check=True)
+        try:
+            result = execute("Prepare the fresh guest for this host account", tmp_path, {
+                "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
+                "PATH": f"{tools}:{os.environ['PATH']}", "CALLS": str(calls),
+                "MAPPING_FAILURE": failure or "",
+            })
+        finally:
+            trees = [assets / "rootfs-tree", *tmp_path.glob("extract-*/rootfs-tree")]
+            for tree in trees:
+                if tree.exists():
+                    subprocess.run([real_sudo, "-n", "chown", f"{os.getuid()}:{os.getgid()}", str(tree)], check=True)
+        assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
+        operations = [json.loads(line)[3] for line in calls.read_text().splitlines()]
+        assert operations == (["prepare"] if failure == "prepare" else ["prepare", "remap-rootfs"])
+        assert (reports / "mapped-guest-metadata.txt").exists() == (failure is None)
+        assert (assets / "cache-paths.txt").read_text() == '/var/cache/apt\n'
+        if failure != "remap-rootfs":
+            assert (assets / "rootfs-tree/marker").read_text() == 'owned fresh tree'
+        else:
+            assert not (assets / "rootfs-tree").exists()
+            assert len(list(tmp_path.glob('extract-*/rootfs-tree/marker'))) == 1
 
 
 @pytest.mark.parametrize("failure,exit_code", [(None, 0), *[

@@ -175,6 +175,8 @@ jobs:
           done
           printf 'Published release=%s host_source=%s platform=linux-arm64 profile=production sha256=%s bytes=%s\n' \
             "$HOST_RELEASE_ID" "$HOST_REVISION" "$HOST_SHA256" "$HOST_BYTES" | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/host-input.txt"
+      - name: Prepare the supported systrap host
+        run: tests/blackbox/prepare-systrap-host.sh
       # The retained complete layout already contains the exact archive blobs.
       # Download it once; do not rebuild or repackage either selected guest.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -244,8 +246,6 @@ jobs:
         run: |
           uv python install 3.13
           uv sync --frozen --python 3.13
-      - name: Prepare the supported systrap host
-        run: tests/blackbox/prepare-systrap-host.sh
       - name: Prepare the fresh guest for this host account
         shell: bash
         run: |
@@ -269,10 +269,10 @@ jobs:
           read -r uid_base gid_base host_uid host_gid <<< "$mapping"
           stage=$(mktemp -d "$RUNNER_TEMP/extract-arm64.XXXXXX")
           assets="$RUNNER_TEMP/verified-extracted-assets"
-          mv "$assets/rootfs-tree" "$stage/rootfs-tree"
+          sudo -n mv "$assets/rootfs-tree" "$stage/rootfs-tree"
           sudo -n "$bundle/bin/safeyolo" --root "$host/preparation" host remap-rootfs \
             "$stage/rootfs-tree" "$uid_base" "$gid_base" "$host_uid" "$host_gid"
-          mv "$stage/rootfs-tree" "$assets/rootfs-tree"
+          sudo -n mv "$stage/rootfs-tree" "$assets/rootfs-tree"
           rmdir "$stage"
           cp "$host/linux-settings.toml" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/linux-host-settings.toml"
           stat -c '%n uid=%u gid=%g mode=%a bytes=%s' "$assets/rootfs-tree" "$assets/cache-paths.txt" \
