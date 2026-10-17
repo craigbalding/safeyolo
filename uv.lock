@@ -919,6 +919,11 @@ dev = [
     { name = "yarl" },
     { name = "zstandard" },
 ]
+guest-tests = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+]
 
 [package.metadata]
 
@@ -950,6 +955,11 @@ dev = [
     { name = "websockets", specifier = ">=16.1,<17" },
     { name = "yarl", specifier = ">=1.9.0" },
     { name = "zstandard", specifier = ">=0.25,<1" },
+]
+guest-tests = [
+    { name = "httpx", specifier = ">=0.25.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "pytest-timeout", specifier = ">=2.0.0" },
 ]
 
 [[package]]

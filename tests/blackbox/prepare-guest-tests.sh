@@ -12,17 +12,8 @@ if ! python3 -m pip --version >/dev/null 2>&1; then
         exit 1
     fi
 fi
-# Constrain the selected packages and their dependencies to the same lock as
-# the host runner. No compiler or unrelated host test dependency is required.
-constraints=$(mktemp)
-trap 'rm -f -- "$constraints"' EXIT
-python3 - > "$constraints" <<'PY'
-import tomllib
-from pathlib import Path
-
-lock = tomllib.loads(Path('/workspace/uv.lock').read_text())
-for package in lock['package']:
-    print(f"{package['name']}=={package['version']}")
-PY
-python3 -m pip install --break-system-packages -c "$constraints" pytest httpx pytest-timeout
+# Exported from the host runner's lock. Include hashes for each dependency and
+# retain interpreter markers, wheels and source archives from that lock.
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+python3 -m pip install --break-system-packages --require-hashes -r "$script_dir/guest-requirements.txt"
 python3 -c 'import pytest, httpx, pytest_timeout'
