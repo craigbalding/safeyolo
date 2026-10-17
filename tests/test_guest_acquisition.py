@@ -339,6 +339,7 @@ def test_explicit_first_acquisition_selects_each_index_without_discovery(
                      "--index", digest(second["manifests/compat-v1"]))
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "baseline/share/guest-selection.json").read_bytes() == original
+    assert result.stdout.strip() == json.loads(original)["assets"]
     assert len(requests) == before
     assert not (guest_store / "unused").exists()
 
@@ -475,8 +476,12 @@ def test_invalid_acquisition_index_options_make_no_changes(
 def test_generated_malformed_acquisition_digests_make_no_changes(
         native_cli, registry, package_info, tmp_path, guest_store, value):
     # Valid SHA-256 references need 71 characters, including the prefix.
-    test_invalid_acquisition_index_options_make_no_changes(
-        native_cli, registry, package_info, tmp_path, guest_store, ("--index", value))
+    _contents, requests, _faults, environment = registry
+    root = tmp_path / "refused"
+    result = install(native_cli, root, guest_store, environment, package_info, "--index", value)
+    assert result.returncode != 0 and "panic" not in result.stderr.lower()
+    assert not root.exists() and not guest_store.exists()
+    assert not requests
 
 
 @pytest.mark.parametrize("marker", ["config.toml", "policy.toml", "data/admin_token", "share/explicit-input"])

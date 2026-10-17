@@ -207,8 +207,8 @@ journey remain under #239.
 
 On the consumer host, run `guest acquire` as the installation owner from any
 working directory. Use a verified host package for that platform and a fresh
-root without configuration or guest inputs. Registry access needs the existing
-proxy route and usable system or configured CA trust. Linux also needs the
+root without configuration or guest inputs. Registry access uses the configured
+proxy, if present, and needs usable system or configured CA trust. Linux also needs the
 host account's subordinate UID/GID ranges and sudo for numeric ownership, as
 prepared by `safeyolo host prepare`.
 
