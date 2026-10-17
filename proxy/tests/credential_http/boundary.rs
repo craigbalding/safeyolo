@@ -237,8 +237,8 @@ async fn repeated_h1_fields_keep_credential_decisions_and_forwarding() {
     let reply = raw_exchange(&socket, &request("127.0.0.1", "GET", &cases[1])).await;
     assert!(reply.starts_with(b"HTTP/1.1 403"));
     assert_eq!(seen.lock().unwrap().len(), before);
-    // Equal copies retain one policy charge. The next request exhausts the
-    // existing one-use credential budget rather than forwarding a second use.
+    // The rate-1 budget permits two immediate uses. Equal copies retain one
+    // charge, leaving one more use before the existing budget refuses traffic.
     let mut budgeted = permissions("127.0.0.1", &[TOKEN]);
     budgeted[1]["effect"] = json!("budget");
     budgeted[1]["budget"] = json!(1);
@@ -250,8 +250,10 @@ async fn repeated_h1_fields_keep_credential_decisions_and_forwarding() {
     let reply = raw_exchange(&socket, &request("127.0.0.1", "GET", &cases[1])).await;
     assert!(reply.starts_with(b"HTTP/1.1 200"));
     let reply = raw_exchange(&socket, &request("127.0.0.1", "GET", &cases[0])).await;
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    let reply = raw_exchange(&socket, &request("127.0.0.1", "GET", &cases[0])).await;
     assert!(reply.starts_with(b"HTTP/1.1 429"));
-    assert_eq!(seen.lock().unwrap().len(), before + 1);
+    assert_eq!(seen.lock().unwrap().len(), before + 2);
     proxy.shutdown().await;
     origin_task.abort();
     check_redaction(&directory);
