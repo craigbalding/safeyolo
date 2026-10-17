@@ -2904,7 +2904,7 @@ mod tests {
                         let host = crate::command_centre::Host::from_config(&config).unwrap().unwrap();
                         let tasks = crate::tasks::Registry::default();
                         let serve = async {
-                            let (socket, _) = listener.accept().await.unwrap();
+                            let (socket, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept()).await.expect("stop did not reach Admin").unwrap();
                             hyper::server::conn::http1::Builder::new().serve_connection(
                                 hyper_util::rt::TokioIo::new(socket),
                                 hyper::service::service_fn(|request| async {
@@ -2919,11 +2919,13 @@ mod tests {
                             ).await.unwrap();
                         };
                         let request = async {
-                            if caller == "cli" {
+                            let error = if caller == "cli" {
                                 crate::host_commands::run(config_path.clone(), &["agent".into(), "stop".into(), "alice".into()]).await.unwrap_err().to_string()
                             } else {
                                 crate::native_client::admin(&config_path, &format!("/admin/agents/{id}/stop"), hyper::Method::POST, serde_json::Value::Null, std::time::Duration::from_secs(20)).await.unwrap_err().to_string()
-                            }
+                            };
+                            eprintln!("stop {caller}/{fault}: {error}");
+                            error
                         };
                         let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(20), async { tokio::join!(request, serve) }).await.unwrap();
                         assert!(error.contains("API 500"), "{caller}/{fault}: {error}");
