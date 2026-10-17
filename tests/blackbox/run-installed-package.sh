@@ -70,7 +70,7 @@ if [[ -n $HOST_PACKAGE ]]; then
         if $INSTALL_YES; then prepare_options+=(--yes); fi
         platform_assets=$(python3 "$SCRIPT_DIR/retained_inputs.py" prepare-guest \
             --selection "$SAFEYOLO_BLACKBOX_INPUT_SELECTION" --archive "$GUEST_ARCHIVE" \
-            --bundle "${packages[0]}" --root "$SAFEYOLO_CONFIG_DIR" --directory "$PACKAGE_DIR/guest" "${prepare_options[@]}")
+            --bundle "${packages[0]}" --root "$SAFEYOLO_CONFIG_DIR" --directory "$PACKAGE_DIR/guest" ${prepare_options[@]+"${prepare_options[@]}"})
         INSTALL_ARGUMENTS+=(--platform-assets "$platform_assets")
     fi
     INSTALL_STARTED=$SECONDS
@@ -110,7 +110,7 @@ if [[ -n $LANE ]]; then
         [[ $LANE != kvm ]] || SECTIONS=(--section isolation --section ingress)
     fi
     "$SCRIPT_DIR/run-installed.sh" "$LANE" --prepared-config "$PACKAGE_DIR/prepared" \
-        --install-commit "$REVISION" "${SECTIONS[@]}" --artifacts "$ARTIFACTS/guest"
+        --install-commit "$REVISION" ${SECTIONS[@]+"${SECTIONS[@]}"} --artifacts "$ARTIFACTS/guest"
     # The nightly path uses the maintained complete lane, including continuity
     # where selected by SECTIONS. Do not append a second package/continuity run.
     if [[ ${SAFEYOLO_BLACKBOX_FULL_SECTIONS:-} == 1 ]]; then exit 0; fi
