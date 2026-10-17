@@ -2569,6 +2569,8 @@ mod tests {
             ])
             .arg(root.join("data/vm-control/alice.sock"))
             .arg("fake-secret-argv-canary")
+            .arg("--config")
+            .arg(root.join("config.toml"))
             .env("SAFEYOLO_TEST_VZ_STOP_ROOT", root)
             .env("SAFEYOLO_TEST_VZ_SECRET", "fake-secret-environment-canary")
             .env_remove("SAFEYOLO_TEST_VZ_STOP_FAULT")
@@ -2872,13 +2874,12 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn vz_stop_cli_and_admin_preserve_uncertain_runtime_and_handles() {
-        use http_body_util::BodyExt;
         use std::os::unix::fs::MetadataExt;
         for caller in ["cli", "admin"] {
             for fault in ["unavailable", "conflict"] {
                 let temp = tempfile::tempdir().unwrap();
                 let config_path = temp.path().join("config.toml");
-                std::fs::write(&config_path, "").unwrap();
+                std::fs::write(&config_path, "admin_port = 0\n").unwrap();
                 in_config(config_path.clone(), async {
                     let mut child = spawn_vz_stop_test_helper(temp.path(), Some(fault)).await;
                     let pid = child.id().unwrap() as i32;
@@ -2890,25 +2891,42 @@ mod tests {
                     crate::host_runs::save("alice", &serde_json::json!({"state":"running", "run_id":"0123456789abcdef0123456789abcdef", "backend_pid":pid, "backend_token":birth, "helper_instance":"owned-test"})).unwrap();
                     let saved = ["agents/alice/vm.pid", "agents/alice/vm.token", "agents/alice/runtime.json"].map(|path| (path, std::fs::read(temp.path().join(path)).unwrap()));
                     let sockets = ["data/vm-control/alice.sock", "data/shell-sockets/alice.sock"].map(|path| (path, std::fs::metadata(temp.path().join(path)).unwrap().ino()));
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    std::fs::write(temp.path().join("data/ready.json"), format!(r#"{{"admin_port":{}}}"#, listener.local_addr().unwrap().port())).unwrap();
+                    std::fs::write(temp.path().join("data/admin_token"), "owned-test-token").unwrap();
+                    // Give the live test process the ordinary proxy identity so
+                    // agent stop takes the CLI -> authenticated Admin route.
+                    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), temp.path().join("bin/safeyolo-proxy")).unwrap();
+                    crate::guest_commands::write_json(&temp.path().join("data/proxy-process.json"), &serde_json::json!({"pid":pid,"token":birth})).unwrap();
+                    assert!(crate::host_commands::proxy_live());
                     VZ_TEST_IDENTITY_FAULT.scope((pid, temp.path().join("identity-fault")), async {
-                        let error = if caller == "cli" {
-                            crate::host_commands::run(config_path.clone(), &["agent".into(), "stop".into(), "alice".into()]).await.unwrap_err().to_string()
-                        } else {
-                            let config = crate::native_config::read(&config_path).unwrap();
-                            let host = crate::command_centre::Host::from_config(&config).unwrap().unwrap();
-                            let tasks = crate::tasks::Registry::default();
-                            let request = hyper::Request::builder().method(hyper::Method::POST).uri(format!("/admin/agents/{id}/stop")).header(hyper::header::AUTHORIZATION, "Bearer owned-test-token").body(http_body_util::Empty::<bytes::Bytes>::new()).unwrap();
-                            let response = crate::admin_api::respond_with_context(request, "owned-test-token", crate::admin_api::OperatorContext {
-                                tasks: &tasks, policy: None, circuits: None, stats: None, view: None, policy_path: None, instance_id: None,
-                                command_centre: Some(&host), operator_modes: None, agent_discovery: None, listeners: &[], audit: None,
-                                client_ip: None, passthrough: None, service_audit: None, plumb: None, task_state: None,
-                            }).await.unwrap();
-                            assert_eq!(response.status(), hyper::StatusCode::INTERNAL_SERVER_ERROR);
-                            let body = response.into_response().into_body().collect().await.unwrap().to_bytes();
-                            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                            assert_eq!(value["status_code"], 500);
-                            value["error"].as_str().unwrap().to_owned()
+                        let config = crate::native_config::read(&config_path).unwrap();
+                        let host = crate::command_centre::Host::from_config(&config).unwrap().unwrap();
+                        let tasks = crate::tasks::Registry::default();
+                        let serve = async {
+                            let (socket, _) = listener.accept().await.unwrap();
+                            hyper::server::conn::http1::Builder::new().serve_connection(
+                                hyper_util::rt::TokioIo::new(socket),
+                                hyper::service::service_fn(|request| async {
+                                    let response = crate::admin_api::respond_with_context(request, "owned-test-token", crate::admin_api::OperatorContext {
+                                        tasks: &tasks, policy: None, circuits: None, stats: None, view: None, policy_path: None, instance_id: None,
+                                        command_centre: Some(&host), operator_modes: None, agent_discovery: None, listeners: &[], audit: None,
+                                        client_ip: None, passthrough: None, service_audit: None, plumb: None, task_state: None,
+                                    }).await.unwrap();
+                                    assert_eq!(response.status(), hyper::StatusCode::INTERNAL_SERVER_ERROR);
+                                    Ok::<_, std::convert::Infallible>(response.into_response())
+                                }),
+                            ).await.unwrap();
                         };
+                        let request = async {
+                            if caller == "cli" {
+                                crate::host_commands::run(config_path.clone(), &["agent".into(), "stop".into(), "alice".into()]).await.unwrap_err().to_string()
+                            } else {
+                                crate::native_client::admin(&config_path, &format!("/admin/agents/{id}/stop"), hyper::Method::POST, serde_json::Value::Null, std::time::Duration::from_secs(20)).await.unwrap_err().to_string()
+                            }
+                        };
+                        let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(20), async { tokio::join!(request, serve) }).await.unwrap();
+                        assert!(error.contains("API 500"), "{caller}/{fault}: {error}");
                         assert!(error.contains("VZ helper absence is unconfirmed; refusing SIGKILL"), "{caller}/{fault}: {error}");
                         assert!(error.contains(if fault == "unavailable" { "stage=proc_pidinfo return=0" } else { "stage=birth_mismatch" }), "{error}");
                         assert!(child.try_wait().unwrap().is_none());
