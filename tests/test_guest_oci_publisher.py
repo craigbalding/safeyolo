@@ -338,15 +338,16 @@ def test_invalid_release_refused_before_upload(tmp_path, artifacts, publisher_to
     assert not registry[4]
 
 
-@pytest.fixture(params=["g1", "g2"])
-def retained_publisher(request, tmp_path):
+def select_retained_publisher(tmp_path, generation):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     job = workflow["jobs"]["publish"]
     inputs = {
-        "PUBLISH_INITIAL_G1": str(request.param == "g1").lower(),
-        "PUBLISH_RETAINED_G2": str(request.param == "g2").lower(),
+        "PUBLISH_INITIAL_G1": str(generation == "g1").lower(),
+        "PUBLISH_RETAINED_G2": str(generation == "g2").lower(),
         "PUBLISH_TRANSPORT_FIXTURE": "false",
-        "REQUESTED_VERSION": "guest-2026-10-12.1" if request.param == "g1" else "guest-2026-10-16.1",
+        "PUBLISH_REDUCED_GUEST": str(generation == "reduced").lower(),
+        "REQUESTED_VERSION": {"g1": "guest-2026-10-12.1", "g2": "guest-2026-10-16.1",
+                              "reduced": "guest-2026-10-16.1082"}[generation],
         "REQUESTED_COMPATIBILITY": "v1",
     }
     env_file = tmp_path / "selected-release"
@@ -354,14 +355,25 @@ def retained_publisher(request, tmp_path):
                  env={**os.environ, **inputs, "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file)})
     assert result.returncode == 0, result.stderr
     env = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
-    return SimpleNamespace(job=job, env=env, inputs=inputs, generation=request.param)
+    return SimpleNamespace(job=job, env=env, inputs=inputs, generation=generation)
+
+
+@pytest.fixture(params=["g1", "g2"])
+def retained_publisher(request, tmp_path):
+    return select_retained_publisher(tmp_path, request.param)
+
+
+@pytest.fixture
+def reduced_publisher(tmp_path):
+    return select_retained_publisher(tmp_path, "reduced")
 
 
 @pytest.mark.parametrize("event", ["workflow_dispatch", "push", "release", "schedule", "pull_request"])
 @pytest.mark.parametrize("initial", [None, False, True])
 @pytest.mark.parametrize("retained", [None, False, True])
 @pytest.mark.parametrize("fixture", [None, False, True])
-def test_workflow_retained_publication_routing(event, initial, retained, fixture):
+@pytest.mark.parametrize("reduced", [None, False, True])
+def test_workflow_retained_publication_routing(event, initial, retained, fixture, reduced):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["publish_initial_g1"] == {
@@ -376,19 +388,23 @@ def test_workflow_retained_publication_routing(event, initial, retained, fixture
         "description": "Generate and publish the nonbootable >2 GiB transport fixture by digest only",
         "required": False, "default": False, "type": "boolean",
     }
+    assert inputs["publish_reduced_guest"] == {
+        "description": "Publish retained guest-2026-10-16.1082 by digest without changing production tags",
+        "required": False, "default": False, "type": "boolean",
+    }
     context = {"__builtins__": {}, "github": SimpleNamespace(event_name=event),
                "inputs": SimpleNamespace(publish_initial_g1=initial, publish_retained_g2=retained,
-                                         publish_transport_fixture=fixture)}
+                                         publish_transport_fixture=fixture, publish_reduced_guest=reduced)}
     jobs = workflow["jobs"]
     # These conditions use only boolean operations and string equality. Evaluate
     # both branches, then check dependencies so skipped preparation cannot hold publication.
     publish_condition = jobs["publish"]["if"].removeprefix("${{").removesuffix("}}").strip()
     build_condition = jobs["build"]["if"].removeprefix("${{").removesuffix("}}").strip()
     assert bool(eval(publish_condition.replace("&&", " and ").replace("||", " or "), context)) == (
-        event == "workflow_dispatch" and (initial is True or retained is True or fixture is True)
+        event == "workflow_dispatch" and (initial is True or retained is True or fixture is True or reduced is True)
     )
     assert bool(eval(build_condition.replace("!", "not ").replace("&&", " and "), context)) == (
-        initial is not True and retained is not True and fixture is not True
+        initial is not True and retained is not True and fixture is not True and reduced is not True
     )
     # GitHub skips prepare when its build dependency is skipped. Publication
     # must have no such dependency, including when preparation fails.
@@ -396,7 +412,9 @@ def test_workflow_retained_publication_routing(event, initial, retained, fixture
     assert "needs" not in jobs["publish"]
 
 
-def test_workflow_retained_source_artifacts_and_token_narrow(retained_publisher):
+@pytest.mark.parametrize("generation", ["g1", "g2", "reduced"])
+def test_workflow_retained_source_artifacts_and_token_narrow(tmp_path, generation):
+    retained_publisher = select_retained_publisher(tmp_path, generation)
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
     # PyYAML's YAML1.1 loader maps the Actions 'on' key to boolean True.
     assert set(workflow.get("on", workflow.get(True))) == {"workflow_dispatch"}
@@ -422,6 +440,13 @@ def test_workflow_retained_source_artifacts_and_token_narrow(retained_publisher)
             "GUEST_RUN_ID": "38897452318", "GUEST_ARCHIVE_IDS": "12044318477,12044582213",
             "GUEST_LAYOUT_ID": "12045630940", "PUBLISHER_REVISION": REVISION,
         },
+        "reduced": {
+            "GUEST_VERSION": "guest-2026-10-16.1082", "GUEST_COMPATIBILITY": "v1",
+            "GUEST_REVISION": "33224c9fc14beeb00be30eb71bdc09f91c5aa58b",
+            "GUEST_INDEX": "sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e",
+            "GUEST_RUN_ID": "38975155518", "GUEST_ARCHIVE_IDS": "",
+            "GUEST_LAYOUT_ID": "12079186556", "PUBLISHER_REVISION": REVISION,
+        },
     }
     assert retained_publisher.env == expected[retained_publisher.generation]
     steps = retained_publisher.job["steps"]
@@ -431,6 +456,7 @@ def test_workflow_retained_source_artifacts_and_token_narrow(retained_publisher)
         "PUBLISH_INITIAL_G1": "${{ inputs.publish_initial_g1 }}",
         "PUBLISH_RETAINED_G2": "${{ inputs.publish_retained_g2 }}",
         "PUBLISH_TRANSPORT_FIXTURE": "${{ inputs.publish_transport_fixture }}",
+        "PUBLISH_REDUCED_GUEST": "${{ inputs.publish_reduced_guest }}",
     }
     checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ env.PUBLISHER_REVISION }}"
@@ -489,7 +515,7 @@ def test_retained_workflow_refuses_conflicting_modes_or_release(tmp_path, initia
     step = workflow["jobs"]["publish"]["steps"][0]
     result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
         **os.environ, "PUBLISH_INITIAL_G1": str(initial).lower(), "PUBLISH_RETAINED_G2": str(retained).lower(),
-        "PUBLISH_TRANSPORT_FIXTURE": "false",
+        "PUBLISH_TRANSPORT_FIXTURE": "false", "PUBLISH_REDUCED_GUEST": "false",
         "REQUESTED_VERSION": version, "REQUESTED_COMPATIBILITY": "v1",
         "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
     })
@@ -600,6 +626,146 @@ def test_retained_workflow_verifies_inputs_before_authentication(
         ]
 
 
+@pytest.mark.parametrize("initial,retained,fixture,version,compatibility", [
+    (False, False, False, "guest-2026-10-16.1082", "v1"),
+    (True, False, False, "guest-2026-10-16.1082", "v1"),
+    (False, True, False, "guest-2026-10-16.1082", "v1"),
+    (False, False, True, "guest-2026-10-16.1082", "v1"),
+    (False, False, False, "guest-2026-10-16.1", "v1"),
+    (False, False, False, "$(touch forbidden-write)", "v1"),
+    (False, False, False, "guest-2026-10-16.1082", "v2"),
+])
+def test_reduced_workflow_admission(tmp_path, initial, retained, fixture, version, compatibility):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = workflow["jobs"]["publish"]["steps"][0]
+    env_file = tmp_path / "selected-release"
+    result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
+        **os.environ, "PUBLISH_INITIAL_G1": str(initial).lower(), "PUBLISH_RETAINED_G2": str(retained).lower(),
+        "PUBLISH_TRANSPORT_FIXTURE": str(fixture).lower(), "PUBLISH_REDUCED_GUEST": "true",
+        "REQUESTED_VERSION": version, "REQUESTED_COMPATIBILITY": compatibility,
+        "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
+    })
+    admitted = not any((initial, retained, fixture)) and version == "guest-2026-10-16.1082" and compatibility == "v1"
+    assert (result.returncode == 0) == admitted, result.stderr
+    assert env_file.exists() == admitted
+    assert not (tmp_path / "forbidden-write").exists()
+
+
+@pytest.fixture
+def reduced_layout(tmp_path, artifacts, publisher_tools, reduced_publisher):
+    oras, verifier = publisher_tools
+    env = reduced_publisher.env
+    prepared = publish(tmp_path, artifacts, publisher_tools, version=env["GUEST_VERSION"], revision=env["GUEST_REVISION"])
+    assert prepared.returncode == 0, prepared.stderr
+    source = tmp_path / "workflow-source"
+    scripts = source / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts/publish_guest_by_digest.sh", scripts)
+    examples = source / "proxy/target/release/examples"
+    examples.mkdir(parents=True)
+    (examples / "verify_guest_oci").symlink_to(Path(verifier).resolve())
+    tools = source / "bin"
+    tools.mkdir()
+    (tools / "oras").symlink_to(Path(oras).resolve())
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    layout = runner / "retained-guest-oci"
+    shutil.move(tmp_path / f"layout-{env['GUEST_VERSION']}", layout)
+    # Substitute only the fixture's index. The selection control binds the real
+    # retained digest, source and artifact. No separate archives are staged.
+    index = run(oras, "resolve", "--oci-layout", f"{layout}:{env['GUEST_VERSION']}")
+    assert index.returncode == 0, index.stderr
+    env = {**os.environ, **env, "GUEST_INDEX": index.stdout.strip(), "ORAS": oras,
+           "RUNNER_TEMP": str(runner), "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
+    return SimpleNamespace(source=source, runner=runner, layout=layout, env=env, job=reduced_publisher.job)
+
+
+@pytest.mark.parametrize("defect", [None, "missing-layout", "wrong-index", "wrong-version", "wrong-compatibility",
+                                  "corrupt-index", "corrupt-child", "corrupt-config", "corrupt-archive", "missing-blob"])
+def test_reduced_workflow_verifies_full_layout_before_authentication(reduced_layout, defect):
+    layout, env = reduced_layout.layout, reduced_layout.env
+    if defect == "missing-layout":
+        shutil.rmtree(layout)
+    elif defect == "wrong-index":
+        env["GUEST_INDEX"] = "sha256:" + "0" * 64
+    elif defect == "wrong-version":
+        env["GUEST_VERSION"] = "guest-2026-10-16.1"
+    elif defect == "wrong-compatibility":
+        env["GUEST_COMPATIBILITY"] = "v2"
+    elif defect:
+        blobs = layout / "blobs/sha256"
+        index_path = blobs / env["GUEST_INDEX"].removeprefix("sha256:")
+        index = json.loads(index_path.read_text())
+        child_path = blobs / index["manifests"][0]["digest"].removeprefix("sha256:")
+        child = json.loads(child_path.read_text())
+        blob = {
+            "corrupt-index": index_path, "corrupt-child": child_path,
+            "corrupt-config": blobs / child["config"]["digest"].removeprefix("sha256:"),
+            "corrupt-archive": blobs / child["layers"][0]["digest"].removeprefix("sha256:"),
+            "missing-blob": blobs / child["layers"][0]["digest"].removeprefix("sha256:"),
+        }[defect]
+        if defect == "missing-blob":
+            blob.unlink()
+        else:
+            blob.chmod(0o644)
+            blob.write_bytes(b"corrupt")
+    step = next(step for step in reduced_layout.job["steps"] if step.get("id") == "verify_reduced_guest")
+    result = run("bash", "-euo", "pipefail", "-c", step["run"] + '\ntouch "$RUNNER_TEMP/authentication-reached"',
+                 cwd=reduced_layout.source, env=env)
+    assert (result.returncode == 0) == (defect is None), result.stderr
+    assert (reduced_layout.runner / "authentication-reached").exists() == (defect is None)
+    assert not (reduced_layout.runner / "archives").exists()
+    assert not (reduced_layout.runner / "guest-oci").exists()
+
+
+@pytest.mark.parametrize("fault", [None, "index", "blob", "upload", "missing-tag"])
+def test_actual_oras_reduced_workflow_copies_by_digest_without_changing_tags(
+    tmp_path, reduced_layout, artifacts, publisher_tools, registry, fault,
+):
+    repository, blobs, manifests, tags, events, faults = registry
+    for version in ("guest-2026-10-12.1", "guest-2026-10-16.1"):
+        seeded = publish(tmp_path, artifacts, publisher_tools, repository, version=version)
+        assert seeded.returncode == 0, seeded.stderr
+    before_tags, before_manifests, before_blobs = dict(tags), dict(manifests), dict(blobs)
+    if fault == "missing-tag":
+        del tags["guest-2026-10-12.1"]
+        before_tags = dict(tags)
+    elif fault:
+        faults[fault] = True
+    events.clear()
+    step = next(step for step in reduced_layout.job["steps"] if step.get("name") ==
+                "Upload the retained reduced guest without production tags")
+    # Use the real workflow command and publisher against the owned registry.
+    command = step["run"].replace("ghcr.io/craigbalding/safeyolo-guest", repository).rstrip() + " --plain-http"
+    result = run("bash", "-euo", "pipefail", "-c", command, cwd=reduced_layout.source,
+                 env=reduced_layout.env, timeout=30)
+    assert (result.returncode == 0) == (fault is None), result.stderr
+    assert tags == before_tags
+    assert all(manifests[key] == value for key, value in before_manifests.items())
+    assert all(blobs[key] == value for key, value in before_blobs.items())
+    assert all(path.rsplit("/", 1)[1].startswith("sha256:") for method, path in events
+               if method == "PUT" and "/manifests/" in path)
+    archives = set()
+    for descriptor in json.loads((reduced_layout.layout / "blobs/sha256" /
+                                 reduced_layout.env["GUEST_INDEX"].removeprefix("sha256:")).read_text())["manifests"]:
+        child = json.loads((reduced_layout.layout / "blobs/sha256" / descriptor["digest"].removeprefix("sha256:")).read_text())
+        for item in [child["config"], *child["layers"]]:
+            if fault is None:
+                assert len(blobs[item["digest"]]) == item["size"]
+        archives.update(item["digest"] for item in child["layers"])
+    assert not any(method == "GET" and path.rsplit("/", 1)[1] in archives for method, path in events)
+    if fault is None:
+        assert "Published guest layout" in result.stdout
+        assert "fixture" not in result.stdout.lower()
+        index = reduced_layout.env["GUEST_INDEX"]
+        publication = reduced_layout.runner / "reduced-guest-publication"
+        assert manifests[index] == (publication / "public-index.json").read_bytes()
+        for tag, digest in before_tags.items():
+            assert (publication / f"after-{tag}").read_text().strip() == digest
+    elif fault == "missing-tag":
+        assert not any(method == "PUT" for method, _ in events)
+
+
 @pytest.mark.parametrize("initial,retained,version,compatibility", [
     (False, False, "guest-2026-10-16.239", "v1"),
     (True, False, "guest-2026-10-16.239", "v1"),
@@ -615,7 +781,7 @@ def test_transport_workflow_admission(tmp_path, initial, retained, version, comp
     env_file = tmp_path / "selected-release"
     result = run("bash", "-euo", "pipefail", "-c", step["run"], cwd=tmp_path, env={
         **os.environ, "PUBLISH_INITIAL_G1": str(initial).lower(), "PUBLISH_RETAINED_G2": str(retained).lower(),
-        "PUBLISH_TRANSPORT_FIXTURE": "true", "REQUESTED_VERSION": version,
+        "PUBLISH_TRANSPORT_FIXTURE": "true", "PUBLISH_REDUCED_GUEST": "false", "REQUESTED_VERSION": version,
         "REQUESTED_COMPATIBILITY": compatibility, "GITHUB_SHA": REVISION, "GITHUB_ENV": str(env_file),
     })
     admitted = not initial and not retained and version == prepare_guest_transport_fixture.VERSION and compatibility == "v1"
@@ -629,11 +795,12 @@ def test_transport_workflow_admission(tmp_path, initial, retained, version, comp
         assert selected["PUBLISHER_REVISION"] == REVISION
 
 
-@pytest.mark.parametrize("fixture", [False, True])
-def test_transport_workflow_effective_steps(fixture):
+@pytest.mark.parametrize("fixture,reduced", [(False, False), (True, False), (False, True)])
+def test_digest_workflow_effective_steps(fixture, reduced):
     workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
-    context = {"__builtins__": {}, "inputs": SimpleNamespace(publish_transport_fixture=fixture),
-               "steps": SimpleNamespace(prepare_transport_fixture=SimpleNamespace(outcome="success")),
+    context = {"__builtins__": {}, "inputs": SimpleNamespace(publish_transport_fixture=fixture, publish_reduced_guest=reduced),
+               "steps": SimpleNamespace(prepare_transport_fixture=SimpleNamespace(outcome="success"),
+                                        verify_reduced_guest=SimpleNamespace(outcome="success")),
                "cancelled": lambda: False}
     enabled = []
     for step in workflow["jobs"]["publish"]["steps"]:
@@ -643,10 +810,20 @@ def test_transport_workflow_effective_steps(fixture):
     names = [step.get("name") for step in enabled]
     assert ("Prepare and verify the nonbootable transport fixture" in names) == fixture
     assert ("Upload the transport fixture without production tags" in names) == fixture
-    assert ("Verify retained inputs before registry authentication" in names) != fixture
-    assert ("Upload, verify and promote the complete guest release" in names) != fixture
+    assert ("Verify retained inputs before registry authentication" in names) == (not fixture and not reduced)
+    assert ("Upload, verify and promote the complete guest release" in names) == (not fixture and not reduced)
+    assert ("Verify retained reduced guest before registry authentication" in names) == reduced
+    assert ("Upload the retained reduced guest without production tags" in names) == reduced
     downloads = [step for step in enabled if "actions/download-artifact@" in step.get("uses", "")]
-    assert len(downloads) == (1 if fixture else 2)
+    assert len(downloads) == (1 if fixture or reduced else 2)
+    if reduced:
+        assert downloads[0]["with"]["artifact-ids"] == "${{ env.GUEST_LAYOUT_ID }}"
+        assert names.index("Verify retained reduced guest before registry authentication") < names.index(
+            "Authenticate with the linked repository token"
+        ) < names.index("Upload the retained reduced guest without production tags")
+        upload = next(step for step in enabled if "actions/upload-artifact@" in step.get("uses", ""))
+        assert upload["with"]["name"] == "reduced-guest-publication-result"
+        assert upload["with"]["path"] == "${{ runner.temp }}/reduced-guest-publication"
     if fixture:
         assert downloads[0]["with"]["artifact-ids"] == "${{ env.GUEST_LAYOUT_ID }}"
         assert names.index("Prepare and verify the nonbootable transport fixture") < names.index(
@@ -665,7 +842,7 @@ def test_transport_workflow_upload_uses_generated_index(tmp_path):
                   "Upload the transport fixture without production tags")
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    command = scripts / "publish_guest_transport_fixture.sh"
+    command = scripts / "publish_guest_by_digest.sh"
     command.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
                        "with open(os.environ['CAPTURE_ARGS'], 'w') as target: json.dump(sys.argv[1:], target)\n")
     command.chmod(0o755)
@@ -677,6 +854,7 @@ def test_transport_workflow_upload_uses_generated_index(tmp_path):
     result = run("bash", "-euo", "pipefail", "-c", upload["run"], cwd=tmp_path,
                  env={**os.environ, "RUNNER_TEMP": str(tmp_path), "CAPTURE_ARGS": str(captured)})
     assert result.returncode == 0, result.stderr
+    assert "Never boot this fixture." in result.stdout
     assert json.loads(captured.read_text()) == [
         str(fixture / "layout"), index, "proxy/target/release/examples/verify_guest_oci",
         "ghcr.io/craigbalding/safeyolo-guest", str(fixture / "publication"),
@@ -785,7 +963,7 @@ def test_actual_oras_transport_publication_preserves_production_and_has_small_re
         before_tags = dict(tags)
     elif fault:
         faults[fault] = True
-    result = run(str(ROOT / "scripts/publish_guest_transport_fixture.sh"), str(fixture / "layout"),
+    result = run(str(ROOT / "scripts/publish_guest_by_digest.sh"), str(fixture / "layout"),
                  record["index"]["digest"], verifier, repository, str(fixture / "publication"), "--plain-http",
                  env={**os.environ, "ORAS": oras}, timeout=30)
     assert (result.returncode == 0) == (fault is None), result.stderr
