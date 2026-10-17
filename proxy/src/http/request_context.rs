@@ -98,6 +98,7 @@ impl Drop for CancelInspectionOnDrop {
 }
 
 pub(super) struct RequestContext {
+    request_body_empty: bool,
     pending: Option<Pending>,
     terminal: Option<bool>,
     provenance: Option<Arc<Provenance>>,
@@ -207,6 +208,7 @@ pub(super) fn prepare<B>(
     let observer = Observer::take(request)?;
     let encoding = combined(request.headers(), header::CONTENT_ENCODING);
     Ok(Admission::Pending(RequestContext {
+        request_body_empty: false,
         pending: Some(Pending {
             observer,
             prepared: Some(prepared),
@@ -233,6 +235,7 @@ impl RequestContext {
         trace: Option<Arc<RequestTrace>>,
     ) -> Result<Self, Error> {
         Ok(Self {
+            request_body_empty: false,
             pending: Some(Pending {
                 observer: Observer::take(request)?,
                 prepared: None,
@@ -312,6 +315,11 @@ impl RequestContext {
         self.inspection.as_ref()?.result.clone()
     }
 
+    /// True only after parser validation, with no payload or trailing headers.
+    pub(super) fn request_body_empty(&self) -> bool {
+        self.request_body_empty
+    }
+
     /// Small buffered requests must cross the independent parser barrier before
     /// the caller may dial. Streamed bodies retain their still-pending permit.
     pub(super) async fn buffer<B>(
@@ -338,6 +346,7 @@ impl RequestContext {
         B: Body<Data = hyper::body::Bytes> + Unpin + Send + Sync + 'static,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
+        let empty_body = prepared.unvalidated_empty_body();
         if let Some(content) = prepared.unvalidated_content {
             self.apply_buffered(content).await?;
         } else {
@@ -348,6 +357,7 @@ impl RequestContext {
             self.apply_inspection(None);
             self.try_finish();
         }
+        self.request_body_empty = empty_body;
         Ok((
             prepared
                 .body

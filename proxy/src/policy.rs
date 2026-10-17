@@ -231,6 +231,7 @@ enum RuleEffect {
 /// In particular credential evaluation has no agent and gateway has no path.
 #[derive(Default)]
 struct Context<'a> {
+    observed_ghcr_pull: bool,
     agent: Option<&'a str>,
     port: Option<u16>,
     method: &'a str,
@@ -323,6 +324,7 @@ impl Condition {
 
 #[derive(Clone, Debug)]
 struct Rule {
+    unknown_credential_prompt: bool,
     action: Action,
     generated_route: bool,
     resource: String,
@@ -1068,6 +1070,16 @@ impl Policy {
                 && let Some(credential) = credential.as_ref()
             {
                 self.emit_permission(credential, view, false)?;
+                // The host-wide unknown-credential default is distinct from
+                // an explicit credential permission. Observed anonymous GHCR
+                // pulls are known public tokens; explicit permissions, including
+                // denials and prompts, still take part in normal matching.
+                if credential["effect"] == "prompt" {
+                    self.rules
+                        .last_mut()
+                        .expect("compiled credential rule")
+                        .unknown_credential_prompt = true;
+                }
             }
             if let Some(effect) = config.get("egress").and_then(Value::as_str)
                 && matches!(effect, "allow" | "deny" | "prompt")
@@ -1266,6 +1278,7 @@ impl Policy {
                 _ => return Ok(()),
             };
             self.rules.push(Rule {
+                unknown_credential_prompt: false,
                 action,
                 generated_route: generated,
                 resource: raw["resource"]
@@ -1379,6 +1392,7 @@ impl Policy {
             }
         }
         self.rules.push(Rule {
+            unknown_credential_prompt: false,
             action,
             generated_route: generated,
             resource,
@@ -1404,6 +1418,7 @@ impl Policy {
                     !(task_exact && rule.exact() && !rule.simple() && rule.resource == resource)
                 }))
                 .filter(|rule| rule.action == action)
+                .filter(|rule| !(context.observed_ghcr_pull && rule.unknown_credential_prompt))
         };
         let matches = |rule: &&Rule, agent: bool, exact: bool, port_only: bool| {
             !rule.inferred
@@ -1560,11 +1575,31 @@ impl Policy {
         request: CredentialRequest<'_>,
         now_ms: f64,
     ) -> Result<Decision> {
+        self.evaluate_credential_inner(request, now_ms, false)
+    }
+
+    /// Only the guard's observed, origin- and scope-bound token match may use
+    /// this default. It does not override an applicable authored permission.
+    pub(crate) fn evaluate_observed_ghcr_pull(
+        &self,
+        request: CredentialRequest<'_>,
+        now_ms: f64,
+    ) -> Result<Decision> {
+        self.evaluate_credential_inner(request, now_ms, true)
+    }
+
+    fn evaluate_credential_inner(
+        &self,
+        request: CredentialRequest<'_>,
+        now_ms: f64,
+        observed_ghcr_pull: bool,
+    ) -> Result<Decision> {
         self.evaluations.fetch_add(1, Ordering::Relaxed);
         if !now_ms.is_finite() {
             return Err(invalid("budget timestamp must be finite"));
         }
         let context = Context {
+            observed_ghcr_pull,
             credential_type: request.credential_type,
             credential_hmac: request.credential_hmac.unwrap_or(""),
             path: request.path,
@@ -1577,7 +1612,14 @@ impl Policy {
                 &format!("{}/*", request.destination),
             )
             .or_else(|| self.matching(Action::Credential, &context, "*"));
-        let mut decision = raw_decision(rule, Effect::Prompt);
+        let mut decision = raw_decision(
+            rule,
+            if observed_ghcr_pull {
+                Effect::Allow
+            } else {
+                Effect::Prompt
+            },
+        );
         if let Some(Rule {
             effect: RuleEffect::Budget(rate),
             ..

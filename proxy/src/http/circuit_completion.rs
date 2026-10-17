@@ -263,6 +263,12 @@ impl Completion {
         self.lock().terminal.is_some_and(|result| result.is_err())
     }
 
+    /// Positive protocol completion is required before trusting response content.
+    pub(super) fn response_complete(&self) -> bool {
+        let _ = self.try_finish();
+        self.lock().terminal.is_some_and(|result| result.is_ok())
+    }
+
     /// Poll with the connection driver's waker and cache application exactly once.
     pub(super) fn poll(&self, cx: &mut Context<'_>) -> Poll<bool> {
         let mut observation = self.lock();

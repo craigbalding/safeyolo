@@ -30,6 +30,8 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+pub(crate) mod ghcr;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Error {
@@ -292,6 +294,7 @@ pub struct CredentialGuard {
     key: Arc<hmac::Key>,
     snapshot: Arc<RwLock<Arc<Snapshot>>>,
     stats: Arc<Mutex<Stats>>,
+    ghcr_tokens: Arc<Mutex<ghcr::Tokens>>,
 }
 impl CredentialGuard {
     /// The root owns loading/generating the existing HMAC key file. Its bytes
@@ -301,6 +304,7 @@ impl CredentialGuard {
             key: Arc::new(hmac::Key::new(hmac::HMAC_SHA256, key)),
             snapshot: Arc::new(RwLock::new(Arc::new(Snapshot::default()))),
             stats: Arc::new(Mutex::new(Stats::default())),
+            ghcr_tokens: Arc::new(Mutex::new(ghcr::Tokens::default())),
         }
     }
     pub fn stats(&self) -> Result<Stats> {
@@ -344,6 +348,11 @@ impl CredentialGuard {
                 ),
                 snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
                 stats: self.stats.clone(),
+                ghcr_tokens: if key.is_some() {
+                    Arc::new(Mutex::new(ghcr::Tokens::default()))
+                } else {
+                    self.ghcr_tokens.clone()
+                },
             },
             report,
         ))
@@ -369,7 +378,7 @@ impl CredentialGuard {
     /// Safe detection evidence; no match text escapes this method.
     pub fn classify_headers(&self, headers: &[Header<'_>]) -> Result<Vec<Finding>> {
         let snapshot = self.snapshot()?;
-        self.detect(&snapshot, headers)?
+        self.detect(&snapshot, headers, crate::policy::current_time_ms())?
             .into_iter()
             .map(|mut detection| {
                 classify(&snapshot, &mut detection)?;
@@ -463,7 +472,12 @@ impl CredentialGuard {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
-    fn detect(&self, snapshot: &Snapshot, headers: &[Header<'_>]) -> Result<Vec<Detection>> {
+    fn detect(
+        &self,
+        snapshot: &Snapshot,
+        headers: &[Header<'_>],
+        now_ms: f64,
+    ) -> Result<Vec<Detection>> {
         let mut detections = Vec::<Detection>::new();
         for header in headers {
             let name = header.name.to_lowercase();
@@ -498,6 +512,20 @@ impl CredentialGuard {
                             break;
                         }
                     }
+                }
+                if matched.is_none()
+                    && standard
+                    && name == "authorization"
+                    && raw
+                        .get(..7)
+                        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Bearer "))
+                    && self.known_ghcr_token(value, now_ms)?
+                {
+                    // Issuer observation proves this is a token even when its
+                    // opaque value does not pass a pattern or entropy heuristic.
+                    // Retain the normal unknown credential type for existing deny
+                    // rules; only the later origin/scope match changes the default.
+                    matched = Some((value, "unknown_secret", "high", 1));
                 }
                 if matched.is_none()
                     && ((standard && ["standard", "paranoid"].contains(&snapshot.level.as_str()))
@@ -598,7 +626,7 @@ impl CredentialGuard {
             return Ok(output);
         }
         let snapshot = self.snapshot()?;
-        let detections = self.detect(&snapshot, request.headers)?;
+        let detections = self.detect(&snapshot, request.headers, now_ms)?;
         if detections.is_empty() {
             output.kind = OutcomeKind::NoDetection;
             output.trace.push(trace(
@@ -632,7 +660,19 @@ impl CredentialGuard {
                         &uuid::Uuid::new_v4().simple().to_string()[..12]
                     ))
             );
-            let decision = evaluate(&pdp, &request, &detection.finding, now_ms);
+            let observed_ghcr_pull = self.observed_ghcr_pull(
+                &request,
+                &detection.finding.header,
+                detection.value.expose_secret(),
+                now_ms,
+            )?;
+            let decision = evaluate(
+                &pdp,
+                &request,
+                &detection.finding,
+                now_ms,
+                observed_ghcr_pull,
+            );
             let fingerprint = format!("hmac:{}", detection.finding.fingerprint);
             let expected = snapshot
                 .rules
@@ -642,6 +682,9 @@ impl CredentialGuard {
                 .map(|rule| rule.allowed_hosts.clone())
                 .unwrap_or_default();
             let mut details = json!({"rule":detection.finding.rule,"location":format!("header:{}",detection.finding.header),"fingerprint":fingerprint,"confidence":detection.finding.confidence,"tier":detection.finding.tier,"project_id":project,"reason_codes":decision.codes,"method":request.method,"port":request.port,"connection_id":request.connection_id});
+            if observed_ghcr_pull {
+                details["observed_anonymous_ghcr_pull"] = json!(true);
+            }
             // Bind new operator prompts to the policy's current identity. The
             // first-launch picker must not attribute an older agent's prompt
             // to a recreated name. No credential value enters this evidence.
@@ -1064,7 +1107,13 @@ struct Decision {
     legacy: bool,
     internal_error: bool,
 }
-fn evaluate(pdp: &Pdp<'_>, request: &Request<'_>, finding: &Finding, now_ms: f64) -> Decision {
+fn evaluate(
+    pdp: &Pdp<'_>,
+    request: &Request<'_>,
+    finding: &Finding,
+    now_ms: f64,
+    observed_ghcr_pull: bool,
+) -> Decision {
     let error = |reason: String, codes, legacy| Decision {
         effect: PdpEffect::Error,
         raw_reason: reason.clone(),
@@ -1113,15 +1162,17 @@ fn evaluate(pdp: &Pdp<'_>, request: &Request<'_>, finding: &Finding, now_ms: f64
     }
     let credential_type = finding.credential_type.as_deref().unwrap_or("unknown");
     let path = request.path.split('?').next().unwrap();
-    let Ok(credential) = policy.evaluate_credential(
-        CredentialRequest {
-            credential_type,
-            destination: request.host,
-            path,
-            credential_hmac: Some(&finding.fingerprint),
-        },
-        now_ms,
-    ) else {
+    let credential = CredentialRequest {
+        credential_type,
+        destination: request.host,
+        path,
+        credential_hmac: Some(&finding.fingerprint),
+    };
+    let Ok(credential) = (if observed_ghcr_pull {
+        policy.evaluate_observed_ghcr_pull(credential, now_ms)
+    } else {
+        policy.evaluate_credential(credential, now_ms)
+    }) else {
         return failed();
     };
     let network = credential.effect == Effect::Allow;

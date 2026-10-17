@@ -4,9 +4,9 @@ use hyper::body::Body as _;
 
 const TOKEN: &str = "v1.abcdefgh0123456789ZYXWVUTSRQPOnmlkjihg";
 const OTHER: &str = "v1.ZYXWVUTSRQPOnmlkjihg9876543210abcdefgh";
-const KEY: &[u8] = b"credential-http-boundary-key";
+pub(super) const KEY: &[u8] = b"credential-http-boundary-key";
 
-fn fingerprint(value: &str) -> String {
+pub(super) fn fingerprint(value: &str) -> String {
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, KEY);
     let digest = ring::hmac::sign(&key, value.as_bytes());
     format!("hmac:{}", hex_encode(&digest.as_ref()[..8]))
@@ -33,7 +33,7 @@ fn permissions(host: &str, approved: &[&str]) -> Vec<Value> {
     ]
 }
 
-fn basic(password: &str) -> String {
+pub(super) fn basic(password: &str) -> String {
     format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(format!("user:{password}"))

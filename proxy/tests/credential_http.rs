@@ -81,6 +81,8 @@ use tokio::{
 
 #[path = "credential_http/boundary.rs"]
 mod boundary;
+#[path = "credential_http/ghcr.rs"]
+mod ghcr;
 mod test_owned_endpoint;
 
 fn config(
