@@ -144,11 +144,7 @@ impl Drop for Json {
     }
 }
 
-pub(crate) fn record(
-    writer: &Writer,
-    policy: &Policy,
-    request_id: &str,
-) -> super::Result<Option<Record>> {
+pub(crate) fn committed_record(policy: &Policy, request_id: &str) -> super::Result<Option<Record>> {
     // A committed host entry is canonical permission evidence even if the
     // client lost its response or the post-commit audit write failed.
     if let Some(source) = policy.native_source_text() {
@@ -181,6 +177,17 @@ pub(crate) fn record(
                 }
             }
         }
+    }
+    Ok(None)
+}
+
+pub(crate) fn record(
+    writer: &Writer,
+    policy: &Policy,
+    request_id: &str,
+) -> super::Result<Option<Record>> {
+    if let Some(record) = committed_record(policy, request_id)? {
+        return Ok(Some(record));
     }
     let document = AuditDocument(
         writer
