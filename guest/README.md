@@ -41,6 +41,13 @@ available choices. The blackbox runner installs its own Python test dependencies
 
 ## Quick start
 
+Use a source checkout and the [Linux prerequisites](#linux-setup), or install
+Lima on macOS as described below. The builder needs Python 3.11+ and GnuPG for
+shared resolution and upstream signature checks. These are builder tools; they
+do not add Python to the default guest. If an instance uses earlier build
+outputs, choose a new `OUTPUT_DIR` to preserve its referenced tree. From the
+repository root:
+
 ```bash
 cd guest
 ./build-all.sh
@@ -50,15 +57,14 @@ On Linux this runs natively (rootfs only by default; kernel + initramfs are
 macOS-microVM artifacts, opted in via `BUILD_KERNEL=1`). On macOS it
 auto-shells into a Lima VM (see below).
 
-**Rebuilding after a prior build**: `build-rootfs.sh` short-circuits with
-"Rootfs already present. Delete them to rebuild." when both
-`out/rootfs-base.ext4` and `out/rootfs-tree/` exist. Wipe them first:
-```bash
-sudo rm -rf out/rootfs-base.ext4 out/rootfs-tree out/cache-paths.txt out/build-base.txt
-./build-all.sh
-```
-The download cache under `guest/out/.download-cache/` is preserved — mise/gh
-tarballs and the trixie OCI image don't re-fetch.
+Each run resolves current stable inputs and builds fresh outputs. The scripts
+replace their rootfs, kernel and initramfs outputs; existing files do not skip a
+build. Downloads under `out/.download-cache/` are reused only after identity
+verification. APT upgrades inherited packages within the signed Trixie suites.
+The JSON input record and package/tool origins are retained under `out/provenance/`.
+For a deliberate frozen-input build, set `GUEST_INPUTS` to a previously resolved
+JSON file. Explicit software versions select official release metadata; they
+never act as failure fallbacks. See the [nightly staging and promotion path](../docs/guest-oci.md#prepare-and-publish-a-default-guest-release).
 
 Artifacts land in `guest/out/`. Return to the repository root, then provide
 that directory to the installer at a fresh installation. This example
@@ -121,24 +127,24 @@ Install the build dependencies. `skopeo` + `umoci` pull and unpack the Debian OC
 
 ```bash
 # Debian/Ubuntu:
-sudo apt-get install skopeo umoci e2fsprogs curl jq rsync
+sudo apt-get install skopeo umoci e2fsprogs curl jq rsync python3 gnupg
 
 # Fedora/RHEL:
-sudo dnf install skopeo umoci e2fsprogs curl jq rsync
+sudo dnf install skopeo umoci e2fsprogs curl jq rsync python3 gnupg
 
 # Arch (umoci via AUR):
-sudo pacman -S skopeo e2fsprogs curl jq rsync
+sudo pacman -S skopeo e2fsprogs curl jq rsync python3 gnupg
 yay -S umoci
 
 # Alpine:
-apk add skopeo umoci e2fsprogs curl jq rsync
+apk add skopeo umoci e2fsprogs curl jq rsync python3 gnupg
 ```
 
 For a full kernel + initramfs build (`BUILD_KERNEL=1`, or when producing artifacts for macOS consumers), add the kernel toolchain. On Debian/Ubuntu:
 
 ```bash
 sudo apt-get install \
-    skopeo umoci e2fsprogs curl jq rsync \
+    skopeo umoci e2fsprogs curl jq rsync python3 gnupg \
     build-essential \
     bc \
     flex \
@@ -181,7 +187,7 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 ## Individual scripts
 
-- `build-rootfs.sh` — digest-pinned Debian trixie via `skopeo`, `umoci`, chroot apt and `rootfs-customize-hook.sh`; writes the ext4 image, UID 100000 tree, cache paths and actual build-base reference. `DEBIAN_IMAGE` overrides remain available for contributor builds. Floating tags and non-registry transports do not emit publication provenance. A cached pre-change build needs a rebuild before it can be published.
+- `build-rootfs.sh` — current official Debian Trixie resolved to a digest via `skopeo`, `umoci`, chroot apt and `rootfs-customize-hook.sh`; writes the ext4 image, UID 100000 tree, cache paths and actual build-base reference. `DEBIAN_IMAGE` overrides remain available for contributor builds. Floating tags and non-registry transports do not emit publication provenance. Each invocation builds fresh outputs.
 - `archive-default.sh` — on a Linux builder with GNU tar, zstd and guest sudo, archives finished backend files with numeric owners, modes, links, extended attributes and sparse-image handling. Reports compressed bytes, apparent filesystem bytes and allocated disk bytes separately. A sparse ext4 image's apparent size includes its unused capacity. See the [OCI publication instructions](../docs/guest-oci.md#prepare-and-publish-a-default-guest-release).
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
@@ -286,8 +292,8 @@ The build scripts keep a persistent cache of upstream downloads under `out/.down
 
 - `out/.download-cache/oci/` — skopeo OCI image layout for the pinned Debian trixie input. Reusing the layout avoids downloading unchanged blobs.
 - `out/.download-cache/linux-<ver>.tar.xz` — kernel source tarball
-- `out/.download-cache/mise-v<ver>-linux-<arch>.tar.gz` — pinned mise release
-- `out/.download-cache/gh_<ver>_linux_<arch>.tar.gz` — pinned gh CLI release
+- `out/.download-cache/mise-<ver>-<arch>.tar.gz` — verified resolved mise release
+- `out/.download-cache/gh-<ver>-<arch>.tar.gz` — verified resolved gh CLI release
 
 The chroot package installation downloads Debian packages on each rebuild.
 The builder does not preserve apt's archive cache between builds. This differs
@@ -298,7 +304,7 @@ To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush arti
 ## Why sudo?
 
 `build-rootfs.sh` uses `sudo` for these operations in its owned scratch
-directory under `TMPDIR` (or `/tmp` by default) and its selected output directory.
+directory under `TMPDIR` (or `/var/tmp` by default) and its selected output directory.
 The publication workflow sets `TMPDIR` to disk-backed runner storage:
 
 1. `umoci unpack` — preserves real uid/gid ownership in the unpacked tree, which `mkfs.ext4 -d` needs to read back cleanly at packaging time.

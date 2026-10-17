@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 # Prepare or reuse an OCI guest release; publish only to an explicit destination.
 set -euo pipefail
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+if [[ ${1:-} == --promote || ${1:-} == --record-stage || ${1:-} == --record-smoke || ${1:-} == --inspect ]]; then
+    operation=${1#--}; shift
+    exec "${SAFEYOLO_BUILD_PYTHON:-python3}" "$script_dir/guest_release.py" "$operation" "$@"
+fi
 usage() {
     echo 'Usage: publish_guest_oci.sh (--artifacts DIR | --from-layout) --layout DIR --version TAG --compatibility C --revision SHA --verifier EXECUTABLE [--publish REPOSITORY] [--plain-http]' >&2
     exit 64
 }
 artifacts= layout= version= compatibility= revision= verifier= repository=
 plain_http=0 from_layout=0
+created_at=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --plain-http) plain_http=1; shift ;;
         --from-layout) from_layout=1; shift ;;
-        --artifacts|--layout|--version|--compatibility|--revision|--verifier|--publish)
+        --artifacts|--layout|--version|--compatibility|--revision|--verifier|--publish|--created-at)
             [[ $# -ge 2 && -n "$2" ]] || usage
             case "$1" in
                 --artifacts) artifacts=$2 ;; --layout) layout=$2 ;;
                 --version) version=$2 ;; --compatibility) compatibility=$2 ;;
                 --revision) revision=$2 ;; --verifier) verifier=$2 ;;
-                --publish) repository=$2 ;;
+                --publish) repository=$2 ;; --created-at) created_at=$2 ;;
             esac
             shift 2 ;;
         *) usage ;;
@@ -32,20 +38,26 @@ else
     mkdir -p -- "$layout"
 fi
 oras=${ORAS:-oras}
-[[ $("$oras" version | sed -n 's/^Version: *//p') == 1.3.4 ]] || { echo 'ORAS 1.3.4 is required.' >&2; exit 1; }
 verifier=$(realpath -- "$verifier")
 layout=$(cd -- "$layout" && pwd)
 scratch=$(mktemp -d "$layout/.publish.XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
 if (( ! from_layout )); then
+    # Persist real assembly time locally so identical publication retries retain
+    # bytes. A new build uses a fresh layout and a new immutable version.
+    if [[ -z $created_at ]]; then
+        if [[ -f $layout/assembled-at.txt ]]; then created_at=$(cat "$layout/assembled-at.txt")
+        else created_at=$("${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())'); fi
+    fi
+    printf '%s\n' "$created_at" > "$layout/assembled-at.txt"
     artifact_type=application/vnd.safeyolo.guest.v1
     annotations=(
         --annotation "org.opencontainers.image.version=$version"
         --annotation 'org.opencontainers.image.source=https://github.com/craigbalding/safeyolo'
         --annotation "org.opencontainers.image.revision=$revision"
         --annotation "dev.safeyolo.guest.compatibility=$compatibility"
-        # ORAS otherwise adds the current time, making identical retries conflict.
-        --annotation "org.opencontainers.image.created=${version:6:10}T00:00:00Z"
+        # Assembly time is distinct from verified staging completion.
+        --annotation "org.opencontainers.image.created=$created_at"
     )
     children=()
     for platform in darwin-arm64 linux-amd64 linux-arm64; do
@@ -125,7 +137,9 @@ cp -- "$scratch/fetched-index.json" "$roundtrip/blobs/sha256/${index_digest#sha2
 "$verifier" "$roundtrip" "$index_digest" "$compatibility"
 "$oras" tag "${remote_options[@]}" "$repository@$index_digest" "$version" >/dev/null
 [[ $("$oras" resolve "${remote_options[@]}" "$repository:$version") == "$index_digest" ]]
-"$oras" tag "${remote_options[@]}" "$repository@$index_digest" "compat-$compatibility" >/dev/null
-[[ $("$oras" resolve "${remote_options[@]}" "$repository:compat-$compatibility") == "$index_digest" ]]
-echo "Published $repository:$version; compat-$compatibility -> $index_digest"
+# Completion is recorded only after the complete index and all archives pass
+# registry readback. The following job binds this time to this successful job.
+staged_at=$("${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())')
+printf '%s\n' "$staged_at" > "$layout/verified-staged-at.txt"
+echo "Staged $repository:$version at $index_digest ($staged_at). Compatibility selection is unchanged."
 # Retain all prior versions, generations and rollback content. No deletes.

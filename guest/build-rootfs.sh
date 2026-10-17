@@ -61,24 +61,17 @@ esac
 # --- Fixed-size ext4 image (matches the historical 2 GiB sparse) ------------
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"  # DOC: guest/README.md
 
-# --- Pinned tarballs installed by the customize-hook -----------------------
-MISE_VERSION="${MISE_VERSION:-2026.8.8}"  # DOC: guest/README.md
-MISE_SHA256_ARM64="${MISE_SHA256_ARM64:-6e6e96d319fe274996db5aed691f5398552865e641dc4b6fb6b01d73f4853a17}"
-MISE_SHA256_AMD64="${MISE_SHA256_AMD64:-58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f}"
-
-GH_VERSION="${GH_VERSION:-2.98.0}"  # DOC: guest/README.md
-GH_SHA256_ARM64="${GH_SHA256_ARM64:-cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86}"
-GH_SHA256_AMD64="${GH_SHA256_AMD64:-3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de}"
-
-# --- Debian source image ----------------------------------------------------
-# Architecture-specific manifests from the official trixie index. These pin
-# the actual input, rather than an index or the moving tag. apt still uses the
-# base's signed repositories; this is build provenance, not a package snapshot.
-case "$DEB_ARCH" in
-    amd64) DEBIAN_DIGEST=bcf83fd8af414eda0c0a99d25a4e61dedd88e7aac7f7bc519d04555ff0c40ec5 ;;
-    arm64) DEBIAN_DIGEST=b55910b579d6eb05ebd79fbc8468b974fa39bb0610d52e1f1390bb2177ab7614 ;;
-esac
-DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://docker.io/library/debian@sha256:$DEBIAN_DIGEST}"  # DOC: guest/README.md, contrib/ROOTFS_SCRIPT_GUIDE.md
+# Resolve once for this build. Explicit frozen inputs remain usable offline.
+export SAFEYOLO_GUEST_SRC_DIR="$SCRIPT_DIR"
+source "$SCRIPT_DIR/input-functions.sh"
+if [[ -z ${GUEST_INPUTS:-} ]]; then
+    mkdir -p "$OUTPUT_DIR"
+    GUEST_INPUTS=$(mktemp "$OUTPUT_DIR/inputs.XXXXXX.json")
+    "${SAFEYOLO_BUILD_PYTHON:-python3}" "$SCRIPT_DIR/resolve_inputs.py" resolve \
+        --tools mise gh --base --output "$GUEST_INPUTS"
+    export GUEST_INPUTS
+fi
+guest_inputs "$DEB_ARCH"
 
 # --- Helper: `command -v` that also probes /usr/sbin / /sbin --------------
 # Debian packages these binaries into system sbin dirs that aren't on
@@ -136,69 +129,21 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_EXT4="$OUTPUT_DIR/rootfs-base.ext4"
 OUTPUT_TREE="$OUTPUT_DIR/rootfs-tree"
 
-# Short-circuit only if BOTH artifacts are already present. A partial
-# build can never self-heal otherwise.
-if [ -f "$OUTPUT_EXT4" ] && [ -d "$OUTPUT_TREE" ]; then  # DOC: guest/README.md
-    echo "Rootfs already present:"
-    echo "  $OUTPUT_EXT4"
-    echo "  $OUTPUT_TREE/"
-    echo "Delete them to rebuild."
-    exit 0
-fi
-if [ -f "$OUTPUT_EXT4" ] || [ -d "$OUTPUT_TREE" ]; then
-    echo "Partial build detected. Rebuilding both."
-    sudo rm -rf "$OUTPUT_EXT4" "$OUTPUT_TREE" 2>/dev/null \
-        || rm -rf "$OUTPUT_EXT4" "$OUTPUT_TREE" 2>/dev/null \
-        || true
-fi
+# Existing output is never freshness evidence. Replace only these build outputs.
+sudo -n rm -rf -- "$OUTPUT_EXT4" "$OUTPUT_TREE"
+rm -f -- "$OUTPUT_DIR/build-base.txt"
 
 # --- Download cache ---------------------------------------------------------
 DOWNLOAD_CACHE="$OUTPUT_DIR/.download-cache"
 OCI_CACHE="$DOWNLOAD_CACHE/oci"
 mkdir -p "$DOWNLOAD_CACHE" "$OCI_CACHE"
 
-# Pre-fetch mise + gh tarballs, SHA256-verified. The customize-hook reads
-# MISE_TARBALL / GH_TARBALL and installs the pre-fetched binaries without
-# re-downloading, so rebuilds are fast.
-fetch_pinned() {
-    local label="$1" url="$2" sha="$3" dest="$4"
-    if [ -f "$dest" ]; then
-        if echo "${sha}  $dest" | sha256sum -c - >/dev/null 2>&1; then
-            return 0
-        fi
-        echo "Cached $label has wrong SHA256, re-downloading: $dest" >&2
-        rm -f "$dest"
-    fi
-    echo "--- Fetching $label ($url) ---"
-    curl -fsSL "$url" -o "$dest"
-    echo "${sha}  $dest" | sha256sum -c -
-}
-
-# mise uses "x64" for its amd64 asset, not Debian's "amd64". arm64 matches.
-case "$DEB_ARCH" in
-    amd64) MISE_ARCH=x64 ;;
-    arm64) MISE_ARCH=arm64 ;;
-esac
-MISE_URL="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
-MISE_TARBALL="$DOWNLOAD_CACHE/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
-case "$DEB_ARCH" in
-    arm64) _MISE_SHA="$MISE_SHA256_ARM64" ;;
-    amd64) _MISE_SHA="$MISE_SHA256_AMD64" ;;
-esac
-fetch_pinned "mise ${MISE_VERSION} ($DEB_ARCH)" "$MISE_URL" "$_MISE_SHA" "$MISE_TARBALL"
-export MISE_TARBALL
-
-GH_URL="https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${DEB_ARCH}.tar.gz"
-GH_TARBALL="$DOWNLOAD_CACHE/gh_${GH_VERSION}_linux_${DEB_ARCH}.tar.gz"
-case "$DEB_ARCH" in
-    arm64) _GH_SHA="$GH_SHA256_ARM64" ;;
-    amd64) _GH_SHA="$GH_SHA256_AMD64" ;;
-esac
-fetch_pinned "gh ${GH_VERSION} ($DEB_ARCH)" "$GH_URL" "$_GH_SHA" "$GH_TARBALL"
-export GH_TARBALL
-
-MISE_SHA256="$_MISE_SHA"
-GH_SHA256="$_GH_SHA"
+# Reuse downloads only after matching the frozen official identities.
+MISE_TARBALL="$DOWNLOAD_CACHE/mise-$MISE_VERSION-$DEB_ARCH.tar.gz"
+GH_TARBALL="$DOWNLOAD_CACHE/gh-$GH_VERSION-$DEB_ARCH.tar.gz"
+guest_download "$DEB_ARCH" mise "$MISE_TARBALL"
+guest_download "$DEB_ARCH" gh "$GH_TARBALL"
+export MISE_TARBALL GH_TARBALL
 
 # --- Pull the Debian OCI image ---------------------------------------------
 rm -f "$OUTPUT_DIR/build-base.txt"
@@ -229,7 +174,7 @@ fi
 # --rootless=false (equivalent to omitting --rootless) leaves real ownership
 # + xattrs — necessary so mkfs.ext4 -d later reads the tree back correctly.
 # alpine-minimal has the same rationale.
-WORK_DIR="$(mktemp -d -t safeyolo-rootfs.XXXXXX)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/var/tmp}/safeyolo-rootfs.XXXXXX")"
 cleanup_workdir() {
     if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
         sudo -n rm -rf "$WORK_DIR" 2>/dev/null \
@@ -309,8 +254,39 @@ if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
     echo "Staged the build host TLS CA at $SSL_CERT_FILE inside the temporary chroot."
 fi
 
+# Debian OCI images can lack ca-certificates until the first package install.
+# Stage a verified builder CA for HTTPS APT without replacing the guest bundle
+# that ca-certificates will generate. It never enters the packaged artifact.
+BUILD_APT_CA=$("${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'import ssl; print(ssl.get_default_verify_paths().cafile or "")')
+[[ -r "$BUILD_APT_CA" ]] || { echo 'No readable builder TLS CA bundle for APT.' >&2; exit 1; }
+sudo install -D -m 0644 "$BUILD_APT_CA" "$ROOTFS/tmp/safeyolo-build-ca.pem"
+APT_TLS_OPTIONS=(-o Acquire::https::CaInfo=/tmp/safeyolo-build-ca.pem)
+
 echo "=== apt-get update (inside chroot) ==="
-sudo chroot "$ROOTFS" /usr/bin/apt-get update
+# Restrict the default build to the intended signed Trixie suites.
+sudo rm -f "$ROOTFS/etc/apt/sources.list"
+sudo rm -rf "$ROOTFS/etc/apt/sources.list.d"
+sudo mkdir -p "$ROOTFS/etc/apt/sources.list.d"
+sudo tee "$ROOTFS/etc/apt/sources.list.d/debian.sources" >/dev/null <<'APT_SOURCES'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: https://deb.debian.org/debian-security
+Suites: trixie-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+APT_SOURCES
+sudo chroot "$ROOTFS" /usr/bin/apt-get -o APT::Update::Error-Mode=any update "${APT_TLS_OPTIONS[@]}"
+sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -y dist-upgrade "${APT_TLS_OPTIONS[@]}"
+remaining=$(sudo chroot "$ROOTFS" /usr/bin/apt list --upgradable 2>/dev/null)
+if [[ "$remaining" == *$'\n'* ]]; then
+    echo "Inherited Trixie packages remain upgradable: $remaining" >&2
+    exit 1
+fi
 
 echo "=== Installing base packages ==="
 # Git stays available for gh repository commands and agent edits/checks.
@@ -323,9 +299,20 @@ echo "=== Installing base packages ==="
 # downloads warm. Default Linux directory overlays retain installed files;
 # --ephemeral guests must unpack packages again after a stop.
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
-    /usr/bin/apt-get install -y --no-install-recommends \
+    /usr/bin/apt-get install -y --no-install-recommends "${APT_TLS_OPTIONS[@]}" \
     ca-certificates curl git openssh-client openssh-server \
     iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo
+
+# Capture the verified build repositories before the hook clears APT lists
+# and installs the separate runtime proxy settings.
+mkdir -p "$OUTPUT_DIR/provenance"
+sudo cat "$ROOTFS/etc/apt/sources.list.d/debian.sources" > "$OUTPUT_DIR/provenance/apt-sources-$DEB_ARCH.txt"
+# apt has verified the InRelease signatures through Signed-By. Retain the exact
+# verified metadata, package-index hashes and archive-keyring identity.
+sudo bash -c 'cd "$1"; tar -cf - etc/apt usr/share/keyrings/debian-archive-keyring.gpg var/lib/apt/lists/*_InRelease' \
+    -- "$ROOTFS" > "$OUTPUT_DIR/provenance/apt-$DEB_ARCH.tar"
+sudo bash -c 'cd "$1"; sha256sum var/lib/apt/lists/*_InRelease var/lib/apt/lists/*Packages*' \
+    -- "$ROOTFS" > "$OUTPUT_DIR/provenance/apt-indexes-$DEB_ARCH.sha256"
 
 # --- SafeYolo customize hook ---------------------------------------------
 CUSTOMIZE_HOOK_SCRIPT="$SCRIPT_DIR/rootfs-customize-hook.sh"
@@ -340,11 +327,28 @@ echo "=== Running customize-hook ==="
 sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,MISE_TARBALL,GH_TARBALL,SAFEYOLO_GUEST_SRC_DIR \
     bash "$CUSTOMIZE_HOOK_SCRIPT" "$ROOTFS"
 
+# Keep signed repository metadata and final inventory before the chroot is removed.
+mkdir -p "$OUTPUT_DIR/provenance"
+cp -- "$GUEST_INPUTS" "$OUTPUT_DIR/provenance/inputs.json"
+actual_mise=$(sudo chroot "$ROOTFS" /usr/local/bin/mise --version)
+actual_gh=$(sudo chroot "$ROOTFS" /usr/local/bin/gh --version)
+[[ "$actual_mise" == "$MISE_VERSION "* || "$actual_mise" == "mise $MISE_VERSION "* ]] || {
+    echo 'Installed mise version/interface differs from the frozen release.' >&2; exit 1;
+}
+[[ "$actual_gh" == "gh version $GH_VERSION "* ]] || {
+    echo 'Installed gh version/interface differs from the frozen release.' >&2; exit 1;
+}
+printf '%s\n' "$actual_mise" > "$OUTPUT_DIR/provenance/mise-version-$DEB_ARCH.txt"
+printf '%s\n' "$actual_gh" > "$OUTPUT_DIR/provenance/gh-version-$DEB_ARCH.txt"
+sudo chroot "$ROOTFS" /usr/bin/dpkg-query -W '-f=${binary:Package}\t${Version}\t${Architecture}\n' > "$OUTPUT_DIR/provenance/dpkg-$DEB_ARCH.tsv"
+{ date -u +%Y-%m-%dT%H:%M:%SZ; skopeo --version; "$UMOCI" --version; \
+  rsync --version; mkfs.ext4 -V 2>&1; } > "$OUTPUT_DIR/provenance/builder-$DEB_ARCH.txt"
+
 # --- Strip temporary host network state before packing ---------------------
 # Shipping /etc/resolv.conf or the outer SafeYolo CA would leak host-specific
 # network configuration into every agent. guest-init writes a resolver at
 # boot, and the runtime bind-mounts the correct per-instance proxy CA.
-sudo rm -f "$ROOTFS/etc/resolv.conf"
+sudo rm -f "$ROOTFS/etc/resolv.conf" "$ROOTFS/tmp/safeyolo-build-ca.pem"
 if [ -n "$BUILD_SSL_CERT_DEST" ]; then
     sudo rm -f -- "$BUILD_SSL_CERT_DEST"
     if [ -n "$BUILD_SSL_CERT_BACKUP" ]; then

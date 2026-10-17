@@ -14,9 +14,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tests import test_guest_acquisition as acquisition
+from tests.blackbox import retained_inputs
 from tests.test_host_packages import executable
 
 native_cli = acquisition.native_cli
@@ -49,7 +49,7 @@ def own(path, uid, gid):
 
 @pytest.mark.parametrize("bases", [(231072, 400000), (100000, 100000), None],
                          ids=["alternate", "fixed-preferred", "missing"])
-def test_source_systrap_caller_remaps_only_its_private_copy(native_cli, owned_stage, bases):
+def test_retained_systrap_caller_remaps_only_its_private_copy(native_cli, owned_stage, bases, monkeypatch):
     parent, _ = owned_stage
     source = parent / "blackbox-platform"
     tree = source / "rootfs-tree"
@@ -62,45 +62,70 @@ def test_source_systrap_caller_remaps_only_its_private_copy(native_cli, owned_st
         own(path, 100000, 100000)
     own(tree / "agent", 101000, 101000)
     (source / "cache-paths.txt").write_text("/var/cache/apt\n")
-    tools = parent / "tools"
-    tools.mkdir()
-    subids = tools / "getsubids"
-    subids.write_text("#!/bin/sh\n" + ("exit 0\n" if bases is None else
-        f"printf '0: fixture 500000 65536\\n1: fixture %s 65536\\n' \"$([ \"$1\" = -g ] && echo {bases[1]} || echo {bases[0]})\"\n"))
-    subids.chmod(0o755)
+    archive = parent / "guest.tar.zst"
+    tar_bytes = subprocess.check_output(["sudo", "-n", "tar", "--format=pax", "--numeric-owner", "-C", str(source),
+                                         "-cf", "-", "rootfs-tree", "cache-paths.txt"])
+    with archive.open("wb") as stream:
+        subprocess.run(["zstd", "-q", "-c"], input=tar_bytes, stdout=stream, check=True)
+    original_archive = hashlib.sha256(archive.read_bytes()).hexdigest()
+    descriptor = {"digest": "sha256:" + original_archive, "size": archive.stat().st_size}
+    selection = parent / "selection.json"
+    selection.write_text(json.dumps({"schema": "safeyolo.blackbox-inputs/v1", "status": "selected",
+        "platform": "linux-arm64" if os.uname().machine in {"arm64", "aarch64"} else "linux-amd64",
+        "guest": {"version": "guest-2026-10-17.1", "compatibility": "v1", "archive": descriptor,
+                  "index": {"digest": "sha256:" + "a" * 64, "size": 10},
+                  "child": {"digest": "sha256:" + "b" * 64, "size": 10}}}))
     bundle = parent / "bundle"
     (bundle / "bin").mkdir(parents=True)
     (bundle / "bin/safeyolo").symlink_to(native_cli)
-    workflow = yaml.safe_load((acquisition.REPO / ".github/workflows/blackbox.yml").read_text())
-    steps = {step.get("name"): step for step in workflow["jobs"]["systrap"]["steps"]}
-    assert steps["Prepare the supported systrap host"]["run"] == "tests/blackbox/prepare-systrap-host.sh"
-    consumer = steps["Prepare once and run independent systrap sections"]
-    assert "SAFEYOLO_PLATFORM_ASSETS" not in consumer.get("env", {})
-    mapping = steps["Prepare a private rootfs for the runner's owned IDs"]
-    assert mapping["shell"] == "bash"
-    output = parent / "github-env"
-    result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", mapping["run"]],
-                            env=dict(os.environ, BASH_ENV=os.devnull, RUNNER_TEMP=str(parent), GITHUB_ENV=str(output),
-                                     SAFEYOLO_NATIVE_BUNDLE=str(bundle), PATH=f"{tools}:{os.environ['PATH']}"),
-                            capture_output=True, text=True, timeout=30)
+    root = parent / "installed"
+    directory = parent / "private-guest"
+    prepare_calls = []
+    actual_run = subprocess.run
+
+    def prepared_host(arguments, **kwargs):
+        if arguments[:6] == [str(bundle / "bin/safeyolo"), "--root", str(root), "host", "prepare", "--package-root"]:
+            prepare_calls.append(arguments)
+            assert arguments[6:] == [str(bundle), "--installed-root", str(bundle), "--write-settings",
+                                     str(directory / "linux-settings.toml"), *(["--yes"] if bases else [])]
+            # Range allocation belongs to native host prepare. Control that
+            # host prerequisite here; extraction and native remapping stay real.
+            # Missing ranges without --yes must stop, rather than reuse fixed IDs.
+            if bases is None:
+                raise subprocess.CalledProcessError(1, arguments, stderr="host preparation was not approved")
+            (directory / "linux-settings.toml").write_text(
+                f"[linux]\nuid_base={bases[0]}\ngid_base={bases[1]}\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n")
+            return subprocess.CompletedProcess(arguments, 0)
+        return actual_run(arguments, **kwargs)
+
+    monkeypatch.setattr(retained_inputs.subprocess, "run", prepared_host)
+    if bases is None:
+        with pytest.raises(subprocess.CalledProcessError):
+            retained_inputs.prepare_guest(selection, archive, bundle, root, directory, yes=False)
+        assets = directory / "extract-guest"
+        assert not (root / "share/guest-selection.json").exists()
+        assert (assets / "rootfs-tree").stat().st_uid == 100000
+        assert not (directory / "guest.tar").exists()
+    else:
+        assets = retained_inputs.prepare_guest(selection, archive, bundle, root, directory, yes=True)
+        assert (assets / "rootfs-tree").stat().st_uid == bases[0]
+        assert (assets / "rootfs-tree").stat().st_gid == bases[1]
+        assert (assets / "rootfs-tree/agent").stat().st_uid == os.getuid()
+        frozen = json.loads((root / "share/guest-selection.json").read_bytes())
+        assert frozen["archive"] == descriptor
+    assert len(prepare_calls) == 1
     assert (tree.stat().st_uid, tree.stat().st_gid) == (100000, 100000)
     assert (tree / "agent").stat().st_uid == 101000
-    if bases is None:
-        assert result.returncode != 0 and "needs an owned range" in result.stderr
-        assert not output.exists()
-        assert list(parent.glob("extract-????????")) == []
-        return
-    assert result.returncode == 0, result.stdout + result.stderr
-    assets = Path(output.read_text().strip().removeprefix("SAFEYOLO_PLATFORM_ASSETS="))
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == original_archive
+    # The package runner owns a mktemp parent with mode 0700. Its independent
+    # extraction stays inside that private parent, including on a failed prepare.
+    assert parent.stat().st_uid == os.getuid() and stat.S_IMODE(parent.stat().st_mode) == 0o700
     assert assets.stat().st_uid == os.getuid() and stat.S_IMODE(assets.stat().st_mode) == 0o700
-    assert (assets / "rootfs-tree").stat().st_uid == bases[0]
-    assert (assets / "rootfs-tree").stat().st_gid == bases[1]
     copied = assets / "rootfs-tree/root"
     assert copied.read_bytes() == b"published root"
     assert copied.stat().st_ino != (tree / "root").stat().st_ino
     assert copied.stat().st_ino == (assets / "rootfs-tree/hard").stat().st_ino
     assert (assets / "rootfs-tree/symbolic").readlink() == Path("root")
-    assert (assets / "rootfs-tree/agent").stat().st_uid == os.getuid()
     assert (assets / "cache-paths.txt").read_bytes() == (source / "cache-paths.txt").read_bytes()
 
 

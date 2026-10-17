@@ -32,6 +32,8 @@ ROOTFS="$1"
 # weird error later.
 : "${DEB_ARCH:?DEB_ARCH not set}"
 : "${MISE_VERSION:?MISE_VERSION not set}"
+: "${MISE_SHA256:?MISE_SHA256 not set}"
+: "${GH_SHA256:?GH_SHA256 not set}"
 : "${GH_VERSION:?GH_VERSION not set}"
 : "${SAFEYOLO_GUEST_SRC_DIR:?SAFEYOLO_GUEST_SRC_DIR not set}"
 
@@ -73,11 +75,7 @@ else
     MISE_URL="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
     curl -fsSL "$MISE_URL" -o "$ROOTFS/tmp/mise.tar.gz"
 fi
-if [ -n "${MISE_SHA256:-}" ]; then
-    echo "${MISE_SHA256}  $ROOTFS/tmp/mise.tar.gz" | sha256sum -c -
-else
-    echo "WARNING: no pinned SHA256 for mise ${DEB_ARCH} -- proceeding unverified" >&2
-fi
+echo "${MISE_SHA256}  $ROOTFS/tmp/mise.tar.gz" | sha256sum -c -
 tar -xzf "$ROOTFS/tmp/mise.tar.gz" -C "$ROOTFS/tmp"
 cp "$ROOTFS/tmp/mise/bin/mise" "$ROOTFS/usr/local/bin/mise"
 chmod +x "$ROOTFS/usr/local/bin/mise"
@@ -116,11 +114,7 @@ else
     GH_URL="https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${DEB_ARCH}.tar.gz"
     curl -fsSL "$GH_URL" -o "$ROOTFS/tmp/gh.tar.gz"
 fi
-if [ -n "${GH_SHA256:-}" ]; then
-    echo "${GH_SHA256}  $ROOTFS/tmp/gh.tar.gz" | sha256sum -c -
-else
-    echo "WARNING: no pinned SHA256 for gh ${DEB_ARCH} -- proceeding unverified" >&2
-fi
+echo "${GH_SHA256}  $ROOTFS/tmp/gh.tar.gz" | sha256sum -c -
 tar -xzf "$ROOTFS/tmp/gh.tar.gz" -C "$ROOTFS/tmp"
 cp "$ROOTFS/tmp/gh_${GH_VERSION}_linux_${DEB_ARCH}/bin/gh" "$ROOTFS/usr/local/bin/gh"
 chmod +x "$ROOTFS/usr/local/bin/gh"

@@ -271,18 +271,13 @@ def test_debian_builders_verify_the_fd_runtime_command() -> None:
     assert "fd --version" in kali
 
 
-def test_default_and_custom_builders_share_current_mise_pin() -> None:
-    """The default base and custom rootfs helper must use one verified pin."""
-    default_builder = (GUEST_DIR / "build-rootfs.sh").read_text()
-    custom_helper = (GUEST_DIR / "install-guest-common.sh").read_text()
-
-    for value in (
-        "2026.8.8",
-        "6e6e96d319fe274996db5aed691f5398552865e641dc4b6fb6b01d73f4853a17",
-        "58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f",
-    ):
-        assert value in default_builder
-        assert value in custom_helper
+def test_default_and_custom_builders_share_current_mise_resolution() -> None:
+    for name in ("build-rootfs.sh", "install-guest-common.sh"):
+        source = (GUEST_DIR / name).read_text()
+        assert "input-functions.sh" in source
+        assert "guest_inputs" in source
+        assert "2026.8.8" not in source
+        assert "MISE_VERSION:-" not in source
 
 
 def test_default_builder_supports_a_host_without_resolv_conf() -> None:
@@ -292,7 +287,7 @@ def test_default_builder_supports_a_host_without_resolv_conf() -> None:
     assert "if [ -r /etc/resolv.conf ]; then" in source
     assert 'sudo cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"' not in source
     assert source.index("if [ -r /etc/resolv.conf ]; then") < source.index(
-        'sudo chroot "$ROOTFS" /usr/bin/apt-get update'
+        'sudo chroot "$ROOTFS" /usr/bin/apt-get -o APT::Update::Error-Mode=any update'
     )
 
 
@@ -301,7 +296,7 @@ def test_default_builder_stages_then_removes_inherited_tls_ca() -> None:
     source = (GUEST_DIR / "build-rootfs.sh").read_text()
 
     stage = 'sudo install -D -m 0644 -- "$SSL_CERT_FILE" "$BUILD_SSL_CERT_DEST"'
-    first_chroot = 'sudo chroot "$ROOTFS" /usr/bin/apt-get update'
+    first_chroot = 'sudo chroot "$ROOTFS" /usr/bin/apt-get -o APT::Update::Error-Mode=any update'
     cleanup = 'sudo rm -f -- "$BUILD_SSL_CERT_DEST"'
     empty_runtime_target = (
         'sudo install -D -m 0644 /dev/null "$BUILD_SSL_CERT_DEST"'

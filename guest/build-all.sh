@@ -45,6 +45,21 @@ run_builds_native() {
     echo "Output directory: $OUTPUT_DIR"
     echo ""
 
+    export SAFEYOLO_GUEST_SRC_DIR="$SCRIPT_DIR"
+    source "$SCRIPT_DIR/input-functions.sh"
+    mkdir -p "$OUTPUT_DIR"
+    if [[ -z ${GUEST_INPUTS:-} ]]; then
+        export GUEST_INPUTS
+        GUEST_INPUTS=$(mktemp "$OUTPUT_DIR/inputs.XXXXXX.json")
+        tools=(mise gh)
+        [[ ${BUILD_KERNEL:-} != 1 ]] || tools+=(kernel)
+        "${SAFEYOLO_BUILD_PYTHON:-python3}" "$SCRIPT_DIR/resolve_inputs.py" resolve \
+            --tools "${tools[@]}" --base --output "$GUEST_INPUTS"
+    fi
+    mkdir -p "$OUTPUT_DIR/provenance"
+    cp "$GUEST_INPUTS" "$OUTPUT_DIR/provenance/inputs.json"
+    "${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())' > "$OUTPUT_DIR/provenance/build-started-at.txt"
+
     # Kernel and initramfs are only needed for macOS microVMs
     # (Virtualization.framework). On Linux, gVisor provides its own kernel —
     # only the rootfs is needed. Set BUILD_KERNEL=1 to force kernel+initramfs
@@ -62,6 +77,7 @@ run_builds_native() {
 
     # Rootfs is always needed
     "$SCRIPT_DIR/build-rootfs.sh"
+    "${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())' > "$OUTPUT_DIR/provenance/build-completed-at.txt"
 
     echo ""
     echo "=== All artifacts built ==="

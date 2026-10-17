@@ -128,6 +128,9 @@ provision:
         pax-utils \
         cpio \
         curl \
+        python3 \
+        gnupg \
+        dirmngr \
         ca-certificates \
         xz-utils \
         sudo
@@ -146,6 +149,8 @@ probes:
       command -v mmdebstrap
       command -v aarch64-linux-gnu-gcc
       command -v busybox
+      command -v python3
+      command -v gpg
       command -v skopeo
       command -v umoci
       command -v unzip
