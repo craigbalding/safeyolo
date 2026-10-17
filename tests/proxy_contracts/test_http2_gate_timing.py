@@ -130,16 +130,17 @@ def test_100_warm_batches_direct_and_intercepted(proxy_backend, tmp_path):
     # the same available CPUs. The report records the effective affinity.
     affinity = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
     selected_cpus = affinity[:2] if affinity else None
-    if selected_cpus:
-        os.sched_setaffinity(0, selected_cpus)
     result = {"environment": {
         "platform": platform.platform(), "python": platform.python_version(),
         "openssl": ssl.OPENSSL_VERSION, "affinity": selected_cpus,
         "tokio_worker_threads": os.environ.get("TOKIO_WORKER_THREADS", "default"),
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "working_tree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
         "hold_seconds": 0.2, "streams": 20,
     }, "lanes": {}, "tcp_segmentation": "not observed; inspect an external packet capture"}
     try:
+        if selected_cpus:
+            os.sched_setaffinity(0, selected_cpus)
         with origin_server(
             pem, capture_frames=True, keylog=keylog,
             port=int(os.environ.get("SAFEYOLO_H2_GATE_ORIGIN_PORT", "0")),
@@ -147,6 +148,8 @@ def test_100_warm_batches_direct_and_intercepted(proxy_backend, tmp_path):
             proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
         ) as proxy:
             result["origin_port"] = origin.server_address[1]
+            result["environment"]["binary_identity"] = subprocess.check_output(
+                [proxy.process.args[0], "--version"], text=True).strip()
             result["resources_before"] = runtime_resources(proxy)
             for lane in ("direct", "proxy"):
                 connection = (direct_stream(origin, public) if lane == "direct" else tls_tunnel(

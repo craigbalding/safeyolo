@@ -188,7 +188,12 @@ where
     fn is_end_stream(&self) -> bool {
         // Preserve the source's initial framing choice for an empty unknown
         // body: it must still be polled to finish an outbound chunked message.
-        self.source_terminal && self.frames.is_empty() && self.terminal_visible
+        // Once a frame is visible, retain the source's terminal flag on its
+        // final DATA instead of adding an empty terminal DATA frame. This is
+        // framing only; the caller still requires independent parser proof.
+        self.frames.is_empty()
+            && self.terminal_visible
+            && (self.source_terminal || self.source.is_end_stream())
     }
 
     fn size_hint(&self) -> SizeHint {
@@ -272,6 +277,27 @@ mod tests {
 
     fn data(bytes: &'static [u8]) -> Result<Frame<Bytes>, &'static str> {
         Ok(Frame::data(Bytes::from_static(bytes)))
+    }
+
+    #[tokio::test]
+    async fn streamed_final_data_retains_eos_without_an_extra_terminal_frame() {
+        let mut prepared = prepare(Full::new(Bytes::from_static(b"!")), Some(1), true)
+            .await
+            .unwrap();
+        assert!(prepared.unvalidated_content.is_none());
+        assert!(!prepared.body.is_end_stream());
+        assert_eq!(
+            prepared
+                .body
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            b"!".as_slice()
+        );
+        assert!(prepared.body.is_end_stream());
     }
 
     #[tokio::test]

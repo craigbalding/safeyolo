@@ -1084,11 +1084,13 @@ explicitly selected.
 
 For the timing comparison, stop unrelated heavy work on the selected Linux
 host. The generator pins itself, its origin threads and the inherited proxy to
-two available CPUs. Keep the same origin, binary and generator for both lanes.
+two available CPUs. The reference command uses one Tokio worker. Worker count
+can affect the completion spread and packet grouping; record the selected
+count with the result. Keep the same origin, binary and generator for both lanes.
 Use a new disk-backed test directory outside the checkout:
 
 ```sh
-SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" SAFEYOLO_H2_GATE_BENCHMARK=1 SAFEYOLO_H2_GATE_LIFECYCLE=1 TOKIO_WORKER_THREADS=2 uv run --frozen --no-sync pytest -q -s --basetemp=/var/tmp/safeyolo-h2-gate tests/proxy_contracts/test_http2_gate_timing.py
+SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" SAFEYOLO_H2_GATE_BENCHMARK=1 SAFEYOLO_H2_GATE_LIFECYCLE=1 TOKIO_WORKER_THREADS=1 uv run --frozen --no-sync pytest -q -s --basetemp=/var/tmp/safeyolo-h2-gate tests/proxy_contracts/test_http2_gate_timing.py
 ```
 
 The output names the timing JSON and fixture TLS key file. Each lane uses 100
