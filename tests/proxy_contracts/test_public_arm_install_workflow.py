@@ -1,11 +1,12 @@
-"""Exercise the manual public-install shell path without hosted execution.
+"""Exercise the maintained public onboarding workflow and its observer.
 
-Release transport and installer exits are controlled. The workflow's Bash,
-receipts and read-only filesystem observer run directly.
+The real Bash callers and staged Python observer run with controlled transport
+and installer exits. Metadata checks retain the read-only archive comparison.
 """
 
 import copy
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -60,167 +61,184 @@ def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
     commands = '\n'.join(step.get('run', '') for step in PUBLIC['steps'])
     for excluded in ('cargo ', 'rustup ', 'oras ', '--platform-assets', 'run-installed', 'safeyolo start'):
         assert excluded not in commands
+    assert PUBLIC['steps'][-1]['with']['path'].splitlines() == [
+        '${{ env.PUBLIC_INSTALL_REPORTS }}/observation.json', '${{ env.PUBLIC_INSTALL_REPORTS }}/execution.txt',
+    ]
 
 
 @pytest.fixture
-def public_shell(tmp_path, linux_workflow_stat):
-    work = tmp_path / 'public-install'
-    reports = work / 'reports'
-    reports.mkdir(parents=True)
-    (work / 'bundle').mkdir()
-    transport = tmp_path / 'transport'
-    transport.mkdir()
-    command_dir = tmp_path / 'tools'
-    command_dir.mkdir()
-    (command_dir / 'stat').symlink_to(linux_workflow_stat)
-    curl = command_dir / 'curl'
-    curl.write_text('#!/bin/bash\nset -eu\nif [[ ${@: -1} == https://api.github.com/* ]]; then\n'
-                    'cat "$TRANSPORT/release.json"\nelse\ncat "$TRANSPORT/host.tar.gz"\nfi\n')
+def public_shell(tmp_path):
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    checkout = workspace / 'observer-source'
+    checkout.symlink_to(REPO, target_is_directory=True)
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    env = {**os.environ, **WORKFLOW.get('env', {}), **PUBLIC.get('env', {}),
+           'RUNNER_TEMP': str(tmp_path), 'GITHUB_ENV': str(tmp_path / 'github-env'),
+           'GITHUB_WORKSPACE': str(workspace), 'GITHUB_SHA': 'a' * 40,
+           'PATH': str(tools) + os.pathsep + os.environ['PATH']}
+    env.pop('BASH_ENV', None)
+    result = run_script(step_script('Select fresh observer and report directories'), env)
+    assert result.returncode == 0, result.stderr
+    env.update(line.split('=', 1) for line in Path(env['GITHUB_ENV']).read_text().splitlines())
+    result = run_script(step_script('Stage only the Python observer outside the checkout'), env)
+    assert result.returncode == 0, result.stderr
+    checkout.unlink()
+    work, reports = Path(env['PUBLIC_INSTALL_WORK']), Path(env['PUBLIC_INSTALL_REPORTS'])
+    assert (work / 'observer/ubuntu_onboarding.py').read_bytes() == (REPO / 'tests/blackbox/ubuntu_onboarding.py').read_bytes()
+    assert (work / 'observer/harness/process_identity.py').is_file()
+    return work, reports, env
+
+
+@pytest.fixture
+def onboarding(public_shell, tmp_path, monkeypatch):
+    work, _reports, env = public_shell
+    monkeypatch.syspath_prepend(str(work / 'observer'))
+    spec = importlib.util.spec_from_file_location('public_onboarding', work / 'observer/ubuntu_onboarding.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    home = tmp_path / 'runner-home'
+    home.mkdir()
+    monkeypatch.setattr(module.Path, 'home', lambda: home)
+    # The observer is ARM64-specific; only the host inventory is controlled.
+    machine = list(os.uname())
+    machine[-1] = 'aarch64'
+    monkeypatch.setattr(module.os, 'uname', lambda: os.uname_result(machine))
+    for key in list(os.environ):
+        if key.startswith('SAFEYOLO_') or key in ('GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'):
+            monkeypatch.delenv(key)
+    for key in ('PATH', 'PUBLIC_INSTALL_WORK'):
+        monkeypatch.setenv(key, env[key])
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CACHE_HOME', str(home / '.cache'))
+    monkeypatch.setattr(module.sys, 'argv', [str(spec.origin), '--host', os.uname().nodename,
+                        '--platform', 'linux-arm64', '--observation-dir', str(work / 'private'),
+                        '--observer-source', env['GITHUB_SHA']])
+    # No product starts in these refusal cases. Keep unrelated process scans
+    # and guest network probes out of this controlled observer test.
+    monkeypatch.setattr(module, 'processes', lambda: [])
+    monkeypatch.setattr(module, 'listeners', lambda _owned: [])
+    monkeypatch.setattr(module, 'witness', lambda *_args: {})
+    tools = Path(env['PATH'].split(os.pathsep)[0])
+    for name in ('sudo', 'safeyolo'):
+        (tools / name).write_text('#!/bin/sh\nexit 0\n')
+        (tools / name).chmod(0o755)
+    curl = tools / 'curl'
+    curl.write_text('#!/bin/bash\nset -eu\n'
+                    'printf "%s\\n" "$@" > "$PUBLIC_INSTALL_WORK/download-args"\n'
+                    '[[ ${DOWNLOAD_EXIT:-0} == 0 ]] || exit "$DOWNLOAD_EXIT"\n'
+                    'cp "$PUBLIC_INSTALL_WORK/installer" install-safeyolo.sh\n')
     curl.chmod(0o755)
-    # Execute the unchanged Python/Bash programs with an isolated Path.home().
-    # The test process and child installer retain their actual HOME environment.
-    python = command_dir / 'python3'
-    python.write_text(f'#!{os.sys.executable}\n'
-                      'import os, pathlib, sys\nfrom unittest.mock import patch\n'
-                      'with patch.object(pathlib.Path, "home", return_value=pathlib.Path(os.environ["TEST_RUNNER_HOME"])):\n'
-                      '    exec(compile(sys.stdin.read(), "<workflow-python>", "exec"))\n')
-    python.chmod(0o755)
-    source = WORKFLOW['env']['HOST_REVISION']
-    fields = f'source_commit={source}\nprofile=production\nplatform=linux-arm64\n'
-    fields += 'guest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n'
-    with tarfile.open(transport / 'host.tar.gz', 'w:gz') as tar:
-        data = fields.encode()
-        member = tarfile.TarInfo('safeyolo-linux-arm64-production/package-info')
-        member.size = len(data)
-        tar.addfile(member, io.BytesIO(data))
-    archive = transport / 'host.tar.gz'
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    env = {**os.environ, **WORKFLOW['env'], **PUBLIC['env'],
-           'PUBLIC_INSTALL_WORK': str(work), 'PUBLIC_INSTALL_REPORTS': str(reports),
-           'TEST_RUNNER_HOME': str(tmp_path / 'runner-home'),
-           'TRANSPORT': str(transport), 'PATH': str(command_dir) + os.pathsep + os.environ['PATH'],
-           'HOST_SHA256': digest, 'HOST_BYTES': str(archive.stat().st_size)}
-    release = {'id': int(env['HOST_RELEASE_ID']), 'draft': False, 'prerelease': False,
-                   'tag_name': 'host-' + source, 'target_commitish': source, 'assets': [{
-                       'id': int(env['HOST_ARCHIVE_ASSET_ID']), 'name': 'safeyolo-linux-arm64-production.tar.gz',
-                       'state': 'uploaded', 'digest': 'sha256:' + digest, 'size': archive.stat().st_size,
-                       'browser_download_url': f'https://github.com/craigbalding/safeyolo/releases/download/host-{source}/safeyolo-linux-arm64-production.tar.gz'}]}
-    (transport / 'release.json').write_text(json.dumps(release))
-    return work, reports, transport, release, env
+    (work / 'installer').write_text('#!/bin/bash\n'
+        'printf "%s\\n" "$@" > "$PUBLIC_INSTALL_WORK/installer-args"\nexit 37\n')
+    previous_umask = os.umask(0o022)
+    try:
+        yield module, home
+    finally:
+        os.umask(previous_umask)
 
 
 @pytest.mark.parametrize('cached', [None, 'empty-store', 'blob', 'tree'])
-def test_before_state_requires_uncached_original_guest_and_preserves_existing_inputs(public_shell, cached):
-    work, reports, _transport, _release, env = public_shell
-    store = Path(env['TEST_RUNNER_HOME']) / '.local/share/safeyolo/guests'
-    blob = store / 'blobs/sha256' / env['GUEST_ARCHIVE_SHA256']
-    tree = store / 'trees/sha256' / env['GUEST_ARCHIVE_SHA256']
+def test_current_observer_requires_an_uncached_store_and_preserves_existing_inputs(onboarding, public_shell, monkeypatch, cached):
+    module, home = onboarding
+    work, _reports, _env = public_shell
+    store = home / '.local/share/safeyolo/guests'
+    retained = store / ('trees/sha256/retained/rootfs-tree' if cached == 'tree' else 'blobs/sha256/retained')
     if cached:
         store.mkdir(parents=True)
-    if cached == 'blob':
-        blob.parent.mkdir(parents=True)
-        blob.write_bytes(b'owned cached archive fixture')
-    elif cached == 'tree':
-        tree.mkdir(parents=True)
-        (tree / 'retained').write_bytes(b'owned prepared tree fixture')
-    result = run_script(step_script('Record original guest store before installation'), env)
-    ready = cached in (None, 'empty-store')
-    assert (result.returncode == 0) == ready, result.stderr
-    before = json.loads((reports / 'guest-store-before.json').read_text())
-    assert before['fixture_ready'] == ready
-    assert before['installer_invoked'] is False
-    assert before['store'] == {'path': str(store), 'exists': cached is not None}
-    assert before['original_blob'] == {'path': str(blob), 'exists': cached == 'blob'}
-    assert before['original_tree'] == {'path': str(tree), 'exists': cached == 'tree'}
-    assert not (work / 'instance').exists()
-    if cached == 'blob':
-        assert blob.read_bytes() == b'owned cached archive fixture'
-    elif cached == 'tree':
-        assert (tree / 'retained').read_bytes() == b'owned prepared tree fixture'
+    if cached in ('blob', 'tree'):
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        retained.write_bytes(b'owned cached guest fixture')
+    # An absent store reaches transport. Existing stores, including empty ones,
+    # are refused by the current observer before any product command.
+    monkeypatch.setenv('DOWNLOAD_EXIT', '37')
+    assert module.main() == (2 if cached else 1)
+    record = json.loads((work / 'private/result.json').read_text())
+    assert record['baseline']['cache_present'][str(store)] == bool(cached)
+    assert (work / 'download-args').exists() == (cached is None)
+    assert not (work / 'installer-args').exists()
+    if cached:
+        assert record['product_commands'] == []
+        assert not record.get('owns_product_attempt')
+        assert not (home / '239-onboarding-project').exists()
+    if cached in ('blob', 'tree'):
+        assert retained.read_bytes() == b'owned cached guest fixture'
 
 
-@pytest.mark.parametrize('fault', [None, 'draft', 'source', 'bytes', 'digest'])
-def test_public_host_binding_runs_real_shell_and_refuses_changed_inputs(public_shell, fault):
-    work, reports, transport, release, env = public_shell
-    if fault == 'draft':
-        release['draft'] = True
-    elif fault == 'source':
-        release['target_commitish'] = '0' * 40
-    elif fault == 'bytes':
-        with (transport / 'host.tar.gz').open('ab') as stream:
-            stream.write(b'changed')
-    elif fault == 'digest':
-        archive = transport / 'host.tar.gz'
-        data = bytearray(archive.read_bytes())
-        data[20] ^= 1
-        archive.write_bytes(data)
-    (transport / 'release.json').write_text(json.dumps(release))
-    result = run_script(step_script('Download and bind the unchanged public host'), env)
-    assert (result.returncode == 0) == (fault is None), result.stderr
-    assert (reports / 'release.json').exists()
-    assert (reports / 'host-input.json').exists() == (fault is None)
-    assert (work / 'bundle/safeyolo-linux-arm64-production/package-info').exists() == (fault is None)
+@pytest.mark.parametrize('fault', ['transport', 'installer'])
+def test_current_download_and_installer_refusal_keep_source_binding_and_reached_exits(onboarding, public_shell, monkeypatch, fault):
+    module, _home = onboarding
+    work, _reports, _env = public_shell
+    monkeypatch.setenv('DOWNLOAD_EXIT', '37' if fault == 'transport' else '0')
+    assert module.main() == 1
+    record = json.loads((work / 'private/result.json').read_text())
+    assert record['native_source'] == WORKFLOW['env']['HOST_REVISION'] == module.SOURCE
+    assert record['expected_host_package']['sha256'] == WORKFLOW['env']['HOST_SHA256']
+    assert record['expected_host_package']['bytes'] == int(WORKFLOW['env']['HOST_BYTES'])
+    assert (work / 'download-args').read_text().splitlines() == module.DOWNLOAD[1:]
+    assert module.DOWNLOAD[-1] == f'https://raw.githubusercontent.com/craigbalding/safeyolo/{module.BOOTSTRAP}/install.sh'
+    download = record['product_commands'][0]
+    assert download['exit'] == (37 if fault == 'transport' else 0)
+    assert len(record['product_commands']) == (1 if fault == 'transport' else 2)
+    if fault == 'installer':
+        assert module.LAUNCH == ['bash', 'install-safeyolo.sh', '--release', 'host-' + module.SOURCE,
+                                 '--launch', '.', '--name', 'first', '--harness', 'claude', '--launcher', 'tmux-window']
+        assert (work / 'installer-args').read_text().splitlines() == module.LAUNCH[2:]
+        cold = record['product_commands'][1]
+        assert cold['command_exit'] == cold['exit_code'] == 37
+        assert cold['console_reaped'] and not cold.get('ordinary_q')
+        assert record['warm_not_run']
+    assert record['observation_outcome'] == 'partial'
 
 
-@pytest.mark.parametrize('fault', [None, 'platform', 'index', 'manifest', 'archive-size'])
-def test_actual_selection_binding_refuses_wrong_platform_or_guest_before_observation(public_shell, fault):
-    _work, reports, _transport, _release, env = public_shell
-    selection = {'repository': 'ghcr.io/craigbalding/safeyolo-guest', 'platform': 'linux/arm64',
-                 'version': env['GUEST_VERSION'], 'compatibility': env['GUEST_COMPATIBILITY'],
-                 'index': {'digest': env['GUEST_INDEX']}, 'manifest': {'digest': env['GUEST_MANIFEST']},
-                 'archive': {'digest': 'sha256:' + env['GUEST_ARCHIVE_SHA256'], 'size': int(env['GUEST_ARCHIVE_BYTES'])}}
-    if fault == 'platform':
-        selection['platform'] = 'darwin/arm64'
-    elif fault in ('index', 'manifest'):
-        selection[fault]['digest'] = 'sha256:' + '0' * 64
-    elif fault == 'archive-size':
-        selection['archive']['size'] += 1
-    (reports / 'guest-selection.json').write_text(json.dumps(selection))
-    # Only the final observer command is controlled here; Bash and jq run unchanged.
-    sudo = Path(env['PATH'].split(os.pathsep)[0]) / 'sudo'
-    sudo.write_text('#!/bin/bash\ntouch "$PUBLIC_INSTALL_REPORTS/observer-called"\n')
-    sudo.chmod(0o755)
-    result = run_script(step_script('Bind actual public acquisition and observe all installed metadata'), env)
-    assert (result.returncode == 0) == (fault is None), result.stderr
-    assert (reports / 'observer-called').exists() == (fault is None)
-
-
-@pytest.mark.parametrize('installer_exit', [0, 37])
-def test_installer_exit_and_timing_receipt_survive_without_credentials(public_shell, installer_exit):
-    work, reports, _transport, _release, env = public_shell
-    bundle = work / 'bundle/safeyolo-linux-arm64-production'
-    bundle.mkdir()
-    installer = bundle / 'install.sh'
-    installer.write_text('#!/bin/bash\nset -eu\n'
-                         '[[ -z ${GH_TOKEN+x} && -z ${GITHUB_TOKEN+x} ]] || exit 99\n'
-                         '[[ $(umask) == 0022 ]] || exit 98\n'
-                         '[[ $(stat -c %a "$PUBLIC_INSTALL_WORK/install.stdout") == 600 ]] || exit 98\n'
-                         '[[ $(stat -c %a "$PUBLIC_INSTALL_WORK/install.stderr") == 600 ]] || exit 98\n'
-                         'echo installer-output\necho installer-diagnostic >&2\n'
-                         'echo "GET https://example.test/blob?sig=synthetic-private-token" >&2\n'
-                         'echo "Authorization: Bearer synthetic-private-token" >&2\n'
-                         f'exit {installer_exit}\n')
-    installer.chmod(0o755)
+@pytest.mark.parametrize('exit_status', [0, 37])
+@pytest.mark.parametrize('cleanup', [False, True])
+def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_logs(public_shell, exit_status, cleanup):
+    work, reports, env = public_shell
+    # Control only the observer process. Execute the workflow's env, timeout,
+    # Bash redirections, result copy and exit receipt unchanged.
+    python = Path(env['PATH'].split(os.pathsep)[0]) / 'python3'
+    python.write_text(f'#!{os.sys.executable}\n'
+        'import json, os, pathlib, sys\n'
+        'work = pathlib.Path(os.environ["PUBLIC_INSTALL_WORK"])\n'
+        'private = work / "private"; private.mkdir(exist_ok=True)\n'
+        '(private / "result.json").write_text(json.dumps({"observation_outcome": "partial"}))\n'
+        '(work / "called.json").write_text(json.dumps({"args": sys.argv[1:], "cwd": os.getcwd(),\n'
+        '    "tokens": [key for key in ("GH_TOKEN", "GITHUB_TOKEN") if key in os.environ],\n'
+        '    "path": os.environ["PATH"], "ca": os.environ.get("SSL_CERT_FILE")}))\n'
+        'print("private-terminal-sentinel"); print("private-diagnostic-sentinel", file=sys.stderr)\n'
+        f'sys.exit({exit_status})\n')
+    python.chmod(0o755)
     env.update(GH_TOKEN='synthetic-must-not-pass', GITHUB_TOKEN='synthetic-must-not-pass')
-    preflight = run_script(step_script('Record original guest store before installation'), env)
-    assert preflight.returncode == 0, preflight.stderr
-    result = run_script(step_script('Install with default anonymous native guest acquisition'), env)
-    assert result.returncode == installer_exit, result.stderr
-    receipt = json.loads((reports / 'install-receipt.json').read_text())
-    assert receipt['exit'] == installer_exit
-    assert receipt['install_seconds'] >= 0
-    assert receipt['registry_credentials_supplied'] is False
-    assert receipt['guest_store_before'] == 'guest-store-before.json'
-    before = json.loads((reports / receipt['guest_store_before']).read_text())
-    assert before['fixture_ready'] and before['observed_at'] <= receipt['started_at']
-    assert receipt['command'][1:] == ['--root', str(work / 'instance'), '--command-dir', str(work / 'commands')]
-    assert (reports / 'install.stdout').read_text() == 'installer-output\n'
-    assert (reports / 'install.stderr').read_text().startswith('installer-diagnostic\n')
-    assert 'synthetic-must-not-pass' not in result.stdout + result.stderr
-    assert 'synthetic-private-token' not in result.stdout + result.stderr + (reports / 'install.stderr').read_text()
-    assert 'synthetic-private-token' in (work / 'install.stderr').read_text()
-    assert stat.S_IMODE((work / 'install.stdout').stat().st_mode) == 0o600
-    assert stat.S_IMODE((work / 'install.stderr').stat().st_mode) == 0o600
+    name = ("Finish only this observer's owned cleanup after failure" if cleanup
+            else 'Observe one public bootstrap, first launch and normal repeat')
+    result = run_script(step_script(name), env)
+    assert result.returncode == exit_status, result.stderr
+    called = json.loads((work / 'called.json').read_text())
+    assert called['args'] == ['-I', '-B', str(work / 'observer/ubuntu_onboarding.py'),
+        '--host', os.uname().nodename, '--platform', 'linux-arm64',
+        *(['--cleanup-only'] if cleanup else ['--observer-source', env['GITHUB_SHA']]),
+        '--observation-dir', str(work / 'private')]
+    assert called['cwd'] == str(work) and called['tokens'] == []
+    assert called['path'] == env['PATH'] and called['ca'] == env.get('SSL_CERT_FILE')
+    prefix = 'cleanup' if cleanup else 'observer'
+    for stream in ('stdout', 'stderr'):
+        assert stat.S_IMODE((work / f'{prefix}.{stream}').stat().st_mode) == 0o600
+    assert result.stdout == result.stderr == ''
+    if not cleanup:
+        assert (reports / 'execution.txt').read_text() == f'observer_exit={exit_status}\n'
+    result = run_script(step_script('Retain reached nonsecret operands, including partial observations'), env)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((reports / 'observation.json').read_text()) == {'observation_outcome': 'partial'}
+    assert sorted(path.name for path in reports.iterdir()) == (['observation.json'] if cleanup else ['execution.txt', 'observation.json'])
+
+
+def test_report_step_preserves_missing_result_as_unobserved(public_shell):
+    _work, reports, env = public_shell
+    result = run_script(step_script('Retain reached nonsecret operands, including partial observations'), env)
+    assert result.returncode == 0, result.stderr
+    assert not list(reports.iterdir())
 
 
 @pytest.fixture
