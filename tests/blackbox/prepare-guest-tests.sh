@@ -23,8 +23,19 @@ if [[ -n "$offline_inputs" ]]; then
     set -- --no-index --find-links "$offline_inputs/wheels"
 elif ! python3 -m pip --version >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pip
+        # APT does not read SSL_CERT_FILE. Use the same per-instance CA as
+        # the guest's other HTTPS clients, including on retained images.
+        apt_tls_options=()
+        if [[ -n ${SSL_CERT_FILE:-} ]]; then
+            if [[ ! -f $SSL_CERT_FILE || ! -r $SSL_CERT_FILE ]]; then
+                echo "The test guest TLS CA file is not readable: $SSL_CERT_FILE" >&2
+                exit 1
+            fi
+            apt_tls_options=(-o "Acquire::https::CaInfo=$SSL_CERT_FILE")
+        fi
+        apt-get ${apt_tls_options[@]+"${apt_tls_options[@]}"} -o APT::Update::Error-Mode=any update
+        DEBIAN_FRONTEND=noninteractive apt-get ${apt_tls_options[@]+"${apt_tls_options[@]}"} \
+            install -y --no-install-recommends python3 python3-pip
     elif command -v apk >/dev/null 2>&1; then
         apk add python3 py3-pip
     else

@@ -103,7 +103,8 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
     ('apt-get', False, False), ('apk', False, False), ('apt-get', True, False), ('apt-get', False, True),
 ])
 @pytest.mark.parametrize('failure', [None, 'package', 'pip', 'imports'])
-def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready):
+@pytest.mark.parametrize('ca', ['provided', 'absent'])
+def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ca):
     """Online and offline setup retain hashes and stop on package, pip or import failures."""
     install_exit = 17 if failure == 'package' else 0
     pip_exit = 19 if failure == 'pip' else 0
@@ -149,8 +150,14 @@ if arguments[:1] == ['-c']:
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
     arguments = [str(inputs)] if offline else []
+    environment = dict(os.environ, PATH=str(tools))
+    environment.pop('SSL_CERT_FILE', None)
+    selected_ca = tmp_path / 'selected CA $literal.pem'
+    if ca == 'provided':
+        selected_ca.write_text('selected public CA')
+        environment['SSL_CERT_FILE'] = str(selected_ca)
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', *arguments],
-                            env=dict(os.environ, PATH=str(tools)), text=True,
+                            env=environment, text=True,
                             capture_output=True, timeout=10)
     expected_exit = (install_exit if package_needed else 0) or pip_exit or import_exit
     assert result.returncode == expected_exit, result.stderr
@@ -165,13 +172,38 @@ if arguments[:1] == ['-c']:
     elif pip_ready:
         assert not any(call[0] in ('apt-get', 'apk') for call in calls)
     elif installer == 'apt-get':
-        assert ['apt-get', 'update'] in calls
+        tls = ['-o', f'Acquire::https::CaInfo={selected_ca}'] if ca == 'provided' else []
+        assert ['apt-get', *tls, '-o', 'APT::Update::Error-Mode=any', 'update'] in calls
+        if install_exit == 0:
+            assert ['apt-get', *tls, 'install', '-y', '--no-install-recommends', 'python3', 'python3-pip'] in calls
     else:
         assert ['apk', 'add', 'python3', 'py3-pip'] in calls
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
     installed_packages = not package_needed or install_exit == 0
     assert bool(installs) == installed_packages
     assert (calls[-1][1:2] == ['-c']) == (installed_packages and pip_exit == 0)
+
+
+@pytest.mark.parametrize('ca', ['missing', 'directory'])
+def test_online_guest_setup_refuses_unreadable_selected_ca_before_apt(tmp_path, ca):
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    python = tools / 'python3'
+    python.write_text('#!/bin/sh\nexit 1\n')
+    python.chmod(0o755)
+    apt = tools / 'apt-get'
+    marker = tmp_path / 'apt-was-invoked'
+    apt.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n')
+    apt.chmod(0o755)
+    selected_ca = tmp_path / ca
+    if ca == 'directory':
+        selected_ca.mkdir()
+    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh'],
+                            env=dict(os.environ, PATH=str(tools), SSL_CERT_FILE=str(selected_ca)),
+                            text=True, capture_output=True, timeout=10)
+    assert result.returncode == 1
+    assert 'TLS CA file is not readable' in result.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize('missing', ['all', 'debs', 'wheels', 'relative-path'])
