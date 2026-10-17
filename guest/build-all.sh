@@ -152,7 +152,7 @@ Check guest/lima.yaml 'mounts:' block."
 run_builds_via_lima() {
     # Lima exposes guest/ at one narrow mount. Resolve relative paths and
     # symlinks before translating the selected host output to that mount.
-    local lima_output_dir
+    local lima_output_dir lima_guest_inputs="" staged_inputs
     mkdir -p "$OUTPUT_DIR"
     OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
     case "$OUTPUT_DIR" in
@@ -161,6 +161,17 @@ run_builds_via_lima() {
             ;;
         *) die "On macOS, OUTPUT_DIR must resolve inside $SCRIPT_DIR (the guest/ Lima mount)." ;;
     esac
+
+    # Copy only the selected input record through the existing mount. Its host
+    # path can be outside guest/, and Lima does not inherit host variables.
+    if [[ -n ${GUEST_INPUTS:-} ]]; then
+        staged_inputs=$(mktemp "$OUTPUT_DIR/inputs.XXXXXX")
+        if ! cat < "$GUEST_INPUTS" > "$staged_inputs"; then
+            rm -f "$staged_inputs"
+            die "Cannot stage GUEST_INPUTS: $GUEST_INPUTS"
+        fi
+        lima_guest_inputs="$lima_output_dir/${staged_inputs##*/}"
+    fi
 
     ensure_lima_vm
     # Stop the VM on exit so it doesn't keep CPU/RAM pinned between builds.
@@ -178,6 +189,7 @@ run_builds_via_lima() {
     lima_shell env \
         BUILD_KERNEL=1 \
         OUTPUT_DIR="$lima_output_dir" \
+        GUEST_INPUTS="$lima_guest_inputs" \
         bash "$LIMA_MOUNT_POINT/build-all.sh" --inside-lima
 
     echo ""

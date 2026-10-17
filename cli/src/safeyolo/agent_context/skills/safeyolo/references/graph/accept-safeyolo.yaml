@@ -413,7 +413,7 @@ nodes:
       obtain_from: "trusted-base build scripts; skopeo, umoci, and e2fsprogs from operator-approved signed OS repositories or the checksum-pinned umoci fallback in safeyolo bootstrap"
       sources:
         - path: guest/build-all.sh
-          sha256: 61eb61b04231c90045ec4e8d6ed5722fb537b7d3fb197cea0e4e1f7896af7281
+          sha256: 63b9ec48a6fbd6a4ea010a0ccc1a320376a5d0875a5268dec9f7b5652829fc4e
         - path: guest/build-rootfs.sh
           sha256: 151446ff900c8f1082cfa7ee700fa8df072b93956a6813dd8a9b4cc864d4a409
         - path: guest/rootfs-customize-hook.sh
