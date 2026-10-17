@@ -510,6 +510,26 @@ async fn pruned_selection_keeps_prior_export_and_local_diagnosis_survives_api_st
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lost_resolution_reply_reads_canonical_outcome_without_reposting() {
+    let (output, posts) = resolve_after_lost_reply("approved").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resolved: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(resolved["status"], "approved");
+    assert_eq!(posts, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_resolution_reply_keeps_pending_result_unconfirmed_without_reposting() {
+    let (output, posts) = resolve_after_lost_reply("pending").await;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("decision not confirmed"));
+    assert_eq!(posts, 1);
+}
+
+async fn resolve_after_lost_reply(canonical_status: &'static str) -> (std::process::Output, usize) {
     let fixture = Fixture::new().await;
     configure(&fixture);
     let id = fixture.selected().await;
@@ -529,18 +549,40 @@ async fn lost_resolution_reply_reads_canonical_outcome_without_reposting() {
     let target = id.clone();
     let server = tokio::spawn(async move {
         let mut posts = 0;
-        for _ in 0..3 {
-            let (mut stream, _) = bridge.accept().await.unwrap();
+        // Initial inspection, scope revalidation, decision, canonical recovery.
+        for method in ["GET", "GET", "POST", "GET"] {
+            let (mut stream, _) = timeout(LIMIT, bridge.accept()).await.unwrap().unwrap();
             let bytes = read_http_head(&mut stream).await;
             let header = String::from_utf8(bytes).unwrap();
-            assert!(header.contains(&format!("/admin/approvals/{target}")));
-            if header.starts_with("POST ") {
+            assert_eq!(
+                header.lines().next().unwrap(),
+                format!("{method} /admin/approvals/{target} HTTP/1.1")
+            );
+            if method == "POST" {
+                let length = header
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                let mut body = vec![0; length];
+                timeout(LIMIT, stream.read_exact(&mut body))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap(),
+                    json!({"decision":"approve"})
+                );
+                // Accept the complete decision, then drop its response.
                 posts += 1;
                 continue;
             }
             let mut record = record.clone();
             if posts == 1 {
-                record["status"] = json!("approved");
+                record["status"] = json!(canonical_status);
             }
             let body = record.to_string();
             stream
@@ -554,16 +596,20 @@ async fn lost_resolution_reply_reads_canonical_outcome_without_reposting() {
                 .await
                 .unwrap();
         }
-        posts
+        (posts, bridge)
     });
-    let output = success(
+    let output = cli(
         fixture.root.path(),
         &["approvals", "approve", &id, "--json"],
     )
     .await;
-    assert_eq!(output["status"], "approved");
-    assert_eq!(server.await.unwrap(), 1);
+    let (posts, bridge) = server.await.unwrap();
+    assert!(
+        matches!(bridge.into_std().unwrap().accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "client opened another connection after canonical recovery"
+    );
     fixture.stop().await;
+    (output, posts)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
