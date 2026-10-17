@@ -140,9 +140,9 @@ impl RequestHeaders {
             .map(|field| (field.name.as_bytes(), field.value.as_slice()))
     }
 
-    /// Authorized retained evidence uses each original pair in arrival order,
-    /// after actual request-hook hygiene. This differs from inspection's joined
-    /// values. The caller supplies later removals at its application boundary.
+    /// Credential inspection and authorized retained evidence use each original
+    /// pair in arrival order, after request-hook hygiene. The caller supplies
+    /// later removals at its application boundary.
     pub(crate) fn recording_pairs(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.original
             .iter()

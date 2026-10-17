@@ -7,12 +7,19 @@ const READ: &str = "/v2/owner/image/manifests/latest";
 const FIRST: &str = "v1.abcdefgh0123456789ZYXWVUTSRQPOnmlkjihg";
 const SECOND: &str = "v1.replacementZYXW9876543210abcdefghJKLMN";
 
+struct OriginRequest {
+    host: String,
+    path: String,
+    authenticated: bool,
+    headers: hyper::HeaderMap,
+}
+
 struct Fixture {
     directory: TempDir,
     config: Config,
     ca: rustls::pki_types::CertificateDer<'static>,
     parent: tokio::task::JoinHandle<()>,
-    seen: Arc<Mutex<Vec<(String, String, bool)>>>,
+    seen: Arc<Mutex<Vec<OriginRequest>>>,
     response_mode: Arc<AtomicUsize>,
 }
 
@@ -73,7 +80,7 @@ impl Fixture {
                                         let path=request.uri.path_and_query().unwrap().as_str().to_owned();
                                         let authenticated=request.headers.contains_key("authorization") || request.headers.contains_key("x-final-auth")
                                             || body.trailers().is_some_and(|trailers|trailers.contains_key("authorization"));
-                                        seen.lock().unwrap().push((host.clone(),path.clone(),authenticated));
+                                        seen.lock().unwrap().push(OriginRequest {host:host.clone(),path:path.clone(),authenticated,headers:request.headers.clone()});
                                         let (status,body,location) = if path.starts_with("/token") {
                                             let token=if counter.fetch_add(1,Ordering::SeqCst).is_multiple_of(2) {FIRST} else {SECOND};
                                             match response_mode.load(Ordering::SeqCst) {
@@ -352,6 +359,208 @@ async fn repeated_public_pull_reuse_concurrency_replacement_and_restart() {
 }
 
 #[tokio::test]
+async fn learned_tokens_keep_repeated_field_inspection_approvals_and_budgets() {
+    use super::boundary::{KEY, basic, fingerprint};
+
+    for h2 in [false, true] {
+        let fixture = Fixture::new(default_policy()).await;
+        let data = fixture.config.data_dir.as_ref().unwrap();
+        std::fs::create_dir_all(data).unwrap();
+        std::fs::write(data.join("hmac_secret"), KEY).unwrap();
+        let mut proxy = Proxy::start(fixture.config.clone()).await.unwrap();
+        let first = fixture.token(h2).await;
+        let second = fixture.token(h2).await;
+        fixture.response_mode.store(5, Ordering::SeqCst);
+        let opaque = fixture.token(h2).await;
+        let bearer = format!("Bearer {first}");
+        let other = format!("Bearer {second}");
+        let opaque_bearer = format!("Bearer {opaque}");
+        let encoded = basic(&first);
+        let encoded_other = basic(&second);
+        let combined_equal = format!("{bearer}, {bearer}");
+        let combined_distinct = format!("{bearer}, {other}");
+        let combined_basic = format!("{encoded}, {encoded_other}");
+        let combined_mixed = format!("{bearer}, {encoded}");
+        let cases = [
+            vec![
+                ("Authorization", bearer.as_str()),
+                ("authorization", &bearer),
+            ],
+            vec![("Authorization", &bearer), ("authorization", &other)],
+            vec![("Authorization", &encoded), ("authorization", &encoded)],
+            vec![("Authorization", &bearer), ("authorization", &encoded)],
+            vec![("Authorization", &combined_equal)],
+            vec![("Authorization", &combined_distinct)],
+            vec![("Authorization", &combined_basic)],
+            vec![("Authorization", &combined_mixed)],
+            vec![
+                ("Authorization", &opaque_bearer),
+                ("authorization", &opaque_bearer),
+            ],
+        ];
+        // Recognition also detects opaque values below entropy thresholds.
+        assert_eq!(
+            fixture
+                .fetch(
+                    "ghcr.io",
+                    "GET",
+                    READ,
+                    &[("authorization", &opaque_bearer)],
+                    h2
+                )
+                .await
+                .0,
+            200
+        );
+        assert_no_pending(&fixture.directory).await;
+        let before = fixture.seen.lock().unwrap().len();
+        // Neither repeated fields nor combined entries gain the singleton
+        // anonymous allowance. Each value still needs its ordinary approval.
+        for (index, fields) in cases.iter().enumerate() {
+            for method in ["GET", "HEAD"] {
+                let reply = fetch_response(
+                    &fixture.config.listeners[0].socket_path,
+                    fixture.ca.clone(),
+                    "ghcr.io",
+                    method,
+                    READ,
+                    fields,
+                    h2,
+                )
+                .await;
+                assert_eq!(reply.status(), 428, "case {index}, {method}, h2={h2}");
+                assert_eq!(reply.headers()["x-blocked-by"], "credential-guard");
+                assert!(reply.headers().contains_key("x-safeyolo-request-id"));
+                if method == "HEAD" {
+                    assert!(reply.body().is_empty());
+                } else {
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(reply.body()).unwrap()["error"],
+                        "Require Approval"
+                    );
+                }
+                assert_eq!(fixture.seen.lock().unwrap().len(), before);
+            }
+        }
+        let mut policy = default_policy();
+        let approval = json!({
+            "action":"credential:use", "resource":"ghcr.io/*", "effect":"allow",
+            "condition":{"credential":[fingerprint(&first)]}
+        });
+        policy["hosts"]["ghcr.io"] = json!({"rules":[approval]});
+        let policy_path = fixture.config.policy_file.as_ref().unwrap();
+        std::fs::write(policy_path, policy.to_string()).unwrap();
+        proxy.reload(fixture.config.clone()).await.unwrap();
+        for fields in [&cases[1], &cases[5], &cases[6]] {
+            assert_eq!(
+                fixture.fetch("ghcr.io", "GET", READ, fields, h2).await.0,
+                428
+            );
+            assert_eq!(fixture.seen.lock().unwrap().len(), before);
+        }
+        policy["hosts"]["ghcr.io"]["rules"][0]["condition"]["credential"] = json!([
+            fingerprint(&first),
+            fingerprint(&second),
+            fingerprint(&opaque)
+        ]);
+        std::fs::write(policy_path, policy.to_string()).unwrap();
+        proxy.reload(fixture.config.clone()).await.unwrap();
+        for (index, fields) in cases.iter().enumerate() {
+            assert_eq!(
+                fixture.fetch("ghcr.io", "GET", READ, fields, h2).await.0,
+                200,
+                "approved case {index}, h2={h2}"
+            );
+            let requests = fixture.seen.lock().unwrap();
+            assert_eq!(requests.len(), before + index + 1);
+            let forwarded = requests
+                .last()
+                .unwrap()
+                .headers
+                .get_all("authorization")
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>();
+            assert!(
+                forwarded == fields.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
+                "approved fields changed at origin, case {index}, h2={h2}"
+            );
+        }
+        let before = fixture.seen.lock().unwrap().len();
+        let extra_secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+        for (host, fields) in [
+            ("other.test", cases[0].clone()),
+            (
+                "ghcr.io",
+                vec![
+                    ("authorization", bearer.as_str()),
+                    ("x-api-key", extra_secret),
+                ],
+            ),
+            (
+                "ghcr.io",
+                vec![
+                    ("authorization", bearer.as_str()),
+                    ("authorization", bearer.as_str()),
+                    ("x-api-key", extra_secret),
+                ],
+            ),
+        ] {
+            assert_eq!(fixture.fetch(host, "GET", READ, &fields, h2).await.0, 428);
+            assert_eq!(fixture.seen.lock().unwrap().len(), before);
+        }
+        policy["hosts"]["ghcr.io"]["rules"][0]["effect"] = json!("deny");
+        std::fs::write(policy_path, policy.to_string()).unwrap();
+        proxy.reload(fixture.config.clone()).await.unwrap();
+        let reply = fetch_response(
+            &fixture.config.listeners[0].socket_path,
+            fixture.ca.clone(),
+            "ghcr.io",
+            "HEAD",
+            READ,
+            &cases[0],
+            h2,
+        )
+        .await;
+        assert_eq!(reply.status(), 403);
+        assert_eq!(reply.headers()["x-blocked-by"], "credential-guard");
+        assert!(reply.body().is_empty());
+        assert_eq!(fixture.seen.lock().unwrap().len(), before);
+        // One charge per equal credential leaves the second burst use intact.
+        policy["hosts"]["ghcr.io"]["rules"][0]["effect"] = json!("budget");
+        policy["hosts"]["ghcr.io"]["rules"][0]["budget"] = json!(1);
+        policy["hosts"]["ghcr.io"]["rules"][0]["condition"]["credential"] =
+            json!([fingerprint(&first)]);
+        std::fs::write(policy_path, policy.to_string()).unwrap();
+        proxy.reload(fixture.config.clone()).await.unwrap();
+        for (fields, status) in [(&cases[0], 200), (&cases[4], 200), (&cases[0], 429)] {
+            assert_eq!(
+                fixture.fetch("ghcr.io", "GET", READ, fields, h2).await.0,
+                status
+            );
+        }
+        assert_eq!(fixture.seen.lock().unwrap().len(), before + 2);
+        proxy.shutdown().await;
+        for path in [
+            &fixture.config.event_log,
+            fixture.config.audit_log_path.as_ref().unwrap(),
+        ] {
+            let text = std::fs::read_to_string(path).unwrap();
+            for value in [
+                first.as_str(),
+                second.as_str(),
+                opaque.as_str(),
+                encoded.as_str(),
+                encoded_other.as_str(),
+                extra_secret,
+            ] {
+                assert!(!text.contains(value), "raw credential in events or audit");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn acquisition_origin_scope_authentication_and_redirects_do_not_register() {
     for h2 in [false, true] {
         // Permit test authentication to reach the token endpoint, so refusal
@@ -471,7 +680,7 @@ async fn acquisition_origin_scope_authentication_and_redirects_do_not_register()
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(_, path, auth)| path == QUERY && *auth),
+                .any(|request| request.path == QUERY && request.authenticated),
             "authenticated token exchange did not reach origin"
         );
         assert!(
@@ -480,7 +689,7 @@ async fn acquisition_origin_scope_authentication_and_redirects_do_not_register()
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(host, path, _)| host == "other.test:443" && path == READ),
+                .any(|request| request.host == "other.test:443" && request.path == READ),
             "redirect leaked bearer across origin"
         );
         proxy.shutdown().await;
@@ -619,7 +828,7 @@ capabilities:
             .lock()
             .unwrap()
             .iter()
-            .any(|(_, path, authenticated)| path == QUERY && *authenticated)
+            .any(|request| request.path == QUERY && request.authenticated)
     );
     for token in [FIRST, SECOND] {
         let auth = format!("Bearer {token}");
@@ -748,7 +957,7 @@ async fn h2_empty_data_is_anonymous_but_authentication_trailers_are_not() {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(_, path, auth)| path == QUERY && *auth == authenticated)
+                .any(|request| request.path == QUERY && request.authenticated == authenticated)
         );
         connection.abort();
         proxy.shutdown().await;

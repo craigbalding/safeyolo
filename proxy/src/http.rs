@@ -2615,7 +2615,8 @@ where
     // Credential enforcement is deliberately after network and circuit
     // admission, but before test-context observation, body buffering, or any
     // outbound connection. The ordered parser view remains alive here so the
-    // guard sees first spelling and grouped duplicate values exactly once.
+    // guard sees each original field. Combining repeated values can hide a
+    // credential from entropy detection or change its approval fingerprint.
     if let Some(policy) = runtime.policy.as_ref() {
         let guard = runtime
             .credential_guard
@@ -2642,7 +2643,7 @@ where
             Some(request_id),
             &identity.connection_id,
             false,
-            ordered_headers.iter(),
+            ordered_headers.recording_pairs(),
             crate::credential_guard::Options {
                 block: runtime.operator_modes.credential_block(),
             },
@@ -3887,6 +3888,7 @@ pub(crate) fn serve_request(
             }
         };
         let connect = request.method() == Method::CONNECT;
+        let head = request.method() == Method::HEAD;
         let recording = flow_recording::Recording::new_with_discovery(
             runtime.flow_recorder.clone(),
             identity.clone(),
@@ -3977,6 +3979,12 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
+        // Hyper's HTTP/2 server can send DATA for a HEAD response. Local
+        // refusals must end after the headers, while keeping their decision
+        // and response metadata. Upstream HEAD completion keeps its own owner.
+        if head && reply.extensions().get::<live_view::Upstream>().is_none() {
+            *reply.body_mut() = full(Bytes::new());
+        }
         if destination
             .as_ref()
             .is_ok_and(|destination| probe::is_host(&destination.host))

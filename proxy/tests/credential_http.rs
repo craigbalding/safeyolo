@@ -79,6 +79,8 @@ use tokio::{
     sync::Notify,
 };
 
+#[path = "credential_http/boundary.rs"]
+mod boundary;
 #[path = "credential_http/ghcr.rs"]
 mod ghcr;
 mod test_owned_endpoint;

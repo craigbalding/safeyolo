@@ -8,11 +8,11 @@
 //! identity as Python's `surrogateescape` subject, without putting lone
 //! UTF-16 surrogates into a Rust `String`.
 //!
-//! Callers must provide fields already grouped with the parser's first spelling
-//! and arrival order. This owner does not consult a `HeaderMap`, regroup fields,
-//! or rewrite bytes for forwarding. Values are held by `credentials::Secret`
-//! and can be borrowed only for the one security decision that owns this
-//! adapter.
+//! The credential guard receives individual fields in parser order. The pattern
+//! scanner groups repeated fields before inspection. Neither adapter consults a
+//! `HeaderMap` or rewrites bytes for forwarding. Values are held by
+//! `credentials::Secret` and can be borrowed only for the one security decision
+//! that owns this adapter.
 
 use crate::{credential_guard, credentials::Secret};
 use std::{fmt, str};
@@ -200,7 +200,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Headers {
-    /// Take parser-owned fields in their existing grouped order.
+    /// Take parser-owned fields in their supplied order without grouping.
     pub(crate) fn from_ordered<'a>(
         fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
     ) -> Result<Self, Error> {
@@ -221,10 +221,10 @@ impl Headers {
     }
 
     /// Combine raw parser fields using the source's first spelling and arrival
-    /// order before converting their values to security text. The credential
-    /// guard receives the already-combined `RequestHeaders` view, while the
-    /// pattern scanner receives parser pairs directly; keeping this operation
-    /// here makes both consumers use the same invalid-byte representation.
+    /// order before converting their values to security text. The
+    /// pattern scanner uses this combined view. The credential guard adapts
+    /// individual fields with `from_ordered` so repeated credentials retain
+    /// their own fingerprints. Both consumers share the invalid-byte encoding.
     pub(crate) fn from_parser_fields<'a>(
         fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
     ) -> Result<Self, Error> {
