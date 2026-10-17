@@ -45,8 +45,9 @@ Use a source checkout and the [Linux prerequisites](#linux-setup), or install
 Lima on macOS as described below. The builder needs Python 3.11+ and GnuPG for
 shared resolution and upstream signature checks. These are builder tools; they
 do not add Python to the default guest. If an instance uses earlier build
-outputs, choose a new `OUTPUT_DIR` to preserve its referenced tree. From the
-repository root:
+outputs, choose a new `OUTPUT_DIR` to preserve its referenced tree. On macOS,
+`OUTPUT_DIR` must resolve inside `guest/` so the existing narrow Lima mount can
+reach it. From the repository root:
 
 ```bash
 cd guest

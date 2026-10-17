@@ -42,8 +42,10 @@ controls are implemented by the #211 publisher. The initial guest release,
 have been independently assessed for all three consumer platforms under
 [#239](https://github.com/craigbalding/safeyolo/issues/239).
 These results do not complete that issue's installed and independent-update
-proof or the publisher's ongoing retention obligations. The manual workflow
-supports the accepted retained G2 described below. Publication stays off by default.
+proof or the publisher's ongoing retention obligations. The nightly workflow
+automatically stages candidates and considers eligible candidates for promotion
+under the age and evidence gates described below. Manual dispatch uses the same
+gates. The retained G2 publication below is a historical record.
 
 ## OCI objects
 
@@ -136,9 +138,11 @@ consumer platform. `validate_children` checks all children in
 identities. `Descriptor::verify` checks a reader incrementally through EOF;
 `check_size` supports callers whose OCI client already verifies the hash.
 
-Pin publisher tooling to ORAS 1.3.4. Use `push --image-spec v1.1` with the custom
-platform config and typed archive, then `manifest index create` from exact
-child digests. Set the required index annotations and artifact type explicitly.
+Use the current stable ORAS release resolved and verified by
+`scripts/install_oras.sh`. Freeze its identity for the build. Use
+`push --image-spec v1.1` with the custom platform config and typed archive,
+then `manifest index create` from exact child digests. Set the required index
+annotations and artifact type explicitly.
 Do not combine `--config` with the mutually exclusive `--artifact-platform`.
 
 Guest acquisition uses pinned `oci-client` 0.18.0 with the existing ring TLS

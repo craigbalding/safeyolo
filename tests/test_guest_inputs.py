@@ -159,3 +159,89 @@ print('controlled build tool')
 def test_frozen_input_keys_cannot_inject_shell_assignments():
     with pytest.raises(ValueError, match="unknown"):
         inputs.environment({"schema": "safeyolo.guest-inputs/v1", "tools": {"mise;touch /unsafe": {}}}, "arm64")
+
+
+@pytest.mark.parametrize("selection", ["default", "absolute", "relative", "inside-link", "outside", "outside-link"])
+def test_macos_builder_uses_selected_output_within_narrow_mount(tmp_path, selection):
+    import os
+    import shutil
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    guest = tmp_path / "guest"
+    guest.mkdir()
+    shutil.copyfile(root / "guest/build-all.sh", guest / "build-all.sh")
+    (guest / "input-functions.sh").write_text("")
+    frozen = guest / "inputs.json"
+    frozen.write_text("{}")
+    for script, output in (("build-kernel.sh", "Image"), ("build-initramfs.sh", "initramfs.cpio.gz")):
+        path = guest / script
+        path.write_text(f'#!/bin/bash\nset -eu\nprintf fresh > "$OUTPUT_DIR/{output}"\n')
+        path.chmod(0o755)
+    rootfs = guest / "build-rootfs.sh"
+    rootfs.write_text('''#!/bin/bash
+set -eu
+rm -rf -- "$OUTPUT_DIR/rootfs-tree"
+mkdir -p "$OUTPUT_DIR/rootfs-tree"
+printf fresh > "$OUTPUT_DIR/rootfs-tree/payload"
+''')
+    rootfs.chmod(0o755)
+    old = guest / "out"
+    (old / "rootfs-tree").mkdir(parents=True)
+    (old / "rootfs-tree/payload").write_bytes(b"old rootfs")
+    (old / "Image").write_bytes(b"old kernel")
+    target = old if selection == "default" else guest / "new output"
+    if selection in ("outside", "outside-link"):
+        target = tmp_path / "outside"
+    target.mkdir(exist_ok=True)
+    chosen = target
+    if selection.endswith("link"):
+        chosen = guest / "output-link"
+        chosen.symlink_to(target, target_is_directory=True)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    # Emulate only Lima's existing guest mount. Run the real inner build-all
+    # with small builders so a wrong output really overwrites the old fixture.
+    (tools / "limactl").write_text(f'#!{sys.executable}\n' + '''import json, os, sys
+args = sys.argv[1:]
+with open(os.environ['LIMA_CALLS'], 'a') as stream:
+    stream.write(json.dumps(args)+'\\n')
+if args[0] == 'list':
+    print('Running' if args[-1] == '{{.Status}}' else 'safeyolo-builder')
+elif args[0] == 'shell':
+    command = args[args.index('--')+1:]
+    if command[0] == 'sh':
+        sys.exit(0 if command[-1] == '[ -d /build/guest ]' else 1)
+    assert command[0] == 'env'
+    environment = dict(os.environ)
+    for assignment in command[1:3]:
+        key, value = assignment.split('=', 1)
+        environment[key] = value.replace('/build/guest', os.environ['HOST_GUEST_DIR'], 1)
+    command = [arg.replace('/build/guest', os.environ['HOST_GUEST_DIR'], 1) for arg in command[3:]]
+    os.execvpe(command[0], command, environment)
+''')
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    calls = tmp_path / "lima-calls.jsonl"
+    env = {**os.environ, "PATH": f"{tools}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+           "HOST_GUEST_DIR": str(guest), "LIMA_CALLS": str(calls), "GUEST_INPUTS": str(frozen)}
+    env.pop("OUTPUT_DIR", None)
+    if selection != "default":
+        env["OUTPUT_DIR"] = os.path.relpath(chosen, tmp_path) if selection == "relative" else str(chosen)
+    result = subprocess.run(["bash", str(guest / "build-all.sh")], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, timeout=30)
+    if selection in ("outside", "outside-link"):
+        assert result.returncode != 0
+        assert "OUTPUT_DIR" in result.stderr and "guest" in result.stderr
+        assert not calls.exists(), "Lima started before the output was checked"
+        assert not list(target.iterdir())
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (target / "rootfs-tree/payload").read_bytes() == b"fresh"
+        assert (target / "Image").read_bytes() == b"fresh"
+        build = next(row for row in map(json.loads, calls.read_text().splitlines()) if "env" in row)
+        assert "OUTPUT_DIR=/build/guest/" + str(target.relative_to(guest)) in build
+    if selection != "default":
+        assert (old / "rootfs-tree/payload").read_bytes() == b"old rootfs"
+        assert (old / "Image").read_bytes() == b"old kernel"
