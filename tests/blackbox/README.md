@@ -64,6 +64,31 @@ scenario state. NATS executable bytes are prepared once and reverified by the
 installed launcher in each instance; credentials and JetStream data are private.
 Individual procedural compositions remain intact.
 
+For a guest without Debian or Python Package Index (PyPI) network access, first
+stage verified offline test inputs under the test checkout's `offline/`
+directory. Supply `debs/*.deb` for Python, pip and all their Debian dependencies,
+matched to the selected guest's architecture and installed packages. Supply `wheels/*.whl` for the
+unchanged [`guest-requirements.txt`](guest-requirements.txt), including its
+interpreter-specific dependencies. Verify the input archive against the
+supplier's checksum before extracting it. Keep the host's proxy and certificate
+settings.
+
+Set `SAFEYOLO_GUEST_TEST_INPUTS` to the absolute path **inside each guest**.
+The test checkout is mounted at `/workspace` for the subject, peers and lifecycle
+owner. From the same repository root on the physical Mac, run:
+
+```sh
+SAFEYOLO_GUEST_TEST_INPUTS=/workspace/offline ./tests/blackbox/run-installed.sh vz --section isolation --section access --section lifecycle
+```
+
+Each boot, including a restart, installs the local Debian archives without
+repository access. It then installs Python test packages with index access
+disabled and required lock hashes, and checks imports. Missing inputs or failed
+package checks exit 2 as failed fixture preparation. With
+`SAFEYOLO_GUEST_TEST_INPUTS` unset, setup uses the normal online
+package path. This selection prepares test dependencies only; host preparation
+still needs its usual prepared inputs or network access.
+
 | Lane | Independent sections |
 |---|---|
 | `systrap` | isolation, workloads, access, lifecycle, host continuity |

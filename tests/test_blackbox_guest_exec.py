@@ -99,15 +99,20 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
     assert shlex.split(calls[3][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
 
 
-@pytest.mark.parametrize('installer', ['apt-get', 'apk'])
+@pytest.mark.parametrize('installer,offline', [('apt-get', False), ('apk', False), ('apt-get', True)])
 @pytest.mark.parametrize('install_exit', [0, 17])
-def test_guest_test_setup_uses_lock_and_stops_on_package_failure(tmp_path, install_exit, installer):
+def test_guest_test_setup_uses_lock_and_stops_on_package_failure(tmp_path, install_exit, installer, offline):
     """An interpreter-free guest uses hashed requirements; OS install errors stop setup."""
     tools = tmp_path / 'tools'
     tools.mkdir()
     (tools / 'dirname').symlink_to(shutil.which('dirname'))
     record = tmp_path / 'calls'
     python = tools / 'python3'
+    inputs = tmp_path / 'offline inputs $literal'
+    for name in ('debs/python.deb', 'wheels/pytest.whl'):
+        path = inputs / name
+        path.parent.mkdir(parents=True)
+        path.touch()
     python.write_text(f'''#!{sys.executable}
 import json, sys
 arguments = sys.argv[1:]
@@ -120,29 +125,65 @@ if arguments[:3] == ['-m', 'pip', 'install']:
     requirements = Path(arguments[arguments.index('-r') + 1])
     assert requirements == Path('tests/blackbox/guest-requirements.txt').resolve()
     assert '--hash=sha256:' in requirements.read_text()
+    if {offline!r}:
+        assert '--no-index' in arguments
+        assert arguments[arguments.index('--find-links') + 1] == {str(inputs / 'wheels')!r}
+    else:
+        assert '--no-index' not in arguments and '--find-links' not in arguments
+if arguments[:1] == ['-c']:
+    assert arguments[1] == 'import pytest, httpx, pytest_timeout'
 ''')
     python.chmod(0o755)
     package_installer = tools / installer
-    package_installer.write_text(f'#!{sys.executable}\nimport json, sys\n'
+    package_installer.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
                                 f'with open({str(record)!r}, "a") as out: out.write(json.dumps([{installer!r}, *sys.argv[1:]]) + "\\n")\n'
+                                f'if {offline!r}: assert os.environ["DEBIAN_FRONTEND"] == "noninteractive"\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
-    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh'],
+    arguments = [str(inputs)] if offline else []
+    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', *arguments],
                             env=dict(os.environ, PATH=str(tools)), text=True,
                             capture_output=True, timeout=10)
     assert result.returncode == install_exit, result.stderr
     calls = [json.loads(line) for line in record.read_text().splitlines()]
-    if installer == 'apt-get':
+    if offline:
+        assert calls[0] == [
+            'apt-get', '-o', 'Dir::Etc::sourcelist=/dev/null', '-o', 'Dir::Etc::sourceparts=-',
+            '-o', 'Dpkg::Use-Pty=0', '-y', '--no-install-recommends', 'install',
+            str(inputs / 'debs/python.deb'),
+        ]
+        assert ['apt-get', 'update'] not in calls
+    elif installer == 'apt-get':
         assert ['apt-get', 'update'] in calls
     else:
         assert ['apk', 'add', 'python3', 'py3-pip'] in calls
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
     assert bool(installs) == (install_exit == 0)
+    assert (calls[-1][1:2] == ['-c']) == (install_exit == 0)
+
+
+@pytest.mark.parametrize('missing', ['all', 'debs', 'wheels', 'relative-path'])
+def test_offline_guest_setup_refuses_missing_inputs_before_package_commands(tmp_path, missing):
+    inputs = tmp_path / 'offline'
+    for name in ('debs/python.deb', 'wheels/pytest.whl'):
+        if missing not in ('all', name.split('/')[0]):
+            path = inputs / name
+            path.parent.mkdir(parents=True)
+            path.touch()
+    selected = 'relative/offline' if missing == 'relative-path' else str(inputs)
+    # An empty PATH makes any accidental online package command fail distinctly.
+    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', selected],
+                            env=dict(os.environ, PATH=str(tmp_path / 'no-tools')),
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1
+    assert 'Offline guest test inputs need' in result.stderr
+    assert 'command not found' not in result.stderr
 
 
 @pytest.mark.parametrize('agent', ['bbtest', 'bbpeer', 'bbowner'])
 @pytest.mark.parametrize('prepare_exit', [0, 17])
-def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_path, agent, prepare_exit):
+@pytest.mark.parametrize('offline', [False, True])
+def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_path, monkeypatch, agent, prepare_exit, offline):
     cli = tmp_path / 'native-cli'
     record = tmp_path / 'calls'
     cli.write_text(f'#!{sys.executable}\nimport json, sys\n'
@@ -151,16 +192,24 @@ def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_pa
     cli.chmod(0o755)
     root = str(tmp_path / 'selected root')
     environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=root)
+    inputs = '/workspace/offline inputs $(must not execute)'
+    environment.pop('SAFEYOLO_GUEST_TEST_INPUTS', None)
+    if offline:
+        environment['SAFEYOLO_GUEST_TEST_INPUTS'] = inputs
+    monkeypatch.setenv('SAFEYOLO_GUEST_TEST_INPUTS', '/unrelated ambient inputs')
     if prepare_exit:
-        with pytest.raises(subprocess.CalledProcessError) as error:
+        with pytest.raises(SystemExit) as error:
             guest_exec.prepare_guest_tests(str(cli), agent, env=environment)
-        assert error.value.returncode == prepare_exit
+        assert error.value.code == 2
     else:
         guest_exec.prepare_guest_tests(str(cli), agent, env=environment)
     call = json.loads(record.read_text())
     assert call[:-1] == ['--root', root, 'agent', 'shell', agent, '-c']
-    assert shlex.split(call[-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc',
-                                   'bash /workspace/tests/blackbox/prepare-guest-tests.sh']
+    root_command = shlex.split(call[-1])
+    assert root_command[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
+    assert shlex.split(root_command[-1]) == [
+        'bash', '/workspace/tests/blackbox/prepare-guest-tests.sh', *([inputs] if offline else [])
+    ]
     # Reach the maintained runner's conversion of guest setup failures.
     if agent == 'bbtest':
         runner = Path('tests/blackbox/run-tests.sh').read_text()
@@ -238,8 +287,9 @@ elif operation == 'shell':
     (platform, failure)
     for platform in ('systrap', 'vz') for failure in (None, 'same-run', 'lost-origin')
 ] + [('vz', 'coord-start'), ('systrap', 'prepare-tests'), ('vz', 'prepare-tests')])
+@pytest.mark.parametrize('offline', [False, True])
 def test_operator_restart_retains_selected_guest_transport_and_requires_fresh_run_and_delivery(
-    tmp_path, monkeypatch, platform, failure
+    tmp_path, monkeypatch, platform, failure, offline
 ):
     """Reach native lifecycle and guest-call subprocesses with a controlled transport."""
     root = tmp_path / 'selected root'
@@ -247,6 +297,10 @@ def test_operator_restart_retains_selected_guest_transport_and_requires_fresh_ru
     (root / 'data/instance_id').write_text('sy-owned\n')
     (root / 'policy.toml').write_text('[hosts]\n')
     native = root / 'safeyolo'
+    inputs = '/workspace/offline inputs $literal'
+    monkeypatch.delenv('SAFEYOLO_GUEST_TEST_INPUTS', raising=False)
+    if offline:
+        monkeypatch.setenv('SAFEYOLO_GUEST_TEST_INPUTS', inputs)
     native.write_text(f'''#!{sys.executable}
 import json, os, pathlib, shlex, sys
 root = pathlib.Path({str(root)!r})
@@ -256,8 +310,9 @@ with (root / 'calls').open('a') as output:
     output.write(json.dumps(arguments) + '\\n')
 if arguments[:2] == ['agent', 'shell']:
     request = shlex.split(arguments[-1])
-    if request[-1] == 'bash /workspace/tests/blackbox/prepare-guest-tests.sh':
+    if request[-1].startswith('bash /workspace/tests/blackbox/prepare-guest-tests.sh'):
         assert request[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
+        assert shlex.split(request[-1])[2:] == {([inputs] if offline else [])!r}
         sys.exit(17 if {failure!r} == 'prepare-tests' else 0)
     assert request[request.index('--platform') + 1] == {platform!r}, 'wrong guest bridge selected'
     phase = request[request.index('--phase') + 1]
@@ -296,7 +351,7 @@ else:
     sinkhole = SimpleNamespace(get_requests=lambda: deliveries)
     terminal = {'agent_id': 'ag-owned', 'run_id': 'run-before'}
     if failure:
-        expected_error = subprocess.CalledProcessError if failure == 'prepare-tests' else AssertionError
+        expected_error = SystemExit if failure == 'prepare-tests' else AssertionError
         with pytest.raises(expected_error):
             installed_access.operator_restart(str(native), root, 'bbtest', 'r3', terminal,
                                               sinkhole, platform=platform)

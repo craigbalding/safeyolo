@@ -1976,6 +1976,7 @@ def installed_section_commands(tmp_path, monkeypatch):
         "for name in ('token', 'certificate', 'capture', 'approval', 'overlay'):\n"
         "    (root / name).write_text(uuid.uuid4().hex)\n"
         "(root / 'selection.json').write_text(json.dumps(sys.argv[1:]))\n"
+        "(root / 'guest-test-inputs').write_text(os.environ.get('SAFEYOLO_GUEST_TEST_INPUTS', ''))\n"
         "(root / 'nats-instance').write_text(os.environ['SAFEYOLO_NATS_TEST_INSTANCE'])\n"
         "if sys.argv[sys.argv.index('--expect-platform')+1] == 'kvm':\n"
         "    actual = 'kvm' if (source / 'kvm-access').is_file() else 'systrap'\n"
@@ -2027,10 +2028,13 @@ def test_installed_kvm_sections_restore_access_without_reinstalling(
 
 
 @pytest.mark.parametrize("failure,expected", [(0, 0), (1, 1), (2, 2)])
+@pytest.mark.parametrize("offline", [False, True])
 def test_installed_sections_reuse_preparation_and_separate_live_state(
-    tmp_path, monkeypatch, installed_section_commands, failure, expected
+    tmp_path, monkeypatch, installed_section_commands, failure, expected, offline
 ):
     monkeypatch.setenv("FAIL_SECTION", str(failure))
+    inputs = "/workspace/offline inputs $literal" if offline else ""
+    monkeypatch.setenv("SAFEYOLO_GUEST_TEST_INPUTS", inputs)
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     result = installed_sections.run_sections(
         "systrap", ("isolation", "access"), installed_section_commands, "a" * 40, directory, artifacts
@@ -2044,6 +2048,8 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
         0: "passed", 1: "assertion_failure", 2: "preparation_failure"
     }[failure]
     first, second = directory / "isolation", directory / "access"
+    assert (first / "guest-test-inputs").read_text() == inputs
+    assert (second / "guest-test-inputs").read_text() == inputs
     assert (first / "share/kernel").stat().st_ino == (second / "share/kernel").stat().st_ino
     for name in ("token", "certificate", "capture", "approval", "overlay", "nats-instance"):
         assert (first / name).read_text() != (second / name).read_text()

@@ -40,7 +40,13 @@ def _venv(path, interpreter):
 
 @pytest.fixture(scope='module')
 def guest_package_artifacts(tmp_path_factory):
-    """Download the maintained pure-Python wheels once, through the configured proxy."""
+    """Reuse selected offline wheels, or acquire locked artifacts through the proxy."""
+    if inputs := os.environ.get('SAFEYOLO_GUEST_TEST_INPUTS'):
+        wheels = Path(inputs) / 'wheels'
+        assert list(wheels.glob('*.whl')), f'No prepared guest wheels in {wheels}'
+        # The prepared guest payload needs wheels only. Source refusal remains
+        # covered by the normal acquisition path when its archive is available.
+        return wheels, None
     root = tmp_path_factory.mktemp('guest-package-artifacts')
     python = _venv(root / 'downloader', sys.executable)
     wheels = root / 'wheels'
@@ -70,20 +76,25 @@ def guest_package_artifacts(tmp_path_factory):
 
 
 @pytest.mark.parametrize('python_version', ['3.12', '3.13'])
-@pytest.mark.parametrize('failure', [None, 'wheel', 'source', 'missing-hash', 'missing-all-hashes'])
+@pytest.mark.parametrize('failure', [None, 'wheel', 'source', 'missing-wheel', 'missing-hash', 'missing-all-hashes'])
+@pytest.mark.parametrize('offline', [False, True])
 def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
-    tmp_path, guest_package_artifacts, python_version, failure
+    tmp_path, guest_package_artifacts, python_version, failure, offline
 ):
     interpreter = shutil.which(f'python{python_version}')
     if interpreter is None:
         pytest.skip(f'Python {python_version} is not installed')
-    python = _venv(tmp_path / 'guest', interpreter)
     wheels, source = guest_package_artifacts
-    local_wheels = tmp_path / 'artifacts'
+    if failure == 'source' and source is None:
+        pytest.skip('The selected offline payload contains no source refusal archive')
+    python = _venv(tmp_path / 'guest', interpreter)
+    local_wheels = tmp_path / ('offline inputs $literal/wheels' if offline else 'artifacts')
     shutil.copytree(wheels, local_wheels)
     if failure == 'wheel':
         wheel = next(local_wheels.glob('httpx-*.whl'))
         wheel.write_bytes(wheel.read_bytes() + b'changed bytes')
+    elif failure == 'missing-wheel':
+        next(local_wheels.glob('httpx-*.whl')).unlink()
     elif failure == 'source':
         next(local_wheels.glob('pytest_timeout-*.whl')).unlink()
         (local_wheels / source.name).write_bytes(source.read_bytes() + b'changed bytes')
@@ -102,11 +113,27 @@ def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
                        PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_CONFIG_FILE=os.devnull)
     for name in ('PYTHONPATH', 'PIP_TARGET', 'PIP_PREFIX', 'PIP_REQUIREMENT', 'PIP_CONSTRAINT'):
         environment.pop(name, None)
-    result = subprocess.run(['/bin/bash', str(hook)], env=environment,
+    arguments = []
+    if offline:
+        # OS bootstrap has its own caller/command checks. Use real pip here
+        # without modifying the test host's OS packages.
+        tools = tmp_path / 'tools'
+        tools.mkdir()
+        (tools / 'apt-get').write_text('#!/bin/sh\nexit 0\n')
+        (tools / 'apt-get').chmod(0o755)
+        debs = local_wheels.parent / 'debs'
+        debs.mkdir()
+        (debs / 'bootstrap.deb').touch()
+        environment['PATH'] = f'{tools}:{environment["PATH"]}'
+        environment.pop('PIP_NO_INDEX')
+        environment.pop('PIP_FIND_LINKS')
+        arguments = [str(local_wheels.parent)]
+    result = subprocess.run(['/bin/bash', str(hook), *arguments], env=environment,
                             capture_output=True, text=True, timeout=60)
     if failure:
         assert result.returncode != 0, result.stdout
-        message = 'do not match the hashes' if failure in ('wheel', 'source') else 'hashes are required'
+        message = ('do not match the hashes' if failure in ('wheel', 'source') else
+                   'no matching distribution found' if failure == 'missing-wheel' else 'hashes are required')
         assert message in result.stderr.lower(), result.stderr
         subprocess.run([str(python), '-c',
                         "import importlib.util; assert importlib.util.find_spec('pytest') is None"],
@@ -122,5 +149,5 @@ def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
         assert ('typing-extensions' in packages) == (python_version == '3.12')
         assert 'colorama' not in packages
         # A warm guest can prepare again without changing the interpreter or imports.
-        subprocess.run(['/bin/bash', str(hook)], env=environment,
+        subprocess.run(['/bin/bash', str(hook), *arguments], env=environment,
                        capture_output=True, text=True, check=True, timeout=60)

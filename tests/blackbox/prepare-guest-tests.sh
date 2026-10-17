@@ -1,7 +1,26 @@
 #!/usr/bin/env bash
 # Run as guest root in an owned blackbox fixture, after the guest is ready.
 set -euo pipefail
-if ! python3 -m pip --version >/dev/null 2>&1; then
+offline_inputs=${1:-}
+pip_inputs=()
+if [[ -n "$offline_inputs" ]]; then
+    # These paths are inside the guest's mounted workspace, not host paths.
+    if [[ "$offline_inputs" != /* ]]; then
+        echo 'Offline guest test inputs need an absolute guest path.' >&2
+        exit 1
+    fi
+    shopt -s nullglob
+    debs=("$offline_inputs"/debs/*.deb)
+    wheels=("$offline_inputs"/wheels/*.whl)
+    if (( ${#debs[@]} == 0 || ${#wheels[@]} == 0 )); then
+        echo "Offline guest test inputs need debs/*.deb and wheels/*.whl: $offline_inputs" >&2
+        exit 1
+    fi
+    # Empty repository settings keep dependency resolution on local archives.
+    DEBIAN_FRONTEND=noninteractive apt-get -o Dir::Etc::sourcelist=/dev/null \
+        -o Dir::Etc::sourceparts=- -o Dpkg::Use-Pty=0 -y --no-install-recommends install "${debs[@]}"
+    pip_inputs=(--no-index --find-links "$offline_inputs/wheels")
+elif ! python3 -m pip --version >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pip
@@ -15,5 +34,5 @@ fi
 # Exported from the host runner's lock. Include hashes for each dependency and
 # retain interpreter markers, wheels and source archives from that lock.
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
-python3 -m pip install --break-system-packages --require-hashes -r "$script_dir/guest-requirements.txt"
+python3 -m pip install --break-system-packages --require-hashes "${pip_inputs[@]}" -r "$script_dir/guest-requirements.txt"
 python3 -c 'import pytest, httpx, pytest_timeout'
