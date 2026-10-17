@@ -2767,6 +2767,13 @@ mod tests {
                     )),
                     "{error}"
                 );
+                // Drain the guard's connection so the next iteration cannot
+                // find this listener held by an unaccepted connection.
+                listener.set_nonblocking(true).unwrap();
+                match listener.accept() {
+                    Ok((peer, _)) => drop(peer),
+                    Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+                }
                 drop(listener);
             }
             remove_stopped_vz_sockets("alice").unwrap();
@@ -2920,12 +2927,11 @@ mod tests {
                             ).await.unwrap();
                         };
                         let request = async {
-                            let error = if caller == "cli" {
+                            if caller == "cli" {
                                 crate::host_commands::run(config_path.clone(), &["agent".into(), "stop".into(), "alice".into()]).await.unwrap_err().to_string()
                             } else {
                                 crate::native_client::admin(&config_path, &format!("/admin/agents/{id}/stop"), hyper::Method::POST, serde_json::Value::Null, std::time::Duration::from_secs(20)).await.unwrap_err().to_string()
-                            };
-                            error
+                            }
                         };
                         let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(20), async { tokio::join!(request, serve) }).await.unwrap();
                         assert!(error.contains("API 500"), "{caller}/{fault}: {error}");
