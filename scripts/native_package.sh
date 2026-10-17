@@ -14,8 +14,8 @@ host_platform() {
 
 file_sha256() {
   local digest
-  if command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$1");
-  else digest=$(shasum -a 256 "$1"); fi
+  if command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$1") || return;
+  else digest=$(shasum -a 256 "$1") || return; fi
   printf '%s\n' "${digest%% *}"
 }
 
@@ -89,7 +89,7 @@ verify_native_artifacts() {
 verify_native_package() {
   local package=$1 key value source= profile= platform= minimum= identity binary
   local compatibility= repository= discovery= seen=$'\n' runsc_version= runsc_source= runsc_origin=
-  local legacy_installed=false file line
+  local legacy_installed=false file line checksums checksum_errors=
   if [[ ${2:-} == --installed ]]; then
     # The original installer copied runtime files but omitted all three
     # packaging scripts. Only an installed layout may have those omissions.
@@ -140,19 +140,24 @@ verify_native_package() {
   for binary in tmux-common tmux-window tmux-pane; do
     require_file "$package/assets/launchers/$binary.sh" || return
   done
-  (cd "$package"; while IFS= read -r line || [[ -n $line ]]; do
+  checksums=$(while IFS= read -r line || [[ -n $line ]]; do
     if $legacy_installed; then
       case "$line" in
-        *'  ./install.sh'|*'  ./install_native.sh'|*'  ./native_package.sh') continue;;
+        (*'  ./install.sh'|*'  ./install_native.sh'|*'  ./native_package.sh') continue;;
       esac
     fi
     printf '%s\n' "$line"
-  done < SHA256SUMS | {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum --check --status;
-    else shasum -a 256 --check --status; fi
-  }) || {
+  done < "$package/SHA256SUMS") || return
+  # Native macOS sha256sum needs short options and an explicit stdin operand.
+  # Reject empty input and warnings: the native tool can succeed without any
+  # checks, and both tools can skip malformed lines beside valid checksums.
+  if [[ -z $checksums ]] || ! checksum_errors=$(cd "$package"; printf '%s\n' "$checksums" | {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -w -;
+    else shasum -a 256 -c -w -; fi
+  } 2>&1 >/dev/null) || [[ -n $checksum_errors ]]; then
+    [[ -z $checksum_errors ]] || printf '%s\n' "$checksum_errors" >&2
     package_error 'bundle checksum verification failed'; return 1;
-  }
+  fi
   if [[ -n $runsc_version ]]; then
     local runtime_file
     while IFS= read -r runtime_file; do
