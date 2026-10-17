@@ -7,8 +7,16 @@ policy, audit and upstream fixtures. A component test proves its observed
 boundary; it cannot substitute for an installed guest/operator composition.
 Runner self-tests exercise selection, failure and cleanup controls separately.
 
-From a clean exact checkout on a disposable Linux host with uv, Cargo and the
-bootstrap prerequisites, run the actual software-isolation lane:
+Nightly blackbox installs retained default-branch production host/helper bundles
+and the newest complete compatible staged guest. The
+[retained-input procedure](../tests/blackbox/README.md#test-retained-nightly-inputs)
+freezes artifact and producer identities once. It records build age, the
+captured default-branch head and the separate test controller. Product builders
+run in producers. Missing or invalid selected inputs fail without source or
+older-green substitution. Testing a quarantined guest does not promote it.
+
+For a contributor build, from a clean exact checkout on a disposable Linux host
+with uv, Cargo and the bootstrap prerequisites, run the software-isolation lane:
 
 ```sh
 ./tests/blackbox/run-installed.sh systrap
@@ -27,15 +35,16 @@ security decisions to implementation symbols and their test owners.
 | Selection | Observation boundary |
 |---|---|
 | Native component contracts | Real native process, UDS, local API, protocol, policy/audit and owned upstream; no guest claim |
-| Short installed host package | Current wheel/launcher, exact authenticated native identity, allowed/denied HTTP origins, selected packaged HTTPS and owned stop; guest isolation unproved |
+| Short installed host package | Installed host bundle, exact authenticated native identity, allowed/denied HTTP origins, selected packaged HTTPS and owned stop; guest isolation unproved |
 | Installed isolation | Native host ingress/security/identity/lifecycle plus ordinary and guest-root probes in an actual systrap, KVM-backed gVisor or VZ guest |
 | Installed ingress | Actual KVM guest/forwarder and correlated allowed-origin/denied-no-origin/local API observations |
 | Installed workloads | Linux guest package, Git, SSE, WS/WSS and pinned SSH through CONNECT |
 | Installed access | Two live guests, operator approvals, service/contract/credential effects, populated owner-scoped flow access, NATS/Coord/attention, Plumb and inspector |
 | Installed lifecycle | Live listener/policy changes, all five guest-default-trust TLS cases, mixed drain, three subject cycles and a separate live owner |
 
-`run-installed.sh` prepares one compatible wheel/native executable, locked
-host test environment and kernel/rootfs/helper inputs. Each independent
+`run-installed.sh` prepares one compatible installed bundle, or reuses the
+verified archive installation supplied by the retained runner. The locked
+test environment and kernel/rootfs/helper inputs are prepared once. Each independent
 section borrows only those preparation outputs. Agents, configuration, data,
 logs, fixture certificates/keys, overlays, origins, captures, approvals, tokens
 and writable state stay separate. Access retains its two guests/operator/NATS
@@ -66,11 +75,12 @@ automation/publication remains [#889](https://github.com/craigbalding/safeyolo/i
 Hosted Mac package/proxy checks are not physical VZ evidence. Hosted nested-KVM
 availability is not an acceptance guarantee. Hardware observations require a
 fresh host, trusted trigger, public-PR isolation, resource/owner prechecks,
-exact commit/binary/platform, result, owned cleanup and sanitized publication.
+exact host/helper artifacts and guest digest, separate controller source,
+actual platform, result, owned cleanup and sanitized publication.
 An occupied shared resource, stale ref or another owner's process is not a
 valid setup. Release acceptance retains exact-release-commit results for each
-actual mechanism. This restructuring neither supplies #889's automation nor
-reopens historical #640 acceptance.
+actual mechanism. The [independent hardware entries](../tests/blackbox/hardware/README.md)
+do not establish deployed schedules or reopen historical #640 acceptance.
 
 ## Security observations
 

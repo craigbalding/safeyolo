@@ -5,7 +5,69 @@ agent workloads, access approvals and lifecycle. Rust proxy process and
 protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
 A hosted process or package result does not prove KVM or Apple VZ isolation.
 
-Run installed acceptance on a disposable supported host, from a clean checkout
+## Test retained nightly inputs
+
+The [nightly workflow](../../.github/workflows/blackbox.yml) runs at 03:17 UTC.
+It installs existing default-branch production bundles and the newest complete,
+successfully staged compatible guest. Product, rootfs, kernel and helper
+builders run in separate producers. The test jobs never replace a missing input
+with a source build or an older passing test candidate.
+
+The host producer must first retain a complete bundle for the platform. The
+guest must have the completed-staging attachment described in the
+[guest OCI contract](../../docs/guest-oci.md#nightly-consumer-staging-receipt).
+That staging input is supplied by #1104; historical layouts and publication
+dates do not establish it. Until both inputs exist, selection fails visibly.
+Source tests alone do not establish end-to-end retention or hardware readiness.
+
+For a local retained run, use a disposable supported host, a clean pinned test
+checkout, its frozen development Python environment, GitHub CLI (`gh`) with
+repository Actions read access, and ORAS. No product compiler is required.
+Linux needs the [host prerequisites](../../docs/installation.md#guest-prerequisites)
+and noninteractive sudo. The archive installer checks and explains host setup;
+`--yes` below accepts those changes on this disposable host.
+
+From the checkout root on Linux AMD64, replace both `/owned/` paths with new,
+private disk-backed directories. Use `linux-arm64` for an ARM64 host.
+The first command downloads and freezes the selected inputs. The second command
+installs that exact host archive and guest index, then runs all maintained
+systrap sections with separate writable state and owned cleanup.
+
+```sh
+.venv/bin/python scripts/select_blackbox_artifacts.py --platform linux-amd64 --output /owned/blackbox-inputs
+.venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --yes --selection /owned/blackbox-inputs/selection.json --artifacts /owned/blackbox-reports
+```
+
+`selection.json` records the captured default-branch head, selected host build
+age, host/helper source and profile, producer workflow/run/attempt/job, artifact
+ID and checksum, and guest index/child/archive descriptors. It records the test
+controller separately. An older retained build does not test today's head.
+There is no new age cutoff. A guest still inside its 48-hour promotion
+quarantine is valid input. Test success does not move a production tag.
+
+`installed-inputs.json` records the actual installed host/helper hashes and
+guest descriptors before any section starts. `retained-run.json` records the
+actual test controller, platform, input mode, test provisioning mode and exit.
+Sections retain their existing reports. Missing, expired, partial, incompatible,
+wrong-source/profile/platform or checksum-mismatched selected inputs fail the
+attempt. Retry with new directories; failed attempts are preserved. Raw logs
+and instance state stay private. Hosted report artifacts remain for 30 days.
+
+Trusted dispatch can set `host_run` and `guest_index` to exact producer and
+staged-index identities. The selector accepts the same choices through
+`--host-run` and `--guest-index`. These choices still require trusted default-
+branch production inputs. For an exact release, verify that all required lanes
+use that release's host archive bytes and the exact compatible guest digest.
+Independent nightly selections are not a combined release pass. Public-install
+smoke selects the promoted compatibility channel separately.
+
+The [hardware deployment guide](hardware/README.md) uses the same selector and
+installed runner for independent KVM and physical VZ execution. Craig owns cron
+installation; the source scripts and examples do not establish deployment.
+
+## Build and test a contributor checkout
+
+For source-based acceptance, use a disposable supported host and a clean checkout
 of the exact commit being tested. Install uv and select Rust 1.94.0 from
 [`proxy/rust-toolchain.toml`](../../proxy/rust-toolchain.toml); Cargo must be on
 `PATH`. Linux preparation needs noninteractive host sudo, subordinate IDs
@@ -15,7 +77,7 @@ requires a fresh libvirt guest with usable `/dev/kvm`. VZ requires physical
 Apple Silicon and the Swift helper build prerequisites in the
 [installation reference](../../cli/README.md#installation).
 
-## Run installed sections with one preparation
+### Run installed sections with one preparation
 
 Choose the host's actual mechanism. From the repository root, the following
 runs the checked-out HEAD; `--install-commit FULL_SHA` checks an explicit full
@@ -264,6 +326,8 @@ Apple Silicon VZ. Current GitHub automation schedules systrap and hosted
 package/component checks. Hardware scheduling/publication remains
 [#889](https://github.com/craigbalding/safeyolo/issues/889); this restructuring
 supplies its maintained runners without claiming that automation is complete.
+The [independent hardware entries](hardware/README.md) consume retained inputs;
+they do not build on Tart during the nightly invocation.
 
 <!-- blackbox-cadence-contract:start -->
 | Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
@@ -276,7 +340,8 @@ supplies its maintained runners without claiming that automation is complete.
 Hosted macOS cannot supply physical VZ evidence, and hosted KVM availability is
 not an acceptance guarantee. Hardware runs require a fresh disposable host,
 trusted schedule or explicit operator dispatch, resource/owner prechecks,
-exact selected commit and binary, actual platform identity, observed result,
+exact selected host/helper artifacts and compatible guest digest, separate
+controller source, actual platform identity, observed result,
 owned cleanup and sanitized publication. Public PR code must not execute on a
 persistent hardware host through an untrusted trigger. A stale ref or another
 owner's live resource does not satisfy those prechecks. Before release, retain
@@ -452,9 +517,11 @@ substrate and listener; the host-only smoke does not claim one.
 ## Hosted Linux ARM64 archive qualification
 
 The manual [installed-arm64 workflow](../../.github/workflows/installed-arm64.yml)
-tests the published production host from `c9ecb66b462c2ba0c499f2322f6cfc5c142012da`
-on the repository's `ubuntu-24.04-arm` pool with real systrap guests.
-The default `draft-offline` mode retains its original name and selects original
+uses the repository's `ubuntu-24.04-arm` pool for real systrap guests.
+The default `retained` mode uses the shared selector and installed runner above.
+It accepts `host_run` and `guest_index` for trusted exact selection. The separate
+explicit historical `draft-offline` mode tests the published production host
+from `c9ecb66b462c2ba0c499f2322f6cfc5c142012da`. It retains its original name and selects original
 guest `guest-2026-10-12.1` from `8234a047d810d543d8c4d1cb1fa9859987be035b`.
 Select `guest=reduced-33224` to test the reduced `guest-2026-10-16.1082` guest
 from `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`. The separate `public-install`

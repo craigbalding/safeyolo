@@ -627,17 +627,21 @@ def test_package_reader_refuses_invalid_guest_metadata_before_installation(packa
     assert not root.exists()
 
 
-def test_default_installer_calls_native_guest_before_creating_configuration(package_inputs, tmp_path):
+@pytest.mark.parametrize("guest_index", [None, "sha256:" + "b" * 64])
+def test_default_installer_calls_native_guest_before_creating_configuration(package_inputs, tmp_path, guest_index):
     executable(package_inputs[1] / "safeyolo", f"safeyolo 0.1.0 commit={package_inputs[5]} profile=debug", guest_exit=31)
     bundle = build_bundle(package_inputs, tmp_path)
     root, marker = tmp_path / "fresh", tmp_path / "guest-argv"
     result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
+                 *(["--guest-index", guest_index] if guest_index else []),
                  env=dict(os.environ, PACKAGE_GUEST_CALLS=str(marker)))
     assert result.returncode == 31 and "controlled guest acquisition refusal" in result.stderr
     arguments = marker.read_text().splitlines()
     staging = Path(arguments[1])
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
-    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json"), "--host-settings", str(staging / "host-settings.toml")]
+    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
+                         *(["--index", guest_index] if guest_index else []),
+                         "--host-settings", str(staging / "host-settings.toml")]
     assert not staging.exists()
     assert not (root / "config.toml").exists()
     assert not (root / "bin").exists()

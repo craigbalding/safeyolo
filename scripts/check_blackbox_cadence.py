@@ -26,8 +26,8 @@ FULL_LANES = frozenset({"systrap", "kvm", "vz"})
 START_MARKER = "<!-- blackbox-cadence-contract:start -->"
 END_MARKER = "<!-- blackbox-cadence-contract:end -->"
 RUN_LANE_RE = re.compile(
-    r"(?:^|\s)(?:\./)?tests/blackbox/"
-    r"(?:run-installed|run-lane)\.sh\s+"
+    r"(?:^|\s)(?:(?:\./)?tests/blackbox/(?:run-installed|run-lane)\.sh\s+|"
+    r"(?:\./)?\.venv/bin/python\s+tests/blackbox/retained_inputs\.py\s+run\s+--lane\s+)"
     r"(?P<lane>systrap|kvm|vz)(?:\s|$)",
 )
 

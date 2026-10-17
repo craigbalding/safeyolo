@@ -58,7 +58,14 @@ def test_step_executor_preserves_github_default_and_explicit_bash_semantics(tmp_
 def test_manual_route_separates_acquisition_and_pins_read_only_qualification():
     assert set(WORKFLOW.get("on", WORKFLOW.get(True))) == {"workflow_dispatch"}
     assert WORKFLOW["permissions"] == {"contents": "read"}
-    assert set(WORKFLOW["jobs"]) == {"acquire-host", "installed-arm64", "public-install"}
+    assert set(WORKFLOW["jobs"]) == {"retained", "acquire-host", "installed-arm64", "public-install"}
+    assert WORKFLOW.get("on", WORKFLOW.get(True))["workflow_dispatch"]["inputs"]["mode"]["default"] == "retained"
+    retained = WORKFLOW["jobs"]["retained"]
+    assert retained["if"] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'retained'"
+    assert retained["runs-on"] == "ubuntu-24.04-arm"
+    retained_commands = "\n".join(item.get("run", "") for item in retained["steps"])
+    assert "select_blackbox_artifacts.py" in retained_commands and "retained_inputs.py run" in retained_commands
+    assert "cargo" not in retained_commands and "guest/build" not in retained_commands
     draft_route = "github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'"
     assert HOST_JOB["if"] == draft_route
     assert HOST_JOB["permissions"] == {"contents": "read"}
@@ -118,8 +125,8 @@ def test_manual_route_separates_acquisition_and_pins_read_only_qualification():
     upload = JOB["steps"][-1]
     assert upload["if"] == "always()" and upload["with"]["path"] == "${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}"
     nightly = yaml.safe_load((ROOT / ".github/workflows/blackbox.yml").read_text())
-    assert nightly.get("on", nightly.get(True))["workflow_dispatch"] is None
-    assert set(nightly["jobs"]) == {"guest-inputs", "systrap", "macos-package"}
+    assert set(nightly.get("on", nightly.get(True))["workflow_dispatch"]["inputs"]) == {"host_run", "guest_index"}
+    assert set(nightly["jobs"]) == {"systrap", "macos-package"}
     assert all("if" not in job for job in nightly["jobs"].values())
     preparation = step("Prepare the supported systrap host")["run"]
     assert preparation == "tests/blackbox/prepare-systrap-host.sh"
