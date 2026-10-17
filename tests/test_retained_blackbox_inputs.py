@@ -563,11 +563,12 @@ def test_archive_install_and_section_handoff_work_with_product_builders_unavaila
         shutil.copy2(ROOT / "scripts" / name, controller / "scripts" / name)
     (controller / ".venv").symlink_to(sys.prefix, target_is_directory=True)
     handoff = scripts / "run-installed.sh"
-    handoff.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, subprocess, sys
+    handoff.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, shutil, subprocess, sys
 args = sys.argv[1:]
 assert args[0] == 'systrap' and '--prepared-config' in args and '--section' not in args
 root = pathlib.Path(args[args.index('--prepared-config')+1])
 assert (root/'package-info').is_file() and (root/'share/guest-selection.json').is_file()
+assert shutil.which('runsc') == str(root/'libexec/runsc')
 subprocess.run([str(root/'bin/safeyolo'), '--version'], check=True)
 reports = pathlib.Path(args[args.index('--artifacts')+1]); reports.mkdir(parents=True)
 (reports/'controlled-section-handoff.json').write_text(json.dumps(args))

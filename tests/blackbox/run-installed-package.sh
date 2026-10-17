@@ -95,7 +95,7 @@ if [[ -n $HOST_PACKAGE ]]; then
 else
     "$SCRIPT_DIR/run-lane.sh" proxy --prepare-only
 fi
-export PATH="$PACKAGE_DIR/prepared/bin:$REPO_ROOT/.venv/bin:$PATH"
+export PATH="$PACKAGE_DIR/prepared/bin:$PACKAGE_DIR/prepared/libexec:$REPO_ROOT/.venv/bin:$PATH"
 export PYTHONPATH="$REPO_ROOT/tests/reference:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 REVISION=$(python3 - "$SCRIPT_DIR" "$PACKAGE_DIR/prepared/bin/safeyolo" <<'PY_IDENTITY'
 import sys

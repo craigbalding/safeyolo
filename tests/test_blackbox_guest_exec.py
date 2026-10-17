@@ -280,6 +280,85 @@ def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_pa
         assert ('dependencies could not be prepared' in result.stderr) == bool(prepare_exit)
 
 
+@pytest.mark.parametrize('failure', [None, 'setup', 'home', 'workspace', 'node', 'read-timeout'])
+def test_persistence_preparation_has_its_own_budget_and_preserves_read_assertions(tmp_path, failure):
+    """Run the maintained test with cold setup longer than its scaled read timer."""
+    repository = tmp_path / 'repository'
+    suite = repository / 'tests/blackbox/host/lifecycle'
+    suite.mkdir(parents=True)
+    shutil.copy2('tests/blackbox/host/lifecycle/test_home_persistence.py', suite)
+    # Keep the production timeout value and scope under test. Scale only its
+    # duration so the cold-preparation regression takes less than a second.
+    (suite / 'conftest.py').write_text('''import pytest
+def pytest_collection_modifyitems(items):
+    for item in items:
+        marker = item.get_closest_marker('timeout')
+        if marker:
+            assert marker.args == (120,)
+            item.add_marker(pytest.mark.timeout(0.5, **marker.kwargs), append=False)
+''')
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    cli = tools / 'safeyolo'
+    cli.write_text(f'#!{sys.executable}\n' + '''import json, os, pathlib, shlex, sys, time
+root = pathlib.Path(os.environ['PROBE_ROOT'])
+failure = os.environ['PROBE_FAILURE']
+args = sys.argv[1:]
+if args[:1] == ['--root']:
+    assert args[1] == os.environ['SAFEYOLO_CONFIG_DIR']
+    args = args[2:]
+with (root / 'calls.jsonl').open('a') as output:
+    output.write(json.dumps(args) + '\\n')
+if args[:2] != ['agent', 'shell']:
+    assert args[:2] in (['agent', 'stop'], ['agent', 'start'])
+    sys.exit(0)
+command = args[-1]
+if 'prepare-guest-tests.sh' in command:
+    time.sleep(0.75)
+    if failure == 'setup': sys.exit(17)
+    (root / 'pytest-ready').touch()
+elif command.startswith('mise use'):
+    print('v22.0.0\\n/home/agent/.mise/installs/node/22/bin/node')
+elif command.startswith('printf'):
+    words = shlex.split(command)
+    (root / 'home-marker').write_text(words[2])
+    (root / pathlib.Path(words[-1]).name).write_text(words[2])
+elif command.startswith('cat '):
+    if failure == 'read-timeout': time.sleep(0.75)
+    home = command.startswith('cat /home/')
+    path = root / ('home-marker' if home else pathlib.Path(command.split()[-1]).name)
+    print('wrong' if failure == ('home' if home else 'workspace') else path.read_text(), end='')
+elif command.startswith('node '):
+    print('v20.0.0' if failure == 'node' else 'v22.0.0\\n/home/agent/.mise/installs/node/22/bin/node')
+else:
+    assert command == 'true', command
+''')
+    cli.chmod(0o755)
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith('PYTEST_') and key not in {'PYTHONPATH', 'PYTHONHOME'}}
+    environment.update(PATH=f'{tools}:{Path(sys.executable).parent}:/usr/bin:/bin',
+                       PYTHONPATH=str(Path('tests/blackbox').resolve()),
+                       SAFEYOLO_CONFIG_DIR=str(tmp_path / 'instance'), PROBE_ROOT=str(repository),
+                       PROBE_FAILURE=failure or '')
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short', '--timeout=0.5',
+                             '--basetemp', str(tmp_path / 'pytest'), str(suite)],
+                            cwd=repository, env=environment, text=True, capture_output=True, timeout=15)
+    assert result.returncode == (1 if failure else 0), result.stdout + result.stderr
+    assert ('Timeout (>0.5s)' in result.stdout + result.stderr) == (failure == 'read-timeout')
+    calls = [json.loads(line) for line in (repository / 'calls.jsonl').read_text().splitlines()]
+    commands = [call[-1] for call in calls if call[:2] == ['agent', 'shell']]
+    assert any(call[:2] == ['agent', 'stop'] for call in calls)
+    assert any(call[:2] == ['agent', 'start'] for call in calls)
+    preparation = next(i for i, command in enumerate(commands) if 'prepare-guest-tests.sh' in command)
+    reads = [command for command in commands[preparation + 1:] if command.startswith(('cat ', 'node '))]
+    if failure == 'setup':
+        assert 'could not be prepared' in result.stderr + result.stdout and not reads
+    else:
+        assert (repository / 'pytest-ready').is_file()
+        assert len(reads) == {'home': 1, 'workspace': 2, 'read-timeout': 1}.get(failure, 3)
+    assert not list(repository.glob('.safeyolo-persist-*'))
+
+
 def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeypatch):
     monkeypatch.setenv('SAFEYOLO_CONFIG_DIR', '/selected-root')
     cli = '/selected-root/bin/safeyolo'
