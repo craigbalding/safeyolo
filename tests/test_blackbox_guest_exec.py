@@ -99,46 +99,78 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
     assert shlex.split(calls[3][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
 
 
+@pytest.mark.parametrize('installer', ['apt-get', 'apk'])
 @pytest.mark.parametrize('install_exit', [0, 17])
-def test_guest_test_setup_uses_lock_and_stops_on_package_failure(tmp_path, install_exit):
-    """An interpreter-free guest installs test tools; a failed apt step stops it."""
+def test_guest_test_setup_uses_lock_and_stops_on_package_failure(tmp_path, install_exit, installer):
+    """An interpreter-free guest uses hashed requirements; OS install errors stop setup."""
     tools = tmp_path / 'tools'
     tools.mkdir()
-    for name in ('mktemp', 'rm'):
-        (tools / name).symlink_to(shutil.which(name))
+    (tools / 'dirname').symlink_to(shutil.which('dirname'))
     record = tmp_path / 'calls'
     python = tools / 'python3'
     python.write_text(f'''#!{sys.executable}
-import json, os, sys
+import json, sys
 arguments = sys.argv[1:]
 with open({str(record)!r}, 'a') as out: out.write(json.dumps(['python3', *arguments]) + '\\n')
 if arguments == ['-m', 'pip', '--version']:
     sys.exit(1)
-if arguments == ['-']:
-    os.execv({sys.executable!r}, [{sys.executable!r}, '-'])
 if arguments[:3] == ['-m', 'pip', 'install']:
-    import tomllib
     from pathlib import Path
-    versions = {{p['name']: p['version'] for p in tomllib.loads(Path('uv.lock').read_text())['package']}}
-    constraints = set(Path(arguments[arguments.index('-c') + 1]).read_text().splitlines())
-    for name in ('pytest', 'httpx', 'pytest-timeout'):
-        assert name + '==' + versions[name] in constraints
-    assert arguments[-3:] == ['pytest', 'httpx', 'pytest-timeout']
+    assert '--require-hashes' in arguments
+    requirements = Path(arguments[arguments.index('-r') + 1])
+    assert requirements == Path('tests/blackbox/guest-requirements.txt').resolve()
+    assert '--hash=sha256:' in requirements.read_text()
 ''')
     python.chmod(0o755)
-    apt = tools / 'apt-get'
-    apt.write_text(f'#!{sys.executable}\nimport json, sys\n'
-                   f'with open({str(record)!r}, "a") as out: out.write(json.dumps(["apt-get", *sys.argv[1:]]) + "\\n")\n'
-                   f'sys.exit({install_exit})\n')
-    apt.chmod(0o755)
+    package_installer = tools / installer
+    package_installer.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                                f'with open({str(record)!r}, "a") as out: out.write(json.dumps([{installer!r}, *sys.argv[1:]]) + "\\n")\n'
+                                f'sys.exit({install_exit})\n')
+    package_installer.chmod(0o755)
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh'],
                             env=dict(os.environ, PATH=str(tools)), text=True,
                             capture_output=True, timeout=10)
     assert result.returncode == install_exit, result.stderr
     calls = [json.loads(line) for line in record.read_text().splitlines()]
-    assert ['apt-get', 'update'] in calls
+    if installer == 'apt-get':
+        assert ['apt-get', 'update'] in calls
+    else:
+        assert ['apk', 'add', 'python3', 'py3-pip'] in calls
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
     assert bool(installs) == (install_exit == 0)
+
+
+@pytest.mark.parametrize('agent', ['bbtest', 'bbpeer', 'bbowner'])
+@pytest.mark.parametrize('prepare_exit', [0, 17])
+def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_path, agent, prepare_exit):
+    cli = tmp_path / 'native-cli'
+    record = tmp_path / 'calls'
+    cli.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                   f'with open({str(record)!r}, "a") as out: out.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                   f'sys.exit({prepare_exit})\n')
+    cli.chmod(0o755)
+    root = str(tmp_path / 'selected root')
+    environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=root)
+    if prepare_exit:
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            guest_exec.prepare_guest_tests(str(cli), agent, env=environment)
+        assert error.value.returncode == prepare_exit
+    else:
+        guest_exec.prepare_guest_tests(str(cli), agent, env=environment)
+    call = json.loads(record.read_text())
+    assert call[:-1] == ['--root', root, 'agent', 'shell', agent, '-c']
+    assert shlex.split(call[-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc',
+                                   'bash /workspace/tests/blackbox/prepare-guest-tests.sh']
+    # Reach the maintained runner's conversion of guest setup failures.
+    if agent == 'bbtest':
+        runner = Path('tests/blackbox/run-tests.sh').read_text()
+        start = runner.index('    if ! python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" --prepare-tests; then')
+        block = runner[start:runner.index('    fi', start) + len('    fi')]
+        result = subprocess.run(['/bin/bash', '-c', block], capture_output=True, text=True, timeout=10,
+                                env=dict(environment, SCRIPT_DIR=str(Path('tests/blackbox').resolve()),
+                                         INSTALLED_CLI=str(cli), AGENT_NAME=agent))
+        assert result.returncode == (2 if prepare_exit else 0), result.stderr
+        assert ('dependencies could not be prepared' in result.stderr) == bool(prepare_exit)
 
 
 def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeypatch):
@@ -205,7 +237,7 @@ elif operation == 'shell':
 @pytest.mark.parametrize('platform,failure', [
     (platform, failure)
     for platform in ('systrap', 'vz') for failure in (None, 'same-run', 'lost-origin')
-] + [('vz', 'coord-start')])
+] + [('vz', 'coord-start'), ('systrap', 'prepare-tests'), ('vz', 'prepare-tests')])
 def test_operator_restart_retains_selected_guest_transport_and_requires_fresh_run_and_delivery(
     tmp_path, monkeypatch, platform, failure
 ):
@@ -226,7 +258,7 @@ if arguments[:2] == ['agent', 'shell']:
     request = shlex.split(arguments[-1])
     if request[-1] == 'bash /workspace/tests/blackbox/prepare-guest-tests.sh':
         assert request[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
-        sys.exit(0)
+        sys.exit(17 if {failure!r} == 'prepare-tests' else 0)
     assert request[request.index('--platform') + 1] == {platform!r}, 'wrong guest bridge selected'
     phase = request[request.index('--phase') + 1]
     marker = request[request.index('--marker') + 1]
@@ -264,7 +296,8 @@ else:
     sinkhole = SimpleNamespace(get_requests=lambda: deliveries)
     terminal = {'agent_id': 'ag-owned', 'run_id': 'run-before'}
     if failure:
-        with pytest.raises(AssertionError):
+        expected_error = subprocess.CalledProcessError if failure == 'prepare-tests' else AssertionError
+        with pytest.raises(expected_error):
             installed_access.operator_restart(str(native), root, 'bbtest', 'r3', terminal,
                                               sinkhole, platform=platform)
     else:
@@ -282,6 +315,11 @@ else:
         expected.append(['coord', 'start', '--client-port', '46370', '--monitor-port', '46372'])
     if failure == 'coord-start':
         assert lifecycle == expected
+        return
+    if failure == 'prepare-tests':
+        assert lifecycle == [*expected, ['start'], ['agent', 'start', 'bbtest']]
+        guest_calls = [call for call in calls if call[:2] == ['agent', 'shell']]
+        assert len(guest_calls) == 2  # Before-restart traffic, then the failed preparation.
         return
     assert lifecycle == [*expected, ['start'], ['agent', 'start', 'bbtest'], ['agent', 'status', 'bbtest']]
 
