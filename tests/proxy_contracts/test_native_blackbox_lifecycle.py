@@ -9,6 +9,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -270,6 +274,39 @@ def test_native_lifecycle_consumer_retains_inactive_receipt_and_uses_configured_
         assert (instance.root / "data/proxy-process.json").is_file()
         lifecycle.assert_proxy_stopped(instance.root, listener, runtime)
         assert not Path(native["readiness_file"]).exists()
+
+
+@pytest.mark.parametrize("exits", [True, False])
+def test_native_stop_observer_waits_for_process_exit_and_rejects_a_live_birth(tmp_path, monkeypatch, exits):
+    real_monotonic = time.monotonic
+    readiness = tmp_path / "ready.json"
+    monkeypatch.setattr(lifecycle, "_native_config", lambda *_args: {"readiness_file": str(readiness)})
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    runtime = {"pid": process.pid, "receipt": {"start_token": smoke._process_start_token(process.pid)}}
+    assert runtime["receipt"]["start_token"] is not None
+    try:
+        if exits:
+            # The readiness marker is already absent while the real OS child
+            # remains live. Let it exit after the observer has started waiting.
+            released = threading.Timer(0.1, process.terminate)
+            released.start()
+            try:
+                lifecycle.assert_proxy_stopped(tmp_path, tmp_path / "listener.sock", runtime)
+            finally:
+                released.join()
+            process.wait(timeout=3)
+            assert not smoke._pid_alive(process.pid)
+        else:
+            clock = iter((0, 0, 6))
+            monkeypatch.setattr(lifecycle.time, "monotonic", lambda: next(clock))
+            with pytest.raises(AssertionError, match="remains live after stop"):
+                lifecycle.assert_proxy_stopped(tmp_path, tmp_path / "listener.sock", runtime)
+            assert smoke._pid_alive(process.pid)
+    finally:
+        monkeypatch.setattr(lifecycle.time, "monotonic", real_monotonic)
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=3)
 
 
 @pytest.mark.parametrize("missing_ca", [False, True])

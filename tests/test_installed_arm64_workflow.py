@@ -55,15 +55,15 @@ def test_step_executor_preserves_github_default_and_explicit_bash_semantics(tmp_
     assert (tmp_path / "after.txt").exists() == (shell is None)
 
 
-def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
+def test_manual_route_separates_acquisition_and_pins_read_only_qualification():
     assert set(WORKFLOW.get("on", WORKFLOW.get(True))) == {"workflow_dispatch"}
     assert WORKFLOW["permissions"] == {"contents": "read"}
     assert set(WORKFLOW["jobs"]) == {"acquire-host", "installed-arm64", "public-install"}
     draft_route = "github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'"
     assert HOST_JOB["if"] == draft_route
-    assert HOST_JOB["permissions"] == {"contents": "write"}
+    assert HOST_JOB["permissions"] == {"contents": "read"}
     assert len(HOST_JOB["steps"]) == 2
-    acquisition = step("Read and bind the retained draft host inputs", HOST_JOB)
+    acquisition = step("Read and bind the retained host inputs", HOST_JOB)
     assert acquisition["shell"] == "bash"
     assert acquisition["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
     assert "tar " not in acquisition["run"]
@@ -87,12 +87,12 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert all("continue-on-error" not in item for job in WORKFLOW["jobs"].values() for item in job["steps"])
     checkout = next(item for item in JOB["steps"] if item.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"] == {"persist-credentials": False}
-    assert HOST["HOST_REVISION"] == "7a38dff14e7e4eacb4095da732ffe06d7c7c5796"
-    assert HOST["HOST_RELEASE_ID"] == "410991309"
-    assert HOST["HOST_ARCHIVE_ASSET_ID"] == "634976985"
-    assert HOST["HOST_CHECKSUM_ASSET_ID"] == "634976991"
-    assert HOST["HOST_SHA256"] == "8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f"
-    assert HOST["HOST_BYTES"] == "36529500" and HOST["GUEST_COMPATIBILITY"] == "v1"
+    assert HOST["HOST_REVISION"] == "c9ecb66b462c2ba0c499f2322f6cfc5c142012da"
+    assert HOST["HOST_RELEASE_ID"] == "414106024"
+    assert HOST["HOST_ARCHIVE_ASSET_ID"] == "644683987"
+    assert HOST["HOST_CHECKSUM_ASSET_ID"] == "644683989"
+    assert HOST["HOST_SHA256"] == "eab9b709b3e4c6b536614eeb6b422d12c2b55826149085f78c326b31637922af"
+    assert HOST["HOST_BYTES"] == "176869006" and HOST["GUEST_COMPATIBILITY"] == "v1"
     assert JOB["env"]["GUEST_REVISION"] == "8234a047d810d543d8c4d1cb1fa9859987be035b"
     assert JOB["env"]["GUEST_INDEX"] == "sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e"
     assert JOB["env"]["GUEST_ARCHIVE_SHA256"] == "2899415b6f4ec2eb3ab2ad3a6ef05c7cc5b9b2de14f9c623ff22b2478c8cb6f5"
@@ -106,7 +106,7 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert "if" not in step("Recheck the transferred host inputs before installation")
     assert JOB["steps"].index(downloads[0]) < JOB["steps"].index(step("Recheck the transferred host inputs before installation"))
     assert downloads[1]["with"] == {
-        "artifact-ids": "11747551391", "run-id": 38248401312,
+        "artifact-ids": "${{ env.GUEST_ARTIFACT_ID }}", "run-id": "${{ env.GUEST_RUN_ID }}",
         "repository": "craigbalding/safeyolo", "github-token": "${{ secrets.GITHUB_TOKEN }}",
         "merge-multiple": True, "path": "${{ runner.temp }}/retained-guest-oci",
     }
@@ -122,10 +122,39 @@ def test_manual_route_isolates_draft_access_and_pins_read_only_qualification():
     assert set(nightly["jobs"]) == {"guest-inputs", "systrap", "macos-package"}
     assert all("if" not in job for job in nightly["jobs"].values())
     preparation = step("Prepare the supported systrap host")["run"]
-    assert preparation == "tests/blackbox/prepare-systrap-host.sh --fixed-rootfs-ids"
+    assert preparation == "tests/blackbox/prepare-systrap-host.sh"
     source_preparation = next(item for item in nightly["jobs"]["systrap"]["steps"]
                               if item.get("name") == "Prepare the supported systrap host")
     assert source_preparation["run"] == "tests/blackbox/prepare-systrap-host.sh"
+
+
+@pytest.mark.parametrize("selection", ["original-g1", "reduced-33224", "unknown"])
+def test_guest_selection_binds_retained_artifact_and_archive(tmp_path, selection):
+    env_file = tmp_path / "github-env"
+    result = execute("Select the retained guest inputs", tmp_path, {
+        "GITHUB_ENV": str(env_file), "GUEST_SELECTION": selection,
+    })
+    if selection == "unknown":
+        assert result.returncode == 2 and not env_file.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    selected = dict(JOB["env"])
+    if env_file.exists():
+        selected.update(line.split("=", 1) for line in env_file.read_text().splitlines())
+    if selection == "original-g1":
+        assert selected == JOB["env"]
+        assert selected["GUEST_ARTIFACT_ID"] == "11747551391"
+        assert selected["GUEST_RUN_ID"] == "38248401312"
+    else:
+        assert {key: value for key, value in selected.items() if key.startswith("GUEST_")} == {
+            "GUEST_REVISION": "33224c9fc14beeb00be30eb71bdc09f91c5aa58b",
+            "GUEST_VERSION": "guest-2026-10-16.1082",
+            "GUEST_INDEX": "sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e",
+            "GUEST_ARCHIVE_SHA256": "234c1b1fb58e58822315bf896fcfaba2618ff0bcb98e73372edcf9dccbd24aad",
+            "GUEST_ARCHIVE_BYTES": "119728693",
+            "GUEST_ARTIFACT_ID": "12079186556",
+            "GUEST_RUN_ID": "38975155518",
+        }
 
 
 @pytest.fixture
@@ -142,7 +171,7 @@ def host_inputs(tmp_path, linux_workflow_stat):
     sums = tmp_path / "SHA256SUMS"
     sums.write_text(f"{sha}  safeyolo-linux-arm64-production.tar.gz\n")
     metadata = {
-        "id": 42, "draft": True, "tag_name": "host-" + HOST["HOST_REVISION"],
+        "id": 42, "draft": False, "tag_name": "host-" + HOST["HOST_REVISION"],
         "target_commitish": HOST["HOST_REVISION"],
         "assets": [{"id": 43, "name": "safeyolo-linux-arm64-production.tar.gz", "state": "uploaded"},
                    {"id": 44, "name": "SHA256SUMS", "state": "uploaded"}],
@@ -178,7 +207,7 @@ sys.stdout.buffer.write(Path(os.environ[files[endpoint]]).read_bytes())
 def transferred_host_inputs(tmp_path, host_inputs):
     metadata, env = host_inputs
     Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
-    result = execute("Read and bind the retained draft host inputs", tmp_path, env, HOST_JOB)
+    result = execute("Read and bind the retained host inputs", tmp_path, env, HOST_JOB)
     assert result.returncode == 0, result.stdout + result.stderr
     runner_temp = tmp_path / "consumer runner $(unused)"
     received = runner_temp / "retained-host"
@@ -213,7 +242,7 @@ def test_report_binding_uses_admitted_context_and_reaches_writer_and_upload(tmp_
     assert key == "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
     assert value == str(runner_temp / "installed-arm64-reports")
     Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
-    result = execute("Read and bind the retained draft host inputs", tmp_path, env, HOST_JOB)
+    result = execute("Read and bind the retained host inputs", tmp_path, env, HOST_JOB)
     assert result.returncode == 0, result.stdout + result.stderr
     shutil.copytree(tmp_path / "retained-host", runner_temp / "retained-host")
     result = execute("Recheck the transferred host inputs before installation", tmp_path, {
@@ -224,16 +253,16 @@ def test_report_binding_uses_admitted_context_and_reaches_writer_and_upload(tmp_
     assert JOB["steps"][-1]["with"]["path"] == "${{ env." + key + " }}"
 
 
-@pytest.mark.parametrize("defect", [None, "release-denied", "asset-denied", "checksums-denied", "public", "tag", "source",
+@pytest.mark.parametrize("defect", [None, "release-denied", "asset-denied", "checksums-denied", "draft", "tag", "source",
                                   "missing", "duplicate", "uploading", "digest", "size", "checksum-file",
                                   "release-id", "asset-id", "release-shape", "asset-shape", "asset-name"])
-def test_actual_draft_acquisition_rejects_wrong_inputs_before_transfer(tmp_path, host_inputs, defect):
+def test_actual_published_acquisition_rejects_wrong_inputs_before_transfer(tmp_path, host_inputs, defect):
     metadata, env = host_inputs
     if defect in {"release-denied", "asset-denied", "checksums-denied"}:
         env["DENIED_ENDPOINT"] = "repos/craigbalding/safeyolo/releases/" + (
             {"release-denied": "42", "asset-denied": "assets/43", "checksums-denied": "assets/44"}[defect])
-    elif defect == "public":
-        metadata["draft"] = False
+    elif defect == "draft":
+        metadata["draft"] = True
     elif defect == "tag":
         metadata["tag_name"] = "other-host"
     elif defect == "source":
@@ -263,7 +292,7 @@ def test_actual_draft_acquisition_rejects_wrong_inputs_before_transfer(tmp_path,
     elif defect == "checksum-file":
         Path(env["SUMS_FILE"]).write_text("wrong checksum\n")
     Path(env["RELEASE_JSON"]).write_text(json.dumps(metadata))
-    result = execute("Read and bind the retained draft host inputs", tmp_path, env, HOST_JOB)
+    result = execute("Read and bind the retained host inputs", tmp_path, env, HOST_JOB)
     assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
     assert not (tmp_path / "retained-host/package-info").exists()
     calls = [json.loads(line) for line in Path(env["API_CALLS"]).read_text().splitlines()]
@@ -275,7 +304,7 @@ def test_actual_draft_acquisition_rejects_wrong_inputs_before_transfer(tmp_path,
 
 @pytest.mark.parametrize("defect", [None, "missing-archive", "missing-checksums", "missing-metadata",
                                   "digest", "size", "checksum-file", "release-id", "asset-id", "source", "tag",
-                                  "public", "profile", "package-source", "platform", "compatibility"])
+                                  "draft", "profile", "package-source", "platform", "compatibility"])
 def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, transferred_host_inputs, defect):
     received, env = transferred_host_inputs
     archive = received / "safeyolo-linux-arm64-production.tar.gz"
@@ -292,12 +321,12 @@ def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, tran
         archive.write_bytes(archive.read_bytes()[:-1])
     elif defect == "checksum-file":
         (received / "SHA256SUMS").write_text("wrong checksum\n")
-    elif defect in {"release-id", "asset-id", "source", "tag", "public"}:
+    elif defect in {"release-id", "asset-id", "source", "tag", "draft"}:
         if defect == "asset-id":
             metadata["assets"][0]["id"] = 99
         else:
             key, value = {"release-id": ("id", 99), "source": ("target_commitish", "b" * 40),
-                          "tag": ("tag_name", "other-host"), "public": ("draft", False)}[defect]
+                          "tag": ("tag_name", "other-host"), "draft": ("draft", True)}[defect]
             metadata[key] = value
         metadata_file.write_text(json.dumps(metadata))
     elif defect in {"profile", "package-source", "platform", "compatibility"}:
@@ -321,7 +350,7 @@ def test_read_only_consumer_refuses_missing_or_tampered_transfers(tmp_path, tran
     assert "fixture-token" not in result.stdout + result.stderr
     if defect is None:
         assert {path.name for path in received.iterdir()} == {archive.name, "SHA256SUMS", "release.json", "package-info"}
-        assert "Draft release=42" in result.stdout and f"host_source={HOST['HOST_REVISION']}" in result.stdout
+        assert "Published release=42" in result.stdout and f"host_source={HOST['HOST_REVISION']}" in result.stdout
         assert all(b"fixture-token" not in path.read_bytes() for path in received.iterdir())
 
 
@@ -434,7 +463,7 @@ def test_logical_index_native_verification_and_actual_extraction(tmp_path, guest
     elif defect in {"source", "version", "compatibility", "selected-digest", "size"}:
         env[{"source": "GUEST_REVISION", "version": "GUEST_VERSION", "compatibility": "GUEST_COMPATIBILITY",
              "selected-digest": "GUEST_ARCHIVE_SHA256", "size": "GUEST_ARCHIVE_BYTES"}[defect]] = "wrong"
-    result = execute("Verify the logical G1 index and extract Linux ARM64 assets", tmp_path, env)
+    result = execute("Verify the selected index and extract Linux ARM64 assets", tmp_path, env)
     assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
     extracted = tmp_path / "verified-extracted-assets"
     if defect is not None:
@@ -551,8 +580,10 @@ elif name == 'getsubids':
             assert str(tools / "runsc") in (tmp_path / "safeyolo-runsc").read_text()
 
 
+@pytest.mark.parametrize("lifecycle_only", [False, True])
+@pytest.mark.parametrize("reduced", [False, True])
 @pytest.mark.parametrize("exit_code", [0, 1, 2])
-def test_installed_caller_retains_actual_output_and_failure(tmp_path, exit_code):
+def test_installed_caller_retains_actual_output_and_failure(tmp_path, exit_code, reduced, lifecycle_only):
     scripts = tmp_path / "tests/blackbox"
     scripts.mkdir(parents=True)
     runner = scripts / "run-installed-package.sh"
@@ -578,16 +609,98 @@ sys.exit(int(os.environ['SMOKE_EXIT']))
     result = execute("Run the installed production archive smoke", tmp_path, {
         "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
         "GITHUB_SHA": "c" * 40, "SMOKE_EXIT": str(exit_code),
+        "GUEST_REVISION": "33224c9fc14beeb00be30eb71bdc09f91c5aa58b" if reduced else JOB["env"]["GUEST_REVISION"],
+        "SECTION_SELECTION": "lifecycle" if lifecycle_only else "default",
         "PATH": f"{tools}:{os.environ['PATH']}",
     })
     assert result.returncode == exit_code, result.stdout + result.stderr
+    sections = (["--section", "lifecycle"] if lifecycle_only else
+                ["--section", "isolation", "--section", "workloads", "--section", "lifecycle"] if reduced else [])
     assert json.loads((tmp_path / "arguments.json").read_text()) == [
         "--package", str(tmp_path / "retained-host/safeyolo-linux-arm64-production.tar.gz"),
         "--sha256", HOST["HOST_SHA256"], "--platform-assets", str(tmp_path / "verified-extracted-assets"),
-        "--lane", "systrap",
-    ]
+        "--lane", "systrap", "--yes",
+    ] + sections
     output = (reports / "installed-smoke.txt").read_text()
     assert "test_direct_egress PASSED" in output and "test_home_persistence SKIPPED" in output
+
+
+@pytest.mark.parametrize("failure", [None, "prepare", "remap-rootfs"])
+def test_fresh_guest_mapping_uses_released_helpers_and_stops_on_failure(linux_workflow_stat, failure):
+    real_sudo = shutil.which("sudo")
+    if not real_sudo:
+        pytest.skip("guest sudo is required for the archive ownership control")
+    # Tiny inputs use a native filesystem so root ownership is enforced.
+    with tempfile.TemporaryDirectory(prefix="arm64-mapping-control-") as small:
+        tmp_path = Path(small)
+        host = tmp_path / "retained-host"
+        host.mkdir()
+        bundle = tmp_path / "safeyolo-linux-arm64-production"
+        (bundle / "bin").mkdir(parents=True)
+        helper = bundle / "bin/safeyolo"
+        helper.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+operation = args[3]
+with Path(os.environ['CALLS']).open('a') as output:
+    output.write(json.dumps(args) + '\\n')
+if operation == os.environ.get('MAPPING_FAILURE'):
+    sys.exit(1)
+if operation == 'prepare':
+    assert '--yes' in args and '--platform-assets' not in args
+    Path(args[args.index('--write-settings') + 1]).write_text(
+        '[linux]\\nuid_base=165536\\ngid_base=231072\\nhost_uid=1001\\nhost_gid=1001\\n')
+    print('{"state":"prepared"}')
+elif operation == 'remap-rootfs':
+    tree = Path(args[4])
+    assert tree.is_dir() and tree.parent.name.startswith('extract-')
+    assert tree.parent.stat().st_mode & 0o777 == 0o700
+    assert args[5:] == ['165536', '231072', '1001', '1001']
+else:
+    sys.exit(2)
+    ''')
+        helper.chmod(0o755)
+        with tarfile.open(host / "safeyolo-linux-arm64-production.tar.gz", "w:gz") as output:
+            output.add(bundle, arcname=bundle.name)
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        (tools / "stat").symlink_to(linux_workflow_stat)
+        sudo = tools / "sudo"
+        sudo.write_text(
+            '#!/bin/bash\n'
+            + f'if [[ $2 == mv ]]; then exec {shlex.quote(real_sudo)} "$@"; fi\n'
+            + '[[ $1 == -n ]] || exit 9\nshift\nexec "$@"\n'
+        )
+        sudo.chmod(0o755)
+        assets = tmp_path / "verified-extracted-assets"
+        (assets / "rootfs-tree").mkdir(parents=True)
+        (assets / "rootfs-tree/marker").write_text('owned fresh tree')
+        (assets / "cache-paths.txt").write_text('/var/cache/apt\n')
+        reports = tmp_path / "reports"
+        reports.mkdir()
+        calls = tmp_path / "calls"
+        subprocess.run([real_sudo, "-n", "chown", "100000:100000", str(assets / "rootfs-tree")], check=True)
+        try:
+            result = execute("Prepare the fresh guest for this host account", tmp_path, {
+                "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
+                "PATH": f"{tools}:{os.environ['PATH']}", "CALLS": str(calls),
+                "MAPPING_FAILURE": failure or "",
+            })
+        finally:
+            trees = [assets / "rootfs-tree", *tmp_path.glob("extract-*/rootfs-tree")]
+            for tree in trees:
+                if tree.exists():
+                    subprocess.run([real_sudo, "-n", "chown", f"{os.getuid()}:{os.getgid()}", str(tree)], check=True)
+        assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
+        operations = [json.loads(line)[3] for line in calls.read_text().splitlines()]
+        assert operations == (["prepare"] if failure == "prepare" else ["prepare", "remap-rootfs"])
+        assert (reports / "mapped-guest-metadata.txt").exists() == (failure is None)
+        assert (assets / "cache-paths.txt").read_text() == '/var/cache/apt\n'
+        if failure != "remap-rootfs":
+            assert (assets / "rootfs-tree/marker").read_text() == 'owned fresh tree'
+        else:
+            assert not (assets / "rootfs-tree").exists()
+            assert len(list(tmp_path.glob('extract-*/rootfs-tree/marker'))) == 1
 
 
 @pytest.mark.parametrize("failure,exit_code", [(None, 0), *[
