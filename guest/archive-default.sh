@@ -35,8 +35,10 @@ sudo -n "$(command -v tar)" --format=pax --numeric-owner --acls --xattrs --xattr
 mv -- "$temporary" "$destination/guest.tar.zst"
 cp -- "$assets/build-base.txt" "$destination/build-base.txt"
 read -r archive_bytes < <(wc -c < "$destination/guest.tar.zst")
-apparent_sizes=$(sudo -n du -sc --apparent-size -B1 -- "${files[@]/#/$assets/}")
-allocated_sizes=$(sudo -n du -sc -B1 -- "${files[@]/#/$assets/}")
+# Keep the selected GNU du when sudo replaces PATH, as with tar above.
+du_command=$(command -v du)
+apparent_sizes=$(sudo -n "$du_command" -sc --apparent-size -B1 -- "${files[@]/#/$assets/}")
+allocated_sizes=$(sudo -n "$du_command" -sc -B1 -- "${files[@]/#/$assets/}")
 read -r apparent_bytes _ <<< "${apparent_sizes##*$'\n'}"
 read -r allocated_bytes _ <<< "${allocated_sizes##*$'\n'}"
 printf '%s archive_bytes=%s apparent_bytes=%s allocated_bytes=%s\n' \
