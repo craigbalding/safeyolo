@@ -1461,6 +1461,22 @@ impl Scanner {
             .any(|rule| rule.applies(direction, scope)))
     }
 
+    /// A streamed body cannot satisfy a configured blocking request-body rule.
+    /// Observation mode and log-only rules retain their existing behavior.
+    pub(crate) fn request_body_unavailable(&self, options: Options) -> Result<Option<Decision>> {
+        if !options.block_request
+            || !self
+                .rules()?
+                .iter()
+                .any(|rule| rule.action == "block" && rule.applies(Direction::Request, "body"))
+        {
+            return Ok(None);
+        }
+        let mut decision = content_failure(Direction::Request, "body_unavailable");
+        decision.error_type = Some("BodyUnavailable");
+        Ok(Some(decision))
+    }
+
     /// Return every matching rule for one request body. The ordinary HTTP
     /// scanner stops at the first source ordered match; plumb retains the
     /// source service's complete finding list so log-only and block rules can

@@ -272,3 +272,10 @@ source = "proxy/src/http/upstream_h2.rs"
 pattern = 'const IDLE_TIMEOUT: Duration = Duration::from_secs\((?P<seconds>\d+)\);'
 docs = ["docs/TLS_CERTIFICATE.md"]
 must_contain = "after {seconds} seconds"
+
+[[assertion]]
+name = "required-request-body-inspection-buffer"
+source = "proxy/src/http_content.rs"
+pattern = 'pub const BUFFERED_BODY_THRESHOLD: usize = (?P<mebibytes>\d+) \* 1024 \* 1024;'
+docs = ["docs/TLS_CERTIFICATE.md"]
+must_contain = "{mebibytes} MiB"

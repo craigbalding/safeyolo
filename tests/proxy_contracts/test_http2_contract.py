@@ -629,14 +629,24 @@ def test_upload_response_wait_requires_origin_progress(monkeypatch):
     assert stalled.gettimeout() == 5
 
 
-def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_backend, tmp_path):
+@pytest.mark.parametrize("blocking_body_rule", [False, True])
+def test_http2_large_upload_preserves_streaming_and_required_body_checks(proxy_backend, tmp_path, blocking_body_rule):
     directory = tmp_path / proxy_backend
     directory.mkdir()
     _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     payload = bytes(range(256)) * 40960 + b"\xff"  # 10 MiB + 1 byte
+    policy = POLICY + '''
+[[scan_patterns]]
+name = "required-upload-body"
+pattern = "A"
+target = "request"
+scope = ["body"]
+action = "block"
+''' if blocking_body_rule else POLICY
     with origin_server(pem) as origin, launch_proxy(
-        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+        proxy_backend, directory, policy, tls=True, upstream_ca=public,
+        inspection={"block_request": True} if blocking_body_rule else None,
         native_policy=proxy_backend == "rust", stream_large_bodies="10m",
     ) as proxy:
         with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
@@ -673,8 +683,14 @@ def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_b
                     elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
                         pytest.fail(f"HTTP/2 upload failed: {event}")
             assert offset == len(payload)
-            assert status == "200"
-            assert response == b"hello"
+            assert status == ("403" if blocking_body_rule else "200"), response
+            if blocking_body_rule:
+                assert b"body_unavailable" in response
+            else:
+                assert response == b"hello"
+        if blocking_body_rule:
+            assert origin.requests == []
+            return
         assert len(origin.requests) == 1
         assert origin.requests[0]["body"] == payload
         assert origin.requests[0]["ended"] is True

@@ -611,12 +611,24 @@ impl RequestContext {
                 .iter()
                 .map(|(name, value)| (name.as_slice(), value.as_slice()))
                 .collect::<Vec<_>>();
-            inspection.result = Some(inspection.scanner.scan_http_request_bytes(
+            let decision = inspection.scanner.scan_http_request_bytes(
                 inspection::UrlInput::Text(&inspection.path),
                 &headers,
                 content,
                 inspection.options,
-            ));
+            );
+            inspection.result = Some(decision.and_then(|decision| {
+                // A head-scope decision still keeps its source order. Otherwise
+                // missing streamed content cannot stand in for a clean scan of
+                // the body required by a blocking rule.
+                if content.is_none() && decision.outcome == inspection::Outcome::NoMatch {
+                    return inspection
+                        .scanner
+                        .request_body_unavailable(inspection.options)
+                        .map(|unavailable| unavailable.unwrap_or(decision));
+                }
+                Ok(decision)
+            }));
         }
     }
 

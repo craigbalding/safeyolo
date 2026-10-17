@@ -553,6 +553,54 @@ action = "block"
         assert [row[":path"] for row in origin.requests] == ["/h2-mixed/gate/inspection-sibling/0"]
 
 
+@pytest.mark.parametrize("block_request,action", [(True, "block"), (False, "block"), (True, "log")])
+def test_unavailable_h2_body_cannot_bypass_a_required_blocking_scan(proxy_backend, tmp_path, block_request, action):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    policy = POLICY + f'''
+[[scan_patterns]]
+name = "required-body"
+pattern = "prefix!"
+target = "request"
+scope = ["body"]
+action = "{action}"
+'''
+    with origin_server(pem) as origin, launch_proxy(
+        proxy_backend, directory, policy, tls=True, upstream_ca=public,
+        inspection={"block_request": block_request},
+    ) as proxy, tls_tunnel(
+        proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+    ) as stream:
+        client = GatedClient(stream, origin.authority)
+        identifier = client.next_id
+        client.next_id += 2
+        client.results[identifier] = {"headers": {}, "body": bytearray(), "ended": False}
+        request = headers(origin.authority, "/required-body", [("content-length", str(10 * 1024 * 1024 + 1))])
+        request[0] = (":method", "POST")
+        client.connection.send_headers(identifier, request, end_stream=False)
+        client.connection.send_data(identifier, b"prefix!")
+        client.flush()
+        required = block_request and action == "block"
+        with origin.changed:
+            admitted = origin.changed.wait_for(lambda: bool(origin.requests), timeout=0.2 if required else 5)
+            assert admitted is not required, origin.requests
+        if required:
+            result = client.wait([identifier])[0]
+            assert result["headers"][":status"] == "403", result
+            assert b"body_unavailable" in result["body"]
+        else:
+            client.connection.reset_stream(identifier)
+            client.flush()
+        sibling = client.stage(1, "required-body-sibling", body=b"")
+        client.release(sibling, body=b"")
+        client.finish(sibling)
+        rows = [row for row in origin.requests if row[":path"] == "/required-body"]
+        assert len(rows) == (0 if required else 1)
+        assert not any(row.get("ended") for row in rows)
+
+
 @pytest.mark.parametrize("require_no_body", [True, False])
 def test_gateway_h2_buffers_only_when_applicable_contract_needs_body(proxy_backend, tmp_path, require_no_body):
     from tests.proxy_contracts.test_gateway_redirect import _fixture_state, _gateway_token
