@@ -2878,28 +2878,29 @@ mod tests {
         for caller in ["cli", "admin"] {
             for fault in ["unavailable", "conflict"] {
                 let temp = tempfile::tempdir().unwrap();
-                let config_path = temp.path().join("config.toml");
+                let root = temp.path().canonicalize().unwrap();
+                let config_path = root.as_path().join("config.toml");
                 std::fs::write(&config_path, "admin_port = 0\n").unwrap();
                 in_config(config_path.clone(), async {
-                    let mut child = spawn_vz_stop_test_helper(temp.path(), Some(fault)).await;
+                    let mut child = spawn_vz_stop_test_helper(root.as_path(), Some(fault)).await;
                     let pid = child.id().unwrap() as i32;
                     let birth = vm_process_token("alice", pid).unwrap();
                     let id = "ag-0123456789abcdef0123456789abcdef";
-                    std::fs::write(temp.path().join("policy.toml"), format!("[agents.alice]\nagent_id = '{id}'\n")).unwrap();
-                    std::fs::create_dir_all(temp.path().join("agents/alice/config-share")).unwrap();
-                    std::fs::write(temp.path().join("agents/alice/config-share/host-launch-context.json"), r#"{"generation":"0123456789abcdef0123456789abcdef"}"#).unwrap();
+                    std::fs::write(root.as_path().join("policy.toml"), format!("[agents.alice]\nagent_id = '{id}'\n")).unwrap();
+                    std::fs::create_dir_all(root.as_path().join("agents/alice/config-share")).unwrap();
+                    std::fs::write(root.as_path().join("agents/alice/config-share/host-launch-context.json"), r#"{"generation":"0123456789abcdef0123456789abcdef"}"#).unwrap();
                     crate::host_runs::save("alice", &serde_json::json!({"state":"running", "run_id":"0123456789abcdef0123456789abcdef", "backend_pid":pid, "backend_token":birth, "helper_instance":"owned-test"})).unwrap();
-                    let saved = ["agents/alice/vm.pid", "agents/alice/vm.token", "agents/alice/runtime.json"].map(|path| (path, std::fs::read(temp.path().join(path)).unwrap()));
-                    let sockets = ["data/vm-control/alice.sock", "data/shell-sockets/alice.sock"].map(|path| (path, std::fs::metadata(temp.path().join(path)).unwrap().ino()));
+                    let saved = ["agents/alice/vm.pid", "agents/alice/vm.token", "agents/alice/runtime.json"].map(|path| (path, std::fs::read(root.as_path().join(path)).unwrap()));
+                    let sockets = ["data/vm-control/alice.sock", "data/shell-sockets/alice.sock"].map(|path| (path, std::fs::metadata(root.as_path().join(path)).unwrap().ino()));
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                    std::fs::write(temp.path().join("data/ready.json"), format!(r#"{{"admin_port":{}}}"#, listener.local_addr().unwrap().port())).unwrap();
-                    std::fs::write(temp.path().join("data/admin_token"), "owned-test-token").unwrap();
+                    std::fs::write(root.as_path().join("data/ready.json"), format!(r#"{{"admin_port":{}}}"#, listener.local_addr().unwrap().port())).unwrap();
+                    std::fs::write(root.as_path().join("data/admin_token"), "owned-test-token").unwrap();
                     // Give the live test process the ordinary proxy identity so
                     // agent stop takes the CLI -> authenticated Admin route.
-                    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), temp.path().join("bin/safeyolo-proxy")).unwrap();
-                    crate::guest_commands::write_json(&temp.path().join("data/proxy-process.json"), &serde_json::json!({"pid":pid,"token":birth})).unwrap();
+                    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.as_path().join("bin/safeyolo-proxy")).unwrap();
+                    crate::guest_commands::write_json(&root.as_path().join("data/proxy-process.json"), &serde_json::json!({"pid":pid,"token":birth})).unwrap();
                     assert!(crate::host_commands::proxy_live());
-                    VZ_TEST_IDENTITY_FAULT.scope((pid, temp.path().join("identity-fault")), async {
+                    VZ_TEST_IDENTITY_FAULT.scope((pid, root.as_path().join("identity-fault")), async {
                         let config = crate::native_config::read(&config_path).unwrap();
                         let host = crate::command_centre::Host::from_config(&config).unwrap().unwrap();
                         let tasks = crate::tasks::Registry::default();
@@ -2924,7 +2925,6 @@ mod tests {
                             } else {
                                 crate::native_client::admin(&config_path, &format!("/admin/agents/{id}/stop"), hyper::Method::POST, serde_json::Value::Null, std::time::Duration::from_secs(20)).await.unwrap_err().to_string()
                             };
-                            eprintln!("stop {caller}/{fault}: {error}");
                             error
                         };
                         let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(20), async { tokio::join!(request, serve) }).await.unwrap();
@@ -2933,13 +2933,13 @@ mod tests {
                         assert!(error.contains(if fault == "unavailable" { "stage=proc_pidinfo return=0" } else { "stage=birth_mismatch" }), "{error}");
                         assert!(child.try_wait().unwrap().is_none());
                         assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
-                        assert_eq!(std::fs::read_to_string(temp.path().join("signals")).unwrap(), "1");
+                        assert_eq!(std::fs::read_to_string(root.as_path().join("signals")).unwrap(), "1");
                         for (path, bytes) in saved {
-                            assert_eq!(std::fs::read(temp.path().join(path)).unwrap(), bytes, "{path}");
+                            assert_eq!(std::fs::read(root.as_path().join(path)).unwrap(), bytes, "{path}");
                         }
                         for (path, inode) in sockets {
-                            assert_eq!(std::fs::metadata(temp.path().join(path)).unwrap().ino(), inode, "{path}");
-                            assert!(std::os::unix::net::UnixStream::connect(temp.path().join(path)).is_ok(), "{path}");
+                            assert_eq!(std::fs::metadata(root.as_path().join(path)).unwrap().ino(), inode, "{path}");
+                            assert!(std::os::unix::net::UnixStream::connect(root.as_path().join(path)).is_ok(), "{path}");
                         }
                         let guard = remove_stopped_vz_sockets("alice").unwrap_err().to_string();
                         assert!(guard.contains("live listener"), "{guard}");
