@@ -38,6 +38,7 @@ struct Observation {
     protocol: Option<Protocol>,
     terminal: Option<Result<StatusCode, ()>>,
     applied: Option<bool>,
+    evidence_finished: bool,
     request: Option<RequestContext>,
     request_parser_terminal: Option<bool>,
     request_body_empty: bool,
@@ -117,6 +118,7 @@ impl Completion {
                 protocol: Some(protocol),
                 terminal: None,
                 applied: None,
+                evidence_finished: false,
                 request: context,
                 request_parser_terminal,
                 request_body_empty,
@@ -216,7 +218,7 @@ impl Completion {
                 evidence_failed: false,
             },
         };
-        let mut failed = circuit.evidence_failed();
+        let failed = circuit.evidence_failed();
         if matches!(
             circuit,
             crate::circuit_runtime::ResponseOutcome::Exception { .. }
@@ -227,16 +229,34 @@ impl Completion {
             if let Some(recording) = &self.recording {
                 recording.skip_response();
             }
+            observation.evidence_finished = true;
             observation.applied = Some(failed);
             return failed;
         }
-        if let Some(capture) = &self.capture {
-            failed |= capture.finish(result.is_ok());
-        } else if let Some(recording) = &self.recording {
-            recording.finish(result.is_ok(), None, false);
-        }
         observation.applied = Some(failed);
         failed
+    }
+
+    /// Response delivery, memory accounting and circuit/grant effects do not
+    /// wait for an upload. Context and flow evidence need its validated request
+    /// metadata, so keep their bounded response capture until that owner ends.
+    fn finish_evidence(&self, observation: &mut Observation) {
+        let Some(mut failed) = observation.applied else {
+            return;
+        };
+        if observation.evidence_finished || observation.request.is_some() {
+            return;
+        }
+        // An unwinding evidence hook must retain failure without replaying it.
+        observation.evidence_finished = true;
+        observation.applied = Some(true);
+        let success = observation.terminal.is_some_and(|result| result.is_ok());
+        if let Some(capture) = &self.capture {
+            failed |= capture.finish(success);
+        } else if let Some(recording) = &self.recording {
+            recording.finish(success, None, false);
+        }
+        observation.applied = Some(failed);
     }
 
     /// Observe a latched result without replacing the connection driver's waker.
@@ -266,8 +286,10 @@ impl Completion {
             observation.request_failed |= failed;
             observation.request = None;
         }
+        self.finish_evidence(&mut observation);
         observation
             .applied
+            .filter(|_| observation.evidence_finished && observation.request.is_none())
             .map(|failed| failed || observation.request_failed)
     }
 
@@ -311,9 +333,12 @@ impl Completion {
             observation.request_failed |= failed;
             observation.request = None;
         }
+        self.finish_evidence(&mut observation);
         match observation.applied {
-            Some(failed) => Poll::Ready(failed || observation.request_failed),
-            None => Poll::Pending,
+            Some(failed) if observation.evidence_finished && observation.request.is_none() => {
+                Poll::Ready(failed || observation.request_failed)
+            }
+            _ => Poll::Pending,
         }
     }
 
@@ -361,6 +386,7 @@ impl Completion {
             observation.request_failed |= failed;
             observation.request = None;
         }
+        self.finish_evidence(&mut observation);
         match observation.request_parser_terminal {
             Some(true) => Poll::Ready(Ok(())),
             Some(false) => Poll::Ready(Err("request completion aborted".into())),
@@ -612,6 +638,7 @@ mod tests {
             let completion = Arc::new(Completion {
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
+                    evidence_finished: false,
                     request_parser_terminal: None,
                     request_body_empty: false,
                     terminal: None,

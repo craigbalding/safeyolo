@@ -1,5 +1,6 @@
 """Origin observations of intercepted H2 sessions and delayed request completion."""
 
+import sqlite3
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,6 +25,7 @@ from tests.proxy_contracts.test_http2_contract import (
     tls_tunnel,
 )
 from tests.proxy_contracts.test_native_network_policy import replace_policy
+from tests.proxy_contracts.test_request_streaming_inspection import flow_row
 
 
 class GatedClient:
@@ -121,6 +123,72 @@ def wait_staged(origin, paths, body):
         assert len({row["stream_id"] for row in rows}) == len(paths)
         assert {row["alpn"] for row in rows} == {"h2"}
         return rows
+
+
+@pytest.mark.parametrize("terminal", ["complete", "reset"])
+def test_early_response_retains_validated_upload_evidence(proxy_backend, tmp_path, terminal):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    policy = POLICY + '''
+[addons.test_context]
+target_hosts = ["127.0.0.1"]
+[addons.flow_store]
+compress_bodies = false
+'''
+    claim = [("x-safeyolo-test-context", "run=h2-gate;test=early-response;agent=alice")]
+    early_path = "/h2-mixed/gate/early-response/0"
+    with origin_server(pem, early_response=True) as origin:
+        with launch_proxy(
+            proxy_backend, directory, policy, tls=True, upstream_ca=public,
+            flow_store_enabled=True, agent_api=True,
+        ) as proxy, tls_tunnel(
+            proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+        ) as stream:
+            client = GatedClient(stream, origin.authority)
+            normal = client.stage(1, "normal-response", extra=claim)
+            wait_staged(origin, {"/h2-mixed/gate/normal-response/0"}, b"prefix!")
+            client.release(normal)
+            client.finish(normal)
+            assert flow_row(directory, "/h2-mixed/gate/normal-response/0")["request_body_blob"] == b"prefix!"
+
+            early = client.stage(1, "early-response", extra=claim)
+            rows = wait_staged(origin, {early_path}, b"prefix!")
+            client.finish(early)
+            with origin.changed:
+                assert not origin.changed.wait_for(lambda: rows[0].get("ended"), timeout=0.2)
+                assert bytes(rows[0]["body"]) == b"prefix"
+            if terminal == "complete":
+                client.release(early)
+                with origin.changed:
+                    assert origin.changed.wait_for(lambda: rows[0].get("ended"), timeout=5)
+                    assert bytes(rows[0]["body"]) == b"prefix!"
+            else:
+                client.connection.reset_stream(early[0], error_code=0)
+                client.flush()
+
+            following = client.stage(1, "after-early-response", extra=claim)
+            client.release(following)
+            client.finish(following)
+            assert origin.accepts == 1
+
+        with sqlite3.connect(directory / "flows.sqlite3") as connection:
+            records = connection.execute(
+                "SELECT path, request_body_size, request_body_blob, response_body_blob "
+                "FROM flows ORDER BY path",
+            ).fetchall()
+        expected_paths = {"/h2-mixed/gate/normal-response/0", "/h2-mixed/gate/after-early-response/0"}
+        if terminal == "complete":
+            expected_paths.add(early_path)
+        assert {row[0] for row in records} == expected_paths, records
+        assert len(records) == len(expected_paths), records
+        assert all(row[1:] == (7, b"prefix!", row[0].encode()) for row in records), records
+        phases = [row["details"]["phase"] for row in proxy.events("security.test_context")
+                  if row["details"].get("path") == early_path]
+        assert phases == (["request", "response"] if terminal == "complete" else []), phases
+        if terminal == "reset":
+            assert not rows[0].get("ended")
 
 
 @pytest.mark.parametrize("count", [2, 20, 30])
