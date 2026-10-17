@@ -6,13 +6,16 @@ and installer exits. Metadata checks retain the read-only archive comparison.
 
 import copy
 import hashlib
+import importlib.machinery
 import importlib.util
 import io
 import json
 import os
 import stat
 import subprocess
+import sys
 import tarfile
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
@@ -91,52 +94,114 @@ def public_shell(tmp_path):
     return work, reports, env
 
 
+@contextmanager
+def staged_onboarding(work):
+    """Load copied helpers, then restore the caller's import paths and modules."""
+    previous_path = sys.path[:]
+    previous_modules = {name: module for name, module in sys.modules.copy().items()
+                        if name == 'harness' or name.startswith('harness.')}
+    try:
+        for name in previous_modules:
+            del sys.modules[name]
+        # The real isolated caller sees only the staged namespace. A checkout
+        # package later on sys.path must not replace its copied helper.
+        harness_spec = importlib.machinery.PathFinder.find_spec('harness', [str(work / 'observer')])
+        sys.modules['harness'] = importlib.util.module_from_spec(harness_spec)
+        spec = importlib.util.spec_from_file_location('public_onboarding', work / 'observer/ubuntu_onboarding.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        for name in tuple(sys.modules):
+            if name == 'harness' or name.startswith('harness.'):
+                del sys.modules[name]
+        sys.modules.update(previous_modules)
+        sys.path[:] = previous_path
+
+
 @pytest.fixture
 def onboarding(public_shell, tmp_path, monkeypatch):
     work, _reports, env = public_shell
-    monkeypatch.syspath_prepend(str(work / 'observer'))
-    spec = importlib.util.spec_from_file_location('public_onboarding', work / 'observer/ubuntu_onboarding.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    home = tmp_path / 'runner-home'
-    home.mkdir()
-    monkeypatch.setattr(module.Path, 'home', lambda: home)
-    # The observer is ARM64-specific; only the host inventory is controlled.
-    machine = list(os.uname())
-    machine[-1] = 'aarch64'
-    monkeypatch.setattr(module.os, 'uname', lambda: os.uname_result(machine))
-    for key in list(os.environ):
-        if key.startswith('SAFEYOLO_') or key in ('GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'):
-            monkeypatch.delenv(key)
-    for key in ('PATH', 'PUBLIC_INSTALL_WORK'):
-        monkeypatch.setenv(key, env[key])
-    monkeypatch.setenv('HOME', str(home))
-    monkeypatch.setenv('XDG_CACHE_HOME', str(home / '.cache'))
-    monkeypatch.setattr(module.sys, 'argv', [str(spec.origin), '--host', os.uname().nodename,
-                        '--platform', 'linux-arm64', '--observation-dir', str(work / 'private'),
-                        '--observer-source', env['GITHUB_SHA']])
-    # No product starts in these refusal cases. Keep unrelated process scans
-    # and guest network probes out of this controlled observer test.
-    monkeypatch.setattr(module, 'processes', lambda: [])
-    monkeypatch.setattr(module, 'listeners', lambda _owned: [])
-    monkeypatch.setattr(module, 'witness', lambda *_args: {})
-    tools = Path(env['PATH'].split(os.pathsep)[0])
-    for name in ('sudo', 'safeyolo'):
-        (tools / name).write_text('#!/bin/sh\nexit 0\n')
-        (tools / name).chmod(0o755)
-    curl = tools / 'curl'
-    curl.write_text('#!/bin/bash\nset -eu\n'
-                    'printf "%s\\n" "$@" > "$PUBLIC_INSTALL_WORK/download-args"\n'
-                    '[[ ${DOWNLOAD_EXIT:-0} == 0 ]] || exit "$DOWNLOAD_EXIT"\n'
-                    'cp "$PUBLIC_INSTALL_WORK/installer" install-safeyolo.sh\n')
-    curl.chmod(0o755)
-    (work / 'installer').write_text('#!/bin/bash\n'
-        'printf "%s\\n" "$@" > "$PUBLIC_INSTALL_WORK/installer-args"\nexit 37\n')
-    previous_umask = os.umask(0o022)
+    with staged_onboarding(work) as module:
+        home = tmp_path / 'runner-home'
+        home.mkdir()
+        monkeypatch.setattr(module.Path, 'home', lambda: home)
+        # The observer is ARM64-specific; only the host inventory is controlled.
+        machine = list(os.uname())
+        machine[-1] = 'aarch64'
+        monkeypatch.setattr(module.os, 'uname', lambda: os.uname_result(machine))
+        for key in list(os.environ):
+            if key.startswith('SAFEYOLO_') or key in ('GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'):
+                monkeypatch.delenv(key)
+        for key in ('PATH', 'PUBLIC_INSTALL_WORK'):
+            monkeypatch.setenv(key, env[key])
+        monkeypatch.setenv('HOME', str(home))
+        monkeypatch.setenv('XDG_CACHE_HOME', str(home / '.cache'))
+        monkeypatch.setattr(module.sys, 'argv', [module.__file__, '--host', os.uname().nodename,
+                            '--platform', 'linux-arm64', '--observation-dir', str(work / 'private'),
+                            '--observer-source', env['GITHUB_SHA']])
+        # No product starts in these refusal cases. Keep unrelated process scans
+        # and guest network probes out of this controlled observer test.
+        monkeypatch.setattr(module, 'processes', lambda: [])
+        monkeypatch.setattr(module, 'listeners', lambda _owned: [])
+        monkeypatch.setattr(module, 'witness', lambda *_args: {})
+        tools = Path(env['PATH'].split(os.pathsep)[0])
+        for name in ('sudo', 'safeyolo'):
+            (tools / name).write_text('#!/bin/sh\nexit 0\n')
+            (tools / name).chmod(0o755)
+        curl = tools / 'curl'
+        curl.write_text('#!/bin/bash\nset -eu\n'
+                        'printf "%s\\n" "$@" > "$PUBLIC_INSTALL_WORK/download-args"\n'
+                        '[[ ${DOWNLOAD_EXIT:-0} == 0 ]] || exit "$DOWNLOAD_EXIT"\n'
+                        'cp "$PUBLIC_INSTALL_WORK/installer" install-safeyolo.sh\n')
+        curl.chmod(0o755)
+        (work / 'installer').write_text('#!/bin/bash\n'
+            'printf "%s\\n" "$@" > "$PUBLIC_INSTALL_WORK/installer-args"\nexit 37\n')
+        previous_umask = os.umask(0o022)
+        try:
+            yield module, home
+        finally:
+            os.umask(previous_umask)
+
+
+@pytest.mark.parametrize('preloaded', [False, True])
+@pytest.mark.parametrize('failure', [None, 'import', 'body'])
+def test_staged_onboarding_restores_checkout_imports(public_shell, preloaded, failure):
+    work, _reports, _env = public_shell
+    previous_path = sys.path[:]
+    previous_modules = {name: module for name, module in sys.modules.copy().items()
+                        if name == 'harness' or name.startswith('harness.')}
     try:
-        yield module, home
+        for name in previous_modules:
+            del sys.modules[name]
+        sys.path.insert(0, str(REPO / 'tests/blackbox'))
+        if preloaded:
+            importlib.import_module('harness.process_identity')
+            importlib.import_module('harness.host_listener')
+        expected_path = sys.path[:]
+        expected_modules = {name: module for name, module in sys.modules.copy().items()
+                            if name == 'harness' or name.startswith('harness.')}
+        if failure == 'import':
+            observer_path = work / 'observer/ubuntu_onboarding.py'
+            observer_path.write_text(observer_path.read_text() + '\nraise RuntimeError("observer import failed")\n')
+        with pytest.raises(RuntimeError, match='observer .* failed') if failure else nullcontext():
+            with staged_onboarding(work) as module:
+                helper = sys.modules['harness.process_identity']
+                assert Path(helper.__file__).parent == work / 'observer/harness'
+                assert module.child_exited is helper.child_exited
+                if failure == 'body':
+                    raise RuntimeError('observer body failed')
+        assert sys.path == expected_path
+        assert {name: module for name, module in sys.modules.copy().items()
+                if name == 'harness' or name.startswith('harness.')} == expected_modules
+        listener = importlib.import_module('harness.host_listener')
+        assert Path(listener.__file__) == REPO / 'tests/blackbox/harness/host_listener.py'
     finally:
-        os.umask(previous_umask)
+        for name in tuple(sys.modules):
+            if name == 'harness' or name.startswith('harness.'):
+                del sys.modules[name]
+        sys.modules.update(previous_modules)
+        sys.path[:] = previous_path
 
 
 @pytest.mark.parametrize('cached', [None, 'empty-store', 'blob', 'tree'])
