@@ -280,8 +280,11 @@ def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_pa
         assert ('dependencies could not be prepared' in result.stderr) == bool(prepare_exit)
 
 
-@pytest.mark.parametrize('failure', [None, 'setup', 'home', 'workspace', 'node', 'read-timeout'])
-def test_persistence_preparation_has_its_own_budget_and_preserves_read_assertions(tmp_path, failure):
+@pytest.mark.parametrize('offline,failure', [
+    (offline, failure) for offline in (False, True)
+    for failure in (None, 'setup', 'home', 'workspace', 'node', 'read-timeout')
+] + [(True, 'seed'), (True, 'no-node-input')])
+def test_persistence_preparation_has_its_own_budget_and_preserves_read_assertions(tmp_path, offline, failure):
     """Run the maintained test with cold setup longer than its scaled read timer."""
     repository = tmp_path / 'repository'
     suite = repository / 'tests/blackbox/host/lifecycle'
@@ -299,8 +302,13 @@ def pytest_collection_modifyitems(items):
 ''')
     tools = tmp_path / 'tools'
     tools.mkdir()
+    inputs = tmp_path / 'offline inputs $literal'
+    node_input = inputs / 'mise-node/installs/node/22/bin/node'
+    if failure != 'no-node-input':
+        node_input.parent.mkdir(parents=True)
+        node_input.write_text('verified Node test input')
     cli = tools / 'safeyolo'
-    cli.write_text(f'#!{sys.executable}\n' + '''import json, os, pathlib, shlex, sys, time
+    cli.write_text(f'#!{sys.executable}\n' + '''import json, os, pathlib, shlex, subprocess, sys, time
 root = pathlib.Path(os.environ['PROBE_ROOT'])
 failure = os.environ['PROBE_FAILURE']
 args = sys.argv[1:]
@@ -313,7 +321,17 @@ if args[:2] != ['agent', 'shell']:
     assert args[:2] in (['agent', 'stop'], ['agent', 'start'])
     sys.exit(0)
 command = args[-1]
-if 'prepare-guest-tests.sh' in command:
+if command.startswith('if [ -d '):
+    inputs = pathlib.Path(os.environ['SAFEYOLO_GUEST_TEST_INPUTS']) / 'mise-node'
+    assert shlex.split(command)[3] == str(inputs)
+    if failure == 'seed': sys.exit(31)
+    command = command.replace('/home/agent/.mise', shlex.quote(str(root / 'seeded-home')))
+    subprocess.run(['/bin/bash', '-c', command], check=True)
+    if inputs.is_dir():
+        assert (root / 'seeded-home/installs/node/22/bin/node').read_text() == 'verified Node test input'
+    else:
+        assert not (root / 'seeded-home').exists()
+elif 'prepare-guest-tests.sh' in command:
     time.sleep(0.75)
     if failure == 'setup': sys.exit(17)
     (root / 'pytest-ready').touch()
@@ -336,6 +354,9 @@ else:
     cli.chmod(0o755)
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith('PYTEST_') and key not in {'PYTHONPATH', 'PYTHONHOME'}}
+    environment.pop('SAFEYOLO_GUEST_TEST_INPUTS', None)
+    if offline:
+        environment['SAFEYOLO_GUEST_TEST_INPUTS'] = str(inputs)
     environment.update(PATH=f'{tools}:{Path(sys.executable).parent}:/usr/bin:/bin',
                        PYTHONPATH=str(Path('tests/blackbox').resolve()),
                        SAFEYOLO_CONFIG_DIR=str(tmp_path / 'instance'), PROBE_ROOT=str(repository),
@@ -343,13 +364,21 @@ else:
     result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short', '--timeout=0.5',
                              '--basetemp', str(tmp_path / 'pytest'), str(suite)],
                             cwd=repository, env=environment, text=True, capture_output=True, timeout=15)
-    assert result.returncode == (1 if failure else 0), result.stdout + result.stderr
+    assert result.returncode == (0 if failure in (None, 'no-node-input') else 1), result.stdout + result.stderr
     assert ('Timeout (>0.5s)' in result.stdout + result.stderr) == (failure == 'read-timeout')
     calls = [json.loads(line) for line in (repository / 'calls.jsonl').read_text().splitlines()]
     commands = [call[-1] for call in calls if call[:2] == ['agent', 'shell']]
+    seeds = [i for i, command in enumerate(commands) if command.startswith('if [ -d ')]
+    assert len(seeds) == int(offline)
+    if failure == 'seed':
+        assert not any(call[:2] == ['agent', 'stop'] for call in calls)
+        assert not any(command.startswith('mise use') for command in commands)
+        return
     assert any(call[:2] == ['agent', 'stop'] for call in calls)
     assert any(call[:2] == ['agent', 'start'] for call in calls)
     preparation = next(i for i, command in enumerate(commands) if 'prepare-guest-tests.sh' in command)
+    if offline:
+        assert seeds[0] < next(i for i, command in enumerate(commands) if command.startswith('mise use')) < preparation
     reads = [command for command in commands[preparation + 1:] if command.startswith(('cat ', 'node '))]
     if failure == 'setup':
         assert 'could not be prepared' in result.stderr + result.stdout and not reads

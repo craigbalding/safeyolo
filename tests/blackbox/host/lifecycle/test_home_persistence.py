@@ -12,6 +12,7 @@ read the marker back.
 
 import os
 import secrets
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -82,6 +83,17 @@ class TestAgentHomePersistence:
         workspace_name = f".safeyolo-persist-{marker_token}"
         host_marker = Path(__file__).resolve().parents[4] / workspace_name
         request.addfinalizer(lambda: host_marker.unlink(missing_ok=True))
+        if inputs := os.environ.get("SAFEYOLO_GUEST_TEST_INPUTS"):
+            # Offline fixtures can supply a verified Node installation and mise
+            # configuration. Seed once, before the normal mise command. Never
+            # restore tools during post-restart test-package preparation.
+            mise_inputs = shlex.quote(f"{inputs}/mise-node")
+            seed = self._safeyolo(
+                "agent", "shell", agent_name, "-c",
+                f"if [ -d {mise_inputs} ]; then mkdir -p /home/agent/.mise && "
+                f"cp -R {mise_inputs}/. /home/agent/.mise/; fi", timeout=60,
+            )
+            assert seed.returncode == 0, seed.stderr
         tool = self._safeyolo(
             "agent", "shell", agent_name, "-c",
             "mise use -g node@22 >&2 && node --version && command -v node", timeout=300,
