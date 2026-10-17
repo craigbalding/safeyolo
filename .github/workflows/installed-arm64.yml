@@ -7,12 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Public bootstrap and first launch, or retained archive runtime smoke
+        description: Newest retained inputs, public bootstrap, or explicit historical archive fixture
         type: choice
-        default: draft-offline
+        default: retained
         options:
+          - retained
           - draft-offline
           - public-install
+      host_run:
+        description: Optional exact default-branch production run for retained mode
+        type: string
+      guest_index:
+        description: Optional exact staged guest index for retained mode
+        type: string
       guest:
         description: Guest for retained archive mode (public-install uses the published default)
         type: choice
@@ -41,6 +48,61 @@ env:
   GUEST_COMPATIBILITY: v1
 
 jobs:
+  retained:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'retained'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+      - name: Prepare test instruments and the supported host
+        run: |
+          uv sync --frozen --group dev --python 3.13
+          scripts/install_oras.sh "$RUNNER_TEMP/test-tools"
+          printf '%s\n' "$RUNNER_TEMP/test-tools" >> "$GITHUB_PATH"
+          tests/blackbox/prepare-systrap-host.sh
+      - name: Freeze and download retained inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOST_RUN: ${{ inputs.host_run }}
+          GUEST_INDEX: ${{ inputs.guest_index }}
+        run: |
+          options=()
+          if [[ -n $HOST_RUN ]]; then options+=(--host-run "$HOST_RUN"); fi
+          if [[ -n $GUEST_INDEX ]]; then options+=(--guest-index "$GUEST_INDEX"); fi
+          .venv/bin/python scripts/select_blackbox_artifacts.py --platform linux-arm64 \
+            --output "$RUNNER_TEMP/selection" "${options[@]}"
+      - name: Run the maintained installed sections
+        shell: bash
+        env:
+          SECTION_SELECTION: ${{ inputs.section }}
+          SAFEYOLO_RUNSC_DEBUG: "1"
+        run: |
+          sections=()
+          if [[ $SECTION_SELECTION == lifecycle ]]; then sections=(--section lifecycle); fi
+          .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --yes \
+            --selection "$RUNNER_TEMP/selection/selection.json" \
+            --artifacts "$RUNNER_TEMP/retained-reports" "${sections[@]}"
+      - name: Retain reports and failed selections
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: installed-retained-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/selection/selection.json
+            ${{ runner.temp }}/retained-reports
+          retention-days: 30
+          if-no-files-found: warn
+
   acquire-host:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'
     runs-on: ubuntu-24.04

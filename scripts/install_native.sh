@@ -3,36 +3,43 @@
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
-bundle= platform_assets= command_dir=
+bundle= platform_assets= command_dir= guest_index=
 download_guest=true
 runtime_override=false
 host_arguments=()
 build_arguments=()
 while (($#)); do
   case "$1" in
-    --root|--bundle|--platform-assets|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
+    --root|--bundle|--platform-assets|--guest-index|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
       option=$1
       (($# >= 2)) || { echo "$option requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$option requires a nonempty value" >&2; exit 2; }
       case "$option" in
         --root) root=$2;; --bundle) bundle=$2;; --platform-assets) platform_assets=$2;;
         --command-dir) command_dir=$2;;
+        --guest-index) guest_index=$2;;
         --system-runsc) host_arguments+=("$option" "$2"); runtime_override=true;;
         *) build_arguments+=("$option" "$2");;
       esac
       shift 2;;
     --help)
-      echo 'Usage: install_native.sh [--root ROOT] [--bundle UNPACKED_BUNDLE] [--platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY] [--system-runsc PATH] [--yes]'
+      echo 'Usage: install_native.sh [--root ROOT] [--bundle UNPACKED_BUNDLE] [--guest-index sha256:DIGEST | --platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY] [--system-runsc PATH] [--yes]'
       echo 'From source: scripts/install_native.sh --root ROOT --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
       echo 'Installation checks the bundle, acquires its compatible default guest and creates configuration, trust and tokens internally. Default ROOT is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat preserves a matching installation without upgrading. Conflicting or older state requires a separate root. --platform-assets uses prepared/offline guest inputs; --no-guest-download supports contributor or proxy-only installation.'
       echo 'New Linux bundles include the complete pinned gVisor runtime. Host preparation explains required packages, unused UID/GID allocations, private-runtime access and AppArmor changes before consent. --yes accepts those changes; --system-runsc selects a complete compatible system payload. Proxy-only --no-guest-download skips preparation unless --system-runsc explicitly selects a runtime.'
       echo 'Installs the safeyolo command in HOME/.local/bin when that directory is already on PATH, otherwise /usr/local/bin (using sudo if needed). --command-dir selects another command location. Existing unrelated commands are preserved.'
+      echo '--guest-index pins first acquisition to an exact compatible OCI index. Repeated installation retains its installed guest; use guest upgrade for a later change.'
       exit 0;;
     --no-guest-download) download_guest=false; shift;;
     --yes) host_arguments+=(--yes); shift;;
     *) echo "Unknown argument: $1" >&2; exit 2;;
   esac
 done
+if [[ -n $guest_index ]]; then
+  [[ $guest_index =~ ^sha256:[0-9a-f]{64}$ && -z $platform_assets && $download_guest == true ]] || {
+    echo '--guest-index requires a SHA-256 index and guest download without --platform-assets' >&2; exit 2
+  }
+fi
 [[ -n $root ]] || { echo '--root requires a nonempty directory' >&2; exit 2; }
 source "$script_dir/native_package.sh"
 host_platform >/dev/null
@@ -163,12 +170,13 @@ if ! $existing; then
   install_lock=$lock_path
   staged_root=$(mktemp -d "$(dirname -- "$root")/safeyolo-install.XXXXXX")
   guest_host_arguments=()
+  [[ -z $guest_index ]] || guest_host_arguments+=(--index "$guest_index")
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     echo 'SafeYolo: checking and preparing the Linux host.' >&2
     "$bundle/bin/safeyolo" --root "$root" host prepare --package-root "$bundle" --installed-root "$root" \
       --write-settings "$staged_root/host-settings.toml" ${host_arguments[@]+"${host_arguments[@]}"}
     require_file "$staged_root/host-settings.toml"
-    guest_host_arguments=(--host-settings "$staged_root/host-settings.toml")
+    guest_host_arguments+=(--host-settings "$staged_root/host-settings.toml")
   fi
   if [[ -z $platform_assets ]] && $download_guest; then
     [[ ! -e $root/share && ! -L $root/share ]] || {

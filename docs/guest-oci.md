@@ -203,6 +203,70 @@ Guest-only upgrade and rollback use the same acquisition path. Broader host
 upgrade remains under #238. Installed/public proof and the unchanged-host/new-guest
 journey remain under #239.
 
+## Nightly consumer staging receipt
+
+Nightly blackbox selects a complete staged candidate independently of the
+promoted compatibility channel. The shared
+[`select_blackbox_artifacts.py`](../scripts/select_blackbox_artifacts.py)
+reads existing OCI version tags and attachments. It adds no release catalogue
+and never writes a tag. Host build selection and retention are separate from
+guest production and from public host release/Latest selection.
+
+The #1104 staging controller must attach one original build/staging receipt
+after it uploads and verifies all three archives and the complete index.
+Use `application/vnd.safeyolo.guest.staging.v1+json` as both the attachment's
+artifact type and the receipt layer's media type. The attachment's OCI
+`subject` must contain the index digest, size and media type. Package inventories
+can be other layers in this same attachment; do not add guest index children.
+
+The selector reads this subset of the receipt. #1104 owns the full provenance,
+inventories, attachment publication, staging completion and promotion guard.
+The example values must be replaced with the actual index, source, UTC staging
+completion and successful default-branch producer identities:
+
+```json
+{
+  "schema": "safeyolo.guest-staging/v1",
+  "index_digest": "sha256:<64 hexadecimal digits>",
+  "source_revision": "<full source commit>",
+  "staged_at": "2026-10-17T04:28:31+00:00",
+  "producer": {
+    "repository": "craigbalding/safeyolo",
+    "workflow": ".github/workflows/guest-oci.yml",
+    "run_id": 123,
+    "run_attempt": 1,
+    "job_id": 456
+  }
+}
+```
+
+The selector checks the attachment subject and descriptor hashes, the receipt's
+source/index, and the successful staging job in that exact workflow run and
+attempt. `staged_at` must fall inside that job's UTC interval. A retry of the
+same bytes preserves the original trustworthy receipt. A new index is a new
+candidate. Publication dates and legacy version dates do not supply staging
+completion evidence. The current historical publications lack this new receipt;
+they are not silently substituted into the nightly candidate path.
+
+The newest completed compatible staging time determines nightly selection.
+Uncompleted indexes remain visible in the selection report. Promotion age and
+earlier blackbox outcomes do not determine test input. The selector checks all
+three child/config identities and archive availability, then freezes this
+platform's exact index, child and archive descriptors. Native acquisition or
+offline verified archive extraction consumes those identities. A missing or
+invalid selected input fails; execution never resolves a guest tag again.
+
+For inspection, install ORAS through the existing publisher tooling. Replace
+`sha256:DIGEST` with the recorded index digest. From any working directory:
+
+```sh
+oras discover --artifact-type application/vnd.safeyolo.guest.staging.v1+json --format json --depth 1 ghcr.io/craigbalding/safeyolo-guest@sha256:DIGEST
+```
+
+The result identifies the digest-bound staging attachment. Missing staging
+input blocks nightly consumption. Testing a quarantined candidate does not
+promote it. Public-install smoke continues to select `compat-*` explicitly.
+
 ## Acquire a specific guest before installation
 
 On the consumer host, run `guest acquire` as the installation owner from any

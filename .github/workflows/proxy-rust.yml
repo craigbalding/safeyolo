@@ -59,7 +59,8 @@ jobs:
       revision: ${{ github.event.pull_request.head.sha || github.sha }}
       profile: production
       architecture: ${{ matrix.architecture }}
-      host_inputs: false
+      host_inputs: true
+      retain_packages: true
 
   focused-pr:
     name: Quick native checks (Ubuntu)

@@ -11,6 +11,8 @@ import platform
 import re
 import shutil
 import subprocess
+import tarfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,12 +132,47 @@ def save_debug(directory: Path) -> None:
         print("No usable debug runtime was produced by this CI job")
 
 
+def save_production(directory: Path) -> None:
+    """Bind the finished archive to this Actions producer, without publishing it."""
+    revision = commit()
+    selected_platform = host_platform()
+    name = f"safeyolo-{selected_platform}-production.tar.gz"
+    archive = directory / name
+    with tarfile.open(archive, "r:gz") as package:
+        stream = package.extractfile(name.removesuffix(".tar.gz") + "/package-info")
+        if stream is None:
+            raise ValueError("host archive has no package-info")
+        info = dict(line.split("=", 1) for line in stream.read().decode().splitlines())
+    if any(info.get(key) != value for key, value in {
+        "source_commit": revision, "profile": "production", "platform": selected_platform,
+    }.items()):
+        raise ValueError("archive source/profile/platform differs from this producer")
+    repository = os.environ["GITHUB_REPOSITORY"]
+    run_id = int(os.environ["GITHUB_RUN_ID"])
+    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    workflow = os.environ["GITHUB_WORKFLOW_REF"].removeprefix(repository + "/").split("@", 1)[0]
+    receipt = {
+        "schema": "safeyolo.host-build/v1", "source_revision": revision,
+        "platform": selected_platform, "profile": "production",
+        "built_at": datetime.now(UTC).isoformat(),
+        "producer": {"repository": repository, "workflow": workflow,
+                     "run_id": run_id, "run_attempt": attempt,
+                     "job_key": os.environ["GITHUB_JOB"], "runner_name": os.environ["RUNNER_NAME"]},
+        "archive": {"name": name, "sha256": sha256(archive), "size": archive.stat().st_size},
+    }
+    (directory / "SHA256SUMS").write_text(f"{receipt['archive']['sha256']}  {name}\n")
+    (directory / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("save-debug",))
+    parser.add_argument("operation", choices=("save-debug", "save-production"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    save_debug(args.output)
+    if args.operation == "save-debug":
+        save_debug(args.output)
+    else:
+        save_production(args.output)
 
 
 if __name__ == "__main__":

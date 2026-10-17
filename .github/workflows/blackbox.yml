@@ -4,211 +4,130 @@ name: Nightly native blackbox
 # Hardware-backed lanes run through the same tests on the KVM VPS and a
 # physical Apple Silicon Mac mini (VZ); see tests/blackbox/README.md.
 #
-# BB is intentionally not a per-PR check. A nightly run coalesces the day's
-# changes on the default branch, and workflow_dispatch permits any trusted ref
-# to be tested before merge or release.
+# Builds run in separate producers. BB is not a per-PR check. Each run tests
+# retained default-branch artifacts and records their age and the controller
+# source separately. Dispatch can pin a production run and a staged index.
 
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      host_run:
+        description: Optional exact default-branch production run
+        type: string
+      guest_index:
+        description: Optional exact completed staged guest index (sha256:DIGEST)
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: blackbox-native-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  guest-inputs:
-    uses: ./.github/workflows/guest-test-inputs.yml
-    with:
-      revision: ${{ github.sha }}
-      profile: production
-      architecture: arm64
-      host_inputs: false
-
   systrap:
     name: Installed guest sections and host continuity — Linux systrap
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      SAFEYOLO_RUNSC_DEBUG: "1"
-      CARGO_BUILD_JOBS: "1"
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install the pinned Rust toolchain
-        working-directory: proxy
-        run: |
-          rustup show active-toolchain
-          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
-
-      - name: Restore Rust dependency cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
-          workspaces: |
-            proxy -> target
-            guest/command -> target
-          cache-bin: false
-          cache-on-failure: true
-
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.9.24"
           prune-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.13
-
+      - name: Prepare test instruments
+        run: |
+          uv sync --frozen --group dev --python 3.13
+          scripts/install_oras.sh "$RUNNER_TEMP/test-tools"
+          printf '%s\n' "$RUNNER_TEMP/test-tools" >> "$GITHUB_PATH"
       - name: Prepare the supported systrap host
         run: tests/blackbox/prepare-systrap-host.sh
-
-      - name: Install source rootfs builder prerequisites
-        run: sudo -n apt-get install -y -qq --no-install-recommends skopeo umoci e2fsprogs rsync
-
-      - name: Prepare the matching native host bundle
-        run: |
-          scripts/build_host_packages.sh --directory "$RUNNER_TEMP/blackbox-native" \
-            --runtime-artifacts "$(dirname "$(command -v tmux)")"
-          printf 'SAFEYOLO_NATIVE_BUNDLE=%s\n' "$RUNNER_TEMP/blackbox-native" >> "$GITHUB_ENV"
-
-      - name: Build matching Linux guest rootfs
-        env:
-          OUTPUT_DIR: ${{ runner.temp }}/blackbox-platform
-        run: |
-          ./guest/build-rootfs.sh
-          test -x "$OUTPUT_DIR/rootfs-tree/bin/bash"
-          test -x "$OUTPUT_DIR/rootfs-tree/usr/local/bin/safeyolo-guest-init"
-          test "$(stat -c '%u:%g' "$OUTPUT_DIR/rootfs-tree")" = 100000:100000
-
-      - name: Prepare a private rootfs for the runner's owned IDs
+      - name: Freeze and download retained inputs
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOST_RUN: ${{ inputs.host_run }}
+          GUEST_INDEX: ${{ inputs.guest_index }}
         run: |
-          owned_base() {
-            getsubids "$@" "$USER" | awk '
-              $4 >= 65536 {
-                if ($3 <= 100000 && $3 + $4 >= 165536) preferred = 100000
-                if (!base || $3 < base) base = $3
-              }
-              END {
-                if (preferred) print preferred
-                else if (base) print base
-                else { print "The runner needs an owned range of 65536 subordinate IDs" > "/dev/stderr"; exit 1 }
-              }'
-          }
-          uid_base=$(owned_base)
-          gid_base=$(owned_base -g)
-          assets=$(mktemp -d "$RUNNER_TEMP/extract-XXXXXXXX")
-          sudo -n cp -a --reflink=auto "$RUNNER_TEMP/blackbox-platform/rootfs-tree" "$assets/"
-          cp "$RUNNER_TEMP/blackbox-platform/cache-paths.txt" "$assets/"
-          sudo -n "$SAFEYOLO_NATIVE_BUNDLE/bin/safeyolo" host remap-rootfs \
-            "$assets/rootfs-tree" "$uid_base" "$gid_base" "$(id -u)" "$(id -g)"
-          test "$(stat -c '%u:%g' "$RUNNER_TEMP/blackbox-platform/rootfs-tree")" = 100000:100000
-          test "$(stat -c '%u:%g' "$assets/rootfs-tree")" = "$uid_base:$gid_base"
-          printf 'SAFEYOLO_PLATFORM_ASSETS=%s\n' "$assets" >> "$GITHUB_ENV"
-
-      - name: Prepare once and run independent systrap sections
+          options=()
+          if [[ -n $HOST_RUN ]]; then options+=(--host-run "$HOST_RUN"); fi
+          if [[ -n $GUEST_INDEX ]]; then options+=(--guest-index "$GUEST_INDEX"); fi
+          .venv/bin/python scripts/select_blackbox_artifacts.py --platform linux-amd64 \
+            --output "$RUNNER_TEMP/selection" "${options[@]}"
+      - name: Run retained installed sections
+        env:
+          SAFEYOLO_RUNSC_DEBUG: "1"
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          ./tests/blackbox/run-installed.sh systrap --install-commit "$GITHUB_SHA"
-
-      - name: Upload platform reports and failure observations
+          .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --yes \
+            --selection "$RUNNER_TEMP/selection/selection.json" \
+            --artifacts tests/blackbox/artifacts/systrap
+      - name: Upload reports and failed attempts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: blackbox-systrap-${{ github.run_id }}
+          name: blackbox-systrap-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/selection/selection.json
             tests/blackbox/artifacts/**/*.json
             tests/blackbox/artifacts/**/*.xml
-          retention-days: 7
+          retention-days: 30
           if-no-files-found: warn
 
   macos-package:
     name: Installed host package — GitHub macOS
     runs-on: macos-latest
-    needs: guest-inputs
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install the pinned Rust toolchain
-        working-directory: proxy
-        run: |
-          rustup show active-toolchain
-          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
-
-      - name: Restore Rust dependency cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
-          workspaces: |
-            proxy -> target
-            guest/command -> target
-          cache-bin: false
-          cache-on-failure: true
-
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.9.24"
           prune-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.13
-
+      - name: Prepare test instruments
+        run: |
+          uv sync --frozen --group dev --python 3.13
+          brew install oras
       - name: Prepare macOS loopback test origin
         run: |
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
-
-      - name: Install host terminal runtime
-        run: |
-          brew install tmux
-          tmux -V
-
-      - name: Download Linux guest package inputs
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-guest-arm64-production
-          path: guest/command/target/release
-
-      - name: Download Linux guest terminal input
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-guest-terminal-arm64-production
-          path: ${{ runner.temp }}/guest-terminal
-
-      - name: Prepare native macOS VM package inputs
+      - name: Freeze and download retained inputs
+        shell: bash
         env:
-          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOST_RUN: ${{ inputs.host_run }}
+          GUEST_INDEX: ${{ inputs.guest_index }}
         run: |
-          make -C vm install-helper INSTALL_DIR="$RUNNER_TEMP/blackbox-vm"
-          install -m 0755 "$RUNNER_TEMP/guest-terminal/vsock-term" "$RUNNER_TEMP/blackbox-vm/vsock-term"
-          cp "$RUNNER_TEMP/guest-terminal/vsock-term.version" "$RUNNER_TEMP/guest-terminal/vsock-term.sha256" "$RUNNER_TEMP/blackbox-vm/"
-
-      - name: Install and test the native proxy
+          options=()
+          if [[ -n $HOST_RUN ]]; then options+=(--host-run "$HOST_RUN"); fi
+          if [[ -n $GUEST_INDEX ]]; then options+=(--guest-index "$GUEST_INDEX"); fi
+          .venv/bin/python scripts/select_blackbox_artifacts.py --platform darwin-arm64 \
+            --output "$RUNNER_TEMP/selection" "${options[@]}"
+      - name: Run retained installed sections
         env:
-          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
-          SAFEYOLO_NATIVE_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
-          SAFEYOLO_NATIVE_VM_ARTIFACTS: ${{ runner.temp }}/blackbox-vm
+          SAFEYOLO_RUNSC_DEBUG: "1"
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          # Artifact transfer preserves bytes but resets executable modes.
-          chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
-          ./tests/blackbox/run-installed-package.sh
-
-      - name: Upload proxy evidence
+          .venv/bin/python tests/blackbox/retained_inputs.py run --lane package \
+            --selection "$RUNNER_TEMP/selection/selection.json" \
+            --artifacts tests/blackbox/artifacts/macos-package
+      - name: Upload reports and failed attempts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: blackbox-macos-package-${{ github.run_id }}
+          name: blackbox-macos-package-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/selection/selection.json
             tests/blackbox/artifacts/**/*.json
             tests/blackbox/artifacts/**/*.xml
-          retention-days: 7
+          retention-days: 30
           if-no-files-found: warn

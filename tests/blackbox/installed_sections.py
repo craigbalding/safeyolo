@@ -321,7 +321,8 @@ def main() -> int:
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
     # Short roots also keep configured UDS paths within macOS's pathname limit.
-    directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path.home()))
+    directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path(os.environ.get(
+        "SAFEYOLO_BLACKBOX_STATE_PARENT", Path.home()))))
     print(f"Prepared product and section state: {directory}", flush=True)
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
                         operator_journey=args.operator_journey, prepared_config=prepared_config,
