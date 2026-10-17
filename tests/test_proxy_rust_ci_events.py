@@ -365,6 +365,41 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
 
 
+def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_targets():
+    job = rust_workflow()["jobs"]["contracts"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    shared = steps["Compile shared Rust contract targets"]
+    complete = steps["Compile Rust contract executables"]
+    assert shared["run"] == (
+        "../scripts/cargo_with_space.sh test --release --locked "
+        "--lib --bins --test version --no-run --timings --verbose"
+    )
+    assert complete["run"] == (
+        "../scripts/cargo_with_space.sh test --release --locked --no-run --timings --verbose"
+    )
+    for step in (shared, complete):
+        assert step["working-directory"] == "proxy"
+        assert step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 25 }}"
+        assert step["env"] == {"SAFEYOLO_PYTHON": "${{ github.workspace }}/.venv/bin/python"}
+        assert "if" not in step
+        assert not step.get("continue-on-error")
+    ordered = [steps[name] for name in (
+        "Compile production native executables", "Compile shared Rust contract targets",
+        "Compile Rust contract executables", "Retain Rust compilation timings",
+        "Start the Python-owned Coord fixture", "Test the Rust proxy",
+    )]
+    assert [job["steps"].index(step) for step in ordered] == sorted(
+        job["steps"].index(step) for step in ordered
+    )
+    timings = steps["Retain Rust compilation timings"]
+    assert timings["if"] == "always()"
+    assert timings["with"]["path"] == "proxy/target/cargo-timings/*.html"
+    assert timings["with"]["if-no-files-found"] == "ignore"
+    execution = steps["Test the Rust proxy"]["run"]
+    assert "../scripts/cargo_with_space.sh test --release --locked\n" in execution
+    assert "../scripts/cargo_with_space.sh build --release --locked --bins" in execution
+
+
 @pytest.mark.parametrize("macos", [False, True], ids=["linux", "macos"])
 @pytest.mark.parametrize("package_exit", [0, 19], ids=["prepared", "refused"])
 def test_overnight_harness_callers_receive_prepared_native_inputs(tmp_path, macos, package_exit):
