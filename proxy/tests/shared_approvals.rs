@@ -801,7 +801,7 @@ async fn unreadable_audit_does_not_validate_misbound_or_missing_committed_grants
         let fixture = Fixture::new().await;
         let id = fixture.network("worker", fixture.address).await.id();
         assert_eq!(fixture.resolve(&id, "approve").await.status, 200);
-        let mut policy: toml::Value = fixture.source().parse().unwrap();
+        let mut policy: toml::Value = toml::from_str(&fixture.source()).unwrap();
         if changed == "identity" {
             policy["agents"]["worker"]["agent_id"] = "ag-44444444444444444444444444444444".into();
         } else {
