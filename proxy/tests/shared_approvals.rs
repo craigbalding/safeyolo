@@ -819,6 +819,16 @@ async fn unreadable_audit_does_not_validate_misbound_or_missing_committed_grants
         }
         let source = toml::to_string(&policy).unwrap();
         fixture.apply(&source).await;
+        // The selected read drains the policy-update audit row before the
+        // fixture replaces the sink. Otherwise the writer can recreate the file.
+        assert_eq!(
+            fixture
+                .admin("GET", &format!("/admin/approvals/{id}"), None)
+                .await
+                .status,
+            200,
+            "{changed}"
+        );
         fs::rename(
             fixture.root.path().join("audit.jsonl"),
             fixture.root.path().join("held-audit.jsonl"),
