@@ -859,7 +859,9 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
         .open(fixture.root.path().join("audit.jsonl"))
         .unwrap();
     for key in ["hmac:second", "hmac:first"] {
-        writeln!(audit, "{}", event(credential_id, "credential.example", key)).unwrap();
+        audit
+            .write_all(format!("{}\n", event(credential_id, "credential.example", key)).as_bytes())
+            .unwrap();
     }
     let view = fixture
         .admin("GET", &format!("/admin/approvals/{credential_id}"), None)
@@ -919,7 +921,9 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
     // A pending network action cannot rescue conflicting credential evidence
     // with the same request ID. There is no committed grant for this request.
     for host in ["first.example", "second.example"] {
-        writeln!(audit, "{}", event(&id, host, "hmac:conflicting")).unwrap();
+        audit
+            .write_all(format!("{}\n", event(&id, host, "hmac:conflicting")).as_bytes())
+            .unwrap();
     }
     assert_eq!(
         fixture
@@ -966,9 +970,17 @@ async fn conflicting_network_audit_actions_remain_unavailable_without_committed_
         .find(|event| event["request_id"] == id && event["details"]["network_action"].is_object())
         .unwrap();
     changed["details"]["network_action"]["host"] = json!("different.example");
-    let mut audit = fs::OpenOptions::new().append(true).open(path).unwrap();
-    writeln!(audit, "{changed}").unwrap();
+    let mut audit = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    audit.write_all(format!("{changed}\n").as_bytes()).unwrap();
     drop(audit);
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|event| event == changed),
+        "conflicting action must be a complete retained JSONL record"
+    );
     let source = fixture.source();
     assert_eq!(
         fixture
