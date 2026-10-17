@@ -191,6 +191,31 @@ def test_gated_stream_keeps_snapshot_while_new_streams_observe_reload(proxy_back
         assert len(origin.requests) == 40
 
 
+def test_stalled_old_tls_handshake_does_not_hold_new_runtime_session(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    release = threading.Event()
+    with origin_server(pem, first_tls_gate=release) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+    ) as proxy, tls_tunnel(
+        proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+    ) as stream:
+        client = GatedClient(stream, origin.authority)
+        first = client.stage(1, "old-handshake")
+        assert origin.first_tls_hello.wait(timeout=5)
+        replace_policy(proxy, proxy_backend, directory, POLICY + "\n# new runtime\n")
+        second = client.stage(1, "new-handshake")
+        new = wait_staged(origin, {"/h2-mixed/gate/new-handshake/0"}, b"prefix!")
+        assert not release.is_set()
+        release.set()
+        old = wait_staged(origin, {"/h2-mixed/gate/old-handshake/0"}, b"prefix!")
+        assert old[0]["connection_id"] != new[0]["connection_id"]
+        client.release(first + second)
+        client.finish(first + second)
+
+
 def test_held_and_mixed_policy_streams_do_not_share_approval_or_budget(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()

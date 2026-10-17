@@ -22,7 +22,7 @@ struct Cached {
     runtime: Weak<Runtime>,
     provider: Option<String>,
     agent: Option<String>,
-    session: Arc<Session>,
+    session: Arc<tokio::sync::Mutex<Option<Arc<Session>>>>,
 }
 
 struct Session {
@@ -152,28 +152,37 @@ impl Sessions {
         tunnel: &Tunnel,
         live: Option<&crate::traffic_view::Exchange>,
     ) -> Result<Selected, Error> {
-        let mut sessions = self.0.lock().await;
-        sessions.retain(|cached| {
-            cached.runtime.strong_count() != 0 && !cached.session.sender.is_closed()
-        });
-        if let Some(cached) = sessions.iter().find(|cached| {
-            cached.runtime.ptr_eq(&Arc::downgrade(runtime))
-                && cached.provider.as_deref() == provider
-                && cached.agent.as_deref() == allowed.identity.request_agent()
-                && !cached
-                    .session
-                    .activity
-                    .state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .closed
-        }) {
+        let slot = {
+            let mut sessions = self.0.lock().await;
+            sessions.retain(|cached| cached.runtime.strong_count() != 0);
+            if let Some(cached) = sessions.iter().find(|cached| {
+                cached.runtime.ptr_eq(&Arc::downgrade(runtime))
+                    && cached.provider.as_deref() == provider
+                    && cached.agent.as_deref() == allowed.identity.request_agent()
+            }) {
+                cached.session.clone()
+            } else {
+                let session = Arc::new(tokio::sync::Mutex::new(None));
+                sessions.push(Cached {
+                    runtime: Arc::downgrade(runtime),
+                    provider: provider.map(str::to_owned),
+                    agent: allowed.identity.request_agent().map(str::to_owned),
+                    session: session.clone(),
+                });
+                session
+            }
+        };
+        // Single-flight applies to this admitted scope only. A stalled old
+        // handshake must not hold a new configuration snapshot's connection.
+        let mut cached = slot.lock().await;
+        if let Some(session) = cached.as_ref()
+            && !session.sender.is_closed()
+            && let Some(lease) = Lease::new(session.clone())
+        {
             if let Some(live) = live {
-                live.upstream_connection(cached.session.observation.clone());
+                live.upstream_connection(session.observation.clone());
             }
-            if let Some(lease) = Lease::new(cached.session.clone()) {
-                return Ok(Selected::Http2(lease));
-            }
+            return Ok(Selected::Http2(lease));
         }
         let outbound =
             open_outbound(runtime, allowed, provider, true, Some(tunnel), live, None).await?;
@@ -206,12 +215,7 @@ impl Sessions {
             activity,
             _driver: HttpTask::unobserved(task),
         });
-        sessions.push(Cached {
-            runtime: Arc::downgrade(runtime),
-            provider: provider.map(str::to_owned),
-            agent: allowed.identity.request_agent().map(str::to_owned),
-            session: session.clone(),
-        });
+        *cached = Some(session.clone());
         Ok(Selected::Http2(
             Lease::new(session).ok_or("upstream HTTP/2 session expired")?,
         ))

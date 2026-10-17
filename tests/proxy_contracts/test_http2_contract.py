@@ -101,7 +101,8 @@ def origin_certificate(directory):
 
 class Origin(socketserver.ThreadingTCPServer):
     def __init__(self, pem, protocols, *, race_window=0, max_streams=100, capture_frames=False,
-                 keylog=None, port=0, goaway_after=None, idle_timeout=5, response_bytes=0, early_response=False):
+                 keylog=None, port=0, goaway_after=None, idle_timeout=5, response_bytes=0,
+                 early_response=False, first_tls_gate=None):
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.context.load_cert_chain(pem)
         self.context.set_alpn_protocols(protocols)
@@ -124,6 +125,8 @@ class Origin(socketserver.ThreadingTCPServer):
         self.idle_timeout = idle_timeout
         self.response_bytes = response_bytes
         self.early_response = early_response
+        self.first_tls_gate = first_tls_gate
+        self.first_tls_hello = threading.Event()
         super().__init__(("127.0.0.1", port), OriginHandler)
 
     def get_request(self):
@@ -143,6 +146,11 @@ class OriginHandler(socketserver.BaseRequestHandler):
             self.server.next_connection_id += 1
             connection_id = self.server.next_connection_id
         try:
+            if connection_id == 1 and self.server.first_tls_gate is not None:
+                self.request.settimeout(5)
+                assert self.request.recv(1, socket.MSG_PEEK), "origin did not receive TLS ClientHello"
+                self.server.first_tls_hello.set()
+                assert self.server.first_tls_gate.wait(timeout=20), "TLS gate was not released"
             with self.server.context.wrap_socket(self.request, server_side=True) as stream:
                 stream.settimeout(5)
                 negotiated = stream.selected_alpn_protocol()
@@ -309,6 +317,8 @@ def origin_server(pem, protocols=("h2",), **settings):
     try:
         yield server
     finally:
+        if server.first_tls_gate is not None:
+            server.first_tls_gate.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
