@@ -1016,6 +1016,51 @@ def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_pa
     assert not sentinel.exists()
 
 
+@pytest.mark.parametrize("lane,selected,expected", [
+    ("systrap", [], ["isolation", "lifecycle"]),
+    ("kvm", [], ["isolation", "ingress"]),
+    ("systrap", ["isolation", "workloads", "lifecycle"], ["isolation", "workloads", "lifecycle"]),
+    ("", ["workloads"], None),
+])
+@pytest.mark.parametrize("exit_code", [0, 1, 2])
+def test_installed_package_forwards_sections_and_retains_failure(tmp_path, lane, selected, expected, exit_code):
+    runner = (Path(__file__).parent / "blackbox/run-installed-package.sh").read_text()
+    capture = tmp_path / "arguments.json"
+    consumer = tmp_path / "run-installed.sh"
+    consumer.write_text(
+        f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
+        f"Path({str(capture)!r}).write_text(json.dumps(sys.argv[1:]))\nsys.exit({exit_code})\n"
+    )
+    consumer.chmod(0o755)
+    start = runner.index('if [[ -n $LANE ]]; then\n    if')
+    end = runner.index('export SAFEYOLO_CONFIG_DIR="$PACKAGE_DIR/instance"')
+    probe = tmp_path / "sections.sh"
+    probe.write_text(
+        'uname() { echo Linux; }\n' + runner[:runner.index('PACKAGE_DIR=')]
+        + f'\nSCRIPT_DIR={shlex.quote(str(tmp_path))}\n'
+        + 'PACKAGE_DIR=owned\nREVISION=revision\nARTIFACTS=reports\n'
+        + runner[start:end]
+    )
+    archive = tmp_path / "host.tar.gz"
+    archive.touch()
+    args = ["--package", str(archive), "--sha256", "a" * 64]
+    if lane:
+        args += ["--lane", lane]
+    for section in selected:
+        args += ["--section", section]
+    result = subprocess.run(["bash", str(probe), *args], capture_output=True, text=True, timeout=10)
+    if expected is None:
+        assert result.returncode == 2 and "--section requires" in result.stderr
+        assert not capture.exists()
+    else:
+        assert result.returncode == exit_code, result.stdout + result.stderr
+        sections = [arg for section in expected for arg in ("--section", section)]
+        assert json.loads(capture.read_text()) == [
+            lane, "--prepared-config", "owned/prepared", "--install-commit", "revision",
+            *sections, "--artifacts", "reports/guest",
+        ]
+
+
 @pytest.mark.parametrize("lane,host", [
     ("vz", "Darwin"), ("systrap", "Linux"), ("kvm", "Linux"),
     ("", "Linux"), ("", "Darwin"), ("vz", "Linux"), ("systrap", "Darwin"),

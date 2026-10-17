@@ -452,43 +452,54 @@ substrate and listener; the host-only smoke does not claim one.
 ## Hosted Linux ARM64 archive qualification
 
 The manual [installed-arm64 workflow](../../.github/workflows/installed-arm64.yml)
-tests the retained production host from `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`
-with original guest `guest-2026-10-12.1` from `8234a047d810d543d8c4d1cb1fa9859987be035b`.
-It runs on the repository's `ubuntu-24.04-arm` pool with real systrap guests.
+tests the published production host from `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`
+on the repository's `ubuntu-24.04-arm` pool with real systrap guests.
+The default `draft-offline` mode retains its original name and selects original
+guest `guest-2026-10-12.1` from `8234a047d810d543d8c4d1cb1fa9859987be035b`.
+Select `guest=reduced-33224` to test the reduced `guest-2026-10-16.1082` guest
+from `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`. The separate `public-install`
+mode uses the published default guest and ignores this selection.
 
-The draft-access correction is prepared for Craig's decision. Merge and dispatch
-are held until he approves the permission increase. After approval, integrate
-the independently reviewed workflow before dispatch. The workflow
-uses draft release `410991309` for `host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796`,
-ARM64 production asset `634976985` and checksum asset `634976991`.
-The release must remain a draft with those unchanged assets.
-GitHub requires [push access to see draft releases](https://docs.github.com/en/rest/releases/releases#list-releases).
-The prepared acquisition job requests an ephemeral repository `GITHUB_TOKEN`
-with `contents: write` for the fixed release and asset GET requests. It has no
-checkout and runs no product, verifier, guest or publication command. It transfers
-only the hash/size-bound host archive, checksums and release metadata through an
-Actions artifact. Actual hosted token access remains unverified.
+The acquisition job uses a read-only repository token for fixed release and
+asset GET requests. Release `410991309` must be published with tag
+`host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796`, ARM64 production asset
+`634976985` and checksum asset `634976991`. The job has no checkout and runs no
+product, verifier, guest or publication command. It transfers only the
+hash/size-bound host archive, checksums and release metadata through an Actions
+artifact. The qualification job keeps `contents: read` and `actions: read`.
+It downloads that artifact by ID from the same run and rechecks the host inputs.
 
-The qualification job keeps `contents: read` and `actions: read`. It downloads
-the successful acquisition job's artifact by ID from the same run, rechecks H,
-and downloads the retained G1 layout from run `38248401312`, artifact `11747551391`.
-The G1 artifact expires on 10 January 2027. After Craig's approval and integration,
-use an authenticated operator terminal in this checkout:
+The original G1 layout is retained in run `38248401312`, artifact `11747551391`,
+which expires on 10 January 2027. The reduced layout is retained in normal guest
+build `38975155518`, artifact `12079186556`, which expires on 14 January 2027.
+Both selections verify the pinned logical index, source, version and archive
+before extraction. Extraction preserves Linux ownership and permissions.
+
+From an authenticated operator terminal in this checkout, dispatch the reduced
+guest qualification at the reviewed workflow ref:
 
 ```sh
-gh workflow run installed-arm64.yml --ref master
+gh workflow run installed-arm64.yml --ref master -f mode=draft-offline -f guest=reduced-33224
 ```
 
-The job verifies fixed host and guest identities before installation, preserves
-Linux filesystem metadata, and runs the maintained installed-package smoke.
+The reduced selection runs the maintained isolation, workloads and lifecycle
+sections. These include authorized and unknown-key guest SSH checks, a pinned
+SSH client command, package installation and removal, mediated traffic,
+direct-egress refusal, restart/state checks and owned cleanup. The original G1
+selection keeps its isolation/lifecycle smoke. Both run the existing installed
+host, HTTPS and continuity checks afterward. `run-installed-package.sh --section`
+can select maintained sections for an explicit `--lane`; omitted sections retain
+the wrapper's previous defaults.
+
 The `installed-arm64-RUN_ID` artifact contains individual isolation/root/home
-test outcomes, guest metadata, installed host/HTTPS/continuity reports and
-owned cleanup observations. Read those outcomes and any skips before claiming
-coverage. A failed draft download reports the missing job access and stops.
-The run builds only a verification tool; product files come from the archive.
-Python and uv provide test observers. This staged result does not establish
-anonymous public OCI acquisition, Python-free installation, guest updates or
-the transfer exceeding 2 GiB. The workflow publishes no host or guest artifacts.
+test outcomes, guest metadata, section reports, installed host/HTTPS/continuity
+reports and owned cleanup observations. Read each result and any skips before
+claiming coverage. A failed acquisition stops before installation. The run
+builds only the existing OCI verification tool; product files come from the
+retained archives. Python and uv provide test observers. This staged result does
+not establish anonymous public OCI acquisition, Python-free installation, guest
+updates, matched acquisition-through-first-task timing or a transfer exceeding
+2 GiB. The workflow publishes no host or guest artifacts.
 
 ## Owned origins and observation fidelity
 

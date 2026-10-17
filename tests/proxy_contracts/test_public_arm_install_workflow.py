@@ -37,13 +37,16 @@ def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
     dispatch = WORKFLOW['on']['workflow_dispatch']['inputs']['mode']
     assert dispatch['default'] == 'draft-offline'
     assert dispatch['options'] == ['draft-offline', 'public-install']
+    guest = WORKFLOW['on']['workflow_dispatch']['inputs']['guest']
+    assert guest['default'] == 'original-g1'
+    assert guest['options'] == ['original-g1', 'reduced-33224']
     assert PUBLIC['if'] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'public-install'"
     for name in ('acquire-host', 'installed-arm64'):
         assert WORKFLOW['jobs'][name]['if'] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'"
     assert PUBLIC['runs-on'] == 'ubuntu-24.04-arm'
     assert PUBLIC['permissions'] == {'contents': 'read'}
     assert 'needs' not in PUBLIC and 'strategy' not in PUBLIC
-    assert int(PUBLIC['timeout-minutes']) == 20
+    assert int(PUBLIC['timeout-minutes']) == 30
     assert PUBLIC['steps'][-1]['if'] == 'always()'
     for step in PUBLIC['steps']:
         assert '${{ secrets.' not in json.dumps(step)
