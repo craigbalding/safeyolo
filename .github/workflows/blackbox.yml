@@ -30,6 +30,10 @@ concurrency:
 
 jobs:
   systrap:
+    permissions:
+      contents: read
+      actions: read
+      packages: write
     name: Installed guest sections and host continuity — Linux systrap
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -68,6 +72,17 @@ jobs:
           .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --yes \
             --selection "$RUNNER_TEMP/selection/selection.json" \
             --artifacts tests/blackbox/artifacts/systrap
+      - name: Retain digest-bound installed guest result
+        if: ${{ always() && !cancelled() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORTS: tests/blackbox/artifacts/systrap
+        run: |
+          if [[ -f "$REPORTS/selection.json" ]]; then
+            printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            .venv/bin/python scripts/guest_release.py record-smoke --reports "$REPORTS" \
+              --gate-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+          fi
       - name: Upload reports and failed attempts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

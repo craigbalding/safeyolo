@@ -42,8 +42,10 @@ controls are implemented by the #211 publisher. The initial guest release,
 have been independently assessed for all three consumer platforms under
 [#239](https://github.com/craigbalding/safeyolo/issues/239).
 These results do not complete that issue's installed and independent-update
-proof or the publisher's ongoing retention obligations. The manual workflow
-supports the accepted retained G2 described below. Publication stays off by default.
+proof or the publisher's ongoing retention obligations. The nightly workflow
+automatically stages candidates and considers eligible candidates for promotion
+under the age and evidence gates described below. Manual dispatch uses the same
+gates. The retained G2 publication below is a historical record.
 
 ## OCI objects
 
@@ -136,9 +138,11 @@ consumer platform. `validate_children` checks all children in
 identities. `Descriptor::verify` checks a reader incrementally through EOF;
 `check_size` supports callers whose OCI client already verifies the hash.
 
-Pin publisher tooling to ORAS 1.3.4. Use `push --image-spec v1.1` with the custom
-platform config and typed archive, then `manifest index create` from exact
-child digests. Set the required index annotations and artifact type explicitly.
+Use the current stable ORAS release resolved and verified by
+`scripts/install_oras.sh`. Freeze its identity for the build. Use
+`push --image-spec v1.1` with the custom platform config and typed archive,
+then `manifest index create` from exact child digests. Set the required index
+annotations and artifact type explicitly.
 Do not combine `--config` with the mutually exclusive `--artifact-platform`.
 
 Guest acquisition uses pinned `oci-client` 0.18.0 with the existing ring TLS
@@ -212,15 +216,15 @@ reads existing OCI version tags and attachments. It adds no release catalogue
 and never writes a tag. Host build selection and retention are separate from
 guest production and from public host release/Latest selection.
 
-The #1104 staging controller must attach one original build/staging receipt
+The staging controller attaches one original build/staging receipt
 after it uploads and verifies all three archives and the complete index.
 Use `application/vnd.safeyolo.guest.staging.v1+json` as both the attachment's
 artifact type and the receipt layer's media type. The attachment's OCI
 `subject` must contain the index digest, size and media type. Package inventories
 can be other layers in this same attachment; do not add guest index children.
 
-The selector reads this subset of the receipt. #1104 owns the full provenance,
-inventories, attachment publication, staging completion and promotion guard.
+The selector reads this subset of the full build/staging receipt. The publisher
+retains the inventories and applies the promotion guard.
 The example values must be replaced with the actual index, source, UTC staging
 completion and successful default-branch producer identities:
 
@@ -354,350 +358,220 @@ remain under #239.
 
 ## Prepare and publish a default guest release
 
-The [manual repository workflow](../.github/workflows/guest-oci.yml) prepares
-releases without registry writes by default. The authorized one-time
-host release (H) and initial guest release (G1) have been published.
-The workflow's explicit `publish_initial_g1` mode supports only that original
-G1 and identical recovery retries. Craig's 16 October authorization for #237
-and its children supersedes #1003's publication hold within that scope.
-The `publish_retained_g2` mode publishes the accepted retained G2 and
-advances `compat-v1` without rebuilding guests or the host. No new publication
-approval is needed. Relay owns dispatch after exact source review and integrity
-checks. Preparation does not restart automatic host releases or change Latest.
+The [guest workflow](../.github/workflows/guest-oci.yml) builds and stages at
+**01:17 UTC each day**. Its independent promotion activity runs at **02:47 UTC**.
+GitHub can delay scheduled runs. The promotion clock uses elapsed UTC seconds,
+so a delay or a missed run does not change a candidate's age. A failed build
+does not prevent the promotion activity from considering an earlier candidate.
+Only the repository's default branch can run these publication activities.
 
-For a maintainer with repository Actions access, select the approved source
-revision in **Prepare default guest OCI release**, and enter a new guest version
-and its compatibility identifier. Leave all publication options disabled. The
-workflow builds amd64 and arm64 outputs with the maintained builders. The
-arm64 build also supplies the Mac kernel,
-initramfs and ext4 image. The builders use architecture-specific Debian manifest
-digests and write the actual preserved manifest identity to `build-base.txt`.
-That small build file becomes the child's build-base annotation; it is not a
-published catalogue or a file in the backend archive. Host-shipped executable
-source/profile receipts remain separate and unchanged.
+Each build resolves the official Debian **Trixie** index and both Linux
+architecture manifests once. The shared [resolver](../guest/resolve_inputs.py)
+also selects stable mise, gh, kernel and ORAS releases. The builders use this
+frozen record. They check official checksums, mise/ORAS checksum signatures
+and the kernel release signature. Resolution, verification, a missing
+architecture or an incompatible tool interface fails the build. There is no
+embedded old-version fallback. Actions commit pins and source lockfiles remain.
 
-Each successful archive step prints the compressed payload bytes, apparent
-filesystem bytes and allocated disk bytes separately. The apparent size of a
-sparse ext4 image includes unused capacity; it is not the compressed download
-size. The workflow returns `verified-guest-oci-layout`, containing standard OCI objects
-and all three opaque archives. The verifier checks every advertised child,
-config and blob, including distinct Mac/Linux arm64 archive identities.
-Preparation does not prove public retrieval, bootable platform content, native
-acquisition or the installed independent-update scenario.
+The rootfs builder uses signed `trixie`, `trixie-updates` and `trixie-security`
+repositories. APT update errors fail. The builder upgrades inherited packages,
+installs the guest packages and rejects remaining upgradable packages.
+Rootfs, kernel and initramfs outputs are rebuilt. Cached downloads must match
+the resolved identities before reuse. See the [build prerequisites](../guest/README.md#linux-setup).
 
-### Publish the retained reduced guest
+### Staging and promotion
 
-Both reduced-guest modes use the complete retained layout for
-`guest-2026-10-16.1082`. The input is Actions run `38975155518`, artifact
-`12079186556`, from guest source `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`.
-The artifact ZIP is 368559598 bytes with SHA-256
-`53ce993673eb4e118e256601d5a5f6db1c690c48e7a52774213636f09daf349a`.
-The workflow checks the pinned release index and every child, config and archive
-before registry authentication. Neither mode rebuilds guests or recreates the
-layout. The existing job-local repository token supplies registry access.
+Build/stage creates all three backend archives and an immutable
+`guest-YYYY-MM-DD.N` index. The automatic suffix includes the workflow run ID
+and attempt, so a fresh rebuild gets a new version. Archive output reports
+compressed bytes, apparent filesystem bytes and allocated disk bytes separately.
+A sparse image's apparent size includes unused capacity.
 
-#### Make the reduced guest the default
+The existing publisher uploads by digest, reads all uploaded archives back and
+runs the native OCI verifier. It then verifies the complete index and assigns
+only the immutable version tag. **Staging never moves `compat-v1`.** After the
+stage job succeeds, the receipt job attaches the original verified completion
+time and its exact run/job/attempt. A retry of the same retained index preserves
+that original trustworthy receipt. An unfinished or failed job cannot supply age.
+The index's real assembly timestamp is separate from `staged_at`.
 
-The `publish_reduced_default` mode creates the immutable
-`guest-2026-10-16.1082` tag and advances `compat-v1`. Normal guest discovery
-then selects the reduced guest. Existing installed selections stay unchanged
-until an explicit guest upgrade. G1, G2, other compatibility generations and
-rollback content remain available.
+Promotion selects the newest trusted complete candidate that has reached
+**172800 elapsed seconds** from `staged_at`. Newer quarantined candidates do not
+reset older clocks. Legacy versions without a trustworthy staging receipt are
+ineligible. Missing, malformed, future or mismatched receipts hold promotion.
+Neither a version date nor an upstream, commit or run-start date supplies age.
 
-After the reviewed workflow change is integrated on `master`, Relay runs the
-commands from the repository checkout with repository Actions access.
-Select only this publication mode. The workflow uses the original retained
-layout with `publish_guest_oci.sh --from-layout`; it needs no separate archives.
-The shared publisher fetches and verifies every uploaded child, config and
-archive in fresh local storage before setting either tag.
+The guard requires existing installed guest proof for the **same index** on
+Linux AMD64, Linux ARM64 and a physical Darwin/VZ host. It uses the maintained
+installed runner and compatible retained production host/helper packages.
+Package-only hosted macOS checks do not qualify as VZ guest proof. A qualifying
+result is reused; the same test need not run at both ends of quarantine.
+A missing or failed latest platform result holds promotion with a visible reason.
+No product rebuild, repackaging or OCI metadata rewrite occurs during promotion.
 
-Before dispatch, use pinned ORAS 1.3.4 to inspect the live targets from the
-maintainer's terminal. `compat-v1` can already point to the reduced index after
-an identical successful run. A version tag that exists must match its release.
-If a prior write has an uncertain result, inspect that run and these targets
-before deciding whether to retry. The publisher refuses a conflicting version.
+Before moving `compat-v1`, the guard verifies every staged archive again,
+rechecks the current channel and pause state, rejects replacement of a newer
+accepted selection, and records the decision. It moves the tag by index digest
+and verifies readback. All normal manual and scheduled promotion uses this guard.
+There is no age bypass or automatic security exception. The existing publication
+concurrency group serializes all versions and generations; direct maintainer
+writes must use that same exclusive publication window. OCI tags have no
+compare-and-swap operation. After an uncertain write, inspect the live tag and
+retained decision before retrying.
+
+Automatic guest promotion does not publish a host release, change Latest or
+upgrade an installed instance. Instances still use explicit
+[`guest upgrade` and `guest rollback`](#upgrade-or-roll-back-the-installed-default-guest).
+Prior version tags, indexes, archives and rollback content remain retained.
+
+### Manual run, inspection and recovery
+
+From a source checkout, a maintainer with authenticated `gh` and repository
+Actions access can request a fresh build/stage or consideration of eligible
+candidates. These commands run the integrated default-branch workflow:
 
 ```sh
-repository=ghcr.io/craigbalding/safeyolo-guest
-for tag in compat-v1 guest-2026-10-12.1 guest-2026-10-16.1; do
-  oras resolve "$repository:$tag" || exit 1
-done
-oras repo tags "$repository" || exit 1
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master -f activity=build-stage
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master -f activity=promote
 ```
 
-The prior G1 index is
-`sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e`.
-The prior G2 and initial `compat-v1` index is
-`sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b`.
+An optional `version=guest-YYYY-MM-DD.N` selects a new immutable build name.
+Manual dispatch retains the `compatibility` input; it defaults to `v1`.
+A conflicting existing name fails. Manual promotion applies the same age,
+content and platform checks as the schedule. No runner sleeps for 48 hours.
 
-Dispatch the default publication:
-
-```sh
-gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
-  -f version=guest-2026-10-16.1082 -f compatibility=v1 \
-  -f publish_reduced_default=true
-```
-
-Success prints `Published ghcr.io/craigbalding/safeyolo-guest:guest-2026-10-16.1082`
-and the `compat-v1` index digest. No guest or host is rebuilt. The guest source
-stays `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`.
-
-For the completed dispatch, set `run_id` to its actual Actions run ID.
-Require a successful run, then check anonymous discovery with an empty ORAS
-registry configuration. These commands run from the same terminal. `mktemp`
-creates only a small temporary configuration file.
+For inspection, install the publisher tools on a Linux maintainer machine with
+Python 3.11+, GnuPG, curl and tar. Run from the source checkout. The following
+command reads the current channel and its digest-bound receipts; it writes no tag:
 
 ```sh
-test "$(gh run view "$run_id" --repo craigbalding/safeyolo --json conclusion --jq .conclusion)" = success || exit 1
-registry_config=$(mktemp)
-printf '{"auths":{}}\n' > "$registry_config"
-expected=sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e
-for tag in guest-2026-10-16.1082 compat-v1; do
-  actual=$(oras resolve --registry-config "$registry_config" "$repository:$tag") || exit 1
-  test "$actual" = "$expected" || exit 1
-done
-test "$(oras resolve --registry-config "$registry_config" "$repository:guest-2026-10-12.1")" = sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e || exit 1
-test "$(oras resolve --registry-config "$registry_config" "$repository:guest-2026-10-16.1")" = sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b || exit 1
-rm -- "$registry_config"
-```
-
-Each new tag must resolve to the exact retained reduced index. The prior version
-tags must retain their original targets. Publication does not establish a new
-installation or timing result. Factory installation is a separate operation.
-
-#### Publish by digest only
-
-The `publish_reduced_guest` mode remains available for digest-only recovery
-and explicit-index consumers. It leaves the version and compatibility tags
-unchanged. Do not combine it with `publish_reduced_default`.
-
-After the reviewed workflow change is integrated on `master`, Relay can run
-this command from the repository checkout with repository Actions access:
-
-```sh
-gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
-  -f version=guest-2026-10-16.1082 -f compatibility=v1 \
-  -f publish_initial_g1=false -f publish_retained_g2=false \
-  -f publish_transport_fixture=false -f publish_reduced_guest=true \
-  -f publish_reduced_default=false
-```
-
-The workflow copies the full graph by digest. It creates no public version tag
-and preserves `compat-v1`, G1 and G2. A successful run returns
-`reduced-guest-publication-result` with the registry's index, child manifests,
-configs and the three tag targets before and after publication. The script
-compares these metadata bytes with the retained layout. It does not download
-the archives again. Read the run's status before using its result; the workflow
-also retains partial readbacks after a publication failure.
-
-For a completed publication run, set `run_id` to that dispatch's run ID and
-`readback` to a new directory outside the checkout. From the repository checkout,
-download and check the result:
-
-```sh
-test "$(gh run view "$run_id" --repo craigbalding/safeyolo --json conclusion --jq .conclusion)" = success
-gh run download "$run_id" --repo craigbalding/safeyolo \
-  --name reduced-guest-publication-result --dir "$readback"
-printf '%s  %s\n' \
-  14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e \
-  "$readback/public-index.json" | sha256sum --check
-for tag in compat-v1 guest-2026-10-12.1 guest-2026-10-16.1; do
-  cmp "$readback/before-$tag" "$readback/after-$tag" || exit 1
-done
-```
-
-The immutable guest input is
-`ghcr.io/craigbalding/safeyolo-guest@sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e`.
-Publication readback establishes registry availability. Acquisition, the first
-production edit/check and matched timing require their own runtime results.
-
-### Publish a nonbootable transport fixture
-
-For #239's single transfer over 2 GiB, `publish_transport_fixture` uses the
-retained, verified G2 layout as seed input. The workflow does not rebuild a
-guest. It keeps the G2 kernel and initramfs and generates a 2049 MiB random
-disk file. The two Linux members are small placeholders. These inputs satisfy
-the archive contract but cannot run as guests. Never boot this fixture.
-
-After the reviewed workflow change is integrated, Relay can dispatch `master`
-with repository Actions access. From the repository checkout, run:
-
-```sh
-gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
-  -f version=guest-2026-10-16.239 -f compatibility=v1 \
-  -f publish_initial_g1=false -f publish_retained_g2=false \
-  -f publish_transport_fixture=true
-```
-
-Select only one publication mode. The fixture mode verifies the seed layout
-and the generated layout before registry authentication. It uses the existing
-job-local repository token and publication serialization. ORAS copies the full
-fixture graph by digest without creating a public version tag or changing
-`compat-v1`, G1 or G2. Readback compares the small index, child manifests and
-configs and checks the three production tag targets before and after upload.
-It does not download the large archive again.
-
-The run returns `guest-transport-fixture-result`. Its `fixture.json` records
-the actual index, child and archive digests and sizes, source revision and seed
-identity. The `publication/` directory contains the small registry readbacks
-and tag targets. The result is retained after a publication failure when
-preparation succeeded; a partial result is not successful publication. Each
-generation uses new random bytes. Use that run's identities for the disposable
-native consumer; do not reuse identities from an earlier fixture. Public
-publication and the anonymous packaged native download remain separate proof
-steps. This mode neither changes production host artifacts nor proves guest
-runtime support.
-
-For local preparation, use native Linux builders for each guest architecture.
-Install the [builder prerequisites](../guest/README.md#linux-setup), plus GNU
-tar and zstd. Use a clean source checkout and its pinned Rust toolchain.
-Prepare amd64 outputs at `guest-build-amd64/` and arm64 outputs, including kernel
-and initramfs, at `guest-build-arm64/`, using `OUTPUT_DIR` with
-`guest/build-all.sh`. Set `ARCH` to the native architecture; set `BUILD_KERNEL=1`
-for the arm64 build. Do not archive an active or unfinished build. From the
-repository root, these commands write `guest-archives/` and `guest-oci/`, then
-validate the complete release without registry writes. Replace the example
-version and compatibility with the intended guest release values.
-
-```sh
-guest/archive-default.sh linux/amd64 guest-build-amd64 guest-archives/linux-amd64
-guest/archive-default.sh linux/arm64 guest-build-arm64 guest-archives/linux-arm64
-guest/archive-default.sh darwin/arm64 guest-build-arm64 guest-archives/darwin-arm64
 scripts/install_oras.sh "$HOME/.local/bin"
-cargo build --locked --manifest-path proxy/Cargo.toml --example verify_guest_oci
-ORAS="$HOME/.local/bin/oras" scripts/publish_guest_oci.sh \
-  --artifacts guest-archives --layout guest-oci --version guest-2026-10-12.1 \
-  --compatibility v1 --revision "$(git rev-parse HEAD)" \
-  --verifier proxy/target/debug/examples/verify_guest_oci
+PATH="$HOME/.local/bin:$PATH" scripts/publish_guest_oci.sh --inspect \
+  --reference ghcr.io/craigbalding/safeyolo-guest:compat-v1
 ```
 
-Success prints each platform's verified identities and size, followed by the
-complete index digest. GNU tar preserves Linux numeric owners, modes, links,
-access control lists and extended attributes. Sparse ext4 data uses GNU pax
-sparse metadata when the build filesystem reports holes. A matching GNU tar
-extraction restores that format. Filesystems that report a fully allocated
-source do not provide a sparse-map witness; test on a native filesystem before
-claiming sparse preservation. Missing `cache-paths.txt`, backend files or pinned
-build provenance stop preparation. An older cached build without provenance
-must be rebuilt; do not infer its input from the current Debian tag.
+Replace the reference with a version tag or `ghcr.io/craigbalding/safeyolo-guest@sha256:DIGEST`
+to inspect a retained candidate. The output contains source and run links,
+resolution/build/assembly/staging times, tool identities, per-architecture
+package inventories and promotion decisions. The staging attachment also holds
+the exact signed APT metadata, APT sources, archive keyring, builder versions,
+resolved inputs and kernel configuration. These records remain in GHCR after
+Actions logs and build artifacts expire. An inventory does not promise a
+bit-for-bit rebuild from future live APT repositories; the retained candidate
+provides the exact bytes.
 
-For initial G1 publication, use an authenticated release maintainer account with
-repository Actions access. First integrate the independently accepted workflow
-control into `master`, complete H's final package checks, and publish H. The
-initial G1 run then uses the repository-owned `GITHUB_TOKEN` with job-only
-`actions: read` for retained downloads and `packages: write` for publication.
-Package access and public anonymous retrieval still need verification during
-that execution.
+To retrieve the full inventory files, use `oras discover --artifact-type
+application/vnd.safeyolo.guest.staging.v1+json --format json --depth 1` with that
+index reference. Set `RECEIPT_DIGEST` to the returned attachment digest and
+`INVENTORY_DIR` to a new directory outside the checkout. Then run:
 
-From a terminal with authenticated `gh`, dispatch the integrated workflow:
+```sh
+oras pull --output "$INVENTORY_DIR" "ghcr.io/craigbalding/safeyolo-guest@$RECEIPT_DIGEST"
+```
+
+The Actions summary renders the receipts and version/package changes from the
+previous retained receipt. It is not the only copy. Failed promotion decisions
+and platform attempts are separate attachments; later results do not overwrite
+them. Resolver/build errors and held promotion failures appear in the workflow.
+Use GitHub Actions failure notifications for this workflow in the maintainer's
+GitHub notification settings. The independent hardware cron/mail deployment
+remains separate. To inspect recent runs:
+
+```sh
+gh run list --repo craigbalding/safeyolo --workflow guest-oci.yml --limit 10
+```
+
+During an incident or explicit rollback, disable the workflow first. This pauses
+both automatic guest activities. A promoter checks the workflow state before
+its tag write. A write that has already started can still finish. From the same authenticated maintainer terminal:
+
+```sh
+gh workflow disable guest-oci.yml --repo craigbalding/safeyolo
+```
+
+Wait for any current publication write to finish before rollback. Inspect the
+live tag and its decision if a write was already attempted. Set `ACCEPTED_INDEX`
+to a previously accepted index from the retained receipts. With the authorized
+GHCR publication credential, move only the compatibility tag and check readback:
+
+```sh
+oras tag "ghcr.io/craigbalding/safeyolo-guest@$ACCEPTED_INDEX" compat-v1
+oras resolve ghcr.io/craigbalding/safeyolo-guest:compat-v1
+```
+
+The returned digest must equal `ACCEPTED_INDEX`. Keep the workflow disabled
+until the incident is resolved. Deliberate resume restores the normal guard:
+
+```sh
+gh workflow enable guest-oci.yml --repo craigbalding/safeyolo
+```
+
+### Reuse installed platform evidence
+
+The hosted Linux retained-input jobs attach their existing installed reports
+to the selected index. The physical hardware path uses the same
+`tests/blackbox/retained_inputs.py` runner. Keep its `selection.json`,
+`retained-run.json`, `installed-inputs.json` and `guest/installed-sections.json`
+together. The installed isolation section must pass, including owned cleanup.
+The result records the physical host ID and the actual host/helper/guest bytes.
+
+For a completed physical run, an authorized repository operator can attach
+those existing reports from a Linux maintainer checkout with the publisher tools
+and GHCR write access. Set `REPORTS` to that report directory and `GATE_URL` to
+its retained repository result link. No product build or second test is invoked:
+
+```sh
+scripts/publish_guest_oci.sh --record-smoke --reports "$REPORTS" --gate-url "$GATE_URL"
+```
+
+The attachment records the authenticated repository operator's attestation.
+The guard checks the exact index, platform, compatible host identities and
+result. Missing physical access or reports holds promotion; source tests do not
+replace platform proof. Do not put credentials in receipts or report files.
+
+### Retained historical publications and transport fixture
+
+The former G1/G2/reduced-default publication switches are retired. Their
+accepted indexes and historical receipts remain available. They do not acquire
+quarantine age from their names or older synthetic midnight annotations.
+
+| Version | Source | Index | Original producer |
+| --- | --- | --- | --- |
+| `guest-2026-10-12.1` (G1) | `8234a047d810d543d8c4d1cb1fa9859987be035b` | `sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e` | [38248401312](https://github.com/craigbalding/safeyolo/actions/runs/38248401312); archives `11748025327`, `11746464998`; layout `11747551391` |
+| `guest-2026-10-16.1` (G2) | `ee291fba78ab34e4dca630d529ac8083ec29802f` | `sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b` | [38897452318](https://github.com/craigbalding/safeyolo/actions/runs/38897452318); archives `12044318477`, `12044582213`; layout `12045630940` |
+| `guest-2026-10-16.1082` | `33224c9fc14beeb00be30eb71bdc09f91c5aa58b` | `sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e` | [38975155518](https://github.com/craigbalding/safeyolo/actions/runs/38975155518); layout `12079186556` |
+
+The reduced layout's original ZIP was 368559598 bytes, SHA-256
+`53ce993673eb4e118e256601d5a5f6db1c690c48e7a52774213636f09daf349a`.
+The original G1 artifacts expire on 10 January 2027; G2 artifacts expire on
+14 January 2027. Retained registry content and original acceptance remain
+separate from those Actions retention dates. G1's reported archive sizes were
+229,345,953 bytes (Darwin ARM64), 233,300,853 bytes (Linux AMD64) and
+223,000,369 bytes (Linux ARM64). These sizes do not prove a transfer over 2 GiB,
+filesystem sparsity or installed guest boot. Keep supported releases out of
+registry cleanup jobs. Public anonymous retrieval and #239's installed-update
+proof retain their original scope. GHCR package visibility remains an owner
+setting; consumers use no personal registry token.
+
+The digest-only `transport-fixture` activity accepts explicit retained layout
+run, artifact ID and seed index inputs. It creates the existing nonbootable
+`guest-2026-10-16.239` fixture: the seed kernel/initramfs, a 2049 MiB random disk
+and small Linux placeholders. Never boot it. It writes only by digest and checks
+that all existing tags remain unchanged. It cannot move a compatibility channel.
+Each execution creates new random bytes; use that execution's `fixture.json`.
+For this exceptional transfer test, set `SEED_RUN`, `SEED_ARTIFACT` and
+`SEED_INDEX` to the verified retained layout identities, then dispatch:
 
 ```sh
 gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
-  -f version=guest-2026-10-12.1 -f compatibility=v1 -F publish_initial_g1=true
+  -f activity=transport-fixture -f transport_run="$SEED_RUN" \
+  -f transport_artifact="$SEED_ARTIFACT" -f transport_index="$SEED_INDEX"
 ```
 
-This run skips guest builds and preparation. It downloads only the retained
-artifacts from [run 38248401312](https://github.com/craigbalding/safeyolo/actions/runs/38248401312):
-archive artifacts `11748025327` and `11746464998`, and verified layout
-`11747551391`. They expire on 10 January 2027. The publisher, ORAS 1.3.4 installer
-and native verifier come from checked source
-`8234a047d810d543d8c4d1cb1fa9859987be035b`. Only the verifier is compiled; no guest
-payload is rebuilt or assigned the workflow control's newer revision.
-
-Before registry authentication, the workflow rejects conflicting version or
-compatibility inputs. It verifies the retained layout's complete descriptor
-chain, reconstructs the layout from the retained archives with the accepted
-publisher, and requires both layouts to resolve to
-`sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e`.
-Missing or corrupt inputs stop before uploads. Successful publication prints
-`Published ghcr.io/craigbalding/safeyolo-guest:guest-2026-10-12.1` with
-`compat-v1` pointing to that exact index. A failed run must be diagnosed before
-an identical recovery retry; the mode cannot select another version, run or
-registry repository.
-
-For G2 publication, use the same authenticated maintainer account and integrated,
-independently accepted workflow on `master`. Select `publish_retained_g2` alone:
-
-```sh
-gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
-  -f version=guest-2026-10-16.1 -f compatibility=v1 -F publish_retained_g2=true
-```
-
-The run skips guest builds and downloads the accepted outputs of
-[run 38897452318](https://github.com/craigbalding/safeyolo/actions/runs/38897452318):
-archive artifacts `12044318477` and `12044582213`, and verified layout
-`12045630940`. They expire on 14 January 2027. The guest payload revision stays
-`ee291fba78ab34e4dca630d529ac8083ec29802f`. The publisher, pinned ORAS installer
-and compiled native verifier use the workflow's selected source commit. That
-producer revision is separate from the retained guest payload revision.
-
-Before downloads, the workflow rejects conflicting modes, versions or compatibility
-inputs. Before registry authentication, it verifies the complete retained layout
-and reconstructs the same index from the retained archives. Both layouts must
-resolve to `sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b`.
-The job uses the same repository-owned token permissions as G1. Success prints
-`Published ghcr.io/craigbalding/safeyolo-guest:guest-2026-10-16.1` and verifies that
-`compat-v1` resolves to that index. G1 and rollback content remain retained.
-This mode accepts only that G2; normal preparation remains available for other
-versions. Public retrieval and the installed G1-to-G2 update remain separate
-proof under #239 and #238.
-
-The shared concurrency group serializes all versions and generations, with
-cancellation disabled. Direct publisher invocations must use the same exclusive
-publication window; OCI tags do not provide compare-and-swap.
-`--publish ghcr.io/craigbalding/safeyolo-guest` enables remote writes.
-`--plain-http` exists for disposable local registry tests; public GHCR uses TLS.
-
-The publisher uploads every child and its content by digest. It rejects
-conflicting guest-version reuse. It fetches all uploaded child/config/blob bytes
-into fresh storage and runs the native validator before uploading the full
-index. After index readback succeeds, it assigns the guest version and advances
-`compat-<C>`. Repeating identical input is allowed; conflicting reuse of a guest
-version fails. ORAS's creation annotation is fixed to the version date so retries
-do not change content identity. Any failed verification stops before promotion.
-An interrupted upload can leave untagged content. After checking the failed run
-and live tags, retry with the same source and artifacts or retained layout.
-The publisher never deletes prior version tags, indexes,
-manifests or blobs. It leaves other compatibility generations unchanged.
-
-After the first authorized publication, the package owner must make the GHCR
-package public in its settings and verify all three targets anonymously with
-an empty ORAS registry configuration. Ordinary Rust consumers require no
-personal token or registry account. See GitHub's
-[package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
-The retained run reported compressed default archives of 229,345,953 bytes for
-darwin/arm64, 233,300,853 bytes for linux/amd64 and 223,000,369 bytes for
-linux/arm64. Those sizes do not establish the transfer exceeding 2 GiB, native
-filesystem sparsity or complete installed-platform proof. Issue #239 records
-the independently accepted public G1 portions and remaining proof.
-Keep supported versions and rollback content out of registry cleanup jobs.
-GHCR's documented blob limit or timeout must be observed with an actual default
-payload before considering another distribution scheme.
-
-The focused producer/publisher tests use real ORAS 1.3.4, skopeo's reference
-parser and a disposable local Distribution API fixture. From the source checkout with the frozen test
-environment, the installed ORAS and compiled native example above, run:
-
-```sh
-ORAS="$HOME/.local/bin/oras" GUEST_OCI_VERIFIER="$PWD/proxy/target/debug/examples/verify_guest_oci" \
-  uv run --frozen --no-sync pytest -q tests/test_guest_oci_publisher.py \
-  --basetemp="$HOME/guest-oci-tests"
-```
-
-The tests check archive metadata, real OCI creation, upload/readback ordering,
-immutable-version conflicts/retries, incomplete and corrupt content refusal,
-older-channel retention and default-off retained-release workflow controls. The
-workflow controls also execute pre-authentication validation with native-verified
-fixtures for G1, G2 and the retained reduced guest. They check source/run/artifact bindings and challenge
-conflicting modes, versions, compatibility, and missing or corrupt retained inputs.
-The default-publication controls execute the workflow command against the local
-registry. They check complete readback before promotion, immutable conflicts,
-identical retries, recovery between version and channel writes, and preservation
-of prior versions and other generations. The
-sparse-map test reports a skip if the filesystem cannot supply its required sparse fixture.
-The metadata test stages only a few KiB on the guest filesystem to exercise
-numeric ownership; archives and registry data use the disk-backed basetemp.
-These are source/local observations, not public or booted-platform acceptance.
+The result keeps the fixture identity and partial publication readbacks after a
+failure. Digest-only transport does not establish a bootable guest or anonymous
+native transfer. The direct `publish_guest_by_digest.sh` path also writes only
+by digest; it has no channel-write operation.
 
 ## Local contract check
 

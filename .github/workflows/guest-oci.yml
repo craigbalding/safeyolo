@@ -1,54 +1,70 @@
 name: Prepare default guest OCI release
 
 on:
+  schedule:
+    - cron: '17 1 * * *'
+    - cron: '47 2 * * *'
   workflow_dispatch:
     inputs:
-      version:
-        description: Immutable guest version (guest-YYYY-MM-DD.N)
-        required: true
-        type: string
+      activity:
+        description: Build and stage, consider eligible promotion, or copy a digest-only transport fixture
+        type: choice
+        options: [build-stage, promote, transport-fixture]
+        default: build-stage
       compatibility:
-        description: Guest compatibility identifier
+        description: Guest compatibility identifier (nightly uses v1)
+        type: string
         required: true
         default: v1
+      version:
+        description: Optional immutable guest-YYYY-MM-DD.N for this fresh build
         type: string
-      publish_initial_g1:
-        description: Publish only the retained original guest-2026-10-12.1 after host publication
-        required: false
-        default: false
-        type: boolean
-      publish_retained_g2:
-        description: Publish the accepted retained guest-2026-10-16.1 without rebuilding guests
-        required: false
-        default: false
-        type: boolean
-      publish_transport_fixture:
-        description: Generate and publish the nonbootable >2 GiB transport fixture by digest only
-        required: false
-        default: false
-        type: boolean
-      publish_reduced_guest:
-        description: Publish retained guest-2026-10-16.1082 by digest without changing production tags
-        required: false
-        default: false
-        type: boolean
-      publish_reduced_default:
-        description: Publish retained guest-2026-10-16.1082 with its version tag and advance compat-v1
-        required: false
-        default: false
-        type: boolean
+      transport_run:
+        description: Exact retained layout producer run (transport fixture only)
+        type: string
+      transport_artifact:
+        description: Exact retained layout artifact ID (transport fixture only)
+        type: string
+      transport_index:
+        description: Exact retained seed index digest (transport fixture only)
+        type: string
 
 permissions:
   contents: read
 
-# Serialize the repository's guest version/channel writes, including retries.
+# All guest version/channel writes share the existing serialization.
 concurrency:
   group: default-guest-publication
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event.schedule == '17 1 * * *' || inputs.activity == 'build-stage') }}
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          sudo apt-get -o APT::Update::Error-Mode=any update -qq
+          sudo apt-get install -y -qq skopeo gnupg dirmngr
+      - id: inputs
+        name: Freeze common stable inputs for both architectures
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          python3 guest/resolve_inputs.py resolve --base --output "$RUNNER_TEMP/inputs.json"
+          version=${REQUESTED_VERSION:-guest-$(date -u +%Y-%m-%d).$((GITHUB_RUN_ID * 1000 + GITHUB_RUN_ATTEMPT))}
+          [[ $version =~ ^guest-[0-9]{4}-[0-9]{2}-[0-9]{2}\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: guest-resolved-inputs
+          path: ${{ runner.temp }}/inputs.json
+          if-no-files-found: error
+
   build:
-    if: ${{ !inputs.publish_initial_g1 && !inputs.publish_retained_g2 && !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -56,27 +72,31 @@ jobs:
     runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: guest-resolved-inputs
+          path: ${{ runner.temp }}/resolved
       - name: Install maintained builder and archive prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            skopeo umoci e2fsprogs rsync curl jq zstd
+          sudo apt-get -o APT::Update::Error-Mode=any update -qq
+          sudo apt-get install -y -qq --no-install-recommends skopeo umoci e2fsprogs rsync curl jq zstd
       - name: Install ARM kernel and initramfs prerequisites
         if: matrix.architecture == 'arm64'
         run: |
           sudo apt-get install -y -qq --no-install-recommends \
-            build-essential bc flex bison libelf-dev libssl-dev \
+            build-essential bc flex bison libelf-dev libssl-dev gnupg dirmngr \
             gcc-aarch64-linux-gnu busybox-static pax-utils cpio pkg-config
-      - name: Build the finished default guest outputs
+      - name: Build fresh finished default guest outputs
         env:
           ARCH: ${{ matrix.architecture }}
           BUILD_KERNEL: ${{ matrix.architecture == 'arm64' && '1' || '0' }}
+          GUEST_INPUTS: ${{ runner.temp }}/resolved/inputs.json
           OUTPUT_DIR: ${{ runner.temp }}/guest-build
           TMPDIR: ${{ runner.temp }}/guest-work
         run: |
           mkdir -p "$TMPDIR"
           ./guest/build-all.sh
-      - name: Archive backend files and report compressed sizes
+      - name: Archive backend files and retain build origins
         env:
           ARCH: ${{ matrix.architecture }}
         run: |
@@ -84,210 +104,185 @@ jobs:
           if [[ "$ARCH" == arm64 ]]; then
             ./guest/archive-default.sh darwin/arm64 "$RUNNER_TEMP/guest-build" "$RUNNER_TEMP/archives/darwin-arm64"
           fi
+          mkdir -p "$RUNNER_TEMP/provenance/$ARCH"
+          cp -a "$RUNNER_TEMP/guest-build/provenance/." "$RUNNER_TEMP/provenance/$ARCH/"
+          cp "$RUNNER_TEMP/guest-build/build-base.txt" "$RUNNER_TEMP/provenance/$ARCH/"
+          printf '%s\n' "$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/provenance/$ARCH/run-attempt.txt"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: guest-archives-${{ matrix.architecture }}
-          path: ${{ runner.temp }}/archives
+          path: |
+            ${{ runner.temp }}/archives
+            ${{ runner.temp }}/provenance
           if-no-files-found: error
+      - name: Retain failed build origins
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: failed-guest-build-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/guest-build/provenance
 
-  prepare:
-    needs: build
+  stage:
+    needs: [resolve, build]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      index: ${{ steps.stage.outputs.index }}
+      staged_at: ${{ steps.stage.outputs.staged_at }}
+      run_attempt: ${{ steps.stage.outputs.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: guest-archives-*
           merge-multiple: true
-          path: ${{ runner.temp }}/archives
-      - name: Install pinned ORAS
+          path: ${{ runner.temp }}/built
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: guest-resolved-inputs
+          path: ${{ runner.temp }}/built/provenance
+      - name: Install the frozen verified publisher
+        env:
+          GUEST_INPUTS: ${{ runner.temp }}/built/provenance/inputs.json
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          cp "$RUNNER_TEMP/bin/oras-inputs.json" "$RUNNER_TEMP/built/provenance/"
       - name: Build the shared native OCI verifier
         env:
-          CARGO_BUILD_JOBS: "1"
+          CARGO_BUILD_JOBS: '1'
           SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
-      - name: Prepare and verify the complete release without registry writes
+      - name: Prepare and verify complete local content
         env:
-          GUEST_VERSION: ${{ inputs.version }}
-          GUEST_COMPATIBILITY: ${{ inputs.compatibility }}
-          GUEST_REVISION: ${{ github.sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          COMPATIBILITY: ${{ inputs.compatibility || 'v1' }}
         run: |
-          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
-            --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
-            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/release/examples/verify_guest_oci
+          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/built/archives" \
+            --layout "$RUNNER_TEMP/layout" --version "$VERSION" --compatibility "$COMPATIBILITY" \
+            --revision "$GITHUB_SHA" --verifier proxy/target/release/examples/verify_guest_oci
+      - name: Authenticate with the repository publication token
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - id: stage
+        name: Upload and read back every archive and the complete index
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          COMPATIBILITY: ${{ inputs.compatibility || 'v1' }}
+        run: |
+          scripts/publish_guest_oci.sh --from-layout --layout "$RUNNER_TEMP/layout" \
+            --version "$VERSION" --compatibility "$COMPATIBILITY" --revision "$GITHUB_SHA" \
+            --verifier proxy/target/release/examples/verify_guest_oci --publish ghcr.io/craigbalding/safeyolo-guest
+          echo "index=$(oras resolve --oci-layout "$RUNNER_TEMP/layout:$VERSION")" >> "$GITHUB_OUTPUT"
+          echo "staged_at=$(cat "$RUNNER_TEMP/layout/verified-staged-at.txt")" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          oras version > "$RUNNER_TEMP/built/provenance/publisher-oras.txt"
+          { rustc -Vv; cargo --version; sha256sum proxy/Cargo.lock scripts/publish_guest_oci.sh; } \
+            > "$RUNNER_TEMP/built/provenance/publisher-builder.txt"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: verified-guest-oci-layout
-          path: ${{ runner.temp }}/guest-oci
+          name: verified-guest-provenance
+          path: ${{ runner.temp }}/built/provenance
           if-no-files-found: error
 
-  publish:
-    # Relay dispatches a retained guest or the digest-only transport fixture.
-    # Craig's #237 publication authority covers these; preparation stays default.
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_initial_g1 || inputs.publish_retained_g2 || inputs.publish_transport_fixture || inputs.publish_reduced_guest || inputs.publish_reduced_default) }}
+  receipt:
+    # This follows the completed stage job. A failed stage cannot acquire age.
+    needs: stage
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
       packages: write
     steps:
-      - name: Select retained release and refuse conflicting inputs
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
-          REQUESTED_COMPATIBILITY: ${{ inputs.compatibility }}
-          PUBLISH_INITIAL_G1: ${{ inputs.publish_initial_g1 }}
-          PUBLISH_RETAINED_G2: ${{ inputs.publish_retained_g2 }}
-          PUBLISH_TRANSPORT_FIXTURE: ${{ inputs.publish_transport_fixture }}
-          PUBLISH_REDUCED_GUEST: ${{ inputs.publish_reduced_guest }}
-          PUBLISH_REDUCED_DEFAULT: ${{ inputs.publish_reduced_default }}
-        run: |
-          case "$PUBLISH_INITIAL_G1/$PUBLISH_RETAINED_G2/$PUBLISH_TRANSPORT_FIXTURE/$PUBLISH_REDUCED_GUEST/$PUBLISH_REDUCED_DEFAULT" in
-            true/false/false/false/false)
-              version=guest-2026-10-12.1
-              revision=8234a047d810d543d8c4d1cb1fa9859987be035b
-              index=sha256:df0068692909088a90db2c8f9777807404e3b7d8061ee72bc94a5feabd7dc46e
-              run_id=38248401312
-              archive_ids=11748025327,11746464998
-              layout_id=11747551391
-              publisher_revision=$revision
-              ;;
-            false/true/false/false/false|false/false/true/false/false)
-              version=guest-2026-10-16.1
-              revision=ee291fba78ab34e4dca630d529ac8083ec29802f
-              index=sha256:b5f3b69562fd4b84730813bd3eb0554b351c975bb363a1be9404f0646147c06b
-              run_id=38897452318
-              archive_ids=12044318477,12044582213
-              layout_id=12045630940
-              publisher_revision=$GITHUB_SHA
-              ;;
-            false/false/false/true/false|false/false/false/false/true)
-              version=guest-2026-10-16.1082
-              revision=33224c9fc14beeb00be30eb71bdc09f91c5aa58b
-              index=sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e
-              run_id=38975155518
-              archive_ids=
-              layout_id=12079186556
-              publisher_revision=$GITHUB_SHA
-              ;;
-            *)
-              echo 'Select exactly one guest publication mode.' >&2
-              exit 1
-              ;;
-          esac
-          expected_version=$version
-          if [[ "$PUBLISH_TRANSPORT_FIXTURE" == true ]]; then
-            expected_version=guest-2026-10-16.239
-          fi
-          if [[ "$REQUESTED_VERSION" != "$expected_version" || "$REQUESTED_COMPATIBILITY" != v1 ]]; then
-            echo "Selected publication requires version $expected_version and compatibility v1." >&2
-            exit 1
-          fi
-          printf '%s\n' "GUEST_VERSION=$version" "GUEST_COMPATIBILITY=v1" \
-            "GUEST_REVISION=$revision" "GUEST_INDEX=$index" "GUEST_RUN_ID=$run_id" \
-            "GUEST_ARCHIVE_IDS=$archive_ids" "GUEST_LAYOUT_ID=$layout_id" \
-            "PUBLISHER_REVISION=$publisher_revision" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.PUBLISHER_REVISION }}
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
-        with:
-          artifact-ids: ${{ env.GUEST_ARCHIVE_IDS }}
-          run-id: ${{ env.GUEST_RUN_ID }}
-          repository: craigbalding/safeyolo
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/archives
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          artifact-ids: ${{ env.GUEST_LAYOUT_ID }}
-          run-id: ${{ env.GUEST_RUN_ID }}
-          repository: craigbalding/safeyolo
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/retained-guest-oci
-      - name: Install pinned ORAS
+          name: verified-guest-provenance
+          path: ${{ runner.temp }}/provenance
+      - env:
+          GUEST_INPUTS: ${{ runner.temp }}/provenance/inputs.json
         run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Attach the original staging receipt and inventories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INDEX: ${{ needs.stage.outputs.index }}
+          STAGED_AT: ${{ needs.stage.outputs.staged_at }}
+          STAGE_ATTEMPT: ${{ needs.stage.outputs.run_attempt }}
+        run: |
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          scripts/publish_guest_oci.sh --record-stage --index "$INDEX" --staged-at "$STAGED_AT" --stage-attempt "$STAGE_ATTEMPT" \
+            --provenance "$RUNNER_TEMP/provenance"
+
+  promote:
+    # Independent of today's resolve/build/stage jobs, including their failures.
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event.schedule == '47 2 * * *' || inputs.activity == 'promote') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build the shared native OCI verifier
         env:
-          CARGO_BUILD_JOBS: "1"
-          SAFEYOLO_BUILD_REVISION: ${{ env.PUBLISHER_REVISION }}
+          CARGO_BUILD_JOBS: '1'
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
-      - name: Verify retained inputs before registry authentication
-        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
-        run: |
-          [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
-          proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
-          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
-            --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
-            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/release/examples/verify_guest_oci
-          [[ $(oras resolve --oci-layout "$RUNNER_TEMP/guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
-      - name: Verify retained reduced guest before registry authentication
-        id: verify_reduced_guest
-        if: ${{ inputs.publish_reduced_guest || inputs.publish_reduced_default }}
-        run: |
-          [[ $(oras resolve --oci-layout "$RUNNER_TEMP/retained-guest-oci:$GUEST_VERSION") == "$GUEST_INDEX" ]]
-          proxy/target/release/examples/verify_guest_oci "$RUNNER_TEMP/retained-guest-oci" "$GUEST_INDEX" "$GUEST_COMPATIBILITY"
-      - name: Prepare and verify the nonbootable transport fixture
-        id: prepare_transport_fixture
-        if: ${{ inputs.publish_transport_fixture }}
-        run: |
-          python3 scripts/prepare_guest_transport_fixture.py \
-            --seed-layout "$RUNNER_TEMP/retained-guest-oci" --seed-index "$GUEST_INDEX" \
-            --output "$RUNNER_TEMP/transport-fixture" --revision "$GITHUB_SHA" \
-            --verifier proxy/target/release/examples/verify_guest_oci
-      - name: Authenticate with the linked repository token
+      - name: Consider newest eligible retained candidate
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Upload, verify and promote the complete guest release
-        if: ${{ !inputs.publish_transport_fixture && !inputs.publish_reduced_guest && !inputs.publish_reduced_default }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPATIBILITY: ${{ inputs.compatibility || 'v1' }}
         run: |
-          scripts/publish_guest_oci.sh --artifacts "$RUNNER_TEMP/archives" \
-            --layout "$RUNNER_TEMP/guest-oci" --version "$GUEST_VERSION" \
-            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/release/examples/verify_guest_oci \
-            --publish ghcr.io/craigbalding/safeyolo-guest
-      - name: Publish the retained reduced guest as the default
-        if: ${{ inputs.publish_reduced_default }}
-        run: |
-          scripts/publish_guest_oci.sh --from-layout \
-            --layout "$RUNNER_TEMP/retained-guest-oci" --version "$GUEST_VERSION" \
-            --compatibility "$GUEST_COMPATIBILITY" --revision "$GUEST_REVISION" \
-            --verifier proxy/target/release/examples/verify_guest_oci \
-            --publish ghcr.io/craigbalding/safeyolo-guest
-      - name: Upload the transport fixture without production tags
-        if: ${{ inputs.publish_transport_fixture }}
-        run: |
-          index=$(jq -r '.index.digest' "$RUNNER_TEMP/transport-fixture/fixture.json")
-          scripts/publish_guest_by_digest.sh "$RUNNER_TEMP/transport-fixture/layout" \
-            "$index" proxy/target/release/examples/verify_guest_oci \
-            ghcr.io/craigbalding/safeyolo-guest "$RUNNER_TEMP/transport-fixture/publication"
-          echo 'The anonymous packaged native transfer remains pending. Never boot this fixture.'
-      - name: Upload the retained reduced guest without production tags
-        if: ${{ inputs.publish_reduced_guest }}
-        run: |
-          scripts/publish_guest_by_digest.sh "$RUNNER_TEMP/retained-guest-oci" \
-            "$GUEST_INDEX" proxy/target/release/examples/verify_guest_oci \
-            ghcr.io/craigbalding/safeyolo-guest "$RUNNER_TEMP/reduced-guest-publication"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: ${{ !cancelled() && inputs.publish_reduced_guest && steps.verify_reduced_guest.outcome == 'success' }}
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          scripts/publish_guest_oci.sh --promote --compatibility "$COMPATIBILITY" --verifier proxy/target/release/examples/verify_guest_oci \
+            --work-directory "$RUNNER_TEMP"
+
+  transport-fixture:
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'transport-fixture' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: reduced-guest-publication-result
-          path: ${{ runner.temp }}/reduced-guest-publication
-          if-no-files-found: error
+          artifact-ids: ${{ inputs.transport_artifact }}
+          run-id: ${{ inputs.transport_run }}
+          repository: craigbalding/safeyolo
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/seed
+      - run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - env:
+          CARGO_BUILD_JOBS: '1'
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+      - name: Prepare and publish the nonbootable fixture by digest only
+        env:
+          SEED_INDEX: ${{ inputs.transport_index }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/prepare_guest_transport_fixture.py --seed-layout "$RUNNER_TEMP/seed" --seed-index "$SEED_INDEX" \
+            --output "$RUNNER_TEMP/fixture" --revision "$GITHUB_SHA" --verifier proxy/target/release/examples/verify_guest_oci
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          scripts/publish_guest_by_digest.sh "$RUNNER_TEMP/fixture/layout" \
+            "$(jq -r '.index.digest' "$RUNNER_TEMP/fixture/fixture.json")" \
+            proxy/target/release/examples/verify_guest_oci ghcr.io/craigbalding/safeyolo-guest "$RUNNER_TEMP/fixture/publication"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: ${{ !cancelled() && inputs.publish_transport_fixture && steps.prepare_transport_fixture.outcome == 'success' }}
+        if: always()
         with:
           name: guest-transport-fixture-result
           path: |
-            ${{ runner.temp }}/transport-fixture/fixture.json
-            ${{ runner.temp }}/transport-fixture/publication
-          if-no-files-found: error
+            ${{ runner.temp }}/fixture/fixture.json
+            ${{ runner.temp }}/fixture/publication

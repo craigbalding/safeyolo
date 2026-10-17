@@ -14,7 +14,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-KERNEL_VERSION="${KERNEL_VERSION:-6.12.17}"
+export SAFEYOLO_GUEST_SRC_DIR="$SCRIPT_DIR"
+source "$SCRIPT_DIR/input-functions.sh"
+guest_inputs arm64 --tools kernel
 KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"
 
@@ -26,12 +28,6 @@ if [ "$(uname)" != "Linux" ]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
-
-if [ -f "$OUTPUT_DIR/Image" ]; then
-    echo "Kernel already exists at $OUTPUT_DIR/Image"
-    echo "Delete it to rebuild, or set KERNEL_VERSION to change version."
-    exit 0
-fi
 
 # Dependency check
 MISSING=()
@@ -52,7 +48,7 @@ fi
 
 echo "=== Building Linux $KERNEL_VERSION (ARM64, native cross-compile) ==="
 
-WORK_DIR="$(mktemp -d -t safeyolo-kernel.XXXXXX)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/var/tmp}/safeyolo-kernel.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Persistent download cache shared with build-rootfs.sh. Re-running after
@@ -62,15 +58,7 @@ DOWNLOAD_CACHE="$OUTPUT_DIR/.download-cache"
 mkdir -p "$DOWNLOAD_CACHE"
 KERNEL_TARBALL="$DOWNLOAD_CACHE/linux-${KERNEL_VERSION}.tar.xz"
 
-if [ ! -f "$KERNEL_TARBALL" ]; then
-    echo "--- Downloading kernel source ---"
-    curl -fsSL \
-        "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz" \
-        -o "$KERNEL_TARBALL.tmp"
-    mv "$KERNEL_TARBALL.tmp" "$KERNEL_TARBALL"
-else
-    echo "--- Using cached kernel source ($KERNEL_TARBALL) ---"
-fi
+guest_download arm64 kernel "$KERNEL_TARBALL"
 
 echo "--- Extracting kernel source ---"
 tar xJ -C "$WORK_DIR" -f "$KERNEL_TARBALL"
@@ -86,6 +74,12 @@ make -C "$KERNEL_SRC" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
 
 echo "--- Copying output ---"
 cp "$KERNEL_SRC/arch/arm64/boot/Image" "$OUTPUT_DIR/Image"
+mkdir -p "$OUTPUT_DIR/provenance"
+cp "$KERNEL_SRC/.config" "$OUTPUT_DIR/provenance/kernel.config"
+{ date -u +%Y-%m-%dT%H:%M:%SZ; aarch64-linux-gnu-gcc --version; make --version; \
+  sha256sum "$KERNEL_SRC/.config" "$SCRIPT_DIR/defconfig"; } > "$OUTPUT_DIR/provenance/kernel-builder.txt"
+cp "$GUEST_INPUTS" "$OUTPUT_DIR/provenance/kernel-inputs.json"
+cp "$KERNEL_TARBALL.verification.json" "$OUTPUT_DIR/provenance/kernel-verification.json"
 echo "Kernel built: $(ls -lh "$OUTPUT_DIR/Image" | awk '{print $5}')"
 
 echo "=== Kernel ready at $OUTPUT_DIR/Image ==="

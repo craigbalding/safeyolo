@@ -137,20 +137,16 @@ docs = [
 must_contain = "{marker}"
 
 [[assertion]]
-name = "mise-version-pin"
+name = "mise-stable-resolution"
 source = "guest/build-rootfs.sh"
-pattern = 'MISE_VERSION="\$\{MISE_VERSION:-(?P<mise_version>[0-9.]+)\}"'
+pattern = 'guest_inputs "\$DEB_ARCH"'
 docs = ["guest/README.md"]
-# guest/README.md doesn't currently pin the mise version in prose — this
-# assertion only requires the word "mise" appears somewhere. Kept as a
-# sanity check that the tool is still mentioned; upgrade to full-version
-# pinning when the doc quotes a specific version.
 must_contain = "mise"
 
 [[assertion]]
-name = "gh-version-pin"
+name = "gh-stable-resolution"
 source = "guest/build-rootfs.sh"
-pattern = 'GH_VERSION="\$\{GH_VERSION:-(?P<gh_version>[0-9.]+)\}"'
+pattern = 'guest_inputs "\$DEB_ARCH"'
 docs = ["guest/README.md"]
 must_contain = "gh"
 

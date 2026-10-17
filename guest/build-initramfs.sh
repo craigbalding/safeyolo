@@ -25,12 +25,6 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-if [ -f "$OUTPUT_DIR/initramfs.cpio.gz" ]; then
-    echo "Initramfs already exists at $OUTPUT_DIR/initramfs.cpio.gz"
-    echo "Delete it to rebuild."
-    exit 0
-fi
-
 # Dependency check. Debian's busybox-static ships /bin/busybox (static binary).
 MISSING=()
 [ -x /bin/busybox ] || MISSING+=("busybox-static (/bin/busybox)")
@@ -60,7 +54,7 @@ MKFS_EXT4_BIN="$(command -v mkfs.ext4 || echo /sbin/mkfs.ext4)"
 
 echo "=== Building initramfs ==="
 
-WORK="$(mktemp -d -t safeyolo-initramfs.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/var/tmp}/safeyolo-initramfs.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p \

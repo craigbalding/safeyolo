@@ -432,6 +432,43 @@ def test_cadence_and_consumers_have_no_product_build_steps():
         assert "selection/selection.json" in upload["with"]["path"]
 
 
+@pytest.mark.parametrize("has_report", [True, False])
+def test_arm64_installed_result_step_reaches_recorder_or_reports_missing_input(tmp_path, has_report):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/installed-arm64.yml").read_text())
+    step = next(step for step in workflow["jobs"]["retained"]["steps"]
+                if step.get("name") == "Retain digest-bound installed guest result")
+    reports = tmp_path / "retained-reports"
+    if has_report:
+        reports.mkdir()
+        (reports / "selection.json").write_text("{}")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "oras").write_text("#!/bin/sh\ncat >/dev/null\n")
+    (tools / "oras").chmod(0o755)
+    recorder = tmp_path / ".venv/bin/python"
+    recorder.parent.mkdir(parents=True)
+    recorder.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORDER_CALL"\n')
+    recorder.chmod(0o755)
+    call = tmp_path / "recorder-call"
+    env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "RUNNER_TEMP": str(tmp_path),
+           "GH_TOKEN": "controlled-fixture", "GITHUB_ACTOR": "operator",
+           "GITHUB_REPOSITORY": selector.REPOSITORY, "GITHUB_RUN_ID": "20", "GITHUB_RUN_ATTEMPT": "1",
+           "RECORDER_CALL": str(call)}
+    # GitHub evaluates expressions in env, but does not expand embedded shell variables.
+    env["REPORTS"] = step["env"]["REPORTS"].replace("${{ runner.temp }}", str(tmp_path))
+    result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
+    if has_report:
+        assert result.returncode == 0, result.stderr
+        args = call.read_text().splitlines()
+        assert args[:3] == ["scripts/guest_release.py", "record-smoke", "--reports"]
+        assert args[3] == str(reports)
+    else:
+        assert result.returncode != 0
+        assert "report" in result.stderr.lower()
+        assert not call.exists()
+
+
 def test_guest_archive_without_host_package_cannot_reach_source_preparation(tmp_path):
     state_parent = tmp_path / "must-not-be-created"
     result = subprocess.run([str(ROOT / "tests/blackbox/run-installed-package.sh"), "--guest-archive", "missing.tar.zst"],

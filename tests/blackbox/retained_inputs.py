@@ -56,8 +56,9 @@ def prepare_guest(selection_path: Path, archive: Path, bundle: Path, root: Path,
     unpacked = directory / "guest.tar"
     with archive.open("rb") as source, unpacked.open("xb") as output:
         zstandard.ZstdDecompressor().copy_stream(source, output)
-    assets = directory / "assets"
-    assets.mkdir()
+    # Native remapping accepts only an owned private extract-* stage.
+    assets = directory / ("extract-guest" if selection["platform"].startswith("linux-") else "assets")
+    assets.mkdir(mode=0o700)
     try:
         if selection["platform"].startswith("linux-"):
             subprocess.run(["sudo", "-n", "tar", "--numeric-owner", "--same-owner", "--same-permissions",
@@ -123,7 +124,7 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
         guest_archive: Path | None = None) -> int:
     artifacts.mkdir(parents=True, exist_ok=False)
     report = {"started_at": datetime.now(UTC).isoformat(), "finished_at": None, "exit": None,
-              "lane": lane, "host_system": platform.system(), "host_architecture": platform.machine(),
+              "lane": lane, "host_id": platform.node(), "host_system": platform.system(), "host_architecture": platform.machine(),
               "guest_input_mode": "retained-archive" if guest_archive else "native-index",
               "guest_test_provisioning": "offline" if os.environ.get("SAFEYOLO_GUEST_TEST_INPUTS") else "online",
               **controller_identity()}

@@ -6,8 +6,8 @@ image or a rootfs tarball. Prepare the custom image on a Linux builder with the 
 then supply the result to an installed instance. The CLI does
 not run a Python rootfs builder or accept the retired --rootfs-script flag.
 Existing shell builders and guest support files remain usable.
-The default builder pins the architecture-specific official Debian trixie
-manifest by digest. Its `DEBIAN_IMAGE` override remains available for
+The default builder resolves the current official Debian Trixie index and
+freezes each architecture manifest by digest for that build. Its `DEBIAN_IMAGE` override remains available for
 contributor builds. Only a digest-pinned registry input emits `build-base.txt`
 for default-guest OCI publication; custom profiles keep their existing contract.
 Use a digest-only Docker reference for a pinned override: skopeo 1.18.0 rejects
@@ -168,6 +168,12 @@ source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_mise /path/to/unpacked/rootfs "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common /path/to/unpacked/rootfs
 ```
+
+`install_safeyolo_mise` uses the same current-stable resolver as the default
+builder. The Linux build host needs Python 3.11+ and GnuPG. The helper verifies
+the official signed checksum before installation. An existing mise executable
+does not skip resolution. Set `GUEST_INPUTS` to an explicit frozen build record
+to reuse its identities; resolution or verification errors fail the build.
 
 The helper also pre-creates SafeYolo's host bind-mount destinations before
 Linux remaps the finished tree to its subordinate UID range. Custom builders

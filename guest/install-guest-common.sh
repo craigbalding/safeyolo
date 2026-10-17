@@ -14,7 +14,7 @@
 #
 # What it installs:
 #   * install_safeyolo_mise helper for custom rootfs scripts that want the
-#     same pinned mise binary as the default rootfs
+#     same resolved stable mise binary as the default rootfs
 #   * agent user (uid 1000, shell /bin/bash, home /home/agent)
 #   * /usr/local/bin/safeyolo-guest-init stub (exec'd as PID 1)
 #   * host bind-mount targets required by the Linux gVisor runtime
@@ -39,39 +39,29 @@
 install_safeyolo_mise() {
     local rootfs="$1"
     local target_arch="${2:-${SAFEYOLO_TARGET_ARCH:-}}"
-    local mise_version="${MISE_VERSION:-2026.8.8}"
-    local mise_sha_arm64="${MISE_SHA256_ARM64:-6e6e96d319fe274996db5aed691f5398552865e641dc4b6fb6b01d73f4853a17}"
-    local mise_sha_amd64="${MISE_SHA256_AMD64:-58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f}"
-    local mise_arch mise_sha
-
+    local mise_version mise_sha
     [ -n "$rootfs" ] || { echo "install_safeyolo_mise: rootfs arg required" >&2; return 1; }
     [ -d "$rootfs" ] || { echo "install_safeyolo_mise: rootfs not a dir: $rootfs" >&2; return 1; }
 
     case "$target_arch" in
-        amd64) mise_arch=x64; mise_sha="$mise_sha_amd64" ;;
-        arm64) mise_arch=arm64; mise_sha="$mise_sha_arm64" ;;
+        amd64|arm64) ;;
         *) echo "install_safeyolo_mise: unsupported arch: $target_arch" >&2; return 1 ;;
     esac
 
-    if [ -x "$rootfs/usr/local/bin/mise" ] || [ -x "$rootfs/usr/bin/mise" ]; then
-        echo "=== mise already installed in $rootfs ==="
-        return 0
-    fi
-
-    command -v curl >/dev/null || { echo "install_safeyolo_mise: missing curl" >&2; return 1; }
     command -v sha256sum >/dev/null || { echo "install_safeyolo_mise: missing sha256sum" >&2; return 1; }
     command -v tar >/dev/null || { echo "install_safeyolo_mise: missing tar" >&2; return 1; }
 
-    local url
-    url="https://github.com/jdx/mise/releases/download"
-    url="${url}/v${mise_version}/mise-v${mise_version}-linux-${mise_arch}.tar.gz"
+    source "${SAFEYOLO_GUEST_SRC_DIR:?}/input-functions.sh"
+    guest_inputs "$target_arch" --tools mise || return 1
+    mise_version=$MISE_VERSION
+    mise_sha=$MISE_SHA256
     local tmp_dir="$rootfs/tmp/safeyolo-mise"
     local tarball="$tmp_dir/mise.tar.gz"
 
     echo "=== Installing mise ${mise_version} ==="
     rm -rf "$tmp_dir"
     mkdir -p "$tmp_dir" "$rootfs/usr/local/bin"
-    curl -fsSL "$url" -o "$tarball"
+    guest_download "$target_arch" mise "$tarball" || return 1
     echo "${mise_sha}  $tarball" | sha256sum -c -
     tar -xzf "$tarball" -C "$tmp_dir"
     cp "$tmp_dir/mise/bin/mise" "$rootfs/usr/local/bin/mise"

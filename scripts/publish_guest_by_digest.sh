@@ -7,14 +7,17 @@ if [[ $# != 5 && ! ( $# == 6 && "$6" == --plain-http ) ]]; then
 fi
 layout=$1 index=$2 verifier=$3 repository=$4 output=$5
 oras=${ORAS:-oras}
-[[ $("$oras" version | sed -n 's/^Version: *//p') == 1.3.4 ]]
 "$verifier" "$layout" "$index" v1
 mkdir -- "$output"
 remote_options=() to_options=()
 if [[ $# == 6 ]]; then
     remote_options+=(--plain-http); to_options+=(--to-plain-http)
 fi
-for tag in compat-v1 guest-2026-10-12.1 guest-2026-10-16.1; do
+"$oras" repo tags "${remote_options[@]}" --format json "$repository" > "$output/tags.json"
+jq -r '.tags[]' "$output/tags.json" > "$output/tag-names.txt"
+preserved_tags=()
+while IFS= read -r tag; do preserved_tags+=("$tag"); done < "$output/tag-names.txt"
+for tag in "${preserved_tags[@]}"; do
     "$oras" resolve "${remote_options[@]}" "$repository:$tag" > "$output/before-$tag"
 done
 # An untagged destination copies the index's full graph through digest writes.
@@ -29,7 +32,7 @@ while IFS= read -r child; do
     "$oras" blob fetch "${remote_options[@]}" "$repository@$config" --output "$output/${config#sha256:}.json"
     cmp -- "$layout/blobs/sha256/${config#sha256:}" "$output/${config#sha256:}.json"
 done < "$output/children.txt"
-for tag in compat-v1 guest-2026-10-12.1 guest-2026-10-16.1; do
+for tag in "${preserved_tags[@]}"; do
     "$oras" resolve "${remote_options[@]}" "$repository:$tag" > "$output/after-$tag"
     cmp -- "$output/before-$tag" "$output/after-$tag"
 done

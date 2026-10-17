@@ -32,7 +32,7 @@ elif [ -n "${ZSH_EVAL_CONTEXT:-}" ] && [[ "$ZSH_EVAL_CONTEXT" == *:file* ]]; the
     return 1 2>/dev/null || exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 export OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"
 
 LIMA_VM_NAME="safeyolo-builder"
@@ -44,6 +44,21 @@ run_builds_native() {
     echo "=== SafeYolo Guest Image Build (native Linux) ==="
     echo "Output directory: $OUTPUT_DIR"
     echo ""
+
+    export SAFEYOLO_GUEST_SRC_DIR="$SCRIPT_DIR"
+    source "$SCRIPT_DIR/input-functions.sh"
+    mkdir -p "$OUTPUT_DIR"
+    if [[ -z ${GUEST_INPUTS:-} ]]; then
+        export GUEST_INPUTS
+        GUEST_INPUTS=$(mktemp "$OUTPUT_DIR/inputs.XXXXXX.json")
+        tools=(mise gh)
+        [[ ${BUILD_KERNEL:-} != 1 ]] || tools+=(kernel)
+        "${SAFEYOLO_BUILD_PYTHON:-python3}" "$SCRIPT_DIR/resolve_inputs.py" resolve \
+            --tools "${tools[@]}" --base --output "$GUEST_INPUTS"
+    fi
+    mkdir -p "$OUTPUT_DIR/provenance"
+    cp "$GUEST_INPUTS" "$OUTPUT_DIR/provenance/inputs.json"
+    "${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())' > "$OUTPUT_DIR/provenance/build-started-at.txt"
 
     # Kernel and initramfs are only needed for macOS microVMs
     # (Virtualization.framework). On Linux, gVisor provides its own kernel —
@@ -62,6 +77,7 @@ run_builds_native() {
 
     # Rootfs is always needed
     "$SCRIPT_DIR/build-rootfs.sh"
+    "${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())' > "$OUTPUT_DIR/provenance/build-completed-at.txt"
 
     echo ""
     echo "=== All artifacts built ==="
@@ -134,6 +150,29 @@ Check guest/lima.yaml 'mounts:' block."
 }
 
 run_builds_via_lima() {
+    # Lima exposes guest/ at one narrow mount. Resolve relative paths and
+    # symlinks before translating the selected host output to that mount.
+    local lima_output_dir lima_guest_inputs="" staged_inputs
+    mkdir -p "$OUTPUT_DIR"
+    OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
+    case "$OUTPUT_DIR" in
+        "$SCRIPT_DIR"|"$SCRIPT_DIR"/*)
+            lima_output_dir="$LIMA_MOUNT_POINT${OUTPUT_DIR#"$SCRIPT_DIR"}"
+            ;;
+        *) die "On macOS, OUTPUT_DIR must resolve inside $SCRIPT_DIR (the guest/ Lima mount)." ;;
+    esac
+
+    # Copy only the selected input record through the existing mount. Its host
+    # path can be outside guest/, and Lima does not inherit host variables.
+    if [[ -n ${GUEST_INPUTS:-} ]]; then
+        staged_inputs=$(mktemp "$OUTPUT_DIR/inputs.XXXXXX")
+        if ! cat < "$GUEST_INPUTS" > "$staged_inputs"; then
+            rm -f "$staged_inputs"
+            die "Cannot stage GUEST_INPUTS: $GUEST_INPUTS"
+        fi
+        lima_guest_inputs="$lima_output_dir/${staged_inputs##*/}"
+    fi
+
     ensure_lima_vm
     # Stop the VM on exit so it doesn't keep CPU/RAM pinned between builds.
     # Boot cost on re-use is trivial.
@@ -146,11 +185,11 @@ run_builds_via_lima() {
 
     # On macOS we always need kernel+initramfs (Virtualization.framework).
     # Pass BUILD_KERNEL=1 through to the VM.
-    # Output goes to $LIMA_MOUNT_POINT/out inside the VM, which is bind-mounted
-    # to guest/out on the host.
+    # Map the selected output through the existing guest/ mount.
     lima_shell env \
         BUILD_KERNEL=1 \
-        OUTPUT_DIR="$LIMA_MOUNT_POINT/out" \
+        OUTPUT_DIR="$lima_output_dir" \
+        GUEST_INPUTS="$lima_guest_inputs" \
         bash "$LIMA_MOUNT_POINT/build-all.sh" --inside-lima
 
     echo ""

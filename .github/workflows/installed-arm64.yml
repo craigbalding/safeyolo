@@ -55,6 +55,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,6 +93,19 @@ jobs:
           .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --yes \
             --selection "$RUNNER_TEMP/selection/selection.json" \
             --artifacts "$RUNNER_TEMP/retained-reports" "${sections[@]}"
+      - name: Retain digest-bound installed guest result
+        if: ${{ always() && !cancelled() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORTS: ${{ runner.temp }}/retained-reports
+        run: |
+          if [[ ! -f "$REPORTS/selection.json" ]]; then
+            echo "Missing retained installed reports: $REPORTS/selection.json; no platform evidence was attached." >&2
+            exit 1
+          fi
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          .venv/bin/python scripts/guest_release.py record-smoke --reports "$REPORTS" \
+            --gate-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
       - name: Retain reports and failed selections
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
