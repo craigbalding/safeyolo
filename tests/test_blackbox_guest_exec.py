@@ -99,10 +99,16 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
     assert shlex.split(calls[3][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
 
 
-@pytest.mark.parametrize('installer,offline', [('apt-get', False), ('apk', False), ('apt-get', True)])
-@pytest.mark.parametrize('install_exit', [0, 17])
-def test_guest_test_setup_uses_lock_and_stops_on_package_failure(tmp_path, install_exit, installer, offline):
-    """An interpreter-free guest uses hashed requirements; OS install errors stop setup."""
+@pytest.mark.parametrize('installer,offline,pip_ready', [
+    ('apt-get', False, False), ('apk', False, False), ('apt-get', True, False), ('apt-get', False, True),
+])
+@pytest.mark.parametrize('failure', [None, 'package', 'pip', 'imports'])
+def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready):
+    """Online and offline setup retain hashes and stop on package, pip or import failures."""
+    install_exit = 17 if failure == 'package' else 0
+    pip_exit = 19 if failure == 'pip' else 0
+    import_exit = 23 if failure == 'imports' else 0
+    package_needed = offline or not pip_ready
     tools = tmp_path / 'tools'
     tools.mkdir()
     (tools / 'dirname').symlink_to(shutil.which('dirname'))
@@ -118,7 +124,7 @@ import json, sys
 arguments = sys.argv[1:]
 with open({str(record)!r}, 'a') as out: out.write(json.dumps(['python3', *arguments]) + '\\n')
 if arguments == ['-m', 'pip', '--version']:
-    sys.exit(1)
+    sys.exit({0 if pip_ready else 1})
 if arguments[:3] == ['-m', 'pip', 'install']:
     from pathlib import Path
     assert '--require-hashes' in arguments
@@ -130,8 +136,10 @@ if arguments[:3] == ['-m', 'pip', 'install']:
         assert arguments[arguments.index('--find-links') + 1] == {str(inputs / 'wheels')!r}
     else:
         assert '--no-index' not in arguments and '--find-links' not in arguments
+    sys.exit({pip_exit})
 if arguments[:1] == ['-c']:
     assert arguments[1] == 'import pytest, httpx, pytest_timeout'
+    sys.exit({import_exit})
 ''')
     python.chmod(0o755)
     package_installer = tools / installer
@@ -144,7 +152,8 @@ if arguments[:1] == ['-c']:
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', *arguments],
                             env=dict(os.environ, PATH=str(tools)), text=True,
                             capture_output=True, timeout=10)
-    assert result.returncode == install_exit, result.stderr
+    expected_exit = (install_exit if package_needed else 0) or pip_exit or import_exit
+    assert result.returncode == expected_exit, result.stderr
     calls = [json.loads(line) for line in record.read_text().splitlines()]
     if offline:
         assert calls[0] == [
@@ -153,13 +162,16 @@ if arguments[:1] == ['-c']:
             str(inputs / 'debs/python.deb'),
         ]
         assert ['apt-get', 'update'] not in calls
+    elif pip_ready:
+        assert not any(call[0] in ('apt-get', 'apk') for call in calls)
     elif installer == 'apt-get':
         assert ['apt-get', 'update'] in calls
     else:
         assert ['apk', 'add', 'python3', 'py3-pip'] in calls
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
-    assert bool(installs) == (install_exit == 0)
-    assert (calls[-1][1:2] == ['-c']) == (install_exit == 0)
+    installed_packages = not package_needed or install_exit == 0
+    assert bool(installs) == installed_packages
+    assert (calls[-1][1:2] == ['-c']) == (installed_packages and pip_exit == 0)
 
 
 @pytest.mark.parametrize('missing', ['all', 'debs', 'wheels', 'relative-path'])

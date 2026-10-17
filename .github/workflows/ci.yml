@@ -63,7 +63,8 @@ jobs:
         run: |
           brew install dpkg tmux gnu-tar coreutils zstd bash
           printf '%s\n' "$(brew --prefix bash)/bin" \
-            "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+            "$(brew --prefix gnu-tar)/libexec/gnubin" \
+            "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: uv sync --frozen --group dev

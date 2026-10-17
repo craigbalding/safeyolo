@@ -5,7 +5,9 @@ import io
 import json
 import os
 import shutil
+import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -35,6 +37,7 @@ def archive_tools():
     if run("sudo", "-n", "true").returncode:
         pytest.skip("guest sudo is unavailable")
     assert "GNU tar" in run("tar", "--version").stdout, "put GNU tar on PATH for archive fixtures"
+    assert "GNU coreutils" in run("du", "--version").stdout, "put GNU du on PATH for archive fixtures"
 
 
 @pytest.fixture
@@ -58,7 +61,7 @@ def archive(platform, source, destination):
     ]
     paths = [str(source / name) for name in files]
     for field, options in (("apparent_bytes", ["--apparent-size"]), ("allocated_bytes", [])):
-        measured = run("sudo", "-n", "du", "-sc", "-B1", *options, "--", *paths)
+        measured = run("sudo", "-n", shutil.which("du"), "-sc", "-B1", *options, "--", *paths)
         assert measured.returncode == 0, measured.stderr
         assert int(metrics[field]) == int(measured.stdout.splitlines()[-1].split()[0])
     return destination / "guest.tar.zst"
@@ -99,13 +102,29 @@ def test_archive_preserves_numeric_owners_modes_links_and_cache_paths(tmp_path, 
         os.link(tree / "command", tree / "hard")
         for file in ("cache-paths.txt", "build-base.txt"):
             shutil.copyfile(built / file, source / file)
+        linux_metadata = []
+        if sys.platform == "linux":
+            # The release builds on Linux. Mac publisher fixtures use synthetic
+            # inputs; Homebrew GNU tar cannot retain Linux ACLs and xattrs.
+            private = tree / "private"
+            os.setxattr(private, "user.safeyolo.fixture", b"guest metadata")
+            # Linux POSIX ACL version 2: owner, named user, group, mask, other.
+            acl = struct.pack("<I", 2) + b"".join(
+                struct.pack("<HHI", tag, permissions, uid) for tag, permissions, uid in (
+                    (1, 6, 0xFFFFFFFF), (2, 4, 100001), (4, 0, 0xFFFFFFFF),
+                    (16, 0, 0xFFFFFFFF), (32, 0, 0xFFFFFFFF),
+                )
+            )
+            os.setxattr(private, "system.posix_acl_access", acl)
+            linux_metadata = ["--acls", "--xattrs", "--xattrs-include=*"]
         extracted = Path(temporary) / "extracted"
         extracted.mkdir()
         assert run("sudo", "-n", "chown", "-Rh", "100000:100000", str(tree)).returncode == 0
         assert tree.stat().st_uid == 100000
         try:
             output = archive("linux/arm64", source, tmp_path / "archive")
-            result = run("sudo", "-n", shutil.which("tar"), "--zstd", "--numeric-owner", "--same-owner", "--same-permissions",
+            result = run("sudo", "-n", shutil.which("tar"), "--zstd", *linux_metadata,
+                         "--numeric-owner", "--same-owner", "--same-permissions",
                          "-xf", str(output), "-C", str(extracted))
             assert result.returncode == 0, result.stderr
             for file in ("rootfs-tree", "rootfs-tree/command", "rootfs-tree/private", "rootfs-tree/symbolic"):
@@ -113,6 +132,13 @@ def test_archive_preserves_numeric_owners_modes_links_and_cache_paths(tmp_path, 
                 assert (extracted / file).lstat().st_gid == 100000
             assert (extracted / "rootfs-tree/command").stat().st_mode & 0o777 == 0o751
             assert (extracted / "rootfs-tree/private").stat().st_mode & 0o777 == 0o600
+            if sys.platform == "linux":
+                private = extracted / "rootfs-tree/private"
+                attributes = run("sudo", "-n", sys.executable, "-c",
+                                 "import json, os, sys; print(json.dumps([os.getxattr(sys.argv[1], name).hex() "
+                                 "for name in ('user.safeyolo.fixture', 'system.posix_acl_access')]))", str(private))
+                assert attributes.returncode == 0, attributes.stderr
+                assert json.loads(attributes.stdout) == [b"guest metadata".hex(), acl.hex()]
             assert (extracted / "rootfs-tree/symbolic").readlink() == Path("command")
             assert (extracted / "rootfs-tree/command").stat().st_ino == (extracted / "rootfs-tree/hard").stat().st_ino
             assert (extracted / "cache-paths.txt").read_bytes() == (built / "cache-paths.txt").read_bytes()

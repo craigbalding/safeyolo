@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+LINUX_ENOKEY = 126  # Darwin's errno module has no ENOKEY.
+
 
 @pytest.fixture
 def keyring_probe(monkeypatch):
@@ -20,7 +22,7 @@ def keyring_probe(monkeypatch):
 @pytest.mark.parametrize("arch,getpid,keyctl,add_key", [("aarch64", 172, 219, 217), ("x86_64", 39, 250, 248)])
 @pytest.mark.parametrize("operation", ["keyctl", "add_key"])
 @pytest.mark.parametrize("result,error", [(-1, errno.ENOSYS), (-1, errno.EPERM), (-1, errno.EACCES),
-                                         (-1, errno.EINVAL), (-1, errno.EFAULT), (-1, errno.ENOKEY),
+                                         (-1, errno.EINVAL), (-1, errno.EFAULT), (-1, LINUX_ENOKEY),
                                          (-1, 0), (0, 0), (123, 0)])
 def test_keyring_probe_requires_valid_operation_and_specific_refusal(
     keyring_probe, monkeypatch, arch, getpid, keyctl, add_key, operation, result, error,
@@ -55,6 +57,7 @@ def test_keyring_probe_requires_valid_operation_and_specific_refusal(
 
 
 def test_keyring_probe_requires_working_positive_control(keyring_probe, monkeypatch):
+    monkeypatch.setattr("platform.machine", lambda: "aarch64")
     calls = []
 
     def syscall(number, *arguments):
