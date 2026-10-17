@@ -369,8 +369,12 @@ Each build resolves the official Debian **Trixie** index and both Linux
 architecture manifests once. The shared [resolver](../guest/resolve_inputs.py)
 also selects stable mise, gh, kernel and ORAS releases. The builders use this
 frozen record. They check official checksums, mise/ORAS checksum signatures
-and the kernel release signature. Resolution, verification, a missing
-architecture or an incompatible tool interface fails the build. There is no
+and the kernel release signature. Kernel keys come from the developers' Web Key
+Directories at kernel.org and, for Ben Hutchings, Debian. The mise key comes
+from its publisher at `https://mise.jdx.dev/gpg-key.pub`. These sources supply
+complete keys with self-signed user IDs for GPG compatibility. The existing
+full fingerprints remain the trusted identities. Resolution, verification,
+a missing architecture or an incompatible tool interface fails the build. There is no
 embedded old-version fallback. Actions commit pins and source lockfiles remain.
 
 The rootfs builder uses signed `trixie`, `trixie-updates` and `trixie-security`

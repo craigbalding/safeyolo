@@ -16,8 +16,20 @@ from pathlib import Path
 
 ARCHITECTURES = ("amd64", "arm64")
 PROJECTS = {"mise": "jdx/mise", "gh": "cli/cli", "oras": "oras-project/oras"}
-KERNEL_KEYS = {"ABAF11C65A2970B130ABE3C479BE3E4300411886", "647F28654894E3BD457199BE38DBBDC86092693E",
-               "E27E5D8A3403A2EF66873BBCDEA66FF797772CDC", "AC2B29BD34A6AFDDB3F68F35E7BFC8EC95861109"}
+# Fingerprints: https://www.kernel.org/signature.html . Complete keys come
+# from the developers' Web Key Directories, including Ben's Debian address
+# (https://wiki.debian.org/DebianKeyring). User IDs permit GPG to load a key;
+# only the documented fingerprints below establish the release identity.
+KERNEL_KEYS = {
+    "ABAF11C65A2970B130ABE3C479BE3E4300411886":
+        "https://kernel.org/.well-known/openpgpkey/hu/pf113mfnx1f3eb1yiwhsipa91xfc7o4x?l=torvalds",
+    "647F28654894E3BD457199BE38DBBDC86092693E":
+        "https://kernel.org/.well-known/openpgpkey/hu/e3n9xnm94c5apezqnj1pmrfuaoyfm8cf?l=gregkh",
+    "E27E5D8A3403A2EF66873BBCDEA66FF797772CDC":
+        "https://kernel.org/.well-known/openpgpkey/hu/7j1cnb5wfkj3ts7cgy4xz1gwsz9xs5mj?l=sashal",
+    "AC2B29BD34A6AFDDB3F68F35E7BFC8EC95861109":
+        "https://openpgpkey.debian.org/.well-known/openpgpkey/debian.org/hu/whrjzpz87r1omsrki9ayp167cdgjnefs?l=benh",
+}
 
 
 def now() -> str:
@@ -50,7 +62,7 @@ def signed_checksums(tool: str, version: str, names: dict, raw: bytes) -> dict:
                    "oras": "C6FC42F0DE84A345FAADB742F44418110791EF37"}[tool]
     signature_name = "SHASUMS256.asc" if tool == "mise" else f"oras_{version}_checksums.txt.asc"
     signature_url = names[signature_name]["browser_download_url"]
-    key_url = (f"https://keys.openpgp.org/vks/v1/by-fingerprint/{fingerprint}" if tool == "mise" else
+    key_url = ("https://mise.jdx.dev/gpg-key.pub" if tool == "mise" else
                f"https://raw.githubusercontent.com/oras-project/oras/v{version}/KEYS")
     signature, key = fetch(signature_url), fetch(key_url)
     with tempfile.TemporaryDirectory(prefix="safeyolo-release-signature-") as temporary:
@@ -205,13 +217,14 @@ def download(record: dict, destination: Path, *, kernel_signature: bool = False)
             signers = [key for key in KERNEL_KEYS if key in packets or key[-16:] in packets]
             if len(signers) != 1:
                 raise ValueError("kernel signature does not identify one documented release signer")
-            key_url = f"https://keys.openpgp.org/vks/v1/by-fingerprint/{signers[0]}"
+            key_url = KERNEL_KEYS[signers[0]]
             key = fetch(key_url)
-            # A fingerprint lookup can omit unverified user IDs. Use the public
-            # key packets directly; identity comes from the documented fingerprint.
+            # WKD returns binary keys. Import complete key material into this
+            # isolated keyring; dearmoring alone does not make a key usable.
             keyring = home / "release-key.gpg"
-            subprocess.run(["gpg", "--homedir", temporary, "--batch", "--no-autostart", "--dearmor",
-                            "--output", str(keyring)], input=key, check=True, timeout=60)
+            subprocess.run(["gpg", "--homedir", temporary, "--batch", "--no-autostart",
+                            "--no-default-keyring", "--keyring", str(keyring), "--import"],
+                           input=key, check=True, stdout=subprocess.DEVNULL, timeout=60)
             with tempfile.TemporaryFile(dir=destination.parent) as uncompressed:
                 subprocess.run(["xz", "-dc", str(destination)], stdout=uncompressed, check=True)
                 uncompressed.seek(0)
@@ -219,11 +232,11 @@ def download(record: dict, destination: Path, *, kernel_signature: bool = False)
                                                   "--no-default-keyring", "--keyring", str(keyring), "--status-fd", "1",
                                                   "--verify", str(signature), "-"], stdin=uncompressed, timeout=180).decode()
             fingerprints = {line.split()[-1] for line in status.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")}
-            if not fingerprints & KERNEL_KEYS:
+            if not fingerprints & KERNEL_KEYS.keys():
                 raise ValueError("kernel signature does not match a documented upstream release signer")
             destination.with_suffix(destination.suffix + ".verification.json").write_text(json.dumps({
                 "signature_url": record["signature_url"], "signature_sha256": sha256(signature.read_bytes()),
-                "signers": sorted(fingerprints & KERNEL_KEYS), "key_url": key_url, "key_sha256": sha256(key),
+                "signers": sorted(fingerprints & KERNEL_KEYS.keys()), "key_url": key_url, "key_sha256": sha256(key),
                 "method": "kernel.org documented release fingerprint; public key over HTTPS"}, indent=2) + "\n")
 
 
