@@ -221,10 +221,10 @@ impl Headers {
     }
 
     /// Combine raw parser fields using the source's first spelling and arrival
-    /// order before converting their values to security text. The credential
-    /// guard receives the already-combined `RequestHeaders` view, while the
-    /// pattern scanner receives parser pairs directly; keeping this operation
-    /// here makes both consumers use the same invalid-byte representation.
+    /// order before converting their values to security text. The
+    /// pattern scanner uses this combined view. The credential guard adapts
+    /// individual fields with `from_ordered` so repeated credentials retain
+    /// their own fingerprints. Both consumers share the invalid-byte encoding.
     pub(crate) fn from_parser_fields<'a>(
         fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
     ) -> Result<Self, Error> {
