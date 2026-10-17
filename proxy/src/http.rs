@@ -3504,7 +3504,11 @@ where
                 request.method(),
                 &destination.path,
                 request.headers(),
-                context.request_body_empty(),
+                // Select only the final head here. Progressive empty DATA can
+                // finish later; registration also requires the parser-validated
+                // empty body from this exchange's completion owner below.
+                context.request_body_empty()
+                    || (progressive && content_length.is_none_or(|length| length == 0)),
                 gateway_injected_header.is_some(),
             )
         })
@@ -3548,6 +3552,18 @@ where
             (sender.send_request(request).await?, connection)
         }
         upstream_h2::Selected::Unshared(outbound) => {
+            let request = if progressive {
+                // HTTP/1 Content-Length is itself the message boundary. In
+                // particular, zero would complete at HEADERS before ingress
+                // END_STREAM. Retain the original small-body parser barrier
+                // for negotiated H1 fallback; large bodies still stream.
+                let (parts, body) = request.into_parts();
+                let prepared = request_body::prepare(body, content_length, false).await?;
+                Request::from_parts(parts, prepared.body.boxed())
+            } else {
+                request.map(BodyExt::boxed)
+            };
+            let mut request = request;
             *request.version_mut() = hyper::Version::HTTP_11;
             let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
                 .preserve_header_case(true)
@@ -3726,7 +3742,7 @@ where
         if let Some(content) = &prepared.unvalidated_content {
             // Body EOF alone is insufficient (notably H2 NO_ERROR reset).
             // Register before any buffered response bytes reach the client.
-            if completion.response_complete() {
+            if completion.response_complete() && completion.request_body_empty() {
                 let encoding = test_context::combined(&parts.headers, header::CONTENT_ENCODING)?;
                 if let Ok(decoded) = crate::http_content::decode_prefix_with_size(
                     content,

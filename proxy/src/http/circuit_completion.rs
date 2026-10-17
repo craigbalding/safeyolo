@@ -40,6 +40,7 @@ struct Observation {
     applied: Option<bool>,
     request: Option<RequestContext>,
     request_parser_terminal: Option<bool>,
+    request_body_empty: bool,
     request_failed: bool,
     live_error: Option<zeroize::Zeroizing<String>>,
     gateway_lease: Option<crate::grants::GrantLease>,
@@ -108,6 +109,9 @@ impl Completion {
             (false, None) => Protocol::Http1(hyper::ext::on_response_complete(request)),
         };
         let request_parser_terminal = context.as_ref().and_then(RequestContext::parser_terminal);
+        let request_body_empty = context
+            .as_ref()
+            .is_some_and(RequestContext::request_body_empty);
         Arc::new(Self {
             observation: Mutex::new(Observation {
                 protocol: Some(protocol),
@@ -115,6 +119,7 @@ impl Completion {
                 applied: None,
                 request: context,
                 request_parser_terminal,
+                request_body_empty,
                 request_failed,
                 live_error: None,
                 gateway_lease,
@@ -254,6 +259,10 @@ impl Completion {
                 .request
                 .as_ref()
                 .and_then(RequestContext::parser_terminal);
+            observation.request_body_empty = observation
+                .request
+                .as_ref()
+                .is_some_and(RequestContext::request_body_empty);
             observation.request_failed |= failed;
             observation.request = None;
         }
@@ -295,6 +304,10 @@ impl Completion {
                 .request
                 .as_ref()
                 .and_then(RequestContext::parser_terminal);
+            observation.request_body_empty = observation
+                .request
+                .as_ref()
+                .is_some_and(RequestContext::request_body_empty);
             observation.request_failed |= failed;
             observation.request = None;
         }
@@ -321,6 +334,12 @@ impl Completion {
         self.lock().request_parser_terminal == Some(true)
     }
 
+    pub(super) fn request_body_empty(&self) -> bool {
+        let _ = self.try_finish();
+        let observation = self.lock();
+        observation.request_parser_terminal == Some(true) && observation.request_body_empty
+    }
+
     /// END_STREAM is an independent parser result, never an Incoming EOF or a
     /// zero length hint. In particular RST_STREAM(NO_ERROR) is not completion.
     pub(super) fn poll_request_complete(
@@ -335,6 +354,10 @@ impl Completion {
                 .request
                 .as_ref()
                 .and_then(RequestContext::parser_terminal);
+            observation.request_body_empty = observation
+                .request
+                .as_ref()
+                .is_some_and(RequestContext::request_body_empty);
             observation.request_failed |= failed;
             observation.request = None;
         }
@@ -590,6 +613,7 @@ mod tests {
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
                     request_parser_terminal: None,
+                    request_body_empty: false,
                     terminal: None,
                     live_error: None, gateway_lease: None,
                 }),

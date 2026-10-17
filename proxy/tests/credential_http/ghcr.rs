@@ -964,6 +964,69 @@ async fn h2_empty_data_is_anonymous_but_authentication_trailers_are_not() {
     }
 }
 
+#[tokio::test]
+async fn h2_delayed_empty_data_keeps_anonymous_issuance_and_trailer_isolation() {
+    use hyper::{HeaderMap, body::Frame};
+    for authenticated in [false, true] {
+        let fixture = Fixture::new(default_policy()).await;
+        let proxy = Proxy::start(fixture.config.clone()).await.unwrap();
+        let tls = connect_h2_through_proxy(
+            &fixture.config.listeners[0].socket_path,
+            "ghcr.io:443",
+            "ghcr.io",
+            fixture.ca.clone(),
+        )
+        .await;
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+        let (send, receive) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(2);
+        let body = http_body_util::StreamBody::new(futures_util::stream::unfold(
+            receive,
+            |mut receive| async move { receive.recv().await.map(|frame| (frame, receive)) },
+        ));
+        let response = tokio::spawn(
+            sender.send_request(
+                Request::builder()
+                    .uri(format!("https://ghcr.io{QUERY}"))
+                    .header("content-length", "0")
+                    .body(Box::pin(body))
+                    .unwrap(),
+            ),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        send.send(Ok(Frame::data(Bytes::new()))).await.unwrap();
+        if authenticated {
+            let mut trailers = HeaderMap::new();
+            trailers.insert(
+                "authorization",
+                "Bearer private-trailing-auth".parse().unwrap(),
+            );
+            send.send(Ok(Frame::trailers(trailers))).await.unwrap();
+        }
+        drop(send);
+        let response = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let _ = response.collect().await.unwrap();
+        let auth = format!("Bearer {FIRST}");
+        assert_eq!(
+            fixture
+                .fetch("ghcr.io", "GET", READ, &[("authorization", &auth)], true)
+                .await
+                .0,
+            if authenticated { 428 } else { 200 }
+        );
+        connection.abort();
+        proxy.shutdown().await;
+    }
+}
+
 /// Manual online witness. The candidate runs in this process and uses the
 /// configured parent proxy; it never opens a direct route around that parent.
 #[tokio::test]

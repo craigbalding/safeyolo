@@ -107,7 +107,8 @@ approval and circuit checks. No request header selects an inspection bypass.
 
 The proxy terminates TLS and reconstructs H2 frames. A coordinated client flush
 does not guarantee that the origin receives one TCP segment. HTTP/1.1 fallback
-and encrypted passthrough have different transport properties. For the direct
+retains the existing small-body completion barrier. Encrypted passthrough has
+different transport properties. For the direct
 comparison, origin timestamps and packet observations, use the
 [focused H2 probes](DEVELOPERS.md#http2-gate-verification).
 

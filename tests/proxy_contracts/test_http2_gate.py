@@ -222,9 +222,10 @@ condition = { agent = "alice", path_prefix = "/h2-mixed/gate/limited" }
         # The existing rate=1 burst permits two requests. Pool reuse must not
         # spend an extra token, or skip a per-request charge.
         limited = client.stage(3, "limited")
-        client.release(limited[:2])
+        client.release(limited)
         results = client.wait(denied + approval + limited)
-        assert [row["headers"][":status"] for row in results] == ["403", "428", "200", "200", "429"]
+        assert [row["headers"][":status"] for row in results[:2]] == ["403", "428"]
+        assert sorted(row["headers"][":status"] for row in results[2:]) == ["200", "200", "429"]
         with origin.lock:
             assert len(origin.requests) == 22
             assert not any(row.get("ended") for row in origin.requests if "/allowed/" in row[":path"])
@@ -317,6 +318,29 @@ def test_goaway_reconnects_without_replaying_requests(proxy_backend, tmp_path):
             client.finish(identifiers)
         assert origin.accepts == 2
         assert len(origin.requests) == len({row[":path"] for row in origin.requests}) == 40
+
+
+def test_h2_to_h1_fallback_keeps_small_request_completion_barrier(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    with origin_server(pem, protocols=("http/1.1",)) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+    ) as proxy, tls_tunnel(
+        proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+    ) as stream:
+        client = GatedClient(stream, origin.authority)
+        cancelled = client.stage(1, "h1-cancel", body=b"")
+        with origin.changed:
+            assert not origin.changed.wait_for(lambda: bool(origin.requests), timeout=0.2)
+        client.connection.reset_stream(cancelled[0], error_code=0)
+        client.flush()
+        sibling = client.stage(1, "h1-allowed", body=b"")
+        client.release(sibling, body=b"")
+        client.finish(sibling)
+        assert len(origin.requests) == 1
+        assert "/h1-allowed/" in origin.requests[0]["head"]
 
 
 @pytest.mark.parametrize("reset_code", [0, 8])
@@ -417,6 +441,26 @@ def test_repeated_h2_batches_bound_fds_memory_and_close_origin_socket(proxy_back
             assert origin.accepts == 1
         with origin.changed:
             assert origin.changed.wait_for(lambda: origin.closed_connections == {1}, timeout=2)
+
+
+def test_shutdown_closes_active_h2_session_without_completing_gated_requests(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    with origin_server(pem, idle_timeout=30) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+    ) as proxy, tls_tunnel(
+        proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+    ) as stream:
+        client = GatedClient(stream, origin.authority)
+        client.stage(20, "shutdown")
+        rows = wait_staged(origin, {f"/h2-mixed/gate/shutdown/{index}" for index in range(20)}, b"prefix!")
+        proxy.process.terminate()
+        assert proxy.process.wait(timeout=12) == 0
+        with origin.changed:
+            assert origin.changed.wait_for(lambda: origin.closed_connections == {1}, timeout=2)
+            assert all(not row.get("ended") for row in rows)
 
 
 @pytest.mark.parametrize("scope", ["body", "url"])

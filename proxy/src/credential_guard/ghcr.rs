@@ -33,6 +33,7 @@ struct Token {
 
 /// Created from the final outgoing request, never from a challenge or client
 /// assertion. No redirect response can construct or extend this observation.
+/// The HTTP owner must also validate the request's empty body before registration.
 pub(crate) struct Exchange {
     repositories: Vec<String>,
 }
