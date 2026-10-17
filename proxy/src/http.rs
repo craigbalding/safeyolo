@@ -56,6 +56,7 @@ mod test_context;
 mod trace_tests;
 mod traffic;
 mod traffic_url;
+mod upstream_h2;
 
 pub(crate) type Body = BoxBody<Bytes, Error>;
 
@@ -64,6 +65,7 @@ pub(crate) type Body = BoxBody<Bytes, Error>;
 struct HttpTask {
     task: tokio::task::AbortHandle,
     completion: Option<Arc<circuit_completion::Completion>>,
+    _session: Option<Arc<upstream_h2::Lease>>,
 }
 
 impl HttpTask {
@@ -71,6 +73,7 @@ impl HttpTask {
         Self {
             task,
             completion: None,
+            _session: None,
         }
     }
 }
@@ -134,6 +137,7 @@ struct ForwardedRequestBody {
     body: Body,
     completion: Arc<circuit_completion::Completion>,
     live: Option<Arc<crate::traffic_view::Exchange>>,
+    _session: Option<Arc<upstream_h2::Lease>>,
 }
 
 impl HttpBody for ForwardedRequestBody {
@@ -154,11 +158,17 @@ impl HttpBody for ForwardedRequestBody {
             live.request_trailers(live_view::header_map(trailers));
         }
         let _ = this.completion.try_finish();
+        if matches!(frame, Poll::Ready(None)) {
+            return this
+                .completion
+                .poll_request_complete(cx)
+                .map(|result| result.err().map(Err));
+        }
         frame
     }
 
     fn is_end_stream(&self) -> bool {
-        self.body.is_end_stream()
+        self.body.is_end_stream() && self.completion.request_complete()
     }
 
     fn size_hint(&self) -> SizeHint {
@@ -482,6 +492,8 @@ pub(crate) struct Destination {
 pub(crate) struct Tunnel {
     destination: Destination,
     upstream: tokio::sync::Mutex<Option<Connected>>,
+    sessions: upstream_h2::Sessions,
+    connected_runtime: std::sync::Weak<Runtime>,
 }
 
 impl Destination {
@@ -659,6 +671,7 @@ struct Outbound {
     stream: BoxStream,
     http2: bool,
     h1_request_form: H1RequestForm,
+    observation: crate::traffic_view::UpstreamConnectionObservation,
 }
 
 fn request_uri(
@@ -1179,11 +1192,18 @@ async fn open_outbound(
 ) -> Result<Outbound, Error> {
     let destination = allowed.destination;
     let existing = if let Some(tunnel) = tunnel {
-        tunnel.upstream.lock().await.take()
+        let connection = tunnel.upstream.lock().await.take();
+        // A reload may change parent routing or trust after CONNECT admission.
+        // Retain its donated socket only for the snapshot that opened it.
+        if std::ptr::eq(tunnel.connected_runtime.as_ptr(), runtime) {
+            connection
+        } else {
+            None
+        }
     } else {
         None
     };
-    let connection = match (existing, provider) {
+    let mut connection = match (existing, provider) {
         (Some(_), Some(_)) => {
             // A provider route may appear after a CONNECT was admitted under an
             // earlier policy snapshot. Never reuse that ordinary connection.
@@ -1238,14 +1258,17 @@ async fn open_outbound(
         .await?;
         http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
         stream = Box::new(tls);
+        let completed = crate::circuit_runtime::now();
+        connection.observation.tls_setup = Some(completed);
         if let Some(live) = live {
-            live.upstream_tls(crate::circuit_runtime::now());
+            live.upstream_tls(completed);
         }
     }
     Ok(Outbound {
         stream,
         http2,
         h1_request_form: connection.h1_request_form,
+        observation: connection.observation,
     })
 }
 
@@ -2559,6 +2582,8 @@ where
                 destination.scheme = scheme.into();
                 let tunnel = Arc::new(Tunnel {
                     destination,
+                    sessions: upstream_h2::Sessions::default(),
+                    connected_runtime: Arc::downgrade(&runtime),
                     upstream: tokio::sync::Mutex::new(Some(Connected {
                         stream: server,
                         h1_request_form,
@@ -2710,18 +2735,57 @@ where
             return Ok((prior_block(blocked), "deny".into()));
         }
     }
-    // Prepare the source body after the credential guard has run, but before
-    // gateway admission. A replay owner keeps every buffered frame (including
-    // trailers) available for the eventual upstream request.
+    // Applicable contracts and request-body rules retain pre-egress buffering.
+    // Other intercepted H2 requests deliver headers and prefixes progressively.
+    let gateway_headers: Vec<_> = ordered_headers
+        .recording_pairs()
+        .map(|(name, value)| {
+            (
+                crate::credential_text::source_text(name),
+                crate::credential_text::source_text(value),
+            )
+        })
+        .collect();
+    let gateway_request = crate::services::GatewayRequest {
+        identity: match identity.request_identity() {
+            crate::network_guard::Identity::Resolved(agent) => {
+                crate::services::TrustedIdentity::Agent(agent)
+            }
+            crate::network_guard::Identity::Conflict => crate::services::TrustedIdentity::Conflict,
+            crate::network_guard::Identity::Unavailable => {
+                crate::services::TrustedIdentity::Missing
+            }
+        },
+        host: &destination.policy_host,
+        request: crate::contracts::ContractRequest {
+            method: request.method().as_str(),
+            target: &destination.path,
+            headers: &gateway_headers,
+            body: &[],
+        },
+        route_mode: crate::services::RouteMode::LocalFallback,
+    };
+    let inspection_needs_body = inspection_options(&runtime, identity, &destination.policy_host)
+        .is_some()
+        && runtime
+            .scanner
+            .has_scope(crate::inspection::Direction::Request, "body")?;
+    let contract_needs_body = runtime
+        .policy
+        .as_ref()
+        .and_then(crate::policy::Policy::gateway)
+        .is_some_and(|gateway| gateway.requires_request_body(&gateway_request));
+    let buffer_required = client_version != hyper::Version::HTTP_2
+        || pipeline_probe
+        || request.body().is_end_stream()
+        || inspection_needs_body
+        || contract_needs_body;
+    let progressive = !buffer_required;
     let content_length = request.body().size_hint().exact();
     let (parts, body) = request.into_parts();
-    let prepared = request_body::prepare(body, content_length, false).await?;
+    let prepared = request_body::prepare(body, content_length, progressive).await?;
     let contract_body = prepared.unvalidated_content;
     let mut request = Request::from_parts(parts, prepared.body);
-    // Service-gateway selection is a request-local operation after network,
-    // circuit and credential admission. It consumes the trusted UDS identity
-    // and the published snapshot, then applies a vault credential before body
-    // observation or outbound dial.
     let mut grant_lease = None;
     let mut gateway_injected_header = None;
     let mut gateway_recording_header = None;
@@ -2732,16 +2796,6 @@ where
         let provider_name = snapshot
             .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))
             .map(str::to_owned);
-        // Gateway token fallback and contract checks need each original field.
-        let gateway_headers: Vec<_> = ordered_headers
-            .recording_pairs()
-            .map(|(name, value)| {
-                (
-                    crate::credential_text::source_text(name),
-                    crate::credential_text::source_text(value),
-                )
-            })
-            .collect();
         if ordered_headers
             .recording_pairs()
             .filter(|(_, value)| crate::services::has_gateway_token(value))
@@ -2821,7 +2875,7 @@ where
                     };
                     provider_route = Some((provider, caller_id.to_owned(), caller.to_owned()));
                 }
-                if credential.contract_operation.is_some() && contract_body.is_none() {
+                if contract_needs_body && contract_body.is_none() {
                     // A streamed body cannot be checked against a contract
                     // without first owning its complete parser terminal. Do
                     // not inject or dial while its constraint is unknown.
@@ -3360,9 +3414,11 @@ where
         .headers_mut()
         .append(header::VIA, format!("1.1 {}", runtime.via_token).parse()?);
     let (parts, body) = request.into_parts();
-    // Every ordinary HTTP exchange shares source buffering and the independent
-    // request parser barrier; quiet rules decide whether decoding is needed.
-    let (body, context) = context.buffer(body, content_length).await?;
+    let (body, context) = if progressive {
+        context.stream(body, content_length)?
+    } else {
+        context.buffer(body, content_length).await?
+    };
     let mut request = Request::from_parts(parts, body);
     if let Some(result) = context.inspection_result() {
         let result = result?;
@@ -3396,29 +3452,43 @@ where
             return Ok((prior_block(blocked), "deny".into()));
         }
     }
-    let outbound = open_outbound(
-        &runtime,
-        &AllowedRequest {
-            tasks: &upgrades,
-            destination,
-            identity,
-            request_id,
-        },
-        provider_route.as_ref().map(|(name, _, _)| name.as_str()),
-        request.version() == hyper::Version::HTTP_2,
-        tunnel,
-        live.as_deref(),
-        None,
-    )
-    .await?;
+    let allowed = AllowedRequest {
+        tasks: &upgrades,
+        destination,
+        identity,
+        request_id,
+    };
+    let provider = provider_route.as_ref().map(|(name, _, _)| name.as_str());
+    let outbound = if client_version == hyper::Version::HTTP_2
+        && let Some(tunnel) = tunnel
+    {
+        tunnel
+            .sessions
+            .select(&runtime, &allowed, provider, tunnel, live.as_deref())
+            .await?
+    } else {
+        upstream_h2::Selected::Unshared(
+            open_outbound(
+                &runtime,
+                &allowed,
+                provider,
+                false,
+                tunnel,
+                live.as_deref(),
+                None,
+            )
+            .await?,
+        )
+    };
+    let outbound_http2 = outbound.http2();
     *request.uri_mut() = request_uri(
         destination,
         &format!(
             "{}://{}{}",
             destination.scheme, destination.uri_authority, destination.path
         ),
-        outbound.http2,
-        outbound.h1_request_form,
+        outbound_http2,
+        outbound.h1_request_form(),
     )?;
     // Select only after all request mutation, including gateway injection and
     // body preparation, and after verified upstream TLS. No redirect is followed
@@ -3443,7 +3513,7 @@ where
     request.extensions_mut().insert(recording.clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
-        outbound.http2,
+        outbound_http2,
         state.clone(),
         identity.clone(),
         request_id.to_owned(),
@@ -3456,43 +3526,45 @@ where
         body,
         completion: completion.clone(),
         live: live.clone(),
+        _session: None,
     });
-    let (mut upstream, connection) = if outbound.http2 {
-        // :authority carries the admitted destination. Avoid retaining a second
-        // authority representation while translating a proxied request.
-        request.headers_mut().remove(header::HOST);
-        *request.version_mut() = hyper::Version::HTTP_2;
-        let (mut sender, connection) = hyper::client::conn::http2::handshake(
-            Executor(upgrades.clone()),
-            TokioIo::new(outbound.stream),
-        )
-        .await?;
-        let driver = completion.clone().drive(connection);
-        let connection = HttpTask {
-            task: upgrades.spawn(async move {
-                if let Err(error) = driver.await {
-                    eprintln!("upstream HTTP/2 connection: {error}");
-                }
-            }),
-            completion: Some(completion.clone()),
-        };
-        (sender.send_request(request).await?, connection)
-    } else {
-        *request.version_mut() = hyper::Version::HTTP_11;
-        let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
-            .preserve_header_case(true)
-            .handshake(TokioIo::new(outbound.stream))
-            .await?;
-        let driver = completion.clone().drive(connection.with_upgrades());
-        let connection = HttpTask {
-            task: upgrades.spawn(async move {
-                if let Err(error) = driver.await {
-                    eprintln!("upstream HTTP connection: {error}");
-                }
-            }),
-            completion: Some(completion.clone()),
-        };
-        (sender.send_request(request).await?, connection)
+    let (mut upstream, connection) = match outbound {
+        upstream_h2::Selected::Http2(session) => {
+            let session = Arc::new(session);
+            // An origin can finish its response while an upload is still
+            // gated. Keep the session active until both body owners drop.
+            request.body_mut()._session = Some(session.clone());
+            request.headers_mut().remove(header::HOST);
+            *request.version_mut() = hyper::Version::HTTP_2;
+            let mut sender = session.sender();
+            let driver = completion.clone().observe();
+            let connection = HttpTask {
+                task: upgrades.spawn(async move {
+                    let _ = driver.await;
+                }),
+                completion: Some(completion.clone()),
+                _session: Some(session),
+            };
+            (sender.send_request(request).await?, connection)
+        }
+        upstream_h2::Selected::Unshared(outbound) => {
+            *request.version_mut() = hyper::Version::HTTP_11;
+            let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .handshake(TokioIo::new(outbound.stream))
+                .await?;
+            let driver = completion.clone().drive(connection.with_upgrades());
+            let connection = HttpTask {
+                task: upgrades.spawn(async move {
+                    if let Err(error) = driver.await {
+                        eprintln!("upstream HTTP connection: {error}");
+                    }
+                }),
+                completion: Some(completion.clone()),
+                _session: None,
+            };
+            (sender.send_request(request).await?, connection)
+        }
     };
     completion.headers_received();
     let _ = completion.try_finish();

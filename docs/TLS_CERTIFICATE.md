@@ -82,6 +82,35 @@ Disabling pinning in a development application can also make it accept the
 proxy CA. Avoid flags that disable all certificate verification: they remove
 origin authenticity rather than trusting this CA.
 
+## HTTP/2 request staging
+
+Within one intercepted HTTP/2 (H2) client connection, allowed requests to the
+admitted origin share an upstream H2 session. Reuse stays within the trusted
+agent, authority, parent or provider route, TLS trust and runtime snapshot.
+The proxy retains the socket opened for CONNECT when its snapshot still
+matches. A policy reload selects a separate session for new admitted streams.
+An unused session expires after 60 seconds. An open request or response keeps
+its session active.
+
+An H2 client can send request headers and a body prefix, hold the final byte or
+END_STREAM, then release several streams in one flush. END_STREAM marks the end
+of that stream's request. Small requests can reach the origin before completion
+when their applicable controls can decide from the request head. Recording
+retains bounded bytes as forwarding proceeds. Parser validation still decides
+whether the request completed; a reset does not become a successful end.
+
+An applicable request-body scan or body-dependent service contract keeps its
+existing pre-egress checks. These requests wait for complete content and cannot
+pre-position their body at the origin. A query-only contract does not require
+that wait. Each stream still has its own network, credential, gateway, budget,
+approval and circuit checks. No request header selects an inspection bypass.
+
+The proxy terminates TLS and reconstructs H2 frames. A coordinated client flush
+does not guarantee that the origin receives one TCP segment. HTTP/1.1 fallback
+and encrypted passthrough have different transport properties. For the direct
+comparison, origin timestamps and packet observations, use the
+[focused H2 probes](DEVELOPERS.md#http2-gate-verification).
+
 ## Troubleshooting
 
 Check the configured public CA path, its readable mode and its dates. Inspect

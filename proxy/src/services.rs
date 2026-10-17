@@ -813,6 +813,50 @@ impl GatewaySnapshot {
         }
         decision
     }
+
+    /// A selected capability contract can inspect the complete body. This is
+    /// only a buffering decision; `select` still performs all authorization.
+    pub(crate) fn requires_request_body(&self, request: &GatewayRequest<'_>) -> bool {
+        let Some(registry) = self.registry.as_deref() else {
+            return false;
+        };
+        let Some(token) = extract_token(registry, &self.hosts, request) else {
+            return false;
+        };
+        self.tokens
+            .iter()
+            .enumerate()
+            .find(|(index, binding)| {
+                !self
+                    .token_timestamps
+                    .get(*index)
+                    .is_some_and(|typed| typed.token)
+                    && binding.token.expose_secret() == token.expose_secret()
+            })
+            .and_then(|(_, binding)| {
+                registry
+                    .services
+                    .get(binding.service.as_str()?)?
+                    .capabilities
+                    .get(binding.capability.as_str()?)?
+                    .contract
+                    .as_ref()
+            })
+            .and_then(|contract| {
+                contract.match_operation(
+                    request.request.method,
+                    &normalize_path(request.request.target.split('?').next().unwrap_or_default()),
+                )
+            })
+            .is_some_and(|operation| {
+                ["POST", "PUT", "PATCH"].contains(&request.request.method)
+                    || operation
+                        .request
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| transport.require_no_body)
+            })
+    }
 }
 
 #[derive(Default)]

@@ -39,6 +39,7 @@ struct Observation {
     terminal: Option<Result<StatusCode, ()>>,
     applied: Option<bool>,
     request: Option<RequestContext>,
+    request_parser_terminal: Option<bool>,
     request_failed: bool,
     live_error: Option<zeroize::Zeroizing<String>>,
     gateway_lease: Option<crate::grants::GrantLease>,
@@ -106,12 +107,14 @@ impl Completion {
             (true, None) => Protocol::Http2(h2::ext::on_response_complete(request)),
             (false, None) => Protocol::Http1(hyper::ext::on_response_complete(request)),
         };
+        let request_parser_terminal = context.as_ref().and_then(RequestContext::parser_terminal);
         Arc::new(Self {
             observation: Mutex::new(Observation {
                 protocol: Some(protocol),
                 terminal: None,
                 applied: None,
                 request: context,
+                request_parser_terminal,
                 request_failed,
                 live_error: None,
                 gateway_lease,
@@ -247,6 +250,10 @@ impl Completion {
             .as_mut()
             .and_then(RequestContext::try_finish)
         {
+            observation.request_parser_terminal = observation
+                .request
+                .as_ref()
+                .and_then(RequestContext::parser_terminal);
             observation.request_failed |= failed;
             observation.request = None;
         }
@@ -284,6 +291,10 @@ impl Completion {
         if let Some(request) = observation.request.as_mut()
             && let Poll::Ready(failed) = request.poll(cx)
         {
+            observation.request_parser_terminal = observation
+                .request
+                .as_ref()
+                .and_then(RequestContext::parser_terminal);
             observation.request_failed |= failed;
             observation.request = None;
         }
@@ -304,6 +315,43 @@ impl Completion {
     pub(super) fn evidence_failed(&self) -> bool {
         let observation = self.lock();
         observation.request_failed || observation.applied.unwrap_or(false)
+    }
+
+    pub(super) fn request_complete(&self) -> bool {
+        self.lock().request_parser_terminal == Some(true)
+    }
+
+    /// END_STREAM is an independent parser result, never an Incoming EOF or a
+    /// zero length hint. In particular RST_STREAM(NO_ERROR) is not completion.
+    pub(super) fn poll_request_complete(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), crate::Error>> {
+        let mut observation = self.lock();
+        if let Some(request) = observation.request.as_mut()
+            && let Poll::Ready(failed) = request.poll(cx)
+        {
+            observation.request_parser_terminal = observation
+                .request
+                .as_ref()
+                .and_then(RequestContext::parser_terminal);
+            observation.request_failed |= failed;
+            observation.request = None;
+        }
+        match observation.request_parser_terminal {
+            Some(true) => Poll::Ready(Ok(())),
+            Some(false) => Poll::Ready(Err("request completion aborted".into())),
+            None => Poll::Pending,
+        }
+    }
+
+    /// A reusable connection has a separate observer for each exchange. The
+    /// existing teardown guard still owns recording and completion application.
+    pub(super) fn observe(self: Arc<Self>) -> impl Future<Output = hyper::Result<()>> + Send {
+        let completion = self.clone();
+        self.drive(std::future::poll_fn(move |cx| {
+            completion.poll(cx).map(|_| Ok(()))
+        }))
     }
 
     /// Construct the teardown owner now, so even an unpolled future has its guard.
@@ -541,6 +589,7 @@ mod tests {
             let completion = Arc::new(Completion {
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
+                    request_parser_terminal: None,
                     terminal: None,
                     live_error: None, gateway_lease: None,
                 }),

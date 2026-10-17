@@ -265,3 +265,10 @@ source = "guest/install-novnc-assets.sh"
 pattern = '(?m)^version=(?P<version>[0-9.]+)$'
 docs = ["contrib/ROOTFS_SCRIPT_GUIDE.md"]
 must_contain = "noVNC {version}"
+
+[[assertion]]
+name = "http2-upstream-idle-timeout"
+source = "proxy/src/http/upstream_h2.rs"
+pattern = 'const IDLE_TIMEOUT: Duration = Duration::from_secs\((?P<seconds>\d+)\);'
+docs = ["docs/TLS_CERTIFICATE.md"]
+must_contain = "after {seconds} seconds"

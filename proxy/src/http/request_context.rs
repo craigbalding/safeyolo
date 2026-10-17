@@ -7,10 +7,10 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use http_body_util::BodyExt;
@@ -110,6 +110,63 @@ pub(super) struct RequestContext {
     trace: Option<Arc<RequestTrace>>,
     inspection: Option<Box<RequestInspection>>,
     stop: Option<watch::Receiver<bool>>,
+    capture: Option<Arc<Mutex<ProgressiveCapture>>>,
+    parser_terminal: Option<bool>,
+}
+
+/// Recording can retain bounded bytes while forwarding proceeds. Only a body
+/// terminal AND positive parser completion may publish the captured content.
+struct ProgressiveCapture {
+    content: Option<crate::http_content::BufferedContent>,
+    complete: bool,
+    trailers: bool,
+    waker: Option<Waker>,
+}
+
+struct CapturedBody<B> {
+    source: B,
+    capture: Arc<Mutex<ProgressiveCapture>>,
+}
+
+impl<B> Body for CapturedBody<B>
+where
+    B: Body<Data = hyper::body::Bytes> + Unpin,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    type Data = hyper::body::Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Error>>> {
+        let this = self.get_mut();
+        let frame = Pin::new(&mut this.source).poll_frame(cx);
+        let mut capture = this.capture.lock().unwrap_or_else(|e| e.into_inner());
+        if let Poll::Ready(Some(Ok(frame))) = &frame {
+            if let Some(data) = frame.data_ref()
+                && let Some(content) = capture.content.as_mut()
+                && let Err(error) = content.try_push(data)
+            {
+                return Poll::Ready(Some(Err(error.into())));
+            }
+            capture.trailers |= frame.trailers_ref().is_some();
+        }
+        if matches!(frame, Poll::Ready(None)) || this.source.is_end_stream() {
+            capture.complete = true;
+            if let Some(waker) = capture.waker.take() {
+                waker.wake();
+            }
+        }
+        frame.map(|frame| frame.map(|result| result.map_err(|error| -> Error { Box::new(error) })))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.source.is_end_stream()
+    }
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.source.size_hint()
+    }
 }
 
 /// Call after network/circuit admission and CONNECT exclusion. Only reserved
@@ -224,6 +281,8 @@ pub(super) fn prepare<B>(
         trace,
         inspection: None,
         stop: None,
+        capture: None,
+        parser_terminal: None,
     }))
 }
 
@@ -251,6 +310,8 @@ impl RequestContext {
             trace,
             inspection: None,
             stop: None,
+            capture: None,
+            parser_terminal: None,
         })
     }
 
@@ -318,6 +379,42 @@ impl RequestContext {
     /// True only after parser validation, with no payload or trailing headers.
     pub(super) fn request_body_empty(&self) -> bool {
         self.request_body_empty
+    }
+
+    pub(super) fn parser_terminal(&self) -> Option<bool> {
+        self.parser_terminal
+    }
+
+    /// Preserve prefix delivery and END_STREAM timing when no applicable
+    /// request rule or gateway contract requires complete content at admission.
+    pub(super) fn stream<B>(
+        mut self,
+        body: B,
+        content_length: Option<u64>,
+    ) -> Result<(super::Body, Self), Error>
+    where
+        B: Body<Data = hyper::body::Bytes> + Unpin + Send + Sync + 'static,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        self.apply_inspection(None);
+        let capture = Arc::new(Mutex::new(ProgressiveCapture {
+            content: Some(crate::http_content::BufferedContent::new(
+                content_length,
+                false,
+            )),
+            complete: body.is_end_stream(),
+            trailers: false,
+            waker: None,
+        }));
+        self.capture = Some(capture.clone());
+        Ok((
+            CapturedBody {
+                source: body,
+                capture,
+            }
+            .boxed(),
+            self,
+        ))
     }
 
     /// Small buffered requests must cross the independent parser barrier before
@@ -463,6 +560,7 @@ impl RequestContext {
             } else if (&mut pending.observer).await.is_err() {
                 return Err("request completion aborted".into());
             }
+            self.parser_terminal = Some(true);
             self.apply(pending, Some(content.as_slice()));
         }
         Ok(())
@@ -536,6 +634,13 @@ impl RequestContext {
         if let Some(failed) = self.terminal {
             return Some(failed);
         }
+        if self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| !capture.lock().unwrap_or_else(|e| e.into_inner()).complete)
+        {
+            return None;
+        }
         let result = self.pending.as_mut()?.observer.try_result()?;
         self.finish(result);
         self.terminal
@@ -544,6 +649,13 @@ impl RequestContext {
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         if let Some(failed) = self.terminal {
             return Poll::Ready(failed);
+        }
+        if let Some(capture) = &self.capture {
+            let mut capture = capture.lock().unwrap_or_else(|e| e.into_inner());
+            if !capture.complete {
+                capture.waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
         }
         let Some(pending) = self.pending.as_mut() else {
             return Poll::Ready(false);
@@ -561,8 +673,19 @@ impl RequestContext {
         let Some(pending) = self.pending.take() else {
             return;
         };
+        self.parser_terminal = Some(result.is_ok());
         if result.is_ok() {
-            self.apply(pending, None);
+            let content = self.capture.take().and_then(|capture| {
+                let mut capture = capture.lock().unwrap_or_else(|e| e.into_inner());
+                let content = capture
+                    .content
+                    .take()
+                    .and_then(|content| content.into_content());
+                self.request_body_empty =
+                    !capture.trailers && content.as_ref().is_some_and(|content| content.is_empty());
+                content
+            });
+            self.apply(pending, content.as_deref().map(Vec::as_slice));
         } else {
             // Aborted validation drops the unbegun permit without metadata,
             // counters or a fabricated successful body terminal.

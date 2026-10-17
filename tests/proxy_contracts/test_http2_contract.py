@@ -11,12 +11,13 @@ import ssl
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from time import monotonic
+from time import monotonic, monotonic_ns
 
 import h2.config
 import h2.connection
 import h2.errors
 import h2.events
+import h2.settings
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -99,16 +100,31 @@ def origin_certificate(directory):
 
 
 class Origin(socketserver.ThreadingTCPServer):
-    def __init__(self, pem, protocols):
+    def __init__(self, pem, protocols, *, race_window=0, max_streams=100, capture_frames=False,
+                 keylog=None, port=0, goaway_after=None, idle_timeout=5, response_bytes=0, early_response=False):
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.context.load_cert_chain(pem)
         self.context.set_alpn_protocols(protocols)
+        if keylog is not None:
+            self.context.keylog_filename = str(keylog)
         self.protocols = protocols
         self.requests = []
         self.negotiated_alpn = []
         self.accepts = 0
         self.lock = threading.Lock()
-        super().__init__(("127.0.0.1", 0), OriginHandler)
+        self.changed = threading.Condition(self.lock)
+        self.next_connection_id = 0
+        self.max_streams = max_streams
+        self.race_window = race_window
+        self.race_remaining = {}
+        self.capture_frames = capture_frames
+        self.h2_frames = []
+        self.goaway_after = goaway_after
+        self.closed_connections = set()
+        self.idle_timeout = idle_timeout
+        self.response_bytes = response_bytes
+        self.early_response = early_response
+        super().__init__(("127.0.0.1", port), OriginHandler)
 
     def get_request(self):
         request = super().get_request()
@@ -123,6 +139,9 @@ class Origin(socketserver.ThreadingTCPServer):
 
 class OriginHandler(socketserver.BaseRequestHandler):
     def handle(self):
+        with self.server.lock:
+            self.server.next_connection_id += 1
+            connection_id = self.server.next_connection_id
         try:
             with self.server.context.wrap_socket(self.request, server_side=True) as stream:
                 stream.settimeout(5)
@@ -132,31 +151,102 @@ class OriginHandler(socketserver.BaseRequestHandler):
                 if negotiated == "h2":
                     connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
                         client_side=False, header_encoding="utf-8"))
+                    connection.local_settings = h2.settings.Settings(client=False, initial_values={
+                        h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS: self.server.max_streams,
+                    })
                     connection.initiate_connection()
                     stream.sendall(connection.data_to_send())
                     requests = {}
-                    while data := stream.recv(65536):
+                    self.pending_responses = {}
+                    delayed = []
+                    wire = bytearray()
+                    preface = True
+                    read_id = 0
+                    while True:
+                        self.flush_pending(connection, requests)
+                        now = monotonic()
+                        ready = [row for row in delayed if row[0] <= now]
+                        delayed = [row for row in delayed if row[0] > now]
+                        for _, identifier, balance, race_key in ready:
+                            if balance:
+                                self.server.race_remaining[race_key] = balance - 1
+                            self.respond(connection, requests[identifier], identifier, winner=bool(balance))
+                        closing = (self.server.goaway_after is not None
+                                   and sum(row.get("ended", False) for row in requests.values()) >= self.server.goaway_after)
+                        if closing:
+                            connection.close_connection(last_stream_id=max(requests))
+                        if output := connection.data_to_send():
+                            stream.sendall(output)
+                        if closing:
+                            return
+                        stream.settimeout(max(0.0001, min(row[0] for row in delayed) - monotonic())
+                                          if delayed else self.server.idle_timeout)
+                        try:
+                            data = stream.recv(65536)
+                        except TimeoutError:
+                            if delayed:
+                                continue
+                            return
+                        if not data:
+                            return
+                        read_id += 1
+                        if self.server.capture_frames:
+                            wire.extend(data)
+                            if preface and len(wire) >= 24:
+                                assert wire[:24] == b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+                                del wire[:24]
+                                preface = False
+                            while not preface and len(wire) >= 9:
+                                length = int.from_bytes(wire[:3], "big")
+                                if len(wire) < 9 + length:
+                                    break
+                                with self.server.lock:
+                                    self.server.h2_frames.append({
+                                        "connection_id": connection_id, "tls_read": read_id,
+                                        "length": length, "type": wire[3], "flags": wire[4],
+                                        "stream_id": int.from_bytes(wire[5:9], "big") & 0x7fffffff,
+                                        "observed_ns": monotonic_ns(),
+                                    })
+                                del wire[:9 + length]
                         for event in connection.receive_data(data):
                             if isinstance(event, h2.events.RequestReceived):
                                 record = dict(event.headers)
                                 record["body"] = bytearray()
+                                record.update(connection_id=connection_id, stream_id=event.stream_id,
+                                              alpn=negotiated, headers_ns=monotonic_ns(),
+                                              peer_port=stream.getpeername()[1])
                                 requests[event.stream_id] = record
-                                with self.server.lock:
+                                with self.server.changed:
                                     self.server.requests.append(record)
+                                    self.server.changed.notify_all()
+                                if self.server.early_response and "/early-response/" in record[":path"]:
+                                    record["responded_early"] = True
+                                    self.respond(connection, record, event.stream_id)
                             elif isinstance(event, h2.events.StreamEnded):
-                                requests[event.stream_id]["ended"] = True
-                                path = requests[event.stream_id][":path"]
-                                body = path.encode() if path.startswith("/h2-mixed/") else b"hello"
-                                connection.send_headers(event.stream_id, [
-                                    (":status", "200"), ("content-length", str(len(body))),
-                                ])
-                                connection.send_data(event.stream_id, body, end_stream=True)
+                                with self.server.changed:
+                                    requests[event.stream_id]["ended"] = True
+                                    requests[event.stream_id]["ended_ns"] = monotonic_ns()
+                                    self.server.changed.notify_all()
+                                record = requests[event.stream_id]
+                                if record.get("responded_early"):
+                                    continue
+                                if self.server.race_window:
+                                    race_key = record[":path"].rsplit("/", 1)[0]
+                                    balance = self.server.race_remaining.setdefault(race_key, 1)
+                                    delayed.append((monotonic() + self.server.race_window,
+                                                    event.stream_id, balance, race_key))
+                                else:
+                                    self.respond(connection, record, event.stream_id)
                             elif isinstance(event, h2.events.DataReceived):
-                                with self.server.lock:
+                                with self.server.changed:
                                     requests[event.stream_id]["body"].extend(event.data)
+                                    self.server.changed.notify_all()
                                 connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
-                        if output := connection.data_to_send():
-                            stream.sendall(output)
+                            elif isinstance(event, h2.events.StreamReset):
+                                self.pending_responses.pop(event.stream_id, None)
+                                with self.server.changed:
+                                    requests[event.stream_id]["reset_code"] = int(event.error_code)
+                                    self.server.changed.notify_all()
                 elif "http/1.1" in self.server.protocols:
                     head = b""
                     while not head.endswith(b"\r\n\r\n"):
@@ -171,11 +261,49 @@ class OriginHandler(socketserver.BaseRequestHandler):
             # Closing the proxy owns cancellation of its origin TLS sockets.
             # Assertions check application requests and exact response bodies.
             return
+        finally:
+            with self.server.changed:
+                self.server.closed_connections.add(connection_id)
+                self.server.changed.notify_all()
+
+    def respond(self, connection, record, identifier, *, winner=None):
+        path = record[":path"]
+        large = self.server.response_bytes and "/slow-reader/" in path
+        body = b"x" * self.server.response_bytes if large else path.encode() if path.startswith("/h2-mixed/") else b"hello"
+        response_headers = [(":status", "200"), ("content-length", str(len(body)))]
+        if winner is not None:
+            response_headers.append(("x-race-winner", "1" if winner else "0"))
+        connection.send_headers(identifier, response_headers)
+        if large:
+            self.pending_responses[identifier] = (body, 0)
+        else:
+            connection.send_data(identifier, body, end_stream=True)
+
+    def flush_pending(self, connection, requests):
+        while True:
+            progress = False
+            for identifier, (body, offset) in list(self.pending_responses.items()):
+                count = min(connection.local_flow_control_window(identifier), connection.max_outbound_frame_size,
+                            len(body) - offset)
+                if not count:
+                    continue
+                end = offset + count == len(body)
+                connection.send_data(identifier, body[offset:offset + count], end_stream=end)
+                with self.server.changed:
+                    requests[identifier]["response_bytes_sent"] = offset + count
+                    self.server.changed.notify_all()
+                if end:
+                    del self.pending_responses[identifier]
+                else:
+                    self.pending_responses[identifier] = (body, offset + count)
+                progress = True
+            if not progress:
+                return
 
 
 @contextmanager
-def origin_server(pem, protocols=("h2",)):
-    server = Origin(pem, list(protocols))
+def origin_server(pem, protocols=("h2",), **settings):
+    server = Origin(pem, list(protocols), **settings)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
@@ -267,15 +395,14 @@ class H2CancellationOriginHandler(socketserver.BaseRequestHandler):
                                     break
                             connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
                         elif isinstance(event, h2.events.StreamReset):
-                            if any(record["connection_id"] == connection_id and record[":path"] == "/h2-cancel"
+                            if any(record["connection_id"] == connection_id and record["stream_id"] == event.stream_id
+                                   and record[":path"] == "/h2-cancel"
                                    for record in server.requests):
                                 server.cancel_reset_code = int(event.error_code)
                                 server.reset_seen.set()
                     if output := connection.data_to_send():
                         stream.sendall(output)
-                    if keep_stream_id is not None:
-                        if not server.reset_seen.wait(timeout=5):
-                            raise TimeoutError("cancel stream reset was not observed")
+                    if keep_stream_id is not None and server.reset_seen.is_set():
                         self._finish_keep(connection, keep_stream_id)
                         # The client need not send another frame after its reset.
                         stream.sendall(connection.data_to_send())
@@ -850,6 +977,7 @@ def test_h2_cancellation_origin_flushes_sibling_without_another_client_frame(tmp
                     client_side=True, header_encoding="utf-8"))
                 connection.initiate_connection()
                 connection.send_headers(1, headers(origin.authority, "/h2-keep"), end_stream=True)
+                connection.send_headers(3, headers(origin.authority, "/h2-cancel"), end_stream=True)
                 stream.sendall(connection.data_to_send())
 
                 saw_headers = False
@@ -858,11 +986,13 @@ def test_h2_cancellation_origin_flushes_sibling_without_another_client_frame(tmp
                     assert data, "origin closed before sibling response headers"
                     for event in connection.receive_data(data):
                         if isinstance(event, h2.events.ResponseReceived):
-                            assert event.stream_id == 1
-                            assert dict(event.headers)[":status"] == "200"
-                            saw_headers = True
-                # Trigger the reset gate without another write on this socket.
-                origin.reset_seen.set()
+                            if event.stream_id == 1:
+                                assert dict(event.headers)[":status"] == "200"
+                                saw_headers = True
+                # After this reset, no more client frames are needed to flush
+                # the sibling's response on the same origin connection.
+                connection.reset_stream(3, error_code=h2.errors.ErrorCodes.CANCEL)
+                stream.sendall(connection.data_to_send())
                 assert origin.keep_completed.wait(timeout=5)
 
                 body = bytearray()
@@ -872,8 +1002,8 @@ def test_h2_cancellation_origin_flushes_sibling_without_another_client_frame(tmp
                     assert data, "origin closed before sibling response body"
                     for event in connection.receive_data(data):
                         if isinstance(event, h2.events.DataReceived):
-                            assert event.stream_id == 1
-                            body.extend(event.data)
+                            if event.stream_id == 1:
+                                body.extend(event.data)
                         elif isinstance(event, h2.events.StreamEnded):
                             assert event.stream_id == 1
                             ended = True
@@ -970,7 +1100,7 @@ def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend
             "handler_errors": origin.handler_errors,
         }
         assert origin.handler_errors == [], origin.handler_errors
-        assert len(origin.alpn) == 2
+        assert len(origin.alpn) == 1
         assert set(origin.alpn) == {"h2"}
         assert origin.cancel_reset_code == int(h2.errors.ErrorCodes.CANCEL)
         assert origin.cancel_response_bytes == len(b"cancel-partial")
@@ -979,8 +1109,8 @@ def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend
         assert {row[":path"] for row in origin.requests} == {"/h2-cancel", "/h2-keep"}
         assert {row[":method"] for row in origin.requests} == {"GET"}
         assert {row["request_body_bytes"] for row in origin.requests} == {0}
-        assert len({row["connection_id"] for row in origin.requests}) == 2
-        assert {row["stream_id"] for row in origin.requests} == {1}
+        assert len({row["connection_id"] for row in origin.requests}) == 1
+        assert {row["stream_id"] for row in origin.requests} == {1, 3}
         events = [event for event in read_events(proxy.event_log) if event.get("event") == "proxy.request"]
         assert len(events) == 3  # CONNECT plus the two independently proxied streams.
         inner_events = [event for event in events
