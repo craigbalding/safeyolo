@@ -54,6 +54,19 @@ fn macos_process_token_detail(pid: i64) -> Result<String, String> {
         .ok()
         .filter(|pid| *pid > 0)
         .ok_or_else(|| format!("stage=pid invalid_pid={pid}"))?;
+    #[cfg(test)]
+    if let Ok((fault_pid, Ok(fault))) =
+        VZ_TEST_IDENTITY_FAULT.try_with(|(pid, path)| (*pid, std::fs::read_to_string(path)))
+        && fault_pid == pid
+    {
+        // Reproduce the retained lookup failure while the real helper and
+        // its sockets remain live. Signal-zero still uses the operating system.
+        return match fault.as_str() {
+            "unavailable" => Err("stage=proc_pidinfo return=0 expected=136 errno=Some(3)".into()),
+            "conflict" => Ok(format!("darwin:{pid}:1:0")),
+            _ => panic!("invalid VZ test identity fault"),
+        };
+    }
     let mut info = std::mem::MaybeUninit::<DarwinProcessInfo>::zeroed();
     let size = std::mem::size_of::<DarwinProcessInfo>();
     if size != 136 {
@@ -398,7 +411,7 @@ fn vz_process_absence_detail(pid: i32) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn vz_wait_matches(
+fn vz_helper_is_absent(
     name: &str,
     pid: i32,
     expected: &str,
@@ -413,7 +426,7 @@ fn vz_wait_matches(
         };
         *first_mismatch = Some(format!("{detail}; {}", vz_process_absence_detail(pid)));
     }
-    matches
+    crate::host_runs::process_is_absent(pid)
 }
 
 #[cfg(target_os = "linux")]
@@ -439,6 +452,8 @@ pub(crate) fn config_dir() -> PathBuf {
 
 tokio::task_local! { static INSTANCE_ROOT: PathBuf; }
 tokio::task_local! { static INSTANCE_CONFIG: PathBuf; }
+#[cfg(all(test, target_os = "macos"))]
+tokio::task_local! { static VZ_TEST_IDENTITY_FAULT: (i32, PathBuf); }
 
 pub(crate) fn config_path() -> PathBuf {
     if let Ok(path) = INSTANCE_CONFIG.try_with(Clone::clone) {
@@ -1786,9 +1801,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         let token = match token {
             Ok(token) => token,
             Err(detail) => {
-                if unsafe { libc::kill(pid, 0) } != 0
-                    && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
-                {
+                if crate::host_runs::process_is_absent(pid) {
                     std::fs::remove_file(path)?;
                     let _ = std::fs::remove_file(
                         config_dir().join("agents").join(name).join("vm.token"),
@@ -1809,21 +1822,37 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
             }
         }
         for _ in 0..100 {
-            if !vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
+            if vz_helper_is_absent(name, pid, &token, &mut first_wait_mismatch) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        if vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+        if !vz_helper_is_absent(name, pid, &token, &mut first_wait_mismatch) {
+            // A failed lookup or a different birth does not authorize a
+            // further signal. Only positive absence permits retirement.
+            let observed = vm_process_token_detail(name, pid);
+            if observed.as_deref() != Ok(token.as_str()) {
+                return Err(io::Error::other(format!(
+                    "VZ helper absence is unconfirmed; refusing SIGKILL without the expected helper identity; observed={observed:?}; {}",
+                    vz_process_absence_detail(pid)
+                )));
+            }
+            if unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
             for _ in 0..50 {
-                if !vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
+                if vz_helper_is_absent(name, pid, &token, &mut first_wait_mismatch) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            if vz_wait_matches(name, pid, &token, &mut first_wait_mismatch) {
-                return Err(io::Error::other("owned VZ helper did not stop"));
+            if !vz_helper_is_absent(name, pid, &token, &mut first_wait_mismatch) {
+                return Err(io::Error::other(
+                    "owned VZ helper did not stop; process absence is unconfirmed",
+                ));
             }
         }
         match std::fs::remove_file(path) {
@@ -2482,12 +2511,25 @@ mod tests {
         loop {
             tokio::select! {
                 _ = terminate.recv() => {
+                    let signals = root.join("signals");
+                    let count = std::fs::read_to_string(&signals).unwrap_or_default().parse::<u32>().unwrap_or(0);
+                    std::fs::write(signals, (count + 1).to_string()).unwrap();
                     if std::env::var_os("SAFEYOLO_TEST_VZ_STOP_FAULT").is_none() {
                         break;
                     }
                     // The process and sockets stay live while executable
                     // inspection fails. This is not positive process absence.
-                    std::fs::remove_file(root.join("bin/safeyolo-vm")).unwrap();
+                    match std::env::var("SAFEYOLO_TEST_VZ_STOP_FAULT").unwrap().as_str() {
+                        "executable" => std::fs::remove_file(root.join("bin/safeyolo-vm")).unwrap(),
+                        fault @ ("unavailable" | "conflict") => std::fs::write(root.join("identity-fault"), fault).unwrap(),
+                        "ignore" => {},
+                        _ => panic!("invalid VZ test helper fault"),
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                    if root.join("helper.exit").exists() {
+                        break;
+                    }
                 }
                 accepted = control.accept() => {
                     let (mut socket, _) = accepted.unwrap();
@@ -2505,7 +2547,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    async fn spawn_vz_stop_test_helper(root: &std::path::Path, fault: bool) -> Child {
+    async fn spawn_vz_stop_test_helper(root: &std::path::Path, fault: Option<&str>) -> Child {
         for directory in [
             "bin",
             "agents/alice",
@@ -2527,13 +2569,15 @@ mod tests {
             ])
             .arg(root.join("data/vm-control/alice.sock"))
             .arg("fake-secret-argv-canary")
+            .arg("--config")
+            .arg(root.join("config.toml"))
             .env("SAFEYOLO_TEST_VZ_STOP_ROOT", root)
             .env("SAFEYOLO_TEST_VZ_SECRET", "fake-secret-environment-canary")
             .env_remove("SAFEYOLO_TEST_VZ_STOP_FAULT")
             .stdout(std::process::Stdio::null())
             .kill_on_drop(true);
-        if fault {
-            command.env("SAFEYOLO_TEST_VZ_STOP_FAULT", "1");
+        if let Some(fault) = fault {
+            command.env("SAFEYOLO_TEST_VZ_STOP_FAULT", fault);
         }
         let mut child = command.spawn().unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -2562,11 +2606,19 @@ mod tests {
     async fn vz_stop_failure_reports_first_identity_loss_and_listener_peer() {
         let temp = tempfile::tempdir().unwrap();
         in_config(temp.path().join("config.toml"), async {
-            let mut child = spawn_vz_stop_test_helper(temp.path(), true).await;
+            let mut child = spawn_vz_stop_test_helper(temp.path(), Some("executable")).await;
             let pid = child.id().unwrap() as i32;
             let birth = vm_process_token("alice", pid).unwrap();
             let error = stop_sandbox("alice").await.unwrap_err().to_string();
             assert!(child.try_wait().unwrap().is_none());
+            for path in ["agents/alice/vm.pid", "agents/alice/vm.token"] {
+                assert!(temp.path().join(path).exists(), "{path}");
+            }
+            assert!(
+                error.contains("absence is unconfirmed; refusing SIGKILL"),
+                "{error}"
+            );
+            let guard_error = remove_stopped_vz_sockets("alice").unwrap_err().to_string();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while std::fs::read_to_string(temp.path().join("connections")).unwrap() != "2" {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2596,19 +2648,19 @@ mod tests {
                 "{error}"
             );
             assert!(
-                error.contains("VZ socket still has a live listener"),
-                "{error}"
+                guard_error.contains("VZ socket still has a live listener"),
+                "{guard_error}"
             );
             assert!(
-                error.contains(&format!(
+                guard_error.contains(&format!(
                     "socket={}",
                     vz_diagnostic_path(&temp.path().join("data/vm-control/alice.sock"))
                 )),
-                "{error}"
+                "{guard_error}"
             );
             assert!(
-                error.contains(&format!("peer_pid={pid} peer_birth={birth}")),
-                "{error}"
+                guard_error.contains(&format!("peer_pid={pid} peer_birth={birth}")),
+                "{guard_error}"
             );
             // One status connection and the guard's existing connection only.
             assert_eq!(
@@ -2624,13 +2676,13 @@ mod tests {
     async fn vz_wait_distinguishes_birth_control_and_executable_mismatch_from_absence() {
         let temp = tempfile::tempdir().unwrap();
         in_config(temp.path().join("config.toml"), async {
-            let mut child = spawn_vz_stop_test_helper(temp.path(), false).await;
+            let mut child = spawn_vz_stop_test_helper(temp.path(), None).await;
             let pid = child.id().unwrap() as i32;
             let birth = vm_process_token("alice", pid).unwrap();
             let mut mismatch = None;
-            assert!(vz_wait_matches("alice", pid, &birth, &mut mismatch));
+            assert!(!vz_helper_is_absent("alice", pid, &birth, &mut mismatch));
             assert!(mismatch.is_none());
-            assert!(!vz_wait_matches(
+            assert!(!vz_helper_is_absent(
                 "alice",
                 pid,
                 "darwin:0:1:1",
@@ -2643,7 +2695,7 @@ mod tests {
                     .unwrap()
                     .contains(&format!("stage=birth_mismatch observed_birth={birth}"))
             );
-            assert!(!vz_wait_matches("bob", pid, &birth, &mut mismatch));
+            assert!(!vz_helper_is_absent("bob", pid, &birth, &mut mismatch));
             assert_eq!(mismatch, first);
             let control_error = vm_process_token_detail("bob", pid).unwrap_err();
             assert!(!control_error.contains("fake-secret"), "{control_error}");
@@ -2678,7 +2730,7 @@ mod tests {
             );
             child.kill().await.unwrap();
             let mut absent = None;
-            assert!(!vz_wait_matches("alice", pid, &birth, &mut absent));
+            assert!(vz_helper_is_absent("alice", pid, &birth, &mut absent));
             let absent = absent.unwrap();
             assert!(absent.contains("stage=proc_pidinfo return=0"), "{absent}");
             assert!(
@@ -2715,6 +2767,13 @@ mod tests {
                     )),
                     "{error}"
                 );
+                // Drain the guard's connection so the next iteration cannot
+                // find this listener held by an unaccepted connection.
+                listener.set_nonblocking(true).unwrap();
+                match listener.accept() {
+                    Ok((peer, _)) => drop(peer),
+                    Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+                }
                 drop(listener);
             }
             remove_stopped_vz_sockets("alice").unwrap();
@@ -2739,9 +2798,10 @@ mod tests {
     async fn vz_stop_success_removes_receipts_and_stale_sockets() {
         let temp = tempfile::tempdir().unwrap();
         in_config(temp.path().join("config.toml"), async {
-            let mut child = spawn_vz_stop_test_helper(temp.path(), false).await;
-            stop_sandbox("alice").await.unwrap();
-            assert!(child.wait().await.unwrap().success());
+            let mut child = spawn_vz_stop_test_helper(temp.path(), None).await;
+            let (stopped, exited) = tokio::join!(stop_sandbox("alice"), child.wait());
+            stopped.unwrap();
+            assert!(exited.unwrap().success());
             for path in [
                 "agents/alice/vm.pid",
                 "agents/alice/vm.token",
@@ -2752,6 +2812,149 @@ mod tests {
             }
         })
         .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_stop_waits_for_real_absence_after_unavailable_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        in_config(temp.path().join("config.toml"), async {
+            let mut child = spawn_vz_stop_test_helper(temp.path(), Some("unavailable")).await;
+            let pid = child.id().unwrap() as i32;
+            let birth = vm_process_token("alice", pid).unwrap();
+            VZ_TEST_IDENTITY_FAULT.scope((pid, temp.path().join("identity-fault")), async {
+                let stopping = stop_sandbox("alice");
+                tokio::pin!(stopping);
+                tokio::select! {
+                    result = &mut stopping => panic!("stop returned before identity loss: {result:?}"),
+                    _ = async {
+                        while !temp.path().join("identity-fault").exists() {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    } => {}
+                }
+                let mut mismatch = None;
+                assert!(!vz_helper_is_absent("alice", pid, &birth, &mut mismatch));
+                assert!(mismatch.unwrap().contains("stage=proc_pidinfo return=0"));
+                assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+                assert!(std::os::unix::net::UnixStream::connect(temp.path().join("data/vm-control/alice.sock")).is_ok());
+                tokio::select! {
+                    result = &mut stopping => panic!("stop returned with a live helper: {result:?}"),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+                }
+                assert!(temp.path().join("agents/alice/vm.pid").exists());
+                assert!(temp.path().join("agents/alice/vm.token").exists());
+                std::fs::write(temp.path().join("helper.exit"), "exit").unwrap();
+                assert!(child.wait().await.unwrap().success());
+                stopping.await.unwrap();
+                assert!(crate::host_runs::process_is_absent(pid));
+                assert_eq!(std::fs::read_to_string(temp.path().join("signals")).unwrap(), "1");
+                for path in ["agents/alice/vm.pid", "agents/alice/vm.token", "data/vm-control/alice.sock", "data/shell-sockets/alice.sock"] {
+                    assert!(!temp.path().join(path).exists(), "{path}");
+                }
+            }).await;
+        }).await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_stop_escalates_only_with_fresh_expected_identity() {
+        use std::os::unix::process::ExitStatusExt;
+        let temp = tempfile::tempdir().unwrap();
+        in_config(temp.path().join("config.toml"), async {
+            let mut child = spawn_vz_stop_test_helper(temp.path(), Some("ignore")).await;
+            let pid = child.id().unwrap() as i32;
+            let (stopped, exited) = tokio::join!(stop_sandbox("alice"), child.wait());
+            stopped.unwrap();
+            assert_eq!(exited.unwrap().signal(), Some(libc::SIGKILL));
+            assert!(crate::host_runs::process_is_absent(pid));
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("signals")).unwrap(),
+                "1"
+            );
+            assert!(!temp.path().join("agents/alice/vm.pid").exists());
+            assert!(!temp.path().join("agents/alice/vm.token").exists());
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_stop_cli_and_admin_preserve_uncertain_runtime_and_handles() {
+        use std::os::unix::fs::MetadataExt;
+        for caller in ["cli", "admin"] {
+            for fault in ["unavailable", "conflict"] {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().canonicalize().unwrap();
+                let config_path = root.as_path().join("config.toml");
+                std::fs::write(&config_path, "admin_port = 0\n").unwrap();
+                in_config(config_path.clone(), async {
+                    let mut child = spawn_vz_stop_test_helper(root.as_path(), Some(fault)).await;
+                    let pid = child.id().unwrap() as i32;
+                    let birth = vm_process_token("alice", pid).unwrap();
+                    let id = "ag-0123456789abcdef0123456789abcdef";
+                    std::fs::write(root.as_path().join("policy.toml"), format!("[agents.alice]\nagent_id = '{id}'\n")).unwrap();
+                    std::fs::create_dir_all(root.as_path().join("agents/alice/config-share")).unwrap();
+                    std::fs::write(root.as_path().join("agents/alice/config-share/host-launch-context.json"), r#"{"generation":"0123456789abcdef0123456789abcdef"}"#).unwrap();
+                    crate::host_runs::save("alice", &serde_json::json!({"state":"running", "run_id":"0123456789abcdef0123456789abcdef", "backend_pid":pid, "backend_token":birth, "helper_instance":"owned-test"})).unwrap();
+                    let saved = ["agents/alice/vm.pid", "agents/alice/vm.token", "agents/alice/runtime.json"].map(|path| (path, std::fs::read(root.as_path().join(path)).unwrap()));
+                    let sockets = ["data/vm-control/alice.sock", "data/shell-sockets/alice.sock"].map(|path| (path, std::fs::metadata(root.as_path().join(path)).unwrap().ino()));
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    std::fs::write(root.as_path().join("data/ready.json"), format!(r#"{{"admin_port":{}}}"#, listener.local_addr().unwrap().port())).unwrap();
+                    std::fs::write(root.as_path().join("data/admin_token"), "owned-test-token").unwrap();
+                    // Give the live test process the ordinary proxy identity so
+                    // agent stop takes the CLI -> authenticated Admin route.
+                    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.as_path().join("bin/safeyolo-proxy")).unwrap();
+                    crate::guest_commands::write_json(&root.as_path().join("data/proxy-process.json"), &serde_json::json!({"pid":pid,"token":birth})).unwrap();
+                    assert!(crate::host_commands::proxy_live());
+                    VZ_TEST_IDENTITY_FAULT.scope((pid, root.as_path().join("identity-fault")), async {
+                        let config = crate::native_config::read(&config_path).unwrap();
+                        let host = crate::command_centre::Host::from_config(&config).unwrap().unwrap();
+                        let tasks = crate::tasks::Registry::default();
+                        let serve = async {
+                            let (socket, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept()).await.expect("stop did not reach Admin").unwrap();
+                            hyper::server::conn::http1::Builder::new().serve_connection(
+                                hyper_util::rt::TokioIo::new(socket),
+                                hyper::service::service_fn(|request| async {
+                                    let response = crate::admin_api::respond_with_context(request, "owned-test-token", crate::admin_api::OperatorContext {
+                                        tasks: &tasks, policy: None, circuits: None, stats: None, view: None, policy_path: None, instance_id: None,
+                                        command_centre: Some(&host), operator_modes: None, agent_discovery: None, listeners: &[], audit: None,
+                                        client_ip: None, passthrough: None, service_audit: None, plumb: None, task_state: None,
+                                    }).await.unwrap();
+                                    assert_eq!(response.status(), hyper::StatusCode::INTERNAL_SERVER_ERROR);
+                                    Ok::<_, std::convert::Infallible>(response.into_response())
+                                }),
+                            ).await.unwrap();
+                        };
+                        let request = async {
+                            if caller == "cli" {
+                                crate::host_commands::run(config_path.clone(), &["agent".into(), "stop".into(), "alice".into()]).await.unwrap_err().to_string()
+                            } else {
+                                crate::native_client::admin(&config_path, &format!("/admin/agents/{id}/stop"), hyper::Method::POST, serde_json::Value::Null, std::time::Duration::from_secs(20)).await.unwrap_err().to_string()
+                            }
+                        };
+                        let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(20), async { tokio::join!(request, serve) }).await.unwrap();
+                        assert!(error.contains("API 500"), "{caller}/{fault}: {error}");
+                        assert!(error.contains("VZ helper absence is unconfirmed; refusing SIGKILL"), "{caller}/{fault}: {error}");
+                        assert!(error.contains(if fault == "unavailable" { "stage=proc_pidinfo return=0" } else { "stage=birth_mismatch" }), "{error}");
+                        assert!(child.try_wait().unwrap().is_none());
+                        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+                        assert_eq!(std::fs::read_to_string(root.as_path().join("signals")).unwrap(), "1");
+                        for (path, bytes) in saved {
+                            assert_eq!(std::fs::read(root.as_path().join(path)).unwrap(), bytes, "{path}");
+                        }
+                        for (path, inode) in sockets {
+                            assert_eq!(std::fs::metadata(root.as_path().join(path)).unwrap().ino(), inode, "{path}");
+                            assert!(std::os::unix::net::UnixStream::connect(root.as_path().join(path)).is_ok(), "{path}");
+                        }
+                        let guard = remove_stopped_vz_sockets("alice").unwrap_err().to_string();
+                        assert!(guard.contains("live listener"), "{guard}");
+                        assert!(guard.contains(&format!("peer_pid={pid}")), "{guard}");
+                        child.kill().await.unwrap();
+                    }).await;
+                }).await;
+            }
+        }
     }
 
     #[test]
