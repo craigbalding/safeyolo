@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 HOST_PACKAGE= EXPECTED_SHA256= LANE=
-GUEST_ARGUMENTS=()
+INSTALL_ARGUMENTS=()
 SECTIONS=()
 while (($#)); do
     case "$1" in
@@ -13,16 +13,18 @@ while (($#)); do
             case "$1" in
                 --package) HOST_PACKAGE=$2;;
                 --sha256) EXPECTED_SHA256=$2;;
-                --platform-assets) GUEST_ARGUMENTS+=(--platform-assets "$2");;
+                --platform-assets) INSTALL_ARGUMENTS+=(--platform-assets "$2");;
                 --lane) LANE=$2;;
                 --section) SECTIONS+=(--section "$2");;
             esac
             shift 2;;
-        --no-guest-download) GUEST_ARGUMENTS+=(--no-guest-download); shift;;
+        --no-guest-download) INSTALL_ARGUMENTS+=(--no-guest-download); shift;;
+        --yes) INSTALL_ARGUMENTS+=(--yes); shift;;
         --help)
-            echo 'Usage: run-installed-package.sh [--package HOST.tar.gz --sha256 DIGEST [--platform-assets DIR | --no-guest-download] [--lane systrap|kvm|vz [--section NAME ...]]]'
+            echo 'Usage: run-installed-package.sh [--package HOST.tar.gz --sha256 DIGEST [--platform-assets DIR | --no-guest-download] [--yes] [--lane systrap|kvm|vz [--section NAME ...]]]'
             echo 'Use a supported disposable host, a checksum from the release, and this checkout’s prepared Python test environment. The archive’s installer acquires the default guest unless explicit offline or proxy-only inputs are selected. No source build is used with --package. --lane also runs the maintained isolation/lifecycle sections; the host must provide that backend’s runtime prerequisites.'
             echo 'Repeat --section to select maintained sections for the lane. Omit --section to keep the lane’s isolation/lifecycle or isolation/ingress default.'
+            echo '--yes accepts the installer’s host preparation changes on the supplied disposable host.'
             echo 'Without --package, preserve the source-based proxy-only witness. Each run keeps its owned state under HOME and writes the existing smoke reports; no host-only result proves guest isolation.'
             exit 0;;
         *) echo "Unknown argument: $1" >&2; exit 2;;
@@ -30,7 +32,7 @@ while (($#)); do
 done
 if [[ -n $HOST_PACKAGE ]]; then
     [[ -f $HOST_PACKAGE && $EXPECTED_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo '--package requires an existing archive and --sha256 DIGEST' >&2; exit 2; }
-elif [[ -n $EXPECTED_SHA256 || -n $LANE || ${#GUEST_ARGUMENTS[@]} != 0 ]]; then
+elif [[ -n $EXPECTED_SHA256 || -n $LANE || ${#INSTALL_ARGUMENTS[@]} != 0 ]]; then
     echo 'Archive options require --package' >&2; exit 2
 fi
 case "$LANE:$(uname -s)" in :*|systrap:Linux|kvm:Linux|vz:Darwin) ;; *) echo 'Unsupported lane/host' >&2; exit 2;; esac
@@ -59,7 +61,7 @@ if [[ -n $HOST_PACKAGE ]]; then
     packages=("$PACKAGE_DIR/archive/"*)
     [[ ${#packages[@]} == 1 && -f ${packages[0]}/install.sh ]] || { echo 'Archive must contain one native host bundle' >&2; exit 2; }
     INSTALL_STARTED=$SECONDS
-    "${packages[0]}/install.sh" --root "$SAFEYOLO_CONFIG_DIR" --command-dir "$SAFEYOLO_CONFIG_DIR/commands" ${GUEST_ARGUMENTS[@]+"${GUEST_ARGUMENTS[@]}"}
+    "${packages[0]}/install.sh" --root "$SAFEYOLO_CONFIG_DIR" --command-dir "$SAFEYOLO_CONFIG_DIR/commands" ${INSTALL_ARGUMENTS[@]+"${INSTALL_ARGUMENTS[@]}"}
     echo "Native installation elapsed: $((SECONDS - INSTALL_STARTED)) seconds (agent readiness not yet measured)"
     "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --help >/dev/null
     cat "$SAFEYOLO_CONFIG_DIR/package-info"

@@ -25,12 +25,12 @@ permissions:
   contents: read
 
 env:
-  HOST_RELEASE_ID: "410991309"
-  HOST_ARCHIVE_ASSET_ID: "634976985"
-  HOST_CHECKSUM_ASSET_ID: "634976991"
-  HOST_REVISION: 7a38dff14e7e4eacb4095da732ffe06d7c7c5796
-  HOST_SHA256: 8f8bcb426762aecab725547d4e3df73b7d577afbdcca2e7302f7344ec067c88f
-  HOST_BYTES: "36529500"
+  HOST_RELEASE_ID: "414106024"
+  HOST_ARCHIVE_ASSET_ID: "644683987"
+  HOST_CHECKSUM_ASSET_ID: "644683989"
+  HOST_REVISION: c9ecb66b462c2ba0c499f2322f6cfc5c142012da
+  HOST_SHA256: eab9b709b3e4c6b536614eeb6b422d12c2b55826149085f78c326b31637922af
+  HOST_BYTES: "176869006"
   GUEST_COMPATIBILITY: v1
 
 jobs:
@@ -245,7 +245,38 @@ jobs:
           uv python install 3.13
           uv sync --frozen --python 3.13
       - name: Prepare the supported systrap host
-        run: tests/blackbox/prepare-systrap-host.sh --fixed-rootfs-ids
+        run: tests/blackbox/prepare-systrap-host.sh
+      - name: Prepare the fresh guest for this host account
+        shell: bash
+        run: |
+          host="$RUNNER_TEMP/retained-host"
+          mkdir "$host/unpacked"
+          tar -xzf "$host/safeyolo-linux-arm64-production.tar.gz" -C "$host/unpacked"
+          bundle="$host/unpacked/safeyolo-linux-arm64-production"
+          # Use the released host's allocator and ownership helper. Do not
+          # share another account's IDs or change an existing prepared tree.
+          "$bundle/bin/safeyolo" --root "$host/preparation" host prepare \
+            --package-root "$bundle" --installed-root "$bundle" \
+            --write-settings "$host/linux-settings.toml" --yes \
+            | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/host-preparation.txt"
+          mapping=$(python3 - "$host/linux-settings.toml" <<'PY'
+          import sys, tomllib
+          with open(sys.argv[1], 'rb') as stream:
+              linux = tomllib.load(stream)['linux']
+          print(*(linux[key] for key in ('uid_base', 'gid_base', 'host_uid', 'host_gid')))
+          PY
+          )
+          read -r uid_base gid_base host_uid host_gid <<< "$mapping"
+          stage=$(mktemp -d "$RUNNER_TEMP/extract-arm64.XXXXXX")
+          assets="$RUNNER_TEMP/verified-extracted-assets"
+          mv "$assets/rootfs-tree" "$stage/rootfs-tree"
+          sudo -n "$bundle/bin/safeyolo" --root "$host/preparation" host remap-rootfs \
+            "$stage/rootfs-tree" "$uid_base" "$gid_base" "$host_uid" "$host_gid"
+          mv "$stage/rootfs-tree" "$assets/rootfs-tree"
+          rmdir "$stage"
+          cp "$host/linux-settings.toml" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/linux-host-settings.toml"
+          stat -c '%n uid=%u gid=%g mode=%a bytes=%s' "$assets/rootfs-tree" "$assets/cache-paths.txt" \
+            | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/mapped-guest-metadata.txt"
       - name: Run the installed production archive smoke
         run: |
           set -o pipefail
@@ -260,7 +291,7 @@ jobs:
             fi
             ./tests/blackbox/run-installed-package.sh \
               --package "$RUNNER_TEMP/retained-host/safeyolo-linux-arm64-production.tar.gz" \
-              --sha256 "$HOST_SHA256" --platform-assets "$RUNNER_TEMP/verified-extracted-assets" --lane systrap \
+              --sha256 "$HOST_SHA256" --platform-assets "$RUNNER_TEMP/verified-extracted-assets" --lane systrap --yes \
               "${sections[@]}"
           } 2>&1 | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/installed-smoke.txt"
       - name: Upload reports and individual suite outcomes

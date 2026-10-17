@@ -452,7 +452,7 @@ substrate and listener; the host-only smoke does not claim one.
 ## Hosted Linux ARM64 archive qualification
 
 The manual [installed-arm64 workflow](../../.github/workflows/installed-arm64.yml)
-tests the published production host from `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`
+tests the published production host from `c9ecb66b462c2ba0c499f2322f6cfc5c142012da`
 on the repository's `ubuntu-24.04-arm` pool with real systrap guests.
 The default `draft-offline` mode retains its original name and selects original
 guest `guest-2026-10-12.1` from `8234a047d810d543d8c4d1cb1fa9859987be035b`.
@@ -461,9 +461,9 @@ from `33224c9fc14beeb00be30eb71bdc09f91c5aa58b`. The separate `public-install`
 mode uses the published default guest and ignores this selection.
 
 The acquisition job uses a read-only repository token for fixed release and
-asset GET requests. Release `410991309` must be published with tag
-`host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796`, ARM64 production asset
-`634976985` and checksum asset `634976991`. The job has no checkout and runs no
+asset GET requests. Release `414106024` must be published with tag
+`host-c9ecb66b462c2ba0c499f2322f6cfc5c142012da`, ARM64 production asset
+`644683987` and checksum asset `644683989`. The job has no checkout and runs no
 product, verifier, guest or publication command. It transfers only the
 hash/size-bound host archive, checksums and release metadata through an Actions
 artifact. The qualification job keeps `contents: read` and `actions: read`.
@@ -474,6 +474,11 @@ which expires on 10 January 2027. The reduced layout is retained in normal guest
 build `38975155518`, artifact `12079186556`, which expires on 14 January 2027.
 Both selections verify the pinned logical index, source, version and archive
 before extraction. Extraction preserves Linux ownership and permissions.
+The released host then selects safe subordinate IDs for the runner account.
+Its existing ownership helper maps only this run’s fresh extraction to those
+IDs, preserving modes and cache paths. Other accounts and prepared trees stay
+unchanged. The installer accepts the required host setup on this disposable
+runner through `--yes`.
 
 From an authenticated operator terminal in this checkout, dispatch the reduced
 guest qualification at the reviewed workflow ref:
