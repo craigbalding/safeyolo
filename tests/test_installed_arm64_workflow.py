@@ -580,9 +580,10 @@ elif name == 'getsubids':
             assert str(tools / "runsc") in (tmp_path / "safeyolo-runsc").read_text()
 
 
+@pytest.mark.parametrize("lifecycle_only", [False, True])
 @pytest.mark.parametrize("reduced", [False, True])
 @pytest.mark.parametrize("exit_code", [0, 1, 2])
-def test_installed_caller_retains_actual_output_and_failure(tmp_path, exit_code, reduced):
+def test_installed_caller_retains_actual_output_and_failure(tmp_path, exit_code, reduced, lifecycle_only):
     scripts = tmp_path / "tests/blackbox"
     scripts.mkdir(parents=True)
     runner = scripts / "run-installed-package.sh"
@@ -609,14 +610,17 @@ sys.exit(int(os.environ['SMOKE_EXIT']))
         "RUNNER_TEMP": str(tmp_path), "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(reports),
         "GITHUB_SHA": "c" * 40, "SMOKE_EXIT": str(exit_code),
         "GUEST_REVISION": "33224c9fc14beeb00be30eb71bdc09f91c5aa58b" if reduced else JOB["env"]["GUEST_REVISION"],
+        "SECTION_SELECTION": "lifecycle" if lifecycle_only else "default",
         "PATH": f"{tools}:{os.environ['PATH']}",
     })
     assert result.returncode == exit_code, result.stdout + result.stderr
+    sections = (["--section", "lifecycle"] if lifecycle_only else
+                ["--section", "isolation", "--section", "workloads", "--section", "lifecycle"] if reduced else [])
     assert json.loads((tmp_path / "arguments.json").read_text()) == [
         "--package", str(tmp_path / "retained-host/safeyolo-linux-arm64-production.tar.gz"),
         "--sha256", HOST["HOST_SHA256"], "--platform-assets", str(tmp_path / "verified-extracted-assets"),
         "--lane", "systrap", "--yes",
-    ] + (["--section", "isolation", "--section", "workloads", "--section", "lifecycle"] if reduced else [])
+    ] + sections
     output = (reports / "installed-smoke.txt").read_text()
     assert "test_direct_egress PASSED" in output and "test_home_persistence SKIPPED" in output
 

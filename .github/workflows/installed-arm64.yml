@@ -20,6 +20,13 @@ on:
         options:
           - original-g1
           - reduced-33224
+      section:
+        description: Retained archive sections (default set, or lifecycle only)
+        type: choice
+        default: default
+        options:
+          - default
+          - lifecycle
 
 permissions:
   contents: read
@@ -278,6 +285,8 @@ jobs:
           stat -c '%n uid=%u gid=%g mode=%a bytes=%s' "$assets/rootfs-tree" "$assets/cache-paths.txt" \
             | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/mapped-guest-metadata.txt"
       - name: Run the installed production archive smoke
+        env:
+          SECTION_SELECTION: ${{ inputs.section }}
         run: |
           set -o pipefail
           {
@@ -286,7 +295,9 @@ jobs:
             getconf GNU_LIBC_VERSION
             printf 'Test tooling=%s; product source=%s; guest source=%s\n' "$GITHUB_SHA" "$HOST_REVISION" "$GUEST_REVISION"
             sections=()
-            if [[ $GUEST_REVISION == 33224c9fc14beeb00be30eb71bdc09f91c5aa58b ]]; then
+            if [[ $SECTION_SELECTION == lifecycle ]]; then
+              sections=(--section lifecycle)
+            elif [[ $GUEST_REVISION == 33224c9fc14beeb00be30eb71bdc09f91c5aa58b ]]; then
               sections=(--section isolation --section workloads --section lifecycle)
             fi
             ./tests/blackbox/run-installed-package.sh \

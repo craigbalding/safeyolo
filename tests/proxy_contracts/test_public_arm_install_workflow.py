@@ -40,6 +40,9 @@ def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
     guest = WORKFLOW['on']['workflow_dispatch']['inputs']['guest']
     assert guest['default'] == 'original-g1'
     assert guest['options'] == ['original-g1', 'reduced-33224']
+    section = WORKFLOW['on']['workflow_dispatch']['inputs']['section']
+    assert section['default'] == 'default'
+    assert section['options'] == ['default', 'lifecycle']
     assert PUBLIC['if'] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'public-install'"
     for name in ('acquire-host', 'installed-arm64'):
         assert WORKFLOW['jobs'][name]['if'] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'draft-offline'"

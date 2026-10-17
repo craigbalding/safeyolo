@@ -487,12 +487,17 @@ guest qualification at the reviewed workflow ref:
 gh workflow run installed-arm64.yml --ref master -f mode=draft-offline -f guest=reduced-33224
 ```
 
-The reduced selection runs the maintained isolation, workloads and lifecycle
+For a lifecycle-only correction with unchanged installed inputs, add
+`-f section=lifecycle`. Retain earlier isolation/workload results with their
+original test-source identities. The report lists the sections that actually ran.
+
+The default reduced selection runs the maintained isolation, workloads and lifecycle
 sections. These include authorized and unknown-key guest SSH checks, a pinned
 SSH client command, package installation and removal, mediated traffic,
 direct-egress refusal, restart/state checks and owned cleanup. The original G1
-selection keeps its isolation/lifecycle smoke. Both run the existing installed
-host, HTTPS and continuity checks afterward. `run-installed-package.sh --section`
+selection keeps its isolation/lifecycle smoke. After the selected sections pass,
+both run the existing installed host, HTTPS and continuity checks.
+`run-installed-package.sh --section`
 can select maintained sections for an explicit `--lane`; omitted sections retain
 the wrapper's previous defaults.
 

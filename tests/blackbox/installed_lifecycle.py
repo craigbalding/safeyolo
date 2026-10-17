@@ -189,9 +189,12 @@ def assert_proxy_stopped(config_dir: Path, listener: Path, runtime: dict) -> Non
     # Native stop retains the inactive process receipt. Check its incarnation,
     # readiness and listener rather than requiring the record's deletion.
     pid = runtime["pid"]
-    assert not (_pid_alive(pid) and _process_start_token(pid) == runtime["receipt"]["start_token"]), (
-        f"native process {pid} remains live after stop"
-    )
+    # Readiness can disappear before the final OS process-exit observation.
+    # Require the same birth to exit; a live survivor still fails the check.
+    deadline = time.monotonic() + 5
+    while _pid_alive(pid) and _process_start_token(pid) == runtime["receipt"]["start_token"]:
+        assert time.monotonic() < deadline, f"native process {pid} remains live after stop"
+        time.sleep(0.05)
     with socket.socket(socket.AF_UNIX) as closed:
         assert closed.connect_ex(str(listener)) != 0, "native agent listener still accepts"
     assert not listener.exists(), f"native agent listener remains after stop: {listener}"
