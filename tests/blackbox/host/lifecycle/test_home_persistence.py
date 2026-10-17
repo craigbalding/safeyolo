@@ -12,6 +12,7 @@ read the marker back.
 
 import os
 import secrets
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -65,19 +66,9 @@ class TestAgentHomePersistence:
             time.sleep(1)
         return False
 
-    def test_home_persists_across_restart(self, request):
-        """Home, workspace and a deferred mise tool survive stop/start.
-
-        What: Install Node through mise, write markers to the home and
-        workspace, and check both markers and the same tool after restart.
-        Read the workspace marker on the host too.
-        Why: A missing file or mismatched content means writes to
-        /home/agent landed somewhere ephemeral (the memory overlay
-        on Linux, or an un-mounted location on either platform) —
-        the OCI bind-mount is broken or was never wired. Host-script
-        auth staging, mise installs, and shell history all rely on
-        this invariant.
-        """
+    @pytest.fixture
+    def restarted_agent(self, request):
+        """Prepare the restart with bounded commands before timing readback."""
         agent_name = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
 
         # Baseline: sandbox must be running before we start. run-tests.sh
@@ -92,6 +83,17 @@ class TestAgentHomePersistence:
         workspace_name = f".safeyolo-persist-{marker_token}"
         host_marker = Path(__file__).resolve().parents[4] / workspace_name
         request.addfinalizer(lambda: host_marker.unlink(missing_ok=True))
+        if inputs := os.environ.get("SAFEYOLO_GUEST_TEST_INPUTS"):
+            # Offline fixtures can supply a verified Node installation and mise
+            # configuration. Seed once, before the normal mise command. Never
+            # restore tools during post-restart test-package preparation.
+            mise_inputs = shlex.quote(f"{inputs}/mise-node")
+            seed = self._safeyolo(
+                "agent", "shell", agent_name, "-c",
+                f"if [ -d {mise_inputs} ]; then mkdir -p /home/agent/.mise && "
+                f"cp -R {mise_inputs}/. /home/agent/.mise/; fi", timeout=60,
+            )
+            assert seed.returncode == 0, seed.stderr
         tool = self._safeyolo(
             "agent", "shell", agent_name, "-c",
             "mise use -g node@22 >&2 && node --version && command -v node", timeout=300,
@@ -133,6 +135,25 @@ class TestAgentHomePersistence:
             f"Agent '{agent_name}' did not become reachable within 60s "
             f"after restart — can't verify persistence"
         )
+        return agent_name, marker_path, marker_token, workspace_name, host_marker, tool.stdout
+
+    @pytest.mark.timeout(120, func_only=True)
+    def test_home_persists_across_restart(self, restarted_agent):
+        """Home, workspace and a deferred mise tool survive stop/start.
+
+        What: Install Node through mise, write markers to the home and
+        workspace, and check both markers and the same tool after restart.
+        Read the workspace marker on the host too.
+        Why: A missing file or mismatched content means writes to
+        /home/agent landed somewhere ephemeral (the memory overlay
+        on Linux, or an un-mounted location on either platform) —
+        the OCI bind-mount is broken or was never wired. Host-script
+        auth staging, mise installs, and shell history all rely on
+        this invariant.
+        """
+        # Test provisioning can take its existing 300-second bound. Keep it
+        # outside the readback timer; stop/start/shell retain their own limits.
+        agent_name, marker_path, marker_token, workspace_name, host_marker, tool_stdout = restarted_agent
 
         # 4. Read marker back.
         read = self._safeyolo(
@@ -160,4 +181,4 @@ class TestAgentHomePersistence:
         restored_tool = self._safeyolo(
             "agent", "shell", agent_name, "-c", "node --version && command -v node", timeout=15,
         )
-        assert restored_tool.returncode == 0 and restored_tool.stdout == tool.stdout, restored_tool.stderr
+        assert restored_tool.returncode == 0 and restored_tool.stdout == tool_stdout, restored_tool.stderr

@@ -188,7 +188,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         print(f"Product preparation failed (exit {preparation_exit}); no sections ran")
         return 2
     cli = source / "bin/safeyolo"
-    env["PATH"] = os.pathsep.join((str(source / "bin"), str(REPOSITORY / ".venv/bin"), env["PATH"]))
+    env["PATH"] = os.pathsep.join((str(source / "bin"), str(source / "libexec"),
+                                  str(REPOSITORY / ".venv/bin"), env["PATH"]))
     env["PYTHONPATH"] = os.pathsep.join((str(REPOSITORY / "tests/reference"), str(REPOSITORY)))
     if prepared_config is None:
         env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)

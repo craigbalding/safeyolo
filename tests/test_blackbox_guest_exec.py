@@ -103,7 +103,8 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
     ('apt-get', False, False), ('apk', False, False), ('apt-get', True, False), ('apt-get', False, True),
 ])
 @pytest.mark.parametrize('failure', [None, 'package', 'pip', 'imports'])
-def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready):
+@pytest.mark.parametrize('ca', ['provided', 'absent'])
+def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ca):
     """Online and offline setup retain hashes and stop on package, pip or import failures."""
     install_exit = 17 if failure == 'package' else 0
     pip_exit = 19 if failure == 'pip' else 0
@@ -111,7 +112,8 @@ def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, i
     package_needed = offline or not pip_ready
     tools = tmp_path / 'tools'
     tools.mkdir()
-    (tools / 'dirname').symlink_to(shutil.which('dirname'))
+    for name in ('dirname', 'mktemp', 'install', 'rm'):
+        (tools / name).symlink_to(shutil.which(name))
     record = tmp_path / 'calls'
     python = tools / 'python3'
     inputs = tmp_path / 'offline inputs $literal'
@@ -145,12 +147,25 @@ if arguments[:1] == ['-c']:
     package_installer = tools / installer
     package_installer.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
                                 f'with open({str(record)!r}, "a") as out: out.write(json.dumps([{installer!r}, *sys.argv[1:]]) + "\\n")\n'
+                                f'if {installer == "apt-get" and not offline and ca == "provided"!r}:\n'
+                                f'    from pathlib import Path\n'
+                                f'    public_ca = Path(next(arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("Acquire::https::CaInfo=")))\n'
+                                f'    assert public_ca.read_text() == "selected public CA"\n'
+                                f'    assert public_ca.stat().st_mode & 0o777 == 0o644\n'
+                                f'    assert public_ca != Path(os.environ["SSL_CERT_FILE"])\n'
                                 f'if {offline!r}: assert os.environ["DEBIAN_FRONTEND"] == "noninteractive"\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
     arguments = [str(inputs)] if offline else []
+    environment = dict(os.environ, PATH=str(tools))
+    environment.pop('SSL_CERT_FILE', None)
+    selected_ca = tmp_path / 'selected CA $literal.pem'
+    if ca == 'provided':
+        selected_ca.write_text('selected public CA')
+        selected_ca.chmod(0o600)
+        environment['SSL_CERT_FILE'] = str(selected_ca)
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', *arguments],
-                            env=dict(os.environ, PATH=str(tools)), text=True,
+                            env=environment, text=True,
                             capture_output=True, timeout=10)
     expected_exit = (install_exit if package_needed else 0) or pip_exit or import_exit
     assert result.returncode == expected_exit, result.stderr
@@ -165,13 +180,44 @@ if arguments[:1] == ['-c']:
     elif pip_ready:
         assert not any(call[0] in ('apt-get', 'apk') for call in calls)
     elif installer == 'apt-get':
-        assert ['apt-get', 'update'] in calls
+        tls = []
+        if ca == 'provided':
+            apt_ca = next(arg for call in calls for arg in call if arg.startswith('Acquire::https::CaInfo='))
+            tls = ['-o', apt_ca]
+            assert not Path(apt_ca.split('=', 1)[1]).exists()
+            assert selected_ca.read_text() == 'selected public CA'
+            assert selected_ca.stat().st_mode & 0o777 == 0o600
+        assert ['apt-get', *tls, '-o', 'APT::Update::Error-Mode=any', 'update'] in calls
+        if install_exit == 0:
+            assert ['apt-get', *tls, 'install', '-y', '--no-install-recommends', 'python3', 'python3-pip'] in calls
     else:
         assert ['apk', 'add', 'python3', 'py3-pip'] in calls
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
     installed_packages = not package_needed or install_exit == 0
     assert bool(installs) == installed_packages
     assert (calls[-1][1:2] == ['-c']) == (installed_packages and pip_exit == 0)
+
+
+@pytest.mark.parametrize('ca', ['missing', 'directory'])
+def test_online_guest_setup_refuses_unreadable_selected_ca_before_apt(tmp_path, ca):
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    python = tools / 'python3'
+    python.write_text('#!/bin/sh\nexit 1\n')
+    python.chmod(0o755)
+    apt = tools / 'apt-get'
+    marker = tmp_path / 'apt-was-invoked'
+    apt.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n')
+    apt.chmod(0o755)
+    selected_ca = tmp_path / ca
+    if ca == 'directory':
+        selected_ca.mkdir()
+    result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh'],
+                            env=dict(os.environ, PATH=str(tools), SSL_CERT_FILE=str(selected_ca)),
+                            text=True, capture_output=True, timeout=10)
+    assert result.returncode == 1
+    assert 'TLS CA file is not readable' in result.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize('missing', ['all', 'debs', 'wheels', 'relative-path'])
@@ -232,6 +278,114 @@ def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_pa
                                          INSTALLED_CLI=str(cli), AGENT_NAME=agent))
         assert result.returncode == (2 if prepare_exit else 0), result.stderr
         assert ('dependencies could not be prepared' in result.stderr) == bool(prepare_exit)
+
+
+@pytest.mark.parametrize('offline,failure', [
+    (offline, failure) for offline in (False, True)
+    for failure in (None, 'setup', 'home', 'workspace', 'node', 'read-timeout')
+] + [(True, 'seed'), (True, 'no-node-input')])
+def test_persistence_preparation_has_its_own_budget_and_preserves_read_assertions(tmp_path, offline, failure):
+    """Run the maintained test with cold setup longer than its scaled read timer."""
+    repository = tmp_path / 'repository'
+    suite = repository / 'tests/blackbox/host/lifecycle'
+    suite.mkdir(parents=True)
+    shutil.copy2('tests/blackbox/host/lifecycle/test_home_persistence.py', suite)
+    # Keep the production timeout value and scope under test. Scale only its
+    # duration so the cold-preparation regression takes less than a second.
+    (suite / 'conftest.py').write_text('''import pytest
+def pytest_collection_modifyitems(items):
+    for item in items:
+        marker = item.get_closest_marker('timeout')
+        if marker:
+            assert marker.args == (120,)
+            item.add_marker(pytest.mark.timeout(0.5, **marker.kwargs), append=False)
+''')
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    inputs = tmp_path / 'offline inputs $literal'
+    node_input = inputs / 'mise-node/installs/node/22/bin/node'
+    if failure != 'no-node-input':
+        node_input.parent.mkdir(parents=True)
+        node_input.write_text('verified Node test input')
+    cli = tools / 'safeyolo'
+    cli.write_text(f'#!{sys.executable}\n' + '''import json, os, pathlib, shlex, subprocess, sys, time
+root = pathlib.Path(os.environ['PROBE_ROOT'])
+failure = os.environ['PROBE_FAILURE']
+args = sys.argv[1:]
+if args[:1] == ['--root']:
+    assert args[1] == os.environ['SAFEYOLO_CONFIG_DIR']
+    args = args[2:]
+with (root / 'calls.jsonl').open('a') as output:
+    output.write(json.dumps(args) + '\\n')
+if args[:2] != ['agent', 'shell']:
+    assert args[:2] in (['agent', 'stop'], ['agent', 'start'])
+    sys.exit(0)
+command = args[-1]
+if command.startswith('if [ -d '):
+    inputs = pathlib.Path(os.environ['SAFEYOLO_GUEST_TEST_INPUTS']) / 'mise-node'
+    assert shlex.split(command)[3] == str(inputs)
+    if failure == 'seed': sys.exit(31)
+    command = command.replace('/home/agent/.mise', shlex.quote(str(root / 'seeded-home')))
+    subprocess.run(['/bin/bash', '-c', command], check=True)
+    if inputs.is_dir():
+        assert (root / 'seeded-home/installs/node/22/bin/node').read_text() == 'verified Node test input'
+    else:
+        assert not (root / 'seeded-home').exists()
+elif 'prepare-guest-tests.sh' in command:
+    time.sleep(0.75)
+    if failure == 'setup': sys.exit(17)
+    (root / 'pytest-ready').touch()
+elif command.startswith('mise use'):
+    print('v22.0.0\\n/home/agent/.mise/installs/node/22/bin/node')
+elif command.startswith('printf'):
+    words = shlex.split(command)
+    (root / 'home-marker').write_text(words[2])
+    (root / pathlib.Path(words[-1]).name).write_text(words[2])
+elif command.startswith('cat '):
+    if failure == 'read-timeout': time.sleep(0.75)
+    home = command.startswith('cat /home/')
+    path = root / ('home-marker' if home else pathlib.Path(command.split()[-1]).name)
+    print('wrong' if failure == ('home' if home else 'workspace') else path.read_text(), end='')
+elif command.startswith('node '):
+    print('v20.0.0' if failure == 'node' else 'v22.0.0\\n/home/agent/.mise/installs/node/22/bin/node')
+else:
+    assert command == 'true', command
+''')
+    cli.chmod(0o755)
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith('PYTEST_') and key not in {'PYTHONPATH', 'PYTHONHOME'}}
+    environment.pop('SAFEYOLO_GUEST_TEST_INPUTS', None)
+    if offline:
+        environment['SAFEYOLO_GUEST_TEST_INPUTS'] = str(inputs)
+    environment.update(PATH=f'{tools}:{Path(sys.executable).parent}:/usr/bin:/bin',
+                       PYTHONPATH=str(Path('tests/blackbox').resolve()),
+                       SAFEYOLO_CONFIG_DIR=str(tmp_path / 'instance'), PROBE_ROOT=str(repository),
+                       PROBE_FAILURE=failure or '')
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short', '--timeout=0.5',
+                             '--basetemp', str(tmp_path / 'pytest'), str(suite)],
+                            cwd=repository, env=environment, text=True, capture_output=True, timeout=15)
+    assert result.returncode == (0 if failure in (None, 'no-node-input') else 1), result.stdout + result.stderr
+    assert ('Timeout (>0.5s)' in result.stdout + result.stderr) == (failure == 'read-timeout')
+    calls = [json.loads(line) for line in (repository / 'calls.jsonl').read_text().splitlines()]
+    commands = [call[-1] for call in calls if call[:2] == ['agent', 'shell']]
+    seeds = [i for i, command in enumerate(commands) if command.startswith('if [ -d ')]
+    assert len(seeds) == int(offline)
+    if failure == 'seed':
+        assert not any(call[:2] == ['agent', 'stop'] for call in calls)
+        assert not any(command.startswith('mise use') for command in commands)
+        return
+    assert any(call[:2] == ['agent', 'stop'] for call in calls)
+    assert any(call[:2] == ['agent', 'start'] for call in calls)
+    preparation = next(i for i, command in enumerate(commands) if 'prepare-guest-tests.sh' in command)
+    if offline:
+        assert seeds[0] < next(i for i, command in enumerate(commands) if command.startswith('mise use')) < preparation
+    reads = [command for command in commands[preparation + 1:] if command.startswith(('cat ', 'node '))]
+    if failure == 'setup':
+        assert 'could not be prepared' in result.stderr + result.stdout and not reads
+    else:
+        assert (repository / 'pytest-ready').is_file()
+        assert len(reads) == {'home': 1, 'workspace': 2, 'read-timeout': 1}.get(failure, 3)
+    assert not list(repository.glob('.safeyolo-persist-*'))
 
 
 def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeypatch):

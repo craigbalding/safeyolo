@@ -70,7 +70,7 @@ fi
 # The separate test environment never publishes a product CLI.
 (cd -- "$repository"; uv sync --frozen --group dev)
 export SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT="$checkout"
-export PATH="$root/bin:$repository/.venv/bin:$PATH"
+export PATH="$root/bin:$root/libexec:$repository/.venv/bin:$PATH"
 export PYTHONPATH="$repository/tests/reference:$repository${PYTHONPATH:+:$PYTHONPATH}"
 if [[ $prepare_only == true ]]; then
   nats=()
