@@ -118,7 +118,8 @@ Hashes identify content; they do not authenticate the publisher independently
 of the trusted repository or prevent deletion. Retention remains a publisher
 responsibility. Signing or additional provenance is not a prerequisite here.
 
-Resolve discovery once for an acquisition or upgrade operation. Validate the
+Resolve discovery once for an acquisition or upgrade operation, unless an
+explicit index digest selects the release. Validate the
 resolved index's raw SHA-256 identity, media type, schema, artifact type,
 annotations, completeness and compatibility. The root index has no parent
 descriptor giving an expected size; record the observed raw length. Explicitly
@@ -201,6 +202,38 @@ The installed selection is reused without resolving discovery again.
 Guest-only upgrade and rollback use the same acquisition path. Broader host
 upgrade remains under #238. Installed/public proof and the unchanged-host/new-guest
 journey remain under #239.
+
+## Acquire a specific guest before installation
+
+On the consumer host, run `guest acquire` as the installation owner from any
+working directory. Use a verified host package for that platform and a fresh
+root without configuration or guest inputs. Registry access uses the configured
+proxy, if present, and needs usable system or configured CA trust. Linux also needs the
+host account's subordinate UID/GID ranges and sudo for numeric ownership, as
+prepared by `safeyolo host prepare`.
+
+Before running the example, replace `/path/to/host-package` with the verified
+unpacked host package. Replace `/owned/fresh-root` and `/owned/guest-store` with
+paths owned by your account. For a cold acquisition, the store must be new.
+Replace `sha256:DIGEST` with the complete index digest from the guest release's
+publication. The package metadata stays unchanged.
+
+```sh
+safeyolo --root /owned/fresh-root guest acquire --package-info /path/to/host-package/package-info --write-selection /owned/fresh-root/share/guest-selection.json --store /owned/guest-store --index sha256:DIGEST
+```
+
+Success prints the prepared asset directory and writes the selection as JSON.
+The consumer verifies the requested index, compatibility, platform, child,
+config and archive through the same path used by default acquisition. Keep
+the store: installed inputs reference its prepared trees. To install these
+inputs, pass the printed directory to the host package's `install.sh` with
+`--platform-assets`, using the same root and a separate `--command-dir`. The
+installer retains the generated `share/guest-selection.json` and installs the
+backend files beside it before initialization.
+
+Without `--index`, acquisition resolves the package's compatibility tag.
+An existing installed selection is retained even when `--index` names another
+release. Use `guest upgrade --index sha256:DIGEST` to change an installed guest.
 
 ## Upgrade or roll back the installed default guest
 

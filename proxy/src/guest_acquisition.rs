@@ -1,4 +1,4 @@
-//! Acquire the default guest and stage the existing backend installation inputs.
+//! Acquire a compatible guest and stage the existing backend installation inputs.
 
 use std::{
     collections::BTreeMap,
@@ -45,7 +45,7 @@ pub(crate) fn validate_prepared_linux_assets(
     archive::validate_assets(path, consumer_platform()?, mapping)
 }
 
-pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY]\nPrepare the compatible default guest for the verified installer.\nPrint the prepared asset directory and write its OCI selection as JSON. Existing installed selections are retained.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
+pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
 struct PackageGuest {
@@ -474,6 +474,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     let mut store = None;
     let mut selection_file = None;
     let mut host_settings = None;
+    let mut index = None;
     let mut options = arguments[1..].iter();
     while let Some(option) = options.next() {
         let value = options
@@ -487,6 +488,10 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             selection_file = Some(PathBuf::from(value));
         } else if option == "--host-settings" && host_settings.is_none() {
             host_settings = Some(PathBuf::from(value));
+        } else if option == "--index" && index.is_none() {
+            let digest = value.to_str().ok_or("guest index digest must be UTF-8")?;
+            guest_oci::sha256_hex(digest)?;
+            index = Some(digest);
         } else {
             return Err("unknown or duplicate guest acquire option".into());
         }
@@ -524,7 +529,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         Some(path) => crate::linux_host::mapping_from_settings(&path)?,
         None => crate::linux_host::mapping_for_root(root)?,
     };
-    let selection = acquire(&registry_client()?, &package, &store, None, None, mapping).await?;
+    let selection = acquire(&registry_client()?, &package, &store, index, None, mapping).await?;
     // Acquisition can take time. Preserve an instance initialized meanwhile.
     if root.join("config.toml").try_exists()?
         || root.join("policy.toml").try_exists()?
