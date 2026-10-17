@@ -221,10 +221,10 @@ def registry(tmp_path):
             assert not thread.is_alive()
 
 
-def install(binary, root, store, environment, package_info):
+def install(binary, root, store, environment, package_info, *arguments):
     result = subprocess.run([str(binary), "--root", str(root), "guest", "acquire",
                            "--package-info", str(package_info), "--store", str(store),
-                           "--write-selection", str(root / "prepared-selection.json")],
+                           "--write-selection", str(root / "prepared-selection.json"), *arguments],
                           env=environment, capture_output=True, text=True, timeout=30)
     if result.returncode == 0:
         # Exercise the same backend function used by the actual installer.
@@ -308,6 +308,41 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
         assert not (source / "config.toml").exists()
 
 
+def test_explicit_first_acquisition_selects_each_index_without_discovery(
+        native_cli, registry, package_info, tmp_path, guest_store):
+    contents, requests, _faults, environment = registry
+    first = release(compressed_archive())
+    second = release(compressed_archive(content=b"new guest bytes"), version="guest-2026-10-12.2")
+    contents.update(first)
+    contents.update(second)
+    metadata = package_info.read_bytes()
+    for name, data in (("baseline", first), ("candidate", second)):
+        index = digest(data["manifests/compat-v1"])
+        contents["manifests/" + index] = data["manifests/compat-v1"]
+        root = tmp_path / name
+        before = len(requests)
+        result = install(native_cli, root, guest_store / name, environment, package_info, "--index", index)
+        assert result.returncode == 0, result.stderr
+        selected = json.loads((root / "share/guest-selection.json").read_bytes())
+        assert selected["index"]["digest"] == index
+        assert selected["archive"]["digest"] == digest(data["blobs/" + selected["archive"]["digest"]])
+        assert requests[before:].count(PREFIX + "manifests/" + index) == 1
+        assert PREFIX + "manifests/compat-v1" not in requests[before:]
+        owned_root_ids(root / "share/rootfs-tree")
+        read = subprocess.run(["sudo", "-n", "cat", str(root / "share/rootfs-tree/command")],
+                              check=True, capture_output=True)
+        assert read.stdout == (b"guest bytes" if name == "baseline" else b"new guest bytes")
+    assert package_info.read_bytes() == metadata
+    original = (tmp_path / "baseline/share/guest-selection.json").read_bytes()
+    before = len(requests)
+    result = install(native_cli, tmp_path / "baseline", guest_store / "unused", environment, package_info,
+                     "--index", digest(second["manifests/compat-v1"]))
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "baseline/share/guest-selection.json").read_bytes() == original
+    assert len(requests) == before
+    assert not (guest_store / "unused").exists()
+
+
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, faults, environment = registry
     first = release(compressed_archive(child_owner=101000))
@@ -357,8 +392,9 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert all("/blobs/" not in path for path in requests[before:])
 
 
-@pytest.mark.parametrize("fault", ["partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "zstd", "tar", "ownership", "child-owner", "missing-cache"])
-def test_native_acquisition_refuses_before_activation(native_cli, registry, package_info, tmp_path, fault, guest_store):
+@pytest.mark.parametrize("pinned", [False, True], ids=["discovery", "index"])
+@pytest.mark.parametrize("fault", ["partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache"])
+def test_native_acquisition_refuses_before_activation(native_cli, registry, package_info, tmp_path, fault, guest_store, pinned):
     contents, _requests, faults, environment = registry
     archive = compressed_archive(owner=0 if fault == "ownership" else 100000, missing_cache=fault == "missing-cache", child_owner=0 if fault == "child-owner" else None)
     if fault == "zstd":
@@ -374,14 +410,28 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
         else:
             index["manifests"].append(copy.deepcopy(index["manifests"][1]))
         data["manifests/compat-v1"] = json.dumps(index).encode()
+    if fault == "manifest-hash":
+        for key, value in data.items():
+            if key.startswith("manifests/sha256:"):
+                data[key] = b"!" + value[1:]
+    if fault == "manifest-size":
+        index = json.loads(data["manifests/compat-v1"])
+        for child in index["manifests"]:
+            child["size"] += 1
+        data["manifests/compat-v1"] = json.dumps(index).encode()
     key = "blobs/" + digest(archive)
     if fault == "partial":
         faults["partial"] = key
     if fault == "hash":
         data[key] = b"!" + archive[1:]
     contents.update(data)
+    arguments = []
+    if pinned:
+        index = digest(data["manifests/compat-v1"])
+        contents["manifests/" + index] = data["manifests/compat-v1"]
+        arguments = ["--index", index]
     root, store = tmp_path / "refused", guest_store
-    result = install(native_cli, root, store, environment, package_info)
+    result = install(native_cli, root, store, environment, package_info, *arguments)
     assert result.returncode != 0
     assert "panic" not in result.stderr.lower()
     assert not (root / "share").exists()
@@ -391,6 +441,57 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
     assert not trees.exists() or not list(trees.iterdir())
     blobs = store / "blobs/sha256"
     assert not blobs.exists() or all(len(path.name) == 64 for path in blobs.iterdir())
+
+
+def test_first_acquisition_rejects_wrong_index_digest(native_cli, registry, package_info, tmp_path, guest_store):
+    contents, requests, _faults, environment = registry
+    data = release(compressed_archive())
+    index = "sha256:" + "a" * 64
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    root = tmp_path / "refused"
+    result = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    assert result.returncode != 0 and "panic" not in result.stderr.lower()
+    assert not (root / "share").exists()
+    assert not (root / "prepared-selection.json").exists()
+    assert not any("/blobs/" in path or path.endswith("compat-v1") for path in requests)
+
+
+@pytest.mark.parametrize("arguments", [("--index",), ("--index", ""), ("--index", "compat-v1"),
+                                      ("--index", "--store"), ("--index", "sha256:" + "A" * 64),
+                                      ("--index", os.fsdecode(b"sha256:\xff")),
+                                      ("--index", "sha256:" + "a" * 64, "--index", "sha256:" + "b" * 64)])
+def test_invalid_acquisition_index_options_make_no_changes(
+        native_cli, registry, package_info, tmp_path, guest_store, arguments):
+    _contents, requests, _faults, environment = registry
+    root = tmp_path / "refused"
+    result = install(native_cli, root, guest_store, environment, package_info, *arguments)
+    assert result.returncode != 0 and "panic" not in result.stderr.lower()
+    assert not root.exists() and not guest_store.exists()
+    assert not requests
+
+
+@settings(max_examples=16, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(value=st.text(max_size=64).filter(lambda value: "\0" not in value))
+def test_generated_malformed_acquisition_digests_make_no_changes(
+        native_cli, registry, package_info, tmp_path, guest_store, value):
+    # Valid SHA-256 references need 71 characters, including the prefix.
+    test_invalid_acquisition_index_options_make_no_changes(
+        native_cli, registry, package_info, tmp_path, guest_store, ("--index", value))
+
+
+@pytest.mark.parametrize("marker", ["config.toml", "policy.toml", "data/admin_token", "share/explicit-input"])
+def test_pinned_acquisition_preserves_nonfresh_roots(
+        native_cli, registry, package_info, tmp_path, guest_store, marker):
+    _contents, requests, _faults, environment = registry
+    root = tmp_path / "retained"
+    path = root / marker
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"retained input")
+    result = install(native_cli, root, guest_store, environment, package_info, "--index", "sha256:" + "a" * 64)
+    assert result.returncode != 0 and "panic" not in result.stderr.lower()
+    assert path.read_bytes() == b"retained input"
+    assert not (root / "prepared-selection.json").exists()
+    assert not guest_store.exists() and not requests
 
 
 @settings(max_examples=24, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])

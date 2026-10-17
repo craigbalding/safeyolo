@@ -647,10 +647,16 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     platform = tmp_path / "explicit"
     (platform / "rootfs-tree").mkdir(parents=True)
     supplied = tmp_path / "supplied"
+    selection = supplied / "share/guest-selection.json"
+    selection.parent.mkdir(parents=True)
+    selection.write_bytes(b'{"index": "prepared acquisition selection"}\n')
+    acquisition_call = marker.read_bytes()
     result = run(str(bundle / "install.sh"), "--root", str(supplied), "--command-dir", str(supplied / "commands"),
-                 "--platform-assets", str(platform))
+                 "--platform-assets", str(platform), env=dict(os.environ, PACKAGE_GUEST_CALLS=str(marker)))
     assert result.returncode == 0, result.stderr
     assert (supplied / "share/rootfs-tree").resolve() == (platform / "rootfs-tree").resolve()
+    assert selection.read_bytes() == b'{"index": "prepared acquisition selection"}\n'
+    assert marker.read_bytes() == acquisition_call
 
 
 def packaged_flow_token_recipe(package_inputs, tmp_path):
