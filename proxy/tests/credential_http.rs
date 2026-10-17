@@ -2301,6 +2301,14 @@ async fn run_h2_response_content_case(
             .windows(response_body.len())
             .any(|window| window == response_body.as_slice())
     );
+    // The reusable origin session belongs to the intercepted client transport.
+    // A locally blocked response must not abort that session's other streams.
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2), connection_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(2), origin_task)
         .await
         .unwrap()
@@ -2313,8 +2321,6 @@ async fn run_h2_response_content_case(
         )]
     );
 
-    drop(sender);
-    let _ = connection_task.await;
     proxy.shutdown().await;
     let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
     let rows = events

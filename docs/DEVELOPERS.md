@@ -1063,6 +1063,55 @@ missing PyPI digest metadata. A passing seed-wheel control establishes the
 default-index path with published metadata; it does not establish integrity
 for those skipped paths.
 
+### HTTP/2 gate verification
+
+From the repository root on Linux, use Rust 1.94.0, the frozen development
+Python environment, and an existing compatible Cargo target. The build and
+tests start only owned local fixtures. The contract test also needs the matching
+native CLI for its gateway credential fixture:
+
+```sh
+CARGO_TARGET_DIR="$PWD/proxy/target" CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
+SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" uv run --frozen --no-sync pytest -q tests/proxy_contracts/test_http2_gate.py tests/proxy_contracts/test_http2_gate_timing.py tests/proxy_contracts/test_http2_contract.py
+```
+
+The default run checks cold and warm session reuse, origin-visible prefixes,
+delayed END_STREAM, policy decisions and reloads, generated request resets,
+negotiated stream limits, a stalled response reader, GOAWAY, parent routing and
+bounded repeated work. The race fixture compares a simultaneous release with
+a serial control. Timing thresholds and the real idle timeout run only when
+explicitly selected.
+
+For the timing comparison, stop unrelated heavy work on the selected Linux
+host. The generator pins itself, its origin threads and the inherited proxy to
+two available CPUs. The reference command uses one Tokio worker. Worker count
+can affect the completion spread and packet grouping; record the selected
+count with the result. Keep the same origin, binary and generator for both lanes.
+Use a new disk-backed test directory outside the checkout:
+
+```sh
+SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" SAFEYOLO_H2_GATE_BENCHMARK=1 SAFEYOLO_H2_GATE_LIFECYCLE=1 TOKIO_WORKER_THREADS=1 uv run --frozen --no-sync pytest -q -s --basetemp=/var/tmp/safeyolo-h2-gate tests/proxy_contracts/test_http2_gate_timing.py
+```
+
+The output names the timing JSON and fixture TLS key file. Each lane uses 100
+warm batches of 20 requests. The JSON records the origin's monotonic completion
+spread per batch, median, p95, connection and stream IDs, received H2 frames,
+CPU affinity, source revision and process memory/FD observations. Compare proxy
+p95 with `max(2 ms, 2 × direct p95)`. Investigate consistent median inflation
+above 1 ms. The idle witness observes origin closure, reconnection, and a gated
+upload whose response finishes before its request.
+
+TLS reads do not identify TCP segments. For packet proof, use an isolated
+Linux host with capture permission. Set `SAFEYOLO_H2_GATE_ORIGIN_PORT=49484`
+for the benchmark, and start `tcpdump -i lo -s 0 -w gate.pcap 'tcp port 49484'`
+before the test. Stop and join that capture after the test. Use
+[TShark](https://www.wireshark.org/docs/man-pages/tshark.html) with the printed
+fixture key file to decode `gate.pcap`. Match each batch's peer port and H2
+stream IDs to the captured END_STREAM frames. Count the actual TCP segments
+that contain those frames, including reassembled records. Retain that result
+with the exact tested revision. Report different segmentation explicitly;
+application timestamps alone do not prove one-packet or two-packet delivery.
+
 ### Testing Requirements
 
 Before a PR, run quick focused checks of the changed behavior, including useful

@@ -505,6 +505,8 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         let tunnel = super::Tunnel {
             destination: destination.clone(),
             upstream: tokio::sync::Mutex::new(Some(connected)),
+            sessions: super::upstream_h2::Sessions::default(),
+            connected_runtime: std::sync::Weak::new(),
         };
         let connected = tunnel.upstream.lock().await.take().unwrap();
         let mut peer = accept(&origin).await;

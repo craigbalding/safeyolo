@@ -38,7 +38,10 @@ struct Observation {
     protocol: Option<Protocol>,
     terminal: Option<Result<StatusCode, ()>>,
     applied: Option<bool>,
+    evidence_finished: bool,
     request: Option<RequestContext>,
+    request_parser_terminal: Option<bool>,
+    request_body_empty: bool,
     request_failed: bool,
     live_error: Option<zeroize::Zeroizing<String>>,
     gateway_lease: Option<crate::grants::GrantLease>,
@@ -106,12 +109,19 @@ impl Completion {
             (true, None) => Protocol::Http2(h2::ext::on_response_complete(request)),
             (false, None) => Protocol::Http1(hyper::ext::on_response_complete(request)),
         };
+        let request_parser_terminal = context.as_ref().and_then(RequestContext::parser_terminal);
+        let request_body_empty = context
+            .as_ref()
+            .is_some_and(RequestContext::request_body_empty);
         Arc::new(Self {
             observation: Mutex::new(Observation {
                 protocol: Some(protocol),
                 terminal: None,
                 applied: None,
+                evidence_finished: false,
                 request: context,
+                request_parser_terminal,
+                request_body_empty,
                 request_failed,
                 live_error: None,
                 gateway_lease,
@@ -208,7 +218,7 @@ impl Completion {
                 evidence_failed: false,
             },
         };
-        let mut failed = circuit.evidence_failed();
+        let failed = circuit.evidence_failed();
         if matches!(
             circuit,
             crate::circuit_runtime::ResponseOutcome::Exception { .. }
@@ -219,16 +229,34 @@ impl Completion {
             if let Some(recording) = &self.recording {
                 recording.skip_response();
             }
+            observation.evidence_finished = true;
             observation.applied = Some(failed);
             return failed;
         }
-        if let Some(capture) = &self.capture {
-            failed |= capture.finish(result.is_ok());
-        } else if let Some(recording) = &self.recording {
-            recording.finish(result.is_ok(), None, false);
-        }
         observation.applied = Some(failed);
         failed
+    }
+
+    /// Response delivery, memory accounting and circuit/grant effects do not
+    /// wait for an upload. Context and flow evidence need its validated request
+    /// metadata, so keep their bounded response capture until that owner ends.
+    fn finish_evidence(&self, observation: &mut Observation) {
+        let Some(mut failed) = observation.applied else {
+            return;
+        };
+        if observation.evidence_finished || observation.request.is_some() {
+            return;
+        }
+        // An unwinding evidence hook must retain failure without replaying it.
+        observation.evidence_finished = true;
+        observation.applied = Some(true);
+        let success = observation.terminal.is_some_and(|result| result.is_ok());
+        if let Some(capture) = &self.capture {
+            failed |= capture.finish(success);
+        } else if let Some(recording) = &self.recording {
+            recording.finish(success, None, false);
+        }
+        observation.applied = Some(failed);
     }
 
     /// Observe a latched result without replacing the connection driver's waker.
@@ -247,11 +275,21 @@ impl Completion {
             .as_mut()
             .and_then(RequestContext::try_finish)
         {
+            observation.request_parser_terminal = observation
+                .request
+                .as_ref()
+                .and_then(RequestContext::parser_terminal);
+            observation.request_body_empty = observation
+                .request
+                .as_ref()
+                .is_some_and(RequestContext::request_body_empty);
             observation.request_failed |= failed;
             observation.request = None;
         }
+        self.finish_evidence(&mut observation);
         observation
             .applied
+            .filter(|_| observation.evidence_finished && observation.request.is_none())
             .map(|failed| failed || observation.request_failed)
     }
 
@@ -284,12 +322,23 @@ impl Completion {
         if let Some(request) = observation.request.as_mut()
             && let Poll::Ready(failed) = request.poll(cx)
         {
+            observation.request_parser_terminal = observation
+                .request
+                .as_ref()
+                .and_then(RequestContext::parser_terminal);
+            observation.request_body_empty = observation
+                .request
+                .as_ref()
+                .is_some_and(RequestContext::request_body_empty);
             observation.request_failed |= failed;
             observation.request = None;
         }
+        self.finish_evidence(&mut observation);
         match observation.applied {
-            Some(failed) => Poll::Ready(failed || observation.request_failed),
-            None => Poll::Pending,
+            Some(failed) if observation.evidence_finished && observation.request.is_none() => {
+                Poll::Ready(failed || observation.request_failed)
+            }
+            _ => Poll::Pending,
         }
     }
 
@@ -304,6 +353,54 @@ impl Completion {
     pub(super) fn evidence_failed(&self) -> bool {
         let observation = self.lock();
         observation.request_failed || observation.applied.unwrap_or(false)
+    }
+
+    pub(super) fn request_complete(&self) -> bool {
+        self.lock().request_parser_terminal == Some(true)
+    }
+
+    pub(super) fn request_body_empty(&self) -> bool {
+        let _ = self.try_finish();
+        let observation = self.lock();
+        observation.request_parser_terminal == Some(true) && observation.request_body_empty
+    }
+
+    /// END_STREAM is an independent parser result, never an Incoming EOF or a
+    /// zero length hint. In particular RST_STREAM(NO_ERROR) is not completion.
+    pub(super) fn poll_request_complete(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), crate::Error>> {
+        let mut observation = self.lock();
+        if let Some(request) = observation.request.as_mut()
+            && let Poll::Ready(failed) = request.poll(cx)
+        {
+            observation.request_parser_terminal = observation
+                .request
+                .as_ref()
+                .and_then(RequestContext::parser_terminal);
+            observation.request_body_empty = observation
+                .request
+                .as_ref()
+                .is_some_and(RequestContext::request_body_empty);
+            observation.request_failed |= failed;
+            observation.request = None;
+        }
+        self.finish_evidence(&mut observation);
+        match observation.request_parser_terminal {
+            Some(true) => Poll::Ready(Ok(())),
+            Some(false) => Poll::Ready(Err("request completion aborted".into())),
+            None => Poll::Pending,
+        }
+    }
+
+    /// A reusable connection has a separate observer for each exchange. The
+    /// existing teardown guard still owns recording and completion application.
+    pub(super) fn observe(self: Arc<Self>) -> impl Future<Output = hyper::Result<()>> + Send {
+        let completion = self.clone();
+        self.drive(std::future::poll_fn(move |cx| {
+            completion.poll(cx).map(|_| Ok(()))
+        }))
     }
 
     /// Construct the teardown owner now, so even an unpolled future has its guard.
@@ -541,6 +638,9 @@ mod tests {
             let completion = Arc::new(Completion {
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
+                    evidence_finished: false,
+                    request_parser_terminal: None,
+                    request_body_empty: false,
                     terminal: None,
                     live_error: None, gateway_lease: None,
                 }),
