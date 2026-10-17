@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -27,8 +28,133 @@ def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
 
-def test_only_installed_layout_allows_original_installer_omissions(package_inputs, tmp_path):
-    bundle = build_bundle(package_inputs, tmp_path)
+@pytest.fixture(params=["gnu", "mac-short-options", "shasum"])
+def checksum_bundle(tmp_path, monkeypatch, request):
+    """Run real checksum tools and installers without compiling test binaries."""
+    if os.uname().sysname != "Linux":
+        pytest.skip("controlled shell identities run on Linux; macOS uses actual Tart tools")
+    bundle = tmp_path / "bundle"
+    for name in ("bin", "libexec", "assets/guest", "assets/launchers"):
+        (bundle / name).mkdir(parents=True)
+    platform = "linux-amd64" if os.uname().machine == "x86_64" else "linux-arm64"
+    (bundle / "package-info").write_text(
+        f"source_commit={REVISION}\nprofile=production\nplatform={platform}\nminimum_runtime=2.31\n"
+        "guest_compatibility=test\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\n"
+        "guest_discovery_tag=compat-test\n",
+    )
+    for relative in ("bin/safeyolo", "bin/safeyolo-proxy", "bin/safeyolo-coord",
+                     "assets/guest/safeyolo-guest", "assets/guest/safeyolo-coord"):
+        path = bundle / relative
+        identity = f"{path.name} 0.1.0 commit={REVISION} profile=production"
+        path.write_text(
+            '#!/bin/sh\nif [ "${3:-}" = init ]; then\n'
+            ': > "$2/config.toml"; : > "$2/policy.toml"\nelse\n'
+            f"printf '%s\\n' '{identity}'\nfi\n",
+        )
+        path.chmod(0o755)
+        if relative.startswith("assets/"):
+            path.with_suffix(".version").write_text(identity + "\n")
+            path.with_suffix(".sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest() + "\n")
+    for relative in ("bin/tmux", "libexec/tmux", "bin/watch-backlog-factory"):
+        path = bundle / relative
+        path.write_text("#!/bin/sh\nprintf 'tmux fixture\\n'\n")
+        path.chmod(0o755)
+    for name in ("guest-init", "guest-init-static", "guest-init-per-run", "guest-proxy-forwarder",
+                 "guest-shell-bridge", "guest-desktop", "guest-sudo"):
+        (bundle / "assets/guest" / name).touch()
+    for name in ("tmux-common", "tmux-window", "tmux-pane"):
+        (bundle / "assets/launchers" / f"{name}.sh").touch()
+    for source, destination in (("install_host_package.sh", "install.sh"),
+                                ("install_native.sh", "install_native.sh"),
+                                ("native_package.sh", "native_package.sh")):
+        shutil.copy2(REPO / "scripts" / source, bundle / destination)
+    (bundle / "LICENSE").write_text("fixture notice\n")
+    (bundle / "payload with spaces").write_text("checked bundle bytes\n")
+    (bundle / "SHA256SUMS").write_text("".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{path.relative_to(bundle)}\n"
+        for path in sorted(bundle.rglob("*")) if path.is_file()
+    ))
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("bash", "uname", "getconf", "tr", "cat", "dirname", "mkdir", "mktemp", "rmdir",
+                 "cp", "mv", "ln", "readlink", "cmp", "rm"):
+        (tools / name).symlink_to(shutil.which(name))
+    # Only architecture inspection is controlled. Every manifest and digest
+    # check reads the real fixture bytes through the selected checksum tool.
+    architecture = "3e00" if platform == "linux-amd64" else "b700"
+    (tools / "od").write_text(f"#!/bin/sh\nprintf '7f454c460201000000000000000000000200{architecture}\\n'\n")
+    (tools / "od").chmod(0o755)
+    if request.param == "shasum":
+        (tools / "shasum").symlink_to(shutil.which("shasum"))
+    elif request.param == "gnu":
+        (tools / "sha256sum").symlink_to(shutil.which("sha256sum"))
+    else:
+        backend = shlex.quote(shutil.which("sha256sum"))
+        (tools / "sha256sum").write_text(
+            '#!/bin/sh\ncheck=false; input=false\nfor argument do\ncase "$argument" in\n'
+            '--*) echo "GNU long options are unsupported" >&2; exit 2;;\n'
+            '-c) check=true;;\n-b|-t|-w|-z) ;;\n*) input=true;;\nesac\ndone\n'
+            'if $check && ! $input; then echo "check requires an input operand" >&2; exit 2; fi\n'
+            f'exec {backend} "$@"\n',
+        )
+        (tools / "sha256sum").chmod(0o755)
+    # Keep inherited shell activation from adding an unselected backend.
+    activation = tmp_path / "activation.sh"
+    activation.write_text('export PATH="$CHECKSUM_TOOLS"\n')
+    monkeypatch.setenv("BASH_ENV", str(activation))
+    monkeypatch.setenv("CHECKSUM_TOOLS", str(tools))
+    monkeypatch.setenv("PATH", str(tools))
+    return bundle
+
+
+@pytest.mark.parametrize("entry", ["source", "bundle"])
+@pytest.mark.parametrize("damage", [None, "bytes", "missing", "malformed", "empty", "malformed-only"])
+def test_checksum_backends_through_installers(checksum_bundle, tmp_path, entry, damage):
+    bundle = checksum_bundle
+    payload = bundle / "payload with spaces"
+    if damage == "bytes":
+        payload.write_text("changed bytes\n")
+    elif damage == "missing":
+        payload.unlink()
+    elif damage == "malformed":
+        manifest = bundle / "SHA256SUMS"
+        digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+        manifest.write_text(manifest.read_text().replace(digest, "g" * 64))
+    elif damage == "empty":
+        (bundle / "SHA256SUMS").write_text("")
+    elif damage == "malformed-only":
+        (bundle / "SHA256SUMS").write_text("malformed checksum\n")
+    root = tmp_path / "installed"
+    command = [str(bundle / "install.sh")]
+    if entry == "source":
+        command = [str(REPO / "install.sh"), "--bundle", str(bundle)]
+    result = run(*command, "--root", str(root), "--command-dir", str(tmp_path / "commands"),
+                 "--no-guest-download")
+    if damage:
+        assert result.returncode != 0
+        assert "bundle checksum verification failed" in result.stderr
+        assert not root.exists()
+        assert not (tmp_path / "commands").exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "Verified SafeYolo package" in result.stdout
+        assert (root / "config.toml").exists()
+
+
+def test_checksum_digest_preserves_tool_failure(checksum_bundle):
+    payload = checksum_bundle / "payload with spaces"
+    command = ("bash", "-c", 'source "$1"; file_sha256 "$2"',
+               "digest", str(REPO / "scripts/native_package.sh"))
+    result = run(*command, str(payload))
+    assert result.returncode == 0
+    assert result.stdout.strip() == hashlib.sha256(payload.read_bytes()).hexdigest()
+    result = run(*command, str(checksum_bundle / "missing"))
+    assert result.returncode != 0 and not result.stdout
+
+
+def test_only_installed_layout_allows_original_installer_omissions(checksum_bundle):
+    bundle = checksum_bundle
     command = ("bash", "-c", 'source "$1"; verify_native_package "$2" "${3:-}"',
                "verify", str(REPO / "scripts/native_package.sh"), str(bundle))
     for name in ("install.sh", "install_native.sh", "native_package.sh"):
@@ -36,6 +162,12 @@ def test_only_installed_layout_allows_original_installer_omissions(package_input
     assert run(*command).returncode != 0
     installed = run(*command, "--installed")
     assert installed.returncode == 0, installed.stderr
+    manifest = bundle / "SHA256SUMS"
+    complete = manifest.read_text()
+    manifest.write_text("".join(line for line in complete.splitlines(keepends=True)
+                                if line.endswith(("  ./install.sh\n", "  ./install_native.sh\n", "  ./native_package.sh\n"))))
+    assert run(*command, "--installed").returncode != 0
+    manifest.write_text(complete)
     # This exception never hides a present, changed script or a dangling link.
     (bundle / "install.sh").write_text("changed packaging script\n")
     assert run(*command, "--installed").returncode != 0
