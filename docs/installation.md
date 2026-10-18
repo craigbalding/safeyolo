@@ -437,9 +437,9 @@ installation remain host administration. See the upstream
 [distribution instructions](https://gvisor.dev/docs/user_guide/install/).
 
 SafeYolo keeps the private pinned payload as its default. It avoids separate
-runtime acquisition and administrator installation. The Debian cold observations
-below support that choice for the shipped package. The explicit system override
-remains useful when an administrator needs to own or share the runtime.
+runtime acquisition and administrator installation. The cold observations below
+support that choice for the shipped package. The explicit system override remains
+useful when an administrator needs to own or share the runtime.
 
 Cold acquisition and setup were measured on 18 October 2026 on Ubuntu 24.04.4
 AMD64 and Debian 13 ARM64. Both used the
@@ -454,23 +454,18 @@ pinned upstream payload. Its administrator installed all six executables and
 notices under a new root-owned directory before selecting its absolute `runsc`
 path with `--system-runsc`.
 
-The Ubuntu observations are provisional. Two retained virtual machines had the
-same configured static IP address, which leaves the network baseline ambiguous.
-Corrected Ubuntu measurements are pending; these provisional timings cannot yet
-support the final distribution decision. The Debian observations remain valid.
-
-| Phase (seconds) | Ubuntu bundled (provisional) | Ubuntu system (provisional) | Debian bundled | Debian system |
+| Phase (seconds) | Ubuntu bundled | Ubuntu system | Debian bundled | Debian system |
 | --- | ---: | ---: | ---: | ---: |
-| Bootstrap download | 0.369 | 0.117 | 0.423 | 0.219 |
-| Host archive acquisition and checksum | 6.336 | 236.670 | 14.533 | 13.488 |
-| Host unpack and package verification | 11.569 | 11.390 | 1.930 | 1.958 |
-| Separate upstream runtime download | — | 4.268 | — | 11.102 |
-| Upstream checksum, unpack, payload check and administrator install | — | 14.024 | — | 0.521 |
-| Installer package recheck and setup | 0.800 | 1.872 | 0.236 | 0.896 |
-| Linux host preparation and file staging | 8.652 | 9.962 | 0.377 | 0.138 |
-| Configuration, trust and activation | 1.104 | 0.791 | 0.310 | 0.202 |
-| Doctor | 1.082 | 0.119 | 0.170 | 0.019 |
-| Total from before acquisition through doctor | 30.179 | 279.608 | 18.099 | 28.683 |
+| Bootstrap download | 0.328 | 0.116 | 0.423 | 0.219 |
+| Host archive acquisition and checksum | 2.590 | 4.362 | 14.533 | 13.488 |
+| Host unpack and package verification | 5.856 | 7.554 | 1.930 | 1.958 |
+| Separate upstream runtime download | — | 10.536 | — | 11.102 |
+| Upstream checksum, unpack, payload check and administrator install | — | 10.472 | — | 0.521 |
+| Installer package recheck and setup | 0.575 | 1.104 | 0.236 | 0.896 |
+| Linux host preparation and file staging | 1.841 | 8.251 | 0.377 | 0.138 |
+| Configuration, trust and activation | 0.658 | 0.691 | 0.310 | 0.202 |
+| Doctor | 0.266 | 0.119 | 0.170 | 0.019 |
+| Total from before acquisition through doctor | 12.317 | 43.445 | 18.099 | 28.683 |
 
 Both controls acquired the full host archive: 190,882,862 bytes on AMD64 and
 176,869,006 bytes on ARM64. The system control also acquired 129,604,888 upstream
@@ -493,13 +488,12 @@ support an architecture performance comparison.
 Upstream and content delivery network caches and operating system page caches
 were not controlled. Phase times use a monotonic clock and sampled command
 output. The phase rows omit some command and observation overhead; the total
-includes that overhead. In particular, the same host archive acquisition and
-checksum took 6.336 and 236.670 seconds in the provisional Ubuntu pair. The cause
-of that variation was not established. The provisional 249.429-second total
-difference on Ubuntu cannot be attributed to runtime distribution alone. On
-Debian, the system total was 10.584 seconds longer. The separate runtime download
-and setup cost was 11.623 seconds on Debian; the provisional Ubuntu value was
-18.292 seconds.
+includes that overhead. The system total was 31.128 seconds longer on Ubuntu and
+10.584 seconds longer on Debian. The separate runtime download and setup cost
+was 21.007 seconds on Ubuntu and 11.623 seconds on Debian. The common host-package
+phases also varied, so the total differences cannot be attributed to runtime
+distribution alone. These observations support avoiding the extra download and
+setup; they do not establish a general speed ratio.
 
 Both system totals include the bundled host archive. These results do not
 measure a runtime-free host package or use of an already installed runtime.
