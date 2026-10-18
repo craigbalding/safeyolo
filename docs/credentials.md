@@ -92,6 +92,61 @@ session, then repeat its anonymous token exchange through the proxy to restore
 automatic recognition. Registry login credentials and personal access tokens
 retain their existing approval requirements.
 
+## Use Codex with a ChatGPT subscription
+
+Codex supports [ChatGPT subscription authentication and OpenAI API key
+authentication](https://learn.chatgpt.com/docs/auth). These are different
+credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
+`sk-svcacct-` API keys. A grant for `openai:*` does not identify or approve a
+ChatGPT subscription OAuth access token.
+
+The credential guard has no built-in detector or issuance binding for Codex
+subscription tokens. With standard or paranoid detection, an unrecognised
+bearer that meets the entropy thresholds is detected as `unknown_secret`.
+With `unknown_creds = "prompt"`, it needs approval for its
+exact fingerprint and destination. The guard does not verify a claimed JSON
+Web Token (JWT) issuer, audience or signature. A token's shape and requested
+destination do not prove that the token belongs to Codex or is appropriate for
+that destination. A custom detection rule also supplies no such proof.
+
+The entropy heuristic can miss long bearer values. Its default character
+diversity threshold requires at least half of the characters to be distinct.
+For example, a 222-character synthetic JWT with 57 distinct characters does
+not meet that threshold, despite high Shannon entropy. Without a matching
+detector, that value produces no credential finding. Do not assume that every
+OAuth bearer will produce an approval request.
+
+If you need the heuristic to inspect long values without that diversity test,
+you can opt in through your host policy. Add this table once, or change its
+existing `min_charset_diversity` field:
+
+```toml
+[controls.credentials.entropy]
+min_charset_diversity = 0.0
+```
+
+This setting affects credential detection across the instance. It can produce
+more findings and approval requests for values that previously passed. It
+retains the configured minimum length and Shannon entropy thresholds, so it
+does not detect every secret. It provides no issuer verification, destination
+grant or automatic approval. Check and apply your candidate through the
+[native policy commands](installation.md#check-show-and-apply).
+
+When a credential approval appears, inspect the reported agent, destination
+and fingerprint on the host. Use `credentials approve FINGERPRINT --destination
+HOST` only for the credential and destination you intend to permit, as described
+under [authorization and approval](#authorization-binding-and-risk-approval).
+Read the fingerprint from the approval or the `security.credential_guard` audit
+event. Do not extract or share a token or Codex authentication file to obtain it.
+
+An exact fingerprint approval covers that token at the chosen host. It does
+not establish the token's issuer, account, method or path. Existing network
+permissions, explicit credential denials and inspection of other secrets still
+apply. A replacement access token needs its own approval. Keep that fallback
+when trusted issuance cannot be established. Host-wide unknown-credential
+allowances and grants based on claimed JWT fields permit tokens without proving
+their issuer or intended use.
+
 ## Use a 1Password reference
 
 On the host, follow [1Password's installation and authentication instructions](https://developer.1password.com/docs/cli/get-started/)
