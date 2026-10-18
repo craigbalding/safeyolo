@@ -147,6 +147,75 @@ pathlib.Path(sys.argv[sys.argv.index('--artifacts')+1]).write_text(json.dumps(sy
     assert not (tmp_path / "handoff.json").exists()
 
 
+@pytest.mark.parametrize("member", [False, True])
+@pytest.mark.parametrize("device_result", ["available", "unreadable", "wrong-api"])
+def test_kvm_remote_prerequisites_refresh_only_runner_groups(tmp_path, member, device_result):
+    if os.geteuid() == 0:
+        pytest.skip("The permission control needs an ordinary test user")
+    tools = tmp_path / "tools"
+    (tools / ".venv/bin").mkdir(parents=True)
+    fixture = tmp_path / "device"
+    fixture.touch(mode=0o600)
+    if device_result == "unreadable":
+        fixture.chmod(0)
+    membership = tmp_path / "membership-added"
+    record = tmp_path / "sudo-calls.jsonl"
+    identity = tools / "id"
+    identity.write_text(f'#!{sys.executable}\nimport sys\n'
+                        'assert sys.argv[1:] == ["-nG", "agent"]\n'
+                        f'print("agent sudo" + (" kvm" if {member!r} else ""))\n')
+    sudo = tools / "sudo"
+    sudo.write_text(f'''#!{sys.executable}
+import json, os, pathlib, sys
+args = sys.argv[1:]
+with open({str(record)!r}, "a") as stream: stream.write(json.dumps(args) + "\\n")
+if args == ["-n", "usermod", "-aG", "kvm", "agent"]:
+    pathlib.Path({str(membership)!r}).touch()
+else:
+    assert args[:5] == ["-n", "-E", "-u", "agent", "--"], args
+    assert {member!r} or pathlib.Path({str(membership)!r}).exists()
+    os.execvp(args[5], args[5:])
+''')
+    python = tools / ".venv/bin/python"
+    python.write_text(f'''#!{sys.executable}
+import fcntl, os, sys
+real_open = os.open
+def open_device(path, flags):
+    assert path == "/dev/kvm" and flags == os.O_RDWR
+    return real_open({str(fixture)!r}, flags)
+os.open = open_device
+fcntl.ioctl = lambda fd, request, value: {11 if device_result == "wrong-api" else 12}
+assert sys.argv[1] == "-c"
+exec(sys.argv[2])
+''')
+    lane = tools / "tests/blackbox/hardware/run-hardware-lane.sh"
+    lane.parent.mkdir(parents=True)
+    lane.write_text(f'''#!/bin/bash
+set -eu
+test "$(umask)" = 0022
+test "$SSL_CERT_FILE" = public-ca-marker
+touch {shlex.quote(str(tmp_path / "lane-reached"))}
+''')
+    for executable in (identity, sudo, python, lane):
+        executable.chmod(0o755)
+    wrapper = (ROOT / "tests/blackbox/hardware/run-kvm.sh").read_text()
+    start = wrapper.index("printf -v command 'set -euo pipefail\n")
+    format_block = wrapper[start:wrapper.index("stage=execution\n", start)]
+    formatted = subprocess.check_output(["bash", "-c", 'controller=a; input_digest=b\n' + format_block + '\nprintf "%s" "$command"'], text=True)
+    prerequisite = formatted[formatted.index("test -c /dev/kvm\n"):]
+    # Use a permission-controlled file in place of the absent hardware node.
+    prerequisite = prerequisite.replace("test -c /dev/kvm", "test -f " + shlex.quote(str(fixture)))
+    result = subprocess.run(["bash", "-c", "set -euo pipefail; umask 077\n" + prerequisite], cwd=tools,
+                            env=dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", SSL_CERT_FILE="public-ca-marker"),
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert (result.returncode == 0) == (device_result == "available"), result.stdout + result.stderr
+    assert (tmp_path / "lane-reached").exists() == (device_result == "available")
+    assert membership.exists() == (not member)
+    calls = [json.loads(line) for line in record.read_text().splitlines()]
+    assert len(calls) == (1 if member else 2)
+    assert fixture.stat().st_mode & 0o777 == (0 if device_result == "unreadable" else 0o600)
+
+
 @pytest.mark.parametrize("missing", [False, True])
 def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing):
     producer = tmp_path / "controller"

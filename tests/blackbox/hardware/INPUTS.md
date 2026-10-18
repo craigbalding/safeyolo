@@ -60,20 +60,26 @@ dependencies, then invokes all maintained KVM sections once.
 
 Before deployment, verify that the independently reviewed
 [console-lock correction](https://github.com/craigbalding/safeyolo-harness/pull/6/commits/e9ad4f8fabfa723e388cbfd8f01a8ac54f1046f3)
-is installed. The wrapper requires four CPUs, 10 GiB available memory, 90 GiB
-pool space and actual KVM capability. The guest must pass the `/dev/kvm` API
-probe as its ordinary test user. Check guest fixture ports 8180, 9190, 8181,
+is installed. The fresh-guest entry checks for four CPUs, 10 GiB available
+memory and 90 GiB pool space, then requests that allocation. These are entry
+guards, not measured product minima. It also checks actual KVM capability.
+The harness logs in as `agent`; its bare user setup does not add `kvm`
+membership. If that membership is missing, the entry adds only `agent` to
+`kvm`. It starts the probe and runner as `agent` with refreshed groups and
+preserves the remote environment before the existing credential filter.
+The ordinary user must open `/dev/kvm` read/write and obtain API version 12.
+Device modes stay unchanged. Check guest fixture ports 8180, 9190, 8181,
 18080, 18443 and 19999 before execution. Existing provision/attempt locks,
 exact early lease, domain/disk checks, owned teardown and foreign-resource
 preservation remain in use.
 
-Those resource settings belong to the current fresh-guest entry. Accepted
-Rundeck run 7089 reused a separately prepared guest through the inner wrapper;
-it did not prove this entry's fresh provisioning or installed schedule. Its
+Accepted Rundeck run 7089 reused a separately prepared host with two CPUs and
+4 GiB memory through the inner wrapper. It did not prove this entry's fresh
+provisioning or installed schedule. Its
 [corrected runnable recipe](https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-6243870729)
 keeps parent/state setup at umask `077`, the private log at mode `0600`, and the
-wrapper child at umask `022` for the Debian workloads fixture. Check that child
-mask when binding the deployed SSH command.
+wrapper child at umask `022` for the Debian workloads fixture. The fresh entry
+sets `022` inside that remote child, before both the probe and maintained runner.
 
 For reuse of unchanged Python 3.13 tools in that recipe, use
 `cp -a --reflink=auto` into an actual ignored `source/.venv` directory. Do not

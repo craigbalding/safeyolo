@@ -138,6 +138,7 @@ tar -C "$attempt/inputs" -cf "$attempt/inputs.tar" selection.json "$host_archive
 harness_scp_to "$ip" "$attempt/controller.bundle" /home/agent/controller.bundle
 harness_scp_to "$ip" "$attempt/inputs.tar" /home/agent/inputs.tar
 printf -v command 'set -euo pipefail
+umask 077
 mkdir /home/agent/source /home/agent/inputs
 tar -xf /home/agent/inputs.tar -C /home/agent/inputs
 git -C /home/agent/source init
@@ -148,10 +149,17 @@ uv sync --frozen --group dev --python 3.13
 sudo -n apt-get update -qq
 sudo -n apt-get install -y -qq --no-install-recommends uidmap acl util-linux iproute2 openssh-server socat
 test -c /dev/kvm
-sudo -n .venv/bin/python -c %q
-./tests/blackbox/hardware/run-hardware-lane.sh /home/agent/source %q kvm /home/agent/inputs %q /home/agent/reports
+if ! id -nG agent | tr " " "\n" | grep -Fxq kvm; then
+    sudo -n usermod -aG kvm agent
+fi
+sudo -n -E -u agent -- /bin/bash -c %q kvm-runner %q %q %q
 ' \
-    'import os,fcntl; fd=os.open("/dev/kvm", os.O_RDWR); assert fcntl.ioctl(fd,0xAE00,0)==12; os.close(fd)' "$controller" "$input_digest"
+    'set -euo pipefail
+umask 022
+.venv/bin/python -c "$1"
+exec ./tests/blackbox/hardware/run-hardware-lane.sh /home/agent/source "$2" kvm /home/agent/inputs "$3" /home/agent/reports
+' \
+    'import os,fcntl; assert os.geteuid()!=0; fd=os.open("/dev/kvm", os.O_RDWR); assert fcntl.ioctl(fd,0xAE00,0)==12; os.close(fd)' "$controller" "$input_digest"
 stage=execution
 if [[ $cancelled != 0 ]]; then status=$cancelled; exit "$status"; fi
 bash "$jobs/ssh_exec.sh" "$ip" "$(printf '%s' "$command" | base64 -w0)" "${KVM_LANE_TIMEOUT:-7200}" \
