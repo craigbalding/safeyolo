@@ -20,7 +20,7 @@ import pytest
 
 from tests.proxy_contracts.harness import request
 from tests.proxy_contracts.scenarios import origin_server
-from tests.proxy_contracts.test_native_coord_operator import terminal
+from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
 from tests.proxy_contracts.test_native_policy_cli import native_inputs, native_instance
 
 AGENTS = '''
@@ -68,7 +68,7 @@ headers=["authorization"]
                 assert b"first-launch-key" not in output
             os.write(master, decision.encode() + b"\n")
             output += until(b"No pending requests")
-            assert process.wait(timeout=5) == 0
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             assert b"first-launch-key" not in output
         _wait_for_active_policy(instance)
         status, _, body = request(instance.paths["alice"], target, headers=headers)
@@ -124,10 +124,10 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice):
         if choice == "decline":
             os.write(master, b"n\n")
             until(b"Setup declined")
-            assert process.wait(timeout=5) == 0
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
         else:
             process.send_signal(signal.SIGINT)
-            assert process.wait(timeout=5) in (-signal.SIGINT, 130)
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) in (-signal.SIGINT, 130)
     assert (root / "policy.toml").read_bytes() == policy
     assert not (root / "agents").exists()
     assert not (root / "data/proxy-process.json").exists()
@@ -159,7 +159,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                     until(b"Copy this selected host authentication and settings?")
                     os.write(master, b"n\n")
                     until(b"First-agent host setup failed", timeout=30)
-                    assert process.wait(timeout=5) != 0
+                    assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
                 assert instance.policy.read_bytes() == policy_before_setup
                 assert instance.process.poll() is None
             finally:
@@ -171,18 +171,18 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 os.write(master, b"n\n")
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Preparing the shipped harness setup" in output
-                assert process.wait(timeout=5) != 0
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
             policy_bytes = instance.policy.read_bytes()
             command = instance.root / "agents/first/home/.safeyolo-command"
             previous = command.stat()
             command_bytes = command.read_bytes()
             # The actual default selection finds the intended named agent.
             # It neither reapplies setup nor creates a second identity.
-            with terminal(instance, ["agent", "launch", str(workspace), "--launcher", "tmux-window"]) as (process, _, until):
+            with terminal(instance, ["agent", "launch", str(workspace), "--launcher", "tmux-window"]) as (process, master, until):
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Reusing agent first" in output
                 assert b"Preparing the shipped harness setup" not in output
-                assert process.wait(timeout=5) != 0
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
             assert instance.policy.read_bytes() == policy_bytes
             assert command.stat().st_ino == previous.st_ino and command.read_bytes() == command_bytes
             command.unlink()
@@ -193,7 +193,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 until(b"Copy this selected host authentication and settings?")
                 os.write(master, b"n\n")
                 until(b"First-agent sandbox/harness startup failed", timeout=30)
-                assert process.wait(timeout=5) != 0
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
             assert command.read_bytes() == command_bytes
             # Explicit repair uses the existing TOML writer. Whitespace can
             # change, while every saved policy choice and agent field stays.
@@ -300,7 +300,7 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
                 if b"inspect> " not in output:
                     until(b"inspect> ")
                 os.write(master, b"quit\n")
-            assert process.wait(timeout=5) == 0
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             assert b"API 404 " not in output and b"first-launch-key" not in output
         assert origin.accepts == 0
         _wait_for_active_policy(instance)
@@ -356,7 +356,7 @@ def test_changed_credential_selection_refreshes_without_a_decision(tmp_path, win
             assert b"API 404 " not in output and b"approve / reject" not in output
             if change in ("fingerprint", "destination"):
                 os.write(master, b"\n")
-            assert process.wait(timeout=5) == 0
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             assert instance.policy.read_bytes() == before and origin.accepts == 0
             after_events = [row for row in audit.read_text().splitlines() if '"admin.approval_added"' in row or '"admin.denial"' in row]
             assert after_events == before_events
@@ -395,7 +395,7 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
                 expected = b"approved" if decision == "approve" else b"rejected"
                 assert b"Status: " + expected in output
                 os.write(master, b"quit\n")
-                assert process.wait(timeout=5) == 0
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
         _wait_for_active_policy(instance)
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
         assert origin.accepts == 0

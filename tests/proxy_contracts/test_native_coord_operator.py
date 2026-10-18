@@ -25,6 +25,7 @@ import sys
 import termios
 import time
 from contextlib import contextmanager
+from importlib import import_module
 from pathlib import Path
 
 import nats
@@ -34,6 +35,7 @@ from tests.proxy_contracts.harness import request
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
 REPO = Path(__file__).resolve().parents[2]
+wait_terminal_exit = import_module("tests.nested-linux.launcher_acceptance").wait_terminal_exit
 ROOM = "operator-chat"
 POLICY = '''[controls.network]
 enabled=false
@@ -178,8 +180,10 @@ def terminal(instance, arguments=None, *, cwd=None, command=None):
     finally:
         if process.poll() is None:
             process.terminate()
-        process.wait(timeout=5)
-        os.close(master)
+        try:
+            wait_terminal_exit(process, master, buffer, timeout=5)
+        finally:
+            os.close(master)
 
 
 def test_scripted_inputs_payloads_authority_and_rejections(instance, tmp_path):
@@ -234,7 +238,7 @@ def test_pty_draft_receive_unknown_count_and_later_send(instance):
         os.write(fd, b"later independent marker\r")
         until(b"message accepted;")
         os.write(fd, b":q\r")
-        process.wait(timeout=5)
+        wait_terminal_exit(process, fd, bytearray(), timeout=5)
         assert process.returncode == 0
     messages = history(instance)
     operator = [m for m in messages if m["sender_kind"] == "operator"]
@@ -260,16 +264,9 @@ def test_pty_queued_arrivals_exit_without_another_message(instance, exit_input):
         # this is a fixture scheduling window, not a product timeout.
         time.sleep(0.15)
         os.write(fd, b"\x1b[201~" + exit_input)
-        process.wait(timeout=5)
-        assert process.returncode == 0
         output = bytearray()
-        while select.select([fd], [], [], 0)[0]:
-            try:
-                output.extend(os.read(fd, 65536))
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                break
+        wait_terminal_exit(process, fd, output, timeout=5)
+        assert process.returncode == 0
         assert b"receive stopped:" not in output
     assert [message["body"] for message in history(instance)] == messages
     assert asyncio.run(stream_control(instance)) == before + len(messages)
@@ -311,7 +308,7 @@ def test_clipboard_editor_confirmation_and_cancellation(instance):
         os.write(fd, b"after clipboard timeout\r")
         until(b"message accepted;")
         os.write(fd, b":q\r")
-        process.wait(timeout=5)
+        wait_terminal_exit(process, fd, bytearray(), timeout=5)
         assert process.returncode == 0
     assert [m["body"] for m in history(instance)] == [
         "clipboard café\nsecond line\n", "editor café\nlast line\n", "\ufffd\n",
