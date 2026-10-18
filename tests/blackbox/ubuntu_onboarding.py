@@ -305,6 +305,7 @@ def witness(phase, start_marker=False):
             row.setdefault("state_observation_errors", {})[path] = str(error)
     (private / (phase + "-state-hashes.json")).write_text(json.dumps(state))
     row["selected_public_state_present"] = [p for p in PUBLIC_STATE if state.get(p)]
+    row["selected_private_state_present"] = [p for p in PRIVATE_STATE + OPTIONAL_PRIVATE_STATE if state.get(p)]
     row["ended"] = stamp()
     save()
     return state
@@ -640,7 +641,7 @@ def main():
          "product_commands": [], "interactions": [], "observations": [], "phase_observations": [],
          "limits": ["Signed-out endpoint only; no model task, login or authentication copy",
                     "File/terminal boundaries are sampled; combined phases and provider/download waits remain bounds",
-                    "Terminal screens and state hashes must remain private; only selected-state equality is exported",
+                    "Terminal screens and state hashes must remain private; only selected-state equality and presence are exported",
                     "Guest-home proof covers the saved command and a guest-written marker, not every changing home file",
                     "No other platform, OCI >2GiB, independent-update or Mac cleanup proof"]}
     sampled = set()

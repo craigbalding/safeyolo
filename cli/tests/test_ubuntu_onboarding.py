@@ -147,7 +147,7 @@ class ObserverChecks(unittest.TestCase):
                 os.close(master)
 
     def test_private_state_is_observed_without_exporting_bytes_or_hashes(self):
-        for name in m.PRIVATE_STATE:
+        for name in m.PRIVATE_STATE + m.OPTIONAL_PRIVATE_STATE[:1]:
             path = m.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("PRIVATE_STATE_SENTINEL")
@@ -156,14 +156,18 @@ class ObserverChecks(unittest.TestCase):
              patch.object(m, "listeners", autospec=True, return_value=[]), \
              patch.object(m, "guest", autospec=True, return_value={"exit": 1}):
             before = m.witness("before-return")
+            self.assertEqual(m.x["before-return"]["selected_private_state_present"],
+                             m.PRIVATE_STATE + m.OPTIONAL_PRIVATE_STATE[:1])
             (m.root / m.PRIVATE_STATE[0]).write_text("changed token")
             (m.root / m.PRIVATE_STATE[1]).unlink()
             after = m.witness("after-reentry")
+        self.assertEqual(m.x["after-reentry"]["selected_private_state_present"],
+                         [p for p in m.PRIVATE_STATE if p != m.PRIVATE_STATE[1]] + m.OPTIONAL_PRIVATE_STATE[:1])
         self.assertNotEqual(before[m.PRIVATE_STATE[0]], after[m.PRIVATE_STATE[0]])
         self.assertIsNone(after[m.PRIVATE_STATE[1]])
         self.assertEqual(before[m.PRIVATE_STATE[2]], after[m.PRIVATE_STATE[2]])
         self.assertTrue(all(name in before and before[name] is None and name in after and after[name] is None
-                            for name in m.OPTIONAL_PRIVATE_STATE))
+                            for name in m.OPTIONAL_PRIVATE_STATE[1:]))
         exported = m.out.read_text()
         self.assertNotIn("PRIVATE_STATE_SENTINEL", exported)
         for value in before.values():
@@ -191,6 +195,7 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(state["policy.toml"], digest(m.root / "policy.toml"))
         self.assertNotIn(m.PRIVATE_STATE[0], state)
         self.assertIn(m.PRIVATE_STATE[0], m.x["after-reentry"]["state_observation_errors"])
+        self.assertNotIn(m.PRIVATE_STATE[0], m.x["after-reentry"]["selected_private_state_present"])
 
     def observer_cli(self, home, *args, script=None):
         return subprocess.run([sys.executable, "-I", "-B", script or m.__file__, "--host", os.uname().nodename,
