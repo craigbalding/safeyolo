@@ -39,8 +39,9 @@ def run_script(script, env):
 
 def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
     dispatch = WORKFLOW['on']['workflow_dispatch']['inputs']['mode']
-    assert dispatch['default'] == 'draft-offline'
-    assert dispatch['options'] == ['draft-offline', 'public-install']
+    assert dispatch['default'] == 'retained'
+    assert dispatch['options'] == ['retained', 'draft-offline', 'public-install']
+    assert WORKFLOW['jobs']['retained']['if'] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'retained'"
     guest = WORKFLOW['on']['workflow_dispatch']['inputs']['guest']
     assert guest['default'] == 'original-g1'
     assert guest['options'] == ['original-g1', 'reduced-33224']

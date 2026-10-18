@@ -512,7 +512,8 @@ def test_retained_runner_rejects_changed_archive_before_installation(retained, t
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
-def test_archive_install_and_section_handoff_work_with_product_builders_unavailable(package_inputs, tmp_path, monkeypatch):
+@pytest.mark.parametrize("installer_yes", [False, True])
+def test_archive_install_and_section_handoff_work_with_product_builders_unavailable(package_inputs, tmp_path, monkeypatch, installer_yes):
     """Run the real package installer; section instrumentation is controlled, not hardware proof."""
     import zstandard
 
@@ -562,11 +563,12 @@ def test_archive_install_and_section_handoff_work_with_product_builders_unavaila
         shutil.copy2(ROOT / "scripts" / name, controller / "scripts" / name)
     (controller / ".venv").symlink_to(sys.prefix, target_is_directory=True)
     handoff = scripts / "run-installed.sh"
-    handoff.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, subprocess, sys
+    handoff.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, shutil, subprocess, sys
 args = sys.argv[1:]
 assert args[0] == 'systrap' and '--prepared-config' in args and '--section' not in args
 root = pathlib.Path(args[args.index('--prepared-config')+1])
 assert (root/'package-info').is_file() and (root/'share/guest-selection.json').is_file()
+assert shutil.which('runsc') == str(root/'libexec/runsc')
 subprocess.run([str(root/'bin/safeyolo'), '--version'], check=True)
 reports = pathlib.Path(args[args.index('--artifacts')+1]); reports.mkdir(parents=True)
 (reports/'controlled-section-handoff.json').write_text(json.dumps(args))
@@ -590,12 +592,38 @@ reports = pathlib.Path(args[args.index('--artifacts')+1]); reports.mkdir(parents
     states.mkdir()
     monkeypatch.setenv("SAFEYOLO_BLACKBOX_STATE_PARENT", str(states))
     monkeypatch.setattr(retained_inputs, "ROOT", controller)
-    assert retained_inputs.run(inputs / "selection.json", "systrap", tmp_path / "reports", [], True,
+    assert retained_inputs.run(inputs / "selection.json", "systrap", tmp_path / "reports", [], installer_yes,
                                guest_archive=guest_archive) == 0
     installed = json.loads((tmp_path / "reports/installed-inputs.json").read_bytes())
     assert installed["installed_files_sha256"] == selection["host"]["executables_sha256"]
     assert installed["guest"]["archive"]["digest"] == selection["guest"]["archive"]["digest"]
     assert (tmp_path / "reports/guest/controlled-section-handoff.json").is_file()
+
+
+@pytest.mark.parametrize("explicit_section", [False, True])
+def test_full_section_handoff_accepts_empty_or_explicit_sections_under_nounset(tmp_path, explicit_section):
+    """Exercise the actual handoff block with the host Bash, including macOS 3.2."""
+    source = (ROOT / "tests/blackbox/run-installed-package.sh").read_text()
+    start = source.index('if [[ -n $LANE ]]; then\n')
+    end = source.index('export SAFEYOLO_CONFIG_DIR="$PACKAGE_DIR/instance"', start)
+    runner = tmp_path / "run-installed.sh"
+    record = tmp_path / "arguments.json"
+    runner.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                      f'open({str(record)!r}, "w").write(json.dumps(sys.argv[1:]))\n')
+    runner.chmod(0o755)
+    prefix = 'set -euo pipefail\nSECTIONS=()\n'
+    if explicit_section:
+        prefix += 'SECTIONS=(--section isolation)\n'
+    environment = dict(os.environ, LANE="vz", SAFEYOLO_BLACKBOX_FULL_SECTIONS="1",
+                       SCRIPT_DIR=str(tmp_path), PACKAGE_DIR=str(tmp_path / "state"),
+                       REVISION=SOURCE, ARTIFACTS=str(tmp_path / "reports"))
+    result = subprocess.run(["/bin/bash", "-c", prefix + source[start:end]], env=environment,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    arguments = json.loads(record.read_text())
+    assert arguments == ["vz", "--prepared-config", str(tmp_path / "state/prepared"),
+                         "--install-commit", SOURCE, *(["--section", "isolation"] if explicit_section else []),
+                         "--artifacts", str(tmp_path / "reports/guest")]
 
 
 def test_actual_oras_staging_attachment_round_trip(tmp_path, monkeypatch):

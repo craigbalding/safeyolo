@@ -2129,6 +2129,48 @@ def test_installed_sections_reuse_an_artifact_install_without_reinstalling_or_se
         assert row["prepared_config_dir"] == str(source)
 
 
+@pytest.mark.parametrize("runtime_present", [True, False])
+def test_installed_section_host_collection_uses_prepared_runtime(
+    tmp_path, monkeypatch, installed_section_commands, runtime_present
+):
+    """Reach the host collection guard with only the selected package on PATH."""
+    if not runtime_present and any(Path(path).is_file() for path in ("/usr/bin/runsc", "/usr/local/bin/runsc")):
+        pytest.skip("the missing-runtime control needs a host without system runsc")
+    repository = installed_section_commands
+    scripts = repository / "tests/blackbox"
+    source = tmp_path / "installed-package"
+    subprocess.run([str(scripts / "run-lane.sh"), "systrap", "--prepare-only"],
+                   env=dict(os.environ, SAFEYOLO_CONFIG_DIR=str(source)), check=True)
+    runtime = source / "libexec/runsc"
+    if runtime_present:
+        runtime.parent.mkdir()
+        runtime.write_text('#!/bin/sh\necho "selected runtime"\n')
+        runtime.chmod(0o755)
+    shutil.copy2(ROOT / "tests/blackbox/conftest.py", scripts)
+    host = scripts / "host"
+    host.mkdir()
+    (host / "test_runtime.py").write_text('''import os, shutil, subprocess
+def test_selected_runtime():
+    assert shutil.which('runsc') == os.environ['SELECTED_RUNSC']
+    assert subprocess.check_output(['runsc', '--version'], text=True) == 'selected runtime\\n'
+''')
+    (scripts / "run-tests.sh").write_text(
+        '#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' -m pytest -q --confcutdir='
+        + shlex.quote(str(repository)) + ' --basetemp="$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/pytest" '
+        + shlex.quote(str(host)) + '\n'
+    )
+    monkeypatch.setenv("SELECTED_RUNSC", str(runtime))
+    monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:/usr/bin:/bin")
+    directory, artifacts = tmp_path / "sections", tmp_path / "reports"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation",), repository, "a" * 40, directory, artifacts, prepared_config=source,
+    ) == (0 if runtime_present else 2)
+    row = json.loads((artifacts / "installed-sections.json").read_text())["sections"][0]
+    assert row["exit"] == (0 if runtime_present else 5)
+    assert row["result"] == ("passed" if runtime_present else "preparation_failure")
+    assert row["cleanup"] == "stopped" and not row["cleanup_failures"]
+
+
 def test_listener_restart_selection_reuses_installation_and_owned_cleanup(
     tmp_path, installed_section_commands
 ):

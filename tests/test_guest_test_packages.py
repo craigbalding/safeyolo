@@ -151,3 +151,27 @@ def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
         # A warm guest can prepare again without changing the interpreter or imports.
         subprocess.run(['/bin/bash', str(hook), *arguments], env=environment,
                        capture_output=True, text=True, check=True, timeout=60)
+        # Installed status can survive empty launchers, modules and metadata.
+        # Use real pip to repair those same-version files, including a broken
+        # uninstall RECORD, from the original lock-derived wheel directory.
+        locations = json.loads(subprocess.check_output([
+            str(python), '-c', 'import json, pytest, httpx, pytest_timeout; '
+            'from importlib.metadata import distribution; '
+            'd = distribution("pytest"); '
+            'print(json.dumps([pytest.__file__, httpx.__file__, pytest_timeout.__file__, '
+            'str(d.locate_file("pytest/__main__.py")), '
+            '*[str(d.locate_file(p)) for p in d.files '
+            'if p.name in ("METADATA", "RECORD", "entry_points.txt")]]))',
+        ], env=environment, text=True, timeout=10))
+        damaged = [python.parent / 'pytest', python.parent / 'py.test', *map(Path, locations)]
+        for path in damaged:
+            assert path.is_file()
+            path.write_bytes(b'')
+        repaired = subprocess.run(['/bin/bash', str(hook), *arguments], env=environment,
+                                  capture_output=True, text=True, timeout=60)
+        assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+        assert all(path.stat().st_size > 0 for path in damaged)
+        assert 'Python ' in repaired.stdout and 'pytest-timeout ' in repaired.stdout
+        version = subprocess.check_output([str(python.parent / 'pytest'), '--version'],
+                                          env=environment, text=True, timeout=10)
+        assert version.startswith('pytest ')
