@@ -3,6 +3,7 @@
 ## Contents
 
 - [Classify blocked responses](#classify-blocked-responses)
+- [Custom credential authoring](#custom-credential-authoring)
 - [Proxy and TLS failures](#proxy-and-tls-failures)
 - [Logs and correlation](#logs-and-correlation)
 - [Ask the operator](#ask-the-operator)
@@ -36,6 +37,38 @@ Important 428 distinctions:
 For a 403 network denial, call `/lookup?host=HOST` before asking for policy
 changes. For a 503 from `circuit-breaker`, honor `Retry-After` rather than
 asking for policy changes.
+
+## Custom credential authoring
+
+If `policy check` rejects top-level `credential_rules` or `credentials`, the
+input uses an internal or legacy shape. The supported source is
+`[credential.<name>]` with `match`, `headers` and optional `allowed_hosts`.
+Use the [current reference and synthetic example](https://github.com/craigbalding/safeyolo/blob/master/docs/CONFIGURATION.md#custom-credential-classifiers).
+TOML literal patterns use one backslash in `\A` and `\Z`. Custom classifiers
+append to the built-in catalogue; the first match wins.
+
+The host operator checks and applies a complete candidate with `safeyolo policy
+check FILE`, `safeyolo policy apply FILE` and `safeyolo policy show`. Apply
+reloads detection without restarting. Check success alone does not prove a
+regex match: malformed regexes currently pass validation but are skipped.
+Use a synthetic request, its `security.credential` audit event and the
+controlled origin's received requests to check the actual result. The audit
+uses the rule name and a fingerprint, not the token value.
+
+Classification does not grant permission. A host `allow = ["name:*"]` or an
+exact-token approval is a separate operator decision. Keep unknown-secret
+prompts, destination scope and explicit denials in effect. Do not change the
+live policy from the sandbox or ask for the admin token. For `428`, follow the
+response-specific steps above and ask the operator to use `safeyolo inspect`
+when approval is required.
+
+The Agent API's `/config` contains compiled sensor `credential_rules`, not
+authorable policy. Historical `addons.yaml`, Python and JSON examples are not
+current `policy.toml` syntax. A rejected internal shape does not establish a
+missing classifier capability or a migration regression. Record the command,
+redacted error and CLI/proxy versions before drawing that conclusion.
+Codex subscription OAuth support is separate [#1123](https://github.com/craigbalding/safeyolo/issues/1123);
+do not guess a Codex regex or allow arbitrary opaque tokens.
 
 ## Proxy and TLS failures
 

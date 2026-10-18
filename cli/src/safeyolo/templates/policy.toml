@@ -1,4 +1,9 @@
-# SafeYolo baseline policy
+# Historical Python baseline policy template
+#
+# This retained template uses retired required/addons.yaml settings. Do not
+# load the whole file into the current product. For current policy syntax and
+# custom [credential.<name>] rules, see docs/CONFIGURATION.md, "Custom credential
+# classifiers": https://github.com/craigbalding/safeyolo/blob/master/docs/CONFIGURATION.md#custom-credential-classifiers
 #
 # TOML format: everything about one host in one place.
 # Each entry can have: allow, rate, bypass, rules.
@@ -71,6 +76,7 @@ known_bad = "lists/stevenblack-hosts.txt"
 # ── Defaults (wildcard) ───────────────────────────────────────
 "*"                   = { egress = "allow", unknown_creds = "prompt",  rate = 600 }
 
-# Built-in credential classifiers come from
-# detection/credential_catalog.py. Add [credential.<name>] tables only for
-# local or deployment-specific formats; those rules append to the catalogue.
+# The former Python classifiers came from detection/credential_catalog.py.
+# Current built-in classifiers live in proxy/data/credential_guard/catalogue.json.
+# Custom [credential.<name>] rules append to the catalogue; use the current
+# reference linked above for supported authoring and separate host grants.

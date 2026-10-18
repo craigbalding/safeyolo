@@ -370,48 +370,156 @@ def test_installed_fixture_removes_executables_after_startup_failure(tmp_path):
     assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
 
 
-def test_installed_credential_approval_keeps_destination_scope(tmp_path):
-    policy = '''budget = 12000
+CUSTOM_CREDENTIAL_POLICY = r'''budget = 12000
 [hosts]
 "*" = {egress="allow", unknown_creds="prompt"}
-[credential.synthetic]
-match = ["key-native"]
+[credential.synthetic-fixture]
+match = ['\Afixture-[A-Za-z0-9_-]{20,}\Z']
 headers = ["authorization"]
+allowed_hosts = ["allowed.invalid"]
 '''
-    with origin_server(capture_heads=True) as origin, origin_server() as other, native_instance(tmp_path) as instance:
-        instance.apply(policy)
-        port = origin.server_address[1]
-        target = f"http://127.0.0.1:{port}/native-credential"
-        status, _, body = request(instance.paths["alice"], target)
-        assert (status, body) == (200, b"hello")
-        headers = {"Authorization": "Bearer key-native"}
-        status, response_headers, body = request(instance.paths["alice"], target, headers=headers)
-        assert status == 428, body
-        assert origin.accepts == 1
-        request_id = next(value for name, value in response_headers.items() if name.lower() == "x-safeyolo-request-id")
+CUSTOM_CREDENTIAL_GRANT = '''
+[hosts."allowed.invalid"]
+egress = "allow"
+allow = ["synthetic-fixture:*"]
+'''
+CUSTOM_TOKEN = "fixture-AbCdEf0123456789_-AbCdEf0123456789"
+
+
+def custom_credential_request(instance, origins, destination, *, token=None, status=200, rule=None):
+    before = [len(origin.requests) for origin in origins]
+    result, response_headers, body = request(
+        instance.paths["alice"], f"http://{destination}/native-credential",
+        headers={"Authorization": f"Bearer {token}"} if token else {},
+    )
+    assert result == status, (result, body)
+    expected = before.copy()
+    if status == 200:
+        index = 0 if destination == "allowed.invalid" else 1
+        expected[index] += 1
+        assert body == origins[index].name.encode()
+        if token:
+            assert f"Authorization: Bearer {token}\r\n".encode() in origins[index].requests[-1]["head"]
+    assert [len(origin.requests) for origin in origins] == expected
+    if token is None:
+        return None
+    request_id = next(value for name, value in response_headers.items() if name.lower() == "x-safeyolo-request-id")
+    deadline = time.monotonic() + 4
+    while True:
+        events = read_events(instance.root / "logs/audit.jsonl")
+        detected = [row for row in events if row["event"] == "security.credential"
+                    and row.get("request_id") == request_id]
+        if detected:
+            break
+        assert time.monotonic() < deadline, events
+        time.sleep(0.02)
+    assert len(detected) == 1, detected
+    event = detected[0]
+    assert event["agent"] == "alice" and event["host"] == destination
+    assert event["decision"] == {200: "allow", 403: "deny", 428: "require_approval"}[status]
+    assert event["details"]["rule"] == rule
+    assert event["details"]["fingerprint"].startswith("hmac:")
+    if rule != "unknown_secret":
+        assert event["details"]["confidence"] == "high" and event["details"]["tier"] == 1
+    assert token not in json.dumps(events)
+    assert token.encode() not in body
+    return event
+
+
+def test_installed_credential_approval_keeps_destination_scope(tmp_path):
+    from tests.proxy_contracts.test_authority_consistency import _peers
+
+    # Route each logical destination to a separate maintained local origin.
+    # This avoids making a positive control depend on localhost DNS/address order.
+    with _peers(tmp_path / "peers") as (parent, origins, _), native_instance(
+        tmp_path, parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+    ) as instance:
+        candidate = tmp_path / "candidate"
+        candidate.write_text(CUSTOM_CREDENTIAL_POLICY)
+        checked = instance.cli("policy", "check", str(candidate))
+        assert checked.returncode == 0, checked.stderr
+        instance.apply(CUSTOM_CREDENTIAL_POLICY)
+        shown = instance.show()
+        assert shown["saved_matches_active"]
+        assert shown["effective"]["credential"]["synthetic-fixture"]["match"] == [r"\Afixture-[A-Za-z0-9_-]{20,}\Z"]
+        pid = instance.process.pid
+        for destination in ("allowed.invalid", "forbidden.invalid"):
+            custom_credential_request(instance, origins, destination)
+        # Identification alone grants nothing. The pending request contains
+        # the fingerprint and rule, with no token bytes.
+        event = custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN,
+                                          status=428, rule="synthetic-fixture")
         pending = instance.admin("GET", "/admin/approvals")
-        events = pending["approvals"]
-        event = next(row for row in events if row.get("request_id") == request_id)
-        fingerprint = event["approval"]["key"]
-        assert fingerprint.startswith("hmac:")
-        assert "key-native" not in json.dumps(event)
-        instance.admin("POST", "/admin/policy/baseline/approve", {"destination": "127.0.0.1", "cred_id": fingerprint})
+        approval = next(row for row in pending["approvals"] if row.get("request_id") == event["request_id"])
+        fingerprint = event["details"]["fingerprint"]
+        assert approval["approval"]["key"] == fingerprint
+        assert CUSTOM_TOKEN not in json.dumps(pending)
+        approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
+        assert approved.returncode == 0, approved.stderr
+        assert CUSTOM_TOKEN not in approved.stdout + approved.stderr
         deadline = time.monotonic() + 4
         while True:
             shown = instance.show()
-            if shown["saved_matches_active"] and fingerprint in shown["effective"].get("hosts", {}).get("127.0.0.1", {}).get("allow", []):
+            if shown["saved_matches_active"] and fingerprint in shown["effective"].get("hosts", {}).get("allowed.invalid", {}).get("allow", []):
                 break
             assert time.monotonic() < deadline, shown
             time.sleep(0.02)
-        assert shown["effective"]["hosts"]["127.0.0.1"]["allow"] == [fingerprint]
-        status, _, body = request(instance.paths["alice"], target, headers=headers)
-        assert (status, body) == (200, b"hello")
-        assert origin.accepts == 2
-        status, _, body = request(instance.paths["alice"], f"http://localhost:{other.server_address[1]}/other-destination", headers=headers)
-        assert status == 428, body
-        assert other.accepts == 0
-        status, _, body = request(instance.paths["alice"], f"http://localhost:{other.server_address[1]}/nonsecret")
-        assert (status, body) == (200, b"hello")
+        assert shown["effective"]["hosts"]["allowed.invalid"]["allow"] == [fingerprint]
+        custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN, rule="synthetic-fixture")
+        custom_credential_request(instance, origins, "forbidden.invalid", token=CUSTOM_TOKEN,
+                                  status=428, rule="synthetic-fixture")
+        another = CUSTOM_TOKEN + "-next"
+        custom_credential_request(instance, origins, "allowed.invalid", token=another,
+                                  status=428, rule="synthetic-fixture")
+        granted = CUSTOM_CREDENTIAL_POLICY + CUSTOM_CREDENTIAL_GRANT
+        instance.apply(granted)
+        custom_credential_request(instance, origins, "allowed.invalid", token=another, rule="synthetic-fixture")
+        # Reload the detector, not just a destination grant, in the same PID.
+        instance.apply(granted.replace(r"\Afixture-", r"\Areplacement-"))
+        custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN,
+                                  status=428, rule="unknown_secret")
+        replacement = CUSTOM_TOKEN.replace("fixture-", "replacement-")
+        custom_credential_request(instance, origins, "allowed.invalid", token=replacement, rule="synthetic-fixture")
+        assert instance.process.pid == pid and instance.process.poll() is None
+        denied = granted + '\nrules = [{action="credential:use", resource="allowed.invalid/*", effect="deny"}]\n'
+        instance.apply(denied)
+        custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN,
+                                  status=403, rule="synthetic-fixture")
+        for destination in ("allowed.invalid", "forbidden.invalid"):
+            custom_credential_request(instance, origins, destination)
+
+
+@pytest.mark.parametrize("case", ["unmatched", "malformed", "literal-escaping", "conflict"])
+def test_installed_custom_credential_negative_controls(tmp_path, case):
+    from tests.proxy_contracts.test_authority_consistency import _peers
+
+    policy = CUSTOM_CREDENTIAL_POLICY + CUSTOM_CREDENTIAL_GRANT
+    token = CUSTOM_TOKEN
+    rule = "unknown_secret"
+    if case == "unmatched":
+        token = CUSTOM_TOKEN.replace("fixture-", "unmatched-")
+    elif case == "malformed":
+        policy = policy.replace(r"\Afixture-[A-Za-z0-9_-]{20,}\Z", "[")
+    elif case == "literal-escaping":
+        policy = policy.replace(r"\A", r"\\A").replace(r"\Z", r"\\Z")
+    else:
+        earlier = CUSTOM_CREDENTIAL_POLICY.split("[credential.synthetic-fixture]", 1)[1]
+        policy = policy.replace("[credential.synthetic-fixture]",
+                                "[credential.first-match]" + earlier + "\n[credential.synthetic-fixture]")
+        rule = "first-match"
+    with _peers(tmp_path / "peers") as (parent, origins, _), native_instance(
+        tmp_path, parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+    ) as instance:
+        candidate = tmp_path / "candidate"
+        candidate.write_text(policy)
+        # Invalid regexes are currently skipped, not rejected by check/apply.
+        checked = instance.cli("policy", "check", str(candidate))
+        assert checked.returncode == 0, checked.stderr
+        instance.apply(policy)
+        assert instance.show()["saved_matches_active"]
+        for destination in ("allowed.invalid", "forbidden.invalid"):
+            custom_credential_request(instance, origins, destination)
+            custom_credential_request(instance, origins, destination, token=token, status=428, rule=rule)
 
 
 def test_rejected_apply_preserves_allowed_denied_saved_live_and_recovers(tmp_path):
@@ -421,8 +529,14 @@ def test_rejected_apply_preserves_allowed_denied_saved_live_and_recovers(tmp_pat
         active = instance.show()["effective"]
         saved = instance.policy.read_bytes()
         pid = instance.process.pid
-        for rejected in ('[hosts\n', source.replace('egress="allow"', 'egress="invalid"')):
-            instance.apply(rejected, valid=False)
+        for rejected in ('[hosts\n', source.replace('egress="allow"', 'egress="invalid"'),
+                         'credential_rules=[]\n', '[credentials.synthetic]\npatterns=["legacy"]\n'):
+            failed = instance.apply(rejected, valid=False)
+            if rejected.startswith(("credential_rules", "[credentials")):
+                assert "use [credential.<name>] with match = ['...']" in failed.stderr
+                checked = instance.cli("policy", "check", str(tmp_path / "candidate"))
+                assert checked.returncode != 0
+                assert "use [credential.<name>] with match = ['...']" in checked.stderr
             controls(instance, origin, other)
             assert instance.policy.read_bytes() == saved
             shown = instance.show()
