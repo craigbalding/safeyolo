@@ -66,6 +66,9 @@ class ObserverChecks(unittest.TestCase):
         self.assertFalse(m.task_records(rows, "unrelated existing file")["successful_task"])
         rows[2]["message"]["content"][0]["tool_use_id"] = "other-write"
         self.assertFalse(m.task_records(rows, body)["successful_task"])
+        rows, body = self.canonical_task()
+        rows[0]["message"]["content"] = m.TASK.replace("external dependencies", "external\n  dependencies")
+        self.assertFalse(m.task_records(rows, body)["successful_task"])
         rows, _ = self.canonical_task("Login expired · Please run /login")
         self.assertEqual(m.task_records(rows, None)["errors"], ["Login expired"])
 
@@ -266,7 +269,8 @@ class ObserverChecks(unittest.TestCase):
                 self.assertEqual(m.x["observation_outcome"] != "partial", expected)
                 self.assertFalse(m.x["selected_state_equality"]["agents/first/home/.claude.json"]["equal"])
 
-    def connected_console(self, error=None, echo=True, uncertain_literal=False):
+    def connected_console(self, error=None, echo=True, uncertain_literal=False, displayed_task=None,
+                          changed_selection=False, capture_failure=False):
         """Run the actual driver through a real PTY, tmux, literal input and JSONL producer."""
         binary = shutil.which("tmux")
         if binary is None:
@@ -280,10 +284,13 @@ class ObserverChecks(unittest.TestCase):
         harness = m.private / "harness.py"
         canonical = m.root / "agents/first/home/.claude/projects/-workspace/session.jsonl"
         canonical.parent.mkdir(parents=True)
-        harness.write_text("import json,sys,time,termios\n"
+        harness.write_text("import json,os,sys,time,termios,tty\n"
             + ("state=termios.tcgetattr(0);state[3]&=~termios.ECHO;termios.tcsetattr(0,termios.TCSANOW,state)\n" if not echo else "")
+            + ("tty.setcbreak(0)\n" if displayed_task is not None else "")
             + "print('Claude Code\\n❯ ',end='',flush=True)\n"
-            + "task=sys.stdin.readline().strip()\n"
+            + ("task=sys.stdin.readline().strip()\n" if displayed_task is None else
+               f"task=b''\nwhile len(task)<{len(m.TASK)}:task+=os.read(0,{len(m.TASK)}-len(task))\n"
+               f"print('\\x1b[2J\\x1b[H'+{displayed_task!r},end='',flush=True)\nassert os.read(0,1)==b'\\n'\ntask=task.decode()\n")
             + f"assert task=={m.TASK!r}\nrows={rows!r}\n"
             + f"open({str(canonical)!r},'w').write(''.join(json.dumps(row)+'\\n' for row in rows))\n"
             + (f"open({str(m.project / 'index.html')!r},'w').write({body!r})\n" if not error else "")
@@ -318,7 +325,16 @@ class ObserverChecks(unittest.TestCase):
         worker = subprocess.Popen([sys.executable, "-c", trigger], pass_fds=[write_fd], stderr=subprocess.PIPE)
         run = subprocess.run
         def send_once(command, **kwargs):
+            if capture_failure and "capture-pane" in command and m.x["product_commands"][-1].get("task_input"):
+                command = [*command[:-1], "%999"]
             result = run(command, **kwargs)
+            if changed_selection and "send-keys" in command and "-l" in command:
+                record = m.root / "agents/first/current-launch.json"
+                selection = json.loads(record.read_text())
+                selection["launch_id"] = "changed-launch"
+                run([*tm, "set-option", "-p", "-t", selection["pane_id"],
+                     "@safeyolo_launch_id", selection["launch_id"]], check=True)
+                record.write_text(json.dumps(selection))
             if uncertain_literal and "send-keys" in command and "-l" in command:
                 raise subprocess.TimeoutExpired(command, 3)
             return result
@@ -369,6 +385,75 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["task_input"]["literal_transmissions"], 1)
         self.assertNotIn("enter_attempted", row["task_input"])
         self.assertNotIn("observer_error", row)
+
+    def test_real_foreground_observed_task_wrap_submits_once_and_returns(self):
+        # Operator7971 supplied these exact nonsecret input rows, including ANSI,
+        # prompt, borders and explicit wrapping. JSON preserves the screen bytes.
+        frame = json.loads((Path(__file__).parent / "fixtures/claude-input-7960.json").read_text())
+        displayed = ('Create /workspace/index.html as a complete HTML page with the heading '
+                     '"Hello from SafeYolo". Use no external\n  dependencies.')
+        self.assertIn(displayed, frame)
+        self.assertEqual(" ".join(displayed.split()), m.TASK)
+        cold, warm, canonical = self.connected_console(displayed_task=frame)
+        screen = (m.private / "cold-input-pane.screen").read_bytes()
+        self.assertIn(displayed.encode(), screen)
+        self.assertNotIn(m.TASK.encode(), screen)
+        self.assertTrue(cold["task_input"]["input_visible"])
+        self.assertEqual(cold["task_input"]["literal_transmissions"], 1)
+        self.assertEqual(m.x["observer_tmux_commands"]["send-keys"], 2)
+        self.assertTrue(all(row["task_observation"]["successful_task"] for row in [cold, warm]))
+        self.assertNotIn("task_input", warm)
+        self.assertEqual([row["message"]["content"] for row in map(json.loads, canonical.read_text().splitlines())
+                          if row.get("message", {}).get("content") == m.TASK], [m.TASK])
+
+    def test_real_foreground_changed_task_display_does_not_send_enter(self):
+        displayed = m.TASK.replace("Use no external dependencies.", "Use external\n  dependencies.")
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.connected_console(displayed_task=displayed)
+        row = m.x["product_commands"][-1]
+        self.assertEqual(row["task_input"]["literal_transmissions"], 1)
+        self.assertFalse(row["task_input"]["input_visible"])
+        self.assertNotIn("enter_attempted", row["task_input"])
+        self.assertEqual(m.x["observer_tmux_commands"]["send-keys"], 1)
+        self.assertEqual(m.conversation_offsets(), {})
+        self.assertFalse((m.project / "index.html").exists())
+
+    def test_real_foreground_changed_selection_does_not_send_enter(self):
+        frame = json.loads((Path(__file__).parent / "fixtures/claude-input-7960.json").read_text())
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.connected_console(displayed_task=frame, changed_selection=True)
+        task = m.x["product_commands"][-1]["task_input"]
+        self.assertTrue(task["input_visible"])
+        self.assertTrue(task["input_readback"]["matching_live_visible_pane"])
+        self.assertNotEqual(task["selection"], task["input_readback"]["selection"])
+        self.assertEqual(task["literal_transmissions"], 1)
+        self.assertNotIn("enter_attempted", task)
+        self.assertEqual(m.x["observer_tmux_commands"]["send-keys"], 1)
+        self.assertEqual(m.conversation_offsets(), {})
+        self.assertFalse((m.project / "index.html").exists())
+
+    def test_real_foreground_truncated_task_display_does_not_send_enter(self):
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.connected_console(displayed_task=m.TASK.removesuffix("dependencies."))
+        task = m.x["product_commands"][-1]["task_input"]
+        self.assertFalse(task["input_visible"])
+        self.assertEqual(task["literal_transmissions"], 1)
+        self.assertNotIn("enter_attempted", task)
+        self.assertEqual(m.x["observer_tmux_commands"]["send-keys"], 1)
+        self.assertEqual(m.conversation_offsets(), {})
+        self.assertFalse((m.project / "index.html").exists())
+
+    def test_real_foreground_failed_capture_does_not_send_enter(self):
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.connected_console(capture_failure=True)
+        task = m.x["product_commands"][-1]["task_input"]
+        self.assertTrue(task["input_readback"]["matching_live_visible_pane"])
+        self.assertEqual(task["input_readback"]["exit"], 1)
+        self.assertEqual(task["literal_transmissions"], 1)
+        self.assertNotIn("enter_attempted", task)
+        self.assertEqual(m.x["observer_tmux_commands"]["send-keys"], 1)
+        self.assertEqual(m.conversation_offsets(), {})
+        self.assertFalse((m.project / "index.html").exists())
 
     def test_real_foreground_uncertain_literal_effect_is_unknown_and_never_replayed(self):
         with self.assertRaises(subprocess.TimeoutExpired):
