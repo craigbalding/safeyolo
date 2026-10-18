@@ -262,8 +262,8 @@ def test_current_download_and_installer_refusal_keep_source_binding_and_reached_
 @pytest.mark.parametrize('cleanup', [False, True])
 def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_logs(public_shell, exit_status, cleanup):
     work, reports, env = public_shell
-    # Control only the observer process. Execute the workflow's env, timeout,
-    # Bash redirections, result copy and exit receipt unchanged.
+    # Control the observer and check timeout's arguments without waiting for a
+    # deadline. Execute the real env, Bash redirections, result copy and exits.
     python = Path(env['PATH'].split(os.pathsep)[0]) / 'python3'
     python.write_text(f'#!{os.sys.executable}\n'
         'import json, os, pathlib, sys\n'
@@ -276,6 +276,15 @@ def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_l
         'print("private-terminal-sentinel"); print("private-diagnostic-sentinel", file=sys.stderr)\n'
         f'sys.exit({exit_status})\n')
     python.chmod(0o755)
+    timeout = python.with_name('timeout')
+    expected = ['--signal=INT', '--kill-after=10s', '3m'] if cleanup else [
+        '--signal=INT', '--kill-after=150s', '23m']
+    timeout.write_text(f'#!{os.sys.executable}\n'
+        'import os, sys\n'
+        f'if sys.argv[1:4] != {expected!r}:\n'
+        '    sys.exit("unexpected timeout arguments")\n'
+        'os.execvp(sys.argv[4], sys.argv[4:])\n')
+    timeout.chmod(0o755)
     env.update(GH_TOKEN='synthetic-must-not-pass', GITHUB_TOKEN='synthetic-must-not-pass')
     name = ("Finish only this observer's owned cleanup after failure" if cleanup
             else 'Observe one public bootstrap, first launch and normal repeat')
