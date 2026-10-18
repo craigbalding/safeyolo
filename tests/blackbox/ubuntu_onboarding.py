@@ -56,7 +56,6 @@ TASK = ('Create /workspace/index.html as a complete HTML page with the heading '
 CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 AMD64 with curl and bash. "
     "Use an ordinary account. Review the requested host changes and workspace access before consenting. "
     "If you already use Claude, you can consent to copy its selected host authentication. "
-    "Otherwise, use Claude's supported login when prompted. "
     "Ctrl-b then d opens SafeYolo's host controls. Use a to inspect pending requests and their scope before approving. "
     "Press Enter to return. After the first task, detach and use q to keep the session. "
     "Repeat the second command to return to it.")
@@ -104,9 +103,21 @@ def save():
     out.write_text(json.dumps(x, indent=2) + "\n")
 
 
-def record_reading(phase, kind, data):
+def record_reading(phase, kind, data=None):
     """Count the presented text, retaining account screens only in private files."""
+    if data is None:
+        # Read the full recorded output, rather than the bounded prompt-search
+        # buffer, so progress output cannot hide earlier consent prose.
+        offsets = x.setdefault("reading_offsets", {})
+        with (private / (phase + ".terminal")).open("rb") as stream:
+            stream.seek(offsets.get(phase, 0))
+            data = stream.read()
+            offsets[phase] = stream.tell()
     plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data).decode(errors="replace")
+    # The reading budget excludes commands and the fixed task, including a
+    # wrapped echo of the task in the attached terminal.
+    for excluded in [TASK, shlex.join(DOWNLOAD), shlex.join(LAUNCH)]:
+        plain = re.sub(r"\s+".join(map(re.escape, excluded.split())), "", plain)
     rows = x.setdefault("required_reading", [])
     name = f"reading-{len(rows)}.txt"
     (private / name).write_text(plain)
@@ -535,6 +546,7 @@ class ConnectedJourney:
         self.pane = {}
         self.sent = False
         self.decision_seen = None
+        self.first_key = None
         baseline = private / "conversation-offsets.json"
         if phase == "cold":
             self.offsets = conversation_offsets()
@@ -619,10 +631,13 @@ class ConnectedJourney:
             self.submit()
             return
         if not self.input:
-            self.decision_seen = stamp()
+            self.decision_seen = self.row.get("terminal_output_last_seen")
+            self.first_key = stamp()
             current = pane_screen(self.phase + "-decision")
             screen = ((private / (self.phase + "-decision-pane.screen")).read_bytes()
-                      if current.get("exit") == 0 else pending)
+                      if current.get("exit") == 0 else None)
+            if screen is None and not (private / (self.phase + ".terminal")).is_file():
+                screen = pending
             record_reading(self.phase, "foreground decision screen", screen)
         self.input += keys
         if b"\r" in data or b"\n" in data or b"\x02d" in self.input:
@@ -631,7 +646,7 @@ class ConnectedJourney:
                      b"\x02d": "Ctrl-b d", b"\x1b[B": "Down, Enter", b"\x1b[A": "Up, Enter"}
             public = known.get(answer, "request number" if answer.isdigit() else "private/unclassified input")
             interaction = {"phase": self.phase, "kind": "foreground operator input", "answer": public,
-                "bytes": len(self.input), "seen": self.decision_seen, "sent": stamp(),
+                "bytes": len(self.input), "seen": self.decision_seen, "first_key": self.first_key, "sent": stamp(),
                 "classification_complete": public != "private/unclassified input"}
             if public in {"approve", "reject"}:
                 plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", pending)
@@ -868,6 +883,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                         log.flush()
                         if connected:
                             os.write(sys.stdout.fileno(), chunk)
+                            row["terminal_output_last_seen"] = stamp()
                         pending = (pending + chunk)[-60000:]
                     else:
                         terminal_open = False
@@ -885,7 +901,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     if terminal_open and label not in completed and prompt.encode() in pending:
                         seen = stamp()
                         if connected:
-                            record_reading(phase, label + " consent", pending)
+                            record_reading(phase, label + " consent")
                         os.write(fd, answer.encode())
                         x["interactions"].append({"phase": phase, "prompt": prompt,
                                                   "answer": answer.strip(), "seen": seen, "sent": stamp()})
@@ -896,7 +912,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 if terminal_open and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
                     seen = stamp()
                     if connected:
-                        record_reading(phase, "guest display choice", pending)
+                        record_reading(phase, "guest display choice")
                     os.write(fd, b"\r")
                     x["interactions"].append({"phase": phase, "kind": "guest display choice",
                         "prompt": theme, "answer": "Enter (default theme)", "seen": seen, "sent": stamp()})
@@ -938,7 +954,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     save()
                 if terminal_open and detached and b"SafeYolo host> " in pending and "q" not in completed:
                     if connected:
-                        record_reading(phase, "host return controls", pending)
+                        record_reading(phase, "host return controls")
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
                     if connected:
@@ -960,6 +976,9 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 if time.monotonic() >= deadline:
                     break
     finally:
+        if journey and journey.input:
+            row["unfinished_foreground_input"] = {"bytes": len(journey.input), "seen": journey.decision_seen,
+                                                   "first_key": journey.first_key, **stamp()}
         if old_terminal is not None:
             termios.tcsetattr(operator_fd, termios.TCSADRAIN, old_terminal)
         # Viewer EOF or any classification error must still leave reached live operands.
@@ -1047,15 +1066,29 @@ def preparation_accounting(path):
     if not isinstance(commands, list):
         raise ValueError("Preparation commands must be recorded, including an explicit empty list when none were needed.")
     for command in commands:
-        if command.get("role") not in {"required-user", "fixture", "observer"} or not isinstance(command.get("command"), list):
+        if (not isinstance(command, dict) or command.get("role") not in {"required-user", "fixture", "observer"}
+                or not isinstance(command.get("command"), list) or not command["command"]
+                or not all(isinstance(value, str) for value in command["command"])):
             raise ValueError("Each preparation command needs its actual command operands and required-user, fixture or observer role.")
         if not command.get("reason"):
             raise ValueError("Each preparation classification needs its normal-user or fixture reason.")
         for key in ["started_at", "ended_at"]:
             if command.get(key) is not None:
-                dt.datetime.fromisoformat(command[key])
+                if not isinstance(command[key], str) or dt.datetime.fromisoformat(command[key]).utcoffset() is None:
+                    raise ValueError("Preparation timestamps need an explicit UTC offset.")
+    decisions = data.get("decisions")
+    if not isinstance(decisions, list):
+        raise ValueError("Preparation decisions must be recorded; use an explicit empty list when none were needed.")
+    for decision in decisions:
+        if (not isinstance(decision, dict) or decision.get("role") not in {"required-user", "fixture", "observer"}
+                or not isinstance(decision.get("description"), str) or not decision["description"]):
+            raise ValueError("Each preparation decision needs its role and nonsecret description.")
+        for key in ["seen_at", "answered_at"]:
+            if decision.get(key) is not None:
+                if not isinstance(decision[key], str) or dt.datetime.fromisoformat(decision[key]).utcoffset() is None:
+                    raise ValueError("Preparation timestamps need an explicit UTC offset.")
     for reading in data["required_reading"]:
-        if not isinstance(reading.get("text"), str):
+        if not isinstance(reading, dict) or not isinstance(reading.get("text"), str):
             raise ValueError("Preparation reading must contain its actual text.")
     # Account for transport in the fixture category only when the recorded
     # caller supports that distinction. Operator7950 supplies the actual source.
@@ -1071,6 +1104,7 @@ def connected_accounting():
     warm = [row for row in x["product_commands"] if row.get("phase") == "warm"]
     required = [row for row in commands if row["role"] == "required-user"]
     readings = x.get("required_reading", [])
+    decisions = preparation["decisions"]
     transmissions = [row["task_input"]["literal_transmissions"] for row in cold if row.get("task_input")]
     x["counts"] = {"cold_product_commands": len(cold), "warm_product_commands": len(warm),
         "required_user_preparation_commands": len(required), "total_required_user_commands_to_first_task": len(required) + len(cold),
@@ -1078,21 +1112,26 @@ def connected_accounting():
         "observer_preparation_commands": sum(row["role"] == "observer" for row in commands),
         "observer_diagnostic_commands": sum(row.get("role") == "observer" for row in x["observations"]),
         "observer_tmux_commands": x.get("observer_tmux_commands", {}),
+        "required_user_preparation_decisions": sum(row["role"] == "required-user" for row in decisions),
+        "fixture_preparation_decisions": sum(row["role"] == "fixture" for row in decisions),
+        "observer_preparation_decisions": sum(row["role"] == "observer" for row in decisions),
         "product_interactions": len(x["interactions"]),
         "literal_task_attempts": len(transmissions),
         "literal_task_transmissions": sum(transmissions) if all(value is not None for value in transmissions) else None,
         "canonical_task_submissions": sum(len(conversation["users"]) for conversation in
             (cold[-1].get("task_observation", {}).get("conversations", []) if cold else [])),
-        "material_decisions": sum(bool(row.get("prompt")) or row.get("kind") == "guest display choice" or row.get("answer") in
-            ["approve", "reject", "Down, Enter", "Up, Enter", "request number"] for row in x["interactions"]),
+        "material_decisions": (sum(row["role"] == "required-user" for row in decisions)
+            + sum(bool(row.get("prompt")) or row.get("kind") == "guest display choice" or row.get("answer") in
+            ["approve", "reject", "Down, Enter", "Up, Enter", "request number"] for row in x["interactions"])),
         "required_reading_words": sum(row["words"] for row in readings),
-        "reading_method": "Presented normal-path prose and each decision screen; repeated screens count again. Task and commands are excluded.",
-        "interaction_classification_complete": all(row.get("classification_complete", True) for row in x["interactions"])}
+        "reading_method": "Presented normal-path prose, whole decision screens and recorded terminal output before consent/host-control input. Output and repeated text count again. Known task/command echoes are excluded. This is a conservative displayed-token count, not measured human reading effort.",
+        "interaction_classification_complete": (all(row.get("classification_complete", True) for row in x["interactions"])
+            and not any(row.get("unfinished_foreground_input") for row in cold + warm))}
     first = cold[0]["monotonic"] if cold else None
     launch = next((row for row in cold if row.get("phase") == "cold"), {})
     returned = warm[0] if warm else {}
     start_at = x["started"]["at"]
-    required_starts = [row.get("started_at") for row in required]
+    required_starts = [row.get("started_at") for row in required] + [row.get("seen_at") for row in decisions if row["role"] == "required-user"]
     total_start = min([start_at, *[value for value in required_starts if value]], key=dt.datetime.fromisoformat)
     ready = launch.get("connected_ready", {})
     warm_ready = returned.get("connected_ready", {})
@@ -1107,8 +1146,9 @@ def connected_accounting():
         "canonical_submission_first_seen": launch.get("canonical_submission_first_seen"),
         "host_file_first_seen": launch.get("host_file_first_seen"),
         "warm_readiness_seconds": warm_ready["monotonic"] - returned["monotonic"] if warm_ready else None,
-        "human_decision_intervals": [{"phase": row["phase"], "seen": row["seen"], "sent": row["sent"]}
+        "human_decision_intervals": [{"phase": row["phase"], "seen": row["seen"], "first_key": row["first_key"], "sent": row["sent"]}
             for row in x["interactions"] if row.get("seen") and row.get("kind") == "foreground operator input"],
+        "preparation_decision_intervals": decisions,
         "automated_consent_intervals": [{"phase": row["phase"], "seen": row["seen"], "sent": row["sent"]}
             for row in x["interactions"] if row.get("seen") and row.get("kind") != "foreground operator input"],
         "observer_intervals": [{"label": row["label"], "started": {key: row[key] for key in ["at", "monotonic"]},
@@ -1116,7 +1156,7 @@ def connected_accounting():
         "phase_boundaries": x["phase_observations"],
         "provider_request_intervals": provider_intervals(),
         "limits": ["Phase boundaries and screen readiness are sampled, not exact product start/completion times.",
-                   "Decision intervals measure prompt/input observation, not active human reading effort.",
+                   "Foreground decision intervals start at the last observed terminal output before the first key; prompt appearance and active reading effort remain unknown.",
                    "Overlapping observer, download and provider work must not be added or subtracted as disjoint time.",
                    "Provider request durations include proxy/transport time; missing request/response operands stay unknown.",
                    "Host and guest phase intervals combine download, verification and extraction; their individual wait totals are unknown.",
@@ -1154,7 +1194,7 @@ def connected_run(args, package):
     for row in x["preparation"].get("required_reading", []):
         record_reading("cold", "required preparation prose", row["text"].encode())
     print(CONNECTED_PROSE, flush=True)
-    print("Observer: use the foreground product controls. After login and pending approvals, press Ctrl-] once to send the fixed task. "
+    print("Observer: use the foreground product controls. At the input display, after pending approvals, press Ctrl-] once to send the fixed task. "
           "The observer checks the input, sends Enter once, then observes the file and one live return. Do not type another task.", flush=True)
     first = observe("bootstrap-download", DOWNLOAD, 60, role="product")
     x["product_commands"].append(first)
@@ -1193,7 +1233,10 @@ def connected_run(args, package):
             and "profile=production" in x["package_info"] and f"platform={args.platform}" in x["package_info"]
             and all(before.get(path) and after.get(path) for path in PUBLIC_STATE + PRIVATE_STATE
                     + ["agents/first/home/.claude/.credentials.json"])
-            and all(value["equal"] for value in x["selected_state_equality"].values())
+            # Usage metadata and renewed vendor tokens can change during a
+            # normal return. Report those comparisons without requiring whole
+            # vendor files to remain identical.
+            and all(x["selected_state_equality"][path]["equal"] for path in PUBLIC_STATE + PRIVATE_STATE)
             and all(row.get("discovery_exit") == row.get("version_exit") == 0 for row in [cold, warm])):
         x["observation_outcome"] = "captured; independent assessment required"
 

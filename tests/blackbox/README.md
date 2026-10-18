@@ -385,8 +385,15 @@ commands or preparation reading were needed. Do not classify a real user
 prerequisite as fixture work. A required command increases the total even when
 the installer still uses two product commands.
 
+`decisions` lists each preparation decision with its `role`, a nonsecret
+`description`, and the observed UTC `seen_at` and `answered_at` times. Use null
+for unknown times and an explicit empty list when there were no decisions.
+Include any required browser or account interaction in the ordinary-user
+category. Stored authentication metadata does not replace that accounting.
+
 From the staged observer directory on that host, replace `OWNED_HOSTNAME` with
 its exact hostname. `host-preparation.json` must contain those actual operands.
+Replace `FULL_OBSERVER_COMMIT` with the full commit of the staged observer.
 The observation directory must be new. Run in an attached foreground terminal:
 
 ```sh
@@ -412,10 +419,15 @@ retransmission. Authentication failure does not start login or warm retries.
 
 Only `result.json` is shared. Account screens, history contents and state hashes
 stay private. The result records preparation, command/decision/reading counts,
-sampled cold/warm boundaries, measured decision/observer/provider intervals,
+sampled cold/warm boundaries, measured input/observer/provider intervals,
 actual package/guest identities and selected state comparisons. Unknown wait
-attribution stays unknown. Whole-home/cache equality and uncaptured-process
-cleanup are not claimed. The 15-second target remains unmet pending actual
+attribution stays unknown. Reading counts include whole decision screens,
+recorded output before consent or host-control input, and repeated text.
+The counts exclude the known task and command echoes. They are a
+conservative displayed-token count. The private screens allow later inspection.
+The observer reports changes to vendor usage metadata or renewed tokens without
+requiring whole vendor files to stay identical. Whole-home/cache equality and
+uncaptured-process cleanup are not claimed. The 15-second target remains unmet pending actual
 evidence and operator disposition.
 
 Normal cleanup stops the installed agent, proxy and Coord and checks captured

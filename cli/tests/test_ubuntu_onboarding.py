@@ -45,8 +45,8 @@ class ObserverChecks(unittest.TestCase):
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
 
     def canonical_task(self, error=None):
-        # Keep the actual 7843 event order and Write/result identity from the
-        # reached receipt, in the Claude JSONL envelope consumed by the driver.
+        # Synthetic consumer envelope, with event order and Write/result
+        # identity taken from the normalized 7843 receipt.
         identifier = "toolu_017AuCEPFCANjcYGsxGgrTCx"
         body = '<!DOCTYPE html><html><body><h1>Hello from SafeYolo</h1></body></html>\n'
         rows = [{"type": "user", "uuid": "observed-user", "timestamp": "2026-10-18T14:18:16.132Z",
@@ -77,7 +77,7 @@ class ObserverChecks(unittest.TestCase):
         rows, _ = self.canonical_task("Login expired · Please run /login")
         self.assertEqual(m.task_records(rows, None)["errors"], ["Login expired"])
 
-    def test_real_format_partial_canonical_line_and_multiple_conversations_are_not_success(self):
+    def test_partial_canonical_line_and_multiple_conversations_are_not_success(self):
         rows, body = self.canonical_task()
         home = m.root / "agents/first/home/.claude/projects/-workspace"
         home.mkdir(parents=True)
@@ -97,7 +97,7 @@ class ObserverChecks(unittest.TestCase):
         m.x.update(started=start, product_commands=[{**start, "role": "product"},
             {**start, "phase": "cold", "connected_ready": ready}])
         preparation = m.private / "preparation.json"
-        data = {"required_user_commands_complete": True, "required_user_reading_complete": True, "required_reading": [], "commands": [
+        data = {"required_user_commands_complete": True, "required_user_reading_complete": True, "required_reading": [], "decisions": [], "commands": [
             {"role": "fixture", "command": ["openssl", "cms", "<private input>"],
              "reason": "Provision the already authorized test account into normal host locations",
              "started_at": "2026-10-18T13:58:00+00:00", "ended_at": "2026-10-18T13:59:00+00:00"}]}
@@ -117,10 +117,52 @@ class ObserverChecks(unittest.TestCase):
         m.connected_accounting()
         self.assertEqual(m.x["counts"]["total_required_user_commands_to_first_task"], 3)
         self.assertEqual(m.x["timings"]["cold_total_to_first_task_seconds"], 120)
+        data["decisions"].append({"role": "required-user", "description": "Required account interaction",
+            "seen_at": "2026-10-18T13:57:00+00:00", "answered_at": "2026-10-18T13:58:00+00:00"})
+        preparation.write_text(json.dumps(data))
+        m.preparation_accounting(preparation)
+        m.connected_accounting()
+        self.assertEqual(m.x["counts"]["required_user_preparation_decisions"], 1)
+        self.assertEqual(m.x["timings"]["cold_total_to_first_task_seconds"], 240)
+        data["decisions"][0]["seen_at"] = None
+        preparation.write_text(json.dumps(data))
+        m.preparation_accounting(preparation)
+        m.connected_accounting()
+        self.assertIsNone(m.x["timings"]["cold_total_to_first_task_seconds"])
         data["required_user_commands_complete"] = False
         preparation.write_text(json.dumps(data))
         with self.assertRaisesRegex(ValueError, "unknown"):
             m.preparation_accounting(preparation)
+
+    def test_reading_excludes_wrapped_task_and_command_echoes_but_keeps_decision_prose_private(self):
+        screen = "Review this workspace.\n" + m.TASK.replace(" as ", "\n as ") + "\n" + shlex.join(m.LAUNCH)
+        m.record_reading("cold", "decision screen", screen.encode())
+        self.assertEqual(m.x["required_reading"][0]["words"], 3)
+        self.assertNotIn("Review this workspace", m.out.read_text())
+
+    def test_recorded_reading_does_not_drop_prose_outside_the_prompt_search_buffer(self):
+        terminal = m.private / "cold.terminal"
+        terminal.write_text("Earlier consent prose\n" + " " * 60001 + "Current prompt\n")
+        m.record_reading("cold", "host consent")
+        self.assertEqual(m.x["required_reading"][0]["words"], 5)
+        with terminal.open("a") as stream:
+            stream.write("Next actual prompt\n")
+        m.record_reading("cold", "next consent")
+        self.assertEqual(m.x["required_reading"][1]["words"], 3)
+
+    def test_missing_preparation_decisions_and_naive_times_stop_before_product_execution(self):
+        path = m.private / "preparation.json"
+        data = {"required_user_commands_complete": True, "required_user_reading_complete": True,
+                "required_reading": [], "commands": []}
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "decisions must be recorded"):
+            m.preparation_accounting(path)
+        data.update(decisions=[], commands=[{"role": "required-user", "command": ["required-helper"],
+                    "reason": "Actual prerequisite", "started_at": "2026-10-18T13:59:00"}])
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "UTC offset"):
+            m.preparation_accounting(path)
+        self.assertEqual(m.x["product_commands"], [])
 
     def test_provider_wait_projection_keeps_only_actual_nonsecret_operands_and_unknowns(self):
         logs = m.root / "logs"
@@ -142,7 +184,7 @@ class ObserverChecks(unittest.TestCase):
             path.write_text("PRIVATE_AUTH_SENTINEL")
         preparation = home / "preparation.json"
         preparation.write_text(json.dumps({"required_user_commands_complete": True,
-            "required_user_reading_complete": True, "commands": [], "required_reading": []}))
+            "required_user_reading_complete": True, "commands": [], "required_reading": [], "decisions": []}))
         original = os.uname()
         uname = os.uname_result((*original[:4], "x86_64"))
         environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
@@ -165,7 +207,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertNotIn("PRIVATE_AUTH_SENTINEL", json.dumps(record))
 
     def test_foreground_public_approval_input_retains_the_displayed_scope_without_secret_text(self):
-        row = {}
+        seen = m.stamp()
+        row = {"terminal_output_last_seen": seen}
         journey = m.ConnectedJourney("cold", row)
         read_fd, write_fd = os.pipe()
         try:
@@ -182,10 +225,43 @@ class ObserverChecks(unittest.TestCase):
             self.assertEqual(interaction["displayed_approval"]["status"], "pending")
             self.assertIn("mcp-proxy.anthropic.com only", interaction["displayed_approval"]["effect"])
             self.assertTrue(interaction["classification_complete"])
+            self.assertEqual(interaction["seen"], seen)
+            self.assertGreaterEqual(interaction["first_key"]["monotonic"], seen["monotonic"])
             self.assertNotIn("PRIVATE_REASON", m.out.read_text())
         finally:
             os.close(read_fd)
             os.close(write_fd)
+
+    def test_live_return_reports_mutable_vendor_files_and_requires_stable_state_and_present_auth(self):
+        (m.project / "install-safeyolo.sh").write_text("# controlled bootstrap input\n")
+        (m.project / "index.html").write_text("controlled first file")
+        m.archive.write_bytes(b"controlled package")
+        package = {"bytes": m.archive.stat().st_size, "sha256": m.digest(m.archive)}
+        (m.root / "package-info").write_text(f"source_commit={m.CONNECTED_SOURCE}\nprofile=production\nplatform=linux-amd64\n")
+        required = m.PUBLIC_STATE + m.PRIVATE_STATE + ["agents/first/home/.claude/.credentials.json"]
+        before = dict.fromkeys(required, "same")
+        before["agents/first/home/.claude.json"] = "old usage metadata"
+        for change, expected in [("usage", True), ("policy", False), ("authentication missing", False)]:
+            with self.subTest(change=change):
+                m.x.update(observation_outcome="partial", product_commands=[], observations=[], required_reading=[], interactions=[],
+                           preparation={"required_reading": []})
+                after = {**before, "agents/first/home/.claude.json": "new usage metadata"}
+                if change == "policy":
+                    after["policy.toml"] = "different"
+                if change == "authentication missing":
+                    after["agents/first/home/.claude/.credentials.json"] = None
+                def enter(phase, *args, **kwargs):
+                    stage = "before-return" if phase == "cold" else "after-reentry"
+                    m.x[stage] = {"runtime": {"live_births": {key: {"observed": key, "recorded": key}
+                        for key in ["holder", "backend"]}}, "launch": {"launch_id": "same"},
+                        "task": {"conversations": [{"file": "same-session.jsonl"}]}}
+                    return {"connected_ready": m.stamp(), "ordinary_q": m.stamp(), "exit_code": 0,
+                            "discovery_exit": 0, "version_exit": 0}, before if phase == "cold" else after
+                with patch.object(m, "entered", autospec=True, side_effect=enter), \
+                     patch.object(m, "observe", autospec=True, return_value={"exit": 0}):
+                    m.connected_run(m.argparse.Namespace(platform="linux-amd64"), package)
+                self.assertEqual(m.x["observation_outcome"] != "partial", expected)
+                self.assertFalse(m.x["selected_state_equality"]["agents/first/home/.claude.json"]["equal"])
 
     def connected_console(self, error=None, echo=True, uncertain_literal=False):
         """Run the actual driver through a real PTY, tmux, literal input and JSONL producer."""
