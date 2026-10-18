@@ -295,20 +295,34 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                 assert status >= 400, (name, status)
                 assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
 
-            # Ordinary Authorization values do not acquire a new gateway rule.
+            # Short nonsecret values exercise ordinary repeated forwarding
+            # without asking the credential guard to approve a credential.
             before = (parent.accepts, allowed.accepts, forbidden.accepts)
             ordinary_auth = _send(path, b"/ordinary", [
                 (b"Host", ALLOWED.encode()),
-                (b"Authorization", b"Bearer harmless-first-value"),
-                (b"authorization", b"Bearer harmless-second-value"),
+                (b"Authorization", b"Bearer one"),
+                (b"authorization", b"Bearer two"),
             ])
             assert ordinary_auth[0] == 200 and ordinary_auth[2] == b"allowed", ordinary_auth
             assert (parent.accepts, allowed.accepts, forbidden.accepts) == (
                 before[0] + 1, before[1] + 1, before[2])
-            assert b"harmless-first-value" in allowed.requests[-1]["head"]
-            assert b"harmless-second-value" in allowed.requests[-1]["head"]
+            assert _authorization(allowed.requests[-1]["head"]) == [b"Bearer one", b"Bearer two"]
             assert token not in allowed.requests[-1]["head"]
             assert VAULT_CREDENTIAL.encode() not in allowed.requests[-1]["head"]
+
+            # These original synthetic values each meet default credential
+            # thresholds. Repeated fields must still receive that check.
+            before = (parent.accepts, allowed.accepts, forbidden.accepts)
+            duplicate_credentials = _send(path, b"/ordinary", [
+                (b"Host", ALLOWED.encode()),
+                (b"Authorization", b"Bearer harmless-first-value"),
+                (b"authorization", b"Bearer harmless-second-value"),
+            ])
+            assert duplicate_credentials[0] == 428, duplicate_credentials
+            assert {name.lower(): value for name, value in duplicate_credentials[1].items()}[
+                "x-blocked-by"] == "credential-guard"
+            assert "CREDENTIAL_NOT_APPROVED" in json.loads(duplicate_credentials[2])["reason_codes"]
+            assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
 
             before = (parent.accepts, allowed.accepts)
             ordinary_extra = _send(path, b"/v1/read", [
