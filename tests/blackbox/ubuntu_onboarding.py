@@ -295,7 +295,8 @@ def processes():
             owner = entry.stat()
             row.update(uid=owner.st_uid, gid=owner.st_gid, birth=birth(pid))
             expected = runtime_births.get(pid)
-            if owner.st_uid != os.getuid() and not (expected and row["birth"] == expected):
+            row["recorded_runtime_birth_match"] = bool(expected and row["birth"] == expected)
+            if owner.st_uid != os.getuid() and not row["recorded_runtime_birth_match"]:
                 continue
             row["stage"] = "cmdline"
             argv = process_read(entry, "cmdline", row)
@@ -307,13 +308,16 @@ def processes():
             if not row["birth"] or row["birth_after"] != row["birth"]:
                 row["stage"] = "birth-changed-or-unavailable"
                 unreadable.append(pid)
-            elif row["argv_root_match"] or row["executable_root_match"]:
+            elif row["argv_root_match"] or row["executable_root_match"] or row["recorded_runtime_birth_match"]:
                 result.append({"pid": pid, "birth": row["birth"], "executable": executable,
                                "uid": row["uid"], "gid": row["gid"]})
             row["ownership"] = ("unknown" if pid in unreadable else
-                                "owned" if row["argv_root_match"] or row["executable_root_match"] else "unrelated")
-        except (FileNotFoundError, ProcessLookupError):
-            # /proc races are expected; the saved birth is checked again after stop.
+                                "owned" if row["argv_root_match"] or row["executable_root_match"] or row["recorded_runtime_birth_match"] else "unrelated")
+        except (FileNotFoundError, ProcessLookupError) as error:
+            # A missing file does not prove that a recorded runtime birth exited.
+            if row.get("recorded_runtime_birth_match") and birth(pid) == row["birth"]:
+                unreadable.append(pid)
+                row.update(errno=error.errno, ownership="unknown", birth_after=birth(pid))
             continue
         except (OSError, subprocess.TimeoutExpired) as error:
             # A stable unreadable process cannot be classified as owned or unrelated.
@@ -322,7 +326,7 @@ def processes():
                 row.update(errno=getattr(error, "errno", None), error_type=type(error).__name__,
                            ownership="unknown", birth_after=birth(pid))
         finally:
-            if row.get("permission_reads") or pid in unreadable:
+            if row.get("permission_reads") or row.get("recorded_runtime_birth_match") or pid in unreadable:
                 details.append(row)
     x["latest_process_scan"] = {"unreadable_pids": unreadable, "read_details": details, **stamp()}
     if unreadable or details:

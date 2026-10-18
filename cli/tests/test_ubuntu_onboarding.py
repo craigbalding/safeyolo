@@ -202,8 +202,8 @@ class ObserverChecks(unittest.TestCase):
         proc = Path(self.scratch.name) / "proc"
         entry = proc / "10101"
         entry.mkdir(parents=True)
-        (entry / "cmdline").write_bytes(str(m.root).encode())
-        (entry / "exe").symlink_to(str(m.root / "bin/runsc"))
+        (entry / "cmdline").write_bytes(b"tail\0-f\0/dev/null\0")
+        (entry / "exe").symlink_to("/usr/bin/tail")
         runtime = m.root / "agents/first/runtime.json"
         runtime.parent.mkdir(parents=True)
         token = "linux:boot:10101:1"
@@ -214,6 +214,29 @@ class ObserverChecks(unittest.TestCase):
                  patch.object(m, "birth", autospec=True, return_value=token):
                 rows = m.processes()
             self.assertEqual([r["pid"] for r in rows], [10101] if expected == token else [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc ownership observer")
+    def test_cleanup_tracks_runtime_holder_without_installation_path_in_command(self):
+        holder = subprocess.Popen(["sleep", "20"])
+        token = m.birth(holder.pid)
+        self.assertIsNotNone(token)
+        runtime = m.root / "agents/first/runtime.json"
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text(json.dumps({"holder_pid": holder.pid, "holder_token": token}))
+        try:
+            m.cleanup()
+            self.assertIn(holder.pid, [p["pid"] for p in m.x["remaining_owned_processes"]])
+            self.assertEqual(m.x["tracked_births_still_live"][token], holder.pid)
+            self.assertFalse(m.x["cleanup_verified"])
+            holder.terminate()
+            holder.wait(timeout=3)
+            m.cleanup()
+            self.assertNotIn(token, m.x["tracked_births_still_live"])
+            self.assertNotIn(holder.pid, [p["pid"] for p in m.x["remaining_owned_processes"]])
+        finally:
+            if holder.poll() is None:
+                holder.terminate()
+            holder.wait(timeout=3)
 
     def test_reused_listener_pid_remains_unverified(self):
         process = {"pid": os.getpid(), "birth": "old-birth"}
