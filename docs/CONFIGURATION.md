@@ -566,6 +566,91 @@ gateway. The #819 source/prerequisite and installed credential proofs
 remain in the [responsibility map](settings.md#operator-entry-responsibilities);
 removing Python does not accept them or invent a replacement credential store.
 
+### Custom credential classifiers
+
+Define an additional credential format with `[credential.<name>]` and `match`.
+Custom rules append to the built-in catalogue. The first matching classifier
+wins, so keep patterns narrow and avoid overlap. Classification identifies a
+credential; it does not grant permission to send that credential.
+
+On the host, use the account that owns the selected running instance. Copy its
+`policy.toml` to `$HOME/reviewed-policy.toml` and add the tables below to that
+copy. Keep the rest of the policy. If a host table already exists, edit its
+fields instead of defining it twice. This example uses a synthetic format and
+the reserved name `allowed.invalid`. For an actual local test, replace that
+name with your controlled destination in both tables. Do not use a live token.
+
+```toml
+[credential.synthetic-fixture]
+match = ['\Afixture-[A-Za-z0-9_-]{20,}\Z']
+headers = ["authorization"]
+allowed_hosts = ["allowed.invalid"]
+
+[hosts."allowed.invalid"]
+egress = "allow"
+allow = ["synthetic-fixture:*"]
+```
+
+The example matches an entire token such as
+`fixture-AbCdEf0123456789_-AbCdEf0123456789` in the Authorization header,
+including after `Bearer `. Patterns use the existing Python-compatible regex
+adapter. TOML literal strings use **one** backslash in `\A` and `\Z`.
+In TOML double-quoted strings, write `"\\Afixture-[A-Za-z0-9_-]{20,}\\Z"`
+instead. Doubled backslashes in a literal string do not match the intended
+token. The adapter treats `\Z` as the strict end of the token.
+
+`allowed_hosts` describes the classifier's expected destinations. The separate
+host `allow` grants this named credential family at that host. Keep the host
+grant out of the candidate if you want exact-token approval instead. With the
+normal unknown-credential prompt policy, classification alone still prompts.
+Network access, credential permission and explicit denials remain separate.
+
+Check the complete candidate, then apply it to the selected running instance:
+
+```sh
+safeyolo policy check "$HOME/reviewed-policy.toml"
+safeyolo policy apply "$HOME/reviewed-policy.toml"
+safeyolo policy show
+```
+
+Check success means the source passed policy validation. It does not prove that
+a pattern matches. Apply reloads the classifier without restarting the proxy.
+Show must report `status: active`, `saved_matches_active: true`, and your
+`credential` and `hosts` entries in `effective`.
+
+Send only the synthetic token to your controlled destination through an agent.
+On the host, replace `AGENT` below with that agent's name and read the result:
+
+```sh
+safeyolo logs --agent AGENT --lines 20 --json
+```
+
+The log view gives the event summary and request ID. Its `file` field names the
+host's full audit JSONL file. In that file, the `security.credential_guard`
+event identifies `details.rule: synthetic-fixture`, `confidence: high`,
+`tier: 1`, a `hmac:` fingerprint and the policy decision. The event omits the
+token value. Check the destination's received request as well: an allowed
+request arrives; a blocked request must not arrive.
+Without the family grant, use the host's approval commands to review the
+reported fingerprint and destination. See [credential approval](credentials.md#authorization-binding-and-risk-approval).
+
+If the token remains `unknown_secret`, check the pattern, escaping, header and
+active policy. A malformed regex currently passes policy check/apply but is
+skipped by the detector. It does not create an allowance; unmatched opaque
+tokens still follow the unknown-secret policy. A conflicting earlier match
+uses that earlier classifier, including its destination decision.
+
+Top-level `credential_rules` and `credentials` are internal or legacy inputs,
+not supported policy authoring. The compiler converts `[credential.<name>]` /
+`match` into internal `credentials` / `patterns`, then into `credential_rules`
+for the sensor configuration. The Agent API's `/config` reports that compiled
+sensor data; do not paste it back into `policy.toml`. Retained `addons.yaml`,
+Python and JSON examples in [the historical addon reference](ADDONS.md) are
+not an alternative source format.
+
+This synthetic example does not recognise or authorise Codex subscription
+OAuth tokens. That separate work is tracked in [#1123](https://github.com/craigbalding/safeyolo/issues/1123).
+
 ## Restart and persistence
 
 The current product retains initialized identity, policy, service/vault state,

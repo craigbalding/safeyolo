@@ -587,7 +587,14 @@ fn validate_authoring(document: &Value) -> Result<()> {
         "test_context_rules",
     ] {
         if fields.contains_key(key) {
-            return Err(invalid(format!("policy.toml: unsupported field '{key}'")));
+            let hint = if matches!(key, "credential_rules" | "credentials") {
+                "; use [credential.<name>] with match = ['...'] for custom classifiers"
+            } else {
+                ""
+            };
+            return Err(invalid(format!(
+                "policy.toml: unsupported field '{key}'{hint}"
+            )));
         }
     }
     validate_hosts(fields.get("hosts"), "hosts")?;
@@ -1101,5 +1108,44 @@ decision="allow"
                     .contains(expected)
             );
         }
+    }
+
+    #[test]
+    fn internal_credential_fields_explain_supported_authoring() {
+        let path = Path::new("/owned/policy.toml");
+        for field in ["credential_rules", "credentials"] {
+            for value in ["[]", "{}", "'legacy'", "false", "1"] {
+                let error = Policy::native_source(&format!("{field} = {value}"), path, None, 0.)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(&format!("unsupported field '{field}'")));
+                assert!(error.contains("use [credential.<name>] with match = ['...']"));
+            }
+        }
+        let policy = Policy::native_source(
+            r#"[credential.synthetic-fixture]
+match = ['\Afixture-[A-Za-z0-9_-]{20,}\Z']
+headers = ["authorization"]
+allowed_hosts = ["allowed.invalid"]
+"#,
+            path,
+            None,
+            0.,
+        )
+        .unwrap();
+        let sensor = policy.native_sensor_config().unwrap().unwrap();
+        assert_eq!(sensor["credential_rules"][0]["name"], "synthetic-fixture");
+        assert_eq!(
+            sensor["credential_rules"][0]["patterns"],
+            json!([r"\Afixture-[A-Za-z0-9_-]{20,}\Z"])
+        );
+        assert_eq!(
+            sensor["credential_rules"][0]["header_names"],
+            json!(["authorization"])
+        );
+        assert_eq!(
+            sensor["credential_rules"][0]["allowed_hosts"],
+            json!(["allowed.invalid"])
+        );
     }
 }

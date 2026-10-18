@@ -10,6 +10,10 @@ for retained inspection and exports. Commands and extension examples below
 belong to the historical implementation; do not use them to configure a
 current Rust installation.
 
+For custom credential classifiers, use the current
+[`[credential.<name>]` reference](CONFIGURATION.md#custom-credential-classifiers).
+The Python and JSON examples below describe historical or internal interfaces.
+
 The former `safeyolo.traffic_master` imported
 `mitm_addons.ADDON_CHAIN` and registered its addons with mitmproxy for one
 process generation. The old `SAFEYOLO_ADDONS_DIR` checkout override selected
