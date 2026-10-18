@@ -8,6 +8,7 @@ import json
 import lzma
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from urllib.error import URLError
 
@@ -19,29 +20,33 @@ FIXTURES = Path(__file__).parent / "fixtures/guest-signatures"
 
 
 @pytest.fixture(scope="module")
-def signing_keys(tmp_path_factory):
+def signing_keys():
     if not shutil.which("gpg") or not shutil.which("xz"):
         pytest.skip("signature controls require GPG and xz")
-    home = tmp_path_factory.mktemp("signing")
-    home.chmod(0o700)
-    common = ["gpg", "--homedir", str(home), "--batch", "--pinentry-mode", "loopback", "--passphrase", ""]
-    keys = {}
-    try:
-        for name in ("signer", "other"):
-            uid = f"{name} <{name}@signature.test>"
-            subprocess.run([*common, "--quick-generate-key", uid, "ed25519", "sign", "0"],
-                           check=True, capture_output=True, timeout=30)
-            listing = subprocess.check_output([*common, "--with-colons", "--list-keys", uid], timeout=30).decode()
-            fingerprint = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
-            keys[name] = {"fingerprint": fingerprint,
-                          "binary": subprocess.check_output([*common, "--export", fingerprint], timeout=30),
-                          "armor": subprocess.check_output([*common, "--armor", "--export", fingerprint], timeout=30)}
-        keys["signer"]["no-user-ids"] = subprocess.check_output([
-            *common, "--export-options", "export-minimal", "--export-filter",
-            "keep-uid=mbox = absent@signature.test", "--export", keys["signer"]["fingerprint"]], timeout=30)
-        yield common, keys
-    finally:
-        subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "gpg-agent"], check=True, timeout=30)
+    # GPG also binds S.gpg-agent.extra, which exceeds Darwin socket limits
+    # under pytest's default /var/folders temporary parent.
+    with tempfile.TemporaryDirectory(prefix="sy-gpg-", dir="/tmp") as directory:
+        home = Path(directory).resolve()
+        home.chmod(0o700)
+        common = ["gpg", "--homedir", str(home), "--batch", "--pinentry-mode", "loopback", "--passphrase", ""]
+        keys = {}
+        try:
+            for name in ("signer", "other"):
+                uid = f"{name} <{name}@signature.test>"
+                generated = subprocess.run([*common, "--quick-generate-key", uid, "ed25519", "sign", "0"],
+                                           capture_output=True, text=True, timeout=30)
+                assert generated.returncode == 0, generated.stderr[-4000:]
+                listing = subprocess.check_output([*common, "--with-colons", "--list-keys", uid], timeout=30).decode()
+                fingerprint = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+                keys[name] = {"fingerprint": fingerprint,
+                              "binary": subprocess.check_output([*common, "--export", fingerprint], timeout=30),
+                              "armor": subprocess.check_output([*common, "--armor", "--export", fingerprint], timeout=30)}
+            keys["signer"]["no-user-ids"] = subprocess.check_output([
+                *common, "--export-options", "export-minimal", "--export-filter",
+                "keep-uid=mbox = absent@signature.test", "--export", keys["signer"]["fingerprint"]], timeout=30)
+            yield common, keys
+        finally:
+            subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "gpg-agent"], check=True, timeout=30)
 
 
 def sign(common, fingerprint, raw):
@@ -108,16 +113,19 @@ def test_kernel_refuses_failed_verification(tmp_path, monkeypatch, signing_keys,
 
 
 @pytest.fixture(scope="module")
-def mise_without_user_ids(tmp_path_factory):
-    home = tmp_path_factory.mktemp("mise-key")
-    home.chmod(0o700)
-    common = ["gpg", "--homedir", str(home), "--batch", "--no-autostart"]
-    subprocess.run([*common, "--import", str(FIXTURES / "mise-key.pub")], check=True, capture_output=True, timeout=30)
-    raw = subprocess.check_output([*common, "--export-options", "export-minimal", "--export-filter",
-                                   "keep-uid=mbox = absent@signature.test", "--export"], timeout=30)
-    packets = subprocess.check_output([*common, "--list-packets"], input=raw, timeout=30)
-    assert b":public key packet:" in packets and b":user ID packet:" not in packets
-    return raw
+def mise_without_user_ids():
+    with tempfile.TemporaryDirectory(prefix="sy-mise-", dir="/tmp") as directory:
+        home = Path(directory).resolve()
+        home.chmod(0o700)
+        common = ["gpg", "--homedir", str(home), "--batch", "--no-autostart"]
+        imported = subprocess.run([*common, "--import", str(FIXTURES / "mise-key.pub")],
+                                  capture_output=True, text=True, timeout=30)
+        assert imported.returncode == 0, imported.stderr[-4000:]
+        raw = subprocess.check_output([*common, "--export-options", "export-minimal", "--export-filter",
+                                       "keep-uid=mbox = absent@signature.test", "--export"], timeout=30)
+        packets = subprocess.check_output([*common, "--list-packets"], input=raw, timeout=30)
+        assert b":public key packet:" in packets and b":user ID packet:" not in packets
+        return raw
 
 
 @pytest.mark.parametrize("fault", [None, "unsigned-content", "wrong-key", "untrusted-signature", "missing-user-ids",

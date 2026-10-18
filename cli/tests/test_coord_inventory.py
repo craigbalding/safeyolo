@@ -793,29 +793,36 @@ def test_malformed_oversized_and_concurrent_provider_reads_fail_closed(
     assert timed_out["freshness"] == "unknown"
     assert slow_finished.wait(timeout=1)
 
+    blocking_started = threading.Event()
+    blocking_release = threading.Event()
     blocking_finished = threading.Event()
 
     class BadBlockingProvider:
         async def observe(self, _request):
+            blocking_started.set()
             try:
-                time.sleep(0.2)
+                blocking_release.wait(timeout=5)
                 return _capability_payload(40_000)
             finally:
                 blocking_finished.set()
 
     inventory.register_provider_adapter("rundeck", BadBlockingProvider())
 
-    async def measured_read():
-        started = time.monotonic()
-        result = await api.get_room_state("provider-races")
-        return time.monotonic() - started, result
+    async def blocked_read():
+        pending = asyncio.create_task(api.get_room_state("provider-races"))
+        assert await asyncio.to_thread(blocking_started.wait, timeout=1)
+        result = await asyncio.wait_for(pending, timeout=1)
+        assert not blocking_finished.is_set()
+        return result
 
-    elapsed, blocked = _run(measured_read())
-    assert elapsed < 0.1
-    blocked_capability = blocked["members"][0]["verified"][0]
-    assert blocked_capability["availability"] == "unknown"
-    assert blocked_capability["freshness"] == "unknown"
-    assert blocking_finished.wait(timeout=1)
+    try:
+        blocked = _run(blocked_read())
+        blocked_capability = blocked["members"][0]["verified"][0]
+        assert blocked_capability["availability"] == "unknown"
+        assert blocked_capability["freshness"] == "unknown"
+    finally:
+        blocking_release.set()
+        assert blocking_finished.wait(timeout=1)
 
 
 def test_max_blocking_providers_cannot_starve_authoritative_state_reads(
