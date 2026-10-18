@@ -370,7 +370,8 @@ current profile at actual use. A stored expiry or `loggedIn` value does not
 prove provider authentication. The product asks for consent and performs its
 own supported host-state copy. An ordinary user with existing supported host
 authentication does not run the test account's encryption/transport recipe.
-The account-free browser-login path is outside this connected witness.
+The browser-login path without existing host authentication is outside this
+connected witness.
 
 Before product execution, record the preparation already performed in a small
 nonsecret JSON input. `required_user_commands_complete` and
@@ -380,8 +381,10 @@ invocation as an argument array in `command`, with `role` set to `required-user`
 caller or fixture recipe. Use `started_at` and `ended_at` for observed UTC
 times, or null for unknown times. Replace private operands with named inputs;
 include no credential values. `required_reading` lists objects whose `text`
-contains all required preparation prose. Use explicit empty lists when no
-commands or preparation reading were needed. Do not classify a real user
+contains all required preparation prose. Record its UTC `seen_at` start or null
+if unknown. Missing starts leave the complete cold elapsed time unknown.
+Use explicit empty lists when no commands or preparation reading were needed.
+Do not classify a real user
 prerequisite as fixture work. A required command increases the total even when
 the installer still uses two product commands.
 

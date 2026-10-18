@@ -45,24 +45,16 @@ class ObserverChecks(unittest.TestCase):
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
 
     def canonical_task(self, error=None):
-        # Synthetic consumer envelope, with event order and Write/result
-        # identity taken from the normalized 7843 receipt.
-        identifier = "toolu_017AuCEPFCANjcYGsxGgrTCx"
-        body = '<!DOCTYPE html><html><body><h1>Hello from SafeYolo</h1></body></html>\n'
-        rows = [{"type": "user", "uuid": "observed-user", "timestamp": "2026-10-18T14:18:16.132Z",
-                 "message": {"content": m.TASK}}]
+        # Operator7955 recovered these four redacted producer records from
+        # successful 7843, original lines 5/23/25/43. Intermediate parent events
+        # are omitted; envelope keys, types, order and ID relationships remain.
+        fixture = Path(__file__).parent / "fixtures/claude-connected-7843.jsonl"
+        rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+        body = rows[1]["message"]["content"][0]["input"]["content"]
         if error:
-            rows.append({"type": "assistant", "message": {"content": [{"type": "text", "text": error}]}})
-        else:
-            rows.extend([
-                {"type": "assistant", "timestamp": "2026-10-18T14:18:20.471Z", "message": {"content": [
-                    {"type": "tool_use", "name": "Write", "id": identifier,
-                     "input": {"file_path": "/workspace/index.html", "content": body}}]}},
-                {"type": "user", "timestamp": "2026-10-18T14:18:20.667Z", "message": {"content": [
-                    {"type": "tool_result", "tool_use_id": identifier, "content": "File created", "is_error": False}]}},
-                {"type": "assistant", "timestamp": "2026-10-18T14:18:22.478Z", "message": {"content": [
-                    {"type": "text", "text": "Created index.html with Hello from SafeYolo"}]}}
-            ])
+            # The failure is a synthetic control; no raw expired-login record
+            # was supplied. Do not label its envelope as an observed producer.
+            rows = [rows[0], {"type": "assistant", "message": {"content": [{"type": "text", "text": error}]}}]
         return rows, body
 
     def test_canonical_submission_write_result_and_file_must_match_in_order(self):
@@ -109,6 +101,17 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(m.x["counts"]["fixture_preparation_commands"], 1)
         self.assertEqual(m.x["timings"]["cold_total_to_first_task_seconds"], 60)
         self.assertNotIn("PRIVATE_ACCOUNT_SCREEN", m.out.read_text())
+        data["required_reading"].append({"text": "Read this required prerequisite."})
+        preparation.write_text(json.dumps(data))
+        m.preparation_accounting(preparation)
+        m.connected_accounting()
+        self.assertIsNone(m.x["timings"]["cold_total_to_first_task_seconds"])
+        data["required_reading"][0]["seen_at"] = "2026-10-18T13:57:00+00:00"
+        preparation.write_text(json.dumps(data))
+        m.preparation_accounting(preparation)
+        m.connected_accounting()
+        self.assertEqual(m.x["timings"]["cold_total_to_first_task_seconds"], 240)
+        data["required_reading"] = []
         data["commands"].append({"role": "required-user", "command": ["required-helper"],
             "reason": "Actual missing prerequisite", "started_at": "2026-10-18T13:59:00+00:00",
             "ended_at": "2026-10-18T13:59:30+00:00"})

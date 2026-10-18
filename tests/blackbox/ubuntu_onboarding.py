@@ -1090,6 +1090,9 @@ def preparation_accounting(path):
     for reading in data["required_reading"]:
         if not isinstance(reading, dict) or not isinstance(reading.get("text"), str):
             raise ValueError("Preparation reading must contain its actual text.")
+        if reading.get("seen_at") is not None:
+            if not isinstance(reading["seen_at"], str) or dt.datetime.fromisoformat(reading["seen_at"]).utcoffset() is None:
+                raise ValueError("Preparation timestamps need an explicit UTC offset.")
     # Account for transport in the fixture category only when the recorded
     # caller supports that distinction. Operator7950 supplies the actual source.
     x["preparation"] = data
@@ -1131,7 +1134,9 @@ def connected_accounting():
     launch = next((row for row in cold if row.get("phase") == "cold"), {})
     returned = warm[0] if warm else {}
     start_at = x["started"]["at"]
-    required_starts = [row.get("started_at") for row in required] + [row.get("seen_at") for row in decisions if row["role"] == "required-user"]
+    required_starts = ([row.get("started_at") for row in required]
+        + [row.get("seen_at") for row in decisions if row["role"] == "required-user"]
+        + [row.get("seen_at") for row in preparation["required_reading"]])
     total_start = min([start_at, *[value for value in required_starts if value]], key=dt.datetime.fromisoformat)
     ready = launch.get("connected_ready", {})
     warm_ready = returned.get("connected_ready", {})
