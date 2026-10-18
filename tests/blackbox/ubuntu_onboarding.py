@@ -5,7 +5,7 @@ Adapted from the retained observer for issue 239's Ubuntu AMD64 consumer.
 Run only on the fresh runner named by --host with its matching --platform.
 Python is an observer prerequisite; the product keeps the runner's normal PATH.
 The two product commands retain the normal PATH, proxy, CA and shipped harness.
-Only result.json may be uploaded. PTY output and public-state hashes stay private.
+Only result.json may be uploaded. Terminal screens and state hashes stay private.
 Use --cleanup-only after an interrupted attempt on this same owned host.
 The observer owns its attempted installation; it borrows the runner and its tools.
 """
@@ -67,6 +67,11 @@ PHASE_TEXT = [
     ("harness-installed", "SafeYolo: Claude Code is installed; opening the session."),
 ]
 PUBLIC_STATE = ["policy.toml", "certs/mitmproxy-ca-cert.pem", "data/instance_id", "share/guest-selection.json"]
+PRIVATE_STATE = ["data/admin_token", "data/agent_token", "certs/mitmproxy-ca.pem",
+                 "agents/first/home/.safeyolo-command"]
+OPTIONAL_PRIVATE_STATE = ["data/credentials.key", "data/credentials.enc",
+                          "agents/first/home/.claude/.credentials.json"]
+HOME_MARKER = "SAFEYOLO_ONBOARDING_HOME\n"
 MARKER_QUERY = ('p=$(cat /workspace/.onboarding239.pid) && kill -0 "$p" && '
                 'printf "pid=%s\\n" "$p" && awk \'{print "start=" $22}\' /proc/"$p"/stat && '
                 'printf "heartbeat=" && cat /workspace/.onboarding239.heartbeat')
@@ -98,7 +103,7 @@ def capture(dest, key, action):
     # Missing/racing runtime files must not prevent independent workspace/network capture.
     try:
         dest[key] = action()
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         dest[key] = {"observation_error": str(error), **stamp()}
     save()
     return dest[key]
@@ -226,12 +231,29 @@ def terminal_attachment(phase, launch):
         return {"unavailable": "No recorded tmux socket/pane", **stamp()}
     return observe(phase + "-terminal-attachment", [root / "bin/tmux", "-S", launch["tmux_socket"],
         "display-message", "-p", "-t", launch["pane_id"],
-        "#{@safeyolo_launch_id}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{session_id}\t#{session_attached}"])
+        "#{@safeyolo_launch_id}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{session_id}\t#{session_attached}\t#{window_active}\t#{pane_active}"])
 
 
-def public_state():
-    # No authentication, admin/agent tokens, private CA keys or derived configs are read.
-    return {p: digest(root / p) if (root / p).is_file() else None for p in PUBLIC_STATE}
+def pane_screen(phase):
+    """Read the recorded visible pane; keep its contents and errors private."""
+    launch = launch_record()
+    if not launch.get("tmux_socket") or not re.fullmatch(r"%\d+", launch.get("pane_id") or ""):
+        return {"unavailable": "No recorded tmux socket/pane", **stamp()}
+    command = [str(root / "bin/tmux"), "-S", launch["tmux_socket"]]
+    facts = subprocess.run([*command, "display-message", "-p", "-t", launch["pane_id"],
+        "#{@safeyolo_launch_id}\t#{pane_dead}\t#{window_active}\t#{pane_active}\t#{session_attached}"],
+        capture_output=True, timeout=2)
+    values = facts.stdout.decode(errors="replace").strip().split("\t")
+    visible = (facts.returncode == 0 and len(values) == 5 and values[:4] == [launch.get("launch_id"), "0", "1", "1"]
+               and values[4].isdigit() and int(values[4]) > 0)
+    row = {"facts_exit": facts.returncode, "matching_live_visible_pane": visible, **stamp()}
+    if visible:
+        screen = subprocess.run([*command, "capture-pane", "-p", "-e", "-J", "-t", launch["pane_id"]],
+                                capture_output=True, timeout=2)
+        (private / (phase + "-pane.screen")).write_bytes(screen.stdout)
+        (private / (phase + "-pane.stderr")).write_bytes(screen.stderr)
+        row.update(exit=screen.returncode, labels=login_label(screen.stdout) if screen.returncode == 0 else [], ended=stamp())
+    return row
 
 
 def witness(phase, start_marker=False):
@@ -248,10 +270,13 @@ def witness(phase, start_marker=False):
     if start_marker:
         code = ("nohup sh -c 'echo $$ > /workspace/.onboarding239.pid; while :; do "
                 "date +%s > /workspace/.onboarding239.heartbeat; sleep 1; done' "
-                ">/workspace/.onboarding239.log 2>&1 </dev/null &")
+                ">/workspace/.onboarding239.log 2>&1 </dev/null &\n"
+                "printf %s " + shlex.quote(HOME_MARKER) + ' > "$HOME/.onboarding239-home"')
         row["marker_start"] = guest(phase + "-marker-start", code, deadline)
         time.sleep(1)
     row["marker"] = guest(phase + "-marker", MARKER_QUERY, deadline)
+    row["home_marker"] = guest(phase + "-home", 'cat "$HOME/.onboarding239-home"', deadline)
+    row["home_matches"] = row["home_marker"].get("exit") == 0 and row["home_marker"].get("stdout") == HOME_MARKER
     capture(row, "workspace_before", lambda: (project / "onboarding-fixture.txt").read_text())
     addition = "ONBOARDING239_" + phase + "\n"
     row["workspace_guest"] = guest(phase + "-workspace", "cat /workspace/onboarding-fixture.txt && printf %s "
@@ -271,13 +296,16 @@ def witness(phase, start_marker=False):
         row["network"].append({"kind": label, "operand": operand, "expected_result": good})
         save()
     capture(row, "guest_selection", lambda: read_json(root / "share/guest-selection.json"))
-    try:
-        state = public_state()
-    except OSError as error:
-        row["public_state_observation_error"] = str(error)
-        state = {}
-    (private / (phase + "-public-state-hashes.json")).write_text(json.dumps(state))
-    row["selected_public_state_present"] = [p for p, value in state.items() if value]
+    state = {}
+    # These hashes stay private. A failed read must not erase the other operands.
+    for path in PUBLIC_STATE + PRIVATE_STATE + OPTIONAL_PRIVATE_STATE:
+        try:
+            state[path] = digest(root / path) if (root / path).is_file() else None
+        except OSError as error:
+            row.setdefault("state_observation_errors", {})[path] = str(error)
+    (private / (phase + "-state-hashes.json")).write_text(json.dumps(state))
+    row["selected_public_state_present"] = [p for p in PUBLIC_STATE if state.get(p)]
+    row["selected_private_state_present"] = [p for p in PRIVATE_STATE + OPTIONAL_PRIVATE_STATE if state.get(p)]
     row["ended"] = stamp()
     save()
     return state
@@ -401,6 +429,7 @@ def entered(phase, seconds):
     status = None
     detached = False
     captured = False
+    next_pane_read = 0
     terminal_open = True
     completed = set()
     states = None
@@ -451,10 +480,18 @@ def entered(phase, seconds):
                     pending = b""
                     save()
                 labels = login_label(pending)
+                label_source = "host-terminal-output"
+                if terminal_open and not captured and not labels and time.monotonic() >= next_pane_read:
+                    # Reentry need not emit the old prompt again. Read the current
+                    # visible screen, without treating wrapper text or liveness as readiness.
+                    capture(row, "pane_screen", lambda: pane_screen(phase))
+                    next_pane_read = time.monotonic() + 1
+                    labels = row["pane_screen"].get("labels", [])
+                    label_source = "attached-pane-screen"
                 expired = time.monotonic() >= deadline
                 if terminal_open and not captured and (labels or expired):
                     if labels:
-                        row["signed_out_label"] = {"labels": labels, **stamp()}
+                        row["signed_out_label"] = {"labels": labels, "source": label_source, **stamp()}
                     else:
                         row["readiness_unclassified_at_deadline"] = stamp()
                     save()
@@ -604,7 +641,8 @@ def main():
          "product_commands": [], "interactions": [], "observations": [], "phase_observations": [],
          "limits": ["Signed-out endpoint only; no model task, login or authentication copy",
                     "File/terminal boundaries are sampled; combined phases and provider/download waits remain bounds",
-                    "Private PTY output and selected public-state hashes must remain private",
+                    "Terminal screens and state hashes must remain private; only selected-state equality and presence are exported",
+                    "Guest-home proof covers the saved command and a guest-written marker, not every changing home file",
                     "No other platform, OCI >2GiB, independent-update or Mac cleanup proof"]}
     sampled = set()
     x["baseline"] = inventory()
@@ -656,6 +694,9 @@ def main():
                 if warm.get("signed_out_label") else None)
             x["timings"]["observer_gap_before_warm_seconds"] = warm["monotonic"] - cold["ended"]["monotonic"]
             x["selected_public_state_equality"] = {p: bool(state_before.get(p)) and state_before.get(p) == state_after.get(p) for p in PUBLIC_STATE}
+            x["selected_private_state_equality"] = {p: (p in state_before and p in state_after
+                and (bool(state_before[p]) or p in OPTIONAL_PRIVATE_STATE) and state_before[p] == state_after[p])
+                for p in PRIVATE_STATE + OPTIONAL_PRIVATE_STATE}
             a, b = x["before-return"], x["after-reentry"]
             x["same_runtime_record"] = a.get("runtime") == b.get("runtime")
             x["same_marker"] = (a.get("marker", {}).get("exit") == b.get("marker", {}).get("exit") == 0
@@ -665,7 +706,7 @@ def main():
                 and all(pair["observed"] and pair["observed"] == pair["recorded"]
                         for pair in r["runtime"]["live_births"].values()) for r in [a, b])
             x["warm_returned_normally"] = bool(warm.get("ordinary_q") and warm.get("exit_code") == 0 and not warm.get("observer_terminated_viewer"))
-            complete = (cold.get("signed_out_label")
+            complete = (cold.get("signed_out_label") and warm.get("signed_out_label")
                 and x.get("host_archive", {}).get("matches_assigned_bytes")
                 and isinstance(x.get("package_info"), str)
                 and f"source_commit={SOURCE}" in x["package_info"] and "profile=production" in x["package_info"]
@@ -674,7 +715,8 @@ def main():
                 and x["marker_heartbeat_changed"] and x["live_births_match"]
                 and all(r.get("discovery_exit") == r.get("version_exit") == 0 for r in [cold, warm])
                 and all(x["selected_public_state_equality"].values())
-                and all(r.get("workspace_matches") and len(r.get("network", [])) == 3
+                and all(x["selected_private_state_equality"].values())
+                and all(r.get("home_matches") and r.get("workspace_matches") and len(r.get("network", [])) == 3
                         and all(n["expected_result"] for n in r["network"]) for r in [a, b]))
             if complete:
                 x["observation_outcome"] = "captured; independent assessment required"

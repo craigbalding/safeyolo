@@ -4,12 +4,14 @@ import errno
 import importlib.util
 import json
 import os
+import pty
 import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -87,6 +89,113 @@ class ObserverChecks(unittest.TestCase):
         self.assertIn("#{session_attached}", row["command"][-1])
         self.assertNotIn("capture-pane", row["command"])
         self.assertIn("unavailable", m.terminal_attachment("warm", {"pane_id": "%7"}))
+
+    def test_real_tmux_screen_requires_the_matching_visible_pane_and_stays_private(self):
+        binary = shutil.which("tmux")
+        if binary is None:
+            self.skipTest("real tmux screen check requires tmux")
+        (m.root / "bin").mkdir()
+        (m.root / "bin/tmux").symlink_to(binary)
+        directory = m.root / "agents/first"
+        directory.mkdir(parents=True)
+        # Only this short socket uses /tmp, including on macOS.
+        with tempfile.TemporaryDirectory(prefix="sy-pane-", dir="/tmp") as socket_dir:
+            socket_path = str(Path(socket_dir) / "tmux.sock")
+            command = [binary, "-S", socket_path]
+            viewer = None
+            master, slave = pty.openpty()
+            try:
+                created = subprocess.run([*command, "-f", "/dev/null", "new-session", "-d", "-P", "-F", "#{pane_id}",
+                    "-s", "onboarding", "printf 'SafeYolo: Claude Code is installed; opening the session. Sign in if Claude asks.\\n'; "
+                    "read -r response; printf 'Sign in\\nPRIVATE_PANE_SENTINEL\\n'; cat"],
+                    capture_output=True, text=True, check=True)
+                pane = created.stdout.strip()
+                subprocess.run([*command, "set-option", "-p", "-t", pane, "@safeyolo_launch_id", "launch-test"], check=True)
+                record = {"tmux_socket": socket_path, "pane_id": pane, "launch_id": "launch-test"}
+                (directory / "current-launch.json").write_text(json.dumps(record))
+                self.assertFalse(m.pane_screen("warm")["matching_live_visible_pane"])
+                viewer = subprocess.Popen([*command, "attach-session", "-t", "onboarding"],
+                    stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+                    env={**os.environ, "TERM": "xterm-256color"})
+                deadline = time.monotonic() + 3
+                while True:
+                    row = m.pane_screen("warm")
+                    if row.get("matching_live_visible_pane") or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(row["matching_live_visible_pane"])
+                self.assertEqual(row.get("labels"), [])
+                subprocess.run([*command, "send-keys", "-t", pane, "Enter"], check=True)
+                while True:
+                    row = m.capture(m.x, "pane_screen", lambda: m.pane_screen("warm"))
+                    if row.get("labels") or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(row.get("labels"), ["sign in"])
+                self.assertIn(b"PRIVATE_PANE_SENTINEL", (m.private / "warm-pane.screen").read_bytes())
+                self.assertNotIn("PRIVATE_PANE_SENTINEL", m.out.read_text())
+                record["launch_id"] = "different-launch"
+                (directory / "current-launch.json").write_text(json.dumps(record))
+                wrong = m.pane_screen("warm")
+                self.assertFalse(wrong["matching_live_visible_pane"])
+                self.assertNotIn("labels", wrong)
+            finally:
+                subprocess.run([*command, "kill-server"], capture_output=True)
+                if viewer is not None:
+                    viewer.wait(timeout=3)
+                os.close(slave)
+                os.close(master)
+
+    def test_private_state_is_observed_without_exporting_bytes_or_hashes(self):
+        for name in m.PRIVATE_STATE + m.OPTIONAL_PRIVATE_STATE[:1]:
+            path = m.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("PRIVATE_STATE_SENTINEL")
+        with patch.object(m, "live_record", autospec=True, return_value={}), \
+             patch.object(m, "processes", autospec=True, return_value=[]), \
+             patch.object(m, "listeners", autospec=True, return_value=[]), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 1}):
+            before = m.witness("before-return")
+            self.assertEqual(m.x["before-return"]["selected_private_state_present"],
+                             m.PRIVATE_STATE + m.OPTIONAL_PRIVATE_STATE[:1])
+            (m.root / m.PRIVATE_STATE[0]).write_text("changed token")
+            (m.root / m.PRIVATE_STATE[1]).unlink()
+            after = m.witness("after-reentry")
+        self.assertEqual(m.x["after-reentry"]["selected_private_state_present"],
+                         [p for p in m.PRIVATE_STATE if p != m.PRIVATE_STATE[1]] + m.OPTIONAL_PRIVATE_STATE[:1])
+        self.assertNotEqual(before[m.PRIVATE_STATE[0]], after[m.PRIVATE_STATE[0]])
+        self.assertIsNone(after[m.PRIVATE_STATE[1]])
+        self.assertEqual(before[m.PRIVATE_STATE[2]], after[m.PRIVATE_STATE[2]])
+        self.assertTrue(all(name in before and before[name] is None and name in after and after[name] is None
+                            for name in m.OPTIONAL_PRIVATE_STATE[1:]))
+        exported = m.out.read_text()
+        self.assertNotIn("PRIVATE_STATE_SENTINEL", exported)
+        for value in before.values():
+            if value:
+                self.assertNotIn(value, exported)
+
+    def test_one_unreadable_state_file_does_not_erase_other_state(self):
+        (m.root / "policy.toml").write_text("retained policy")
+        unreadable = m.root / m.PRIVATE_STATE[0]
+        unreadable.parent.mkdir(parents=True)
+        unreadable.write_text("private token")
+        digest = m.digest
+
+        def read_digest(path):
+            if path == unreadable:
+                raise PermissionError("controlled private-state read error")
+            return digest(path)
+
+        with patch.object(m, "digest", autospec=True, side_effect=read_digest), \
+             patch.object(m, "live_record", autospec=True, return_value={}), \
+             patch.object(m, "processes", autospec=True, return_value=[]), \
+             patch.object(m, "listeners", autospec=True, return_value=[]), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 1}):
+            state = m.witness("after-reentry")
+        self.assertEqual(state["policy.toml"], digest(m.root / "policy.toml"))
+        self.assertNotIn(m.PRIVATE_STATE[0], state)
+        self.assertIn(m.PRIVATE_STATE[0], m.x["after-reentry"]["state_observation_errors"])
+        self.assertNotIn(m.PRIVATE_STATE[0], m.x["after-reentry"]["selected_private_state_present"])
 
     def observer_cli(self, home, *args, script=None):
         return subprocess.run([sys.executable, "-I", "-B", script or m.__file__, "--host", os.uname().nodename,
@@ -392,6 +501,15 @@ class ObserverChecks(unittest.TestCase):
         self.assertTrue(m.x["after-reentry"]["captured_before_detach"])
         self.assertIn("ordinary_q", row)
         self.assertNotIn("observer_terminated_viewer", row)
+
+    def test_real_pty_reentry_can_observe_the_visible_pane_without_new_prompt_output(self):
+        with patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": True, "labels": ["/login"]}):
+            row = self.run_console("UNKNOWN UI", 2)
+        self.assertEqual(row["signed_out_label"]["source"], "attached-pane-screen")
+        self.assertNotIn("readiness_unclassified_at_deadline", row)
+        self.assertTrue(m.x["after-reentry"]["captured_before_detach"])
+        self.assertIn("ordinary_q", row)
 
     def test_real_pty_early_exit_is_captured_and_reaped(self):
         with patch.object(m, "LAUNCH", [sys.executable, "-c", "raise SystemExit(3)"]), \
