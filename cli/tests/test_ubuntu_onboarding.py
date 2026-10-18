@@ -1,6 +1,7 @@
 """Focused observer checks; no SafeYolo product, external network, VM or provider is run."""
 
 import errno
+import http.server
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -68,6 +70,180 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual([n["kind"] for n in row["network"]], ["positive", "direct-http", "direct-https"])
         self.assertEqual([n["expected_result"] for n in row["network"]], [False, True, True])
         self.assertNotIn(m.digest(m.root / "policy.toml"), m.out.read_text())
+
+    def test_network_response_and_local_event_correlation_keep_raw_diagnostics_private(self):
+        logs = m.root / "logs"
+        logs.mkdir()
+        for name in ("events.jsonl", "proxy.log"):
+            (logs / name).touch()
+        request_id = "req-" + "1" * 32
+
+        class Proxy(http.server.BaseHTTPRequestHandler):
+            decision = "error"
+            def do_GET(self):
+                self.send_response(502)
+                self.send_header("X-SafeYolo-Request-Id", request_id)
+                self.send_header("Set-Cookie", "PRIVATE_COOKIE_SENTINEL")
+                self.send_header("X-Blocked-By", "PRIVATE_HEADER_SENTINEL")
+                self.end_headers()
+                self.wfile.write(b"PRIVATE_BODY_SENTINEL")
+                with (logs / "events.jsonl").open("a") as stream:
+                    for identifier in ("req-" + "2" * 32, request_id):
+                        stream.write(json.dumps({"event": "proxy.request", "host": "httpbin.org", "status": 502,
+                            "request_id": identifier, "decision": self.decision, "private": "PRIVATE_EVENT_SENTINEL"}) + "\n")
+                with (logs / "proxy.log").open("a") as stream:
+                    stream.write(f"request {request_id} failed: PRIVATE_ERROR_SENTINEL\n")
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+        worker = threading.Thread(target=server.serve_forever)
+        worker.start()
+        m.cli.write_text("#!/bin/sh\nexec sh -c \"$7\"\n")
+        try:
+            with patch.dict(os.environ, {"HTTP_PROXY": f"http://127.0.0.1:{server.server_port}"}):
+                for decision in ("error", "allow"):
+                    Proxy.decision = decision
+                    row = m.network_probe("cold", "positive", m.PROBES[0][1], time.monotonic() + 10)
+                    self.assertFalse(row["expected_result"])
+                    self.assertEqual(row["operand"]["exit"], 0)
+                    self.assertEqual(row["response"]["http_code"], 502)
+                    self.assertEqual(row["response"]["request_id"], request_id)
+                    self.assertTrue(row["response"]["blocked_by_header_present"])
+                    self.assertNotIn("blocked_by_header", row["response"])
+                    self.assertEqual(row["proxy_logs"]["events.jsonl"]["matches"],
+                        [{"request_id": request_id, "correlation": "request-id", "status": 502, "decision": decision}])
+                    self.assertEqual(row["proxy_logs"]["proxy.log"]["matches"][0]["stage"], "request-failed")
+                    self.assertNotIn("PRIVATE_", json.dumps(row))
+                    self.assertNotIn("PRIVATE_", m.out.read_text())
+                    self.assertIn("PRIVATE_COOKIE_SENTINEL", (m.private / "cold-positive.stderr").read_text())
+                    self.assertNotIn("stdout", row["operand"])
+        finally:
+            server.shutdown()
+            worker.join(timeout=3)
+            server.server_close()
+
+    def test_network_missing_response_and_identity_error_remain_distinct_from_success(self):
+        logs = m.root / "logs"
+        logs.mkdir()
+        (logs / "events.jsonl").touch()
+        proxy_log = logs / "proxy.log"
+        proxy_log.touch()
+        identifier = "req-" + "3" * 32
+        m.cli.write_text(f"#!/bin/sh\nprintf 'request {identifier} identity reconciliation failed: PRIVATE_IDENTITY\\n' >> {proxy_log}\n"
+                         "exec sh -c \"$7\"\n")
+        row = m.network_probe("cold", "positive", "true", time.monotonic() + 10)
+        self.assertFalse(row["expected_result"])
+        self.assertEqual(row["metrics_error"], "JSONDecodeError")
+        self.assertEqual(row["proxy_logs"]["proxy.log"]["matches"], [{"request_id": identifier,
+            "stage": "identity-reconciliation", "correlation": "time-window-only"}])
+        self.assertNotIn("PRIVATE_", json.dumps(row))
+        for status in (7, 28):
+            row = m.network_probe("cold", "direct-http", 'printf \'{"http_code":0}\'; exit ' + str(status), time.monotonic() + 10)
+            self.assertTrue(row["expected_result"])
+            self.assertEqual(row["operand"]["exit"], status)
+            self.assertEqual(row["response"]["http_code"], 0)
+
+    def test_process_permission_read_records_original_stage_and_scoped_retry(self):
+        entry = Path("/proc") / str(os.getpid())
+        row = {}
+        denied = PermissionError(errno.EACCES, "denied")
+        observed = subprocess.CompletedProcess([], 0, b"/usr/bin/python3\n", b"PRIVATE_RETRY_DIAGNOSTIC")
+        with patch.object(m.os, "readlink", autospec=True, side_effect=denied), \
+             patch.object(m.subprocess, "run", autospec=True, return_value=observed) as run:
+            self.assertEqual(m.process_read(entry, "exe", row), b"/usr/bin/python3")
+        self.assertEqual(run.call_args.args[0], ["sudo", "-n", "/usr/bin/readlink", "--", str(entry / "exe")])
+        self.assertEqual(row["permission_reads"][0]["errno"], errno.EACCES)
+        self.assertEqual(row["permission_reads"][0]["stage"], "exe")
+        self.assertEqual(row["permission_reads"][0]["sudo_exit"], 0)
+        self.assertNotIn("PRIVATE_", json.dumps(row))
+        with patch.object(m.os, "readlink", autospec=True, side_effect=denied), \
+             patch.object(m.subprocess, "run", autospec=True, side_effect=FileNotFoundError("sudo absent")):
+            with self.assertRaises(PermissionError):
+                m.process_read(entry, "exe", row)
+        self.assertEqual(row["permission_reads"][-1]["sudo_error"], "FileNotFoundError")
+
+    def test_process_scan_recovery_requires_same_birth_and_keeps_ownership_operands(self):
+        proc = Path(self.scratch.name) / "proc"
+        entry = proc / "10101"
+        entry.mkdir(parents=True)
+        (entry / "cmdline").write_bytes(b"PRIVATE_UNRELATED_ARG")
+        (entry / "exe").symlink_to("/usr/bin/unrelated")
+        real_readlink = os.readlink
+
+        def denied_exe(path):
+            if str(path).endswith("/10101/exe"):
+                raise PermissionError(errno.EACCES, "controlled exe denial")
+            return real_readlink(path)
+
+        for changed in (False, True):
+            with patch.object(m, "Path", autospec=True, side_effect=lambda _path: proc), \
+                 patch.object(m, "birth", autospec=True, side_effect=["linux:boot:10101:1", "linux:boot:10101:2" if changed else "linux:boot:10101:1"]), \
+                 patch.object(m.os, "readlink", autospec=True, side_effect=denied_exe), \
+                 patch.object(m.subprocess, "run", autospec=True,
+                              return_value=subprocess.CompletedProcess([], 0, b"/usr/bin/unrelated\n", b"")):
+                self.assertEqual(m.processes(), [])
+            scan = m.x["latest_process_scan"]
+            self.assertEqual(scan["unreadable_pids"], [10101] if changed else [])
+            detail = scan["read_details"][0]
+            self.assertEqual(detail["uid"], os.getuid())
+            self.assertEqual(detail["executable"], "/usr/bin/unrelated")
+            self.assertFalse(detail["argv_root_match"])
+            self.assertEqual(detail["ownership"], "unknown" if changed else "unrelated")
+            self.assertNotIn("PRIVATE_", json.dumps(scan))
+
+    def test_denied_owned_listener_read_is_not_an_empty_listener_list(self):
+        process = {"pid": os.getpid(), "birth": m.birth(os.getpid())}
+        with patch.object(m, "process_read", autospec=True, side_effect=PermissionError(errno.EACCES, "fd denied")):
+            result = m.capture(m.x, "remaining_owned_listeners", lambda: m.listeners([process]))
+        self.assertIn("observation_error", result)
+
+    def test_runtime_with_another_uid_is_included_only_at_its_recorded_birth(self):
+        proc = Path(self.scratch.name) / "proc"
+        entry = proc / "10101"
+        entry.mkdir(parents=True)
+        (entry / "cmdline").write_bytes(b"tail\0-f\0/dev/null\0")
+        (entry / "exe").symlink_to("/usr/bin/tail")
+        runtime = m.root / "agents/first/runtime.json"
+        runtime.parent.mkdir(parents=True)
+        token = "linux:boot:10101:1"
+        for expected in (token, "linux:boot:10101:2"):
+            runtime.write_text(json.dumps({"backend_pid": 10101, "backend_token": expected}))
+            with patch.object(m, "Path", autospec=True, return_value=proc), \
+                 patch.object(m.os, "getuid", autospec=True, return_value=os.getuid() + 1), \
+                 patch.object(m, "birth", autospec=True, return_value=token):
+                rows = m.processes()
+            self.assertEqual([r["pid"] for r in rows], [10101] if expected == token else [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc ownership observer")
+    def test_cleanup_tracks_runtime_holder_without_installation_path_in_command(self):
+        holder = subprocess.Popen(["sleep", "20"])
+        token = m.birth(holder.pid)
+        self.assertIsNotNone(token)
+        runtime = m.root / "agents/first/runtime.json"
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text(json.dumps({"holder_pid": holder.pid, "holder_token": token}))
+        try:
+            m.cleanup()
+            self.assertIn(holder.pid, [p["pid"] for p in m.x["remaining_owned_processes"]])
+            self.assertEqual(m.x["tracked_births_still_live"][token], holder.pid)
+            self.assertFalse(m.x["cleanup_verified"])
+            holder.terminate()
+            holder.wait(timeout=3)
+            m.cleanup()
+            self.assertNotIn(token, m.x["tracked_births_still_live"])
+            self.assertNotIn(holder.pid, [p["pid"] for p in m.x["remaining_owned_processes"]])
+        finally:
+            if holder.poll() is None:
+                holder.terminate()
+            holder.wait(timeout=3)
+
+    def test_reused_listener_pid_remains_unverified(self):
+        process = {"pid": os.getpid(), "birth": "old-birth"}
+        with patch.object(m, "process_read", autospec=True) as read:
+            result = m.capture(m.x, "remaining_owned_listeners", lambda: m.listeners([process]))
+        self.assertIn("observation_error", result)
+        read.assert_not_called()
 
     def test_launch_environment_is_never_saved(self):
         directory = m.root / "agents/first"

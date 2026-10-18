@@ -16,6 +16,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pty
 import re
@@ -48,11 +49,11 @@ DOWNLOAD = ["curl", "--fail", "--location", "--proto", "=https", "--proto-redir"
 LAUNCH = ["bash", "install-safeyolo.sh", "--release", RELEASE, "--launch", ".",
           "--name", "first", "--harness", "claude", "--launcher", "tmux-window"]
 PROBES = [
-    ("positive", 'test -n "$HTTP_PROXY" && curl -s -o /dev/null -w "%{http_code}" '
+    ("positive", 'test -n "$HTTP_PROXY" && curl -sS -D /dev/stderr -o /dev/null -w "%{json}" '
      '--proxy "$HTTP_PROXY" -H "X-SafeYolo-Test-Context: run=isolation;agent=bbtest" '
      '--max-time 10 http://httpbin.org/get'),
-    ("direct-http", "curl -s --noproxy '*' --connect-timeout 3 --max-time 10 -o /dev/null http://1.1.1.1"),
-    ("direct-https", "curl -s --noproxy '*' --connect-timeout 3 --max-time 10 -k -o /dev/null https://8.8.8.8"),
+    ("direct-http", "curl -sS -D /dev/stderr -w '%{json}' --noproxy '*' --connect-timeout 3 --max-time 10 -o /dev/null http://1.1.1.1"),
+    ("direct-https", "curl -sS -D /dev/stderr -w '%{json}' --noproxy '*' --connect-timeout 3 --max-time 10 -k -o /dev/null https://8.8.8.8"),
 ]
 PHASE_TEXT = [
     ("host-acquisition", "SafeYolo: acquiring safeyolo-linux-"),
@@ -117,7 +118,7 @@ def birth(pid):
     return process_start_token(pid)
 
 
-def observe(label, args, timeout=20):
+def observe(label, args, timeout=20, private_output=False):
     row = {"label": label, "command": list(map(str, args)), **stamp()}
     x["observations"].append(row)
     save()
@@ -131,8 +132,13 @@ def observe(label, args, timeout=20):
             os.killpg(process.pid, signal.SIGKILL)
             stdout, stderr = process.communicate(timeout=3)
             row["timeout"] = True
-        row.update(exit=process.returncode, stdout=stdout.decode(errors="replace"),
-                   stderr=stderr.decode(errors="replace"))
+        row["exit"] = process.returncode
+        if private_output:
+            (private / (label + ".stdout")).write_bytes(stdout)
+            (private / (label + ".stderr")).write_bytes(stderr)
+            row.update(private_output=True, stdout_bytes=len(stdout), stderr_bytes=len(stderr))
+        else:
+            row.update(stdout=stdout.decode(errors="replace"), stderr=stderr.decode(errors="replace"))
     except (OSError, subprocess.SubprocessError) as error:
         row["observation_error"] = str(error)
     row["ended"] = stamp()
@@ -140,35 +146,190 @@ def observe(label, args, timeout=20):
     return row
 
 
-def guest(label, code, deadline):
+def guest(label, code, deadline, private_output=False):
     return observe(label, [cli, "--root", root, "agent", "shell", "first", "-c", code],
-                   min(20, max(0.1, deadline - time.monotonic())))
+                   min(20, max(0.1, deadline - time.monotonic())), private_output=private_output)
+
+
+def network_probe(phase, kind, code, deadline):
+    """Export selected operands; curl output and new proxy log bytes stay private."""
+    label = phase + "-" + kind
+    logs = {}
+    for name in ["events.jsonl", "proxy.log"]:
+        path = root / "logs" / name
+        try:
+            info = path.stat()
+            logs[name] = {"offset": info.st_size, "inode": info.st_ino}
+        except OSError as error:
+            logs[name] = {"errno": error.errno}
+    operand = guest(label, code, deadline, private_output=True)
+    row = {"kind": kind, "operand": operand, "response": {}, "proxy_logs": logs}
+    try:
+        metrics = json.loads((private / (label + ".stdout")).read_bytes())
+        if not isinstance(metrics, dict):
+            raise ValueError("Curl metrics were not an object")
+        for key in ["http_code", "http_connect", "num_connects", "size_download", "time_namelookup",
+                    "time_connect", "time_pretransfer", "time_starttransfer", "time_total"]:
+            value = metrics.get(key)
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                row["response"][key] = value
+    except (OSError, ValueError) as error:
+        row["metrics_error"] = type(error).__name__
+    headers = (private / (label + ".stderr")).read_bytes() if operand.get("private_output") else b""
+    # Response header claims alone do not establish local enforcement or origin delivery.
+    for line in headers.splitlines():
+        name, _, value = line.partition(b":")
+        value = value.strip()
+        if name.lower() == b"x-safeyolo-request-id" and re.fullmatch(rb"req-[0-9a-f]{32}", value):
+            row["response"]["request_id"] = value.decode()
+        if name.lower() == b"x-blocked-by":
+            row["response"]["blocked_by_header_present"] = True
+            if value in [b"network-guard", b"credential-guard", b"pattern-scanner", b"test-context", b"admin-shield", b"service-gateway"]:
+                row["response"]["blocked_by_header"] = value.decode()
+    request_id = row["response"].get("request_id")
+    for name, log in logs.items():
+        if "offset" not in log:
+            continue
+        try:
+            with (root / "logs" / name).open("rb") as stream:
+                info = os.fstat(stream.fileno())
+                if info.st_ino != log["inode"] or info.st_size < log["offset"]:
+                    log["changed_file"] = True
+                    continue
+                stream.seek(log["offset"])
+                data = stream.read(65537)
+            log["truncated"] = len(data) > 65536
+            data = data[:65536]
+            (private / (label + "-" + name)).write_bytes(data)
+            log["bytes"] = len(data)
+            log["matches"] = []
+            for line in data.splitlines():
+                if name == "proxy.log":
+                    match = re.match(rb"request (req-[0-9a-f]{32}) (identity reconciliation failed|failed):", line)
+                    if match and (not request_id or match[1].decode() == request_id):
+                        failure = {"request_id": match[1].decode(),
+                            "stage": "identity-reconciliation" if match[2].startswith(b"identity") else "request-failed",
+                            "correlation": "request-id" if request_id else "time-window-only"}
+                        categories = [term for term in ["dns", "connection refused", "connection reset", "timed out", "tls", "unexpected eof"]
+                                      if term.encode() in line.lower()]
+                        if categories:
+                            failure["error_categories"] = categories
+                        log["matches"].append(failure)
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    log["invalid_json_line"] = True
+                    continue
+                if not isinstance(event, dict):
+                    log["invalid_event_shape"] = True
+                    continue
+                if (event.get("event") != "proxy.request" or event.get("host") != "httpbin.org"
+                        or not re.fullmatch(r"req-[0-9a-f]{32}", str(event.get("request_id")))
+                        or (request_id and event["request_id"] != request_id)):
+                    continue
+                selected = {"request_id": event["request_id"],
+                            "correlation": "request-id" if request_id else "host-and-time-window-only"}
+                if type(event.get("status")) is int and 100 <= event["status"] <= 599:
+                    selected["status"] = event["status"]
+                if event.get("decision") in ["allow", "deny", "error", "invalid", "admin_port_access"]:
+                    selected["decision"] = event["decision"]
+                log["matches"].append(selected)
+            log["matches_truncated"] = len(log["matches"]) > 16
+            log["matches"] = log["matches"][:16]
+        except OSError as error:
+            log["read_errno"] = error.errno
+    row["expected_result"] = (operand.get("exit") == 0 and row["response"].get("http_code") == 200
+                              if kind == "positive" else operand.get("exit") in [7, 28] and not operand.get("timeout"))
+    return row
+
+
+def process_read(entry, stage, row):
+    """Retry only a denied, fixed /proc read; never run the observer as root."""
+    try:
+        if stage == "exe":
+            return os.readlink(entry / "exe").encode()
+        if stage == "fd":
+            links = []
+            for fd in (entry / "fd").iterdir():
+                try:
+                    links.append(os.readlink(fd).encode())
+                except FileNotFoundError:
+                    # A closed descriptor no longer holds its former socket.
+                    continue
+            return b"\n".join(links)
+        return (entry / "cmdline").read_bytes()
+    except PermissionError as error:
+        failed = {"stage": stage, "errno": error.errno, **stamp()}
+        row.setdefault("permission_reads", []).append(failed)
+        commands = {"exe": ["/usr/bin/readlink", "--", str(entry / "exe")],
+                    "cmdline": ["/usr/bin/cat", "--", str(entry / "cmdline")],
+                    "fd": ["/usr/bin/find", str(entry / "fd"), "-mindepth", "1", "-maxdepth", "1", "-printf", "%l\n"]}
+        try:
+            observed = subprocess.run(["sudo", "-n", *commands[stage]], capture_output=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired) as retry_error:
+            failed["sudo_error"] = type(retry_error).__name__
+            raise PermissionError(error.errno, "Scoped process reader unavailable", str(entry / stage)) from retry_error
+        failed["sudo_exit"] = observed.returncode
+        # Output can include unrelated command arguments or open-file paths.
+        (private / f"proc-{entry.name}-{stage}.stdout").write_bytes(observed.stdout)
+        (private / f"proc-{entry.name}-{stage}.stderr").write_bytes(observed.stderr)
+        if observed.returncode:
+            raise PermissionError(error.errno, "Scoped process read failed", str(entry / stage)) from error
+        return observed.stdout.rstrip(b"\n") if stage == "exe" else observed.stdout
 
 
 def processes():
     result = []
     unreadable = []
+    details = []
+    record = read_json(root / "agents/first/runtime.json") or {}
+    runtime_births = {record.get(key): record.get(key.replace("_pid", "_token"))
+                      for key in ["holder_pid", "backend_pid"] if record.get(key)}
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
+        pid = int(entry.name)
+        row = {"pid": pid, "stage": "stat"}
         try:
-            if entry.stat().st_uid != os.getuid():
+            owner = entry.stat()
+            row.update(uid=owner.st_uid, gid=owner.st_gid, birth=birth(pid))
+            expected = runtime_births.get(pid)
+            row["recorded_runtime_birth_match"] = bool(expected and row["birth"] == expected)
+            if owner.st_uid != os.getuid() and not row["recorded_runtime_birth_match"]:
                 continue
-            argv = (entry / "cmdline").read_bytes()
-            executable = os.readlink(entry / "exe")
-            if str(root).encode() not in argv and not executable.startswith(str(root) + "/"):
-                continue
-            pid = int(entry.name)
-            result.append({"pid": pid, "birth": birth(pid), "executable": executable})
-        except (FileNotFoundError, ProcessLookupError):
-            # /proc races are expected; the saved birth is checked again after stop.
+            row["stage"] = "cmdline"
+            argv = process_read(entry, "cmdline", row)
+            row["argv_root_match"] = str(root).encode() in argv
+            row["stage"] = "exe"
+            executable = process_read(entry, "exe", row).decode(errors="replace")
+            row.update(executable=executable, executable_root_match=executable.startswith(str(root) + "/"),
+                       birth_after=birth(pid))
+            if not row["birth"] or row["birth_after"] != row["birth"]:
+                row["stage"] = "birth-changed-or-unavailable"
+                unreadable.append(pid)
+            elif row["argv_root_match"] or row["executable_root_match"] or row["recorded_runtime_birth_match"]:
+                result.append({"pid": pid, "birth": row["birth"], "executable": executable,
+                               "uid": row["uid"], "gid": row["gid"]})
+            row["ownership"] = ("unknown" if pid in unreadable else
+                                "owned" if row["argv_root_match"] or row["executable_root_match"] or row["recorded_runtime_birth_match"] else "unrelated")
+        except (FileNotFoundError, ProcessLookupError) as error:
+            # A missing file does not prove that a recorded runtime birth exited.
+            if row.get("recorded_runtime_birth_match") and birth(pid) == row["birth"]:
+                unreadable.append(pid)
+                row.update(errno=error.errno, ownership="unknown", birth_after=birth(pid))
             continue
-        except PermissionError:
+        except (OSError, subprocess.TimeoutExpired) as error:
             # A stable unreadable process cannot be classified as owned or unrelated.
             if entry.exists():
-                unreadable.append(int(entry.name))
-    x["latest_process_scan"] = {"unreadable_pids": unreadable, **stamp()}
-    if unreadable:
+                unreadable.append(pid)
+                row.update(errno=getattr(error, "errno", None), error_type=type(error).__name__,
+                           ownership="unknown", birth_after=birth(pid))
+        finally:
+            if row.get("permission_reads") or row.get("recorded_runtime_birth_match") or pid in unreadable:
+                details.append(row)
+    x["latest_process_scan"] = {"unreadable_pids": unreadable, "read_details": details, **stamp()}
+    if unreadable or details:
         x.setdefault("process_scan_limits", []).append(x["latest_process_scan"])
     return result
 
@@ -178,16 +339,30 @@ def listeners(owned):
         raise ValueError("Owned process capture was unavailable; listeners are unverified.")
     inodes = set()
     for process in owned:
+        row = {"pid": process["pid"], "birth": process["birth"]}
+        entry = Path(f"/proc/{process['pid']}")
         try:
-            for fd in Path(f"/proc/{process['pid']}/fd").iterdir():
-                try:
-                    link = os.readlink(fd)
-                    if link.startswith("socket:["):
-                        inodes.add(link[8:-1])
-                except FileNotFoundError:
-                    continue
-        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            if birth(process["pid"]) != process["birth"]:
+                if entry.exists():
+                    raise ValueError(f"Process {process['pid']} listener identity changed or is unavailable")
+                continue
+            links = process_read(entry, "fd", row)
+            if birth(process["pid"]) != process["birth"]:
+                if entry.exists():
+                    raise ValueError(f"Process {process['pid']} listener identity changed or is unavailable")
+                continue
+            for link in links.decode().splitlines():
+                if link.startswith("socket:["):
+                    inodes.add(link[8:-1])
+        except (FileNotFoundError, ProcessLookupError):
+            # A reaped process cannot retain a listener. Live races stay unknown.
+            if birth(process["pid"]) == process["birth"]:
+                raise ValueError(f"Live process {process['pid']} listener read raced") from None
             continue
+        finally:
+            if row.get("permission_reads"):
+                x.setdefault("listener_read_details", []).append(row)
+                save()
     result = []
     for family in ["tcp", "tcp6", "unix"]:
         for line in Path("/proc/net/" + family).read_text().splitlines()[1:]:
@@ -289,11 +464,7 @@ def witness(phase, start_marker=False):
     row["network"] = []
     for label, code in PROBES:
         # These direct controls execute ONLY in this owned product guest.
-        operand = guest(phase + "-" + label, code, deadline)
-        good = operand.get("exit") == 0 and operand.get("stdout", "").strip() == "200"
-        if label != "positive":
-            good = operand.get("exit") in [7, 28] and not operand.get("timeout")
-        row["network"].append({"kind": label, "operand": operand, "expected_result": good})
+        row["network"].append(network_probe(phase, label, code, deadline))
         save()
     capture(row, "guest_selection", lambda: read_json(root / "share/guest-selection.json"))
     state = {}
