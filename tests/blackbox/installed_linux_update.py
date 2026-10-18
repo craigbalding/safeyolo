@@ -105,6 +105,16 @@ def redact(text, root):
     return text
 
 
+def guest_ready_shell(label, markers):
+    """Check retained markers before writing new markers and reporting readiness."""
+    checks = "; ".join(f"grep -Fx {name} {directory}/.u239-{name}"
+                       for name in markers for directory in ("/home/agent", "/workspace"))
+    return ("set -eu; " + (checks + "; " if checks else "") +
+            f"printf '%s\\n' {label} > /home/agent/.u239-{label}; " +
+            f"printf '%s\\n' {label} > /workspace/.u239-{label}; " +
+            "id; uname -m; sha256sum /usr/bin/curl /bin/bash; printf 'U239_READY\\n'")
+
+
 def main():
     """Observe one native installation through updates, boots and owned cleanup."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -224,13 +234,7 @@ def main():
         runtime = _runtime_observation(root, _native_config(root / "config.toml", root),
             root / "bin/safeyolo-proxy", config_path=root / "config.toml", working_directory=root,
             require_running=True, require_authenticated_identity=True)
-        checks = "; ".join(f"grep -Fx {name} /home/agent/.u239-{name} && grep -Fx {name} /workspace/.u239-{name}"
-                           for name in markers)
-        code = ("set -eu; " + (checks + "; " if checks else "") +
-                f"printf '%s\\n' {label} > /home/agent/.u239-{label}; " +
-                f"printf '%s\\n' {label} > /workspace/.u239-{label}; " +
-                "id; uname -m; sha256sum /usr/bin/curl /bin/bash; printf 'U239_READY\\n'")
-        result = cli(label + "-shell", "agent", "shell", "bbtest", "-c", code)
+        result = cli(label + "-shell", "agent", "shell", "bbtest", "-c", guest_ready_shell(label, markers))
         ready = time.monotonic()
         assert "U239_READY" in result
         if install_started is not None:

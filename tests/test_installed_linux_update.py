@@ -67,6 +67,38 @@ def test_report_redacts_installation_tokens_in_normal_and_timeout_output(tmp_pat
         assert update.redact(text, tmp_path) == "[redacted] [redacted] ordinary"
 
 
+@pytest.mark.parametrize("location", ["home", "workspace"])
+@pytest.mark.parametrize("damage", [None, "missing", "wrong"])
+def test_guest_ready_shell_refuses_lost_persistent_markers(tmp_path, location, damage):
+    directories = {name: tmp_path / name for name in ("home", "workspace")}
+    markers = ("g1", "restart-g1")
+    command = update.guest_ready_shell("g2", markers)
+    for name, directory in directories.items():
+        directory.mkdir()
+        for marker in markers:
+            (directory / f".u239-{marker}").write_text(marker + "\n")
+        command = command.replace("/home/agent" if name == "home" else "/workspace", str(directory))
+    damaged = directories[location] / ".u239-g1"
+    if damage == "missing":
+        damaged.unlink()
+    elif damage == "wrong":
+        damaged.write_text("changed\n")
+    result = subprocess.run(["bash", "--noprofile", "--norc", "-c", command],
+                            env={**os.environ, "BASH_ENV": ""},
+                            capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == (damage is None), result.stdout + result.stderr
+    assert ("U239_READY" in result.stdout) == (damage is None)
+    for directory in directories.values():
+        new_marker = directory / ".u239-g2"
+        if damage is None:
+            assert new_marker.read_text() == "g2\n"
+        else:
+            assert not new_marker.exists()
+    if damage is None:
+        for marker in markers:
+            assert result.stdout.splitlines().count(marker) == 2
+
+
 @pytest.mark.parametrize("damage", [None, "checksum", "size", "interrupted"])
 def test_host_acquisition_verifies_both_archives_before_observer(tmp_path, damage):
     source = tmp_path / "package-info"
