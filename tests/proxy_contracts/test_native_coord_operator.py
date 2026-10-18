@@ -348,6 +348,10 @@ def test_watch_timeline_payload_modes_and_cursor_reconnect(instance):
         process.wait(timeout=5)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Model-turn execution belongs to the Linux guest, including VZ guests",
+)
 def test_supervisor_events_reach_coord_and_live_watch(instance, tmp_path):
     """Exercise the real sender/API contract with a deterministic model seam."""
     binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", instance.root / "bin/safeyolo-coord"))

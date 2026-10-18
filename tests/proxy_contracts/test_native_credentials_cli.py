@@ -12,6 +12,9 @@ import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from tests.proxy_contracts.harness import child_process, connection, request, wait_ready
 from tests.proxy_contracts.scenarios import origin_server
@@ -111,10 +114,57 @@ def surfaces(instance):
     # installed root. Scan generated files, routine logs and the encrypted file.
     for path in instance.root.rglob("*"):
         if path.is_file() and path.parent.name != "bin":
-            content = path.read_bytes()
+            try:
+                content = path.read_bytes()
+            except FileNotFoundError:
+                # The proxy can atomically rename a circuit snapshot after is_file().
+                continue
             for value in (LOCAL, EXTERNAL, AUTH, DETECTED):
                 if value.encode() in content:
                     raise AssertionError(f"credential marker in generated {path.relative_to(instance.root)}")
+
+
+def test_surfaces_tolerates_atomic_snapshot_rename(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    temporary = data / ".circuit-fixture.tmp"
+    temporary.write_bytes(b"snapshot")
+    final = data / "circuits.json"
+    read_bytes = Path.read_bytes
+
+    def rename_then_read(path):
+        if path == temporary:
+            path.rename(final)
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", rename_then_read)
+    surfaces(SimpleNamespace(root=tmp_path))
+    assert final.read_bytes() == b"snapshot"
+
+
+@pytest.mark.parametrize("relative", [
+    "data/circuits.json", "generated.json", "process.log", "credentials.enc",
+    "data/.circuit-retained.tmp",
+])
+@pytest.mark.parametrize("value", [LOCAL, EXTERNAL, AUTH, DETECTED])
+def test_surfaces_detects_credentials_in_present_files(tmp_path, relative, value):
+    path = tmp_path / relative
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(value)
+    with pytest.raises(AssertionError, match="credential marker in generated"):
+        surfaces(SimpleNamespace(root=tmp_path))
+
+
+@pytest.mark.parametrize("error", [PermissionError, OSError])
+def test_surfaces_propagates_other_read_errors(tmp_path, monkeypatch, error):
+    (tmp_path / "process.log").touch()
+
+    def unreadable(_path):
+        raise error("fixture read failure")
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(error, match="fixture read failure"):
+        surfaces(SimpleNamespace(root=tmp_path))
 
 
 @contextmanager
