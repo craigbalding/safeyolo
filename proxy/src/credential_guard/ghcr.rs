@@ -161,19 +161,6 @@ impl CredentialGuard {
         context.sign().as_ref().try_into().expect("SHA256 length")
     }
 
-    pub(super) fn known_ghcr_token(&self, value: &str, now_ms: f64) -> Result<bool> {
-        if !valid_bearer(value) || !now_ms.is_finite() {
-            return Ok(false);
-        }
-        let digest = self.ghcr_digest(value);
-        let now = Instant::now();
-        let mut tokens = self.ghcr_tokens.lock().map_err(|_| Error::State)?;
-        tokens.0.retain(|token| {
-            token.retain_until > now && token.expires_at_ms.is_none_or(|expiry| expiry > now_ms)
-        });
-        Ok(tokens.0.iter().any(|token| token.digest == digest))
-    }
-
     pub(super) fn observed_ghcr_pull(
         &self,
         request: &Request<'_>,

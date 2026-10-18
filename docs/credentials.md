@@ -46,6 +46,24 @@ An allowed request receives the service's response. Bob, another destination,
 and a method or path outside the capability cannot use Alice's token. An upstream
 service can still reject a token whose vendor permissions are insufficient.
 
+## Unknown bearer credentials
+
+With the default credential controls, a nonempty `Authorization: Bearer` value
+that matches no known credential rule uses `unknown_secret`. Bearer detection
+does not depend on entropy. Short, repetitive and placeholder bearer values
+also require approval unless policy permits them. This enforces the existing
+unknown-credential requirement even when a token fails the entropy heuristic.
+The check also applies to bearer values in service requests before credential
+injection.
+
+Review the reported fingerprint and destination before granting an approval.
+An exact-token approval applies to that token and destination. A replacement
+token needs its own approval unless another applicable policy permits it.
+Token shape and claimed issuer do not establish permission. This behavior
+does not add automatic approval for Codex subscription OAuth tokens. The
+[credential controls](settings.md#named-policy-controls) retain header
+selection, exclusions, enablement and warn mode.
+
 ## Pull public images and OCI artifacts from GHCR
 
 With default credential policy, public pulls from GitHub Container Registry

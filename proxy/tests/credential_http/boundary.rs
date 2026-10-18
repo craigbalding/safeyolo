@@ -146,14 +146,15 @@ async fn repeated_h1_fields_keep_credential_decisions_and_forwarding() {
     let post = raw_exchange(&socket, &request("127.0.0.1", "POST", &cases[1])).await;
     assert!(post.starts_with(b"HTTP/1.1 428"));
     assert!(seen.lock().unwrap().is_empty());
-    // Short values remain ordinary fields even when repeated.
+    // A short Bearer value still declares a credential. Equal copies must
+    // reach the same approval path instead of bypassing it through entropy.
     let ordinary = [
         ("Authorization", "Bearer ordinary"),
         ("authorization", "Bearer ordinary"),
     ];
     let reply = raw_exchange(&socket, &request("127.0.0.1", "GET", &ordinary)).await;
-    assert!(reply.starts_with(b"HTTP/1.1 200"));
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(reply.starts_with(b"HTTP/1.1 428"));
+    assert!(seen.lock().unwrap().is_empty());
 
     // An approval for one exact value permits all its supported field forms.
     // It does not approve another value, destination, or secret header.
@@ -163,7 +164,14 @@ async fn repeated_h1_fields_keep_credential_decisions_and_forwarding() {
         &policy_path,
         policy(permissions(
             "127.0.0.1",
-            &[TOKEN, OTHER, &comma_password, &comma_key, &digest],
+            &[
+                TOKEN,
+                OTHER,
+                "ordinary",
+                &comma_password,
+                &comma_key,
+                &digest,
+            ],
         ))
         .to_string(),
     )
@@ -184,7 +192,7 @@ async fn repeated_h1_fields_keep_credential_decisions_and_forwarding() {
             "approved case {index}: status"
         );
         let requests = seen.lock().unwrap();
-        assert_eq!(requests.len(), index + 2);
+        assert_eq!(requests.len(), index + 1);
         let lines = std::str::from_utf8(requests.last().unwrap())
             .unwrap()
             .split("\r\n");

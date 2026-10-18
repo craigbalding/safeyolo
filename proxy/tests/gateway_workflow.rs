@@ -45,6 +45,7 @@ detection_level = "none"
 
 [addons.credential_guard.settings]
 use_default_credential_rules = false
+standard_auth_headers = []
 
 [addons.credential_guard.settings.entropy]
 min_length = 1000
@@ -55,6 +56,10 @@ min_length = 1000
 fn deny_refreshed_credential_policy(origin_port: u16) -> String {
     initial_policy(origin_port)
         .replace("detection_level = \"none\"", "detection_level = \"standard\"")
+        .replace(
+            "standard_auth_headers = []",
+            "standard_auth_headers = [\"authorization\", \"x-api-key\"]",
+        )
         .replace(
             "use_default_credential_rules = false",
             "use_default_credential_rules = true",
@@ -2031,6 +2036,7 @@ detection_level = "none"
 
 [addons.credential_guard.settings]
 use_default_credential_rules = false
+standard_auth_headers = []
 
 [addons.credential_guard.settings.entropy]
 min_length = 1000
@@ -3356,10 +3362,9 @@ async fn repeated_service_oauth_activity_runs_concurrently() {
 }
 
 /// A refreshed credential is checked on the actual native forwarding path. The
-/// policy uses the shipped GitHub refresh pattern and denies `credential:use`;
+/// policy denies `credential:use` for the replacement's credential type;
 /// the controlled origin must never receive a request or the replacement.
-#[tokio::test]
-async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
+async fn check_refreshed_credential_deny(replacement: &str, credential_type: &str) {
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
     for directory in ["data", "builtin", "services"] {
@@ -3385,6 +3390,8 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
     let token_seen = Arc::new(Mutex::new(Vec::new()));
     let token_task = tokio::spawn({
         let token_seen = token_seen.clone();
+        let body =
+            serde_json::to_vec(&json!({"access_token": replacement, "expires_in": 3600})).unwrap();
         async move {
             let Ok((mut stream, _)) = token_listener.accept().await else {
                 return;
@@ -3417,20 +3424,30 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
                 }
             }
             token_seen.lock().unwrap().push(request);
-            let body =
-                br#"{"access_token":"ghr_synthetic_refreshed_access_token_value_123456","expires_in":3600}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
-            let _ = stream.write_all(body).await;
+            let _ = stream.write_all(&body).await;
         }
     });
 
     std::fs::write(
         root_path.join("policy.toml"),
-        budgeted_credential_policy(origin_port),
+        budgeted_credential_policy(origin_port)
+            .replace("github-refresh:*", &format!("{credential_type}:*"))
+            // This fixture permits its minted gateway bearer separately, so
+            // the final guard evaluates the refreshed upstream credential.
+            .replace(
+                "credentials = [\"unrelated:*\"]",
+                "credentials = [\"unrelated:*\", \"fixture-gateway:*\"]",
+            )
+            + r#"
+[credentials.fixture-gateway]
+patterns = ['\Asgw_[0-9a-f]{64}\Z']
+headers = ["authorization"]
+"#,
     )
     .unwrap();
     std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
@@ -3508,7 +3525,7 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
         2,
         "each final credential gets one guard evaluation"
     );
-    assert_eq!(guard_rows[0]["evaluations"].as_array().unwrap().len(), 1);
+    assert_eq!(guard_rows[0]["evaluations"].as_array().unwrap().len(), 2);
     assert_eq!(guard_rows[1]["evaluations"].as_array().unwrap().len(), 1);
     assert!(
         !event_rows
@@ -3519,7 +3536,7 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
         &root_path.join("audit.jsonl"),
         "security.credential_guard",
         &request_id,
-        2,
+        3,
     )
     .await;
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
@@ -3528,14 +3545,36 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
             .lines()
             .filter(|line| line.contains("security.credential_guard") && line.contains(&request_id))
             .count(),
-        2,
+        3,
         "unrelated credentials are audited once despite final gateway checking"
     );
-    assert!(!audit.contains("ghr_synthetic_refreshed_access_token_value_123456"));
+    assert!(!audit.contains(replacement));
+    let finding = &guard_rows[1]["evaluations"][0]["finding"];
+    assert_eq!(finding["credential_type"], credential_type);
     let _ = stop_tx.send(());
     watcher.await.unwrap();
     origin_task.abort();
     token_task.abort();
+}
+
+#[tokio::test]
+async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
+    check_refreshed_credential_deny(
+        "ghr_synthetic_refreshed_access_token_value_123456",
+        "github-refresh",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn gateway_refreshed_unknown_bearer_use_deny_blocks_before_origin() {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    for replacement in [
+        "dev-placeholder".to_owned(),
+        format!("{}A", alphabet.repeat(2)),
+    ] {
+        check_refreshed_credential_deny(&replacement, "unknown").await;
+    }
 }
 
 /// A selected service without an auth stanza removes the gateway token and

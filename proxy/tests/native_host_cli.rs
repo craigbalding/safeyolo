@@ -306,8 +306,10 @@ fn provider_failures_have_request_correlated_reasons_and_generic_502() {
     let saved = fs::read(&record).unwrap();
     fs::create_dir_all(root.join("services")).unwrap();
     fs::write(root.join("services/alice.yaml"), "schema_version: 1\nname: alice\ndefault_host: proofspot.safeyolo.internal\ncapabilities:\n  reader:\n    routes:\n      - methods: [GET]\n        path: /api/**\n").unwrap();
+    // Permit the fixture's incoming service bearer at its provider destination
+    // so these requests reach the provider failure checks.
     fs::write(root.join("policy.toml"), format!(
-        "[hosts.\"proofspot.safeyolo.internal\"]\nservice='alice'\negress='allow'\n[hosts.\"*\"]\negress='deny'\n[agents.alice]\nagent_id='ag-11111111111111111111111111111111'\nfolder={}\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[agents.bob.services.alice]\ncapability='reader'\n", serde_json::to_string(temp.path().to_str().unwrap()).unwrap()
+        "[hosts.\"proofspot.safeyolo.internal\"]\nservice='alice'\negress='allow'\nallow=['unknown:*']\n[hosts.\"*\"]\negress='deny'\n[agents.alice]\nagent_id='ag-11111111111111111111111111111111'\nfolder={}\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[agents.bob.services.alice]\ncapability='reader'\n", serde_json::to_string(temp.path().to_str().unwrap()).unwrap()
     )).unwrap();
     let socket = root.join("bob.sock");
     let config = root.join("config.toml");

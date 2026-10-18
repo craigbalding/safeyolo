@@ -378,7 +378,7 @@ impl CredentialGuard {
     /// Safe detection evidence; no match text escapes this method.
     pub fn classify_headers(&self, headers: &[Header<'_>]) -> Result<Vec<Finding>> {
         let snapshot = self.snapshot()?;
-        self.detect(&snapshot, headers, crate::policy::current_time_ms())?
+        self.detect(&snapshot, headers)?
             .into_iter()
             .map(|mut detection| {
                 classify(&snapshot, &mut detection)?;
@@ -472,12 +472,7 @@ impl CredentialGuard {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
-    fn detect(
-        &self,
-        snapshot: &Snapshot,
-        headers: &[Header<'_>],
-        now_ms: f64,
-    ) -> Result<Vec<Detection>> {
+    fn detect(&self, snapshot: &Snapshot, headers: &[Header<'_>]) -> Result<Vec<Detection>> {
         let mut detections = Vec::<Detection>::new();
         for header in headers {
             let name = header.name.to_lowercase();
@@ -519,12 +514,12 @@ impl CredentialGuard {
                     && raw
                         .get(..7)
                         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Bearer "))
-                    && self.known_ghcr_token(value, now_ms)?
+                    && !value.is_empty()
                 {
-                    // Issuer observation proves this is a token even when its
-                    // opaque value does not pass a pattern or entropy heuristic.
-                    // Retain the normal unknown credential type for existing deny
-                    // rules; only the later origin/scope match changes the default.
+                    // The supported Bearer scheme declares a credential even
+                    // when its value fails the entropy heuristic. Classification
+                    // grants no permission: unknown values use normal policy,
+                    // approval, and audit, including explicit credential denials.
                     matched = Some((value, "unknown_secret", "high", 1));
                 }
                 if matched.is_none()
@@ -626,7 +621,7 @@ impl CredentialGuard {
             return Ok(output);
         }
         let snapshot = self.snapshot()?;
-        let detections = self.detect(&snapshot, request.headers, now_ms)?;
+        let detections = self.detect(&snapshot, request.headers)?;
         if detections.is_empty() {
             output.kind = OutcomeKind::NoDetection;
             output.trace.push(trace(
