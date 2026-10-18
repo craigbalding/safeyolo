@@ -606,7 +606,10 @@ class ConnectedJourney:
         time.sleep(0.3)
         checked = pane_screen(self.phase + "-input")
         screen = (private / (self.phase + "-input-pane.screen")).read_bytes() if checked.get("exit") == 0 else b""
-        task.update(input_readback=checked, input_visible=TASK.lower().encode() in terminal_plain(screen))
+        # Claude can insert explicit newlines and indentation even with tmux -J.
+        # Fold display whitespace only; canonical saved tasks still match TASK exactly.
+        plain = b" ".join(terminal_plain(screen).split())
+        task.update(input_readback=checked, input_visible=TASK.lower().encode() in plain)
         save()
         if not checked.get("matching_live_visible_pane") or checked["selection"] != selection or not task["input_visible"]:
             raise ValueError("Literal input readback failed; Enter was not sent and input will not be repeated.")
