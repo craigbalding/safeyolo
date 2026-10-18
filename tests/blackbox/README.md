@@ -348,6 +348,82 @@ owner's live resource does not satisfy those prechecks. Before release, retain
 exact-release-commit results for all three actual isolation mechanisms.
 Historical #640 receipts remain historical acceptance; #320 does not reopen them.
 
+## Connected public onboarding observation
+
+`ubuntu_onboarding.py` retains its unattended signed-out observation. Its
+`--connected` mode observes one authorized Ubuntu AMD64 first task and one live
+return. This is operator test tooling, not another user setup command or a
+product acceptance result.
+
+Use one newly owned OS-only Ubuntu 24.04 AMD64 host as its ordinary user.
+No SafeYolo proxy or sandbox must already run. Stage only this observer and
+`harness/process_identity.py` outside the product checkout, as in the
+`public-install` job in `.github/workflows/installed-arm64.yml`. Python and any
+outer terminal tooling are observer inputs. Preserve the product's normal
+PATH, proxy, CA settings, HOME and shipped launcher. Do not prepare product
+packages, guests, runtimes or vendor caches.
+
+The operator provisions the already authorized test account into the user's
+normal `.claude.json` and `.claude/.credentials.json` host locations. The
+operator keeps source selection, credentials and transport private. Select the
+current profile at actual use. A stored expiry or `loggedIn` value does not
+prove provider authentication. The product asks for consent and performs its
+own supported host-state copy. An ordinary user with existing supported host
+authentication does not run the test account's encryption/transport recipe.
+The account-free browser-login path is outside this connected witness.
+
+Before product execution, record the preparation already performed in a small
+nonsecret JSON input. `required_user_commands_complete` and
+`required_user_reading_complete` must be true. `commands` lists each actual
+invocation as an argument array in `command`, with `role` set to `required-user`,
+`fixture` or `observer`. Each entry needs a `reason` grounded in the ordinary
+caller or fixture recipe. Use `started_at` and `ended_at` for observed UTC
+times, or null for unknown times. Replace private operands with named inputs;
+include no credential values. `required_reading` lists objects whose `text`
+contains all required preparation prose. Use explicit empty lists when no
+commands or preparation reading were needed. Do not classify a real user
+prerequisite as fixture work. A required command increases the total even when
+the installer still uses two product commands.
+
+From the staged observer directory on that host, replace `OWNED_HOSTNAME` with
+its exact hostname. `host-preparation.json` must contain those actual operands.
+The observation directory must be new. Run in an attached foreground terminal:
+
+```sh
+python3 -I -B ubuntu_onboarding.py --host OWNED_HOSTNAME --platform linux-amd64 --connected --preparation host-preparation.json --observation-dir private-observation --observer-source FULL_OBSERVER_COMMIT
+```
+
+The observer uses bootstrap `45d8853a` and public host release
+`host-c5ce76019b6c997e282ab05cea0212b492e945d2`. It counts the displayed normal-path
+prose and setup consent, then forwards ordinary foreground input. Complete any
+vendor display choice. For a pending request, use Ctrl-b then d, `a`, the current
+request number and the displayed scope before entering `approve`. Press Enter
+to leave the picker, then Enter to return to the agent. These are interactions
+in the same product command. Do not use another CLI to inject policy or grants.
+
+When the live input display is ready and pending approvals are resolved, press
+Ctrl-] once. This is an observer trigger. The observer sends the fixed
+`index.html` task literally, waits 0.3 seconds, checks input readback, and sends
+one Enter. It then requires one saved user turn, a matching Write/tool result,
+the host file and the returned input display. It detaches and uses `q` normally,
+then repeats the launch command once and checks the same live task/session/file.
+Do not enter another task. A failed or uncertain input is preserved without
+retransmission. Authentication failure does not start login or warm retries.
+
+Only `result.json` is shared. Account screens, history contents and state hashes
+stay private. The result records preparation, command/decision/reading counts,
+sampled cold/warm boundaries, measured decision/observer/provider intervals,
+actual package/guest identities and selected state comparisons. Unknown wait
+attribution stays unknown. Whole-home/cache equality and uncaptured-process
+cleanup are not claimed. The 15-second target remains unmet pending actual
+evidence and operator disposition.
+
+Normal cleanup stops the installed agent, proxy and Coord and checks captured
+process births/listeners. After interruption, use `--cleanup-only` with the same
+host, platform and observation directory; it does not replay product input.
+The operator then removes only the new private credential copies, stops the
+exact outer fixture and releases its owned lease. Preserve the original login.
+
 ## Existing single-section entry points
 
 `run-lane.sh` remains the supported installation plus one test selection

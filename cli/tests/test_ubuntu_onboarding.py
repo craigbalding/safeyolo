@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import pty
+import shlex
 import shutil
 import signal
 import socket
@@ -42,6 +43,261 @@ class ObserverChecks(unittest.TestCase):
         m.cli.write_text('#!/bin/sh\nprintf "observer-test-version\\n"\n')
         m.cli.chmod(0o755)
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
+
+    def canonical_task(self, error=None):
+        # Keep the actual 7843 event order and Write/result identity from the
+        # reached receipt, in the Claude JSONL envelope consumed by the driver.
+        identifier = "toolu_017AuCEPFCANjcYGsxGgrTCx"
+        body = '<!DOCTYPE html><html><body><h1>Hello from SafeYolo</h1></body></html>\n'
+        rows = [{"type": "user", "uuid": "observed-user", "timestamp": "2026-10-18T14:18:16.132Z",
+                 "message": {"content": m.TASK}}]
+        if error:
+            rows.append({"type": "assistant", "message": {"content": [{"type": "text", "text": error}]}})
+        else:
+            rows.extend([
+                {"type": "assistant", "timestamp": "2026-10-18T14:18:20.471Z", "message": {"content": [
+                    {"type": "tool_use", "name": "Write", "id": identifier,
+                     "input": {"file_path": "/workspace/index.html", "content": body}}]}},
+                {"type": "user", "timestamp": "2026-10-18T14:18:20.667Z", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": identifier, "content": "File created", "is_error": False}]}},
+                {"type": "assistant", "timestamp": "2026-10-18T14:18:22.478Z", "message": {"content": [
+                    {"type": "text", "text": "Created index.html with Hello from SafeYolo"}]}}
+            ])
+        return rows, body
+
+    def test_canonical_submission_write_result_and_file_must_match_in_order(self):
+        rows, body = self.canonical_task()
+        self.assertTrue(m.task_records(rows, body)["successful_task"])
+        self.assertTrue(m.task_records(rows[:3], body)["successful_task"])
+        for changed in [rows[:2], rows[1:], [rows[0], rows[2], rows[1], rows[3]], rows + [rows[0]]]:
+            self.assertFalse(m.task_records(changed, body)["successful_task"])
+        self.assertFalse(m.task_records(rows, "unrelated existing file")["successful_task"])
+        rows[2]["message"]["content"][0]["tool_use_id"] = "other-write"
+        self.assertFalse(m.task_records(rows, body)["successful_task"])
+        rows, _ = self.canonical_task("Login expired · Please run /login")
+        self.assertEqual(m.task_records(rows, None)["errors"], ["Login expired"])
+
+    def test_real_format_partial_canonical_line_and_multiple_conversations_are_not_success(self):
+        rows, body = self.canonical_task()
+        home = m.root / "agents/first/home/.claude/projects/-workspace"
+        home.mkdir(parents=True)
+        transcript = home / "session.jsonl"
+        transcript.write_text("".join(json.dumps(row) + "\n" for row in rows[:2]) + json.dumps(rows[2]))
+        (m.project / "index.html").write_text(body)
+        self.assertFalse(m.task_observation({})["successful_task"])
+        with transcript.open("a") as output:
+            output.write("\n")
+        self.assertTrue(m.task_observation({})["successful_task"])
+        (home / "other.jsonl").write_bytes(transcript.read_bytes())
+        self.assertFalse(m.task_observation({})["successful_task"])
+
+    def test_preparation_counts_do_not_hide_required_commands_or_count_fixture_auth_as_product(self):
+        start = {"at": "2026-10-18T14:00:00+00:00", "monotonic": 100}
+        ready = {"at": "2026-10-18T14:01:00+00:00", "monotonic": 160}
+        m.x.update(started=start, product_commands=[{**start, "role": "product"},
+            {**start, "phase": "cold", "connected_ready": ready}])
+        preparation = m.private / "preparation.json"
+        data = {"required_user_commands_complete": True, "required_user_reading_complete": True, "required_reading": [], "commands": [
+            {"role": "fixture", "command": ["openssl", "cms", "<private input>"],
+             "reason": "Provision the already authorized test account into normal host locations",
+             "started_at": "2026-10-18T13:58:00+00:00", "ended_at": "2026-10-18T13:59:00+00:00"}]}
+        preparation.write_text(json.dumps(data))
+        m.preparation_accounting(preparation)
+        m.record_reading("cold", "host consent", b"PRIVATE_ACCOUNT_SCREEN three words")
+        m.connected_accounting()
+        self.assertEqual(m.x["counts"]["total_required_user_commands_to_first_task"], 2)
+        self.assertEqual(m.x["counts"]["fixture_preparation_commands"], 1)
+        self.assertEqual(m.x["timings"]["cold_total_to_first_task_seconds"], 60)
+        self.assertNotIn("PRIVATE_ACCOUNT_SCREEN", m.out.read_text())
+        data["commands"].append({"role": "required-user", "command": ["required-helper"],
+            "reason": "Actual missing prerequisite", "started_at": "2026-10-18T13:59:00+00:00",
+            "ended_at": "2026-10-18T13:59:30+00:00"})
+        preparation.write_text(json.dumps(data))
+        m.preparation_accounting(preparation)
+        m.connected_accounting()
+        self.assertEqual(m.x["counts"]["total_required_user_commands_to_first_task"], 3)
+        self.assertEqual(m.x["timings"]["cold_total_to_first_task_seconds"], 120)
+        data["required_user_commands_complete"] = False
+        preparation.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            m.preparation_accounting(preparation)
+
+    def test_provider_wait_projection_keeps_only_actual_nonsecret_operands_and_unknowns(self):
+        logs = m.root / "logs"
+        logs.mkdir()
+        rows = [{"event": "traffic.request", "host": "api.anthropic.com", "request_id": "req-1", "ts": "first"},
+                {"event": "traffic.response", "host": "api.anthropic.com", "request_id": "req-1", "ts": "last",
+                 "details": {"ms": 3000, "status": 200, "private": "PRIVATE_HEADER"}},
+                {"event": "traffic.request", "host": "mcp-proxy.anthropic.com", "request_id": "req-2", "ts": "open"}]
+        (logs / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        observed = m.provider_intervals()
+        self.assertEqual(observed["responses"][0]["recorded_duration_ms"], 3000)
+        self.assertEqual(observed["requests_without_response"], {"req-2": "open"})
+        self.assertNotIn("PRIVATE_", json.dumps(observed))
+
+    def test_connected_main_accepts_existing_host_auth_and_binds_the_public_package(self):
+        home = Path(self.scratch.name) / "normal-host"
+        (home / ".claude").mkdir(parents=True)
+        for path in [home / ".claude.json", home / ".claude/.credentials.json"]:
+            path.write_text("PRIVATE_AUTH_SENTINEL")
+        preparation = home / "preparation.json"
+        preparation.write_text(json.dumps({"required_user_commands_complete": True,
+            "required_user_reading_complete": True, "commands": [], "required_reading": []}))
+        original = os.uname()
+        uname = os.uname_result((*original[:4], "x86_64"))
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
+                       and key not in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]}
+        argv = [m.__file__, "--host", original.nodename, "--platform", "linux-amd64", "--connected",
+                "--preparation", str(preparation), "--observation-dir", str(home / "private")]
+        with patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
+             patch.object(m.os, "uname", autospec=True, return_value=uname), patch.dict(os.environ, environment, clear=True), \
+             patch.object(sys.stdin, "isatty", autospec=True, return_value=True), patch.object(sys.stdout, "isatty", autospec=True, return_value=True), \
+             patch.object(m, "processes", autospec=True, return_value=[]), patch.object(m, "listeners", autospec=True, return_value=[]), \
+             patch.object(m, "connected_run", autospec=True, side_effect=ValueError("controlled stop before product execution")) as run:
+            self.assertEqual(m.main(), 1)
+        run.assert_called_once()
+        record = json.loads((home / "private/result.json").read_text())
+        self.assertNotIn("baseline_unavailable", record)
+        self.assertEqual(record["native_source"], m.CONNECTED_SOURCE)
+        self.assertEqual(record["expected_host_package"]["bytes"], 191260514)
+        self.assertEqual(record["product_commands"], [])
+        self.assertEqual((home / ".claude/.credentials.json").read_text(), "PRIVATE_AUTH_SENTINEL")
+        self.assertNotIn("PRIVATE_AUTH_SENTINEL", json.dumps(record))
+
+    def test_foreground_public_approval_input_retains_the_displayed_scope_without_secret_text(self):
+        row = {}
+        journey = m.ConnectedJourney("cold", row)
+        read_fd, write_fd = os.pipe()
+        try:
+            pending = (b'Request: credential-request\nStatus: pending\n'
+                b'SafeYolo effect: Allow the selected credential for mcp-proxy.anthropic.com only\n'
+                b'Helper reason (untrusted text): "PRIVATE_REASON"\n'
+                b'approve / reject / Enter to leave unchanged: ')
+            with patch.object(m, "pane_screen", autospec=True, return_value={"matching_live_visible_pane": False}):
+                journey.forward(write_fd, b"approve\r", pending)
+                journey.forward(write_fd, b"\x1b]10;rgb:1111/2222/3333\x07", pending)
+            self.assertEqual(os.read(read_fd, 1024), b"approve\r\x1b]10;rgb:1111/2222/3333\x07")
+            self.assertEqual(len(m.x["interactions"]), 1)
+            interaction = m.x["interactions"][0]
+            self.assertEqual(interaction["displayed_approval"]["status"], "pending")
+            self.assertIn("mcp-proxy.anthropic.com only", interaction["displayed_approval"]["effect"])
+            self.assertTrue(interaction["classification_complete"])
+            self.assertNotIn("PRIVATE_REASON", m.out.read_text())
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
+    def connected_console(self, error=None, echo=True, uncertain_literal=False):
+        """Run the actual driver through a real PTY, tmux, literal input and JSONL producer."""
+        binary = shutil.which("tmux")
+        if binary is None:
+            self.skipTest("foreground connected check requires tmux")
+        bin_dir = m.root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / "tmux").symlink_to(binary)
+        (bin_dir / "safeyolo").symlink_to(m.cli)
+        (m.project / "onboarding-fixture.txt").unlink()
+        rows, body = self.canonical_task(error)
+        harness = m.private / "harness.py"
+        canonical = m.root / "agents/first/home/.claude/projects/-workspace/session.jsonl"
+        canonical.parent.mkdir(parents=True)
+        harness.write_text("import json,sys,time,termios\n"
+            + ("state=termios.tcgetattr(0);state[3]&=~termios.ECHO;termios.tcsetattr(0,termios.TCSANOW,state)\n" if not echo else "")
+            + "print('Claude Code\\n❯ ',end='',flush=True)\n"
+            + "task=sys.stdin.readline().strip()\n"
+            + f"assert task=={m.TASK!r}\nrows={rows!r}\n"
+            + f"open({str(canonical)!r},'w').write(''.join(json.dumps(row)+'\\n' for row in rows))\n"
+            + (f"open({str(m.project / 'index.html')!r},'w').write({body!r})\n" if not error else "")
+            + f"print({(error or 'index.html: Hello from SafeYolo')!r},flush=True)\n"
+            + "print('❯ ',end='',flush=True)\n"
+            + "while sys.stdin.readline():pass\n")
+        socket_path = str(m.root / "tmux.sock")
+        tm = [binary, "-S", socket_path]
+        wrapper = m.private / "launch.py"
+        wrapper.write_text("import json,os,subprocess,sys\n"
+            f"tm={tm!r}\nrecord={str(m.root / 'agents/first/current-launch.json')!r}\n"
+            "if not os.path.exists(record):\n"
+            + " for prompt in ['Allow these host changes? [y/N]', 'Run this setup and share this workspace? [y/N]', 'Copy this selected host authentication and settings? [y/N]']:\n"
+            + "  print('Actual consent prose: '+prompt,flush=True);assert sys.stdin.readline().strip()=='y'\n"
+            + f" pane=subprocess.check_output(tm+['-f','/dev/null','new-session','-d','-x','120','-y','30','-P','-F','#{{pane_id}}','-s','public',{shlex.join([sys.executable,str(harness)])!r}],text=True).strip()\n"
+            + " subprocess.run(tm+['set-option','-p','-t',pane,'@safeyolo_launch_id','launch-connected'],check=True)\n"
+            + f" open(record,'w').write(json.dumps({{'tmux_socket':{socket_path!r},'tmux_session':'public','pane_id':pane,'launch_id':'launch-connected'}}))\n"
+            + "subprocess.run(tm+['attach-session','-t','public'],check=True)\n"
+            + "print('SafeYolo host> ',end='',flush=True);assert sys.stdin.readline().strip()=='q'\n")
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        self.addCleanup(os.close, write_fd)
+        self.addCleanup(lambda: subprocess.run([*tm, "kill-server"], capture_output=True))
+        trigger = ("import os,subprocess,sys,time\n"
+            f"tm={tm!r}\ndeadline=time.monotonic()+8\n"
+            "while time.monotonic()<deadline:\n"
+            " facts=subprocess.run(tm+['display-message','-p','-t','public','#{pane_dead} #{window_active} #{pane_active} #{session_attached}'],capture_output=True,text=True)\n"
+            " screen=subprocess.run(tm+['capture-pane','-p','-t','public'],capture_output=True)\n"
+            f" if facts.stdout.strip()=='0 1 1 1' and '❯'.encode() in screen.stdout:os.write({write_fd},b'\\x1d');sys.exit(0)\n"
+            " time.sleep(.05)\n"
+            "sys.exit('No live attached input pane')\n")
+        worker = subprocess.Popen([sys.executable, "-c", trigger], pass_fds=[write_fd], stderr=subprocess.PIPE)
+        run = subprocess.run
+        def send_once(command, **kwargs):
+            result = run(command, **kwargs)
+            if uncertain_literal and "send-keys" in command and "-l" in command:
+                raise subprocess.TimeoutExpired(command, 3)
+            return result
+        try:
+            with patch.object(m, "LAUNCH", [sys.executable, str(wrapper)]), \
+                 patch.object(m.Path, "home", autospec=True, return_value=Path(self.scratch.name)), \
+                 patch.object(m.subprocess, "run", autospec=True, side_effect=send_once), \
+                 patch.dict(os.environ, {"PATH": str(bin_dir) + ":" + os.environ["PATH"]}):
+                cold, _ = m.entered("cold", 10, connected=True, operator_fd=read_fd)
+                warm = None
+                if cold.get("connected_ready"):
+                    warm, _ = m.entered("warm", 5, connected=True, operator_fd=read_fd)
+            self.assertEqual(worker.wait(timeout=9), 0, worker.stderr.read().decode())
+            return cold, warm, canonical
+        finally:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.wait(timeout=3)
+            worker.stderr.close()
+
+    def test_real_foreground_connected_driver_submits_once_and_returns_without_another_task(self):
+        cold, warm, canonical = self.connected_console()
+        self.assertEqual(cold["task_input"]["literal_transmissions"], 1)
+        self.assertTrue(cold["task_input"]["input_visible"])
+        self.assertEqual(cold["task_input"]["facts_before_input"][1:], ["0", "1", "1", "1"])
+        self.assertIn("connected_ready", cold)
+        self.assertIn("connected_ready", warm)
+        self.assertEqual(cold["exit_code"], 0)
+        self.assertEqual(warm["exit_code"], 0)
+        self.assertNotIn("task_input", warm)
+        self.assertEqual(len([row for row in map(json.loads, canonical.read_text().splitlines())
+                              if row.get("message", {}).get("content") == m.TASK]), 1)
+        self.assertTrue(all(row["task_observation"]["successful_task"] for row in [cold, warm]))
+        self.assertEqual([i["answer"] for i in m.x["interactions"] if i.get("prompt")], ["y", "y", "y"])
+
+    def test_real_foreground_expired_login_keeps_submission_and_never_runs_a_warm_task(self):
+        cold, warm, canonical = self.connected_console(error="Login expired · Please run /login")
+        self.assertIsNone(warm)
+        self.assertIn("connected_failure", cold)
+        self.assertEqual(len(cold["task_observation"]["conversations"][0]["users"]), 1)
+        self.assertFalse((m.project / "index.html").exists())
+        self.assertEqual(len(canonical.read_text().splitlines()), 2)
+
+    def test_real_foreground_missing_literal_readback_does_not_send_enter(self):
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.connected_console(echo=False)
+        row = m.x["product_commands"][-1]
+        self.assertEqual(row["task_input"]["literal_transmissions"], 1)
+        self.assertNotIn("enter_attempted", row["task_input"])
+        self.assertNotIn("observer_error", row)
+
+    def test_real_foreground_uncertain_literal_effect_is_unknown_and_never_replayed(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.connected_console(uncertain_literal=True)
+        row = m.x["product_commands"][-1]
+        self.assertIsNone(row["task_input"]["literal_transmissions"])
+        self.assertNotIn("enter_attempted", row["task_input"])
+        self.assertEqual(m.x["observer_tmux_commands"]["send-keys"], 1)
 
     def test_banner_is_not_readiness_even_when_chunk_ends_at_sign_in(self):
         for banner in [b"SafeYolo: Claude Code is installed; opening the session. Sign in",

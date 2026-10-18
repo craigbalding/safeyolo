@@ -8,6 +8,10 @@ The two product commands retain the normal PATH, proxy, CA and shipped harness.
 Only result.json may be uploaded. Terminal screens and state hashes stay private.
 Use --cleanup-only after an interrupted attempt on this same owned host.
 The observer owns its attempted installation; it borrows the runner and its tools.
+The default endpoint is signed out. --connected adds one foreground first task
+and live return, with --preparation supplying actual prior accounting operands.
+In connected mode, Ctrl-] triggers the fixed task once; other input stays in the
+normal product terminal. The observer never signs in or retries a task.
 """
 
 import argparse
@@ -29,6 +33,7 @@ import subprocess
 import sys
 import termios
 import time
+import tty
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,6 +48,18 @@ PACKAGES = {
                     "sha256": "eab9b709b3e4c6b536614eeb6b422d12c2b55826149085f78c326b31637922af"},
 }
 RELEASE = "host-" + SOURCE
+CONNECTED_SOURCE = "c5ce76019b6c997e282ab05cea0212b492e945d2"
+CONNECTED_PACKAGE = {"machine": "x86_64", "bytes": 191260514,
+                     "sha256": "811a20c1fa75d081504b9bfa3a7766bb3c2df6e55f4740742243ad24bc217538"}
+TASK = ('Create /workspace/index.html as a complete HTML page with the heading '
+        '"Hello from SafeYolo". Use no external dependencies.')
+CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 AMD64 with curl and bash. "
+    "Use an ordinary account. Review the requested host changes and workspace access before consenting. "
+    "If you already use Claude, you can consent to copy its selected host authentication. "
+    "Otherwise, use Claude's supported login when prompted. "
+    "Ctrl-b then d opens SafeYolo's host controls. Use a to inspect pending requests and their scope before approving. "
+    "Press Enter to return. After the first task, detach and use q to keep the session. "
+    "Repeat the second command to return to it.")
 DOWNLOAD = ["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
             "--output", "install-safeyolo.sh",
             f"https://raw.githubusercontent.com/craigbalding/safeyolo/{BOOTSTRAP}/install.sh"]
@@ -87,6 +104,17 @@ def save():
     out.write_text(json.dumps(x, indent=2) + "\n")
 
 
+def record_reading(phase, kind, data):
+    """Count the presented text, retaining account screens only in private files."""
+    plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data).decode(errors="replace")
+    rows = x.setdefault("required_reading", [])
+    name = f"reading-{len(rows)}.txt"
+    (private / name).write_text(plain)
+    rows.append({"phase": phase, "kind": kind, "words": len(plain.split()),
+                 "private_file": name, "count_method": "whitespace-separated displayed tokens", **stamp()})
+    save()
+
+
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -118,8 +146,8 @@ def birth(pid):
     return process_start_token(pid)
 
 
-def observe(label, args, timeout=20, private_output=False):
-    row = {"label": label, "command": list(map(str, args)), **stamp()}
+def observe(label, args, timeout=20, private_output=False, role="observer"):
+    row = {"label": label, "role": role, "command": list(map(str, args)), **stamp()}
     x["observations"].append(row)
     save()
     try:
@@ -415,14 +443,18 @@ def pane_screen(phase):
     if not launch.get("tmux_socket") or not re.fullmatch(r"%\d+", launch.get("pane_id") or ""):
         return {"unavailable": "No recorded tmux socket/pane", **stamp()}
     command = [str(root / "bin/tmux"), "-S", launch["tmux_socket"]]
+    counts = x.setdefault("observer_tmux_commands", {})
+    counts["display-message"] = counts.get("display-message", 0) + 1
     facts = subprocess.run([*command, "display-message", "-p", "-t", launch["pane_id"],
         "#{@safeyolo_launch_id}\t#{pane_dead}\t#{window_active}\t#{pane_active}\t#{session_attached}"],
         capture_output=True, timeout=2)
     values = facts.stdout.decode(errors="replace").strip().split("\t")
     visible = (facts.returncode == 0 and len(values) == 5 and values[:4] == [launch.get("launch_id"), "0", "1", "1"]
                and values[4].isdigit() and int(values[4]) > 0)
-    row = {"facts_exit": facts.returncode, "matching_live_visible_pane": visible, **stamp()}
+    row = {"facts_exit": facts.returncode, "matching_live_visible_pane": visible,
+           "selection": launch, "facts": values, **stamp()}
     if visible:
+        counts["capture-pane"] = counts.get("capture-pane", 0) + 1
         screen = subprocess.run([*command, "capture-pane", "-p", "-e", "-J", "-t", launch["pane_id"]],
                                 capture_output=True, timeout=2)
         (private / (phase + "-pane.screen")).write_bytes(screen.stdout)
@@ -431,7 +463,191 @@ def pane_screen(phase):
     return row
 
 
-def witness(phase, start_marker=False):
+def conversation_offsets():
+    return {str(p): p.stat().st_size for p in (root / "agents/first/home/.claude/projects").glob("*/*.jsonl")}
+
+
+def task_records(records, host_content):
+    """Project the reached Claude JSONL format without exporting message contents."""
+    users, writes, results, errors = [], [], [], []
+    active = False
+    for index, event in enumerate(records):
+        message = event.get("message", {})
+        content = message.get("content", [])
+        blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        texts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        if event.get("type") == "user" and texts and not event.get("isMeta"):
+            exact = texts == [TASK]
+            users.append({"uuid": event.get("uuid"), "timestamp": event.get("timestamp"), "exact_task": exact})
+            active |= exact
+        if not active:
+            continue
+        for label in ["Login expired", "API Error: 401", "API Error: 428"]:
+            if any(label in value for value in texts) and label not in errors:
+                errors.append(label)
+        for block in blocks:
+            if event.get("type") == "assistant" and block.get("type") == "tool_use" and block.get("name") == "Write":
+                operand = block.get("input", {})
+                writes.append({"id": block.get("id"), "timestamp": event.get("timestamp"), "event_index": index,
+                    "target_matches": operand.get("file_path") == "/workspace/index.html",
+                    "content_matches_host": host_content is not None and operand.get("content") == host_content})
+            if event.get("type") == "user" and block.get("type") == "tool_result":
+                results.append({"tool_use_id": block.get("tool_use_id"), "timestamp": event.get("timestamp"), "event_index": index,
+                                "is_error": block.get("is_error", False)})
+    matched = [w["id"] for w in writes if w["id"] and w["target_matches"] and w["content_matches_host"]
+               and any(r["tool_use_id"] == w["id"] and r["is_error"] is False
+                       and w["event_index"] < r["event_index"] for r in results)]
+    return {"users": users, "writes": writes, "tool_results": results, "errors": errors,
+            "matching_write_result_ids": matched,
+            "successful_task": len(users) == 1 and users[0]["exact_task"] and bool(matched)}
+
+
+def task_observation(offsets):
+    file = project / "index.html"
+    content = file.read_text() if file.is_file() else None
+    conversations = []
+    for path in (root / "agents/first/home/.claude/projects").glob("*/*.jsonl"):
+        with path.open("rb") as stream:
+            stream.seek(offsets.get(str(path), 0))
+            data = stream.read()
+        # An in-progress final line is not a complete canonical event yet.
+        lines = data.splitlines(keepends=True)
+        records = [json.loads(line) for line in lines if line.endswith(b"\n")]
+        if any(record.get("type") == "user" and
+               (record.get("message", {}).get("content") == TASK or
+                record.get("message", {}).get("content") == [{"type": "text", "text": TASK}]) for record in records):
+            conversations.append({"file": str(path.relative_to(root)), **task_records(records, content)})
+    complete = (len(conversations) == 1 and conversations[0]["successful_task"] and content is not None
+                and bool(re.search(r"<h1\b[^>]*>\s*Hello from SafeYolo\s*</h1>", content, re.I))
+                and "</html>" in content.lower())
+    return {"conversations": conversations, "file_present": content is not None,
+            "file_bytes": file.stat().st_size if content is not None else None,
+            "successful_task": complete, **stamp()}
+
+
+class ConnectedJourney:
+    """One foreground task and one live return through the existing launch driver."""
+
+    def __init__(self, phase, row):
+        self.phase, self.row = phase, row
+        self.input = b""
+        self.screen = b""
+        self.pane = {}
+        self.sent = False
+        self.decision_seen = None
+        baseline = private / "conversation-offsets.json"
+        if phase == "cold":
+            self.offsets = conversation_offsets()
+            baseline.write_text(json.dumps(self.offsets))
+        else:
+            self.offsets = read_json(baseline)
+
+    def poll(self):
+        self.pane = pane_screen(self.phase)
+        self.row["pane_screen"] = self.pane
+        if not self.pane.get("matching_live_visible_pane") or self.pane.get("exit") != 0:
+            return False
+        self.screen = (private / (self.phase + "-pane.screen")).read_bytes()
+        plain = terminal_plain(self.screen)
+        task = task_observation(self.offsets)
+        if task["file_present"] and "host_file_first_seen" not in self.row:
+            self.row["host_file_first_seen"] = {"previous_sample": self.row.get("last_task_sample"), **stamp()}
+        if any(c["users"] for c in task["conversations"]) and "canonical_submission_first_seen" not in self.row:
+            self.row["canonical_submission_first_seen"] = stamp()
+        self.row["last_task_sample"] = stamp()
+        self.row["task_observation"] = task
+        if b"login expired" in plain or (self.sent and b"api error: 401" in plain):
+            self.row["connected_failure"] = "Observed provider authentication failure; no task or login retry."
+            return True
+        if self.phase == "cold" and self.sent and time.monotonic() - self.row["task_input"]["enter_attempted"]["monotonic"] > 20:
+            if not any(c["users"] for c in task["conversations"]):
+                self.row["connected_failure"] = "Enter was sent, but canonical submission was not observed; no retransmission."
+                return True
+        if self.input_ready() and task["successful_task"]:
+            if b"index.html" in plain and b"hello from safeyolo" in plain:
+                self.row["connected_ready"] = stamp()
+                return True
+        return False
+
+    def input_ready(self):
+        plain = terminal_plain(self.screen)
+        # This identifies an input display, not working provider authentication.
+        return (self.pane.get("matching_live_visible_pane") and "❯".encode() in plain
+                and not login_label(self.screen) and b"esc to interrupt" not in plain)
+
+    def submit(self):
+        if self.phase != "cold" or self.sent or self.row.get("task_input"):
+            raise ValueError("This journey permits one task transmission and no warm task.")
+        self.poll()
+        if not self.input_ready():
+            raise ValueError("Task input requires the selected live, active, attached input pane.")
+        selection = self.pane["selection"]
+        command = [str(root / "bin/tmux"), "-S", selection["tmux_socket"]]
+        task = {"text": TASK, "selection": selection, "facts_before_input": self.pane["facts"],
+                "literal_attempted": stamp(), "literal_transmissions": None}
+        self.row["task_input"] = task
+        x.setdefault("observer_tmux_commands", {}).setdefault("send-keys", 0)
+        x["observer_tmux_commands"]["send-keys"] += 1
+        save()  # Save intent before either uncertain external input effect.
+        subprocess.run([*command, "send-keys", "-t", selection["pane_id"], "-l", TASK], check=True, timeout=3)
+        task["literal_transmissions"] = 1
+        time.sleep(0.3)
+        checked = pane_screen(self.phase + "-input")
+        screen = (private / (self.phase + "-input-pane.screen")).read_bytes() if checked.get("exit") == 0 else b""
+        task.update(input_readback=checked, input_visible=TASK.lower().encode() in terminal_plain(screen))
+        save()
+        if not checked.get("matching_live_visible_pane") or checked["selection"] != selection or not task["input_visible"]:
+            raise ValueError("Literal input readback failed; Enter was not sent and input will not be repeated.")
+        task["enter_attempted"] = stamp()
+        x["observer_tmux_commands"]["send-keys"] += 1
+        save()
+        subprocess.run([*command, "send-keys", "-t", selection["pane_id"], "Enter"], check=True, timeout=3)
+        self.sent = True
+        task["enter_sent"] = stamp()
+        save()
+
+    def forward(self, fd, data, pending):
+        # tmux asks the outer terminal for colours, attributes and cursor
+        # position. Forward its replies without counting them as human choices.
+        keys = re.sub(rb"\x1b\](?:10|11);[^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-9;?=>]*[cR]|\x1bP>\|.*?\x1b\\", b"", data)
+        if not keys:
+            os.write(fd, data)
+            return
+        if b"\x1d" in keys:
+            if keys != b"\x1d" or keys != data:
+                raise ValueError("Send the observer task trigger alone; mixed input was preserved without forwarding.")
+            self.submit()
+            return
+        if not self.input:
+            self.decision_seen = stamp()
+            current = pane_screen(self.phase + "-decision")
+            screen = ((private / (self.phase + "-decision-pane.screen")).read_bytes()
+                      if current.get("exit") == 0 else pending)
+            record_reading(self.phase, "foreground decision screen", screen)
+        self.input += keys
+        if b"\r" in data or b"\n" in data or b"\x02d" in self.input:
+            answer = self.input.strip(b"\r\n")
+            known = {b"": "Enter", b"a": "a", b"q": "q", b"approve": "approve", b"reject": "reject",
+                     b"\x02d": "Ctrl-b d", b"\x1b[B": "Down, Enter", b"\x1b[A": "Up, Enter"}
+            public = known.get(answer, "request number" if answer.isdigit() else "private/unclassified input")
+            interaction = {"phase": self.phase, "kind": "foreground operator input", "answer": public,
+                "bytes": len(self.input), "seen": self.decision_seen, "sent": stamp(),
+                "classification_complete": public != "private/unclassified input"}
+            if public in {"approve", "reject"}:
+                plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", pending)
+                views = re.findall(rb"Request: ([^\r\n]+)\r?\nStatus: ([^\r\n]+)\r?\nSafeYolo effect: ([^\r\n]+)", plain)
+                if views:
+                    identifier, status, effect = views[-1]
+                    interaction["displayed_approval"] = {"request_id": identifier.decode(), "status": status.decode(), "effect": effect.decode()}
+                else:
+                    interaction["classification_complete"] = False
+            x["interactions"].append(interaction)
+            self.input = b""
+            save()
+        os.write(fd, data)
+
+
+def witness(phase, start_marker=False, connected=False):
     deadline = time.monotonic() + 90
     row = {**stamp()}
     x[phase] = row
@@ -442,6 +658,9 @@ def witness(phase, start_marker=False):
     capture(row, "terminal_attachment", lambda: terminal_attachment(phase, row["launch"]))
     capture(row, "processes", processes)
     capture(row, "listeners", lambda: listeners(row.get("processes", [])))
+    if connected:
+        capture(row, "task", lambda: task_observation(read_json(private / "conversation-offsets.json")))
+        return snapshot_state(phase, row, connected=True)
     if start_marker:
         code = ("nohup sh -c 'echo $$ > /workspace/.onboarding239.pid; while :; do "
                 "date +%s > /workspace/.onboarding239.heartbeat; sleep 1; done' "
@@ -466,17 +685,32 @@ def witness(phase, start_marker=False):
         # These direct controls execute ONLY in this owned product guest.
         row["network"].append(network_probe(phase, label, code, deadline))
         save()
+    return snapshot_state(phase, row)
+
+
+def snapshot_state(phase, row, connected=False):
     capture(row, "guest_selection", lambda: read_json(root / "share/guest-selection.json"))
     state = {}
     # These hashes stay private. A failed read must not erase the other operands.
-    for path in PUBLIC_STATE + PRIVATE_STATE + OPTIONAL_PRIVATE_STATE:
+    paths = PUBLIC_STATE + PRIVATE_STATE + OPTIONAL_PRIVATE_STATE
+    if connected:
+        paths += ["agents/first/home/.claude.json", "agents/first/home/.claude/settings.json"]
+    for path in paths:
         try:
             state[path] = digest(root / path) if (root / path).is_file() else None
         except OSError as error:
             row.setdefault("state_observation_errors", {})[path] = str(error)
+    if connected:
+        for path in [".claude.json", ".claude/.credentials.json"]:
+            source = Path.home() / path
+            key = "host-state/" + path
+            try:
+                state[key] = digest(source) if source.is_file() else None
+            except OSError as error:
+                row.setdefault("state_observation_errors", {})[key] = str(error)
     (private / (phase + "-state-hashes.json")).write_text(json.dumps(state))
     row["selected_public_state_present"] = [p for p in PUBLIC_STATE if state.get(p)]
-    row["selected_private_state_present"] = [p for p in PRIVATE_STATE + OPTIONAL_PRIVATE_STATE if state.get(p)]
+    row["selected_private_state_present"] = [p for p in state if p not in PUBLIC_STATE and state.get(p)]
     row["ended"] = stamp()
     save()
     return state
@@ -578,8 +812,8 @@ def stop_console_group(pid, row):
     save()
 
 
-def entered(phase, seconds):
-    row = {"command": LAUNCH, "phase": phase, **stamp()}
+def entered(phase, seconds, connected=False, operator_fd=None):
+    row = {"command": LAUNCH, "role": "product", "phase": phase, **stamp()}
     row["post_return_diagnostics"] = [["command", "-v", "safeyolo"], ["safeyolo", "--version"]]
     x["product_commands"].append(row)
     save()
@@ -587,6 +821,7 @@ def entered(phase, seconds):
     script = (shlex.join(LAUNCH) + '\nresult=$?\nprintf "\\nSY239_COMMAND_EXIT=%s\\n" "$result"\n'
               'printf "SY239_DISCOVERY_BEGIN\\n"\ncommand -v safeyolo\nprintf "SY239_DISCOVERY_EXIT=%s\\n" "$?"\n'
               'printf "SY239_VERSION_BEGIN\\n"\nsafeyolo --version\nprintf "SY239_VERSION_EXIT=%s\\n" "$?"\nexit "$result"\n')
+    journey = ConnectedJourney(phase, row) if connected else None
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(project)
@@ -604,11 +839,23 @@ def entered(phase, seconds):
     terminal_open = True
     completed = set()
     states = None
+    old_terminal = None
+    connected_done = False
     try:
+        if connected and operator_fd is None:
+            operator_fd = sys.stdin.fileno()
+            old_terminal = termios.tcgetattr(operator_fd)
+            tty.setraw(operator_fd)
         with (private / (phase + ".terminal")).open("wb") as log:
             while True:
                 sample_files(phase)
-                if select.select([fd] if terminal_open else [], [], [], 0.25)[0]:
+                ready = select.select(([fd] if terminal_open else []) + ([operator_fd] if connected else []), [], [], 0.25)[0]
+                if connected and operator_fd in ready:
+                    data = os.read(operator_fd, 1024)
+                    if not data:
+                        raise EOFError("Foreground operator input closed; preserve the reached journey without retry.")
+                    journey.forward(fd, data, pending)
+                if fd in ready:
                     try:
                         chunk = os.read(fd, 65536)
                     except OSError as error:
@@ -619,6 +866,8 @@ def entered(phase, seconds):
                     if chunk:
                         log.write(chunk)
                         log.flush()
+                        if connected:
+                            os.write(sys.stdout.fileno(), chunk)
                         pending = (pending + chunk)[-60000:]
                     else:
                         terminal_open = False
@@ -631,10 +880,12 @@ def entered(phase, seconds):
                 for label, prompt, answer in [
                     ("host", "Allow these host changes? [y/N]", "y\n"),
                     ("setup", "Run this setup and share this workspace? [y/N]", "y\n"),
-                    ("auth", "Copy this selected host authentication and settings? [y/N]", "n\n"),
+                    ("auth", "Copy this selected host authentication and settings? [y/N]", "y\n" if connected else "n\n"),
                 ]:
                     if terminal_open and label not in completed and prompt.encode() in pending:
                         seen = stamp()
+                        if connected:
+                            record_reading(phase, label + " consent", pending)
                         os.write(fd, answer.encode())
                         x["interactions"].append({"phase": phase, "prompt": prompt,
                                                   "answer": answer.strip(), "seen": seen, "sent": stamp()})
@@ -644,15 +895,20 @@ def entered(phase, seconds):
                 theme = theme_prompt(pending)
                 if terminal_open and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
                     seen = stamp()
+                    if connected:
+                        record_reading(phase, "guest display choice", pending)
                     os.write(fd, b"\r")
                     x["interactions"].append({"phase": phase, "kind": "guest display choice",
                         "prompt": theme, "answer": "Enter (default theme)", "seen": seen, "sent": stamp()})
                     completed.add("theme")
                     pending = b""
                     save()
-                labels = login_label(pending)
+                labels = login_label(pending) if not connected else []
                 label_source = "host-terminal-output"
-                if terminal_open and not captured and not labels and time.monotonic() >= next_pane_read:
+                if connected and terminal_open and not captured and time.monotonic() >= next_pane_read:
+                    connected_done = journey.poll()
+                    next_pane_read = time.monotonic() + 0.5
+                if not connected and terminal_open and not captured and not labels and time.monotonic() >= next_pane_read:
                     # Reentry need not emit the old prompt again. Read the current
                     # visible screen, without treating wrapper text or liveness as readiness.
                     capture(row, "pane_screen", lambda: pane_screen(phase))
@@ -660,26 +916,33 @@ def entered(phase, seconds):
                     labels = row["pane_screen"].get("labels", [])
                     label_source = "attached-pane-screen"
                 expired = time.monotonic() >= deadline
-                if terminal_open and not captured and (labels or expired):
+                if terminal_open and not captured and (labels or connected_done or expired):
                     if labels:
                         row["signed_out_label"] = {"labels": labels, "source": label_source, **stamp()}
-                    else:
+                    elif not row.get("connected_ready"):
                         row["readiness_unclassified_at_deadline"] = stamp()
                     save()
                     started = time.monotonic()
                     captured = True
-                    states = witness("before-return" if phase == "cold" else "after-reentry", phase == "cold")
+                    states = witness("before-return" if phase == "cold" else "after-reentry", phase == "cold" and not connected,
+                                     **({"connected": True} if connected else {}))
                     row["capture_seconds"] = time.monotonic() - started
                     # Capture precedes detach even for an unclassified UI.
                     os.write(fd, b"\x02d")
                     detached = True
                     row["viewer_detach"] = stamp()
+                    if connected:
+                        x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
                     pending = b""
                     deadline = time.monotonic() + 30
                     save()
                 if terminal_open and detached and b"SafeYolo host> " in pending and "q" not in completed:
+                    if connected:
+                        record_reading(phase, "host return controls", pending)
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
+                    if connected:
+                        x["interactions"].append({"phase": phase, "kind": "keep session and exit", "answer": "q", "sent": stamp()})
                     completed.add("q")
                     pending = b""
                     save()
@@ -697,10 +960,13 @@ def entered(phase, seconds):
                 if time.monotonic() >= deadline:
                     break
     finally:
+        if old_terminal is not None:
+            termios.tcsetattr(operator_fd, termios.TCSADRAIN, old_terminal)
         # Viewer EOF or any classification error must still leave reached live operands.
         if not captured:
             try:
-                states = witness("before-return" if phase == "cold" else "after-reentry", phase == "cold")
+                states = witness("before-return" if phase == "cold" else "after-reentry", phase == "cold" and not connected,
+                                 **({"connected": True} if connected else {}))
             except Exception as error:
                 # Preserve the error but always reap this owned viewer below.
                 row["final_capture_error"] = repr(error)
@@ -768,14 +1034,180 @@ def cleanup():
     save()
 
 
+def preparation_accounting(path):
+    """Read nonsecret observations of preparation already owned by the operator."""
+    if path is None:
+        raise ValueError("Connected observation needs --preparation with actual prior commands, times and reading; no cold run started.")
+    data = read_json(path)
+    if not isinstance(data, dict) or data.get("required_user_commands_complete") is not True:
+        raise ValueError("Required user preparation is unknown; resolve it before a cold attempt.")
+    if data.get("required_user_reading_complete") is not True or not isinstance(data.get("required_reading"), list):
+        raise ValueError("Required preparation reading is unknown; include its actual prose or an explicit empty list.")
+    commands = data.get("commands")
+    if not isinstance(commands, list):
+        raise ValueError("Preparation commands must be recorded, including an explicit empty list when none were needed.")
+    for command in commands:
+        if command.get("role") not in {"required-user", "fixture", "observer"} or not isinstance(command.get("command"), list):
+            raise ValueError("Each preparation command needs its actual command operands and required-user, fixture or observer role.")
+        if not command.get("reason"):
+            raise ValueError("Each preparation classification needs its normal-user or fixture reason.")
+        for key in ["started_at", "ended_at"]:
+            if command.get(key) is not None:
+                dt.datetime.fromisoformat(command[key])
+    for reading in data["required_reading"]:
+        if not isinstance(reading.get("text"), str):
+            raise ValueError("Preparation reading must contain its actual text.")
+    # Account for transport in the fixture category only when the recorded
+    # caller supports that distinction. Operator7950 supplies the actual source.
+    x["preparation"] = data
+    save()
+    return data
+
+
+def connected_accounting():
+    preparation = x["preparation"]
+    commands = preparation["commands"]
+    cold = [row for row in x["product_commands"] if row.get("phase") != "warm"]
+    warm = [row for row in x["product_commands"] if row.get("phase") == "warm"]
+    required = [row for row in commands if row["role"] == "required-user"]
+    readings = x.get("required_reading", [])
+    transmissions = [row["task_input"]["literal_transmissions"] for row in cold if row.get("task_input")]
+    x["counts"] = {"cold_product_commands": len(cold), "warm_product_commands": len(warm),
+        "required_user_preparation_commands": len(required), "total_required_user_commands_to_first_task": len(required) + len(cold),
+        "fixture_preparation_commands": sum(row["role"] == "fixture" for row in commands),
+        "observer_preparation_commands": sum(row["role"] == "observer" for row in commands),
+        "observer_diagnostic_commands": sum(row.get("role") == "observer" for row in x["observations"]),
+        "observer_tmux_commands": x.get("observer_tmux_commands", {}),
+        "product_interactions": len(x["interactions"]),
+        "literal_task_attempts": len(transmissions),
+        "literal_task_transmissions": sum(transmissions) if all(value is not None for value in transmissions) else None,
+        "canonical_task_submissions": sum(len(conversation["users"]) for conversation in
+            (cold[-1].get("task_observation", {}).get("conversations", []) if cold else [])),
+        "material_decisions": sum(bool(row.get("prompt")) or row.get("kind") == "guest display choice" or row.get("answer") in
+            ["approve", "reject", "Down, Enter", "Up, Enter", "request number"] for row in x["interactions"]),
+        "required_reading_words": sum(row["words"] for row in readings),
+        "reading_method": "Presented normal-path prose and each decision screen; repeated screens count again. Task and commands are excluded.",
+        "interaction_classification_complete": all(row.get("classification_complete", True) for row in x["interactions"])}
+    first = cold[0]["monotonic"] if cold else None
+    launch = next((row for row in cold if row.get("phase") == "cold"), {})
+    returned = warm[0] if warm else {}
+    start_at = x["started"]["at"]
+    required_starts = [row.get("started_at") for row in required]
+    total_start = min([start_at, *[value for value in required_starts if value]], key=dt.datetime.fromisoformat)
+    ready = launch.get("connected_ready", {})
+    warm_ready = returned.get("connected_ready", {})
+    def elapsed(a, b):
+        return (dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds() if a and b else None
+    x["timings"] = {"total_started_at": total_start,
+        "required_preparation_start_known": all(required_starts),
+        "cold_total_to_first_task_seconds": elapsed(total_start, ready.get("at")) if all(required_starts) else None,
+        "cold_product_to_first_task_seconds": ready.get("monotonic", first) - first if first and ready else None,
+        "cold_product_to_input_seconds": (launch["task_input"]["enter_sent"]["monotonic"] - first
+            if first and launch.get("task_input", {}).get("enter_sent") else None),
+        "canonical_submission_first_seen": launch.get("canonical_submission_first_seen"),
+        "host_file_first_seen": launch.get("host_file_first_seen"),
+        "warm_readiness_seconds": warm_ready["monotonic"] - returned["monotonic"] if warm_ready else None,
+        "human_decision_intervals": [{"phase": row["phase"], "seen": row["seen"], "sent": row["sent"]}
+            for row in x["interactions"] if row.get("seen") and row.get("kind") == "foreground operator input"],
+        "automated_consent_intervals": [{"phase": row["phase"], "seen": row["seen"], "sent": row["sent"]}
+            for row in x["interactions"] if row.get("seen") and row.get("kind") != "foreground operator input"],
+        "observer_intervals": [{"label": row["label"], "started": {key: row[key] for key in ["at", "monotonic"]},
+                               "ended": row.get("ended")} for row in x["observations"] if row.get("role") == "observer"],
+        "phase_boundaries": x["phase_observations"],
+        "provider_request_intervals": provider_intervals(),
+        "limits": ["Phase boundaries and screen readiness are sampled, not exact product start/completion times.",
+                   "Decision intervals measure prompt/input observation, not active human reading effort.",
+                   "Overlapping observer, download and provider work must not be added or subtracted as disjoint time.",
+                   "Provider request durations include proxy/transport time; missing request/response operands stay unknown.",
+                   "Host and guest phase intervals combine download, verification and extraction; their individual wait totals are unknown.",
+                   "Unattributed time remains unknown; no historical wait attribution is reconstructed."],
+        "target_15_seconds": "unmet; no operator target disposition is inferred"}
+    save()
+
+
+def provider_intervals():
+    requests = {}
+    intervals = []
+    path = root / "logs/events.jsonl"
+    if not path.is_file():
+        return {"unavailable": "No reached product event log"}
+    for line in path.read_bytes().splitlines(keepends=True):
+        if not line.endswith(b"\n"):
+            continue
+        event = json.loads(line)
+        if event.get("host") not in {"api.anthropic.com", "mcp-proxy.anthropic.com"} or not event.get("request_id"):
+            continue
+        identifier = event["request_id"]
+        if event.get("event") == "traffic.request":
+            requests[identifier] = event.get("ts")
+        elif event.get("event") == "traffic.response":
+            milliseconds = event.get("details", {}).get("ms")
+            intervals.append({"request_id": identifier, "host": event["host"], "started_at": requests.pop(identifier, None),
+                "ended_at": event.get("ts"), "recorded_duration_ms": milliseconds,
+                "status": event.get("details", {}).get("status")})
+    return {"responses": intervals, "requests_without_response": requests,
+            "scope": "Reached requests in this new single-agent instance; no provider-only or disjoint-wait total."}
+
+
+def connected_run(args, package):
+    record_reading("cold", "normal-path instructions", CONNECTED_PROSE.encode())
+    for row in x["preparation"].get("required_reading", []):
+        record_reading("cold", "required preparation prose", row["text"].encode())
+    print(CONNECTED_PROSE, flush=True)
+    print("Observer: use the foreground product controls. After login and pending approvals, press Ctrl-] once to send the fixed task. "
+          "The observer checks the input, sends Enter once, then observes the file and one live return. Do not type another task.", flush=True)
+    first = observe("bootstrap-download", DOWNLOAD, 60, role="product")
+    x["product_commands"].append(first)
+    save()
+    if first.get("exit") != 0:
+        return
+    x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
+    cold, before = entered("cold", 900, connected=True)
+    capture(x, "after_q_runtime", live_record)
+    if archive.is_file():
+        x["host_archive"] = {"bytes": archive.stat().st_size, "sha256": digest(archive)}
+        x["host_archive"]["matches_assigned_bytes"] = (x["host_archive"]["bytes"] == package["bytes"]
+            and x["host_archive"]["sha256"] == package["sha256"])
+    capture(x, "package_info", lambda: text(root / "package-info"))
+    if not (cold.get("connected_ready") and cold.get("ordinary_q") and cold.get("exit_code") == 0
+            and not cold.get("observer_terminated_viewer")):
+        x["warm_not_run"] = "First task/normal return was not established; no task, login or install retry."
+        return
+    file_before = digest(project / "index.html")
+    warm, after = entered("warm", 180, connected=True)
+    a, b = x["before-return"], x["after-reentry"]
+    x["selected_state_equality"] = {path: {"present_before": bool(before.get(path)), "present_after": bool(after.get(path)),
+        "equal": path in before and path in after and before[path] == after[path]} for path in before.keys() | after.keys()}
+    x["same_runtime_record"] = a.get("runtime") == b.get("runtime")
+    x["same_launch"] = a.get("launch") == b.get("launch")
+    x["same_conversation"] = (a.get("task", {}).get("conversations") == b.get("task", {}).get("conversations"))
+    x["host_file_unchanged"] = file_before == digest(project / "index.html")
+    x["live_births_match"] = all(len(r.get("runtime", {}).get("live_births", {})) == 2
+        and all(pair["observed"] and pair["observed"] == pair["recorded"]
+                for pair in r["runtime"]["live_births"].values()) for r in [a, b])
+    if (warm.get("connected_ready") and warm.get("ordinary_q") and warm.get("exit_code") == 0
+            and not warm.get("observer_terminated_viewer") and x["same_runtime_record"] and x["same_launch"]
+            and x["same_conversation"] and x["host_file_unchanged"] and x["live_births_match"]
+            and x.get("host_archive", {}).get("matches_assigned_bytes")
+            and isinstance(x["package_info"], str) and f"source_commit={CONNECTED_SOURCE}" in x["package_info"]
+            and "profile=production" in x["package_info"] and f"platform={args.platform}" in x["package_info"]
+            and all(before.get(path) and after.get(path) for path in PUBLIC_STATE + PRIVATE_STATE
+                    + ["agents/first/home/.claude/.credentials.json"])
+            and all(value["equal"] for value in x["selected_state_equality"].values())
+            and all(row.get("discovery_exit") == row.get("version_exit") == 0 for row in [cold, warm])):
+        x["observation_outcome"] = "captured; independent assessment required"
+
+
 def main():
-    global root, project, private, cli, out, archive, store, x, sampled
+    global root, project, private, cli, out, archive, store, x, sampled, LAUNCH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, help="exact newly allocated owned hostname")
     parser.add_argument("--platform", required=True, choices=PACKAGES)
     parser.add_argument("--observation-dir", type=Path, help="fresh private observer directory outside the checkout")
     parser.add_argument("--observer-source", default="unknown", help="workflow checkout commit; separate from product identities")
     parser.add_argument("--cleanup-only", action="store_true", help="stop and inspect this observer's recorded attempt")
+    parser.add_argument("--connected", action="store_true", help="foreground AMD64 first task and live return using existing consented host authentication")
+    parser.add_argument("--preparation", type=Path, help="nonsecret actual preparation commands/times/reading; required with --connected")
     args = parser.parse_args()
     if os.uname().nodename != args.host or args.host == "sy-1050-c9-cold-428968871" or os.geteuid() == 0:
         raise SystemExit("Use only the named fresh host as its ordinary user; the retained fixture is excluded.")
@@ -783,8 +1215,13 @@ def main():
     private = args.observation_dir or Path.home() / "239-onboarding-observation"
     project = Path.home() / "239-onboarding-project"
     cli = root / "bin/safeyolo"
-    package = PACKAGES[args.platform]
-    archive = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "safeyolo/host-packages" / RELEASE / f"safeyolo-{args.platform}-production.tar.gz"
+    if args.connected and args.platform != "linux-amd64":
+        raise SystemExit("The connected operator witness is bound to Ubuntu AMD64; signed-out platform use is unchanged.")
+    package = CONNECTED_PACKAGE if args.connected else PACKAGES[args.platform]
+    source = CONNECTED_SOURCE if args.connected else SOURCE
+    LAUNCH = ["bash", "install-safeyolo.sh", "--release", "host-" + source, "--launch", ".",
+              "--name", "first", "--harness", "claude", "--launcher", "tmux-window"]
+    archive = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "safeyolo/host-packages" / ("host-" + source) / f"safeyolo-{args.platform}-production.tar.gz"
     store = Path.home() / ".local/share/safeyolo/guests"
     os.umask(0o077)
     out = private / "result.json"
@@ -805,7 +1242,7 @@ def main():
     x = {"started": stamp(), "purpose": "Public Ubuntu install, normal q and warm repeat",
          "observation_outcome": "partial",
          "platform": args.platform, "expected_host_package": package,
-         "native_source": SOURCE, "bootstrap_source": BOOTSTRAP, "observer_parent": "operator6542/6732",
+         "native_source": source, "bootstrap_source": BOOTSTRAP, "observer_parent": "operator6542/6732",
          "observer_source": args.observer_source,
          "ownership": {"runner": "borrowed; no host shutdown or tool/cache removal",
                        "product_root": str(root), "agent": "first", "project": str(project), "private_observer": str(private)},
@@ -816,21 +1253,58 @@ def main():
                     "Guest-home proof covers the saved command and a guest-written marker, not every changing home file",
                     "No other platform, OCI >2GiB, independent-update or Mac cleanup proof"]}
     sampled = set()
+    if args.connected:
+        x["purpose"] = "Connected public first task and normal live return"
+        x["observer_parent"] = "TASK7946/operator7950"
+        x["limits"] = ["One authorized existing-host-authentication Ubuntu AMD64 witness; no new sign-in or other platform claim.",
+            "Only selected policy, CA/token, guest, authentication, configuration and task state comparisons; no whole-home/cache equality.",
+            "Only captured process births/listeners are covered by owned cleanup; historical missing captures stay unknown.",
+            "Terminal screens, canonical history contents and state hashes stay private.",
+            "Source readiness is not product acceptance. The 15-second target stays unmet."]
     x["baseline"] = inventory()
     save()
     overrides = [p for p in os.environ if p.startswith("SAFEYOLO_")]
     prior_product = any(p.exists() or p.is_symlink() for p in
                         [root, archive.parent, store, Path.home() / ".local/share/safeyolo/tools"])
-    prior_vendor = any(x["baseline"][key][p] for key in ["auth_present", "vendor_cache_present"] for p in x["baseline"][key])
+    prior_vendor = any(x["baseline"][key][p] for key in (["vendor_cache_present"] if args.connected else ["auth_present", "vendor_cache_present"]) for p in x["baseline"][key])
     if prior_product or prior_vendor or overrides or x["baseline"]["credential_env_names"] or os.uname().machine != package["machine"]:
         x["baseline_unavailable"] = {"reason": "Existing product/authentication inputs, overrides or wrong architecture; all preserved", "override_names": overrides}
         save()
         return 2
+    if args.connected and (not sys.stdin.isatty() or not sys.stdout.isatty()
+                          or not all(x["baseline"]["auth_present"].values())):
+        x["baseline_unavailable"] = "Connected witness needs a foreground terminal and the existing account in normal host locations; no login was attempted."
+        save()
+        return 2
+    if args.connected:
+        try:
+            preparation_accounting(args.preparation)
+        except (OSError, ValueError) as error:
+            x["preparation_unavailable"] = str(error)
+            save()
+            return 2
     project.mkdir(mode=0o755)
-    (project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
-    x["fixture_preparation"] = {"project": str(project), "file": "onboarding-fixture.txt", **stamp()}
+    if not args.connected:
+        (project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
+    x["fixture_preparation"] = {"project": str(project), "file": None if args.connected else "onboarding-fixture.txt", **stamp()}
     x["owns_product_attempt"] = True
     save()
+    if args.connected:
+        try:
+            connected_run(args, package)
+        except Exception as error:
+            # Retain the first failure; cleanup never resubmits input or signs in.
+            x["observer_error"] = repr(error)
+        finally:
+            try:
+                cleanup()
+                connected_accounting()
+                if not x["counts"]["interaction_classification_complete"]:
+                    x["observation_outcome"] = "partial"
+            finally:
+                x["ended"] = stamp()
+                save()
+        return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
     try:
         observe("baseline-sudo-noninteractive", ["sudo", "-n", "true"], 5)
         started = time.monotonic()
