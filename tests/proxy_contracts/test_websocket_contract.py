@@ -118,6 +118,10 @@ class OriginHandler(socketserver.BaseRequestHandler):
             stream = self.request
             stream.settimeout(5)
             if self.server.context:
+                # CONNECT can reserve a TCP connection before seeing the inner
+                # request. Credential refusal can close it without TLS bytes.
+                if not stream.recv(1, socket.MSG_PEEK):
+                    return
                 stream = self.server.context.wrap_socket(stream, server_side=True)
             with stream:
                 request_line, headers = read_head(stream)

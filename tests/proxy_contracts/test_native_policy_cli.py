@@ -577,6 +577,10 @@ rules = [{action="credential:use", resource="forbidden.invalid/*", effect="deny"
                     instance.paths["alice"], f"{destination}:443".encode(), destination,
                     instance.root / "certs/mitmproxy-ca-cert.pem",
                 )
+                if status != 200:
+                    assert status == expected == 403 and rule is None and stream is None
+                    assert [len(origin.requests) for origin in origins] == before
+                    return None
                 assert status == 200
                 with stream:
                     fields = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
@@ -658,7 +662,8 @@ rules = [{action="credential:use", resource="forbidden.invalid/*", effect="deny"
             send(token, destination="forbidden.invalid", expected=403)
         assert fingerprints[0] != fingerprints[1]
         send(tokens[0])
-        send(tokens[1], expected=428, rule="openai", extra={"X-Api-Key": api_key})
+        other_secret = send(tokens[1], expected=428, extra={"X-Api-Key": api_key})
+        assert other_secret["details"]["location"] == "header:X-Api-Key"
 
         granted = instance.policy.read_text()
         other_prompt = tomlkit.parse(granted)
@@ -710,7 +715,6 @@ def test_installed_unknown_bearer_websocket_requires_exact_approval(tmp_path):
         extra_config=f'upstream_ca_file={json.dumps(str(public))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
     ) as instance:
         def upgrade(value, expected):
-            before = origin.accepts
             with websocket_handshake(
                 origin, path=instance.paths["alice"], ca=instance.root / "certs/mitmproxy-ca-cert.pem",
                 extra_headers=[("Authorization", f"Bearer {value}")],
@@ -728,7 +732,9 @@ def test_installed_unknown_bearer_websocket_requires_exact_approval(tmp_path):
                     line, forwarded = origin.handshakes.get(timeout=5)
                     assert line == "GET /backend-api/codex/responses HTTP/1.1"
                     assert forwarded["authorization"] == [f"Bearer {value}"]
-                assert origin.accepts == before + (expected == 101)
+                # CONNECT can open an empty TCP connection before the inner
+                # headers arrive. Refusal must prevent the HTTP upgrade.
+                assert origin.handshakes.empty()
             deadline = time.monotonic() + 4
             while True:
                 events = read_events(instance.root / "logs/audit.jsonl")
