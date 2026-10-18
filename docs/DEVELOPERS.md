@@ -316,6 +316,39 @@ descriptors. A rejected candidate keeps its target until it is repaired, superse
 or explicitly retired with its receipt. Source, fixtures, patches and review
 reports remain untouched.
 
+### Retain production packages in CI
+
+Use the `packages_only` input of `proxy-rust.yml` to produce complete host
+bundles without the contract matrix. It calls the existing
+`guest-test-inputs.yml` producer with production profile and package retention.
+First check for reusable complete bundles at the required source, profile and
+platform. Raw host or guest executable artifacts alone are not complete bundles.
+The existing Cargo cache remains available to the producer.
+
+From a machine with authenticated GitHub CLI (`gh`) and repository Actions write
+access, select the full source SHA from the default branch (`master`):
+
+```sh
+package_source=$(gh api repos/craigbalding/safeyolo/commits/master --jq .sha)
+gh workflow run proxy-rust.yml --repo craigbalding/safeyolo --ref master \
+  -F packages_only=true -f source_revision="$package_source" \
+  -f package_architecture=all
+```
+
+The request fails before compilation if the selected SHA differs from the
+dispatched head or the workflow runs outside the default branch. If the branch
+advances, select the intended new head before dispatching again.
+`all` produces Linux AMD64, Linux ARM64 and macOS ARM64 packages. `amd64`
+selects Linux AMD64 only; `arm64` selects Linux ARM64 and macOS ARM64 together.
+The existing producer shares Linux ARM64 guest executables with the Mac build.
+
+Successful producer jobs retain `nightly-host-<platform>-production` artifacts
+for 30 days. Each artifact contains the archive, `SHA256SUMS` and `build.json`
+with its source, platform, profile and producer identity. Check the selected
+run and package identities before publication or installed tests. This request
+does not publish a host release or change guest channels. Scheduled runs and
+manual runs without `packages_only=true` keep the full contract matrix.
+
 ### Disposable development instance
 
 Use the [bundle build and installation](installation.md#build-a-bundle)
