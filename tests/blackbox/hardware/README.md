@@ -1,20 +1,30 @@
 # Run independent retained-artifact hardware tests
 
-Run KVM on devstack through the existing Rundeck acceptance harness. Run VZ
-on physical Bristol through `sy-agent`. Each entry selects existing production
+Run Kernel-based Virtual Machine (KVM) tests on devstack through the existing
+Rundeck acceptance harness. Run Apple Virtualization.framework (VZ) tests on
+physical Bristol through `sy-agent`. Each entry selects existing production
 host/helper and staged guest artifacts once. It uses the same installed runner
 as hosted blackbox. Neither entry builds SafeYolo, a rootfs, kernel or helper.
 
 The entries adapt the independently reviewed #889 wrappers at
-`4fc6e11c07ea308d053873bbec59a07baa43e1a7`. That review does not accept these
-changed inputs, deployed schedules or hardware results. The held paired
-controller is not used. All existing #889 hardware/deployment limits remain.
+`4fc6e11c07ea308d053873bbec59a07baa43e1a7`. That source review remains separate
+from the retained-consumer results and deployment. The held paired controller
+is not used.
 
-Before deployment, the production workflow must retain qualifying host bundles,
-and #1104 must supply real completed-staging receipts. These end-to-end inputs
-and current hardware results remain unproved. Selection fails when they are
-missing. Craig owns cron installation. Do not install the superseded nightly
-build-on-Tart payload.
+Qualifying production bundles and completed guest staging now have end-to-end
+proof. Lens accepted complete [three-section KVM](https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-6244175979)
+and [four-section physical VZ](https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-6243765595)
+consumers at controller `8a2d28aa3fe1871161883bd630dd7e7a9f34ee3a`.
+Those receipts qualify different explicit host selections. They preserve the
+failed VZ sampler, missing original KVM after-run metadata and separate stopped
+cleanup inspections. They do not establish a combined exact-release pass.
+
+The full consumers do not prove the complete cron entries. Latest automatic
+selection, deployed schedules, sanitized deployed publication and failure email
+remain unproved. Craig owns installation. Before using the VZ entry, resolve the
+[offline staging gap](INPUTS.md#bristol-trusted-account-and-confined-execution)
+in the existing entry. Do not install the superseded nightly build-on-Tart
+payload.
 
 ## Configure the existing hosts
 
@@ -68,11 +78,24 @@ runner retains per-assertion pass/fail/skip output in the private execution
 log; the public projection leaves `skipped_assertions` unknown. It does not
 invent a zero count or convert command success into full release acceptance.
 
-For trusted exact selection, use `on-demand HOST_RUN GUEST_INDEX` instead of
-`overnight`. Replace `HOST_RUN` with the exact default-branch production run ID
-and `GUEST_INDEX` with the full staged `sha256:` index digest. Both entries accept
-those same arguments. A guest in quarantine is eligible for testing; these
-entries do not change production tags.
+For trusted exact selection, replace `HOST_RUN` with that platform's exact
+default-branch production run ID and `GUEST_INDEX` with the full staged
+`sha256:` index digest. Use the same configured account and prerequisites as
+its overnight entry. On devstack:
+
+```sh
+/usr/local/lib/safeyolo-hardware/tests/blackbox/hardware/run-kvm.sh on-demand HOST_RUN GUEST_INDEX
+```
+
+On Bristol:
+
+```sh
+/usr/local/lib/safeyolo-hardware/tests/blackbox/hardware/run-vz.sh on-demand HOST_RUN GUEST_INDEX
+```
+
+A guest in quarantine is eligible for testing. These entries do not change
+production tags. Missing, expired or invalid selected artifacts fail visibly;
+the entries do not rebuild or select an older passing input.
 
 Before release, all required lanes must consume that release's exact host
 archive bytes and the same recorded compatible guest digest. Compare the full

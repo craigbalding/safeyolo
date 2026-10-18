@@ -2,24 +2,40 @@
 
 These are the inputs for the two independent entries in the
 [deployment guide](README.md). Craig owns installing cron after Relay supplies
-the reviewed candidate and real input readiness. Missing artifacts or staging
-receipts fail the attempt. No build-on-Tart preparation belongs in this nightly
-consumer path.
+the reviewed candidate and deployment prerequisites. Complete retained
+Kernel-based Virtual Machine (KVM) and physical Apple Virtualization.framework
+(VZ) consumers are accepted at the separate selections linked in that guide.
+Installed cron, latest automatic selection, deployed publication and
+email delivery remain unproved. Missing artifacts or staging receipts fail the
+attempt. No build-on-Tart preparation belongs in this nightly consumer path.
 
 ## Bind the trusted configuration
 
 The installed Bash entries source private, operator-owned shell files at
 `/etc/safeyolo-hardware/kvm.env` and `/etc/safeyolo-hardware/vz.env`.
+`KVM_DEPLOYMENT_ENV` and `VZ_DEPLOYMENT_ENV` can select other absolute config
+paths. Set each account's actual tool `PATH` in its config file; cron does not
+inherit an interactive shell's setup.
 Keep those files and all control/publication credentials outside candidate
 authority. Both trusted accounts need Bash, Git, `gh`, `jq`, ORAS and a Python
 3.12 or 3.13 environment containing the controller's frozen development
 dependencies. Set `HARDWARE_PYTHON` to that environment's actual interpreter.
 The GitHub principal needs repository Actions read access and #889 comment
 write/read access. It never reaches the tested guest or `sy-agent` environment.
+ORAS needs pull access to the staged guest repository. These entries do not
+need registry write access.
 
 The default-branch native producer runs at 03:23 UTC. Hosted blackbox runs at
 03:17 UTC. Each consumer selects an already completed build by run/artifact ID;
 there is no dependency on those schedules starting or finishing in order.
+
+Each entry calls `scripts/select_blackbox_artifacts.py` once, then transfers
+the frozen selection, host archive, guest archive and pinned controller. The
+execution path is `run-hardware-lane.sh` → `retained_inputs.py run` →
+`run-installed-package.sh --package ... --guest-archive ...` →
+`run-installed.sh --prepared-config ...`. The wrapper filters credentials with
+`env -i`. The installed runner gives every section separate writable state;
+neither entry calls the held paired controller.
 
 ### Devstack KVM account
 
@@ -46,8 +62,25 @@ Before deployment, verify that the independently reviewed
 [console-lock correction](https://github.com/craigbalding/safeyolo-harness/pull/6/commits/e9ad4f8fabfa723e388cbfd8f01a8ac54f1046f3)
 is installed. The wrapper requires four CPUs, 10 GiB available memory, 90 GiB
 pool space and actual KVM capability. The guest must pass the `/dev/kvm` API
-probe. Existing provision/attempt locks, exact early lease, domain/disk checks,
-owned teardown and foreign-resource preservation remain in use.
+probe as its ordinary test user. Check guest fixture ports 8180, 9190, 8181,
+18080, 18443 and 19999 before execution. Existing provision/attempt locks,
+exact early lease, domain/disk checks, owned teardown and foreign-resource
+preservation remain in use.
+
+Those resource settings belong to the current fresh-guest entry. Accepted
+Rundeck run 7089 reused a separately prepared guest through the inner wrapper;
+it did not prove this entry's fresh provisioning or installed schedule. Its
+[corrected runnable recipe](https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-6243870729)
+keeps parent/state setup at umask `077`, the private log at mode `0600`, and the
+wrapper child at umask `022` for the Debian workloads fixture. Check that child
+mask when binding the deployed SSH command.
+
+For reuse of unchanged Python 3.13 tools in that recipe, use
+`cp -a --reflink=auto` into an actual ignored `source/.venv` directory. Do not
+use a `.venv` symlink or change ignore rules. Verify clean source after the
+copy. Successful run 7089 needed no `uv sync` or product build. The current
+fresh-guest entry instead prepares test tools with `uv sync --frozen --group
+dev --python 3.13`; that command does not build product binaries.
 
 ### Bristol trusted account and confined execution
 
@@ -69,7 +102,7 @@ The private SSH key stays in the trusted account. Transfer uses SSH stdin.
 | `VZ_RUNTIME_PATH` | Verified PATH for Bash, Git, tar and the offline Python/test tools |
 | `VZ_CA_BUNDLE` | Readable public CA bundle for absent inherited trust settings |
 | `VZ_LOCK` | Persistent host-local lock file, readable but protected from replacement by `sy-agent` |
-| `VZ_HELPER_TIMEOUT` | Optional positive per-helper deadline; default 120 seconds |
+| `VZ_HELPER_TIMEOUT` | Positive per-helper deadline; set `900` to match the accepted full consumer; entry default is `120` seconds |
 | `VZ_OBSERVER_TIMEOUT` | Optional observer deadline; default 10800 seconds |
 
 Prepare and verify test instruments separately. The wrapper links their
@@ -78,6 +111,17 @@ and compiles no product on Bristol. The test input link is explicit fixture
 provisioning, recorded as offline in `retained-run.json`. The raw retained guest
 archive is verified by digest before extraction. The host bundle's matching
 signed helper, guest helpers and package checksums are verified before use.
+
+**VZ deployment still has a source prerequisite.** `run-vz.sh` currently makes
+`source/offline` a symlink to the external `VZ_OFFLINE_TEST_INPUTS` directory,
+then passes `/workspace/offline` to the guest. Only the checkout is mounted at
+`/workspace`; an absolute host symlink outside that mount does not supply the
+guest's files. The accepted full consumer used a real, readable `source/offline`
+directory. Repair this staging step through source review before using the
+VZ entry. Its accepted inner consumer is not proof of the current entry's
+staging. Preserve package hashes and readable fixture modes in the staged copy;
+keep logs and state private. The existing [guest preparation instructions](../README.md#run-installed-sections-with-one-preparation)
+describe the guest-visible inputs.
 
 The trusted checkout must also be readable by `sy-agent` for its fixed wrapper,
 port and process-inspection commands. `sy-agent` needs the existing
@@ -90,7 +134,9 @@ must keep maintained Unix socket paths within macOS's 104-byte limit.
 
 ## Install the existing independent cron recipes
 
-Craig installs each entry in its stated account. Before enabling an entry,
+These are the maintained installation recipes, not installed schedules. Resolve
+the VZ staging prerequisite above before enabling that entry. Craig installs
+each entry in its stated account. Before enabling an entry,
 create its private log directory, configure the actual tools' PATH, replace
 `REPLACE_WITH_OPERATOR_EMAIL`, and verify working `/usr/bin/mail` transport.
 Confirm the host's current timezone. These entries do not install themselves.
@@ -100,6 +146,8 @@ On devstack as `rundeck`, with the default `KVM_ATTEMPTS` path:
 ```sh
 mkdir -p /var/lib/rundeck/harness/evidence/issue889
 chmod 700 /var/lib/rundeck/harness/evidence/issue889
+touch /var/lib/rundeck/harness/evidence/issue889/cron.log
+chmod 600 /var/lib/rundeck/harness/evidence/issue889/cron.log
 crontab -e
 ```
 
@@ -116,6 +164,8 @@ On Bristol as its existing trusted operator account, with `VZ_ATTEMPTS` set to
 ```sh
 mkdir -p "$HOME/hardware-attempts"
 chmod 700 "$HOME/hardware-attempts"
+touch "$HOME/hardware-attempts/cron.log"
+chmod 600 "$HOME/hardware-attempts/cron.log"
 crontab -e
 ```
 
@@ -155,6 +205,11 @@ cleanup leaves the attempt failed. Use the existing host operator's exact
 argv/start-identity inspection and maintained owned cleanup. Do not signal a
 process by broad name or delete unknown state. Host death or `SIGKILL` cannot
 promise shell cleanup.
+When manual recovery needs the installed CLI, stop the owned proxy/Coord and
+separately stop disposable agents. `safeyolo stop` alone leaves agents running.
+The KVM entry also owns its exact harness guest, disks, seed and lease; it must
+preserve unrelated guests. Keep VZ fixture cleanup scoped to its recorded
+process identities and allocated ports.
 
 For a known existing publication index, the trusted account can publish the
 retained selected result again without running tests:
