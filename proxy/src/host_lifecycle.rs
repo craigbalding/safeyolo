@@ -1522,6 +1522,25 @@ pub(crate) async fn start(
             return Err(error);
         }
         let memory_mb = agent.memory_mb.unwrap_or(4096);
+        #[cfg(target_os = "macos")]
+        let boot = {
+            let child = match crate::host_platform::spawn_vz_helper(
+                &agent.name,
+                &ip,
+                memory_mb as u64,
+                agent.rootfs_overlay.as_deref() == Some("memory"),
+            ) {
+                Ok(child) => child,
+                Err(error) => {
+                    if let Err(rollback) = rollback_preboot_start(agent, &run).await {
+                        return Err(format!("{error}; preboot rollback failed: {rollback}").into());
+                    }
+                    return Err(error.into());
+                }
+            };
+            crate::host_platform::wait_vz_start(&agent.name, child).await
+        };
+        #[cfg(not(target_os = "macos"))]
         let boot = crate::host_platform::start_sandbox(
             &agent.name,
             &ip,
@@ -1590,7 +1609,7 @@ pub(crate) async fn start(
     runtime(agent).await
 }
 
-// The setup lock is held, and no backend has been invoked for this record.
+// The setup lock is held, and no backend process was spawned for this record.
 // Retire it before rebuilding the map so a failed projection can be retried.
 // A changed record or generation no longer belongs to this failed start.
 async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error> {
