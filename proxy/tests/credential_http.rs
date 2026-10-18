@@ -436,7 +436,8 @@ async fn send(
         .method("GET")
         .uri(uri)
         .header("Authorization", credential)
-        .header("authorization", "Bearer duplicate")
+        // Keep this duplicate ordinary; a short Bearer now needs approval.
+        .header("authorization", "duplicate")
         .header("Connection", "keep-alive, x-remove")
         .header("X-Remove", "header-canary")
         .header("X-SafeYolo-Trace", "1")
@@ -798,7 +799,7 @@ async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_bod
 }
 
 #[tokio::test]
-async fn native_guard_classifies_unknown_entropy_and_keeps_ordinary_headers_uninspected() {
+async fn native_guard_classifies_unknown_bearers_and_keeps_other_headers_uninspected() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
     let policy_path = directory.path().join("policy.json");
@@ -903,13 +904,20 @@ async fn native_guard_classifies_unknown_entropy_and_keeps_ordinary_headers_unin
     );
     assert_eq!(seen.lock().unwrap().len(), 1);
 
-    // A short ordinary value is not a credential detection and therefore
-    // remains usable without a policy exception. The origin sees it exactly.
+    // A short Bearer value still needs approval. Other ordinary headers keep
+    // their existing heuristic and can reach the origin without approval.
     let ordinary = raw_round_trip(
         &socket,
         &single_credential_h1_request(origin_port, "ordinary", "ordinary"),
     )
     .await;
+    assert!(ordinary.starts_with(b"HTTP/1.1 428"), "{ordinary:?}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let other_header = single_credential_h1_request(origin_port, "ordinary", "ordinary");
+    let other_header = String::from_utf8(other_header)
+        .unwrap()
+        .replace("Authorization: Bearer ordinary", "X-Ordinary: ordinary");
+    let ordinary = raw_round_trip(&socket, other_header.as_bytes()).await;
     assert!(ordinary.starts_with(b"HTTP/1.1 200"), "{ordinary:?}");
     tokio::time::timeout(Duration::from_secs(2), ready.notified())
         .await
@@ -930,7 +938,7 @@ async fn native_guard_classifies_unknown_entropy_and_keeps_ordinary_headers_unin
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter(|event| event["event"] == "proxy.credential_guard")
         .collect::<Vec<_>>();
-    assert_eq!(guard_events.len(), 3);
+    assert_eq!(guard_events.len(), 4);
     assert_eq!(guard_events[0]["outcome"], "allowed");
     assert_eq!(guard_events[1]["outcome"], "blocked");
     assert_eq!(
@@ -945,9 +953,14 @@ async fn native_guard_classifies_unknown_entropy_and_keeps_ordinary_headers_unin
         guard_events[1]["evaluations"][0]["effect"],
         "require_approval"
     );
-    assert_eq!(guard_events[2]["outcome"], "no_detection");
+    assert_eq!(guard_events[2]["outcome"], "blocked");
+    assert_eq!(
+        guard_events[2]["evaluations"][0]["finding"]["rule"],
+        "unknown_secret"
+    );
+    assert_eq!(guard_events[3]["outcome"], "no_detection");
     assert!(
-        guard_events[2]["evaluations"]
+        guard_events[3]["evaluations"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -1201,7 +1214,7 @@ async fn native_guard_live_budget_counts_credential_and_network_charges() {
 }
 
 #[tokio::test]
-async fn native_parser_to_guard_invalid_utf8_matches_source_detector() {
+async fn native_parser_to_guard_invalid_utf8_keeps_known_and_unknown_bearers() {
     let source: Value = serde_json::from_str(include_str!("credential_guard_source.json")).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
@@ -1238,25 +1251,22 @@ async fn native_parser_to_guard_invalid_utf8_matches_source_detector() {
         let path = row["id"].as_str().unwrap();
         let request = h1_request_with_value(origin_port, path, &value);
         let response = raw_round_trip(&socket, &request).await;
-        if row["detected"].as_bool().unwrap() {
-            assert!(response.starts_with(b"HTTP/1.1 403"), "{path}");
-            assert!(seen.lock().unwrap().is_empty(), "{path}");
+        assert!(response.starts_with(b"HTTP/1.1 403"), "{path}");
+        assert!(seen.lock().unwrap().is_empty(), "{path}");
+        let event = std::fs::read_to_string(directory.path().join("events.jsonl"))
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .rfind(|event| event["event"] == "proxy.credential_guard")
+            .unwrap();
+        // Retain the historical parser inputs and known-rule result. The new
+        // Bearer requirement also detects values that missed that rule.
+        let rule = if row["detected"].as_bool().unwrap() {
+            "synthetic-invalid-byte"
         } else {
-            assert!(response.starts_with(b"HTTP/1.1 200"), "{path}");
-            tokio::time::timeout(Duration::from_secs(2), ready.notified())
-                .await
-                .unwrap();
-            let requests = seen.lock().unwrap();
-            assert_eq!(requests.len(), 1, "{path}");
-            assert!(
-                requests[0]
-                    .windows(value.len())
-                    .any(|window| window == value),
-                "{path}"
-            );
-            drop(requests);
-            seen.lock().unwrap().clear();
-        }
+            "unknown_secret"
+        };
+        assert_eq!(event["evaluations"][0]["finding"]["rule"], rule, "{path}");
     }
     proxy.shutdown().await;
     origin_task.abort();
@@ -2622,8 +2632,8 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     assert_eq!(seen.lock().unwrap().len(), 1);
 
     // An even backslash run makes the source spelling literal.  The same
-    // malformed value must therefore pass through instead of matching the
-    // true surrogateescape pattern above.
+    // malformed value must miss the known rule, then use unknown-secret
+    // handling for its nonempty Bearer value.
     write_policy(r"key-\\uDCFF");
     proxy
         .reload(config(&directory, &policy_path, &socket, true))
@@ -2631,14 +2641,25 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         .unwrap();
     let escaped_literal = raw_round_trip(&socket, &matching).await;
     assert!(
-        escaped_literal.starts_with(b"HTTP/1.1 200"),
+        escaped_literal.starts_with(b"HTTP/1.1 403"),
         "{escaped_literal:?}"
     );
-    tokio::time::timeout(Duration::from_secs(2), ready.notified())
-        .await
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let last_guard: Value = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .rfind(|event| event["event"] == "proxy.credential_guard")
         .unwrap();
+    assert_eq!(
+        last_guard["evaluations"][0]["finding"]["rule"],
+        "unknown_secret"
+    );
 
     let nonmatching = invalid_h1_request(origin_port, "invalid-nonmatch", 0xfe);
+    let blocked = raw_round_trip(&socket, &nonmatching).await;
+    assert!(blocked.starts_with(b"HTTP/1.1 403"), "{blocked:?}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    set_mode(&proxy_config, "credential-guard", "warn").await;
     let allowed = raw_round_trip(&socket, &nonmatching).await;
     assert!(allowed.starts_with(b"HTTP/1.1 200"), "{allowed:?}");
     tokio::time::timeout(Duration::from_secs(2), ready.notified())
@@ -2646,14 +2667,9 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         .unwrap();
     {
         let requests = seen.lock().unwrap();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 2);
         assert!(
             requests[1]
-                .windows(b"key-\xff".len())
-                .any(|window| window == b"key-\xff")
-        );
-        assert!(
-            requests[2]
                 .windows(b"key-\xfe".len())
                 .any(|window| window == b"key-\xfe")
         );
@@ -2946,7 +2962,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
         allowed_sender.send_request(
             Request::builder()
                 .uri(format!("https://{authority}/allowed-concurrent"))
-                .header("authorization", "Bearer clear-h2")
+                .header("authorization", "clear-h2")
                 .body(Full::new(Bytes::from_static(b"allowed-h2-body")))
                 .unwrap(),
         ),
@@ -2965,7 +2981,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     .await
     .unwrap();
     assert_eq!(seen.lock().unwrap().len(), 3);
-    assert_eq!(seen.lock().unwrap()[2], b"Bearer clear-h2");
+    assert_eq!(seen.lock().unwrap()[2], b"clear-h2");
     drop(blocked_sender);
     drop(allowed_sender);
     drop(sender);
@@ -3116,7 +3132,7 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
     assert_eq!(seen.lock().unwrap().len(), 3);
     let delivered = String::from_utf8(seen.lock().unwrap()[0].clone()).unwrap();
     assert!(delivered.contains("authorization: Bearer key-allowed\r\n"));
-    assert!(delivered.contains("authorization: Bearer duplicate\r\n"));
+    assert!(delivered.contains("authorization: duplicate\r\n"));
     assert!(!delivered.contains("header-canary"));
     assert!(delivered.contains("GET /allowed?Q=%252F HTTP/1.1\r\n"));
 

@@ -167,7 +167,8 @@ def origin_server(script, *, pem=None, compressed=False, first_frame=None,
 
 
 @contextmanager
-def websocket_handshake(origin, *, path=None, ca=None, compressed=False):
+def websocket_handshake(origin, *, path=None, ca=None, compressed=False,
+                        extra_headers=(), target_path="/socket"):
     stream = socket.socket(socket.AF_UNIX) if path else socket.socket()
     stream.settimeout(5)
     try:
@@ -181,13 +182,15 @@ def websocket_handshake(origin, *, path=None, ca=None, compressed=False):
             context = ssl.create_default_context(cafile=ca)
             context.set_alpn_protocols(["http/1.1"])
             stream = context.wrap_socket(stream, server_hostname="127.0.0.1")
-        target = "/socket" if ca or not path else f"http://{origin.authority}/socket"
+        target = target_path if ca or not path else f"http://{origin.authority}{target_path}"
         request = (f"GET {target} HTTP/1.1\r\nHost: {origin.authority}\r\n"
                    "Connection: keep-alive, Upgrade\r\nUpgrade: websocket\r\n"
                    f"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {KEY}\r\n"
                    "Sec-WebSocket-Protocol: fixture, another\r\n")
         if compressed:
             request += "Sec-WebSocket-Extensions: permessage-deflate\r\n"
+        for name, value in extra_headers:
+            request += f"{name}: {value}\r\n"
         stream.sendall((request + "\r\n").encode())
         response, headers = read_head(stream)
         yield stream, response, headers

@@ -296,6 +296,14 @@ settings remain in `policy show`. Raw context and evidence values are preserved.
 | `controls.circuits.excluded_domains` | String array; `[]` | Existing extra circuit exclusions. Built-in local/probe exclusions remain in the circuit owner. |
 | `logging.quiet_hosts.hosts`, `logging.quiet_hosts.paths` | String array/map of string arrays; `[]`, `{}` | Existing effective request-logger quiet rules; the existing logger suppresses matching traffic records. Security audit remains independent. |
 
+For `Authorization` selected by `standard_auth_headers` and not excluded by
+`safe_headers`, every supported nonempty `Bearer` value enters credential
+policy. A bearer that matches no known rule uses `unknown_secret`, regardless
+of the entropy thresholds or detection level. With default block mode and no
+approval, short, repetitive and placeholder bearer values also prompt or deny.
+These checks use the existing fingerprint, destination policy and approval
+path. Detection does not establish a token's issuer or grant permission.
+
 Host/agent `exceptions` use `network`, `credentials`, `patterns`, `circuits`, or
 `streaming`, compiled into the existing precedence rules. Named list references
 use a local file in `[lists]` and `$name` in `[hosts]`. Advanced `[[permissions]]`,
