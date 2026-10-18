@@ -118,7 +118,7 @@ def observed_origin(*, socket_timeout=10):
         assert not thread.is_alive()
 
 
-def policy():
+def policy(*, body_action="block"):
     return json.dumps(
         {
             "hosts": {"*": {"egress": "allow"}},
@@ -140,7 +140,7 @@ def policy():
                     "pattern": BLOCK_MARKER.decode(),
                     "target": "request",
                     "scope": ["body"],
-                    "action": "block",
+                    "action": body_action,
                 },
                 {
                     "name": "url-block",
@@ -175,11 +175,11 @@ def policy():
 
 
 @contextmanager
-def inspected_proxy(backend, directory):
+def inspected_proxy(backend, directory, *, body_action="block"):
     with launch_proxy(
         backend,
         directory,
-        policy(),
+        policy(body_action=body_action),
         policy_format="json",
         native_policy=True,
         inspection={"block_request": True},
@@ -334,8 +334,31 @@ def test_request_inspection_before_and_after_streaming_boundary(proxy_backend, t
             assert stored["request_body_truncated"] == 1
             assert stored["request_body_blob"] == body[:CAPTURE_LIMIT]
 
-        # Keep the upload open after the first chunk. The origin must see
-        # actual body bytes while the client has not completed this request.
+        # A required blocking body scan refuses streaming content that it
+        # cannot inspect. Neither framing can forward a partial request.
+        size = STREAM_LIMIT + 1
+        body = b"x" * size
+        for chunked in (False, True):
+            with head(
+                proxy, origin, f"/unavailable-{chunked}", length=size, chunked=chunked,
+                first=b"" if chunked else b"only-a-prefix",
+            ) as client:
+                if chunked:
+                    for start in range(0, len(body), 65536):
+                        send_chunk(client, body[start : start + 65536])
+                status, headers, reply = response(client)
+            assert status == 403 and headers["x-blocked-by"] == "pattern-scanner"
+            assert json.loads(reply)["reason"] == "body_unavailable"
+            assert origin.accepts == 0 and origin.requests == {}
+            rows = wait_scanner(directory, headers["x-safeyolo-request-id"])
+            assert len(rows) == 1 and rows[0]["decision"] == "deny", rows
+
+
+def test_log_only_body_rules_preserve_streaming_bytes_and_evidence(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    with observed_origin() as origin, inspected_proxy(proxy_backend, directory, body_action="log") as proxy:
+        # Body rules only log here; URL/header blocking and other guards stay
+        # active. Observe bytes before either request framing is complete.
         size = STREAM_LIMIT + 1
         body = b"x" * (size - len(BLOCK_MARKER)) + BLOCK_MARKER
         with head(

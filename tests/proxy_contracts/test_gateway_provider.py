@@ -49,6 +49,55 @@ def _header_values(wire: bytes, name: bytes) -> list[bytes]:
             if line.split(b":", 1)[0].lower() == name.lower()]
 
 
+def _subordinate_bases():
+    # Use the accepted owned_run.rs selection: prefer 100000 only when owned,
+    # otherwise select the lowest complete allocation for each ID kind.
+    account = subprocess.check_output(["/usr/bin/id", "-un"], text=True, timeout=5).strip()
+
+    def base(group):
+        output = subprocess.check_output(
+            ["/usr/bin/getsubids", *(["-g"] if group else []), account], text=True, timeout=5,
+        )
+        starts = []
+        for line in output.splitlines():
+            try:
+                start, count = map(int, line.split()[2:4])
+            except ValueError:
+                continue  # Match owned_run.rs: ignore rows without a valid allocation.
+            end = start + count
+            if start >= 0 and count >= 65536 and end <= 0xFFFF_FFFF:
+                starts.append(100000 if start <= 100000 and end >= 165536 else start)
+        assert starts, "native fixture requires an owned range of 65536 subordinate IDs"
+        return min(starts, key=lambda start: (start != 100000, start))
+
+    return base(False), base(True)
+
+
+@pytest.mark.parametrize("uid_ranges,gid_ranges,expected", [
+    ("0: fixture 165536 65536\n", "0: fixture 231072 65536\n", (165536, 231072)),
+    ("0: fixture 10000 65536\n1: fixture 100000 65536\n",
+     "0: fixture 100000 65536\n1: fixture 10000 65536\n", (100000, 100000)),
+    ("0: fixture 90000 80000\n", "0: fixture 90000 80000\n", (100000, 100000)),
+    ("invalid\n0: fixture 100000 65535\n1: fixture 4294967295 65536\n2: fixture 231072 65536\n",
+     "0: fixture 296608 65536\n1: fixture 165536 65536\n", (231072, 165536)),
+])
+def test_provider_subordinate_bases_select_owned_ranges(monkeypatch, uid_ranges, gid_ranges, expected):
+    outputs = {
+        ("/usr/bin/id", "-un"): "fixture\n",
+        ("/usr/bin/getsubids", "fixture"): uid_ranges,
+        ("/usr/bin/getsubids", "-g", "fixture"): gid_ranges,
+    }
+    monkeypatch.setattr(subprocess, "check_output", lambda command, **_kwargs: outputs[tuple(command)])
+    assert _subordinate_bases() == expected
+
+
+def test_provider_subordinate_bases_require_a_complete_owned_range(monkeypatch):
+    monkeypatch.setattr(subprocess, "check_output", lambda command, **_kwargs:
+                        "fixture\n" if command[0] == "/usr/bin/id" else "0: fixture 100000 65535\n")
+    with pytest.raises(AssertionError, match="owned range of 65536 subordinate IDs"):
+        _subordinate_bases()
+
+
 @contextmanager
 def _provider_run(directory, monkeypatch):
     # Match the owned namespace/process fixture in proxy/tests/support/owned_run.rs.
@@ -64,6 +113,7 @@ def _provider_run(directory, monkeypatch):
     entry = directory / "bin/nsenter"
     entry.write_text('#!/bin/sh\nshift 5\nexec "$@"\n')
     entry.chmod(0o755)
+    uid_base, gid_base = _subordinate_bases()
     backend = subprocess.Popen(
         ["/usr/bin/unshare", "--user", "--net", "/bin/bash", "-c",
          'exec -a runsc-sandbox /bin/sh -c \'read -r finish\' "$@"', "fixture",
@@ -78,17 +128,18 @@ def _provider_run(directory, monkeypatch):
             assert backend.poll() is None, "owned provider namespace exited"
             assert time.monotonic() < deadline, "owned provider namespace did not start"
             time.sleep(0.01)
-        for kind, identity in (("uid", os.getuid()), ("gid", os.getgid())):
+        for kind, identity, base in (("uid", os.getuid(), uid_base), ("gid", os.getgid(), gid_base)):
+            tail = base + 1001
             if kind == "gid":
                 (proc / "setgroups").write_text("deny")
             try:
-                (proc / f"{kind}_map").write_text(f"0 100000 1000\n1000 {identity} 1\n1001 101001 64534\n")
+                (proc / f"{kind}_map").write_text(f"0 {base} 1000\n1000 {identity} 1\n1001 {tail} 64534\n")
             except PermissionError:
                 # Rootless hosts use the same subordinate-ID helpers as the
                 # maintained native fixture and production sandbox startup.
                 subprocess.run(
                     [f"/usr/bin/new{kind}map", str(backend.pid),
-                     "0", "100000", "1000", "1000", str(identity), "1", "1001", "101001", "64534"],
+                     "0", str(base), "1000", "1000", str(identity), "1", "1001", str(tail), "64534"],
                     check=True, timeout=5,
                 )
         ticks = (proc / "stat").read_text().rsplit(")", 1)[1].split()[19]
