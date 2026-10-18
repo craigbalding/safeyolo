@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -134,11 +135,36 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice):
     assert not (root / "data/coord/nats/process.json").exists()
 
 
-def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tmp_path):
+@pytest.mark.parametrize("missing_input", (
+    ["rootfs-base.ext4", "Image", "initramfs.cpio.gz", "helper"]
+    if os.uname().sysname == "Darwin" else ["rootfs-tree"]
+))
+def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(missing_input):
     policy = 'budget=12000\n[hosts]\n"*"={egress="allow",unknown_creds="allow"}\n'
-    with origin_server() as origin, native_instance(tmp_path, source=policy) as instance:
+    # Agent listeners use the installed root, not the fixture's separate proxy
+    # socket directory. A normal Darwin pytest path can fail before boot entry.
+    with tempfile.TemporaryDirectory(prefix="sy-first-", dir=Path.home()) as directory, \
+            origin_server() as origin, native_instance(Path(directory), source=policy) as instance:
+        tmp_path = Path(directory)
         workspace = tmp_path / "workspace"
         workspace.mkdir()
+        if os.uname().sysname == "Darwin":
+            agent_socket = instance.root.resolve() / "data/sockets/10.200.0.1_first/proxy.sock"
+            assert len(os.fsencode(agent_socket)) < 104, agent_socket
+            # These bytes cannot boot a guest. The selected missing input (or
+            # missing executable) must prevent any helper from being spawned.
+            share = instance.root / "share"
+            share.mkdir(exist_ok=True)
+            for name in ("rootfs-base.ext4", "Image", "initramfs.cpio.gz"):
+                if name != missing_input:
+                    (share / name).write_bytes(b"prelaunch fixture, not a boot image\n")
+            if missing_input == "helper":
+                (instance.root / "bin/safeyolo-vm").unlink()
+                diagnostic = b"No such file or directory (os error 2)"
+            else:
+                diagnostic = f"missing agent boot input: {share / missing_input}".encode()
+        else:
+            diagnostic = f"installed rootfs tree is missing: {instance.root / 'share/rootfs-tree'}".encode()
         instance.environment.update(PATH=f"{instance.root / 'bin'}:/usr/bin:/bin",
                                     TERM="xterm-256color", SAFEYOLO_NATS_TEST_INSTANCE=f"launch-{tmp_path.name}")
         arguments = ["coord", "start"]
@@ -171,7 +197,11 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 os.write(master, b"n\n")
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Preparing the shipped harness setup" in output
+                assert diagnostic in output, output
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+            runtime = instance.root / "agents/first/runtime.json"
+            assert not runtime.exists()
+            assert json.loads(instance.cli("agent", "status", "first").stdout)["runtime_state"] == "stopped"
             policy_bytes = instance.policy.read_bytes()
             command = instance.root / "agents/first/home/.safeyolo-command"
             previous = command.stat()
@@ -182,7 +212,9 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Reusing agent first" in output
                 assert b"Preparing the shipped harness setup" not in output
+                assert diagnostic in output, output
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+            assert not runtime.exists()
             assert instance.policy.read_bytes() == policy_bytes
             assert command.stat().st_ino == previous.st_ino and command.read_bytes() == command_bytes
             command.unlink()
@@ -192,8 +224,10 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(tm
                 os.write(master, b"y\n")
                 until(b"Copy this selected host authentication and settings?")
                 os.write(master, b"n\n")
-                until(b"First-agent sandbox/harness startup failed", timeout=30)
+                output = until(b"First-agent sandbox/harness startup failed", timeout=30)
+                assert diagnostic in output, output
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+            assert not runtime.exists()
             assert command.read_bytes() == command_bytes
             # Explicit repair uses the existing TOML writer. Whitespace can
             # change, while every saved policy choice and agent field stays.

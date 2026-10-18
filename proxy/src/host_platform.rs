@@ -2059,12 +2059,12 @@ fn vz_boot_inputs(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) async fn start_sandbox(
+pub(crate) fn spawn_vz_helper(
     name: &str,
     ip: &str,
     memory_mb: u64,
     ephemeral: bool,
-) -> io::Result<()> {
+) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2205,11 +2205,19 @@ pub(crate) async fn start_sandbox(
         .truncate(true)
         .open(directory.join("serial.log"))?;
     let stderr = serial.try_clone()?;
-    let mut child = command
+    command
         .stdin(std::process::Stdio::null())
         .stdout(serial)
         .stderr(stderr)
-        .spawn()?;
+        .spawn()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) -> io::Result<()> {
+    let config = config_dir();
+    let directory = config.join("agents").join(name);
+    let status_dir = directory.join("status");
+    let control = config.join("data/vm-control").join(format!("{name}.sock"));
     let started = async {
         let mut identity = None;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
