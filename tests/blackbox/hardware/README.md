@@ -19,9 +19,16 @@ Those receipts qualify different explicit host selections. They preserve the
 failed VZ sampler, missing original KVM after-run metadata and separate stopped
 cleanup inspections. They do not establish a combined exact-release pass.
 
-The full consumers do not prove the complete cron entries. Latest automatic
-selection, deployed schedules, sanitized deployed publication and failure email
-remain unproved. Craig owns installation. Prepare the verified
+The [hosted 64-bit Arm (ARM64) consumer](https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-6244450863)
+selected the newest successfully staged compatible guest during quarantine,
+without input overrides.
+Its installed host and controller have separate source identities. That hosted
+result does not prove either hardware entry.
+
+The full consumers do not prove the complete cron entries. Automatic selection
+through these hardware entries, deployed schedules, sanitized deployed
+publication and failure email remain unproved. Craig owns installation.
+Prepare the verified
 [offline test inputs](INPUTS.md#bristol-trusted-account-and-confined-execution)
 before using the VZ entry. Do not install the superseded nightly build-on-Tart
 payload.

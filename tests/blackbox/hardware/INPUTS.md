@@ -5,9 +5,10 @@ These are the inputs for the two independent entries in the
 the reviewed candidate and deployment prerequisites. Complete retained
 Kernel-based Virtual Machine (KVM) and physical Apple Virtualization.framework
 (VZ) consumers are accepted at the separate selections linked in that guide.
-Installed cron, latest automatic selection, deployed publication and
-email delivery remain unproved. Missing artifacts or staging receipts fail the
-attempt. No build-on-Tart preparation belongs in this nightly consumer path.
+Installed hardware cron, automatic selection through these entries, deployed
+publication and email delivery remain unproved. Missing artifacts or staging
+receipts fail the attempt. No build-on-Tart preparation belongs in this nightly
+consumer path.
 
 ## Bind the trusted configuration
 
