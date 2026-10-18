@@ -95,10 +95,14 @@ def document(index: dict, kind: str, attachment: dict) -> dict:
     return json.loads(raw)
 
 
-def records(index: dict, kind: str) -> list[dict]:
+def referrers(index: dict, kind: str) -> list[dict]:
     result = json.loads(command("oras", "discover", "--format", "json", "--depth", "1", "--artifact-type", kind,
                                 f"{selection.GUEST_REPOSITORY}@{index['digest']}"))
-    return [document(index, kind, row) for row in result["referrers"]]
+    return result["referrers"]
+
+
+def records(index: dict, kind: str) -> list[dict]:
+    return [document(index, kind, row) for row in referrers(index, kind)]
 
 
 def stage(args: argparse.Namespace) -> dict:
@@ -236,17 +240,78 @@ def smoke_result(reports: Path, gate_url: str) -> dict:
             "gate_url": gate_url}
 
 
+def smoke_upload_context(default_branch: str) -> dict:
+    """Identify a trusted manual upload separately from platform execution."""
+    expected_ref = f"refs/heads/{default_branch}"
+    if (os.environ["GITHUB_REPOSITORY"] != selection.REPOSITORY
+            or os.environ["GITHUB_WORKFLOW_REF"] != f"{selection.REPOSITORY}/{selection.GUEST_WORKFLOW}@{expected_ref}"
+            or os.environ["GITHUB_REF"] != expected_ref or os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch"):
+        raise ValueError("retained smoke upload requires the default-branch guest workflow dispatch")
+    identity = producer("record-smoke")
+    run = selection.gh(f"actions/runs/{identity['run_id']}/attempts/{identity['run_attempt']}")
+    actor = os.environ["GITHUB_ACTOR"]
+    if (run["head_sha"] != os.environ["GITHUB_SHA"] or run["head_branch"] != default_branch
+            or run["path"] != selection.GUEST_WORKFLOW or run["event"] != "workflow_dispatch"
+            or run["run_attempt"] != identity["run_attempt"] or run["actor"]["login"] != actor):
+        raise ValueError("retained smoke upload origin differs from the authenticated dispatch")
+    verify_operator(actor)
+    return {"producer": identity, "source_revision": os.environ["GITHUB_SHA"],
+            "job_url": f"https://github.com/{selection.REPOSITORY}/actions/runs/{identity['run_id']}/job/{identity['job_id']}"}
+
+
+def matching_smoke(index: dict, result: dict, files: list[Path], default_branch: str) -> dict | None:
+    """Reuse a trusted passed receipt only when all four attached files match."""
+    for row in referrers(index, SMOKE):
+        prior = document(index, SMOKE, row)
+        if any(prior.get(key) != value for key, value in result.items()):
+            continue
+        verify_smoke_origin(prior, default_branch)
+        _, manifest = selection.manifest(f"{selection.GUEST_REPOSITORY}@{selection.digest(row['digest'])}")
+        reports = [layer for layer in manifest["layers"] if layer["mediaType"] == JSON]
+        if len(reports) != len(files):
+            continue
+        for number, path in enumerate(files):
+            layers = [layer for layer in reports if layer.get("annotations", {}).get("org.opencontainers.image.title") == f"{number}-{path.name}"]
+            if len(layers) != 1:
+                break
+            layer = layers[0]
+            raw = selection.capture("oras", "blob", "fetch", "--output", "-",
+                                    f"{selection.GUEST_REPOSITORY}@{selection.digest(layer['digest'])}")
+            selection.verify_bytes(raw, layer)
+            if raw != path.read_bytes():
+                break
+        else:
+            return prior
+    return None
+
+
 def record_smoke(args: argparse.Namespace) -> dict:
+    upload = None
+    if os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_JOB") == "record-smoke":
+        default_branch = branch()
+        upload = smoke_upload_context(default_branch)
     try:
         result = smoke_result(args.reports, args.gate_url)
     except (ValueError, KeyError, TypeError, OSError) as exc:
+        if upload is not None:
+            # Uploads need complete successful evidence. Installed consumers
+            # still retain their original failed attempts below.
+            raise
         frozen = json.loads((args.reports / "selection.json").read_bytes())
         result = {"schema": "safeyolo.guest-smoke/v1", "index_digest": frozen["guest"]["index"]["digest"],
                   "platform": frozen["platform"], "result": "failed", "finished_at": stamp(),
                   "controller_revision": frozen["controller_revision"], "gate_url": args.gate_url,
                   "reason": str(exc) if isinstance(exc, ValueError) else type(exc).__name__}
     index, _ = selection.manifest(f"{selection.GUEST_REPOSITORY}@{result['index_digest']}")
-    if os.environ.get("GITHUB_ACTIONS") == "true":
+    files = [args.reports / path for path in
+             ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
+             if (args.reports / path).is_file()]
+    if upload is not None:
+        prior = matching_smoke(index, result, files, default_branch)
+        if prior is not None:
+            return {"decision": "matching successful smoke retained", "smoke": prior, "upload": upload}
+        result.update(operator=os.environ["GITHUB_ACTOR"], upload=upload)
+    elif os.environ.get("GITHUB_ACTIONS") == "true":
         run_id, attempt = (int(os.environ[key]) for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
         jobs = selection.pages(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100", "jobs")
         running = [job for job in jobs if job["runner_name"] == os.environ["RUNNER_NAME"] and job["status"] == "in_progress"]
@@ -260,9 +325,7 @@ def record_smoke(args: argparse.Namespace) -> dict:
         actor = json.loads(command("gh", "api", "user"))["login"]
         verify_operator(actor)
         result["operator"] = actor
-    attach(index, SMOKE, result, [args.reports / path for path in
-                                 ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
-                                 if (args.reports / path).is_file()])
+    attach(index, SMOKE, result, files)
     return result
 
 

@@ -519,16 +519,50 @@ to the selected index. The physical hardware path uses the same
 together. The installed isolation section must pass, including owned cleanup.
 The result records the physical host ID and the actual host/helper/guest bytes.
 
-For a completed physical run, an authorized repository operator can attach
-those existing reports from a Linux maintainer checkout with the publisher tools
-and GHCR write access. Set `REPORTS` to that report directory and `GATE_URL` to
-its retained repository result link. No product build or second test is invoked:
+For a completed retained run, an authorized repository operator can attach
+those four reports through the existing Actions publisher. Use a Linux
+maintainer checkout with Python 3 and authenticated `gh`. The account must have
+repository write, maintain or admin permission. The workflow uses its own
+repository token for GHCR writes; no local registry login is needed.
+
+Set `REPORTS` to the report directory and `GATE_URL` to the original execution
+result link. Run this command after the workflow change is on default branch
+`master`. It sends only the four original UTF-8 report texts. It starts a
+serialized upload job without selecting a resolver, build, platform test or
+promotion job:
+
+```sh
+set -euo pipefail
+export REPORTS GATE_URL
+python3 - <<'PY' | gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master --json
+import json
+import os
+from pathlib import Path
+
+names = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
+texts = {name: (Path(os.environ["REPORTS"]) / name).read_bytes().decode("utf-8") for name in names}
+print(json.dumps({"activity": "record-smoke", "smoke_gate_url": os.environ["GATE_URL"],
+                  "smoke_reports": json.dumps(texts)}))
+PY
+```
+
+The job summary records the operator's attestation and identifies the upload
+run separately from the platform execution. The attached reports keep their
+original bytes, execution time, controller revision, host/package identities,
+guest descriptors and section outcomes. An exact successful attachment is
+retained without another write. Matching requires the same result fields and
+all four attached file bytes. Existing failed records remain available.
+Missing or failed reports and invalid operator or workflow origins fail the
+upload. The normal promotion age and evidence guards still apply.
+
+An operator with existing local publisher tools and GHCR write access can
+also attach completed physical evidence outside Actions:
 
 ```sh
 scripts/publish_guest_oci.sh --record-smoke --reports "$REPORTS" --gate-url "$GATE_URL"
 ```
 
-The attachment records the authenticated repository operator's attestation.
+Both paths record the authenticated repository operator's attestation.
 The guard checks the exact index, platform, compatible host identities and
 result. Missing physical access or reports holds promotion; source tests do not
 replace platform proof. Do not put credentials in receipts or report files.
