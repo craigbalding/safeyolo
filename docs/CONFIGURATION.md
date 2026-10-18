@@ -625,10 +625,12 @@ On the host, replace `AGENT` below with that agent's name and read the result:
 safeyolo logs --agent AGENT --lines 20 --json
 ```
 
-The `security.credential` event identifies `details.rule: synthetic-fixture`,
-`confidence: high`, `tier: 1`, a `hmac:` fingerprint and the policy decision.
-The audit event omits the token value. Check the destination's received request
-as well: an allowed request arrives; a blocked request must not arrive.
+The log view gives the event summary and request ID. Its `file` field names the
+host's full audit JSONL file. In that file, the `security.credential_guard`
+event identifies `details.rule: synthetic-fixture`, `confidence: high`,
+`tier: 1`, a `hmac:` fingerprint and the policy decision. The event omits the
+token value. Check the destination's received request as well: an allowed
+request arrives; a blocked request must not arrive.
 Without the family grant, use the host's approval commands to review the
 reported fingerprint and destination. See [credential approval](credentials.md#authorization-binding-and-risk-approval).
 

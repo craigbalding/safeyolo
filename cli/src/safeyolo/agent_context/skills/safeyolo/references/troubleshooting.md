@@ -51,7 +51,7 @@ The host operator checks and applies a complete candidate with `safeyolo policy
 check FILE`, `safeyolo policy apply FILE` and `safeyolo policy show`. Apply
 reloads detection without restarting. Check success alone does not prove a
 regex match: malformed regexes currently pass validation but are skipped.
-Use a synthetic request, its `security.credential` audit event and the
+Use a synthetic request, its `security.credential_guard` audit event and the
 controlled origin's received requests to check the actual result. The audit
 uses the rule name and a fingerprint, not the token value.
 

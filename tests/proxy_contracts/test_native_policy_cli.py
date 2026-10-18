@@ -407,7 +407,7 @@ def custom_credential_request(instance, origins, destination, *, token=None, sta
     deadline = time.monotonic() + 4
     while True:
         events = read_events(instance.root / "logs/audit.jsonl")
-        detected = [row for row in events if row["event"] == "security.credential"
+        detected = [row for row in events if row["event"] == "security.credential_guard"
                     and row.get("request_id") == request_id]
         if detected:
             break
@@ -432,7 +432,8 @@ def test_installed_credential_approval_keeps_destination_scope(tmp_path):
     # Route each logical destination to a separate maintained local origin.
     # This avoids making a positive control depend on localhost DNS/address order.
     with _peers(tmp_path / "peers") as (parent, origins, _), native_instance(
-        tmp_path, parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        tmp_path, source=CUSTOM_CREDENTIAL_POLICY,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
     ) as instance:
         candidate = tmp_path / "candidate"
         candidate.write_text(CUSTOM_CREDENTIAL_POLICY)
@@ -449,6 +450,13 @@ def test_installed_credential_approval_keeps_destination_scope(tmp_path):
         # the fingerprint and rule, with no token bytes.
         event = custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN,
                                           status=428, rule="synthetic-fixture")
+        logs = instance.cli("logs", "--agent", "alice", "--lines", "20", "--json")
+        assert logs.returncode == 0, logs.stderr
+        log_view = json.loads(logs.stdout)
+        assert Path(log_view["file"]) == instance.root / "logs/audit.jsonl"
+        assert any(row["request_id"] == event["request_id"]
+                   and row["event"] == "security.credential_guard" for row in log_view["events"])
+        assert CUSTOM_TOKEN not in logs.stdout
         pending = instance.admin("GET", "/admin/approvals")
         approval = next(row for row in pending["approvals"] if row.get("request_id") == event["request_id"])
         fingerprint = event["details"]["fingerprint"]
