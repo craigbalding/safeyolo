@@ -530,6 +530,128 @@ def test_installed_custom_credential_negative_controls(tmp_path, case):
             custom_credential_request(instance, origins, destination, token=token, status=428, rule=rule)
 
 
+@pytest.mark.parametrize("scheme", ["http", "https"])
+@pytest.mark.parametrize("case", ["opaque-default", "jwt-default", "jwt-opt-in"])
+def test_installed_unverified_oauth_rotation_requires_exact_approval(tmp_path, scheme, case):
+    """Synthetic bearer claims cannot establish issuer or destination authority."""
+    from tests.proxy_contracts.test_authority_consistency import _connect, _peers
+
+    def encoded(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    # These are forged fixtures, not captured Codex credentials or a claim
+    # about the format of a current Codex access token.
+    claimed_header = encoded({"alg": "RS256", "typ": "JWT"})
+    tokens = [
+        ".".join((claimed_header, encoded({
+            "iss": "https://auth.openai.com", "aud": "https://api.openai.com/v1",
+            "sub": "synthetic-worker", "jti": str(index),
+        }), "AbCdEf0123456789_-GhIjKl9876543210"))
+        for index in (1, 2)
+    ]
+    opaque = "AbCdEf0123456789_-GhIjKl9876543210-MnOpQrStUvWxYz"
+    api_key = "sk-proj-AbCdEf0123456789_-GhIjKl9876543210"
+    source = 'budget = 12000\n[hosts]\n"*" = {egress="allow", unknown_creds="prompt"}\n'
+    if case == "opaque-default":
+        tokens = [opaque + "-first", opaque + "-second"]
+    elif case == "jwt-opt-in":
+        source += '\n[controls.credentials.entropy]\nmin_charset_diversity = 0.0\n'
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=source,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance:
+        pid = instance.process.pid
+
+        def send(token=None, *, destination="allowed.invalid", expected=200, rule="unknown_secret", extra=None):
+            before = [len(origin.requests) for origin in origins]
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            headers.update(extra or {})
+            if scheme == "http":
+                status, response_headers, body = request(
+                    instance.paths["alice"], f"http://{destination}/v1/responses",
+                    method="POST", headers=headers, body=b"{}",
+                )
+            else:
+                status, stream = _connect(
+                    instance.paths["alice"], f"{destination}:443".encode(), destination,
+                    instance.root / "certs/mitmproxy-ca-cert.pem",
+                )
+                assert status == 200
+                with stream:
+                    fields = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+                    stream.sendall((f"POST /v1/responses HTTP/1.1\r\nHost: {destination}\r\n"
+                                    f"{fields}Content-Length: 2\r\nConnection: close\r\n\r\n{{}}").encode())
+                    response = http.client.HTTPResponse(stream)
+                    response.begin()
+                    status, response_headers, body = response.status, dict(response.getheaders()), response.read()
+            print(json.dumps({"case": case, "scheme": scheme, "method": "POST", "path": "/v1/responses",
+                              "host": destination, "status": status,
+                              "origin_delta": [len(origin.requests) - count for origin, count in zip(origins, before, strict=True)]}))
+            assert status == expected, (status, body)
+            counts = before.copy()
+            if status == 200:
+                index = (0 if destination == "allowed.invalid" else 1) + (2 if scheme == "https" else 0)
+                counts[index] += 1
+                if token:
+                    assert f"Authorization: Bearer {token}\r\n".encode() in origins[index].requests[-1]["head"]
+            assert [len(origin.requests) for origin in origins] == counts
+            if token is None:
+                return None
+            request_id = next(value for name, value in response_headers.items()
+                              if name.lower() == "x-safeyolo-request-id")
+            deadline = time.monotonic() + 4
+            while True:
+                events = read_events(instance.root / "logs/audit.jsonl")
+                rows = [row for row in events if row["event"] == "security.credential_guard"
+                        and row.get("request_id") == request_id]
+                if rows:
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+            decision = {200: "allow", 428: "require_approval", 403: "deny"}[expected]
+            event = next(row for row in rows if row["details"]["rule"] == rule and row["decision"] == decision)
+            assert event["agent"] == "alice" and event["host"] == destination
+            assert all(secret not in json.dumps(events) and secret.encode() not in body
+                       for secret in [*tokens, opaque, api_key])
+            print(json.dumps({"case": case, "scheme": scheme, "rule": rule,
+                              "tier": event["details"]["tier"], "decision": event["decision"]}))
+            return event
+
+        send()
+        send(destination="forbidden.invalid")
+        send(opaque, expected=428)
+        send(api_key, expected=428, rule="openai")
+        for token in tokens:
+            event = send(token, expected=428)
+            pending = instance.admin("GET", "/admin/approvals")
+            assert any(row.get("request_id") == event["request_id"] for row in pending["approvals"])
+            assert all(secret not in json.dumps(pending) for secret in [*tokens, opaque, api_key])
+            fingerprint = event["details"]["fingerprint"]
+            approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
+            assert approved.returncode == 0, approved.stderr
+            deadline = time.monotonic() + 4
+            while True:
+                shown = instance.show()
+                if shown["saved_matches_active"] and fingerprint in shown["effective"].get("hosts", {}).get("allowed.invalid", {}).get("allow", []):
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+            send(token)
+            send(token, destination="forbidden.invalid", expected=428)
+        send(tokens[1], expected=428, extra={"X-Api-Key": api_key})
+        instance.apply(instance.policy.read_text())
+        send(tokens[0])
+        send(opaque, expected=428)
+        denied = tomlkit.parse(instance.policy.read_text())
+        denied["hosts"]["allowed.invalid"]["rules"] = [{
+            "action": "credential:use", "resource": "allowed.invalid/*", "effect": "deny",
+        }]
+        instance.apply(tomlkit.dumps(denied))
+        send(tokens[0], expected=403)
+        assert instance.process.pid == pid and instance.process.poll() is None
+
+
 def test_rejected_apply_preserves_allowed_denied_saved_live_and_recovers(tmp_path):
     with origin_server() as origin, origin_server() as other, native_instance(tmp_path) as instance:
         source = scoped_policy(origin.server_address[1])
