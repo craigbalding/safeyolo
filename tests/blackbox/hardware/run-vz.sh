@@ -112,10 +112,11 @@ if [[ $trigger != collect ]]; then
         "$(dirname "$work")" "$(dirname "$states")" "$work" "$states" "$work/source" "$work/inputs" "$run_id" "$work/owner" "$work/controller.bundle"
     stage=transfer
     "${ssh_command[@]}" "$command" < "$attempt/controller.bundle" > "$attempt/transfer-private.log" 2>&1
-    printf -v command 'set -euo pipefail; tar -xf - -C %q; git -C %q init; git -C %q fetch %q HEAD; git -C %q checkout --detach FETCH_HEAD; ln -s %q %q; ln -s %q %q; printf "/.venv\\n/offline\\n" >> %q' \
+    # Guests mount only source; copy the verified fixtures inside that mount.
+    printf -v command 'set -euo pipefail; tar -xf - -C %q; git -C %q init; git -C %q fetch %q HEAD; git -C %q checkout --detach FETCH_HEAD; ln -s %q %q; cp -RLp %q %q; printf "/.venv\\n/offline\\n" >> %q' \
         "$work/inputs" "$work/source" "$work/source" "$work/controller.bundle" "$work/source" \
         "${VZ_TEST_ENV:?Set the verified offline development Python environment}" "$work/source/.venv" \
-        "${VZ_OFFLINE_TEST_INPUTS:?Set the verified architecture-matched guest test dependencies}" "$work/source/offline" "$work/source/.git/info/exclude"
+        "${VZ_OFFLINE_TEST_INPUTS:?Set the verified architecture-matched guest test dependencies}/." "$work/source/offline" "$work/source/.git/info/exclude"
     "${ssh_command[@]}" "$command" < "$attempt/inputs.tar" >> "$attempt/transfer-private.log" 2>&1
     env_options=(HOME=/Users/sy-agent USER=sy-agent PATH="${VZ_RUNTIME_PATH:?Set the verified offline runtime PATH}" LANG=C LC_ALL=C BASH_ENV=/dev/null
         SAFEYOLO_BLACKBOX_STATE_PARENT="$states" SAFEYOLO_GUEST_TEST_INPUTS=/workspace/offline

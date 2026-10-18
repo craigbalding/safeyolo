@@ -147,6 +147,64 @@ pathlib.Path(sys.argv[sys.argv.index('--artifacts')+1]).write_text(json.dumps(sy
     assert not (tmp_path / "handoff.json").exists()
 
 
+@pytest.mark.parametrize("missing", [False, True])
+def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing):
+    producer = tmp_path / "controller"
+    producer.mkdir()
+    (producer / "tracked").touch()
+    subprocess.run(["git", "init", "-q", str(producer)], check=True)
+    subprocess.run(["git", "-C", str(producer), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(producer), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "controller"], check=True)
+    work = tmp_path / "work $literal"
+    for name in ("source", "inputs"):
+        (work / name).mkdir(parents=True)
+    subprocess.run(["git", "-C", str(producer), "bundle", "create", str(work / "controller.bundle"), "HEAD"], check=True)
+    archive = tmp_path / "inputs.tar"
+    subprocess.run(["tar", "-cf", str(archive), "-C", str(producer), "tracked"], check=True)
+    supplier = tmp_path / "supplier"
+    supplier.mkdir(mode=0o755)
+    expected = {"debs/python.deb": b"verified Debian bytes", "wheels/pytest.whl": b"locked wheel bytes",
+                "mise-node/installs/node/22/bin/node": b"verified executable bytes"}
+    for name, content in expected.items():
+        path = supplier / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.chmod(0o755 if name.endswith("/node") else 0o644)
+    for path in supplier.rglob("*"):
+        if path.is_dir():
+            path.chmod(0o755)
+    node = supplier / "mise-node/installs/node/22/bin/node"
+    node.rename(tmp_path / "node-input")
+    node.symlink_to(tmp_path / "node-input")
+    inputs = tmp_path / "offline inputs $literal"
+    if not missing:
+        inputs.symlink_to(supplier, target_is_directory=True)
+    # Execute the actual SSH transfer block locally; no product or VM runs.
+    wrapper = (ROOT / "tests/blackbox/hardware/run-vz.sh").read_text()
+    transfer = wrapper[wrapper.index("    printf -v command 'set -euo pipefail; tar"):wrapper.index("    env_options=(")]
+    setup = 'umask 077; work=$1; VZ_TEST_ENV=$2; VZ_OFFLINE_TEST_INPUTS=$3; attempt=$4; ssh_command=(bash -c)\n'
+    result = subprocess.run(["bash", "-c", setup + transfer, "transfer", str(work), sys.prefix, str(inputs), str(tmp_path)],
+                            capture_output=True, text=True, timeout=10, check=False)
+    if missing:
+        assert result.returncode != 0
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    staged = work / "source/offline"
+    assert staged.is_dir() and not staged.is_symlink()
+    assert not any(path.is_symlink() for path in staged.rglob("*"))
+    # Removing the supplier paths must not break the guest-visible copy.
+    inputs.unlink()
+    node.unlink()
+    (tmp_path / "node-input").unlink()
+    for name, content in expected.items():
+        copied = staged / name
+        assert hashlib.sha256(copied.read_bytes()).digest() == hashlib.sha256(content).digest()
+        assert copied.stat().st_mode & 0o777 == (0o755 if name.endswith("/node") else 0o644)
+        assert all(parent.stat().st_mode & 0o005 == 0o005 for parent in copied.parents if parent.is_relative_to(staged))
+    clean = subprocess.check_output(["git", "-C", str(work / "source"), "status", "--porcelain"], text=True)
+    assert clean == ""
+
+
 def test_vz_lock_contender_does_not_execute_or_signal_current_owner(tmp_path):
     lock = tmp_path / "host.lock"
     work = tmp_path / "work"

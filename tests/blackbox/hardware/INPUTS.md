@@ -97,7 +97,7 @@ The private SSH key stays in the trusted account. Transfer uses SSH stdin.
 | `VZ_SSH_CONFIG` | Absolute path to the existing batch SSH configuration with alias `seatbelt-mac` |
 | `VZ_PYTHON` | Existing offline Python in `sy-agent`, able to run the trusted read-only probes |
 | `VZ_TEST_ENV` | Existing verified development Python environment for the pinned controller and its `uv.lock`; no product binaries or credentials |
-| `VZ_OFFLINE_TEST_INPUTS` | Existing architecture-matched Debian packages and locked wheels for the maintained guest test instruments |
+| `VZ_OFFLINE_TEST_INPUTS` | Existing architecture-matched Debian packages, locked wheels and verified `mise-node/` Node 22 installation/configuration for the maintained guest tests |
 | `VZ_NATS_BINARY` | Existing verified NATS test executable, available offline to `sy-agent` |
 | `VZ_RUNTIME_PATH` | Verified PATH for Bash, Git, tar and the offline Python/test tools |
 | `VZ_CA_BUNDLE` | Readable public CA bundle for absent inherited trust settings |
@@ -105,23 +105,21 @@ The private SSH key stays in the trusted account. Transfer uses SSH stdin.
 | `VZ_HELPER_TIMEOUT` | Positive per-helper deadline; set `900` to match the accepted full consumer; entry default is `120` seconds |
 | `VZ_OBSERVER_TIMEOUT` | Optional observer deadline; default 10800 seconds |
 
-Prepare and verify test instruments separately. The wrapper links their
-existing directories into the disposable checkout; it downloads no packages
-and compiles no product on Bristol. The test input link is explicit fixture
-provisioning, recorded as offline in `retained-run.json`. The raw retained guest
+Prepare and verify test instruments separately. The wrapper links the existing
+Python environment and copies guest test inputs into the disposable checkout.
+The guest installs those test dependencies offline, as recorded in
+`retained-run.json`. The entry compiles no product on Bristol. The raw retained guest
 archive is verified by digest before extraction. The host bundle's matching
 signed helper, guest helpers and package checksums are verified before use.
 
-**VZ deployment still has a source prerequisite.** `run-vz.sh` currently makes
-`source/offline` a symlink to the external `VZ_OFFLINE_TEST_INPUTS` directory,
-then passes `/workspace/offline` to the guest. Only the checkout is mounted at
-`/workspace`; an absolute host symlink outside that mount does not supply the
-guest's files. The accepted full consumer used a real, readable `source/offline`
-directory. Repair this staging step through source review before using the
-VZ entry. Its accepted inner consumer is not proof of the current entry's
-staging. Preserve package hashes and readable fixture modes in the staged copy;
-keep logs and state private. The existing [guest preparation instructions](../README.md#run-installed-sections-with-one-preparation)
-describe the guest-visible inputs.
+`run-vz.sh` copies `VZ_OFFLINE_TEST_INPUTS` into a real `source/offline`
+directory, then passes `/workspace/offline` to the guest. The copy follows input
+symlinks so their files remain available through the checkout mount. It
+preserves file bytes and modes. Verify the supplier's checksums and readable
+fixture modes before staging. Guest package hash checks remain enabled. Keep
+logs and state private. The existing [guest preparation instructions](../README.md#run-installed-sections-with-one-preparation)
+describe the guest-visible inputs. The accepted inner consumer used a real,
+readable directory; it did not prove the complete cron entry's staging.
 
 The trusted checkout must also be readable by `sy-agent` for its fixed wrapper,
 port and process-inspection commands. `sy-agent` needs the existing
@@ -134,9 +132,8 @@ must keep maintained Unix socket paths within macOS's 104-byte limit.
 
 ## Install the existing independent cron recipes
 
-These are the maintained installation recipes, not installed schedules. Resolve
-the VZ staging prerequisite above before enabling that entry. Craig installs
-each entry in its stated account. Before enabling an entry,
+These are the maintained installation recipes, not installed schedules. Craig
+installs each entry in its stated account. Before enabling an entry,
 create its private log directory, configure the actual tools' PATH, replace
 `REPLACE_WITH_OPERATOR_EMAIL`, and verify working `/usr/bin/mail` transport.
 Confirm the host's current timezone. These entries do not install themselves.

@@ -21,9 +21,9 @@ cleanup inspections. They do not establish a combined exact-release pass.
 
 The full consumers do not prove the complete cron entries. Latest automatic
 selection, deployed schedules, sanitized deployed publication and failure email
-remain unproved. Craig owns installation. Before using the VZ entry, resolve the
-[offline staging gap](INPUTS.md#bristol-trusted-account-and-confined-execution)
-in the existing entry. Do not install the superseded nightly build-on-Tart
+remain unproved. Craig owns installation. Prepare the verified
+[offline test inputs](INPUTS.md#bristol-trusted-account-and-confined-execution)
+before using the VZ entry. Do not install the superseded nightly build-on-Tart
 payload.
 
 ## Configure the existing hosts
