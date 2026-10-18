@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       activity:
-        description: Build and stage, consider eligible promotion, or copy a digest-only transport fixture
+        description: Build and stage, consider promotion, attach retained smoke, or copy a transport fixture
         type: choice
-        options: [build-stage, promote, transport-fixture]
+        options: [build-stage, promote, record-smoke, transport-fixture]
         default: build-stage
       compatibility:
         description: Guest compatibility identifier (nightly uses v1)
@@ -27,6 +27,12 @@ on:
         type: string
       transport_index:
         description: Exact retained seed index digest (transport fixture only)
+        type: string
+      smoke_reports:
+        description: JSON object with the four original report texts (record-smoke only)
+        type: string
+      smoke_gate_url:
+        description: Original installed execution result link (record-smoke only)
         type: string
 
 permissions:
@@ -244,6 +250,47 @@ jobs:
           printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           scripts/publish_guest_oci.sh --promote --compatibility "$COMPATIBILITY" --verifier proxy/target/release/examples/verify_guest_oci \
             --work-directory "$RUNNER_TEMP"
+
+  record-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'record-smoke' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore the four original report files
+        env:
+          SMOKE_REPORTS: ${{ inputs.smoke_reports }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          names = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
+          texts = json.loads(os.environ["SMOKE_REPORTS"])
+          if not isinstance(texts, dict) or set(texts) != set(names) or any(not isinstance(texts[name], str) for name in names):
+              raise ValueError("smoke_reports must contain exactly the four original report texts")
+          reports = Path(os.environ["RUNNER_TEMP"]) / "retained-reports"
+          (reports / "guest").mkdir(parents=True)
+          for name in names:
+              (reports / name).write_bytes(texts[name].encode("utf-8"))
+          PY
+      - name: Install the maintained publisher
+        run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Attach retained operator evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SMOKE_GATE_URL: ${{ inputs.smoke_gate_url }}
+        run: |
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          python3 scripts/guest_release.py record-smoke \
+            --reports "$RUNNER_TEMP/retained-reports" --gate-url "$SMOKE_GATE_URL"
 
   transport-fixture:
     if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'transport-fixture' }}
