@@ -342,8 +342,11 @@ def test_account_inspection_preserves_foreign_processes_and_reports_unknowns(mon
         macos.owned_account_processes(502, ["/owned/run"])
 
 
-@pytest.mark.parametrize("ownership", ["owned-inactive", "owned-active", "foreign"])
-def test_kvm_reconciliation_requires_inactive_exact_ownership(tmp_path, ownership):
+@pytest.mark.parametrize(("ownership", "held_lock"), [
+    ("owned-inactive", None), ("owned-active", None), ("foreign", None),
+    ("owned-inactive", "attempt"), ("owned-inactive", "provision"),
+])
+def test_kvm_reconciliation_requires_inactive_exact_ownership(tmp_path, ownership, held_lock):
     run_id = "a" * 32
     root, pool, jobs, tools = (tmp_path / name for name in ("attempts", "pool", "jobs", "tools"))
     for path in (root, pool, jobs, tools):
@@ -362,6 +365,14 @@ acquire_provision_lock() {{ exec 8>"$POOL_DIR/provision.lock"; flock -n 8; }}
 guest_lease_path() {{ printf '%s' "$POOL_DIR/lease"; }}
 '''
     (jobs / "_common.sh").write_text(common)
+    # The controlled KVM host uses real advisory locks on either test platform.
+    flock = tools / "flock"
+    flock.write_text(f'''#!{sys.executable}
+import fcntl, sys
+assert sys.argv[1] == '-n' and len(sys.argv) == 3
+fcntl.flock(int(sys.argv[2]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+''')
+    flock.chmod(0o755)
     virsh = tools / "virsh"
     virsh.write_text(f'''#!/bin/bash
 set -eu
@@ -384,8 +395,15 @@ touch {shlex.quote(str(pool / 'teardown-called'))}
 ''')
     config = tmp_path / "kvm.env"
     config.write_text(f"KVM_ATTEMPTS={shlex.quote(str(root))}\nHARNESS_JOBS={shlex.quote(str(jobs))}\n")
-    result = subprocess.run(["bash", str(ROOT / "tests/blackbox/hardware/run-kvm.sh"), "reconcile", str(attempt)],
-                            env=dict(os.environ, KVM_DEPLOYMENT_ENV=str(config), PATH=f"{tools}:{os.environ['PATH']}"),
-                            capture_output=True, text=True, timeout=10, check=False)
-    assert (result.returncode == 0) == (ownership == "owned-inactive"), result.stdout + result.stderr
-    assert (pool / "teardown-called").exists() == (ownership == "owned-inactive")
+    lock_path = pool / "provision.lock" if held_lock == "provision" else root / ".kvm.lock"
+    with lock_path.open("w") as lock:
+        if held_lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = subprocess.run(["bash", str(ROOT / "tests/blackbox/hardware/run-kvm.sh"), "reconcile", str(attempt)],
+                                env=dict(os.environ, KVM_DEPLOYMENT_ENV=str(config), PATH=f"{tools}:{os.environ['PATH']}"),
+                                capture_output=True, text=True, timeout=10, check=False)
+    reclaimed = ownership == "owned-inactive" and held_lock is None
+    assert (result.returncode == 0) == reclaimed, result.stdout + result.stderr
+    assert (pool / "teardown-called").exists() == reclaimed
+    assert (pool / f"{guest}.qcow2").exists() != reclaimed
+    assert (pool / "lease").exists() != reclaimed

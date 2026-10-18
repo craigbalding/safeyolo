@@ -146,14 +146,23 @@ print('controlled build tool')
         path = tools / name
         path.write_text(tool)
         path.chmod(0o755)
+    for name, value in (("uname", "Linux"), ("nproc", "1")):
+        path = tools / name
+        path.write_text(f"#!/bin/sh\nprintf '%s\\n' {value}\n")
+        path.chmod(0o755)
     inputs_path = tmp_path / "inputs.json"
     inputs_path.write_text('{}')
-    result = subprocess.run(["bash", str(builder / "build-kernel.sh")], capture_output=True, text=True, timeout=30,
-                            env={**os.environ, "PATH": f"{tools}:{Path(sys.executable).parent}:{os.environ['PATH']}",
-                                 "OUTPUT_DIR": str(output), "TMPDIR": str(tmp_path), "TEST_INPUTS": str(inputs_path)})
+    command = ["bash", str(builder / "build-kernel.sh")]
+    environment = {**os.environ, "PATH": f"{tools}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+                   "OUTPUT_DIR": str(output), "TMPDIR": str(tmp_path), "TEST_INPUTS": str(inputs_path)}
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, env=environment)
     assert result.returncode == 0, result.stderr
     assert (output / "Image").read_bytes() == b"fresh controlled kernel"
     assert (output / "provenance/kernel.config").read_bytes() == (builder / "defconfig").read_bytes()
+    (tools / "uname").write_text("#!/bin/sh\nprintf '%s\\n' Darwin\n")
+    refused = subprocess.run(command, capture_output=True, text=True, timeout=30, env=environment)
+    assert refused.returncode != 0 and "runs on Linux only" in refused.stderr
+    assert (output / "Image").read_bytes() == b"fresh controlled kernel"
 
 
 def test_frozen_input_keys_cannot_inject_shell_assignments():

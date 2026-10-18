@@ -2146,7 +2146,9 @@ def test_installed_section_host_collection_uses_prepared_runtime(
         runtime.parent.mkdir()
         runtime.write_text('#!/bin/sh\necho "selected runtime"\n')
         runtime.chmod(0o755)
-    shutil.copy2(ROOT / "tests/blackbox/conftest.py", scripts)
+    # Exercise the Linux runsc collection guard on either test host.
+    guard = (ROOT / "tests/blackbox/conftest.py").read_text()
+    (scripts / "conftest.py").write_text(guard.replace("sys.platform", repr("linux")))
     host = scripts / "host"
     host.mkdir()
     (host / "test_runtime.py").write_text('''import os, shutil, subprocess

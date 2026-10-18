@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import certifi
 import pytest
 
 from scripts import prepare_guest_transport_fixture
@@ -452,6 +453,9 @@ elif name=='umoci':
     (tree/'usr/share/keyrings').mkdir(parents=True)
     (tree/'usr/share/keyrings/debian-archive-keyring.gpg').write_bytes(b'fixture')
 elif name=='chroot':
+    if '/usr/bin/apt-get' in args:
+        assert 'Acquire::https::CaInfo=/tmp/safeyolo-build-ca.pem' in args
+        assert (pathlib.Path(args[0])/'tmp/safeyolo-build-ca.pem').read_bytes() == pathlib.Path(os.environ['SSL_CERT_FILE']).read_bytes()
     if '/usr/local/bin/mise' in args: print('1.2.3 fixture')
     if '/usr/local/bin/gh' in args: print('gh version 1.2.3 fixture')
     if 'update' in args and os.environ.get('APT_FAULT')=='update': sys.exit(100)
@@ -482,6 +486,7 @@ elif name=='rsync':
         for tool in ('mise','gh')}, 'debian':{'manifests':{architecture:{'reference':
             'docker://docker.io/library/debian@sha256:'+'c'*64}}}}))
     env = {**os.environ, "PATH": f"{tools}:{Path(os.sys.executable).parent}:{os.environ['PATH']}",
+           "SAFEYOLO_BUILD_PYTHON": sys.executable, "SSL_CERT_FILE": certifi.where(),
            "ARCH": architecture, "OUTPUT_DIR": str(output), "TMPDIR": str(work), "BUILD_CALLS": str(calls_path),
            "SKOPEO_PARSER": real_skopeo, "GUEST_INPUTS": str(inputs),
            "MISE_SHA256_AMD64": digest, "MISE_SHA256_ARM64": digest,
@@ -497,6 +502,7 @@ elif name=='rsync':
     assert any(arg.startswith("docker://docker.io/library/debian@sha256:") for arg in copies[0])
     assert (output / "build-base.txt").read_text() == "docker.io/library/debian@sha256:" + "d" * 64 + "\n"
     assert (output / "rootfs-tree").is_dir()
+    assert not (output / "rootfs-tree/tmp/safeyolo-build-ca.pem").exists()
     assert (output / "rootfs-base.ext4").is_file()
     assert (output / "cache-paths.txt").read_text() == "/var/cache/apt\n/var/lib/apt/lists\n"
     before = calls_path.read_bytes()
