@@ -62,9 +62,10 @@ There is no separate init, build or setup command after unpacking.
 
 The installer creates the `safeyolo` command in `$HOME/.local/bin` when that
 directory is already on your normal PATH. Otherwise it uses `/usr/local/bin`
-on Linux and Mac, and may ask for your normal sudo password to create the
-command entry. Linux guest extraction can also require sudo to preserve numeric
-ownership. The instance files remain owned by your account. New host
+on Linux and Mac. Creating the command directory and link uses sudo only when
+the nearest existing parent is not writable by your account. Linux guest
+acquisition uses sudo to extract the guest with its mapped owners and access
+permissions. The configuration remains owned by your account. New host
 terminals can run `safeyolo` without selecting a root or changing PATH.
 An unrelated existing command is preserved and reported with its recovery.
 
@@ -139,8 +140,16 @@ The default instance is `$HOME/.safeyolo`. `SAFEYOLO_CONFIG_DIR` or
 `SAFEYOLO_HOME` can select another root. The installer exposes `safeyolo` in
 `$HOME/.local/bin` or `/usr/local/bin` when that directory is already on PATH.
 It preserves unrelated commands and reports collisions. It can request sudo
-for required host preparation, the command entry and Linux guest ownership.
-Instance files remain owned by your account.
+for the host operations described in [Linux host preparation](#linux-host-preparation-in-new-source-bundles).
+The command directory and link use sudo only if their nearest existing parent
+is unwritable by your account. Configuration remains owned by your account;
+the Linux guest tree has mapped sandbox owners.
+
+The published `host-c5ce76019b6c997e282ab05cea0212b492e945d2` bundle says
+“Only these command-entry operations require sudo.” This is misleading:
+Linux host preparation and guest acquisition also use sudo.
+Current source corrects the message. It does not change installation actions,
+consent or privileges, and does not update an already published bundle.
 
 Put installer options before `--launch`. Arguments after it go to the existing
 `agent launch` command. Omitting `--launch` installs only. `--yes` accepts
@@ -179,6 +188,8 @@ accepted operations; they do not record another installed onboarding run.
 The selected guest was `guest-2026-10-16.1082`, `linux/amd64`, compatibility
 `v1`. The linked result records all package and guest identities. One task
 produced matching Write/result events and a 627-byte host `index.html`.
+That HTML task remains historical engineering evidence, separate from the
+README's public example.
 One task-free repeat returned to the same live runtime, launch and conversation
 in 3.086 seconds. This is selected-state evidence, not a whole-home guarantee.
 Earlier release, upgrade, refusal and retry proof retains its original scope.
@@ -461,10 +472,28 @@ The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
 Run the bundle's ordinary `install.sh` as your host account. Before changing
-Ubuntu, it lists missing packages, account ranges, file permissions and the
-AppArmor profile, then asks for consent. `--yes` accepts those listed changes
-for an unattended installation. It uses sudo only for required privileged
-operations. The proxy and agents continue to run without host root privilege.
+Ubuntu, it lists missing packages, subordinate account ranges, file permissions
+and the AppArmor profile, then asks for consent. `--yes` accepts those listed changes
+for an unattended installation. The proxy and agents run without host root
+privilege. Guest root maps to subordinate host user and group IDs, not host root.
+
+Host preparation uses sudo to run `apt-get` for missing packages, allocate
+missing unused user ID (UID) and group ID (GID) ranges, and install or load the
+required AppArmor profile. Runtime access uses `setfacl` to grant the selected
+sandbox IDs traversal through private parent directories and read/execute
+access to the selected runtime. This uses sudo only for paths your account
+does not own. Activation uses the same access helper for the installed path.
+The selected KVM backend also needs device access for its sandbox IDs, as
+described below.
+
+Linux guest acquisition separately uses sudo to extract the selected guest
+files with numeric owners and access control lists (ACLs), inspect those owners
+and ACLs, and remap them to your account's selected sandbox mapping when needed.
+These operations prepare the rootless guest filesystem. They do not give the
+agent host root privilege. If ordinary cleanup cannot remove a failed extraction
+stage because of its mapped owners, cleanup uses `sudo -n` for that newly
+created stage only. Completed host preparation remains if guest acquisition
+fails; retry reuses valid inputs.
 
 Preparation installs missing host tools from Ubuntu's existing package sources.
 It reuses suitable subordinate UID and GID ranges independently. If either
@@ -477,8 +506,8 @@ Where Ubuntu restricts unprivileged user namespaces, preparation installs and
 loads a separate AppArmor profile for this runtime's actual path. It grants
 only the selected mapped root UID needed access through private runtime
 directories. It preserves other users' and groups' effective file permissions.
-It keeps AppArmor enabled and does not change global namespace
-policy. For an explicitly selected KVM backend, set
+It keeps AppArmor enabled and checks global namespace settings without changing
+them. For an explicitly selected KVM backend, set
 `SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
 requires `/dev/kvm` and grants the mapped root GID required read/write access.
 It repairs a selected root UID denial if required and preserves other ACL

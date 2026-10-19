@@ -1,10 +1,14 @@
 # SafeYolo
 
-SafeYolo runs coding agents in isolated Linux sandboxes with controlled network
-and service access. Share a project directory and give the agent root access
-inside its sandbox to install tools, run browsers, start services and debug
-code. You choose its permissions. Works with Claude Code, OpenAI Codex, Pi
-and other coding agents.
+SafeYolo lets coding agents build, test and debug software with fewer
+interruptions inside isolated Linux sandboxes. Share a project directory and
+let the agent install tools, run commands, start services and use browsers.
+You choose its file, network and service access. Works with Claude Code,
+OpenAI Codex, Pi and other coding agents.
+
+The agent can have root inside its sandbox, without root on your host.
+Writable shared files are real host data: the agent can change or delete them.
+Use the terminal on a workstation or headless server; the Mac GUI is optional.
 
 [![CI](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/craigbalding/safeyolo/badge)](https://scorecard.dev/viewer/?uri=github.com/craigbalding/safeyolo)
@@ -27,48 +31,47 @@ belong to the earlier product.
 
 ## Quick start
 
-On Ubuntu 24.04 AMD64 (x86_64), use your ordinary sudo-enabled account with
-Bash, curl, tar and an existing Claude Code login on that host. In a host
-terminal, open a project directory you own, without `index.html` or
-`install-safeyolo.sh`.
+Use Ubuntu 24.04 AMD64 (x86_64), an ordinary sudo-enabled account, Bash, curl,
+tar and an existing host Claude Code login. Open a host terminal in your own
+project directory without `install-safeyolo.sh`.
 
-These commands download and run the official GitHub installer; you trust the
-project publisher. Run each separately. Stop if either fails.
+You trust the project publisher. Setup uses host sudo for missing packages and
+sandbox IDs, guest extraction and ownership, and AppArmor rules for the selected
+runtime's user namespaces. Selected sandbox IDs get traversal to the runtime and
+read/execute on its files. Setting these permissions uses sudo only on paths you
+do not own. Command linking uses sudo for an unwritable parent. Host changes are
+listed before consent. Run separately; stop on failure.
 
 ```sh
 curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
 bash install-safeyolo.sh --launch
 ```
 
-Setup explains host changes before sudo and asks before sharing files or
-copying login/settings. Copied credentials are readable inside the sandbox.
-Declining setup stops launch; you can decline copying and sign in inside Claude.
-Claude runs tools without per-tool prompts. First use can take several minutes.
-For access requests, follow SafeYolo's host prompts and read each effect before
-approving.
+Sharing and login/settings copying require consent. The sandbox can read copied
+credentials. Declining setup stops launch; copying is optional. You can sign in
+inside Claude. Claude skips tool prompts; read SafeYolo requests before
+approving. First use can take minutes.
 
 When Claude opens, send:
 
-> Create /workspace/index.html as a complete HTML page with the heading
-> "Hello from SafeYolo". Use no external dependencies.
+> Build and test a non-destructive command-line duplicate-file finder in
+> /workspace. Have it scan by content and report duplicate groups and
+> reclaimable space, without changing scanned files. Use installed tools
+> without adding dependencies. Create your own sample files, run the tool
+> on them inside the sandbox, and show the actual terminal results. Include
+> usage instructions.
 
 ### Check the result
 
-Follow the displayed terminal controls to return to your host.
-In the same project directory:
-
-```sh
-cat index.html
-```
-
-> Expected: a complete HTML page containing the heading "Hello from SafeYolo".
-
-Open `index.html` in your browser.
+> Expected: passing tests and a terminal report of the sample duplicate groups
+> and reclaimable bytes. The tool, tests and sample files remain in your shared
+> project directory.
 
 ## Everyday commands
 
-From the same project directory, run `safeyolo agent launch` to return to
-Claude. SafeYolo reuses the matching agent and its persistent home. Launching
+Follow the displayed terminal controls to return to your host. From the same
+project directory, run `safeyolo agent launch` to return to Claude.
+SafeYolo reuses the matching agent and its persistent home. Launching
 again does not upgrade it or resubmit a task. If a task fails, inspect its
 effects before submitting it again.
 

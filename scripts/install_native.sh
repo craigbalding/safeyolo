@@ -220,7 +220,7 @@ if ! $existing; then
 fi
 check_command_entry
 if ((${#command_install[@]})); then
-  echo "SafeYolo will create $command_dir if needed and link $command_entry to $command_target. Only these command-entry operations require sudo." >&2
+  echo "SafeYolo will use sudo to create $command_dir if needed and link $command_entry to $command_target because your account cannot write $command_parent. Linux host preparation and guest extraction use sudo separately." >&2
 fi
 ${command_install[@]+"${command_install[@]}"} mkdir -p "$command_dir"
 if ! $existing; then

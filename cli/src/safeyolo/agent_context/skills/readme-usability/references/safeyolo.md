@@ -26,6 +26,17 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
   Host changes, copied authentication and access scopes belong at the software's
   actual decisions, with refusal intact. Read the whole README as a new user;
   matching commands and word counts do not establish a clear path.
+- **Show useful independent work in the terminal.** Choose the first task for
+  its practical value to a prospect. Use permissions already in place and tools
+  available in the guest. Show implementation, testing and execution inside the
+  sandbox, including a visible terminal result on a headless server. Keep
+  engineering acceptance fixtures separate from public example selection;
+  a proposed task is not an executed witness.
+- **Judge the whole page.** Within the existing exact-head review, Lens must
+  lead with an editorial verdict on clarity, relevance, restraint, practical
+  value and first-use flow. Read first use and the return path together.
+  Relay requires that verdict before integration. Checks support the verdict;
+  skill reads, passing checks and word counts do not establish usability.
 - **Use one product name.** Under #1053, the product is SafeYolo. Use
   `SafeYolo`, `proxy`, `installer`, `release` and `settings` as appropriate.
   Do not describe a separate “native” edition. This owner decision takes
@@ -56,11 +67,25 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
 
 ## Operational examples and evidence
 
+Craig rejected these main-README examples under #1053:
+
+- Fixture hashes and redundant default flags in normal commands: they make
+  prospects reproduce an engineering fixture instead of using the public entry.
+- A compressed approval-console tutorial and internal qualification narration:
+  they displace useful first work and make readers interpret factory evidence.
+  Do not manufacture an access request or approval pause as the demonstration.
+- Creating `index.html`, then “Open `index.html` in your browser”: this assumes
+  a GUI and asks the user to open untrusted agent output on the host. Keep
+  generated-code execution inside the sandbox. A project summary or toy
+  artifact is not a sufficient replacement merely because it is easy to test.
+
 Before enabling an entry, explain changes to authentication, forwarding, and
 login behaviour. Document the actual scope of rollback, including changes that
 remain after a helper fails. Put failure-specific prerequisites before recovery
 commands. Inspect the implementation rather than assuming an installer handles
-account checks, ACLs, or every setup stage.
+account checks, access control lists (ACLs), or every setup stage. Explain which
+host actions use sudo and why before the relevant action. Distinguish those
+operations from root privilege inside the guest.
 
 An SSH `id` result establishes account identity, not filesystem or network
 confinement. A health endpoint establishes only what it checks. Use the recorded
