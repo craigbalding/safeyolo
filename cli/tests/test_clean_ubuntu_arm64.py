@@ -26,7 +26,8 @@ def test_stock_image_requires_both_pinned_size_and_hash(tmp_path):
         with pytest.raises(ValueError, match="size or SHA256"):
             m.verify_image(image)
         image.write_bytes(b"verified stock disk" + b"extra")
-        with pytest.raises(ValueError, match="size or SHA256"):
+        with patch.object(m, "IMAGE_SHA256", hashlib.sha256(image.read_bytes()).hexdigest()), \
+                pytest.raises(ValueError, match="size or SHA256"):
             m.verify_image(image)
 
 

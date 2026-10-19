@@ -66,7 +66,6 @@ def main():
     def interrupted(signum, frame):
         raise KeyboardInterrupt("Fixture interrupted; stopping its owned VM.")
 
-    signal.signal(signal.SIGTERM, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True, help="new private directory on disk-backed storage")
     parser.add_argument("--observer-source", required=True, help="exact source commit, separate from packaged product")
@@ -123,6 +122,7 @@ def main():
     vm = None
     accessible = False
     save()
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         run(["curl", "--fail", "--location", "--proto", "=http,https", "--proto-redir", "=http,https",
              "--max-time", "240", "--output", image, IMAGE_ARCHIVE_URL], 250)
@@ -144,7 +144,9 @@ def main():
                    "-serial", f"file:{work / 'serial.log'}",
                    "-drive", f"if=virtio,format=qcow2,file={overlay}",
                    "-drive", f"if=virtio,format=raw,file={seed}", "-device", "virtio-rng-pci",
-                   "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{args.ssh_port}-:22"]
+                   "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{args.ssh_port}-:22",
+                   # Boot from the stock disk, without an unused PXE ROM dependency.
+                   "-device", "virtio-net-pci,netdev=net0,romfile="]
         with (work / "qemu.stderr").open("wb") as errors:
             vm = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors)
         report["vm"] = {"pid": vm.pid, "command": command, "started": stamp()}
@@ -170,7 +172,10 @@ def main():
         here = Path(__file__).resolve().parent
         run(scp + [here / "ubuntu_onboarding.py", "ubuntu@127.0.0.1:observer/"], 30)
         run(scp + [here / "harness/process_identity.py", "ubuntu@127.0.0.1:observer/harness/"], 30)
-        observer = ["python3", "-I", "-B", "observer/ubuntu_onboarding.py", "--host", HOSTNAME,
+        # The remote deadline ends the observer before SSH recovery starts.
+        # Killing only the outer SSH client could leave the observer writing.
+        observer = ["timeout", "--signal=INT", "--kill-after=120s", "23m",
+                    "python3", "-I", "-B", "observer/ubuntu_onboarding.py", "--host", HOSTNAME,
                     "--platform", "linux-arm64", "--observer-source", args.observer_source,
                     "--observation-dir", "/home/ubuntu/onboarding-observation"]
         report["vm"]["observer_started"] = stamp()
