@@ -57,6 +57,22 @@ class ObserverChecks(unittest.TestCase):
             rows = [rows[0], {"type": "assistant", "message": {"content": [{"type": "text", "text": error}]}}]
         return rows, body
 
+    def test_signed_out_accounting_counts_controls_without_claiming_a_task_or_human_time(self):
+        m.x.update(product_commands=[{"command": m.DOWNLOAD}, {"phase": "cold"}, {"phase": "warm"}],
+            interactions=[{"phase": "cold", "prompt": "Allow host changes?", "seen": m.stamp(), "sent": m.stamp()},
+                          {"phase": "warm", "kind": "return to host", "answer": "Ctrl-b d"},
+                          {"phase": "warm", "kind": "keep session and exit", "answer": "q"}])
+        m.record_reading("cold", "normal instructions", m.SIGNED_OUT_PROSE.encode())
+        m.signed_out_accounting()
+        self.assertEqual(m.x["counts"]["cold_product_commands"], 2)
+        self.assertEqual(m.x["counts"]["warm_product_commands"], 1)
+        self.assertEqual(m.x["counts"]["product_interactions"], 3)
+        self.assertEqual(m.x["counts"]["material_decisions"], 1)
+        self.assertEqual(m.x["counts"]["canonical_task_submissions"], 0)
+        self.assertEqual(m.x["counts"]["required_reading_words"], len(m.SIGNED_OUT_PROSE.split()))
+        self.assertNotIn("cold_total_to_first_task_seconds", m.x["timings"])
+        self.assertIn("do not measure human", m.x["timings"]["wait_limit"])
+
     def test_canonical_submission_write_result_and_file_must_match_in_order(self):
         rows, body = self.canonical_task()
         self.assertTrue(m.task_records(rows, body)["successful_task"])

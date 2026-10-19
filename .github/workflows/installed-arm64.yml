@@ -14,6 +14,7 @@ on:
           - retained
           - draft-offline
           - public-install
+          - clean-public-install
           - installed-update
       host_run:
         description: Optional exact default-branch production run for retained mode
@@ -49,6 +50,43 @@ env:
   GUEST_COMPATIBILITY: v1
 
 jobs:
+  clean-public-install:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'clean-public-install'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CLEAN_UBUNTU_WORK: ${{ runner.temp }}/clean-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install VM instruments on the outer runner only
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends qemu-system-arm qemu-utils qemu-efi-aarch64 cloud-image-utils
+          qemu-system-aarch64 --version
+          dpkg-query -W qemu-system-arm qemu-utils qemu-efi-aarch64 cloud-image-utils
+      - name: Observe public installation in a stock Ubuntu ARM64 VM
+        shell: bash
+        run: |
+          umask 077
+          env -u GH_TOKEN -u GITHUB_TOKEN timeout --signal=INT --kill-after=180s 41m \
+            python3 -I -B tests/blackbox/clean_ubuntu_arm64.py \
+            --work-dir "$CLEAN_UBUNTU_WORK" --observer-source "$GITHUB_SHA"
+      - name: Retain reached clean-OS observations, including failures
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: clean-public-install-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          # No disk, private key, authentication, terminal or private state upload.
+          path: |
+            ${{ env.CLEAN_UBUNTU_WORK }}/reports/fixture.json
+            ${{ env.CLEAN_UBUNTU_WORK }}/reports/observation.json
+          retention-days: 30
+          if-no-files-found: error
+
   installed-update:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'installed-update'
     runs-on: ubuntu-24.04-arm

@@ -59,6 +59,11 @@ CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 AMD64 with curl 
     "Ctrl-b then d opens SafeYolo's host controls. Use a to inspect pending requests and their scope before approving. "
     "Press Enter to return. After the first task, detach and use q to keep the session. "
     "Repeat the second command to return to it.")
+SIGNED_OUT_PROSE = ("Use an ordinary account on a fresh Ubuntu 24.04 host with curl and bash. "
+    "Review the host changes and workspace access before consenting. "
+    "This observation declines authentication copy and stops at the sign-in screen. "
+    "Ctrl-b then d opens the host controls. Use q to keep the session. "
+    "Repeat the second command to return to it.")
 DOWNLOAD = ["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
             "--output", "install-safeyolo.sh",
             f"https://raw.githubusercontent.com/craigbalding/safeyolo/{BOOTSTRAP}/install.sh"]
@@ -903,8 +908,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 ]:
                     if terminal_open and label not in completed and prompt.encode() in pending:
                         seen = stamp()
-                        if connected:
-                            record_reading(phase, label + " consent")
+                        record_reading(phase, label + " consent")
                         os.write(fd, answer.encode())
                         x["interactions"].append({"phase": phase, "prompt": prompt,
                                                   "answer": answer.strip(), "seen": seen, "sent": stamp()})
@@ -914,8 +918,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 theme = theme_prompt(pending)
                 if terminal_open and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
                     seen = stamp()
-                    if connected:
-                        record_reading(phase, "guest display choice")
+                    record_reading(phase, "guest display choice")
                     os.write(fd, b"\r")
                     x["interactions"].append({"phase": phase, "kind": "guest display choice",
                         "prompt": theme, "answer": "Enter (default theme)", "seen": seen, "sent": stamp()})
@@ -950,18 +953,15 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     os.write(fd, b"\x02d")
                     detached = True
                     row["viewer_detach"] = stamp()
-                    if connected:
-                        x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
+                    x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
                     pending = b""
                     deadline = time.monotonic() + 30
                     save()
                 if terminal_open and detached and b"SafeYolo host> " in pending and "q" not in completed:
-                    if connected:
-                        record_reading(phase, "host return controls")
+                    record_reading(phase, "host return controls")
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
-                    if connected:
-                        x["interactions"].append({"phase": phase, "kind": "keep session and exit", "answer": "q", "sent": stamp()})
+                    x["interactions"].append({"phase": phase, "kind": "keep session and exit", "answer": "q", "sent": stamp()})
                     completed.add("q")
                     pending = b""
                     save()
@@ -1101,6 +1101,27 @@ def preparation_accounting(path):
     x["preparation"] = data
     save()
     return data
+
+
+def signed_out_accounting():
+    """Keep counts and measured intervals without claiming a first task."""
+    cold = [row for row in x["product_commands"] if row.get("phase") != "warm"]
+    warm = [row for row in x["product_commands"] if row.get("phase") == "warm"]
+    x["counts"] = {"cold_product_commands": len(cold), "warm_product_commands": len(warm),
+        "product_interactions": len(x["interactions"]),
+        "material_decisions": sum(bool(row.get("prompt")) for row in x["interactions"]),
+        "required_reading_words": sum(row["words"] for row in x.get("required_reading", [])),
+        "canonical_task_submissions": 0,
+        "observer_diagnostic_commands": len(x["observations"]),
+        "reading_method": "Displayed instructions and terminal text; command echoes excluded. Repeated text counts again.",
+        "limits": "Signed-out endpoint only. No human reading duration or complete first-task command count is claimed."}
+    timings = x.setdefault("timings", {})
+    timings.update(phase_boundaries=x["phase_observations"],
+        automated_interaction_intervals=[row for row in x["interactions"] if row.get("seen")],
+        observer_intervals=[{"label": row["label"], "started": {key: row[key] for key in ["at", "monotonic"]},
+                             "ended": row.get("ended")} for row in x["observations"]],
+        wait_limit="Phase observations are sampled bounds. Automated responses do not measure human reading or provider-only waits.")
+    save()
 
 
 def connected_accounting():
@@ -1358,6 +1379,7 @@ def main():
         return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
     try:
         observe("baseline-sudo-noninteractive", ["sudo", "-n", "true"], 5)
+        record_reading("cold", "signed-out observation instructions", SIGNED_OUT_PROSE.encode())
         started = time.monotonic()
         first = observe("bootstrap-download", DOWNLOAD, 60)
         x["product_commands"].append(first)
@@ -1429,6 +1451,10 @@ def main():
         try:
             cleanup()
         finally:
+            for phase in ["cold", "warm"]:
+                if (private / (phase + ".terminal")).is_file():
+                    record_reading(phase, "remaining terminal output")
+            signed_out_accounting()
             x["ended"] = stamp()
             save()
     return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
