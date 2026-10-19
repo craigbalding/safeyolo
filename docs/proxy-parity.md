@@ -808,7 +808,7 @@ SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
 
 The Rust fixture launches `safeyolo-proxy --config PATH`. The JSON configuration
 provides `listeners` with `agent_id` and `socket_path`, `readiness_file`,
-`event_log`, and `policy_file` for native network policy. Optional
+`audit_log_path`, and `policy_file` for native network policy. Optional
 `parent_proxy`, `upstream_ca_file` and `via_token` select upstream transport.
 `tls_ca_file` selects an existing combined CA PEM for the development HTTPS path.
 The listener configuration supplies identity; request headers cannot select it.
@@ -834,8 +834,8 @@ Native guard responses preserve the source JSON bytes, status and headers.
 The shared audit writer emits canonical `security.network_guard` records for
 deny, warn, approval-required, budget and homoglyph decisions, plus allowed
 CONNECT admission. Ordinary allowed HTTP emits no network security event.
-Development `proxy.network_guard` diagnostics retain the guard intents without
-raw queries or application bytes. Approval persistence and the production pipeline are tracked by accepted issue
+Canonical `security.network_guard.evaluated` events retain evaluation metadata
+without copying security intents, raw queries or application bytes. Approval persistence and the production pipeline are tracked by accepted issue
 results and the final #640 release gates. The bounded local API reads are
 described below.
 
@@ -886,9 +886,8 @@ Operator replies use Python's indented JSON presentation and the shared scalar
 formatter. GET borrows the stored document into one sized, zeroizing response
 allocation. Task document owners and API outcomes omit Debug and general serialization.
 The shared canonical writer emits failed-authentication and accepted-task-update
-events without raw task documents or bearer values. Separate development
-`proxy.admin_api` diagnostics retain the intents. Diagnostic write failures
-preserve the response and set `X-SafeYolo-Evidence-Error`. Synchronous canonical
+events without raw task documents or bearer values. Redundant admin diagnostic
+copies are removed. Synchronous canonical
 submission exceptions terminate the operator handler before its response;
 accepted task mutations remain committed.
 
@@ -1127,11 +1126,11 @@ Reset and atomic budget charging use the same lock across live policy snapshots.
 Reset commits before canonical `admin.budget_reset` and `admin.budgets_reset`
 submission, in that order. A synchronous failure at the first submission returns
 the source fixed 500 and suppresses the second event; a failure at the second
-terminates the handler. Neither failure rolls back the reset. A failed diagnostic write sets
-`X-SafeYolo-Evidence-Error` on the successful response; it does not roll back the
-reset. The [operator transport test](../proxy/tests/admin_transport.rs) exercises
-an actual failing diagnostic sink and recovery. Canonical worker sink failure
-uses the writer's asynchronous fallback and preserves the producer result.
+terminates the handler. Neither failure rolls back the reset.
+The [operator transport test](../proxy/tests/admin_transport.rs) checks the
+canonical reset events. [Writer lifecycle controls](../proxy/src/audit_runtime_tests.rs)
+cover sink failure and recovery. The canonical worker reports file errors to
+stderr asynchronously and preserves the producer result.
 
 The operator report preserves the source connection termination on reporting
 failure, while Agent `/budgets` retains its own error response. With the explicit
@@ -1623,8 +1622,9 @@ uses an absolute URI with IDNA authority, while the source preserves origin-form
 in this case. Wire fixtures assert both exact forms and the unchanged path/query.
 
 The fixture checks decisions, delivered bytes, destination ports, generated
-IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
-migration evidence, not replacements for production JSONL or traffic APIs.
+IDs and trusted attribution. The native fixture reads `traffic.request_outcome`
+and `traffic.egress` from the canonical event log. The historical Python
+comparator's diagnostic names remain part of its frozen migration evidence.
 The shared [HTTP/1.1 response-handoff fixture](../tests/proxy_contracts/test_http1_handoff_contract.py)
 holds a chunked event response after its first client-visible bytes. The client
 then closes, and the origin observes its own connection closing. A completed
@@ -1900,12 +1900,12 @@ The authenticated `/circuits` response reads that same owner. Existing operator
 POST `/admin/circuit-breaker/reset` deletes an exact host key without clearing
 lifetime counters or settings. Missing or falsy host fields return 400. Reads can
 advance stale circuits and emit unscoped canonical transitions. Circuit operations
-submit canonical events at their source mutation points. Development
-`proxy.circuit` records remain separate diagnostics. Reset submits its ops event
+submit canonical events at their source mutation points. Redundant circuit
+diagnostic copies are removed. Reset submits its ops event
 before the separate admin event; a non-string host uses the source minimal
-validation-fallback envelope for the ops event. Diagnostic write failure preserves committed state and valid response
-bytes. A failure known before headers adds `X-SafeYolo-Evidence-Error`; a later
-failure produces a content-free diagnostic.
+validation-fallback envelope for the ops event. Canonical writer failures use
+the existing submission and worker reporting paths. A failure does not roll
+back a committed circuit transition.
 
 Settings come from top-level `addons.circuit_breaker` fields. Refresh remains
 lazy: an unchanged hash skips, omitted fields retain their values, and exclusions
@@ -2023,8 +2023,8 @@ content yields an empty snippet. Content decoding does not change forwarded byte
 [Native HTTP tests](../tests/proxy_contracts/test_http_test_context.py) exercise
 the complete forwarding path. Parser and application tests cover resets,
 unread responses, body replay, counter ordering and evidence failures separately.
-These are implementation evidence. TestContext security events still use the
-development diagnostic sink. Non-string YAML target keys and lone JSON surrogates remain
+These are implementation evidence. TestContext security events use the
+canonical audit writer. Non-string YAML target keys and lone JSON surrogates remain
 frontend gaps. Late evidence failures cannot change headers already delivered.
 Independent acceptance and production cutover remain outstanding.
 
@@ -2242,14 +2242,15 @@ reached core operation. Open, reopen and close increment their counters before
 submission and publish their new state afterward. Half-open publishes state
 before submission; a synchronous failure then prevents the later admission slot
 or next stats entry. Reset commits before its events. Successful returned
-transition intents are already submitted and receive only separate diagnostics.
+transition intents are already submitted and are not copied into another event.
 Ops events have no attribution or decision. Response transitions carry optional
 request metadata only after its request hook has run; early responses do not
-borrow the unconditional native diagnostic ID. Circuit denial events use trusted
+borrow the unconditional ingress request ID. Circuit denial events use trusted
 UDS attribution. D55's early admission remains distinct from source body timing.
 
 TestContext decision and applied request/response events now use the canonical
-writer. Applied events have no decision or attribution object. Request metadata
+writer. Applied events retain trusted ingress attribution and have no decision.
+Request metadata
 is installed before decoding and submission; a synchronous failure retains that
 metadata but stops the terminal context counters and later request logging.
 A subsequent response can still use the metadata. Response decoding or
@@ -2280,10 +2281,10 @@ The write receipt does not promise filesystem sync or crash durability.
 checks all three stateless routes against the native admin and retained watch
 views before and after destination recovery in one process.
 
-The native `X-SafeYolo-Evidence-Error` header reports selected diagnostic failures.
-It does not cover every canonical submission exception: circuit hook failures
-and a TestContext head-hook failure can omit the header while preserving their
-existing hook continuation.
+The native `X-SafeYolo-Evidence-Error` header reports selected failures known
+before response headers are sent. It does not cover asynchronous worker file
+errors. Some hook failures keep their existing continuation and can omit the
+header.
 
 [Circuit source controls](../proxy/tests/circuit_audit_order_source.py),
 [TestContext source controls](../proxy/tests/test_context_audit_source.py),
@@ -2833,8 +2834,8 @@ otherwise allowed connection. A failed start submission still leaves an end
 attempt due. Failed error/end submissions do not resurrect their sessions.
 The [transport owner](../proxy/src/http/ignored_host.rs) closes its socket before
 finalizing evidence and uses the existing shutdown lifetime. It adds no timer,
-body reader or permission decision. Legacy `proxy.tunnel` diagnostics remain
-separate from these canonical events.
+body reader or permission decision. The canonical `traffic.tunnel` event retains
+relay coverage, byte counts, duration and outcome in the same event log.
 Abrupt task teardown has no final-event drain guarantee.
 
 The current runtime scope excludes ordinary HTTP connections and inner-Host
@@ -2849,17 +2850,17 @@ remains unchanged.
 Native connection-error wording and cancellation reasons can differ from the
 Python stack. A canceled pending native attempt uses `connection cancelled`;
 this does not establish source hook/semaphore cancellation equivalence.
-A failure in the native pre-dial diagnostic write is reported as an attempt
-error while retaining its existing transport failure; the source has no
-identical diagnostic stage.
+A failed route-observation submission is reported to stderr and does not revoke
+admitted transport. Missing event evidence does not establish a route or a
+successful connection. The historical Python source has no identical stage.
 
 The focused `configured_passthrough_entry_does_not_bypass_parent_route` control
 adds one real parent-parity witness: an exact `127.0.0.1:<origin-port>`
 passthrough entry selects opaque transport while still sending the CONNECT and
 client payload to the configured parent. An independently listening origin
 accepts zero connections. The parent records the logical authority and its
-loopback peer. The single `proxy.egress` event keeps the logical host and port
-with `route: "parent"`, and the canonical start/end pair uses the logical
+loopback peer. The single `traffic.egress` event keeps the logical host and port
+with `details.route: "parent"`, and the canonical start/end pair uses the logical
 destination. Companion controls cover a verified TLS parent, a configured SNI
 alias through a parent, a same-host different-port neighbor, and exact
 parent-address/CIDR entries for an unrelated destination. A parent refusal
@@ -2890,7 +2891,7 @@ a native TLS fatal alert and then an EOF. The controlled unconfigured origin
 receives zero bytes from all three unconfigured connections. The native egress
 log records one direct configured dial and three direct unconfigured dials. The
 canonical passthrough log records only the configured start/end pair and no
-passthrough error. The only `proxy.tunnel` record is the configured opaque
+passthrough error. The only `traffic.tunnel` record is the configured opaque
 endpoint. This proves that a client-rejected interception handshake and one
 malformed TLS-handshake record do not become opaque forwarding.
 Upstream-verification, parent-route and other invalid-interception cases remain

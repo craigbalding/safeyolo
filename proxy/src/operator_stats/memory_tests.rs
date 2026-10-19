@@ -18,7 +18,6 @@ fn runtime(directory: &std::path::Path) -> Runtime {
         "data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "flow_store_enabled":false,
         "flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_state_file":""

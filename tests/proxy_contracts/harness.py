@@ -37,14 +37,14 @@ def read_events(path):
 @dataclass
 class RunningProxy:
     paths: dict[str, str]
-    event_log: Path
+    audit_log: Path
     process: subprocess.Popen
     readiness_file: Path
     # Kept for historical resource comparisons; current native runs have no child adapter.
     policy_process: subprocess.Popen | None = None
 
     def events(self, kind):
-        return [row for row in read_events(self.event_log) if row["event"] == kind]
+        return [row for row in read_events(self.audit_log) if row["event"] == kind]
 
 
 @contextmanager
@@ -166,7 +166,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             # back to the host's /safeyolo/data path.
             "readiness_file": str(directory / "ready"),
             "audit_log_path": str(directory / "audit.jsonl"),
-            "event_log": str(directory / "events.jsonl"),
             # Keep native policy/evidence state inside this fixture. The Rust
             # default (/safeyolo/data) is unavailable in ordinary runs.
             "data_dir": str(directory / "data"),
@@ -205,7 +204,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
         env = os.environ.copy()
         env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         if agent_api:
-            api_data = directory / "api-data"
+            api_data = Path(config["data_dir"]) if native_product else directory / "api-data"
             api_data.mkdir(exist_ok=True)
             if agent_api_token is not None:
                 token_file = api_data / "agent_token"
@@ -267,7 +266,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             readiness_file=readiness,
             expected_backend="rust-m2",
         )
-        yield RunningProxy(paths, Path(config["event_log"]), process, readiness)
+        yield RunningProxy(paths, Path(config["audit_log_path"]), process, readiness)
 
 
 def connection(path):

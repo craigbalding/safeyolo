@@ -394,9 +394,9 @@ def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend,
             assert any(row["event"] == "security.credential_guard" and row["host"] == ALLOWED
                        and row["decision"] == "allow" for row in audit)
             if proxy_backend == "rust":
-                egress = proxy.events("proxy.egress")
+                egress = proxy.events("traffic.egress")
                 assert egress
-                assert all(row["host"] == ALLOWED and row["port"] == 80 and row["route"] == "parent"
+                assert all(row["host"] == ALLOWED and row["details"]["port"] == 80 and row["details"]["route"] == "parent"
                            for row in egress)
         # The peer itself must route an authored conflicting Host to the other
         # physical origin. This checks the observer without proxy behavior.
@@ -524,7 +524,7 @@ def test_inner_port_and_root_dot_authorities_do_not_inherit_connect(proxy_backen
                     assert forbidden.accepts == 0 and forbidden.requests == []
                     # Python's lazy strategy may reject before opening its
                     # parent leg; any leg that opens must keep the outer route.
-                    assert all(row["target"] == outer and row["route"] == "allowed-tls"
+                    assert all(row["target"] == outer and row["details"]["route"] == "allowed-tls"
                                for row in parent.requests)
 
             # Omitting the default port is a valid spelling of this endpoint.
@@ -732,9 +732,9 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             assert any(row["event"] == "security.credential_guard" and row["host"] == ALLOWED
                        and row["decision"] == "allow" for row in audit)
             if proxy_backend == "rust":
-                egress = proxy.events("proxy.egress")
+                egress = proxy.events("traffic.egress")
                 assert egress
-                assert all(row["host"] == ALLOWED and row["port"] == 443 and row["route"] == "parent"
+                assert all(row["host"] == ALLOWED and row["details"]["port"] == 443 and row["details"]["route"] == "parent"
                            for row in egress)
         # The wrong-name certificate is trusted and valid for its own name.
         # This direct control distinguishes name verification from CA failure.

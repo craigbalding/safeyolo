@@ -399,13 +399,13 @@ class H2CancellationOriginHandler(socketserver.BaseRequestHandler):
                                 keep_stream_id = event.stream_id
                         elif isinstance(event, h2.events.DataReceived):
                             for record in server.requests:
-                                if (record["connection_id"] == connection_id
+                                if (record["details"]["connection_id"] == connection_id
                                         and record["stream_id"] == event.stream_id):
                                     record["request_body_bytes"] += len(event.data)
                                     break
                             connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
                         elif isinstance(event, h2.events.StreamReset):
-                            if any(record["connection_id"] == connection_id and record["stream_id"] == event.stream_id
+                            if any(record["details"]["connection_id"] == connection_id and record["stream_id"] == event.stream_id
                                    and record[":path"] == "/h2-cancel"
                                    for record in server.requests):
                                 server.cancel_reset_code = int(event.error_code)
@@ -787,16 +787,16 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
         request_ids = {identifier: responses[identifier]["headers"]["x-safeyolo-request-id"]
                        for identifier in (1, 3)}
         assert request_ids[1] != request_ids[3]
-        events = read_events(directory / "events.jsonl")
+        events = read_events(directory / "audit.jsonl")
         audit = read_events(directory / "audit.jsonl")
-        denied_requests = [row for row in events if row.get("event") == "proxy.request"
+        denied_requests = [row for row in events if row.get("event") == "traffic.request_outcome"
                            and row.get("request_id") == request_ids[1]]
         assert len(denied_requests) == 1
         assert denied_requests[0]["status"] == 403
         assert denied_requests[0]["decision"] == "deny"
-        assert not any(row.get("event") == "proxy.egress" and row.get("request_id") == request_ids[1]
+        assert not any(row.get("event") == "traffic.egress" and row.get("request_id") == request_ids[1]
                        for row in events)
-        denied_guard = [row for row in events if row.get("event") == "proxy.credential_guard"
+        denied_guard = [row for row in events if row.get("event") == "security.credential_guard.evaluated"
                         and row.get("request_id") == request_ids[1]]
         if proxy_backend == "rust":
             assert len(denied_guard) == 1
@@ -806,7 +806,7 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
         assert len(denied_audit) == 1
         assert denied_audit[0]["decision"] == "deny"
         assert denied_audit[0]["agent"] == "alice"
-        sibling_requests = [row for row in events if row.get("event") == "proxy.request"
+        sibling_requests = [row for row in events if row.get("event") == "traffic.request_outcome"
                             and row.get("request_id") == request_ids[3]]
         assert len(sibling_requests) == 1
         assert sibling_requests[0]["status"] == 200
@@ -858,7 +858,7 @@ def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend,
         assert "req-" + "f" * 32 not in identifiers
         assert sorted(row[":path"] for row in origin.requests) == sorted(
             f"/signed?part=one&part=two%2Fthree&n={index}" for index in range(12))
-        events = {row["request_id"]: row for row in proxy.events("proxy.request")}
+        events = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
         for agent, responses in [("alice", alice), ("bob", bob)]:
             assert len({events[row["headers"]["x-safeyolo-request-id"]]["connection_id"] for row in responses}) == 1
             for row in responses:
@@ -940,7 +940,7 @@ def test_http2_mixed_stream_decisions_and_http1_control(proxy_backend, tmp_path)
                 response_ids = [row["headers"]["x-safeyolo-request-id"] for row in alice + bob]
                 assert len(set(response_ids)) == 5
                 assert "req-" + "f" * 32 not in response_ids
-                events = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                events = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
                 for agent, responses in (("alice", alice), ("bob", bob)):
                     connection_ids = {events[row["headers"]["x-safeyolo-request-id"]]["connection_id"]
                                       for row in responses}
@@ -948,7 +948,7 @@ def test_http2_mixed_stream_decisions_and_http1_control(proxy_backend, tmp_path)
                     for row in responses:
                         event = events[row["headers"]["x-safeyolo-request-id"]]
                         assert event["agent"] == agent
-                        assert event["status"] == int(row["headers"][":status"])
+                        assert event["details"]["status"] == int(row["headers"][":status"])
 
                 marker = json.loads(proxy.readiness_file.read_text())
                 api = AdminAPI(
@@ -1135,12 +1135,12 @@ def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend
         assert {row[":path"] for row in origin.requests} == {"/h2-cancel", "/h2-keep"}
         assert {row[":method"] for row in origin.requests} == {"GET"}
         assert {row["request_body_bytes"] for row in origin.requests} == {0}
-        assert len({row["connection_id"] for row in origin.requests}) == 1
+        assert len({row["details"]["connection_id"] for row in origin.requests}) == 1
         assert {row["stream_id"] for row in origin.requests} == {1, 3}
-        events = [event for event in read_events(proxy.event_log) if event.get("event") == "proxy.request"]
+        events = [event for event in read_events(proxy.audit_log) if event.get("event") == "traffic.request_outcome"]
         assert len(events) == 3  # CONNECT plus the two independently proxied streams.
         inner_events = [event for event in events
-                        if event.get("coverage") == "native_network_guard_circuits_and_test_context"]
+                        if event.get("details", {}).get("coverage") == "native_network_guard_circuits_and_test_context"]
         assert len(inner_events) == 2
         assert {int(event.get("status", 0)) for event in events} == {200}
         evidence = {

@@ -166,7 +166,6 @@ async fn workflow() {
     assert!(fixture.proxy.service_files == service_key);
     for retained in [
         Arc::ptr_eq(&initial.audit, &watched.audit),
-        Arc::ptr_eq(&initial.events, &watched.events),
         Arc::ptr_eq(&initial.traces, &watched.traces),
         Arc::ptr_eq(&initial.memory_monitor, &watched.memory_monitor),
         Arc::ptr_eq(&initial.flow_recorder, &watched.flow_recorder),
@@ -280,7 +279,6 @@ async fn workflow() {
         budget
     );
     assert!(Arc::ptr_eq(&accepted.audit, &recovered.audit));
-    assert!(Arc::ptr_eq(&accepted.events, &recovered.events));
     let reply = fixture.read("alice", "GET", TOKEN).await;
     assert_projection(&reply, &recovered, "alice");
     let view = reply.value();

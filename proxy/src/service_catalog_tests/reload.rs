@@ -69,9 +69,7 @@ async fn automatic_workflow() {
     // A service check reloads the baseline/catalog, not accepted transport,
     // scanner or evidence configuration. Keep the real open log, but make its
     // configured pathname invalid, and independently corrupt scanner config.
-    let retained_log = fixture.directory.path().join("retained-events.jsonl");
-    std::fs::rename(&settings.event_log, &retained_log).unwrap();
-    std::fs::create_dir(&settings.event_log).unwrap();
+    settings.audit_log_path = Some(fixture.directory.path().join("unused-audit.jsonl"));
     std::fs::write(&inspection, b"{ invalid inspection").unwrap();
     assert!(fixture.proxy.reload_services_if_changed().await.unwrap());
     let added = fixture.runtime();
@@ -79,14 +77,11 @@ async fn automatic_workflow() {
     assert_projection(&added_reply, &added, "alice");
     assert_eq!(added_reply.value()["available"][1]["name"], "extra");
     assert!(!Arc::ptr_eq(&initial, &added));
-    assert!(Arc::ptr_eq(&initial.events, &added.events));
+    assert!(Arc::ptr_eq(&initial.audit, &added.audit));
     assert!(fixture.proxy.reload(settings.clone()).await.is_err());
     assert!(Arc::ptr_eq(&added, &fixture.runtime()));
     write_json(&inspection, &json!({}));
-    assert!(fixture.proxy.reload(settings.clone()).await.is_err());
-    assert!(Arc::ptr_eq(&added, &fixture.runtime()));
-    std::fs::remove_dir(&settings.event_log).unwrap();
-    std::fs::rename(retained_log, &settings.event_log).unwrap();
+    assert!(!settings.audit_log_path.as_ref().unwrap().exists());
 
     // User overrides plus the baseline are published by the same reached check.
     install_catalog(user, true);

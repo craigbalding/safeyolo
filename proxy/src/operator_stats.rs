@@ -66,16 +66,8 @@ fn document_with_memory(
             &mut rand::random::<f64>,
             &audit,
         ) {
-            Ok(outcome) => {
-                crate::circuit_runtime::record_transitions(runtime, &outcome.events, None);
-                outcome.value
-            }
-            Err(error) => {
-                // Earlier successful submissions remain committed. These are
-                // development diagnostics, not a second canonical submission.
-                crate::circuit_runtime::record_transitions(runtime, error.events(), None);
-                circuit_failure(&error)
-            }
+            Ok(outcome) => outcome.value,
+            Err(error) => circuit_failure(&error),
         };
         report.insert("circuit-breaker".into(), circuits);
         let context = match runtime.test_context.stats(crate::http::declaration_time()) {
@@ -236,7 +228,6 @@ mod tests {
             "data_dir":directory.path().join("data"),
             "readiness_file":directory.path().join("ready"),
             "audit_log_path":directory.path().join("audit.jsonl"),
-            "event_log":directory.path().join("events.jsonl"),
             "flow_store_enabled":false,
             "flow_store_db_path":directory.path().join("unused.sqlite3"),
             "circuit_state_file":""

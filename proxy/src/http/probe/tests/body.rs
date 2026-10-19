@@ -39,10 +39,10 @@ fn context_counts(fixture: &Fixture) -> (u64, u64) {
     (stats.checks_total, stats.allowed_total)
 }
 fn trace_from_owned_diagnostic(fixture: &Fixture) -> Value {
-    let rows = records(fixture.directory.path(), "events.jsonl");
+    let rows = records(fixture.directory.path(), "audit.jsonl");
     let request = rows
         .iter()
-        .find(|row| row["event"] == "proxy.network_guard")
+        .find(|row| row["event"] == "security.network_guard.evaluated")
         .expect("request reached actual head admission");
     fixture
         .runtime

@@ -41,7 +41,7 @@ pub(super) fn basic(password: &str) -> String {
 }
 
 fn check_redaction(directory: &TempDir) {
-    for path in ["events.jsonl", "audit.jsonl"] {
+    for path in ["audit.jsonl"] {
         let text = std::fs::read_to_string(directory.path().join(path)).unwrap();
         for secret in [
             TOKEN.to_owned(),

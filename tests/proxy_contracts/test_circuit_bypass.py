@@ -132,13 +132,13 @@ def test_complete_429_counts_but_ordinary_4xx_does_not(proxy_backend, tmp_path):
             for checks, (expected, failures, agent) in enumerate(
                 [(500, 1, "alice"), (404, 1, "bob"), (429, 2, "alice")], start=1
             ):
-                before = origin.accepts, len(proxy.events("proxy.egress"))
+                before = origin.accepts, len(proxy.events("traffic.egress"))
                 status, headers, body = send_request(
                     proxy.paths[agent], f"http://{HOST}:{origin.server_address[1]}/{expected}"
                 )
                 assert status == expected and body == b"hello"
                 assert "x-blocked-by" not in {key.lower() for key in headers}
-                assert (origin.accepts, len(proxy.events("proxy.egress"))) == (before[0] + 1, before[1] + 1)
+                assert (origin.accepts, len(proxy.events("traffic.egress"))) == (before[0] + 1, before[1] + 1)
                 wait_failure_count(proxy, failures)
                 check_state(proxy, f"completed-upstream-{expected}", checks=checks, failures=failures)
             _, headers, _ = hit(proxy, origin, "bob", "/blocked", 503)

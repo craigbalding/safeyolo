@@ -340,7 +340,7 @@ async fn duplex_relay_retains_dropped_and_spooled_messages_and_open_session() {
     );
     assert_eq!(closed["messages"], observed["messages"]);
     assert!(
-        !std::fs::read_to_string(directory.path().join("diagnostics.jsonl"))
+        !std::fs::read_to_string(directory.path().join("audit.jsonl"))
             .unwrap()
             .contains("owned close reason")
     );
@@ -510,10 +510,14 @@ async fn compressed_fragmented_relay_inspects_both_directions_and_keeps_controls
 #[tokio::test]
 async fn reached_drop_and_message_survive_diagnostic_failure() {
     let directory = tempfile::tempdir().unwrap();
-    let mut runtime = runtime(directory.path());
-    runtime.events = Arc::new(Mutex::new(
-        std::fs::File::open(directory.path().join("diagnostics.jsonl")).unwrap(),
-    ));
+    let runtime = runtime(directory.path());
+    assert!(
+        runtime
+            .audit
+            .wait_for_drain(Duration::from_secs(2))
+            .unwrap()
+    );
+    runtime.audit.poison_for_test();
     let runtime = Arc::new(runtime);
     let (session, guard) = live_session(&runtime);
     let memory = memory_runtime::WebSocket::new(&runtime, ID, HOST);
@@ -551,7 +555,7 @@ async fn reached_drop_and_message_survive_diagnostic_failure() {
     drop(guard);
     assert!(transcript(&runtime)["websocket"]["timestamp_end"].is_number());
     drop(memory);
-    assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
+    assert!(runtime.audit.shutdown(Duration::from_secs(1)).is_err());
 }
 
 #[tokio::test]

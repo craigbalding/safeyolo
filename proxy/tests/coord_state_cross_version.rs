@@ -69,7 +69,7 @@ fn config(root: &Path) -> Config {
         readiness_file: root.join("ready.json"),
         reload_id: None,
         audit_log_path: Some(root.join("audit.jsonl")),
-        event_log: root.join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),

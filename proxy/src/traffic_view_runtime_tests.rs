@@ -20,7 +20,6 @@ fn config(directory: &Path) -> Config {
     serde_json::from_value(json!({
         "listeners":[], "policy_file":policy, "data_dir":directory.join("data"), "flow_store_enabled":false,
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "readiness_file":directory.join("ready.json"),
     }))
     .unwrap()

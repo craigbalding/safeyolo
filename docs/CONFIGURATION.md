@@ -19,14 +19,29 @@ ROOT/
 ├── agents/              # Persistent homes, overlays and owned run metadata
 ├── certs/               # Public CA and private signing key
 ├── data/                # Private tokens, instance identity and durable state
-└── logs/                # Audit, runtime diagnostics and flow storage
+└── logs/                # Canonical event log and flow storage
 ```
 
 The [settings reference](settings.md#runtime-settings) gives every
 retained key, default and consumer. Paths such as `data_dir`,
-`audit_log_path`, `event_log` and `flow_store_db_path` belong to this root by
+`audit_log_path` and `flow_store_db_path` belong to this root by
 default; the earlier Python XDG log selection is not a runtime setting.
 Keep private tokens, signing keys and service credentials on the host.
+
+The canonical audit writer records operational, security and diagnostic events
+in `audit_log_path`. `safeyolo logs` shows their summaries and details. For a
+request, `traffic.egress` records the selected direct or parent route and the
+logical destination. It describes an attempt before connection, not successful
+delivery. The requesting agent can read the same event through
+`/explain?request_id=req-<32hex>`. Neither reader requires FlowStore capture.
+`traffic.request_outcome` records the response prepared by the proxy. Response
+preparation does not establish that the body reached the client.
+
+Older generated configurations can contain `event_log`. The native TOML loader
+and the internal JSON launcher ignore that retired setting. Remove it when
+maintaining those configurations. SafeYolo does not open, append or delete the
+old diagnostic file. Existing historical files remain available for manual
+inspection; the readers use the canonical log and its existing retention rules.
 
 ## Runtime settings
 

@@ -325,7 +325,7 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
                 (("bob", 403), ("alice", 200), ("bob", 403), ("alice", 200))
             ):
                 before = (origin.accepts, len(origin.requests))
-                egress_before = len(proxy.events("proxy.egress"))
+                egress_before = len(proxy.events("traffic.egress"))
                 status, headers, body = request(proxy.paths[agent], url, headers={
                     "X-SafeYolo-Agent": "alice" if agent == "bob" else "bob",
                     "X-Agent-Id": "alice" if agent == "bob" else "bob",
@@ -346,7 +346,7 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
                 )
                 if expected == 403:
                     assert response_headers["x-blocked-by"] == "network-guard"
-                    assert len(proxy.events("proxy.egress")) == egress_before
+                    assert len(proxy.events("traffic.egress")) == egress_before
                 else:
                     assert body == b"hello"
                     assert origin.canary_headers[-1] == f"request-id-{index}"
@@ -369,21 +369,21 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
         (Path(directory) / "request-id-observations.json").write_text(
             json.dumps(evidence, indent=2) + "\n"
         )
-        events = [event for event in proxy.events("proxy.request")
-                  if event.get("host") == host and event.get("port") == port]
+        events = [event for event in proxy.events("traffic.request_outcome")
+                  if event.get("host") == host and event.get("details", {}).get("port") == port]
         assert len(events) == len(observations), events
         for event, observation, identifier, record in zip(
             events, observations, identifiers, evidence, strict=True
         ):
             assert event["agent"] == observation["agent"]
             assert event["request_id"] == identifier
-            assert event["host"] == host and event["port"] == port
-            assert event["status"] == observation["status"]
+            assert event["host"] == host and event["details"]["port"] == port
+            assert event["details"]["status"] == observation["status"]
             assert event["decision"] == ("allow" if observation["status"] == 200 else "deny")
-            assert event["connection_id"]
-            assert event["connection_id"] == record["connection_id"]
-        assert len({event["connection_id"] for event in events}) == len(events)
-        assert len(proxy.events("proxy.egress")) == 2
+            assert event["details"]["connection_id"]
+            assert event["details"]["connection_id"] == record["connection_id"]
+        assert len({event["details"]["connection_id"] for event in events}) == len(events)
+        assert len(proxy.events("traffic.egress")) == 2
         target = url if parent else "/signed?part=one&part=two%2Fthree"
         assert origin.requests == [{"method": "GET", "target": target}] * 2
         assert not proxy.readiness_file.exists(), "Graceful shutdown left readiness behind"
@@ -438,7 +438,7 @@ def reserved_scenario(backend, directory):
                     bearer = f"synthetic-bearer-{uuid.uuid4().hex}"
                     query = f"synthetic-query-{uuid.uuid4().hex}"
                     before_accepts = parent.accepts
-                    before_egress = len(proxy.events("proxy.egress"))
+                    before_egress = len(proxy.events("traffic.egress"))
                     before_audit = len(read_events(run_dir / "audit.jsonl"))
                     status, _headers, body = request(
                         proxy.paths["alice"], f"http://{host}{path}?secret={query}",
@@ -448,7 +448,7 @@ def reserved_scenario(backend, directory):
                     row = {"state": state, "host": host, "kind": kind, "status": status,
                            "body": body.decode("utf-8", errors="replace"),
                            "parent_accepts": parent.accepts - before_accepts,
-                           "egress_attempts": len(proxy.events("proxy.egress")) - before_egress,
+                           "egress_attempts": len(proxy.events("traffic.egress")) - before_egress,
                            "parent_heads_hex": [head.hex() for head in heads],
                            "bearer": bearer, "query": query}
                     responses.append(row)

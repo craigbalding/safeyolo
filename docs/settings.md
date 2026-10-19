@@ -217,7 +217,7 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | `admin_port` | Integer; `9090` | `proxy.admin_port`; loopback Admin listener. |
 | `admin_api_token_file` | Path; `data/admin_token` | Generated operator token path; Admin authentication and CLI. |
 | `readiness_file` | Path; `data/ready.json` | Generated readiness path; accepted process/listener marker. |
-| `audit_log_path`, `event_log` | Paths; `logs/audit.jsonl`, `logs/events.jsonl` | Generated log paths; canonical audit writer and separate runtime diagnostics. |
+| `audit_log_path` | Path; `logs/audit.jsonl` | One event log for operational, security and diagnostic events, through the canonical audit writer. |
 | `circuit_state_file` | Path; `data/circuits.json` | Generated circuit snapshot path; existing circuit state owner. Empty disables snapshots. |
 | `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; `builtin-services`, `services` | Standalone init creates these directories; the installer selects `assets/services` and `data/services`. Operator definitions override builtins by name. CLI and delivery read the same accepted catalogue. Set both together. |
 | `onepassword_executable` | Absolute host executable path; absent | Optional 1Password resolver, after service/policy/approval checks. Authentication stays in the host environment. Restart after changing it; local credentials do not need it. |

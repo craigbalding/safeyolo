@@ -60,7 +60,6 @@ def environment(monkeypatch):
             "policy_file": "policy.toml",
             "readiness_file": "ready.json",
             "audit_log_path": "audit.jsonl",
-            "event_log": "diagnostics.jsonl",
             "flow_store_db_path": "flows.sqlite3",
             "flow_store_enabled": False,
             "ignore_hosts": ["owned.invalid:443"],

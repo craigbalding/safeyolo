@@ -211,9 +211,7 @@ fn config(directory: &Path) -> Config {
         "admin_api_token_file": directory.join("operator-token"),
         "readiness_file": directory.join("ready.json"),
         "flow_store_enabled": false,
-        "audit_log_path": directory.join("audit.jsonl"),
-        "event_log": directory.join("events.jsonl")
-    }))
+        "audit_log_path": directory.join("audit.jsonl"),}))
     .unwrap()
 }
 
@@ -243,9 +241,7 @@ fn service_config(directory: &Path) -> Config {
         "readiness_file": directory.join("ready.json"),
         "flow_store_enabled": false,
         "circuit_breaker_enabled": false,
-        "audit_log_path": directory.join("audit.jsonl"),
-        "event_log": directory.join("events.jsonl")
-    }))
+        "audit_log_path": directory.join("audit.jsonl"),}))
     .unwrap()
 }
 

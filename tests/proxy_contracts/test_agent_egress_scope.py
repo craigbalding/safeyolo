@@ -130,7 +130,7 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
             assert delivered == expected_deliveries
             assert 1 <= parent.accepts <= len(expected_deliveries)
 
-            runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+            runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
             guards = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
                       if row["event"] == "security.network_guard"}
             all_ids = [identifier for cases in results.values() for _, _, identifier in cases]
@@ -138,7 +138,7 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
             for agent, cases in results.items():
                 for url, status, identifier in cases:
                     row = runtime[identifier]
-                    assert (row["agent"], row["status"], row["host"], row["port"]) == (
+                    assert (row["agent"], row["details"]["status"], row["host"], row["details"]["port"]) == (
                         agent, status, urlsplit(url).hostname, urlsplit(url).port or 80,
                     )
                     if status != 200:
@@ -186,7 +186,7 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
                 alice.close()
                 bob.close()
 
-            runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+            runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
             guards = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
                       if row["event"] == "security.network_guard"}
             for agent, authority, status, identifier in observed:
@@ -251,12 +251,12 @@ def test_permitted_local_endpoint_overrides_host_prompt(proxy_backend, tmp_path)
             assert other_origin.accepts == len(other_origin.requests) == 1
             assert other_origin.requests[0]["target"] == "/direct-control"
 
-            runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+            runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
             guards = {row["request_id"]: row for row in read_events(tmp_path / proxy_backend / "audit.jsonl")
                       if row["event"] == "security.network_guard"}
             for agent, destination_port, status, identifier in observed:
                 row = runtime[identifier]
-                assert (row["agent"], row["host"], row["port"], row["status"]) == (
+                assert (row["agent"], row["host"], row["details"]["port"], row["details"]["status"]) == (
                     agent, "127.0.0.1", destination_port, status,
                 )
                 if status == 428:
@@ -310,6 +310,6 @@ def test_forged_body_agent_cannot_cross_uds_listener(proxy_backend, tmp_path):
                 observed.append((agent, headers["x-safeyolo-request-id"], status))
             assert parent.accepts == len(parent.requests) == 1
             assert parent.requests[0]["body"] == json.dumps({"agent": "bob", "agent_id": "bob"}).encode()
-            runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+            runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
             for agent, identifier, status in observed:
                 assert (runtime[identifier]["agent"], runtime[identifier]["status"]) == (agent, status)

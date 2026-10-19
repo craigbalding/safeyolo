@@ -198,7 +198,7 @@ class ObserverChecks(unittest.TestCase):
                 {"event": "traffic.response", "host": "api.anthropic.com", "request_id": "req-1", "ts": "last",
                  "details": {"ms": 3000, "status": 200, "private": "PRIVATE_HEADER"}},
                 {"event": "traffic.request", "host": "mcp-proxy.anthropic.com", "request_id": "req-2", "ts": "open"}]
-        (logs / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        (logs / "audit.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
         observed = m.provider_intervals()
         self.assertEqual(observed["responses"][0]["recorded_duration_ms"], 3000)
         self.assertEqual(observed["requests_without_response"], {"req-2": "open"})
@@ -515,7 +515,7 @@ class ObserverChecks(unittest.TestCase):
     def test_network_response_and_local_event_correlation_keep_raw_diagnostics_private(self):
         logs = m.root / "logs"
         logs.mkdir()
-        for name in ("events.jsonl", "proxy.log"):
+        for name in ("audit.jsonl", "proxy.log"):
             (logs / name).touch()
         request_id = "req-" + "1" * 32
 
@@ -528,7 +528,7 @@ class ObserverChecks(unittest.TestCase):
                 self.send_header("X-Blocked-By", "PRIVATE_HEADER_SENTINEL")
                 self.end_headers()
                 self.wfile.write(b"PRIVATE_BODY_SENTINEL")
-                with (logs / "events.jsonl").open("a") as stream:
+                with (logs / "audit.jsonl").open("a") as stream:
                     for identifier in ("req-" + "2" * 32, request_id):
                         stream.write(json.dumps({"event": "proxy.request", "host": "httpbin.org", "status": 502,
                             "request_id": identifier, "decision": self.decision, "private": "PRIVATE_EVENT_SENTINEL"}) + "\n")
@@ -552,7 +552,7 @@ class ObserverChecks(unittest.TestCase):
                     self.assertEqual(row["response"]["request_id"], request_id)
                     self.assertTrue(row["response"]["blocked_by_header_present"])
                     self.assertNotIn("blocked_by_header", row["response"])
-                    self.assertEqual(row["proxy_logs"]["events.jsonl"]["matches"],
+                    self.assertEqual(row["proxy_logs"]["audit.jsonl"]["matches"],
                         [{"request_id": request_id, "correlation": "request-id", "status": 502, "decision": decision}])
                     self.assertEqual(row["proxy_logs"]["proxy.log"]["matches"][0]["stage"], "request-failed")
                     self.assertNotIn("PRIVATE_", json.dumps(row))
@@ -567,7 +567,7 @@ class ObserverChecks(unittest.TestCase):
     def test_network_missing_response_and_identity_error_remain_distinct_from_success(self):
         logs = m.root / "logs"
         logs.mkdir()
-        (logs / "events.jsonl").touch()
+        (logs / "audit.jsonl").touch()
         proxy_log = logs / "proxy.log"
         proxy_log.touch()
         identifier = "req-" + "3" * 32

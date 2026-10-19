@@ -137,7 +137,7 @@ fn config(
         readiness_file: directory.path().join("ready.json"),
         reload_id: None,
         audit_log_path: Some(directory.path().join("audit.jsonl")),
-        event_log: directory.path().join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
@@ -668,13 +668,13 @@ async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
 
     let live_stats = stats(&directory).await;
     assert_eq!(live_stats["credential-guard"]["violations_total"], 0);
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_event = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "proxy.credential_guard")
+        .find(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
-    assert_eq!(guard_event["outcome"], "allowed");
+    assert_eq!(guard_event["details"]["outcome"], "allowed");
     assert_eq!(
         guard_event["evaluations"][0]["finding"]["rule"],
         "synthetic"
@@ -781,13 +781,13 @@ async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_bod
         "nominated header leaked: {head:?}"
     );
     assert_eq!(&wire[split..], body, "body bytes changed in transit");
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_event = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "proxy.credential_guard")
+        .find(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
-    assert_eq!(guard_event["outcome"], "allowed");
+    assert_eq!(guard_event["details"]["outcome"], "allowed");
     assert_eq!(
         guard_event["evaluations"][0]["finding"]["rule"],
         "signed-target"
@@ -849,19 +849,22 @@ async fn native_guard_classifies_unknown_bearers_and_keeps_other_headers_uninspe
             .any(|window| { window == b"key-known" })
     );
 
-    let first_event = std::fs::read_to_string(directory.path().join("events.jsonl"))
+    let first_event = std::fs::read_to_string(directory.path().join("audit.jsonl"))
         .unwrap()
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "proxy.credential_guard")
+        .find(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
-    assert_eq!(first_event["evaluations"][0]["finding"]["rule"], "known");
     assert_eq!(
-        first_event["evaluations"][0]["finding"]["credential_type"],
+        first_event["details"]["evaluations"][0]["finding"]["rule"],
         "known"
     );
-    assert_eq!(first_event["evaluations"][0]["effect"], "allow");
-    let known_hmac = first_event["evaluations"][0]["finding"]["fingerprint"]
+    assert_eq!(
+        first_event["details"]["evaluations"][0]["finding"]["credential_type"],
+        "known"
+    );
+    assert_eq!(first_event["details"]["evaluations"][0]["effect"], "allow");
+    let known_hmac = first_event["details"]["evaluations"][0]["finding"]["fingerprint"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -932,15 +935,15 @@ async fn native_guard_classifies_unknown_bearers_and_keeps_other_headers_uninspe
     proxy.shutdown().await;
     origin_task.abort();
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(guard_events.len(), 4);
-    assert_eq!(guard_events[0]["outcome"], "allowed");
-    assert_eq!(guard_events[1]["outcome"], "blocked");
+    assert_eq!(guard_events[0]["details"]["outcome"], "allowed");
+    assert_eq!(guard_events[1]["details"]["outcome"], "blocked");
     assert_eq!(
         guard_events[1]["evaluations"][0]["finding"]["rule"],
         "unknown_secret"
@@ -953,12 +956,12 @@ async fn native_guard_classifies_unknown_bearers_and_keeps_other_headers_uninspe
         guard_events[1]["evaluations"][0]["effect"],
         "require_approval"
     );
-    assert_eq!(guard_events[2]["outcome"], "blocked");
+    assert_eq!(guard_events[2]["details"]["outcome"], "blocked");
     assert_eq!(
         guard_events[2]["evaluations"][0]["finding"]["rule"],
         "unknown_secret"
     );
-    assert_eq!(guard_events[3]["outcome"], "no_detection");
+    assert_eq!(guard_events[3]["details"]["outcome"], "no_detection");
     assert!(
         guard_events[3]["evaluations"]
             .as_array()
@@ -1066,41 +1069,40 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
     proxy.shutdown().await;
     origin_task.abort();
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     for (request_id, agent) in [(alice_id, "alice"), (bob_id, "bob")] {
         let event = events
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|event| {
-                event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+                event["event"] == "security.credential_guard.evaluated"
+                    && event["request_id"] == request_id
             })
             .unwrap();
         assert_eq!(event["agent"], agent);
         assert!(
-            event["connection_id"]
+            event["details"]["connection_id"]
                 .as_str()
                 .is_some_and(|id| !id.is_empty())
         );
-        assert_eq!(event["evaluations"].as_array().unwrap().len(), 1);
-        assert_eq!(event["evaluations"][0]["effect"], "require_approval");
+        assert_eq!(event["details"]["evaluations"].as_array().unwrap().len(), 1);
         assert_eq!(
-            event["evaluations"][0]["required_checks"],
+            event["details"]["evaluations"][0]["effect"],
+            "require_approval"
+        );
+        assert_eq!(
+            event["details"]["evaluations"][0]["required_checks"],
             json!([
                 "rate_limit",
                 "credential_detection",
                 "credential_validation"
             ])
         );
-        assert_eq!(event["evaluations"][0]["budget_remaining"], Value::Null);
-        assert_eq!(event["audit"][0]["approval"]["approval_type"], "credential");
-        assert_eq!(event["audit"][0]["approval"]["target"], "127.0.0.1");
-        assert_eq!(event["audit"][0]["agent"], agent);
         assert_eq!(
-            event["audit"][0]["approval"]["scope_hint"]["expected_hosts"],
-            json!(["127.0.0.1"])
+            event["details"]["evaluations"][0]["budget_remaining"],
+            Value::Null
         );
-
         let canonical = audit
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -1109,6 +1111,14 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
             })
             .unwrap();
         assert_eq!(canonical["agent"], agent);
+        assert_eq!(canonical["approval"]["approval_type"], "credential");
+        assert_eq!(canonical["approval"]["target"], "127.0.0.1");
+        assert_eq!(canonical["agent"], agent);
+        assert_eq!(
+            canonical["approval"]["scope_hint"]["expected_hosts"],
+            json!(["127.0.0.1"])
+        );
+
         assert_eq!(canonical["approval"]["required"], true);
         assert_eq!(
             canonical["approval"]["scope_hint"]["expected_hosts"],
@@ -1189,11 +1199,11 @@ async fn native_guard_live_budget_counts_credential_and_network_charges() {
     proxy.shutdown().await;
     origin_task.abort();
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(guard_events.len(), 1);
     assert_eq!(guard_events[0]["request_id"], first_id);
@@ -1202,13 +1212,16 @@ async fn native_guard_live_budget_counts_credential_and_network_charges() {
     let network_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.network_guard")
+        .filter(|event| event["event"] == "security.network_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(network_events.len(), 2);
-    assert_eq!(network_events[1]["outcome"], "blocked");
-    assert_eq!(network_events[1]["metadata"]["blocked_by"], "network-guard");
+    assert_eq!(network_events[1]["details"]["outcome"], "blocked");
     assert_eq!(
-        network_events[1]["metadata"]["block_reason"],
+        network_events[1]["details"]["metadata"]["blocked_by"],
+        "network-guard"
+    );
+    assert_eq!(
+        network_events[1]["details"]["metadata"]["block_reason"],
         "Request budget exceeded for 127.0.0.1"
     );
 }
@@ -1253,11 +1266,11 @@ async fn native_parser_to_guard_invalid_utf8_keeps_known_and_unknown_bearers() {
         let response = raw_round_trip(&socket, &request).await;
         assert!(response.starts_with(b"HTTP/1.1 403"), "{path}");
         assert!(seen.lock().unwrap().is_empty(), "{path}");
-        let event = std::fs::read_to_string(directory.path().join("events.jsonl"))
+        let event = std::fs::read_to_string(directory.path().join("audit.jsonl"))
             .unwrap()
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .rfind(|event| event["event"] == "proxy.credential_guard")
+            .rfind(|event| event["event"] == "security.credential_guard.evaluated")
             .unwrap();
         // Retain the historical parser inputs and known-rule result. The new
         // Bearer requirement also detects values that missed that rule.
@@ -1266,7 +1279,10 @@ async fn native_parser_to_guard_invalid_utf8_keeps_known_and_unknown_bearers() {
         } else {
             "unknown_secret"
         };
-        assert_eq!(event["evaluations"][0]["finding"]["rule"], rule, "{path}");
+        assert_eq!(
+            event["details"]["evaluations"][0]["finding"]["rule"], rule,
+            "{path}"
+        );
     }
     proxy.shutdown().await;
     origin_task.abort();
@@ -1463,7 +1479,7 @@ async fn native_pattern_scanner_url_block_without_body_keeps_local_response() {
 
     proxy.shutdown().await;
     origin_task.abort();
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -1478,17 +1494,17 @@ async fn native_pattern_scanner_url_block_without_body_keeps_local_response() {
             event["event"] == "security.pattern_scanner"
                 && event["request_id"] == request_id.as_str()
                 && event["decision"] == "deny"
-                && event["outcome"] == "match_blocked"
-                && event["finding"]["location"] == location
+                && event["details"]["outcome"] == "match_blocked"
+                && event["details"]["finding"]["location"] == location
         }));
         assert!(rows.iter().any(|event| {
-            event["event"] == "proxy.request"
+            event["event"] == "traffic.request_outcome"
                 && event["request_id"] == request_id.as_str()
-                && event["status"] == 403
+                && event["details"]["status"] == 403
                 && event["decision"] == "deny"
         }));
         assert!(!rows.iter().any(|event| {
-            event["event"] == "proxy.egress" && event["request_id"] == request_id.as_str()
+            event["event"] == "traffic.egress" && event["request_id"] == request_id.as_str()
         }));
         assert!(audit_rows.iter().any(|event| {
             event["event"] == "traffic.response"
@@ -1730,26 +1746,27 @@ async fn native_pattern_scanner_rejects_unsupported_request_encoding_before_orig
 
     proxy.shutdown().await;
     origin_task.abort();
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect::<Vec<_>>();
     let credential = rows
         .iter()
-        .position(|event| event["event"] == "proxy.credential_guard")
+        .position(|event| event["event"] == "security.credential_guard.evaluated")
         .expect("credential guard event missing");
     let scanner = rows
         .iter()
         .position(|event| {
-            event["event"] == "security.pattern_scanner" && event["direction"] == "request"
+            event["event"] == "security.pattern_scanner"
+                && event["details"]["direction"] == "request"
         })
         .expect("unsupported request scanner event missing");
     assert!(
         credential < scanner,
         "request scanner did not run after credential guard"
     );
-    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
     assert_eq!(rows[scanner]["failure"], "content_decode");
     assert_eq!(rows[scanner]["error_type"], "ContentDecode");
@@ -1870,26 +1887,27 @@ async fn native_pattern_scanner_rejects_unsupported_response_encoding_after_cred
     );
 
     proxy.shutdown().await;
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect::<Vec<_>>();
     let credential = rows
         .iter()
-        .position(|event| event["event"] == "proxy.credential_guard")
+        .position(|event| event["event"] == "security.credential_guard.evaluated")
         .expect("credential guard event missing");
     let scanner = rows
         .iter()
         .position(|event| {
-            event["event"] == "security.pattern_scanner" && event["direction"] == "response"
+            event["event"] == "security.pattern_scanner"
+                && event["details"]["direction"] == "response"
         })
         .expect("unsupported response scanner event missing");
     assert!(
         credential < scanner,
         "later response hook did not run after credential guard"
     );
-    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
     assert_eq!(rows[scanner]["failure"], "content_decode");
     assert_eq!(rows[scanner]["error_type"], "ContentDecode");
@@ -2148,7 +2166,7 @@ async fn native_pattern_scanner_rejects_unsupported_request_encoding_on_real_h2(
         )]
     );
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -2156,7 +2174,8 @@ async fn native_pattern_scanner_rejects_unsupported_request_encoding_on_real_h2(
     let credential = rows
         .iter()
         .position(|event| {
-            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+            event["event"] == "security.credential_guard.evaluated"
+                && event["request_id"] == request_id
         })
         .expect("H2 request credential guard event missing");
     let scanner = rows
@@ -2164,21 +2183,21 @@ async fn native_pattern_scanner_rejects_unsupported_request_encoding_on_real_h2(
         .position(|event| {
             event["event"] == "security.pattern_scanner"
                 && event["request_id"] == request_id
-                && event["direction"] == "request"
+                && event["details"]["direction"] == "request"
         })
         .expect("H2 request scanner event missing");
     assert!(
         credential < scanner,
         "request scan ran before credential guard"
     );
-    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
     assert_eq!(rows[scanner]["failure"], "content_decode");
     assert_eq!(rows[scanner]["error_type"], "ContentDecode");
     assert!(
-        !rows
-            .iter()
-            .any(|event| { event["event"] == "proxy.egress" && event["request_id"] == request_id }),
+        !rows.iter().any(|event| {
+            event["event"] == "traffic.egress" && event["request_id"] == request_id
+        }),
         "unsupported H2 request reached the egress path"
     );
     assert!(!events.contains("key-h2-request"));
@@ -2332,7 +2351,7 @@ async fn run_h2_response_content_case(
     );
 
     proxy.shutdown().await;
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -2340,7 +2359,8 @@ async fn run_h2_response_content_case(
     let credential = rows
         .iter()
         .position(|event| {
-            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+            event["event"] == "security.credential_guard.evaluated"
+                && event["request_id"] == request_id
         })
         .expect("H2 response credential guard event missing");
     let scanner = rows
@@ -2348,14 +2368,14 @@ async fn run_h2_response_content_case(
         .position(|event| {
             event["event"] == "security.pattern_scanner"
                 && event["request_id"] == request_id
-                && event["direction"] == "response"
+                && event["details"]["direction"] == "response"
         })
         .expect("H2 response scanner event missing");
     assert!(
         credential < scanner,
         "response scan ran before credential guard"
     );
-    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
     assert!(!events.contains("key-h2-response"));
     assert!(!events.contains("h2-response-secret"));
@@ -2531,21 +2551,21 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
     proxy.shutdown().await;
     origin_task.abort();
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect::<Vec<_>>();
     let guard_rows = rows
         .iter()
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(guard_rows.len(), 1);
     assert_eq!(guard_rows[0]["request_id"], failed_request_id);
     assert_ne!(guard_rows[0]["request_id"], local_request_id);
     let credential = rows
         .iter()
-        .position(|event| event["event"] == "proxy.credential_guard")
+        .position(|event| event["event"] == "security.credential_guard.evaluated")
         .expect("credential guard event missing before observation failure");
     let pattern = rows
         .iter()
@@ -2556,16 +2576,16 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
         "observation ran before credential guard"
     );
     let guard = &rows[credential];
-    assert_eq!(guard["outcome"], "allowed");
+    assert_eq!(guard["details"]["outcome"], "allowed");
     assert_eq!(guard["agent"], "alice");
-    assert_eq!(guard["evaluations"][0]["effect"], "allow");
+    assert_eq!(guard["details"]["evaluations"][0]["effect"], "allow");
     let scanner = &rows[pattern];
     assert_eq!(scanner["decision"], "deny");
     assert_eq!(scanner["direction"], "request");
     assert_eq!(scanner["failure"], "content_decode");
     assert!(!events.contains("key-observation"));
     assert!(!events.contains("key-local-only"));
-    assert!(!events.contains("proxy.egress"));
+    assert!(!events.contains("traffic.egress"));
 
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     assert!(!audit.contains("key-observation"));
@@ -2644,11 +2664,11 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         escaped_literal.starts_with(b"HTTP/1.1 403"),
         "{escaped_literal:?}"
     );
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let last_guard: Value = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .rfind(|event| event["event"] == "proxy.credential_guard")
+        .rfind(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
     assert_eq!(
         last_guard["evaluations"][0]["finding"]["rule"],
@@ -2989,7 +3009,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     proxy.shutdown().await;
     origin_task.abort();
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let rows = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -2997,7 +3017,8 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     let credential = rows
         .iter()
         .position(|event| {
-            event["event"] == "proxy.credential_guard" && event["request_id"] == failed_request_id
+            event["event"] == "security.credential_guard.evaluated"
+                && event["request_id"] == failed_request_id
         })
         .expect("H2 credential guard event missing before observation failure");
     let scanner = rows
@@ -3010,7 +3031,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
         credential < scanner,
         "observation ran before credential guard"
     );
-    assert_eq!(rows[credential]["outcome"], "warned");
+    assert_eq!(rows[credential]["details"]["outcome"], "warned");
     assert_eq!(rows[scanner]["decision"], "deny");
     assert_eq!(rows[scanner]["failure"], "content_decode");
     assert!(!events.contains("key-\\xff"));
@@ -3245,18 +3266,23 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
 
     drop(sender);
     let _ = connection_task.await;
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
-    assert_eq!(events.matches("proxy.credential_guard").count(), 6);
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert_eq!(
+        events
+            .matches("security.credential_guard.evaluated")
+            .count(),
+        6
+    );
     assert!(!events.contains("key-allowed"));
     assert!(!events.contains("header-canary"));
     let guard_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     let fingerprints = guard_events
         .iter()
-        .map(|event| event["evaluations"][0]["finding"]["fingerprint"].clone())
+        .map(|event| event["details"]["evaluations"][0]["finding"]["fingerprint"].clone())
         .collect::<Vec<_>>();
     assert_eq!(fingerprints.len(), 6);
     assert_eq!(fingerprints[0], fingerprints[1]);
@@ -3281,9 +3307,15 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
         guard_events[5]["evaluations"][0]["finding"]["rule"],
         "synthetic-reloaded"
     );
-    assert_eq!(guard_events[0]["trace"][0]["state"], "evaluated");
-    assert_eq!(guard_events[0]["trace"][0]["outcome"], "detected");
-    assert_eq!(guard_events[1]["trace"][0]["outcome"], "detected");
+    assert_eq!(guard_events[0]["details"]["trace"][0]["state"], "evaluated");
+    assert_eq!(
+        guard_events[0]["details"]["trace"][0]["outcome"],
+        "detected"
+    );
+    assert_eq!(
+        guard_events[1]["details"]["trace"][0]["outcome"],
+        "detected"
+    );
     drop(bob_sender);
     let _ = bob_connection_task.await;
     proxy.shutdown().await;
@@ -3396,17 +3428,18 @@ async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
         "forbidden receiver observed a connection or application bytes"
     );
     let request_id = response_header(&forbidden_response, "x-safeyolo-request-id");
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let event = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|event| {
-            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+            event["event"] == "security.credential_guard.evaluated"
+                && event["request_id"] == request_id
         })
         .unwrap();
-    assert_eq!(event["outcome"], "blocked");
-    assert_eq!(event["body_scope"], "headers_only");
-    assert_eq!(event["query_scope"], "policy_context_only");
+    assert_eq!(event["details"]["outcome"], "blocked");
+    assert_eq!(event["details"]["body_scope"], "headers_only");
+    assert_eq!(event["details"]["query_scope"], "policy_context_only");
     assert!(!events.contains("key-authorized"));
 
     forbidden_task.abort();
@@ -3533,11 +3566,11 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
     proxy.shutdown().await;
     allowed_task.abort();
 
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(guard_events.len(), 3);
     let event = |request_id: &str| {
@@ -3549,30 +3582,33 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
     let first_event = event(&first_id);
     let denied_event = event(&denied_id);
     let third_event = event(&third_id);
-    assert_eq!(first_event["outcome"], "allowed");
-    assert_eq!(denied_event["outcome"], "blocked");
-    assert_eq!(third_event["outcome"], "allowed");
+    assert_eq!(first_event["details"]["outcome"], "allowed");
+    assert_eq!(denied_event["details"]["outcome"], "blocked");
+    assert_eq!(third_event["details"]["outcome"], "allowed");
     for event in [first_event, denied_event, third_event] {
-        assert_eq!(event["evaluations"].as_array().unwrap().len(), 1);
+        assert_eq!(event["details"]["evaluations"].as_array().unwrap().len(), 1);
         assert_eq!(
-            event["evaluations"][0]["required_checks"],
+            event["details"]["evaluations"][0]["required_checks"],
             json!([
                 "rate_limit",
                 "credential_detection",
                 "credential_validation"
             ])
         );
-        assert_eq!(event["evaluations"][0]["budget_remaining"], Value::Null);
+        assert_eq!(
+            event["details"]["evaluations"][0]["budget_remaining"],
+            Value::Null
+        );
     }
     assert_eq!(first_event["agent"], "alice");
     assert_eq!(denied_event["agent"], "alice");
     assert_eq!(third_event["agent"], "alice");
-    let connection_id = first_event["connection_id"].as_str().unwrap();
+    let connection_id = first_event["details"]["connection_id"].as_str().unwrap();
     assert!(!connection_id.is_empty());
-    assert_eq!(denied_event["connection_id"], connection_id);
-    assert_eq!(third_event["connection_id"], connection_id);
+    assert_eq!(denied_event["details"]["connection_id"], connection_id);
+    assert_eq!(third_event["details"]["connection_id"], connection_id);
     assert!(guard_events.iter().all(|event| {
-        event["evaluations"]
+        event["details"]["evaluations"]
             .as_array()
             .is_some_and(|evaluations| !evaluations.is_empty())
     }));
@@ -3652,18 +3688,22 @@ async fn native_guard_header_match_blocks_streaming_chunked_upload_before_live_r
         receiver_seen.lock().unwrap().is_none(),
         "streaming credential denial reached the live receiver"
     );
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let event = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|event| {
-            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+            event["event"] == "security.credential_guard.evaluated"
+                && event["request_id"] == request_id
         })
         .unwrap();
-    assert_eq!(event["outcome"], "blocked");
-    assert_eq!(event["body_scope"], "headers_only");
-    assert_eq!(event["query_scope"], "policy_context_only");
-    assert_eq!(event["evaluations"][0]["finding"]["rule"], "streaming");
+    assert_eq!(event["details"]["outcome"], "blocked");
+    assert_eq!(event["details"]["body_scope"], "headers_only");
+    assert_eq!(event["details"]["query_scope"], "policy_context_only");
+    assert_eq!(
+        event["details"]["evaluations"][0]["finding"]["rule"],
+        "streaming"
+    );
     assert!(!events.contains("key-streaming"));
     assert!(!events.contains("streaming-body-canary"));
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
@@ -3743,15 +3783,15 @@ async fn native_guard_warn_mode_delivers_and_reports_trace_audit_and_stats() {
     drop(sender);
     let _ = connection_task.await;
     proxy.shutdown().await;
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let event = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "proxy.credential_guard")
+        .find(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
-    assert_eq!(event["outcome"], "warned");
-    assert_eq!(event["trace"][0]["outcome"], "detected");
-    assert_eq!(event["trace"][1]["outcome"], "warned");
+    assert_eq!(event["details"]["outcome"], "warned");
+    assert_eq!(event["details"]["trace"][0]["outcome"], "detected");
+    assert_eq!(event["details"]["trace"][1]["outcome"], "warned");
     assert!(!events.contains("key-warn"));
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     assert!(audit.contains("\"decision\": \"warn\""));
@@ -3814,13 +3854,13 @@ async fn native_guard_hmac_exception_survives_reload_and_rejects_other_credentia
     tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
         .await
         .unwrap();
-    let first_event = std::fs::read_to_string(directory.path().join("events.jsonl"))
+    let first_event = std::fs::read_to_string(directory.path().join("audit.jsonl"))
         .unwrap()
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "proxy.credential_guard")
+        .find(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
-    let fingerprint = first_event["evaluations"][0]["finding"]["fingerprint"]
+    let fingerprint = first_event["details"]["evaluations"][0]["finding"]["fingerprint"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -3867,18 +3907,18 @@ async fn native_guard_hmac_exception_survives_reload_and_rejects_other_credentia
     assert_eq!(other.status(), 428);
     let _ = other.collect().await.unwrap();
     assert_eq!(seen.lock().unwrap().len(), 2);
-    let reloaded = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let reloaded = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_events = reloaded
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(guard_events.len(), 3);
     assert_eq!(
         guard_events[0]["evaluations"][0]["finding"]["fingerprint"],
         guard_events[1]["evaluations"][0]["finding"]["fingerprint"]
     );
-    assert_eq!(guard_events[2]["outcome"], "blocked");
+    assert_eq!(guard_events[2]["details"]["outcome"], "blocked");
     assert_eq!(
         stats(&directory).await["credential-guard"]["violations_total"],
         1
@@ -4004,18 +4044,29 @@ async fn native_guard_policy_disabled_domain_and_client_bypasses_forward() {
     drop(sender);
     let _ = connection_task.await;
     proxy.shutdown().await;
-    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "proxy.credential_guard")
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
         .collect::<Vec<_>>();
     assert_eq!(guard_events.len(), 3);
-    assert!(guard_events.iter().all(|event| {
-        event["outcome"] == "bypassed" && event["audit"].as_array().unwrap().is_empty()
-    }));
-    assert_eq!(guard_events[0]["trace"][0]["reason"], "policy_disabled");
-    assert_eq!(guard_events[1]["trace"][0]["reason"], "policy_disabled");
-    assert_eq!(guard_events[2]["trace"][0]["reason"], "policy_disabled");
+    assert!(
+        guard_events
+            .iter()
+            .all(|event| { event["details"]["outcome"] == "bypassed" })
+    );
+    assert_eq!(
+        guard_events[0]["details"]["trace"][0]["reason"],
+        "policy_disabled"
+    );
+    assert_eq!(
+        guard_events[1]["details"]["trace"][0]["reason"],
+        "policy_disabled"
+    );
+    assert_eq!(
+        guard_events[2]["details"]["trace"][0]["reason"],
+        "policy_disabled"
+    );
     origin_task.abort();
 }

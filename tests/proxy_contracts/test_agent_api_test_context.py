@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.proxy_contracts.harness import connection
+from tests.proxy_contracts.harness import connection, read_events
 from tests.proxy_contracts.scenarios import FORGED_REQUEST_ID, origin_server
 from tests.proxy_contracts.test_agent_api_contract import AUTH_REQUIRED, HOST, TOKEN, assert_api_response
 from tests.proxy_contracts.test_native_network_policy import policy_proxy, replace_policy
@@ -41,7 +41,7 @@ def native_declaration_api(proxy_backend, tmp_path):
                 yield proxy
             finally:
                 assert parent.accepts == 0 and parent.requests == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
         assert proxy.process.returncode == 0
         assert not proxy.readiness_file.exists()
         assert all(not Path(path).exists() for path in proxy.paths.values())
@@ -59,7 +59,7 @@ def exchange(proxy, *, listener="alice", trusted_agent="alice", source="10.0.0.2
              status=200, expected=None):
     """Send owned UDS HTTP with optional body suspension before the real handler."""
     mutations = {"security.test_context_declared", "security.test_context_cleared"}
-    before = sum((row.get("audit") or {}).get("event") in mutations for row in proxy.events("proxy.agent_api"))
+    before = sum(row["event"] in mutations for row in read_events(proxy.audit_log))
     client = connection(proxy.paths[listener])
     started = time.monotonic()
     try:
@@ -88,13 +88,14 @@ def exchange(proxy, *, listener="alice", trusted_agent="alice", source="10.0.0.2
         client.close()
     decoded = assert_api_response(result, status, expected)
     request_id = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
-    events = [row for row in proxy.events("proxy.agent_api") if row["request_id"] == request_id]
+    events = [row for row in proxy.events("agent.api_response") if row["request_id"] == request_id]
     assert len(events) == 1
     event = events[0]
-    assert event["agent"] == trusted_agent and event["status"] == status and event["handler_owned"] is True
-    audit = event.get("audit")
+    assert event["agent"] == trusted_agent and event["details"]["status"] == status and event["details"]["handler_owned"] is True
+    audit = next((row for row in read_events(proxy.audit_log)
+                  if row.get("request_id") == request_id and row["event"] in mutations), None)
     mutation = status == 200 and method in {"POST", "DELETE"} and path.split("?")[0].rstrip("/") == CURRENT
-    after = sum((row.get("audit") or {}).get("event") in mutations for row in proxy.events("proxy.agent_api"))
+    after = sum(row["event"] in mutations for row in read_events(proxy.audit_log))
     assert after == before + int(mutation)
     if mutation:
         declared = method == "POST"
@@ -139,7 +140,7 @@ def current(proxy, original, *, listener="alice", trusted_agent="alice", source=
 
 
 def reload_listeners(proxy, update):
-    path = proxy.event_log.parent / "proxy.json"
+    path = proxy.audit_log.parent / "proxy.json"
     config = json.loads(path.read_text())
     update(config["listeners"])
     before = proxy.readiness_file.stat()
@@ -243,7 +244,7 @@ def test_native_declaration_api_byte_bodies_and_failed_mutation_retention(native
 
 def test_native_declaration_api_reload_uses_current_ttl_and_retains_old_records(native_declaration_api):
     proxy = native_declaration_api
-    directory = proxy.event_log.parent
+    directory = proxy.audit_log.parent
     retained = declare(proxy, run="stable")
 
     def reload_while_body_is_pending():

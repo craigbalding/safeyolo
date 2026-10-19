@@ -368,15 +368,14 @@ def wait_passthrough_audit(path: Path, agent: str) -> list[dict]:
 
 def assert_shutdown_ownership(config_dir: Path, agent: str, marker: str) -> dict:
     native = _native_config(config_dir / "config.toml", config_dir)["raw"]
-    events = event_rows(Path(native["event_log"]))
     audit = event_rows(Path(native["audit_log_path"]))
     p2_marker = "p2-" + marker[3:]
     ended = [
         row
-        for row in events
-        if row.get("event") == "proxy.websocket.end" and row.get("agent") == agent and row.get("outcome") == "shutdown"
+        for row in audit
+        if row.get("event") == "traffic.websocket.end" and row.get("agent") == agent and row.get("details", {}).get("outcome") == "shutdown"
     ]
-    assert len(ended) == 1 and ended[0].get("drained") is True, ended
+    assert len(ended) == 1 and ended[0].get("details", {}).get("drained") is True, ended
     closed = [
         row
         for row in audit

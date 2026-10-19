@@ -73,7 +73,7 @@ fn config(root: &Path) -> Config {
         readiness_file: root.join("ready.json"),
         reload_id: None,
         audit_log_path: Some(root.join("audit.jsonl")),
-        event_log: root.join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
@@ -384,7 +384,7 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
     // Capture both sinks before the owner drain. A wait with no attention
     // result must not create a late audit or event after its owner terminates.
     let audit_before_first_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_before_first_shutdown = file_lines(&config.event_log);
+    let events_before_first_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
 
     let started = tokio::time::Instant::now();
     proxy.shutdown().await;
@@ -426,7 +426,7 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         "admin listener must close at shutdown"
     );
     let audit_after_first_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_after_first_shutdown = file_lines(&config.event_log);
+    let events_after_first_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
     assert_eq!(
         audit_after_first_shutdown, audit_before_first_shutdown,
         "first owner drain must not append a late audit event"
@@ -474,7 +474,7 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         "restarted attention wait must create a live NATS subscription"
     );
     let audit_before_second_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_before_second_shutdown = file_lines(&config.event_log);
+    let events_before_second_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
     restarted.shutdown().await;
 
     let mut restarted_subscriptions_after = usize::MAX;
@@ -505,7 +505,7 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         "restarted admin listener must close at shutdown"
     );
     let audit_after_second_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_after_second_shutdown = file_lines(&config.event_log);
+    let events_after_second_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
     assert_eq!(
         audit_after_second_shutdown, audit_before_second_shutdown,
         "restarted owner drain must not append a late audit event"
@@ -646,7 +646,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
     assert_eq!(admin_identity.status, 200);
     assert_eq!(admin_identity.body["instance_id"], instance_id);
     let audit_before = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_before = file_lines(&config.event_log);
+    let events_before = file_lines(config.audit_log_path.as_ref().unwrap());
 
     proxy.shutdown().await;
 
@@ -679,7 +679,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
     );
     assert!(TcpStream::connect(("127.0.0.1", admin_port)).await.is_err());
     let first_audit_lines_after_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let first_event_lines_after_shutdown = file_lines(&config.event_log);
+    let first_event_lines_after_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
     let first_audit_lines_unchanged = first_audit_lines_after_shutdown == audit_before;
     let first_event_lines_unchanged = first_event_lines_after_shutdown == events_before;
     assert_eq!(first_audit_lines_after_shutdown, audit_before);
@@ -724,7 +724,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
     }
     assert_eq!(restarted_consumers_before, 1);
     let restarted_audit_before = file_lines(&config.audit_log_path.clone().unwrap());
-    let restarted_events_before = file_lines(&config.event_log);
+    let restarted_events_before = file_lines(config.audit_log_path.as_ref().unwrap());
     restarted.shutdown().await;
 
     let mut restarted_consumers_after = usize::MAX;
@@ -757,7 +757,10 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
         file_lines(&config.audit_log_path.clone().unwrap()),
         restarted_audit_before
     );
-    assert_eq!(file_lines(&config.event_log), restarted_events_before);
+    assert_eq!(
+        file_lines(config.audit_log_path.as_ref().unwrap()),
+        restarted_events_before
+    );
 
     let evidence = json!({
         "workflow": "native-coordination-room-wait-consumer-shutdown-restart",
@@ -783,7 +786,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
             "readiness_removed": !config.readiness_file.exists(),
             "agent_socket_removed": !config.listeners[0].socket_path.exists(),
             "audit_lines_unchanged": file_lines(&config.audit_log_path.clone().unwrap()) == restarted_audit_before,
-            "event_lines_unchanged": file_lines(&config.event_log) == restarted_events_before,
+            "event_lines_unchanged": file_lines(config.audit_log_path.as_ref().unwrap()) == restarted_events_before,
         },
         "remaining_scope": [
             "shared OAuth refresh owner shutdown",

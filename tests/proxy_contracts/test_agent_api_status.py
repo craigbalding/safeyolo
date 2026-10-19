@@ -22,12 +22,12 @@ INITIAL = json.loads(bytes.fromhex(SOURCE["rows"][0]["response"]["body_hex"]))
 
 def read_status(proxy, parent, expected):
     """Both identities see the same ordered report, without any upstream work."""
-    before = parent.accepts, len(proxy.events("proxy.egress"))
+    before = parent.accepts, len(proxy.events("traffic.egress"))
     for agent, path in (("alice", "/status"), ("bob", "/status///?agent=alice&task_id=forged&ignored=%ff")):
         result = api_request(proxy, path, agent=agent, headers={"X-SafeYolo-Agent": "forged"})
         assert_api_response(result, 200, expected)
         assert result[2] == json.dumps(expected).encode()
-    assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+    assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
 
 
 def test_agent_api_status_counts_real_requests_and_preserves_state_on_reload(proxy_backend, tmp_path):
@@ -57,7 +57,7 @@ def test_agent_api_status_counts_real_requests_and_preserves_state_on_reload(pro
             for path in ("/config", "/policy", "/budgets", "/health"):
                 assert_api_response(api_request(proxy, path), 200)
             read_status(proxy, parent, expected)
-            assert parent.accepts == 0 and proxy.events("proxy.egress") == []
+            assert parent.accepts == 0 and proxy.events("traffic.egress") == []
 
             started = time.monotonic()
             for agent, status in (("alice", 200), ("bob", 200), ("alice", 429)):
@@ -73,7 +73,7 @@ def test_agent_api_status_counts_real_requests_and_preserves_state_on_reload(pro
                 }
                 read_status(proxy, parent, expected)
             assert_no_refill(started)
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
 
             replace_policy(proxy, proxy_backend, directory, "{}")
             expected["policy_hash"] = "sha256:917ea0d8c9828d33"

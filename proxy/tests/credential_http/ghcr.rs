@@ -309,7 +309,8 @@ async fn repeated_public_pull_reuse_concurrency_replacement_and_restart() {
             policy_before
         );
         proxy.shutdown().await;
-        let events = std::fs::read_to_string(&fixture.config.event_log).unwrap();
+        let events =
+            std::fs::read_to_string(fixture.config.audit_log_path.as_ref().unwrap()).unwrap();
         let audit =
             std::fs::read_to_string(fixture.config.audit_log_path.as_ref().unwrap()).unwrap();
         assert!(
@@ -327,7 +328,10 @@ async fn repeated_public_pull_reuse_concurrency_replacement_and_restart() {
         let allowed: Vec<_> = events
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .filter(|row| row["event"] == "proxy.credential_guard" && row["outcome"] == "allowed")
+            .filter(|row| {
+                row["event"] == "security.credential_guard.evaluated"
+                    && row["details"]["outcome"] == "allowed"
+            })
             .collect();
         assert_eq!(allowed.len(), 8);
         assert!(
@@ -542,7 +546,7 @@ async fn learned_tokens_keep_repeated_field_inspection_approvals_and_budgets() {
         assert_eq!(fixture.seen.lock().unwrap().len(), before + 2);
         proxy.shutdown().await;
         for path in [
-            &fixture.config.event_log,
+            fixture.config.audit_log_path.as_ref().unwrap(),
             fixture.config.audit_log_path.as_ref().unwrap(),
         ] {
             let text = std::fs::read_to_string(path).unwrap();
@@ -1044,7 +1048,7 @@ async fn live_public_manifest_and_small_blob() {
         .or_else(|_| std::env::var("HTTP_PROXY"))
         .ok()
         .filter(|value| !value.is_empty());
-    let event_log = config.event_log.clone();
+    let event_log = config.audit_log_path.as_ref().unwrap().clone();
     let audit_path = config.audit_log_path.clone().unwrap();
     let proxy = Proxy::start(config).await.unwrap();
     let repository = "craigbalding/safeyolo-guest";
@@ -1211,7 +1215,7 @@ async fn live_public_manifest_and_small_blob() {
     let observed = rows
         .iter()
         .filter(|row| {
-            row["event"] == "proxy.credential_guard"
+            row["event"] == "security.credential_guard.evaluated"
                 && row["audit"][0]["details"]["observed_anonymous_ghcr_pull"] == true
         })
         .count();
@@ -1221,7 +1225,7 @@ async fn live_public_manifest_and_small_blob() {
     );
     assert!(
         rows.iter()
-            .any(|row| row["event"] == "proxy.egress" && row["host"] == "ghcr.io")
+            .any(|row| row["event"] == "traffic.egress" && row["host"] == "ghcr.io")
     );
     println!(
         "live GHCR candidate: two distinct tokens, {manifest_reads} manifests, two blobs ({blob_bytes} bytes), {observed} observed-token decisions, zero approval events, zero pending approvals; source {}",

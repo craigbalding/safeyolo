@@ -10,7 +10,6 @@ fn config(directory: &Path) -> Config {
                       "source_id":"192.0.2.1"}],
         "policy_file":policy,"data_dir":directory.join("data"),"flow_store_enabled":false,
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "readiness_file":directory.join("ready.json"),
     }))
     .unwrap()

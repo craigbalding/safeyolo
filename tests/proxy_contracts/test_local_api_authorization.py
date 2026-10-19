@@ -40,7 +40,7 @@ def test_reserved_routes_stay_local_when_agent_api_unavailable(
                 assert json.loads(body)["reason_code"] == "agent_api_unavailable"
                 assert {key.lower(): value for key, value in headers.items()}["x-safeyolo-agent-api"] == "true"
                 assert parent.accepts == 0 and parent.request_heads == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
 
             for authority in ("_safeyolo.probe.internal", "_SAFEYOLO.PROBE.INTERNAL."):
                 status, _, body = send_request(
@@ -49,14 +49,14 @@ def test_reserved_routes_stay_local_when_agent_api_unavailable(
                 )
                 assert status == 200 and json.loads(body)["probe_ok"] is True
                 assert parent.accepts == 0 and parent.request_heads == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
 
             status, _, body = send_request(
                 proxy.paths["bob"], "http://ordinary.invalid/health?secret=query-canary-621",
                 headers={"Authorization": "Bearer bearer-canary-621"},
             )
             assert status == 200 and body == b"hello"
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
             assert b"query-canary-621" in parent.request_heads[0]
             assert b"bearer-canary-621" in parent.request_heads[0]
 
@@ -95,7 +95,7 @@ def test_agent_cannot_reach_operator_listener_through_proxy(proxy_backend, tmp_p
                 assert status == 403, body
                 assert {key.lower(): value for key, value in headers.items()}["x-blocked-by"] == "admin-shield"
                 assert parent.accepts == 0 and parent.request_heads == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
 
             # The operator's direct listener retains public health and token-gated reads.
             client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -114,14 +114,14 @@ def test_agent_cannot_reach_operator_listener_through_proxy(proxy_backend, tmp_p
                 response.read()
             finally:
                 client.close()
-            assert parent.accepts == 0 and proxy.events("proxy.egress") == []
+            assert parent.accepts == 0 and proxy.events("traffic.egress") == []
 
             # The same port at another address is not an operator listener.
             status, _, body = send_request(proxy.paths["alice"], f"http://127.0.0.2:{port}/ordinary")
             assert status == 200 and body == b"hello"
             status, _, body = send_request(proxy.paths["alice"], f"http://127.0.0.2.:{port}/ordinary")
             assert status == 200 and body == b"hello"
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
 
 
 def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path):
@@ -145,7 +145,7 @@ def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path
                 assert result[0] == status, result
                 assert {key.lower(): value for key, value in result[1].items()}["x-safeyolo-agent-api"] == "true"
                 assert parent.accepts == origin_accepts
-                assert len(proxy.events("proxy.egress")) == origin_accepts
+                assert len(proxy.events("traffic.egress")) == origin_accepts
                 return json.loads(result[2])
 
             origin_accepts = 0
@@ -221,7 +221,7 @@ def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path
                 "error": "Flow not found",
             }
             assert parent.accepts == 2 and len(parent.requests) == 2
-            local = [row for row in proxy.events("proxy.request") if row["host"].lower().rstrip(".") == HOST]
+            local = [row for row in proxy.events("traffic.request_outcome") if row["host"].lower().rstrip(".") == HOST]
             assert local and all(row["decision"] == "local" for row in local)
             deadline = time.monotonic() + 2
             while True:
@@ -255,7 +255,7 @@ def test_flow_post_rejects_non_object_json_without_effect(proxy_backend, tmp_pat
             )
             assert status == 200 and raw == b"hello"
             request_id = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
 
             def call(agent, path, body=None, *, method="POST"):
                 status, response_headers, raw = send_request(
@@ -269,7 +269,7 @@ def test_flow_post_rejects_non_object_json_without_effect(proxy_backend, tmp_pat
                 assert {key.lower(): value for key, value in response_headers.items()}[
                     "x-safeyolo-agent-api"
                 ] == "true"
-                assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+                assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
                 return status, json.loads(raw)
 
             deadline = time.monotonic() + 2
@@ -342,7 +342,7 @@ def test_invalid_policy_startup_refuses_and_reload_keeps_denial(proxy_backend, t
             denied = "http://blocked.invalid/denied"
             allowed = "http://open.invalid/allowed"
             assert send_request(proxy.paths["alice"], denied)[0] == 403
-            assert parent.accepts == 0 and proxy.events("proxy.egress") == []
+            assert parent.accepts == 0 and proxy.events("traffic.egress") == []
             status, _, body = send_request(proxy.paths["alice"], allowed)
             assert status == 200 and body == b"hello"
             assert parent.accepts == 1
@@ -350,7 +350,7 @@ def test_invalid_policy_startup_refuses_and_reload_keeps_denial(proxy_backend, t
             replace_policy(proxy, proxy_backend, directory, "hosts = 7", valid=False)
             assert api_request(proxy, "/policy")[2] == before
             assert send_request(proxy.paths["alice"], denied)[0] == 403
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
             assert send_request(proxy.paths["bob"], allowed)[0] == 200
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
             assert any(row["event"] == "ops.policy_error" for row in read_events(directory / "audit.jsonl"))

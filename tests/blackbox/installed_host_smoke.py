@@ -244,7 +244,7 @@ def _native_config(path: Path, cwd: Path) -> dict[str, Any]:
         for key, default in (("policy_file", "policy.toml"), ("readiness_file", "data/ready.json"),
                              ("admin_api_token_file", "data/admin_token"), ("flow_store_db_path", "logs/flows.sqlite3"),
                              ("circuit_state_file", "data/circuits.json"),
-                             ("audit_log_path", "logs/audit.jsonl"), ("event_log", "logs/events.jsonl")):
+                             ("audit_log_path", "logs/audit.jsonl")):
             native[key] = str(_absolute_path(native.get(key, default), cwd))
         native.setdefault("listeners", [])
         for key in ("upstream_ca_file", "tls_ca_file", "gateway_services_dir", "gateway_builtin_services_dir"):

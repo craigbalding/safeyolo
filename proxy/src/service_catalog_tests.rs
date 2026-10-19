@@ -32,7 +32,6 @@ fn config(directory: &Path) -> Config {
         "policy_file":directory.join("policy.json"),
         "data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
-        "event_log":directory.join("events.jsonl"),
         "audit_log_path":directory.join("audit.jsonl"),
         "flow_store_db_path":directory.join("flows.sqlite3"),
         "flow_store_enabled":true,"circuit_state_file":""
@@ -549,7 +548,7 @@ impl Fixture {
                 .unwrap()
                 .is_none()
         );
-        for name in ["audit.jsonl", "events.jsonl"] {
+        for name in ["audit.jsonl"] {
             let bytes = std::fs::read(self.directory.path().join(name)).unwrap();
             assert!(
                 !bytes.windows(4).any(|part| part == b"sgw_"),
@@ -564,7 +563,7 @@ impl Fixture {
             let text = std::str::from_utf8(&bytes).unwrap();
             for line in text.lines() {
                 let event: Value = serde_json::from_str(line).unwrap();
-                assert_ne!(event["event"], "proxy.egress");
+                assert_ne!(event["event"], "traffic.egress");
             }
         }
     }

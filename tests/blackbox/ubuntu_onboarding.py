@@ -199,7 +199,7 @@ def network_probe(phase, kind, code, deadline):
     """Export selected operands; curl output and new proxy log bytes stay private."""
     label = phase + "-" + kind
     logs = {}
-    for name in ["events.jsonl", "proxy.log"]:
+    for name in ["audit.jsonl", "proxy.log"]:
         path = root / "logs" / name
         try:
             info = path.stat()
@@ -268,14 +268,14 @@ def network_probe(phase, kind, code, deadline):
                 if not isinstance(event, dict):
                     log["invalid_event_shape"] = True
                     continue
-                if (event.get("event") != "proxy.request" or event.get("host") != "httpbin.org"
+                if (event.get("event") != "traffic.request_outcome" or event.get("host") != "httpbin.org"
                         or not re.fullmatch(r"req-[0-9a-f]{32}", str(event.get("request_id")))
                         or (request_id and event["request_id"] != request_id)):
                     continue
                 selected = {"request_id": event["request_id"],
                             "correlation": "request-id" if request_id else "host-and-time-window-only"}
-                if type(event.get("status")) is int and 100 <= event["status"] <= 599:
-                    selected["status"] = event["status"]
+                if type(event.get("status")) is int and 100 <= event["details"]["status"] <= 599:
+                    selected["status"] = event["details"]["status"]
                 if event.get("decision") in ["allow", "deny", "error", "invalid", "admin_port_access"]:
                     selected["decision"] = event["decision"]
                 log["matches"].append(selected)
@@ -676,7 +676,7 @@ def witness(phase, start_marker=False, connected=False):
     x[phase] = row
     save()
     capture(row, "runtime", live_record)
-    row["status"] = observe(phase + "-status", [cli, "--root", root, "agent", "status", "first"])
+    row["details"]["status"] = observe(phase + "-status", [cli, "--root", root, "agent", "status", "first"])
     capture(row, "launch", launch_record)
     capture(row, "terminal_attachment", lambda: terminal_attachment(phase, row["launch"]))
     capture(row, "processes", processes)
@@ -1269,7 +1269,7 @@ def connected_accounting():
 def provider_intervals():
     requests = {}
     intervals = []
-    path = root / "logs/events.jsonl"
+    path = root / "logs/audit.jsonl"
     if not path.is_file():
         return {"unavailable": "No reached product event log"}
     for line in path.read_bytes().splitlines(keepends=True):

@@ -20,7 +20,7 @@ fn config(directory: &Path) -> Config {
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
         "policy_file":directory.join("policy.json"),"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "admin_port":0,"admin_api_token_file":directory.join("token"),
-        "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events.jsonl"),
+        "audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_state_file":""
     }))
@@ -246,16 +246,16 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
             .contains(TOKEN)
     );
     assert!(
-        !std::fs::read_to_string(directory.path().join("events.jsonl"))
+        !std::fs::read_to_string(directory.path().join("audit.jsonl"))
             .unwrap()
             .contains(TOKEN)
     );
-    for line in std::fs::read_to_string(directory.path().join("events.jsonl"))
+    for line in std::fs::read_to_string(directory.path().join("audit.jsonl"))
         .unwrap()
         .lines()
     {
         let event: Value = serde_json::from_str(line).unwrap();
-        assert_ne!(event["event"], "proxy.egress");
+        assert_ne!(event["event"], "traffic.egress");
     }
 }
 

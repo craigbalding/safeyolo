@@ -441,9 +441,9 @@ esac
                 && !logs.contains("/private/path")
         );
         assert!(
-            !fs::read_to_string(root.join("logs/events.jsonl"))
+            !fs::read_to_string(root.join("logs/audit.jsonl"))
                 .unwrap()
-                .contains("proxy.egress")
+                .contains("traffic.egress")
         );
     }
     fs::write(&record, saved).unwrap();

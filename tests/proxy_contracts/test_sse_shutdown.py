@@ -138,7 +138,7 @@ def test_early_sse_disconnect_exits_and_restarts(proxy_backend, tmp_path):
                 restart_dir / "process.log", readiness_file=proxy.readiness_file,
                 expected_backend="rust-m2",
             )
-            restarted = RunningProxy(proxy.paths, proxy.event_log, process, proxy.readiness_file)
+            restarted = RunningProxy(proxy.paths, proxy.audit_log, process, proxy.readiness_file)
             assert process.pid != first_pid
             assert json.loads(proxy.readiness_file.read_text())["pid"] == process.pid
             assert (directory / "proxy.json").read_bytes() == config

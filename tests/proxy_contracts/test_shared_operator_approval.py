@@ -262,7 +262,7 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
                 assert status == 428, body
                 assert (origin.accepts, len(origin.requests), len(origin.request_heads)) == before_restore
 
-                events = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                events = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
                 assert [events[identifier]["status"] for identifier in reuse_ids] == [
                     200, 428, 403, 200, 428,
                 ]
@@ -490,7 +490,7 @@ egress = "prompt"
                     proxy_backend == "python"
                 )
 
-                runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
                 assert (runtime[global_id]["agent"], runtime[global_id]["status"]) == ("bob", 428)
                 assert (runtime[agent_id]["agent"], runtime[agent_id]["status"]) == (
                     "alice", expected_agent_status,

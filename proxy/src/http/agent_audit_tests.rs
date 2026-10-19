@@ -18,8 +18,7 @@ fn config(directory: &Path) -> Config {
     std::fs::write(&policy, "{}").unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.10"}],
-        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "event_log":directory.join("diagnostics.jsonl"),"audit_log_path":directory.join("audit.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":"",
     })).unwrap()
@@ -129,7 +128,21 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
     records(&directory.join("audit.jsonl"))
         .into_iter()
         .filter(|row| {
+            assert_eq!(row["schema_version"], 1);
             !(row["addon"] == "memory-monitor" && row["event"] == "ops.memory.conn_closed")
+        })
+        .filter(|row| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "agent.api_response"
+                        | "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                        | "gateway.evaluated"
+                )
+            )
         })
         .collect()
 }
@@ -183,7 +196,8 @@ fn canonical_agent_events_precede_traffic_and_preserve_local_responses() {
     ] {
         assert!(!directory.path().join(name).exists(), "{name}");
     }
-    for name in ["audit.jsonl", "diagnostics.jsonl"] {
+    {
+        let name = "audit.jsonl";
         let content = std::fs::read_to_string(directory.path().join(name)).unwrap();
         assert!(!content.contains(TOKEN));
         let encoded = TOKEN
@@ -280,15 +294,19 @@ async fn owned_child(directory: &Path) {
     assert_eq!(rows[0]["details"]["path"], "/api/test-context/current///");
     assert_eq!(rows[0]["addon"], "agent-api-request-guard");
     proxy.shutdown().await;
-    let diagnostics = records(&directory.join("diagnostics.jsonl"));
+    let diagnostics = records(&directory.join("audit.jsonl"));
     assert_eq!(
         diagnostics
             .iter()
-            .filter(|row| row["event"] == "proxy.agent_api")
+            .filter(|row| row["event"] == "agent.api_response")
             .count(),
         6
     );
-    assert!(!diagnostics.iter().any(|row| row["event"] == "proxy.egress"));
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|row| row["event"] == "traffic.egress")
+    );
 }
 
 #[test]
@@ -338,7 +356,8 @@ fn explain_uses_trusted_owner_and_shared_writer_after_reload() {
     ] {
         assert!(!directory.path().join(name).exists(), "{name}");
     }
-    for name in ["audit.jsonl", "diagnostics.jsonl"] {
+    {
+        let name = "audit.jsonl";
         let text = std::fs::read_to_string(directory.path().join(name)).unwrap();
         assert!(!text.contains(TOKEN));
         let encoded = TOKEN
@@ -405,7 +424,15 @@ async fn explain_child(directory: &Path) {
     let bob_events = explained(directory, "bob", &bob_id, "").await;
     for (value, agent) in [(&alice_events, "alice"), (&bob_events, "bob")] {
         let events = value["events"].as_array().unwrap();
-        assert_eq!(names(events), ["traffic.request", "traffic.response"]);
+        assert_eq!(
+            names(events),
+            [
+                "agent.api_response",
+                "traffic.request",
+                "traffic.response",
+                "traffic.request_outcome"
+            ]
+        );
         assert!(events.iter().all(|event| event["agent"] == agent));
     }
     for (agent, request_id, suffix) in [
@@ -433,9 +460,9 @@ async fn explain_child(directory: &Path) {
     );
     proxy.shutdown().await;
     assert!(
-        !records(&directory.join("diagnostics.jsonl"))
+        !records(&directory.join("audit.jsonl"))
             .iter()
-            .any(|row| row["event"] == "proxy.egress")
+            .any(|row| row["event"] == "traffic.egress")
     );
 }
 
@@ -728,9 +755,9 @@ async fn discovery_child(directory: &Path) {
     );
     proxy.shutdown().await;
     assert!(
-        !self::records(&directory.join("diagnostics.jsonl"))
+        !self::records(&directory.join("audit.jsonl"))
             .iter()
-            .any(|row| row["event"] == "proxy.egress")
+            .any(|row| row["event"] == "traffic.egress")
     );
     assert!(
         !std::fs::read_to_string(directory.join("audit.jsonl"))

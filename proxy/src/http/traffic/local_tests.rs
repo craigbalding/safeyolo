@@ -23,8 +23,7 @@ fn config(directory: &Path) -> Config {
     .unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.10"}],
-        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "event_log":directory.join("events"),"audit_log_path":directory.join("audit.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"test_context_block":true,
         "circuit_breaker_enabled":false,"via_token":"owned-loop-marker",
     })).unwrap()
