@@ -57,6 +57,26 @@ class ObserverChecks(unittest.TestCase):
             rows = [rows[0], {"type": "assistant", "message": {"content": [{"type": "text", "text": error}]}}]
         return rows, body
 
+    def test_signed_out_accounting_counts_controls_without_claiming_a_task_or_human_time(self):
+        m.x.update(product_commands=[{"command": m.DOWNLOAD}, {"phase": "cold"}, {"phase": "warm"}],
+            observations=[{"label": "bootstrap-download", "role": "product", **m.stamp()},
+                          {"label": "native-version", "role": "observer", **m.stamp()}],
+            interactions=[{"phase": "cold", "prompt": "Allow host changes?", "seen": m.stamp(), "sent": m.stamp()},
+                          {"phase": "warm", "kind": "return to host", "answer": "Ctrl-b d"},
+                          {"phase": "warm", "kind": "keep session and exit", "answer": "q"}])
+        m.record_reading("cold", "normal instructions", m.SIGNED_OUT_PROSE.encode())
+        m.signed_out_accounting()
+        self.assertEqual(m.x["counts"]["cold_product_commands"], 2)
+        self.assertEqual(m.x["counts"]["warm_product_commands"], 1)
+        self.assertEqual(m.x["counts"]["product_interactions"], 3)
+        self.assertEqual(m.x["counts"]["material_decisions"], 1)
+        self.assertEqual(m.x["counts"]["canonical_task_submissions"], 0)
+        self.assertEqual(m.x["counts"]["observer_diagnostic_commands"], 1)
+        self.assertEqual([row["label"] for row in m.x["timings"]["observer_intervals"]], ["native-version"])
+        self.assertEqual(m.x["counts"]["required_reading_words"], len(m.SIGNED_OUT_PROSE.split()))
+        self.assertNotIn("cold_total_to_first_task_seconds", m.x["timings"])
+        self.assertIn("do not measure human", m.x["timings"]["wait_limit"])
+
     def test_canonical_submission_write_result_and_file_must_match_in_order(self):
         rows, body = self.canonical_task()
         self.assertTrue(m.task_records(rows, body)["successful_task"])
@@ -1021,6 +1041,142 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["discovery_stdout"], str(m.cli))
         self.assertEqual(row["version_stdout"], "observer-test-version")
         self.assertNotIn("observer_terminated_viewer", row)
+
+    def test_launch_summary_classifies_only_known_product_errors_and_exports_no_excerpt(self):
+        private_text = "PRIVATE_AUTH_MODEL_TERMINAL_CANARY"
+        launch_id = "launch-" + "a" * 32
+        errors = [("coding-agent observation timed out", "coding-agent-observation-timeout"),
+                  ("coding-agent observation failed", "coding-agent-observation-failed"),
+                  ("coding-agent observation is unverified", "coding-agent-observation-unverified"),
+                  (private_text, "unknown")]
+        with patch.object(m, "launch_record", autospec=True, return_value={"launch_id": launch_id, "command": private_text}):
+            for message, category in errors:
+                with self.subTest(category=category):
+                    row = {"phase": "cold", "command_exit": 1}
+                    output = (private_text + "\n\x1b[31msafeyolo: First-agent sandbox/harness startup failed: "
+                              + message + ". Saved agent state is retained.\x1b[0m\n" + private_text).encode()
+                    m.record_launch_result(row, output)
+                    result = row["launch_result"]
+                    self.assertEqual(result["error_category"], category)
+                    self.assertEqual(result["failure_phase"], "sandbox-harness-start")
+                    self.assertEqual(result["launch_id"], launch_id)
+                    self.assertNotIn(private_text, json.dumps(result))
+                    self.assertLess(len(json.dumps(result)), 700)
+                    self.assertIn("monotonic", result)
+            known_error = (b"safeyolo: First-agent sandbox/harness startup failed: "
+                           b"coding-agent observation timed out. Saved agent state is retained.")
+            for output, exit_code in [(b"coding-agent observation timed out", 1),
+                (b"Unrecognized private failure", 1),
+                (b"SY239_COMMAND_EXIT=1\n" + known_error, 1),
+                (known_error, 0), (known_error, None)]:
+                row = {"phase": "cold", "command_exit": exit_code}
+                m.record_launch_result(row, output)
+                self.assertEqual(row["launch_result"]["failure_phase"], "unknown")
+                self.assertEqual(row["launch_result"]["error_category"], "unknown")
+
+    def test_real_failed_launch_is_saved_before_witness_and_cleanup(self):
+        launch_id = "launch-" + "b" * 32
+        directory = m.root / "agents/first"
+        directory.mkdir(parents=True)
+        (directory / "current-launch.json").write_text(json.dumps({"launch_id": launch_id}))
+        private_text = "PRIVATE_TERMINAL_STRING"
+        message = ("Starting or resuming claude.\n" + private_text + "\n"
+                   "safeyolo: First-agent sandbox/harness startup failed: coding-agent observation timed out. "
+                   "Saved agent state is retained. " + private_text)
+        stub = m.project / "failed-launch.py"
+        stub.write_text(f"print({message!r},flush=True);raise SystemExit(1)")
+        def witness(*args, **kwargs):
+            saved = json.loads(m.out.read_text())["product_commands"][-1]["launch_result"]
+            self.assertEqual(saved["failure_phase"], "sandbox-harness-start")
+            self.assertEqual(saved["last_observed_phase"], "sandbox-harness-start")
+            self.assertEqual(saved["error_category"], "coding-agent-observation-timeout")
+            self.assertEqual(saved["launch_id"], launch_id)
+            self.assertNotIn(private_text, m.out.read_text())
+            return {}
+        with patch.object(m, "LAUNCH", [sys.executable, str(stub)]), \
+             patch.object(m, "witness", autospec=True, side_effect=witness), \
+             patch.dict(os.environ, {"PATH": str(m.cli.parent) + ":" + os.environ["PATH"]}):
+            row, _ = m.entered("cold", 2)
+        self.assertEqual(row["command_exit"], 1)
+        self.assertEqual(row["exit_code"], 1)
+        self.assertEqual(row["discovery_exit"], 0)
+        self.assertEqual(row["version_exit"], 0)
+        self.assertNotIn("ordinary_q", row)
+        self.assertNotIn("final_capture_error", row)
+
+    def test_unreadable_launch_identity_does_not_export_private_error_or_skip_summary(self):
+        row = {"phase": "cold"}
+        with patch.object(m, "launch_record", autospec=True, side_effect=ValueError("PRIVATE_IDENTITY_ERROR")):
+            m.record_launch_result(row, b"private terminal")
+        self.assertEqual(row["launch_result"]["identity_status"], "unreadable")
+        self.assertIsNone(row["launch_result"]["launch_id"])
+        self.assertEqual(row["launch_result"]["error_category"], "unknown")
+        self.assertNotIn("PRIVATE", m.out.read_text())
+        with patch.object(m, "launch_record", autospec=True, return_value={"launch_id": "PRIVATE_INVALID_ID"}):
+            m.record_launch_result(row, b"private terminal")
+        self.assertEqual(row["launch_result"]["identity_status"], "unavailable")
+        self.assertNotIn("PRIVATE", m.out.read_text())
+
+    def test_split_multidigit_exit_marker_is_complete_before_saving_summary(self):
+        stub = m.project / "exit127.py"
+        stub.write_text("raise SystemExit(127)\n")
+        read = os.read
+        with patch.object(m, "LAUNCH", [sys.executable, str(stub)]), \
+             patch.object(m, "witness", autospec=True, return_value={}), \
+             patch.object(m.os, "read", autospec=True, side_effect=lambda fd, count: read(fd, min(count, 1))):
+            row, _ = m.entered("cold", 10)
+        self.assertEqual(row["launch_result"]["command_exit"], 127)
+        self.assertEqual(row["command_exit"], 127)
+
+    def test_complete_launch_result_is_saved_before_a_simultaneous_deadline(self):
+        launch_id = "launch-" + "c" * 32
+        directory = m.root / "agents/first"
+        directory.mkdir(parents=True)
+        (directory / "current-launch.json").write_text(json.dumps({"launch_id": launch_id}))
+        private_text = "PRIVATE_DEADLINE_TERMINAL_CANARY"
+        message = ("Starting or resuming claude.\n" + private_text + "\n"
+                   "safeyolo: First-agent sandbox/harness startup failed: coding-agent observation timed out. "
+                   "Saved agent state is retained.")
+        stub = m.project / "deadline-exit127.py"
+        stub.write_text(f"print({message!r},flush=True);raise SystemExit(127)\n")
+        read, monotonic = os.read, time.monotonic
+        received = b""
+        marker_received = False
+        saved_at_witness = []
+
+        def terminal_read(fd, count):
+            nonlocal received, marker_received
+            chunk = read(fd, count)
+            if os.isatty(fd):
+                received += chunk
+                marker_received = b"SY239_COMMAND_EXIT=127\r\n" in received
+            return chunk
+
+        def clock():
+            return monotonic() + (20 if marker_received else 0)
+
+        def witness(*args, **kwargs):
+            saved_at_witness.append(json.loads(m.out.read_text())["product_commands"][-1].get("launch_result"))
+            return {}
+
+        with patch.object(m, "LAUNCH", [sys.executable, str(stub)]), \
+             patch.object(m, "witness", autospec=True, side_effect=witness), \
+             patch.object(m.os, "read", autospec=True, side_effect=terminal_read), \
+             patch.object(m.time, "monotonic", autospec=True, side_effect=clock), \
+             patch.dict(os.environ, {"PATH": str(m.cli.parent) + ":" + os.environ["PATH"]}):
+            row, _ = m.entered("cold", 10)
+        self.assertTrue(marker_received)
+        self.assertEqual(saved_at_witness, [row["launch_result"]])
+        self.assertEqual(row["command_exit"], 127)
+        self.assertEqual(row["launch_result"]["command_exit"], 127)
+        self.assertEqual(row["launch_result"]["failure_phase"], "sandbox-harness-start")
+        self.assertEqual(row["launch_result"]["error_category"], "coding-agent-observation-timeout")
+        self.assertEqual(row["launch_result"]["launch_id"], launch_id)
+        self.assertEqual(row["exit_code"], 127)
+        self.assertTrue(row["console_reaped"])
+        self.assertNotIn("final_capture_error", row)
+        self.assertNotIn(private_text, m.out.read_text())
+        self.assertIn(private_text, (m.private / "cold.terminal").read_text())
 
     def test_real_pty_drains_small_final_chunks_after_shell_exit(self):
         read = os.read

@@ -59,6 +59,11 @@ CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 AMD64 with curl 
     "Ctrl-b then d opens SafeYolo's host controls. Use a to inspect pending requests and their scope before approving. "
     "Press Enter to return. After the first task, detach and use q to keep the session. "
     "Repeat the second command to return to it.")
+SIGNED_OUT_PROSE = ("Use an ordinary account on a fresh Ubuntu 24.04 host with curl and bash. "
+    "Review the host changes and workspace access before consenting. "
+    "This observation declines authentication copy and stops at the sign-in screen. "
+    "Ctrl-b then d opens the host controls. Use q to keep the session. "
+    "Repeat the second command to return to it.")
 DOWNLOAD = ["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
             "--output", "install-safeyolo.sh",
             f"https://raw.githubusercontent.com/craigbalding/safeyolo/{BOOTSTRAP}/install.sh"]
@@ -830,6 +835,48 @@ def stop_console_group(pid, row):
     save()
 
 
+def record_launch_result(row, output):
+    """Save fixed diagnostic categories before runtime capture or owned cleanup."""
+    result = {"command_exit": row.get("command_exit"), "failure_phase": "unknown",
+              "error_category": "unknown", "launch_id": None, **stamp()}
+    boundaries = [r["boundary"] for r in x["phase_observations"]
+                  if r["phase"] == row["phase"] and r["boundary"] in dict(PHASE_TEXT)]
+    result["last_observed_phase"] = boundaries[-1] if boundaries else "unknown"
+    # Inspect only launch output, before the same-terminal diagnostic commands.
+    # Never export an error excerpt, even for a recognized product prefix.
+    plain = terminal_plain(output[-60000:]).split(b"sy239_command_exit=", 1)[0]
+    phases = {"shipped harness setup": "harness-setup", "host setup": "host-setup",
+              "services": "services-start", "proxy readiness": "proxy-readiness",
+              "coord readiness": "coord-readiness", "sandbox/harness startup": "sandbox-harness-start",
+              "terminal attachment": "terminal-attachment", "harness session": "harness-session",
+              "approvals": "approvals", "sandbox/harness retry": "sandbox-harness-retry"}
+    if row.get("command_exit") not in (None, 0):
+        matches = re.findall(rb"(?:^|[\r\n])(?:safeyolo: )?first-agent ([^:\r\n]{1,80}) failed: ([^\r\n]*)", plain)
+        if matches and matches[-1][0].decode(errors="replace") in phases:
+            result["failure_phase"] = phases[matches[-1][0].decode()]
+            for message, error_category in [
+                (b"coding-agent observation timed out", "coding-agent-observation-timeout"),
+                (b"coding-agent observation failed", "coding-agent-observation-failed"),
+                (b"coding-agent observation is unverified", "coding-agent-observation-unverified"),
+            ]:
+                if matches[-1][1].startswith(message + b". saved agent state is retained."):
+                    result["error_category"] = error_category
+    try:
+        launch = launch_record()
+    except (OSError, ValueError):
+        # A missing/corrupt identity remains unknown; do not lose the diagnosis
+        # or prevent disposal, and do not export exception text from private state.
+        result["identity_status"] = "unreadable"
+    else:
+        launch_id = launch.get("launch_id")
+        if isinstance(launch_id, str) and re.fullmatch(r"launch-[0-9a-f]{32}", launch_id):
+            result.update(launch_id=launch_id, identity_status="recorded")
+        else:
+            result["identity_status"] = "unavailable"
+    row["launch_result"] = result
+    save()
+
+
 def entered(phase, seconds, connected=False, operator_fd=None):
     row = {"command": LAUNCH, "role": "product", "phase": phase, **stamp()}
     row["post_return_diagnostics"] = [["command", "-v", "safeyolo"], ["safeyolo", "--version"]]
@@ -896,6 +943,18 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                         x["phase_observations"].append({"phase": phase, "boundary": label, **stamp()})
                         completed.add(label)
                         save()
+                # Save complete command results before any prompt/deadline
+                # action can start diagnostics or clear the search buffer.
+                for key in ["COMMAND", "DISCOVERY", "VERSION"]:
+                    match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)\r?\n", pending)
+                    if match:
+                        row[key.lower() + "_exit"] = int(match.group(1))
+                        if key == "COMMAND" and "launch_result" not in row:
+                            record_launch_result(row, pending)
+                for key in ["DISCOVERY", "VERSION"]:
+                    match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
+                    if match:
+                        row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
                 for label, prompt, answer in [
                     ("host", "Allow these host changes? [y/N]", "y\n"),
                     ("setup", "Run this setup and share this workspace? [y/N]", "y\n"),
@@ -903,8 +962,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 ]:
                     if terminal_open and label not in completed and prompt.encode() in pending:
                         seen = stamp()
-                        if connected:
-                            record_reading(phase, label + " consent")
+                        record_reading(phase, label + " consent")
                         os.write(fd, answer.encode())
                         x["interactions"].append({"phase": phase, "prompt": prompt,
                                                   "answer": answer.strip(), "seen": seen, "sent": stamp()})
@@ -914,8 +972,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 theme = theme_prompt(pending)
                 if terminal_open and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
                     seen = stamp()
-                    if connected:
-                        record_reading(phase, "guest display choice")
+                    record_reading(phase, "guest display choice")
                     os.write(fd, b"\r")
                     x["interactions"].append({"phase": phase, "kind": "guest display choice",
                         "prompt": theme, "answer": "Enter (default theme)", "seen": seen, "sent": stamp()})
@@ -950,35 +1007,28 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     os.write(fd, b"\x02d")
                     detached = True
                     row["viewer_detach"] = stamp()
-                    if connected:
-                        x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
+                    x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
                     pending = b""
                     deadline = time.monotonic() + 30
                     save()
                 if terminal_open and detached and b"SafeYolo host> " in pending and "q" not in completed:
-                    if connected:
-                        record_reading(phase, "host return controls")
+                    record_reading(phase, "host return controls")
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
-                    if connected:
-                        x["interactions"].append({"phase": phase, "kind": "keep session and exit", "answer": "q", "sent": stamp()})
+                    x["interactions"].append({"phase": phase, "kind": "keep session and exit", "answer": "q", "sent": stamp()})
                     completed.add("q")
                     pending = b""
                     save()
-                for key in ["COMMAND", "DISCOVERY", "VERSION"]:
-                    match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)", pending)
-                    if match:
-                        row[key.lower() + "_exit"] = int(match.group(1))
-                for key in ["DISCOVERY", "VERSION"]:
-                    match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
-                    if match:
-                        row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
                 # The shell can exit while its final discovery/version bytes remain queued.
                 if child_exited(pid) and (not terminal_open or not select.select([fd], [], [], 0)[0]):
                     break
                 if time.monotonic() >= deadline:
                     break
     finally:
+        if "launch_result" not in row:
+            # An interrupted viewer or an absent exit marker has no classified
+            # product failure. Retain explicit unknowns before cleanup starts.
+            record_launch_result(row, pending)
         if journey and journey.input:
             row["unfinished_foreground_input"] = {"bytes": len(journey.input), "seen": journey.decision_seen,
                                                    "first_key": journey.first_key, **stamp()}
@@ -1101,6 +1151,28 @@ def preparation_accounting(path):
     x["preparation"] = data
     save()
     return data
+
+
+def signed_out_accounting():
+    """Keep counts and measured intervals without claiming a first task."""
+    cold = [row for row in x["product_commands"] if row.get("phase") != "warm"]
+    warm = [row for row in x["product_commands"] if row.get("phase") == "warm"]
+    x["counts"] = {"cold_product_commands": len(cold), "warm_product_commands": len(warm),
+        "product_interactions": len(x["interactions"]),
+        "material_decisions": sum(bool(row.get("prompt")) for row in x["interactions"]),
+        "required_reading_words": sum(row["words"] for row in x.get("required_reading", [])),
+        "canonical_task_submissions": 0,
+        "observer_diagnostic_commands": sum(row.get("role") == "observer" for row in x["observations"]),
+        "observer_tmux_commands": x.get("observer_tmux_commands", {}),
+        "reading_method": "Displayed instructions and terminal text; command echoes excluded. Repeated text counts again.",
+        "limits": "Signed-out endpoint only. No human reading duration or complete first-task command count is claimed."}
+    timings = x.setdefault("timings", {})
+    timings.update(phase_boundaries=x["phase_observations"],
+        automated_interaction_intervals=[row for row in x["interactions"] if row.get("seen")],
+        observer_intervals=[{"label": row["label"], "started": {key: row[key] for key in ["at", "monotonic"]},
+                             "ended": row.get("ended")} for row in x["observations"] if row.get("role") == "observer"],
+        wait_limit="Phase observations are sampled bounds. Automated responses do not measure human reading or provider-only waits.")
+    save()
 
 
 def connected_accounting():
@@ -1358,8 +1430,10 @@ def main():
         return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
     try:
         observe("baseline-sudo-noninteractive", ["sudo", "-n", "true"], 5)
+        record_reading("cold", "signed-out observation instructions", SIGNED_OUT_PROSE.encode())
+        print(SIGNED_OUT_PROSE, flush=True)
         started = time.monotonic()
-        first = observe("bootstrap-download", DOWNLOAD, 60)
+        first = observe("bootstrap-download", DOWNLOAD, 60, role="product")
         x["product_commands"].append(first)
         save()
         if first.get("exit") != 0:
@@ -1429,6 +1503,10 @@ def main():
         try:
             cleanup()
         finally:
+            for phase in ["cold", "warm"]:
+                if (private / (phase + ".terminal")).is_file():
+                    record_reading(phase, "remaining terminal output")
+            signed_out_accounting()
             x["ended"] = stamp()
             save()
     return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
