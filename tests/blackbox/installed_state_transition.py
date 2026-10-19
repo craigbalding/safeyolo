@@ -196,7 +196,8 @@ class UnixHTTP(http.client.HTTPConnection):
 
 
 def request(socket_path: Path, method: str, target: str, *, token: str | None = None,
-            body: bytes = b"", headers: dict | None = None):
+            body: bytes = b"", headers: dict | None = None,
+            response_headers: dict | None = None):
     connection = UnixHTTP(socket_path)
     fields = {"Host": "_safeyolo.proxy.internal" if target in ("/health", "/circuits")
               or target.startswith("/api/") or target.startswith("/gateway/")
@@ -210,6 +211,8 @@ def request(socket_path: Path, method: str, target: str, *, token: str | None = 
         connection.request(method, target, body=body, headers=fields)
         response = connection.getresponse()
         data = response.read(4 * 1024 * 1024)
+        if response_headers is not None:
+            response_headers.update((name.lower(), value) for name, value in response.getheaders())
         return response.status, data
     finally:
         connection.close()
@@ -609,20 +612,29 @@ capabilities:
         fixture_python(env, """
 import json,sys,tomlkit
 from pathlib import Path
-from safeyolo.policy.toml_roundtrip import locked_policy_mutate
+from safeyolo.policy.toml_roundtrip import add_host_credential,locked_policy_mutate
 def update(doc):
     host=tomlkit.inline_table(); host['service']='contract'
     doc['hosts'][sys.argv[3]]=host
+    add_host_credential(doc,sys.argv[3],['unknown:*'])
+    # Credential guard checks network permission without an agent. The exact
+    # HTTP endpoint is reachable there; agent denials still control requests.
+    endpoint=tomlkit.inline_table(); endpoint['egress']='allow'
+    doc['hosts'][sys.argv[3]+':'+sys.argv[4]]=endpoint
     doc['agents']=tomlkit.table()
     doc['agents']['alice']=tomlkit.table()
     doc['agents']['alice']['agent_id']='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     doc['agents']['alice']['folder']=str(Path(sys.argv[1]).parent)
     doc['agents']['alice']['hosts']=tomlkit.table()
+    denied=tomlkit.inline_table(); denied['egress']='deny'
+    doc['agents']['alice']['hosts'][sys.argv[3]]=denied
     tls_host=tomlkit.inline_table(); tls_host['egress']='allow'; tls_host['rate']=600
     doc['agents']['alice']['hosts'][sys.argv[3]+':'+sys.argv[2]]=tls_host
     doc['agents']['bob']=tomlkit.table()
     doc['agents']['bob']['agent_id']='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
     doc['agents']['bob']['folder']=str(Path(sys.argv[1]).parent)
+    doc['agents']['bob']['hosts']=tomlkit.table()
+    doc['agents']['bob']['hosts'][sys.argv[3]]=denied
     doc['controls']=tomlkit.table()
     doc['controls']['test_context']=tomlkit.table()
     doc['controls']['test_context']['target_hosts']=[sys.argv[3]]
@@ -641,7 +653,8 @@ def update(doc):
     doc['controls']['circuits']['jitter_factor']=0
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
-""", str(root / "policy.toml"), str(tls_origin.server_port), args.origin_host)
+""", str(root / "policy.toml"), str(tls_origin.server_port), args.origin_host,
+                       str(origin.server_port))
         policy = tomlkit.parse((root / "policy.toml").read_text())
         policy["hosts"]["*"]["egress"] = "deny"
         (root / "policy.toml").write_text(tomlkit.dumps(policy))
@@ -694,7 +707,7 @@ print(json.dumps(asyncio.run(exercise())))
         plumb_request_id = pending["request_id"]
         status, denied = request(alice, "GET",
                                  f"http://{args.origin_host}:{origin.server_port}/initial")
-        check(status in (403, 428, 429) and not origin.seen,
+        check(status == 403 and not origin.seen,
               f"initial native process did not deny unapproved origin: {status}")
         ca = root / "certs/mitmproxy-ca.pem"
         hmac = root / "data/hmac_secret"
@@ -785,7 +798,7 @@ print(json.dumps(asyncio.run(exercise())))
               "Rust did not select old user catalog override")
         status, denied = request(alice, "GET",
                                  f"http://{args.origin_host}:{origin.server_port}/initial-rust")
-        check(status in (403, 428) and not origin.seen,
+        check(status == 403 and not origin.seen,
               f"Rust did not keep initial denial: {status}")
         status, approved = admin(root, "POST", "/admin/policy/host/allow",
                                  {"host": args.origin_host, "port": origin.server_port,
@@ -806,11 +819,12 @@ print(json.dumps(asyncio.run(exercise())))
               "approved request bytes changed")
         before = len(origin.seen)
         bob_status, _ = request(bob, "GET", f"http://{args.origin_host}:{origin.server_port}/bob")
-        check(bob_status in (403, 428) and len(origin.seen) == before,
+        check(bob_status == 403 and len(origin.seen) == before,
               "Alice's scoped approval leaked to Bob")
         wrong_port_status, _ = request(alice, "GET",
                                        f"http://{args.origin_host}:{origin.server_port + 1}/wrong-port")
-        check(wrong_port_status in (403, 428), "scoped approval leaked to another port")
+        check(wrong_port_status == 403 and len(origin.seen) == before,
+              "scoped approval leaked to another port")
         task_target = f"http://{args.origin_host}:{origin.server_port}/task-lifetime"
         task_headers = {"X-SafeYolo-Test-Context": "run=owned;agent=alice;test=R638"}
         policy_before_task = sha(root / "policy.toml")
@@ -877,11 +891,15 @@ print(json.dumps({'test_context':'removed_after_flow'}))
             return catalog.get("authorized", {}).get("contract", {}).get("token")
         gateway_token = eventually(current_gateway_token, "native service authorization not active")
         before = len(origin.seen)
-        status, _ = request(alice, "POST",
+        refusal_headers = {}
+        status, refusal = request(alice, "POST",
                             f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
-                            token=gateway_token, body=b'{"project":"alpha"}')
-        check(status in (403, 428) and len(origin.seen) == before,
-              f"risky route crossed without binding/grant: {status}")
+                            token=gateway_token, body=b'{"project":"alpha"}',
+                            response_headers=refusal_headers)
+        check(status == 403 and refusal_headers.get("x-blocked-by") == "service-gateway"
+              and json.loads(refusal)["error"] == "ROUTE_DENIED"
+              and len(origin.seen) == before,
+              f"unbound route did not reach the gateway: {status} {refusal}")
         status, binding = admin(root, "POST", "/admin/gateway/contract-binding", {
             "agent": "alice", "service": "contract", "capability": "writer",
             "template": "contract.write.v1", "bindings": {"project": "alpha", "ticket": "T-1"},
@@ -889,6 +907,18 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         check(status == 200 and binding.get("binding_id"),
               f"native contract binding failed: {status} {binding}")
         binding_id = binding["binding_id"]
+        def ungranted_request():
+            token = current_gateway_token()
+            if token is None:
+                return None
+            response_headers = {}
+            value, body = request(
+                alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
+                token=token, body=b'{"project":"alpha"}', response_headers=response_headers)
+            check(len(origin.seen) == before, "ungranted route reached the origin")
+            return (value == 428 and response_headers.get("x-blocked-by") == "service-gateway"
+                    and json.loads(body)["error"] == "GATEWAY_RISKY_ROUTE")
+        eventually(ungranted_request, "bound route did not reach the gateway grant prompt")
         status, grant = admin(root, "POST", "/admin/gateway/grant", {
             "agent": "alice", "service": "contract", "method": "POST",
             "path": "/v1/write", "lifetime": "remembered"})
@@ -1086,6 +1116,15 @@ print(json.dumps(asyncio.run(exercise())))
         eventually(granted_request, "replacement native OAuth did not deliver")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v2",
               "replacement native OAuth did not inject the second refreshed value")
+        revocation_token = eventually(current_gateway_token,
+                                      "replacement service token unavailable before revocation")
+        before = len(origin.seen)
+        status, body = request(
+            alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
+            token=revocation_token, body=b'{"project":"alpha"}')
+        check(status == 200 and body == BODY and len(origin.seen) == before + 1
+              and origin.seen[-1]["body"] == b'{"project":"alpha"}',
+              f"replacement service token did not deliver before revocation: {status} {body}")
         replacement_read = fixture_python(env, """
 import json,sys
 from pathlib import Path
@@ -1116,6 +1155,16 @@ print(json.dumps({'native_grant_read':True,
         check(sha(provider_snapshot) == provider_hash,
               "replacement changed the provider-owned snapshot")
         catalog_override.unlink()
+        eventually(lambda: current_gateway_token() is None,
+                   "replacement native process retained revoked service authorization")
+        before = len(origin.seen)
+        refusal_headers = {}
+        status, refusal = request(
+            alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
+            token=revocation_token, body=b'{"project":"alpha"}', response_headers=refusal_headers)
+        check(status == 403 and refusal_headers.get("x-blocked-by") == "service-gateway"
+              and json.loads(refusal)["error"] == "INVALID_TOKEN" and len(origin.seen) == before,
+              f"replacement service revocation did not reach the gateway: {status} {refusal}")
         # The fresh native contract applies edited policy through its existing
         # Admin transaction; the retired host DELETE route is not a prerequisite.
         revoked_policy = tomlkit.parse((root / "policy.toml").read_text())
@@ -1169,7 +1218,7 @@ print(json.dumps({'native_grant_read':True,
         before = len(origin.seen)
         host_revoked_status, _ = request(
             alice, "GET", f"http://{args.origin_host}:{origin.server_port}/after-host-revocation")
-        check(host_revoked_status in (403, 428) and len(origin.seen) == before,
+        check(host_revoked_status == 403 and len(origin.seen) == before,
               "return Rust resurrected replacement-revoked scoped host approval")
         status, returned_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
         check(status == 200 and not returned_catalog.get("authorized", {}).get("contract"),
@@ -1179,10 +1228,12 @@ print(json.dumps({'native_grant_read':True,
                   for item in returned_catalog["available"]),
               "return Rust retained removed user catalog override")
         before = len(origin.seen)
-        revoked_status, _ = request(
+        refusal_headers = {}
+        revoked_status, refusal = request(
             alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
-            token=gateway_token, body=b'{"project":"alpha"}')
-        check(revoked_status in (403, 428) and len(origin.seen) == before,
+            token=gateway_token, body=b'{"project":"alpha"}', response_headers=refusal_headers)
+        check(revoked_status == 403 and refusal_headers.get("x-blocked-by") == "network-guard"
+              and len(origin.seen) == before,
               "return Rust crossed replacement-revoked grant/binding")
         status, returned_flow = json_request(alice, "GET", f"/api/flows/{flow_id}", agent_token)
         check(status == 200 and any(t.get("tag") == "replacement" and t.get("value") == "rollback"

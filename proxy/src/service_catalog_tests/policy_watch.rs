@@ -132,8 +132,8 @@ capabilities:
         root.join("policy.toml"),
         r#"version = '2.0'
 [hosts]
-'basic.test' = {egress='allow', service='basic'}
-'contract.test' = {egress='allow', service='contract'}
+'basic.test' = {egress='allow', service='basic', allow=['unknown:*']}
+'contract.test' = {egress='allow', service='contract', allow=['unknown:*']}
 [agents.alice]
 image='owned'
 [agents.bob]
@@ -238,6 +238,8 @@ approval_default='once'
     )
     .await;
     assert_eq!(prompt.status, 428);
+    assert_eq!(prompt.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(prompt.value()["error"], "GATEWAY_RISKY_ROUTE");
     let peer = agent_post(
         &fixture.directory.path().join("bob.sock"),
         "http://contract.test/p3/write?ticket=T-1",
@@ -246,6 +248,8 @@ approval_default='once'
     )
     .await;
     assert_eq!(peer.status, 403);
+    assert_eq!(peer.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(peer.value()["error"], "AGENT_MISMATCH");
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
 
     // Remove basic, then reauthorize it after the next loader has read the
@@ -359,7 +363,7 @@ capabilities:
         &path,
         r#"version = '2.0'
 [hosts]
-'basic.test' = {egress='allow', service='basic'}
+'basic.test' = {egress='allow', service='basic', allow=['unknown:*']}
 [agents.alice]
 image='owned'
 [agents.bob]
@@ -407,12 +411,10 @@ image='owned'
         fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
         json!({})
     );
-    assert_eq!(
-        agent_get(&fixture.directory.path().join("bob.sock"), &token)
-            .await
-            .status,
-        403
-    );
+    let peer = agent_get(&fixture.directory.path().join("bob.sock"), &token).await;
+    assert_eq!(peer.status, 403);
+    assert_eq!(peer.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(peer.value()["error"], "AGENT_MISMATCH");
 
     // The opposite admin mutation must stay gone after a concurrent prune and
     // the next watcher publication, including an already issued gateway token.
@@ -435,12 +437,10 @@ image='owned'
         fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
         json!({})
     );
-    assert_eq!(
-        agent_get(&fixture.directory.path().join("alice.sock"), &token)
-            .await
-            .status,
-        403
-    );
+    let revoked = agent_get(&fixture.directory.path().join("alice.sock"), &token).await;
+    assert_eq!(revoked.status, 403);
+    assert_eq!(revoked.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(revoked.value()["error"], "INVALID_TOKEN");
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
     fixture.stop().await;
 }
@@ -592,6 +592,11 @@ fn reply(response: Vec<u8>) -> Reply {
     let (head, body) = response.split_once("\r\n\r\n").unwrap();
     Reply {
         status: head.split_whitespace().nth(1).unwrap().parse().unwrap(),
+        blocked_by: head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-blocked-by")
+                .then(|| value.trim().to_owned())
+        }),
         body: body.into(),
     }
 }

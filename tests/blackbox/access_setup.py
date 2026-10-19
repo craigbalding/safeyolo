@@ -11,6 +11,8 @@ from pathlib import Path
 
 import tomlkit
 
+from safeyolo.policy.toml_roundtrip import add_host_credential
+
 if __package__:
     from .native_credentials import store_credential
 else:
@@ -91,6 +93,8 @@ def prepare(config_dir: Path, *, native_cli: Path) -> None:
         entry["egress"] = "allow"
         entry["service"] = service
         hosts[host] = entry
+        # The synthetic gateway bearer must reach service authorization.
+        add_host_credential(policy, host, ["unknown:*"])
     allowed = tomlkit.inline_table()
     allowed["egress"] = "allow"
     hosts["failing.test"] = allowed

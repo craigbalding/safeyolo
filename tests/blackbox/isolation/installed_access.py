@@ -154,19 +154,21 @@ def peer_denial() -> dict:
     token = Path("/safeyolo/p3-stolen-token").read_text().strip()
     assert token.startswith("sgw_")
     result = exchange("GET", f"http://{BASIC_HOST}/p3/read", bearer=token)
-    assert result[0] == 403, (result[0], result[2])
+    assert result[0] == 403 and result[1].get("x-blocked-by") == "service-gateway", result
+    assert json.loads(result[2])["error"] == "AGENT_MISMATCH", result
     return {"stolen_token_status": result[0], "authorized_services": sorted(view.get("authorized", {}))}
 
 
 def contract_prompt() -> dict:
     token = service_token("p3_contract")
-    status, headers, _ = exchange(
+    status, headers, raw = exchange(
         "POST",
         f"http://{CONTRACT_HOST}/p3/write?ticket=T-1",
         payload={"project": "alpha"},
         bearer=token,
     )
-    assert status == 428, status
+    assert status == 428 and headers.get("x-blocked-by") == "service-gateway", (status, headers, raw)
+    assert json.loads(raw)["error"] == "GATEWAY_RISKY_ROUTE", raw
     request_id = headers.get("x-safeyolo-request-id")
     assert request_id and request_id.startswith("req-")
     return {"pending_status": status, "request_id": request_id}
@@ -182,7 +184,8 @@ def contract_effect() -> dict:
     approved = exchange("POST", target, payload={"project": "alpha"}, bearer=token)
     assert approved[0] == 200 and json.loads(approved[2])["received"] is True, approved[0]
     reused = exchange("POST", target, payload={"project": "alpha"}, bearer=token)
-    assert reused[0] == 428, (reused[0], reused[2])
+    assert reused[0] == 428 and reused[1].get("x-blocked-by") == "service-gateway", reused
+    assert json.loads(reused[2])["error"] == "GATEWAY_RISKY_ROUTE", reused
     return {"bad_binding": bad[0], "outside_route": outside[0], "approved": approved[0], "after_once_grant": reused[0]}
 
 
