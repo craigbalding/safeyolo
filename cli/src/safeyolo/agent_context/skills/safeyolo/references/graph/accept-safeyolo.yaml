@@ -330,7 +330,7 @@ nodes:
         - path: cli/tests/test_codex_coord_supervisor.py
           sha256: 9ab5adfa35ef0b38fbaf62fd82766ccb97c95eeaf5a121baf4a035831e7b4c27
         - path: cli/tests/test_agent_command_supervisor.py
-          sha256: 0e4955002840bb0a393490800b042ee13bb03aeeccccddf62bbcd7edc5023918
+          sha256: 4e667aff35a4b8d2cedc3c7b9bf03dc1d4c647896df33d8846cc0a22be47a3db
         - path: tests/proxy_contracts/test_native_factory_cli.py
           sha256: c27a9710f392a2cb15c5026f9f6fd2b7fe5ff586755af144d39db9911833eb4d
       setup: "Use the trusted base's locked Python test environment and warm native production artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."

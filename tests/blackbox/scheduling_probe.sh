@@ -57,6 +57,8 @@ test "$HTTPS_PROXY" = "$HTTP_PROXY"
 test -r "$SSL_CERT_FILE"
 test "$REQUESTS_CA_BUNDLE" = "$SSL_CERT_FILE"
 test "$NODE_EXTRA_CA_CERTS" = "$SSL_CERT_FILE"
+crontab -l > /dev/null
+atq > /dev/null
 agent_token=$(cat /app/agent_token) || exit
 printf 'Authorization: Bearer %s\n' "$agent_token" |
     curl --silent --show-error --fail-with-body --max-time 10 --header @- \

@@ -10,7 +10,8 @@ case "$command_name" in
     *) echo "Unsupported scheduling command: $command_name" >&2; exit 2 ;;
 esac
 
-# A hardware VM uses the package's ordinary set-ID executable instead.
+# Without capabilities, the native commands use set-ID bits in VZ or the
+# agent's supplementary spool groups in gVisor daemon children.
 case "$command_name" in
     crontab) /usr/bin/setpriv --egid=crontab --keep-groups /bin/true 2>/dev/null && exec /usr/bin/setpriv "$@" ;;
     *) /usr/bin/setpriv --euid=daemon --egid=daemon --keep-groups /bin/true 2>/dev/null && exec /usr/bin/setpriv "$@" ;;

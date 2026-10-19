@@ -172,6 +172,11 @@ restart the sandbox after correcting a daemon/startup failure. A failed daemon
 does not establish delivery. Base package maintenance entries are disabled in
 the system crontab; their scripts remain available for guest administration.
 
+In a Linux daemon-fired job, `at` can print `Can't signal atd (permission denied)`
+after it queues work. The job has dropped the capabilities needed for that
+signal. Guest init detects native ready-file changes and notifies atd. Use
+`atq` to check the entry and the job's output log to check execution.
+
 Existing installations need updated host per-run scripts and a rebuilt
 standard guest containing cron/at and the scheduling integration. Follow the
 [guest upgrade procedure](https://github.com/craigbalding/safeyolo/blob/master/docs/guest-oci.md#upgrade-or-roll-back-the-installed-default-guest),
