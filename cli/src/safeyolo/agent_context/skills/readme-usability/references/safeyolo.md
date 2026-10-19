@@ -17,13 +17,15 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
   prose within 150 words, excluding runnable commands, the task and expected
   output. Count all required context and instructions, including any required
   reference or wizard reading. Moving setup out of view does not meet the goal.
-- **Publish the tested commands.** Match the exact accepted #1050 journey,
-  including its bootstrap, release, platform, account and launcher. Show the
-  first task and observable host-visible result separately from installation
-  and launch. Reuse accepted release/retry/refusal proof at its recorded scope.
-  Distinguish required decisions and prose from logs, repeated output and
-  observer work; displayed-word totals do not measure required reading.
-  Keep unproved platforms, account flows and timing limits explicit.
+- **Use the public entry and supported defaults.** Reuse the accepted #1050
+  journey. Verify changed release resolution and omitted options against its
+  underlying operations; do not require fixture names, flags or source hashes
+  in public commands. Keep exact qualification identities and remaining proof
+  limits in the reference and evidence. State applicable platform and account
+  prerequisites before action. Show the first task and host-visible result.
+  Host changes, copied authentication and access scopes belong at the software's
+  actual decisions, with refusal intact. Read the whole README as a new user;
+  matching commands and word counts do not establish a clear path.
 - **Use one product name.** Under #1053, the product is SafeYolo. Use
   `SafeYolo`, `proxy`, `installer`, `release` and `settings` as appropriate.
   Do not describe a separate “native” edition. This owner decision takes
@@ -73,10 +75,13 @@ For a longer unavoidable onboarding path, name the actual missing operation,
 its linked owner under #237, and the smallest sufficient product repair.
 Keep the actual prerequisites visible. Do not call a longer warning-filled
 quick start complete or implement a new helper outside the assigned scope.
-Use the accepted #1050 commands and connected AMD64 first-task result as the
-current README input; #1051/#1052 and #239 retain their own accepted scope.
+Reuse #1050's connected AMD64 first-task result; #1051/#1052 and #239 retain
+their own accepted scope. Default/entry equivalence is not a new installed run
+or evidence for another platform or account flow.
 Use the maintained documentation, command and forbidden-phrase checks to
 challenge drift, including an added mandatory command and an obsolete product
 qualifier. Review required prose and decisions as well as command count.
+Distinguish required reading from logs, repeated output and observer work;
+displayed-word totals do not measure required reading.
 Terminology changes and a warm return do not establish the cold 15-second
 outcome. The recorded cold target remains unmet.

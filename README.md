@@ -1,9 +1,10 @@
 # SafeYolo
 
 SafeYolo runs coding agents in isolated Linux sandboxes with controlled network
-and service access. Give an agent a workspace and guest-local root to install
-tools, run browsers, start services and debug code within the permissions you
-choose. Works with Claude Code, OpenAI Codex, Pi and other coding agents.
+and service access. Share a project directory and give the agent root access
+inside its sandbox to install tools, run browsers, start services and debug
+code. You choose its permissions. Works with Claude Code, OpenAI Codex, Pi
+and other coding agents.
 
 [![CI](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/craigbalding/safeyolo/badge)](https://scorecard.dev/viewer/?uri=github.com/craigbalding/safeyolo)
@@ -19,45 +20,42 @@ choose. Works with Claude Code, OpenAI Codex, Pi and other coding agents.
   permission does not grant permission to send a credential.
 - Operator commands for traffic, approvals, logs and diagnosis, with
   scoped exports and capture/retention limits. Commander provides the Mac GUI.
-- Controlled labs, canonical Coord messaging and supervised factories.
+- Tools for experiments and agent coordination.
 
-SafeYolo is pre-v1. It uses Rust and a signed Swift VM helper on macOS.
-The quick start uses a tested production release. Published Python CLI packages
-describe the earlier product. Python is used by repository tests and black-box
-instruments.
+SafeYolo is pre-v1. Use the installer below; published Python CLI packages
+belong to the earlier product.
 
 ## Quick start
 
-Tested: Ubuntu 24.04.4 AMD64, user ID 1000, existing Claude login.
-Bash, curl, tar, Git, system Python, tmux and subordinate ranges were present.
-Use a writable workspace without `index.html` or `install-safeyolo.sh`, unused
-`first` and fresh `~/.safeyolo`. Run individually; stop on errors.
-HTTPS trusts the project publisher.
+On Ubuntu 24.04 AMD64 (x86_64), use your ordinary sudo-enabled account with
+Bash, curl, tar and an existing Claude Code login on that host. In a host
+terminal, open a project directory you own, without `index.html` or
+`install-safeyolo.sh`.
 
-Setup downloads packages, explains host changes before sudo, and asks before
-sharing this workspace or copying authentication/settings. Copied credentials
-are guest-readable. Claude runs tools without per-tool prompts. Decline copying
-to use `/login`; declining setup stops launch.
+These commands download and run the official GitHub installer; you trust the
+project publisher. Run each separately. Stop if either fails.
 
 ```sh
-curl --fail --location --proto '=https' --proto-redir '=https' --output install-safeyolo.sh https://raw.githubusercontent.com/craigbalding/safeyolo/45d8853a202c04c9f5f8ca772df410ae8ced1844/install.sh
-bash install-safeyolo.sh --release host-c5ce76019b6c997e282ab05cea0212b492e945d2 --launch . --name first --harness claude --launcher tmux-window
+curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
+bash install-safeyolo.sh --launch
 ```
 
-Answer vendor prompts. For access requests, press Ctrl-b then d, enter `a`,
-select the request number and approve/reject its displayed effect. Credential
-approval persists for all current/future agents in this instance; network
-approval grants reusable access to this agent's displayed host/port. After
-review, Enter returns to Claude; `q` exits, retaining state.
+Setup explains host changes before sudo and asks before sharing files or
+copying login/settings. Copied credentials are readable inside the sandbox.
+Declining setup stops launch; you can decline copying and sign in inside Claude.
+Claude runs tools without per-tool prompts. First use can take several minutes.
+For access requests, follow SafeYolo's host prompts and read each effect before
+approving.
 
-Send Claude:
+When Claude opens, send:
 
 > Create /workspace/index.html as a complete HTML page with the heading
 > "Hello from SafeYolo". Use no external dependencies.
 
 ### Check the result
 
-Detach, then `q`. On the host:
+Follow the displayed terminal controls to return to your host.
+In the same project directory:
 
 ```sh
 cat index.html
@@ -65,22 +63,28 @@ cat index.html
 
 > Expected: a complete HTML page containing the heading "Hello from SafeYolo".
 
-Open it in your browser.
+Open `index.html` in your browser.
 
 ## Everyday commands
 
-These optional commands use the quick start's agent `first` and default
-installation. For another instance, use the
+From the same project directory, run `safeyolo agent launch` to return to
+Claude. SafeYolo reuses the matching agent and its persistent home. Launching
+again does not upgrade it or resubmit a task. If a task fails, inspect its
+effects before submitting it again.
+
+The agent name comes from your project directory. Use `safeyolo status`
+to find it, then replace `NAME` below with the listed name. These commands
+use the default installation. For another instance, use the
 [custom-instance reference](docs/installation.md#other-installation-paths).
 
 | Task | Command |
 | --- | --- |
-| Run the agent | `safeyolo agent start first` |
+| Start or return to Claude in this project | `safeyolo agent launch` |
 | Read proxy and agent state | `safeyolo status` |
-| Reconnect to the agent terminal | `safeyolo agent attach first` |
-| Open a separate shell | `safeyolo agent shell first` |
-| Open the running desktop | `safeyolo agent present first` |
-| Stop the agent | `safeyolo agent stop first` |
+| Reconnect to a running agent terminal | `safeyolo agent attach NAME` |
+| Open a separate shell | `safeyolo agent shell NAME` |
+| Open the running desktop | `safeyolo agent present NAME` |
+| Stop the agent | `safeyolo agent stop NAME` |
 | Diagnose runtime state | `safeyolo doctor` |
 | Stop the proxy and its Coord runtime | `safeyolo stop` |
 
@@ -92,13 +96,6 @@ policy, trust and operator listeners. The [CLI guide](cli/README.md) links each
 command family to its current operating instructions.
 
 ## Optional workflows
-
-The [tested journey and limits](docs/installation.md#tested-onboarding-scope)
-record the existing-account setup, first file and live return. The 15-second
-goal is unmet. Clean Ubuntu ARM64 and macOS onboarding remain unproved.
-Repeat the second quick-start command to return to the same matching live
-session; repeat is not an upgrade. If a task fails, inspect its effects before
-submitting it again.
 
 | Need | Documentation |
 | --- | --- |
