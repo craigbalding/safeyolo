@@ -3488,6 +3488,13 @@ fn fetch_max_messages(wake_mode: bool, limit: usize) -> usize {
     }
 }
 
+fn pull_byte_limit_reached(error: &async_nats::Error) -> bool {
+    // async-nats 0.47 Batch erases the status into an I/O error. Match only
+    // NATS's byte-budget response; other pull failures must still fail.
+    error.to_string()
+        == "error while processing messages from the stream: 409, Some(\"Message Size Exceeds MaxBytes\")"
+}
+
 async fn read_messages(
     client: &CoordClient,
     room_name: &str,
@@ -3598,6 +3605,7 @@ async fn read_messages_with_timeout(
         name: cleanup_name,
         owner: client.owner.cleanup.clone(),
     };
+    let mut byte_limited = false;
     let result = async {
         let deadline = tokio::time::Instant::now() + fetch_timeout;
         let mut page: Vec<WaitCandidate> = Vec::new();
@@ -3679,7 +3687,14 @@ async fn read_messages_with_timeout(
                 let Some(message) = message else {
                     break;
                 };
-                let message = message.map_err(|_| CoordError::Unavailable)?;
+                let message = match message {
+                    Ok(message) => message,
+                    Err(error) if !page.is_empty() && pull_byte_limit_reached(&error) => {
+                        byte_limited = true;
+                        break;
+                    }
+                    Err(_) => return Err(CoordError::Unavailable),
+                };
                 // JetStream delivers the authoritative stream sequence in the
                 // message metadata. Nats-Sequence is absent from valid pull
                 // messages on some server paths.
@@ -3785,13 +3800,23 @@ async fn read_messages_with_timeout(
         .into_iter()
         .map(|candidate| candidate.value)
         .collect::<Vec<_>>();
-    let has_more = page.len() > limit;
+    // The byte limit proves there is another message, even if it arrived
+    // after the stream state snapshot.
+    let has_more = byte_limited || page.len() > limit;
     page.truncate(limit);
     let next_cursor = page
         .last()
         .and_then(|message| message.get("sequence"))
         .and_then(Value::as_u64)
-        .unwrap_or(since);
+        // A purged stream or deleted suffix can retain a last sequence with
+        // no messages after `since`. Finish that range without looping on it.
+        .unwrap_or_else(|| {
+            if wake_mode {
+                since
+            } else {
+                since.max(last_sequence)
+            }
+        });
     let mut result = json!({
         "messages": page,
         "next_cursor":next_cursor,
@@ -3807,6 +3832,28 @@ async fn read_messages_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pull_byte_limit_does_not_hide_other_provider_failures() {
+        for (message, expected) in [
+            (
+                "error while processing messages from the stream: 409, Some(\"Message Size Exceeds MaxBytes\")",
+                true,
+            ),
+            (
+                "error while processing messages from the stream: 409, Some(\"Consumer Deleted\")",
+                false,
+            ),
+            (
+                "error while processing messages from the stream: 503, Some(\"Message Size Exceeds MaxBytes\")",
+                false,
+            ),
+            ("connection reset", false),
+        ] {
+            let error: async_nats::Error = Box::new(std::io::Error::other(message));
+            assert_eq!(pull_byte_limit_reached(&error), expected, "{message}");
+        }
+    }
 
     fn test_coord_request(method: &'static str, path_and_query: &'static str) -> Request<'static> {
         Request {

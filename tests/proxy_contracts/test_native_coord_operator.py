@@ -123,7 +123,7 @@ print(json.dumps(asyncio.run(read())))
     assert json.loads(instance.cli("coord", "status").stdout)["state"] == "running"
 
 
-async def stream_control(instance, no_ack=None):
+async def stream_control(instance, no_ack=None, *, delete=(), purge=False):
     # Only this driver reads the fixture's host-local NATS credential. Neither
     # the guest command nor test output receives it.
     credential = (instance.root / "data/coord/nats/creds").read_text().strip()
@@ -136,6 +136,10 @@ async def stream_control(instance, no_ack=None):
         if no_ack is not None:
             stream.config.no_ack = no_ack
             await js.update_stream(config=stream.config)
+        for sequence in delete:
+            await js.delete_msg(stream.config.name, sequence)
+        if purge:
+            await js.purge_stream(stream.config.name)
         return (await js.stream_info(stream.config.name)).state.messages
     finally:
         await connection.close()
@@ -346,6 +350,92 @@ def test_watch_timeline_payload_modes_and_cursor_reconnect(instance):
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def read_page(instance, since=0, limit=200, *, expected_status=200):
+    status, _, raw = request(
+        instance.paths["alice"],
+        f"http://_safeyolo.proxy.internal/api/coord/rooms/{ROOM}/messages?since={since}&limit={limit}",
+        headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"},
+    )
+    assert status == expected_status, raw
+    return json.loads(raw)
+
+
+def test_history_byte_limit_returns_partial_pages_and_watch_tail(instance):
+    bodies = [f"large-{index:02d}:" + "x" * 249991 for index in range(18)] + ["recent-small"]
+    for body in bodies:
+        agent_send(instance, body)
+    for limit in (15, 16, 200):
+        cursor, messages = 0, []
+        while True:
+            page = read_page(instance, cursor, limit)
+            assert 0 < len(page["messages"]) <= limit
+            assert sum(len(json.dumps(m).encode()) for m in page["messages"]) < 4 * 1024 * 1024
+            assert page["next_cursor"] > cursor
+            assert not page["history_truncated"]
+            messages.extend(page["messages"])
+            cursor = page["next_cursor"]
+            if not page["has_more"]:
+                break
+        assert [m["sequence"] for m in messages] == list(range(1, 20))
+        assert [m["body"] for m in messages] == bodies
+        assert cursor == 19
+    for arguments, expected in ((("--since", "0"), bodies), (("--history", "30"), bodies),
+                                (("--history", "3"), bodies[-3:])):
+        watched = cli(instance, "watch", ROOM, *arguments, "--once", "--json")
+        assert watched.returncode == 0, watched.stderr
+        assert [json.loads(line)["body"] for line in watched.stdout.splitlines()] == expected
+    with terminal(instance, ["coord", "watch", ROOM, "--history", "1", "--json"]) as (_, _, until):
+        until(b"recent-small")
+        agent_send(instance, "after-large-history")
+        until(b"after-large-history")
+    assert asyncio.run(stream_control(instance)) == 20
+
+
+@pytest.mark.parametrize("retained", ["empty", "purged", "gapped"])
+def test_empty_retained_ranges_finish_and_watch_follows(instance, retained):
+    if retained != "empty":
+        for index in range(5):
+            agent_send(instance, f"retained-{index + 1}")
+        asyncio.run(stream_control(instance, purge=retained == "purged",
+                                   delete=(1, 3, 5) if retained == "gapped" else ()))
+    cursor, sequences = 0, []
+    for _ in range(4):
+        page = read_page(instance, cursor, 1)
+        assert page["history_truncated"] == (retained != "empty" and cursor == 0)
+        sequences.extend(m["sequence"] for m in page["messages"])
+        assert page["next_cursor"] >= cursor
+        if page["has_more"]:
+            assert page["next_cursor"] > cursor
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            break
+    else:
+        pytest.fail("retained range did not finish")
+    assert sequences == ([2, 4] if retained == "gapped" else [])
+    assert cursor == (0 if retained == "empty" else 5)
+    future = read_page(instance, cursor + 10)
+    assert future["messages"] == [] and future["next_cursor"] == cursor + 10 and not future["has_more"]
+    watched = cli(instance, "watch", ROOM, "--since", "0", "--once", "--json")
+    assert watched.returncode == 0, watched.stderr
+    assert [json.loads(line)["sequence"] for line in watched.stdout.splitlines()] == sequences
+    with terminal(instance, ["coord", "watch", ROOM, "--since", "0", "--json"]) as (_, _, until):
+        # The watcher must scan the old range before it can follow this event.
+        agent_send(instance, "after-empty-range")
+        until(b"after-empty-range")
+        agent_send(instance, "following-empty-range")
+        until(b"following-empty-range")
+    assert asyncio.run(stream_control(instance)) == len(sequences) + 2
+
+
+def test_history_provider_failure_remains_an_error(instance):
+    agent_send(instance, "before-provider-stop")
+    assert instance.cli("coord", "stop").returncode == 0
+    assert read_page(instance, expected_status=503)["error"] == "coordination substrate unavailable"
+    watched = cli(instance, "watch", ROOM, "--once", "--json")
+    assert watched.returncode != 0 and not watched.stdout
+    assert "coordination substrate unavailable" in watched.stderr
 
 
 @pytest.mark.skipif(
