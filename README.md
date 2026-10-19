@@ -32,37 +32,34 @@ belong to the earlier product.
 ## Quick start
 
 Use Ubuntu 24.04 AMD64 (x86_64), an ordinary sudo-enabled account, Bash, curl,
-tar and an existing host Claude Code login. Open a host terminal in a project
-directory you own, without `install-safeyolo.sh`.
+tar and an existing host Claude Code login. Open a host terminal in your own
+project directory without `install-safeyolo.sh`.
 
-You trust the official GitHub publisher. The installer uses host sudo to prepare
-the rootless guest: missing packages, missing sandbox ID ranges, required AppArmor setup,
-guest extraction and ownership. Runtime permission changes use sudo for paths
-you do not own; command linking uses it for an unwritable parent. Host changes
-are listed before consent. Run each command separately. Stop on failure.
+You trust the project publisher. Setup uses host sudo for missing packages and
+sandbox IDs, guest extraction and ownership, and AppArmor rules for the selected
+runtime's user namespaces. Selected sandbox IDs get traversal to the runtime and
+read/execute on its files. Setting these permissions uses sudo only on paths you
+do not own. Command linking uses sudo for an unwritable parent. Host changes are
+listed before consent. Run separately; stop on failure.
 
 ```sh
 curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
 bash install-safeyolo.sh --launch
 ```
 
-Setup asks before sharing your workspace or copying login/settings. Copied
-credentials are readable in the sandbox. Declining setup stops launch;
-you can decline copying and sign in inside Claude. Claude tools run without
-per-tool prompts. Read SafeYolo access requests before approving. First use
-can take minutes.
+Sharing and login/settings copying require consent. The sandbox can read copied
+credentials. Declining setup stops launch; copying is optional. You can sign in
+inside Claude. Claude skips tool prompts; read SafeYolo requests before
+approving. First use can take minutes.
 
 When Claude opens, send:
 
-> Build a command-line duplicate-file finder in a new directory under
-> /workspace. It should scan a directory by content and print groups of
-> identical files and the space recoverable by keeping one file per group.
-> Never delete or modify scanned files. Use tools already installed; add no
-> dependencies. Write and run tests, including same-size files with different
-> contents. Create sample files in another new directory under /workspace,
-> run the tool on them, and show the duplicate groups and reclaimable bytes
-> in this terminal. Save the tool, tests and usage instructions so I can use
-> it on a backup or project tree.
+> Build and test a non-destructive command-line duplicate-file finder in
+> /workspace. Have it scan by content and report duplicate groups and
+> reclaimable space, without changing scanned files. Use installed tools
+> without adding dependencies. Create your own sample files, run the tool
+> on them inside the sandbox, and show the actual terminal results. Include
+> usage instructions.
 
 ### Check the result
 
