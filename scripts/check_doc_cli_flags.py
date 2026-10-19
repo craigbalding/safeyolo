@@ -64,10 +64,10 @@ QUICK_START_INSTALLER_URL = (
 
 def _check_quick_start_commands(commands: list[str], surface: dict[str, set[str]]) -> list[str]:
     """Check the public interface, not qualification fixture identities."""
-    if len(commands) != 3:
-        return ["#1053: Quick start needs two setup commands, then the separate cat index.html verification; review added setup"]
+    if len(commands) != 2:
+        return ["#1053: Quick start needs two setup commands; review added setup"]
     try:
-        download, launch, verify = [shlex.split(line) for line in commands]
+        download, launch = [shlex.split(line) for line in commands]
     except ValueError as exc:
         return [f"#1053: invalid quick-start shell quoting: {exc}"]
     problems = []
@@ -93,8 +93,6 @@ def _check_quick_start_commands(commands: list[str], surface: dict[str, set[str]
         error = _validate_line("safeyolo agent launch " + shlex.join(launch[3:]), surface)
         if error:
             problems.append(f"#1053: installer launch arguments: {error}")
-    if verify != ["cat", "index.html"]:
-        problems.append("#1053: keep cat index.html as the separate host-file verification")
     return problems
 
 
