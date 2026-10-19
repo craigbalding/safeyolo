@@ -97,6 +97,8 @@ def image(tmp_path):
 
 
 def agent(root, command, **kwargs):
+    # Match guest-init-per-run's gVisor launch of the native supervisor.
+    # Its ordinary bash child inherits these capabilities and no spool groups.
     return run("chroot", str(root), "/usr/bin/setpriv", "--reuid=1000", "--regid=1000",
                "--clear-groups", "--inh-caps=+setuid,+setgid", "--ambient-caps=+setuid,+setgid",
                "/bin/sh", "-c", "cd /home/agent; " + command, **kwargs)
@@ -111,9 +113,6 @@ def daemons(root):
     (root / "dev/log").unlink(missing_ok=True)
     process = subprocess.Popen(["chroot", str(root), "/bin/bash", "-c", '''
 set -e
-# This chroot emulates the Linux nosuid tree, including on a normal Linux
-# test host. Only the platform classification is substituted.
-uname() { if [ "$1" = -r ]; then echo fixture-gvisor; else /usr/bin/uname "$@"; fi; }
 . /usr/local/lib/safeyolo/scheduling.sh
 trap 'stop_guest_schedulers; exit' TERM INT
 start_guest_schedulers
@@ -145,58 +144,6 @@ def test_gate_stays_quiet_and_built_image_has_no_jobs(image):
         assert "per-run gate is closed" in (image / "var/log/safeyolo-scheduling.log").read_text()
 
 
-@pytest.mark.parametrize("scheduler", ("cron", "at"))
-def test_daemon_fired_agent_can_manage_own_jobs(image, scheduler):
-    """Daemon children must use native queues after dropping capabilities."""
-    (image / "safeyolo/per-run-go").touch()
-    (image / "etc/environment").write_text("export PATH=/usr/local/bin:/usr/bin:/bin\n")
-    with daemons(image):
-        pass
-    script = image / "home/agent/jobs/manage.sh"
-    script.write_text('''#!/bin/sh
-set -eu
-setpriv --dump > /home/agent/jobs/privileges
-test "$(id -u)" = 1000
-test "$(id -ru)" = 1000
-if setpriv --reuid=0 /bin/true 2>/dev/null; then exit 1; fi
-crontab -l
-printf 'MAILTO=""\\n# installed by a daemon child\\n' | crontab -
-crontab -l | grep -F 'installed by a daemon child'
-crontab -r
-if crontab -l; then exit 1; fi
-submission=$(printf 'touch /home/agent/jobs/cancelled\\n' | at -M now + 10 minutes 2>&1)
-printf '%s\\n' "$submission"
-job=$(printf '%s\\n' "$submission" | sed -n 's/^job \\([0-9][0-9]*\\) at .*/\\1/p')
-test -n "$job"
-atq | grep "^$job[[:space:]]"
-test "$(stat -c %u /var/spool/cron/atjobs/a* | sort -u)" = 1000
-atrm "$job"
-if atq | grep "^$job[[:space:]]"; then exit 1; fi
-printf '%s\\n' '/usr/local/bin/safeyolo-job /usr/bin/id -u > /home/agent/jobs/followup' | at -M now
-''')
-    command = ("if /usr/local/bin/safeyolo-job /bin/sh /home/agent/jobs/manage.sh "
-               ">>/home/agent/jobs/manage.log 2>&1; then echo 0; else echo $?; fi "
-               "> /home/agent/jobs/status")
-    crontab = 'MAILTO=""\n' + ("@reboot " + command + "\n" if scheduler == "cron" else "")
-    table = image / "home/agent/jobs/crontab"
-    table.write_text(crontab)
-    agent(image, "crontab /home/agent/jobs/crontab")
-    if scheduler == "at":
-        submission = image / "home/agent/jobs/submission"
-        submission.write_text(command + "\n")
-        agent(image, "at -M now < /home/agent/jobs/submission")
-    with daemons(image):
-        status = image / "home/agent/jobs/status"
-        eventually(lambda: status.exists() and status.read_text(), seconds=80)
-        assert status.read_text() == "0\n", (image / "home/agent/jobs/manage.log").read_text()
-        privileges = (image / "home/agent/jobs/privileges").read_text()
-        assert "Ambient capabilities: [none]" in privileges
-        followup = image / "home/agent/jobs/followup"
-        eventually(lambda: followup.exists() and followup.read_text() == "1000\n", seconds=80)
-        assert not (image / "home/agent/jobs/cancelled").exists()
-        assert agent(image, "atq").stdout == ""
-
-
 def test_real_cron_at_restart_environment_coord_and_failures(image, tmp_path):
     """Run real daemons and native Coord in owned state, with no model calls."""
     from tests.proxy_contracts.test_native_coord_operator import POLICY, cli, history
@@ -205,9 +152,16 @@ def test_real_cron_at_restart_environment_coord_and_failures(image, tmp_path):
     (image / "safeyolo/per-run-go").touch()
     with daemons(image):
         pass  # Establish the package spool permissions before submission.
+    launch = agent(image, "id -G; setpriv --dump").stdout
+    assert launch.splitlines()[0] == "1000"
+    assert "Ambient capabilities: setgid,setuid" in launch
     job = image / "home/agent/jobs/report.sh"
     job.write_text('''#!/bin/sh
 set -eu
+test "$(id -u)" = 1000
+test "$(id -ru)" = 1000
+setpriv --dump > "/home/agent/jobs/$1.privileges"
+if setpriv --reuid=0 /bin/true 2>/dev/null; then exit 1; fi
 /bin/sh /home/agent/jobs/post-coord.sh
 printf '%s uid=%s cwd=%s home=%s env=%s\n' "$1" "$(id -u)" "$PWD" "$HOME" "$SCHEDULING_FIXTURE" >> /home/agent/jobs/observed
 ''')
@@ -222,6 +176,8 @@ printf '%s uid=%s cwd=%s home=%s env=%s\n' "$1" "$(id -u)" "$PWD" "$HOME" "$SCHE
     agent(image, f"atrm {cancel_id}")
     assert cancel_id not in {line.split()[0] for line in agent(image, "atq").stdout.splitlines()}
     assert "report.sh" in agent(image, "crontab -l").stdout
+    assert (image / "var/spool/cron/crontabs/agent").stat().st_uid == 1000
+    assert {path.stat().st_uid for path in (image / "var/spool/cron/atjobs").glob("a*")} == {1000}
 
     # Reuse the maintained native fixture. This is a private NATS store and
     # two trusted per-agent listeners, never the Factory's Coord endpoint.
@@ -262,6 +218,9 @@ printf '%s uid=%s cwd=%s home=%s env=%s\n' "$1" "$(id -u)" "$PWD" "$HOME" "$SCHE
                     eventually(lambda: observed.exists() and "cron uid=1000" in observed.read_text()
                                and "at uid=1000" in observed.read_text(), seconds=80)
                     assert "cwd=/workspace home=/home/agent env=current" in observed.read_text()
+                    for scheduler in ("cron", "at"):
+                        privileges = (image / f"home/agent/jobs/{scheduler}.privileges").read_text()
+                        assert "Ambient capabilities: [none]" in privileges
                     assert (image / "home/agent/jobs/reboot").exists()
                     def published():
                         messages = history(instance, "scheduled-work")

@@ -5,8 +5,6 @@ SCHEDULER_LOG=/var/log/safeyolo-scheduling.log
 CRON_PID=
 ATD_PID=
 SCHEDULER_SYSLOG_PID=
-ATD_NOTIFY_READY_FILES=0
-ATD_READY_FILES=
 
 scheduler_log() {
     printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SCHEDULER_LOG"
@@ -30,23 +28,13 @@ start_guest_schedulers() {
     fi
     chown daemon:daemon /var/spool/cron/atjobs/.SEQ
     chmod 0600 /var/spool/cron/atjobs/.SEQ
-    case "$(uname -r)" in
-        *-gvisor)
-            # Cron/at drop the agent's SETUID/SETGID capabilities in job
-            # children. Their initgroups calls retain these native spool
-            # groups, so the ordinary nosuid commands still work there.
-            usermod -a -G crontab,daemon agent
-            chmod 0660 /var/spool/cron/atjobs/.SEQ
-            ATD_NOTIFY_READY_FILES=1
-            ;;
-    esac
     if [ -f /etc/at.deny ]; then
         chown root:daemon /etc/at.deny
     fi
 
-    # VZ has a fresh /run tmpfs. Clear Linux's retained cron boot marker and
-    # atd readiness file before these new, guest-owned daemon processes start.
-    rm -f /run/crond.reboot /run/atd.pid
+    # VZ has a fresh /run tmpfs. Linux's persistent root overlay can retain
+    # cron's boot marker; a new sandbox boot must still run @reboot entries.
+    rm -f /run/crond.reboot
 
     # Cron emits runtime errors through syslog. BusyBox is already in the base.
     # Respect an existing guest syslog socket rather than replacing its owner.
@@ -63,7 +51,7 @@ start_guest_schedulers() {
 
 check_guest_schedulers() {
     [ -n "$CRON_PID$ATD_PID$SCHEDULER_SYSLOG_PID" ] || return 0
-    local name pid result running label ready_files file ready_pid
+    local name pid result running label
     # Bash owns these children. Its job table distinguishes an exited child
     # from a live process without polling /proc or trusting a reused PID.
     running=$'\n'"$(jobs -pr)"$'\n'
@@ -82,26 +70,6 @@ check_guest_schedulers() {
             printf -v "$name" '%s' ''
         fi
     done
-    # atd writes its PID file after installing its HUP handler. Never send
-    # the first notification before that child is ready to receive it.
-    if [ "$ATD_NOTIFY_READY_FILES" = 1 ] && [ -n "$ATD_PID" ] &&
-            [ -r /run/atd.pid ] && read -r ready_pid 2>/dev/null < /run/atd.pid &&
-            [ "$ready_pid" = "$ATD_PID" ]; then
-        # A capability-free at caller cannot signal atd. Forward native
-        # ready-file changes through this existing guest-owner loop. The
-        # executable bit is set only after at finishes writing each job;
-        # the sequence file changes too early to serve as a notification.
-        ready_files=
-        for file in /var/spool/cron/atjobs/*; do
-            if [ -f "$file" ] && [ -x "$file" ]; then
-                ready_files+="$file"$'\n'
-            fi
-        done
-        if [ "$ready_files" != "$ATD_READY_FILES" ]; then  # DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md
-            kill -HUP "$ATD_PID" 2>/dev/null || scheduler_log 'atd queue notification failed; inspect this log and the guest boot log'
-            ATD_READY_FILES=$ready_files
-        fi
-    fi
 }
 
 stop_guest_schedulers() {
@@ -114,6 +82,4 @@ stop_guest_schedulers() {
     CRON_PID=
     ATD_PID=
     SCHEDULER_SYSLOG_PID=
-    ATD_NOTIFY_READY_FILES=0
-    ATD_READY_FILES=
 }
