@@ -3,17 +3,20 @@ set -uo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: run-controller.sh [--command PATH] [--startup-file PATH] [--title TITLE] [--] [ARG]...
+Usage: run-controller.sh [--command PATH] [--harness codex|claude] [--startup-file PATH] [--title TITLE] [--] [ARG]...
 
 Run the SafeYolo host-script command from inside the current tmux pane without
 replacing its parent interactive shell. The default command is
-/home/agent/.safeyolo-command.
+/home/agent/.safeyolo-command. The default harness is codex. Use --harness
+claude with the command staged by @claude.
 EOF
   exit 2
 }
 
 command_file="$HOME/.safeyolo-command"
 startup_file=
+harness=codex
+instructions_file=
 pane_title=controller
 
 while [ "$#" -gt 0 ]; do
@@ -26,6 +29,11 @@ while [ "$#" -gt 0 ]; do
     --startup-file)
       [ "$#" -ge 2 ] || usage
       startup_file=$2
+      shift 2
+      ;;
+    --harness)
+      [ "$#" -ge 2 ] || usage
+      harness=$2
       shift 2
       ;;
     --title)
@@ -42,6 +50,7 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
+case "$harness" in codex|claude) ;; *) usage ;; esac
 
 if [ -z "${TMUX:-}" ] || [ -z "${TMUX_PANE:-}" ]; then
   printf 'run-controller.sh must be invoked from the intended tmux controller pane\n' >&2
@@ -103,7 +112,11 @@ mark_controller_run() {
     printf 'Warning: unable to publish controller input readiness\n' >&2
   fi
 }
-trap clear_controller_run EXIT
+cleanup_controller_run() {
+  clear_controller_run
+  if [ -n "$instructions_file" ]; then rm -f -- "$instructions_file"; fi
+}
+trap cleanup_controller_run EXIT
 
 started_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 printf '\n__SAFEYOLO_CONTROLLER_START__ utc=%s %s command=%s\n' \
@@ -139,20 +152,31 @@ if [ -n "$startup_file" ]; then
     combined_instructions+=$'\n---\n'
   fi
 
-  toml_instructions=$combined_instructions
-  toml_instructions="${toml_instructions//\\/\\\\}"
-  toml_instructions="${toml_instructions//\"/\\\"}"
-  toml_instructions="${toml_instructions//$'\b'/\\b}"
-  toml_instructions="${toml_instructions//$'\f'/\\f}"
-  toml_instructions="${toml_instructions//$'\t'/\\t}"
-  toml_instructions="${toml_instructions//$'\r'/\\r}"
-  toml_instructions="${toml_instructions//$'\n'/\\n}"
-  toml_instructions="\"$toml_instructions\""
+  if [ "$harness" = claude ]; then
+    # Keep multiline context out of argv. The staged Claude wrapper translates
+    # this file into Claude's native --append-system-prompt-file option.
+    instructions_file=$(umask 077; mktemp "$HOME/.safeyolo/lab-startup.XXXXXX") || exit 2
+    printf '%s' "$combined_instructions" > "$instructions_file" || exit 2
+    mark_controller_run
+    SAFEYOLO_LAB_STARTUP_FILE="$instructions_file" "$command_file" "$@" 'Hello.'
+    controller_rc=$?
+    clear_controller_run
+  else
+    toml_instructions=$combined_instructions
+    toml_instructions="${toml_instructions//\\/\\\\}"
+    toml_instructions="${toml_instructions//\"/\\\"}"
+    toml_instructions="${toml_instructions//$'\b'/\\b}"
+    toml_instructions="${toml_instructions//$'\f'/\\f}"
+    toml_instructions="${toml_instructions//$'\t'/\\t}"
+    toml_instructions="${toml_instructions//$'\r'/\\r}"
+    toml_instructions="${toml_instructions//$'\n'/\\n}"
+    toml_instructions="\"$toml_instructions\""
 
-  mark_controller_run
-  "$command_file" -c "developer_instructions=$toml_instructions" "$@" 'Hello.'
-  controller_rc=$?
-  clear_controller_run
+    mark_controller_run
+    "$command_file" -c "developer_instructions=$toml_instructions" "$@" 'Hello.'
+    controller_rc=$?
+    clear_controller_run
+  fi
 else
   mark_controller_run
   "$command_file" "$@"

@@ -38,9 +38,9 @@ fi
 # backups, session-env, shell-snapshots, statsig, cache, debug) is deliberately
 # NOT staged -- those are session-scope and would leak transcripts cross-agent.
 
-# --- 2. Stage SafeYolo baseline + shared skill ------------------------------
+# --- 2. Stage SafeYolo baseline + shared skills -----------------------------
 # Keep SafeYolo's always-on baseline outside .claude/ so it cannot shadow the
-# user's CLAUDE.md. Link the shared on-demand skill into Claude's native path.
+# user's CLAUDE.md. Link the shared on-demand skills into Claude's native path.
 stage_safeyolo_context "$AGENT_HOME" claude
 
 # --- 3. Write the foreground command -----------------------------------------
@@ -169,7 +169,10 @@ fi
 
 # Inject SafeYolo agent guide as system context (non-fatal if missing).
 args=(--dangerously-skip-permissions)
-if [ -f "$HOME/.safeyolo/AGENTS.md" ]; then
+if [ -n "${SAFEYOLO_LAB_STARTUP_FILE:-}" ]; then
+    # The Lab runner combines the baseline, startup instructions and objective.
+    args+=(--append-system-prompt-file "$SAFEYOLO_LAB_STARTUP_FILE")
+elif [ -f "$HOME/.safeyolo/AGENTS.md" ]; then
     args+=(--append-system-prompt "$(cat "$HOME/.safeyolo/AGENTS.md")")
 fi
 
