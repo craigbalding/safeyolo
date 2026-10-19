@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from tests.proxy_contracts.harness import connection, read_events
-from tests.proxy_contracts.scenarios import FORGED_REQUEST_ID, origin_server
+from tests.proxy_contracts.scenarios import FORGED_REQUEST_ID, origin_server, wait_for_reserved_audit
 from tests.proxy_contracts.test_agent_api_contract import AUTH_REQUIRED, HOST, TOKEN, assert_api_response
 from tests.proxy_contracts.test_native_network_policy import policy_proxy, replace_policy
 
@@ -88,10 +88,16 @@ def exchange(proxy, *, listener="alice", trusted_agent="alice", source="10.0.0.2
         client.close()
     decoded = assert_api_response(result, status, expected)
     request_id = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
-    events = [row for row in proxy.events("agent.api_response") if row["request_id"] == request_id]
+    rows = wait_for_reserved_audit(proxy.audit_log, 0, "agent.api_response", request_id=request_id)
+    events = [row for row in rows if row["event"] == "agent.api_response"]
     assert len(events) == 1
     event = events[0]
-    assert event["agent"] == trusted_agent and event["details"]["status"] == status and event["details"]["handler_owned"] is True
+    # The non-agent listener has no reconciled canonical evidence owner.
+    assert event.get("agent") == (None if trusted_agent == "default" else trusted_agent)
+    if trusted_agent == "default":
+        assert event["details"]["attribution"]["attribution_status"] == "unavailable"
+        assert event["details"]["attribution"]["attribution_provenance"] == {"reason": "no_trusted_identity"}
+    assert event["details"]["status"] == status and event["details"]["handler_owned"] is True
     audit = next((row for row in read_events(proxy.audit_log)
                   if row.get("request_id") == request_id and row["event"] in mutations), None)
     mutation = status == 200 and method in {"POST", "DELETE"} and path.split("?")[0].rstrip("/") == CURRENT

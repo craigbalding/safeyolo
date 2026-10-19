@@ -396,8 +396,9 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
         observations = json.loads(serialized)
         return {"fixture_origin_port": origin_port,
                 "requests": observations, "origin_targets": [item["target"] for item in origin.requests],
-                "policy_events": [{key: event[key] for key in ("agent", "host", "port", "status", "decision")}
-                                  for event in events]}
+                "policy_events": [{"agent": event["agent"], "host": event["host"],
+                                   "port": event["details"]["port"], "status": event["details"]["status"],
+                                   "decision": event["decision"]} for event in events]}
 
 
 def wait_for_reserved_audit(path, before_count, expected_event, *, request_id=None,

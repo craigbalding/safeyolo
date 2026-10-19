@@ -205,6 +205,7 @@ egress = "deny"
 [addons.credential_guard]
 enabled = true
 detection_level = "none"
+standard_auth_headers = []
 [addons.credential_guard.settings]
 use_default_credential_rules = false
 [addons.credential_guard.settings.entropy]
