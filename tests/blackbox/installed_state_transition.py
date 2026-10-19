@@ -1116,6 +1116,15 @@ print(json.dumps(asyncio.run(exercise())))
         eventually(granted_request, "replacement native OAuth did not deliver")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v2",
               "replacement native OAuth did not inject the second refreshed value")
+        revocation_token = eventually(current_gateway_token,
+                                      "replacement service token unavailable before revocation")
+        before = len(origin.seen)
+        status, body = request(
+            alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
+            token=revocation_token, body=b'{"project":"alpha"}')
+        check(status == 200 and body == BODY and len(origin.seen) == before + 1
+              and origin.seen[-1]["body"] == b'{"project":"alpha"}',
+              f"replacement service token did not deliver before revocation: {status} {body}")
         replacement_read = fixture_python(env, """
 import json,sys
 from pathlib import Path
@@ -1152,7 +1161,7 @@ print(json.dumps({'native_grant_read':True,
         refusal_headers = {}
         status, refusal = request(
             alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
-            token=gateway_token, body=b'{"project":"alpha"}', response_headers=refusal_headers)
+            token=revocation_token, body=b'{"project":"alpha"}', response_headers=refusal_headers)
         check(status == 403 and refusal_headers.get("x-blocked-by") == "service-gateway"
               and json.loads(refusal)["error"] == "INVALID_TOKEN" and len(origin.seen) == before,
               f"replacement service revocation did not reach the gateway: {status} {refusal}")
