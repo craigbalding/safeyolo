@@ -3605,6 +3605,7 @@ async fn read_messages_with_timeout(
         name: cleanup_name,
         owner: client.owner.cleanup.clone(),
     };
+    let mut byte_limited = false;
     let result = async {
         let deadline = tokio::time::Instant::now() + fetch_timeout;
         let mut page: Vec<WaitCandidate> = Vec::new();
@@ -3688,7 +3689,10 @@ async fn read_messages_with_timeout(
                 };
                 let message = match message {
                     Ok(message) => message,
-                    Err(error) if !page.is_empty() && pull_byte_limit_reached(&error) => break,
+                    Err(error) if !page.is_empty() && pull_byte_limit_reached(&error) => {
+                        byte_limited = true;
+                        break;
+                    }
                     Err(_) => return Err(CoordError::Unavailable),
                 };
                 // JetStream delivers the authoritative stream sequence in the
@@ -3796,7 +3800,9 @@ async fn read_messages_with_timeout(
         .into_iter()
         .map(|candidate| candidate.value)
         .collect::<Vec<_>>();
-    let has_more = page.len() > limit;
+    // The byte limit proves there is another message, even if it arrived
+    // after the stream state snapshot.
+    let has_more = byte_limited || page.len() > limit;
     page.truncate(limit);
     let next_cursor = page
         .last()
