@@ -811,26 +811,47 @@ def console_group(pid):
     return members
 
 
-def stop_console_group(pid, row):
+def read_console(fd):
+    try:
+        return os.read(fd, 65536)
+    except OSError as error:
+        if error.errno != errno.EIO:
+            raise
+        # Linux PTYs report EIO when the last slave closes.
+        return b""
+
+
+def stop_console_group(pid, fd, row):
     shutdown = {"pgid": pid, "verified": False, "started": stamp()}
     row["console_group_shutdown"] = shutdown
     save()
     # pty.fork created this session/group. Keep its direct child unreaped so
     # its PID and group ID cannot be reused while the group is signalled.
     limit = time.monotonic() + 3
-    remaining = console_group(pid)
+    terminal_open = True
+
+    def remaining_members():
+        nonlocal terminal_open
+        # Darwin can leave a signalled tmux client exiting until its terminal
+        # output drains. Keep reading the owned master while waiting for exit.
+        while terminal_open and time.monotonic() < limit and select.select([fd], [], [], 0)[0]:
+            if not read_console(fd):
+                terminal_open = False
+        return console_group(pid)
+
+    remaining = remaining_members()
     if remaining:
         row["observer_terminated_viewer"] = stamp()
         os.killpg(pid, signal.SIGTERM)
     while remaining and time.monotonic() < limit - 1:
-        time.sleep(0.05)
-        remaining = console_group(pid)
+        select.select([fd] if terminal_open else [], [], [], 0.05)
+        remaining = remaining_members()
     if remaining:
         shutdown["sigkill"] = stamp()
         os.killpg(pid, signal.SIGKILL)
         while remaining and time.monotonic() < limit:
-            time.sleep(0.05)
-            remaining = console_group(pid)
+            select.select([fd] if terminal_open else [], [], [], 0.05)
+            remaining = remaining_members()
     shutdown.update(remaining=remaining, verified=not remaining, ended=stamp())
     save()
 
@@ -915,19 +936,8 @@ def entered(phase, seconds, connected=False, operator_fd=None):
             while True:
                 sample_files(phase)
                 ready = select.select(([fd] if terminal_open else []) + ([operator_fd] if connected else []), [], [], 0.25)[0]
-                if connected and operator_fd in ready:
-                    data = os.read(operator_fd, 1024)
-                    if not data:
-                        raise EOFError("Foreground operator input closed; preserve the reached journey without retry.")
-                    journey.forward(fd, data, pending)
                 if fd in ready:
-                    try:
-                        chunk = os.read(fd, 65536)
-                    except OSError as error:
-                        if error.errno != errno.EIO:
-                            raise
-                        # Linux PTYs report EIO when the last slave closes.
-                        chunk = b""
+                    chunk = read_console(fd)
                     if chunk:
                         log.write(chunk)
                         log.flush()
@@ -955,12 +965,18 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
                     if match:
                         row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
+                console_active = terminal_open and "command_exit" not in row and not child_exited(pid)
+                if console_active and connected and operator_fd in ready:
+                    data = os.read(operator_fd, 1024)
+                    if not data:
+                        raise EOFError("Foreground operator input closed; preserve the reached journey without retry.")
+                    journey.forward(fd, data, pending)
                 for label, prompt, answer in [
                     ("host", "Allow these host changes? [y/N]", "y\n"),
                     ("setup", "Run this setup and share this workspace? [y/N]", "y\n"),
                     ("auth", "Copy this selected host authentication and settings? [y/N]", "y\n" if connected else "n\n"),
                 ]:
-                    if terminal_open and label not in completed and prompt.encode() in pending:
+                    if console_active and label not in completed and prompt.encode() in pending:
                         seen = stamp()
                         record_reading(phase, label + " consent")
                         os.write(fd, answer.encode())
@@ -970,7 +986,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                         pending = b""
                         save()
                 theme = theme_prompt(pending)
-                if terminal_open and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
+                if console_active and phase == "cold" and "sandbox-harness-start" in completed and "theme" not in completed and theme:
                     seen = stamp()
                     record_reading(phase, "guest display choice")
                     os.write(fd, b"\r")
@@ -981,10 +997,10 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     save()
                 labels = login_label(pending) if not connected else []
                 label_source = "host-terminal-output"
-                if connected and terminal_open and not captured and time.monotonic() >= next_pane_read:
+                if connected and console_active and not captured and time.monotonic() >= next_pane_read:
                     connected_done = journey.poll()
                     next_pane_read = time.monotonic() + 0.5
-                if not connected and terminal_open and not captured and not labels and time.monotonic() >= next_pane_read:
+                if not connected and console_active and not captured and not labels and time.monotonic() >= next_pane_read:
                     # Reentry need not emit the old prompt again. Read the current
                     # visible screen, without treating wrapper text or liveness as readiness.
                     capture(row, "pane_screen", lambda: pane_screen(phase))
@@ -992,7 +1008,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     labels = row["pane_screen"].get("labels", [])
                     label_source = "attached-pane-screen"
                 expired = time.monotonic() >= deadline
-                if terminal_open and not captured and (labels or connected_done or expired):
+                if console_active and not captured and (labels or connected_done or expired):
                     if labels:
                         row["signed_out_label"] = {"labels": labels, "source": label_source, **stamp()}
                     elif not row.get("connected_ready"):
@@ -1011,7 +1027,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     pending = b""
                     deadline = time.monotonic() + 30
                     save()
-                if terminal_open and detached and b"SafeYolo host> " in pending and "q" not in completed:
+                if console_active and detached and b"SafeYolo host> " in pending and "q" not in completed:
                     record_reading(phase, "host return controls")
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
@@ -1045,7 +1061,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 save()
         try:
             if not child_exited(pid) or not row.get("ordinary_q") or console_group(pid):
-                stop_console_group(pid, row)
+                stop_console_group(pid, fd, row)
         finally:
             waited, code = os.waitpid(pid, os.WNOHANG)
             if waited:

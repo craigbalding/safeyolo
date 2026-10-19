@@ -1174,6 +1174,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["launch_result"]["launch_id"], launch_id)
         self.assertEqual(row["exit_code"], 127)
         self.assertTrue(row["console_reaped"])
+        self.assertNotIn("viewer_detach", row)
+        self.assertNotIn("readiness_unclassified_at_deadline", row)
         self.assertNotIn("final_capture_error", row)
         self.assertNotIn(private_text, m.out.read_text())
         self.assertIn(private_text, (m.private / "cold.terminal").read_text())
@@ -1232,11 +1234,18 @@ class ObserverChecks(unittest.TestCase):
                 m.child_exited(os.getpid())
 
     def test_observer_intervention_stays_visible_on_zero_exit(self):
+        private_text = "PRIVATE_SHUTDOWN_TERMINAL_CANARY"
         code = ("import os,signal\n"
-                "signal.signal(signal.SIGTERM,lambda *_:os._exit(0))\n"
+                "def stop(*_):\n"
+                f" data=({private_text!r}+'\\n').encode()*4096\n"
+                " while data:data=data[os.write(1,data):]\n"
+                " os._exit(0)\n"
+                "signal.signal(signal.SIGTERM,stop)\n"
                 "print('Sign in',flush=True)\n"
                 "signal.pause()\n")
-        with patch.object(m, "LAUNCH", ["exec", sys.executable, "-c", code]), \
+        stub = m.project / "shutdown.py"
+        stub.write_text(code)
+        with patch.object(m, "LAUNCH", ["exec", sys.executable, str(stub)]), \
              patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")):
             with self.assertRaisesRegex(ValueError, "capture failed"):
                 m.entered("warm", 2)
@@ -1245,6 +1254,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["exit_code"], 0)
         self.assertTrue(row["console_reaped"])
         self.assertTrue(row["console_group_shutdown"]["verified"])
+        self.assertNotIn("sigkill", row["console_group_shutdown"])
+        self.assertNotIn(private_text, m.out.read_text())
 
     def test_real_pty_unclassified_ui_still_captures_before_detach(self):
         row = self.run_console("UNKNOWN UI", 0.2)

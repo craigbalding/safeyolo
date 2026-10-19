@@ -721,7 +721,7 @@ class TestTemplateRoundTrip:
         save_roundtrip(path, doc)
 
         content = path.read_text()
-        assert "# SafeYolo baseline policy" in content
+        assert "# Historical Python baseline policy template" in content
         assert "# ── LLM APIs" in content
 
         reloaded = load_roundtrip(path)
