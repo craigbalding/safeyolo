@@ -16,7 +16,7 @@ _stage_safeyolo_lab_entrypoint() {
     fi
     # shellcheck source=../../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-bashrc.sh
     . "$lab_scripts/lab-bashrc.sh"
-    _prepare_safeyolo_lab_bashrc "$bashrc" || return 1
+    _prepare_safeyolo_lab_bashrc "$bashrc" "$3" || return 1
 
     if [ -L "$command_path" ]; then
         current_target="$(readlink "$command_path")"
@@ -265,7 +265,7 @@ stage_safeyolo_context() {
     fi
 
     if [ "$consumer" = "claude" ] || { [ "$consumer" = "codex" ] && { [ -z "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] || [ ! -d "$repo_root/skills" ]; }; }; then
-        _stage_safeyolo_lab_entrypoint "$agent_home" "$repo_root"
+        _stage_safeyolo_lab_entrypoint "$agent_home" "$repo_root" "$consumer"
     fi
     if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
         _stage_safeyolo_repo_map "$agent_home"

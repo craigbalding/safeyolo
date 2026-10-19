@@ -26,7 +26,11 @@ and enters the viewer. Repeating the command reattaches to the same controller
 and evidence. `--recover` restarts an owned dead controller; `--relaunch`
 explicitly replaces it. No pane discovery or guest-shell bootstrap is required.
 
-For a Claude Lab, use an owned agent prepared with `--host-script @claude`.
+For a Claude Lab, prepare an owned agent with the installed instance's executable
+`assets/contrib/claude-host-setup.sh`. Pass its absolute path to
+`agent create --host-script`, or `agent configure --host-script` for a stopped
+agent. See the [host-script guide](https://github.com/craigbalding/safeyolo/blob/master/contrib/HOST_SCRIPT_GUIDE.md)
+for setup and host-state copying.
 Check `claude auth status` in that guest before starting the Lab. From its
 pre-lab shell, run `safeyolo-lab --harness claude --objective "OBJECTIVE"`,
 using the operator's objective. The shared runner uses the staged Claude

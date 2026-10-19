@@ -8,7 +8,14 @@ For a Codex Lab, run `safeyolo lab` on the instance host. The entry asks for the
 objective before preparing its guest and checking its own Codex authentication.
 The operator does not enter a guest shell or discover a controller pane first.
 
-For a Claude Lab, first prepare an owned guest with `--host-script @claude`.
+For a Claude Lab, first prepare an owned guest from the instance host. With the
+default installation, pass
+`--host-script "$HOME/.safeyolo/assets/contrib/claude-host-setup.sh"` to
+`agent create`, or `agent configure` for an existing stopped agent. Select the
+executable script from that instance's `assets/contrib/` directory. For another
+instance root or a trusted checkout script, see the
+[host-script guide](https://github.com/craigbalding/safeyolo/blob/master/contrib/HOST_SCRIPT_GUIDE.md),
+including its host-state copying behavior.
 In that guest, verify the existing account with `claude auth status`. Do not
 capture credential values or login codes. From the pre-lab shell, run
 `safeyolo-lab --harness claude --objective "OBJECTIVE"` with the operator's
@@ -58,11 +65,16 @@ agent is no longer needed, stop it separately from the instance host.
 
 ## Internal guest command
 
-A pre-lab shell in `/home/agent` prints this discovery hint:
+A pre-lab shell in `/home/agent` prepared by Claude host setup prints this
+discovery hint:
 
 ```text
-SafeYolo lab: run safeyolo-lab
+SafeYolo lab: run safeyolo-lab --harness claude
 ```
+
+Codex host setup and the standalone installer print `SafeYolo lab: run safeyolo-lab`.
+Without `--harness`, the helper uses Codex for a fresh session and the saved
+harness for reconnection or recovery.
 
 If the command is absent after the skill is installed, run the internal
 installer once:

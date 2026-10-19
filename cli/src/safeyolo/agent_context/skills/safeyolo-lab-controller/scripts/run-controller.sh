@@ -8,7 +8,7 @@ Usage: run-controller.sh [--command PATH] [--harness codex|claude] [--startup-fi
 Run the SafeYolo host-script command from inside the current tmux pane without
 replacing its parent interactive shell. The default command is
 /home/agent/.safeyolo-command. The default harness is codex. Use --harness
-claude with the command staged by @claude.
+claude with the command staged by claude-host-setup.sh.
 EOF
   exit 2
 }
