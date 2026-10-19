@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -18,6 +19,22 @@ spec = importlib.util.spec_from_file_location("clean_ubuntu", Path(__file__).res
     / "tests/blackbox/clean_ubuntu_arm64.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+
+
+def test_diagnostic_guest_metadata_must_match_without_exporting_the_anonymous_token():
+    raw = b'{"schemaVersion":2,"manifests":[]}'
+    index = "sha256:" + hashlib.sha256(raw).hexdigest()
+    replies = [io.BytesIO(b'{"token":"PRIVATE_ANONYMOUS_PULL_TOKEN"}'), io.BytesIO(raw)]
+    with patch.object(m.urllib.request, "urlopen", autospec=True, side_effect=replies), \
+            patch.object(m, "GUEST_INDEX", index):
+        result = m.verify_diagnostic_guest()
+    assert result["index"] == index
+    assert "TOKEN" not in json.dumps(result)
+    replies = [io.BytesIO(b'{"token":"PRIVATE_ANONYMOUS_PULL_TOKEN"}'), io.BytesIO(raw)]
+    with patch.object(m.urllib.request, "urlopen", autospec=True, side_effect=replies):
+        with pytest.raises(ValueError, match="No VM was started") as error:
+            m.verify_diagnostic_guest()
+    assert "TOKEN" not in str(error.value)
 
 
 def test_stock_image_requires_both_pinned_size_and_hash(tmp_path):
@@ -125,7 +142,10 @@ def test_sigterm_during_acquisition_removes_the_owned_partial_disk(tmp_path):
     work = tmp_path / "vm"
     marker = tmp_path / "unrelated"
     marker.write_text("keep")
-    process = subprocess.Popen([sys.executable, str(Path(m.__file__)), "--work-dir", str(work),
+    probe = ("import runpy\nfrom unittest.mock import patch\n"
+             f"main=runpy.run_path({m.__file__!r})['main']\n"
+             "with patch.dict(main.__globals__,verify_diagnostic_guest=lambda:{}):\n raise SystemExit(main())\n")
+    process = subprocess.Popen([sys.executable, "-c", probe, "--work-dir", str(work),
         "--observer-source", "interruption-test", "--ssh-port", str(port)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "PATH": str(tools) + ":" + os.environ["PATH"]})
     try:

@@ -22,6 +22,7 @@ import signal
 import socket
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 
 IMAGE_URL = "https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img"
@@ -32,6 +33,7 @@ IMAGE_SHA256 = "7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc
 IMAGE_BYTES = 615630848
 HOSTNAME = "sy1050-clean-arm64"
 CPU_MODEL = "cortex-a72"
+GUEST_INDEX = "sha256:14359301826746d088f124205de232c77c40567871550d38b035e6bfb53e5a2e"
 
 
 def stamp():
@@ -43,6 +45,22 @@ def verify_image(path):
         actual = hashlib.file_digest(stream, "sha256").hexdigest()
     if path.stat().st_size != IMAGE_BYTES or actual != IMAGE_SHA256:
         raise ValueError("Stock Ubuntu image size or SHA256 does not match the pinned public source.")
+
+
+def verify_diagnostic_guest():
+    """Stop before acquisition if the prior diagnostic's published guest changed."""
+    # The c9 public bootstrap uses compat-v1 and has no guest-index option.
+    # Check its public metadata without staging a guest, token or product input.
+    repository = "craigbalding/safeyolo-guest"
+    with urllib.request.urlopen(f"https://ghcr.io/token?service=ghcr.io&scope=repository:{repository}:pull", timeout=30) as reply:
+        token = json.load(reply)["token"]
+    request = urllib.request.Request(f"https://ghcr.io/v2/{repository}/manifests/compat-v1",
+        headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.oci.image.index.v1+json"})
+    with urllib.request.urlopen(request, timeout=30) as reply:
+        index = "sha256:" + hashlib.sha256(reply.read(1024 * 1024)).hexdigest()
+    if index != GUEST_INDEX:
+        raise ValueError(f"Published compat-v1 index is {index}; diagnostic requires {GUEST_INDEX}. No VM was started.")
+    return {"repository": "ghcr.io/" + repository, "discovery_tag": "compat-v1", "index": index, **stamp()}
 
 
 def stop_vm(vm):
@@ -155,6 +173,8 @@ def main():
     save()
     signal.signal(signal.SIGTERM, interrupted)
     try:
+        report["diagnostic_guest_preflight"] = verify_diagnostic_guest()
+        save()
         run(["curl", "--fail", "--location", "--proto", "=http,https", "--proto-redir", "=http,https",
              "--max-time", "240", "--output", image, IMAGE_ARCHIVE_URL], 250)
         verify_image(image)

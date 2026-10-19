@@ -835,6 +835,48 @@ def stop_console_group(pid, row):
     save()
 
 
+def record_launch_result(row, output):
+    """Save fixed diagnostic categories before runtime capture or owned cleanup."""
+    result = {"command_exit": row.get("command_exit"), "failure_phase": "unknown",
+              "error_category": "unknown", "launch_id": None, **stamp()}
+    boundaries = [r["boundary"] for r in x["phase_observations"]
+                  if r["phase"] == row["phase"] and r["boundary"] in dict(PHASE_TEXT)]
+    result["last_observed_phase"] = boundaries[-1] if boundaries else "unknown"
+    # Inspect only launch output, before the same-terminal diagnostic commands.
+    # Never export an error excerpt, even for a recognized product prefix.
+    plain = terminal_plain(output[-60000:]).split(b"sy239_command_exit=", 1)[0]
+    phases = {"shipped harness setup": "harness-setup", "host setup": "host-setup",
+              "services": "services-start", "proxy readiness": "proxy-readiness",
+              "coord readiness": "coord-readiness", "sandbox/harness startup": "sandbox-harness-start",
+              "terminal attachment": "terminal-attachment", "harness session": "harness-session",
+              "approvals": "approvals", "sandbox/harness retry": "sandbox-harness-retry"}
+    if row.get("command_exit") not in (None, 0):
+        matches = re.findall(rb"(?:^|[\r\n])(?:safeyolo: )?first-agent ([^:\r\n]{1,80}) failed: ([^\r\n]*)", plain)
+        if matches and matches[-1][0].decode(errors="replace") in phases:
+            result["failure_phase"] = phases[matches[-1][0].decode()]
+            for message, error_category in [
+                (b"coding-agent observation timed out", "coding-agent-observation-timeout"),
+                (b"coding-agent observation failed", "coding-agent-observation-failed"),
+                (b"coding-agent observation is unverified", "coding-agent-observation-unverified"),
+            ]:
+                if matches[-1][1].startswith(message + b". saved agent state is retained."):
+                    result["error_category"] = error_category
+    try:
+        launch = launch_record()
+    except (OSError, ValueError):
+        # A missing/corrupt identity remains unknown; do not lose the diagnosis
+        # or prevent disposal, and do not export exception text from private state.
+        result["identity_status"] = "unreadable"
+    else:
+        launch_id = launch.get("launch_id")
+        if isinstance(launch_id, str) and re.fullmatch(r"launch-[0-9a-f]{32}", launch_id):
+            result.update(launch_id=launch_id, identity_status="recorded")
+        else:
+            result["identity_status"] = "unavailable"
+    row["launch_result"] = result
+    save()
+
+
 def entered(phase, seconds, connected=False, operator_fd=None):
     row = {"command": LAUNCH, "role": "product", "phase": phase, **stamp()}
     row["post_return_diagnostics"] = [["command", "-v", "safeyolo"], ["safeyolo", "--version"]]
@@ -969,6 +1011,8 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)", pending)
                     if match:
                         row[key.lower() + "_exit"] = int(match.group(1))
+                        if key == "COMMAND" and "launch_result" not in row:
+                            record_launch_result(row, pending)
                 for key in ["DISCOVERY", "VERSION"]:
                     match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
                     if match:
@@ -979,6 +1023,10 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 if time.monotonic() >= deadline:
                     break
     finally:
+        if "launch_result" not in row:
+            # An interrupted viewer or an absent exit marker has no classified
+            # product failure. Retain explicit unknowns before cleanup starts.
+            record_launch_result(row, pending)
         if journey and journey.input:
             row["unfinished_foreground_input"] = {"bytes": len(journey.input), "seen": journey.decision_seen,
                                                    "first_key": journey.first_key, **stamp()}
