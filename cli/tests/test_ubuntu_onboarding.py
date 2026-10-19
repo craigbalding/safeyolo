@@ -59,6 +59,8 @@ class ObserverChecks(unittest.TestCase):
 
     def test_signed_out_accounting_counts_controls_without_claiming_a_task_or_human_time(self):
         m.x.update(product_commands=[{"command": m.DOWNLOAD}, {"phase": "cold"}, {"phase": "warm"}],
+            observations=[{"label": "bootstrap-download", "role": "product", **m.stamp()},
+                          {"label": "native-version", "role": "observer", **m.stamp()}],
             interactions=[{"phase": "cold", "prompt": "Allow host changes?", "seen": m.stamp(), "sent": m.stamp()},
                           {"phase": "warm", "kind": "return to host", "answer": "Ctrl-b d"},
                           {"phase": "warm", "kind": "keep session and exit", "answer": "q"}])
@@ -69,6 +71,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(m.x["counts"]["product_interactions"], 3)
         self.assertEqual(m.x["counts"]["material_decisions"], 1)
         self.assertEqual(m.x["counts"]["canonical_task_submissions"], 0)
+        self.assertEqual(m.x["counts"]["observer_diagnostic_commands"], 1)
+        self.assertEqual([row["label"] for row in m.x["timings"]["observer_intervals"]], ["native-version"])
         self.assertEqual(m.x["counts"]["required_reading_words"], len(m.SIGNED_OUT_PROSE.split()))
         self.assertNotIn("cold_total_to_first_task_seconds", m.x["timings"])
         self.assertIn("do not measure human", m.x["timings"]["wait_limit"])

@@ -1112,7 +1112,7 @@ def signed_out_accounting():
         "material_decisions": sum(bool(row.get("prompt")) for row in x["interactions"]),
         "required_reading_words": sum(row["words"] for row in x.get("required_reading", [])),
         "canonical_task_submissions": 0,
-        "observer_diagnostic_commands": len(x["observations"]),
+        "observer_diagnostic_commands": sum(row.get("role") == "observer" for row in x["observations"]),
         "observer_tmux_commands": x.get("observer_tmux_commands", {}),
         "reading_method": "Displayed instructions and terminal text; command echoes excluded. Repeated text counts again.",
         "limits": "Signed-out endpoint only. No human reading duration or complete first-task command count is claimed."}
@@ -1120,7 +1120,7 @@ def signed_out_accounting():
     timings.update(phase_boundaries=x["phase_observations"],
         automated_interaction_intervals=[row for row in x["interactions"] if row.get("seen")],
         observer_intervals=[{"label": row["label"], "started": {key: row[key] for key in ["at", "monotonic"]},
-                             "ended": row.get("ended")} for row in x["observations"]],
+                             "ended": row.get("ended")} for row in x["observations"] if row.get("role") == "observer"],
         wait_limit="Phase observations are sampled bounds. Automated responses do not measure human reading or provider-only waits.")
     save()
 
@@ -1383,7 +1383,7 @@ def main():
         record_reading("cold", "signed-out observation instructions", SIGNED_OUT_PROSE.encode())
         print(SIGNED_OUT_PROSE, flush=True)
         started = time.monotonic()
-        first = observe("bootstrap-download", DOWNLOAD, 60)
+        first = observe("bootstrap-download", DOWNLOAD, 60, role="product")
         x["product_commands"].append(first)
         save()
         if first.get("exit") != 0:
