@@ -142,6 +142,25 @@ chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 install_safeyolo_runtime_mount_targets "$ROOTFS"
 install_safeyolo_privilege_helper "$ROOTFS"
 
+# Cron/at are started by per-run init, never by package scripts or the static
+# snapshot phase. Keep their native commands and per-agent overlay spools.
+install -D -m 0644 "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-scheduling.sh" \
+    "$ROOTFS/usr/local/lib/safeyolo/scheduling.sh"
+install -m 0755 "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-job" "$ROOTFS/usr/local/bin/safeyolo-job"
+for command_name in crontab at atq atrm batch; do
+    install -m 0755 "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-schedule-command" \
+        "$ROOTFS/usr/local/bin/$command_name"
+done
+
+# Debian's system crontab would enable apt/dpkg maintenance through
+# run-parts. The base enables agent jobs only. Keep those scripts available
+# for deliberate guest administration.
+printf '%s\n' '# No package maintenance is scheduled in the SafeYolo base.' > "$ROOTFS/etc/crontab"
+# PAM's cron stack reads this file even when no locale package is installed.
+if [ ! -f "$ROOTFS/etc/default/locale" ]; then
+    printf 'LANG=C.UTF-8\n' > "$ROOTFS/etc/default/locale"
+fi
+
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"
 echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
@@ -151,6 +170,8 @@ for busybox_path in /bin/busybox /usr/bin/busybox; do
     if [ -x "$ROOTFS$busybox_path" ]; then
         ln -sf "$busybox_path" "$ROOTFS/usr/local/bin/hexdump"
         ln -sf "$busybox_path" "$ROOTFS/usr/local/bin/nc"
+        # crontab -e uses sensible-editor, whose fallback includes vi.
+        ln -sf "$busybox_path" "$ROOTFS/usr/local/bin/vi"
         break
     fi
 done

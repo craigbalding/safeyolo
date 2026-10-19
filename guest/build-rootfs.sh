@@ -205,6 +205,20 @@ path-include /usr/share/locale/en*
 path-include /usr/share/locale/locale.alias
 NODOC
 
+# Package installation must not start cron/at in the builder's namespace.
+# Restore the base image's policy after installation; runtime service control
+# remains available to guest administrators.
+if sudo test -e "$ROOTFS/usr/sbin/policy-rc.d"; then
+    sudo cp -a "$ROOTFS/usr/sbin/policy-rc.d" "$WORK_DIR/policy-rc.d"
+fi
+sudo mkdir -p "$ROOTFS/usr/sbin"
+sudo rm -f "$ROOTFS/usr/sbin/policy-rc.d"
+sudo tee "$ROOTFS/usr/sbin/policy-rc.d" >/dev/null <<'SERVICE_POLICY'
+#!/bin/sh
+exit 101
+SERVICE_POLICY
+sudo chmod 0755 "$ROOTFS/usr/sbin/policy-rc.d"
+
 # --- Chroot apt-get install ------------------------------------------------
 # debian:trixie OCI is minimal. Keep the packages that the
 # customize-hook (mise/gh/sshd/useradd) and the agent runtime
@@ -301,7 +315,7 @@ echo "=== Installing base packages ==="
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends "${APT_TLS_OPTIONS[@]}" \
     ca-certificates curl git openssh-client openssh-server \
-    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo
+    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo cron at sensible-utils
 
 # Capture the verified build repositories before the hook clears APT lists
 # and installs the separate runtime proxy settings.
@@ -326,6 +340,11 @@ export SAFEYOLO_GUEST_SRC_DIR="$SCRIPT_DIR"
 echo "=== Running customize-hook ==="
 sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,MISE_TARBALL,GH_TARBALL,SAFEYOLO_GUEST_SRC_DIR \
     bash "$CUSTOMIZE_HOOK_SCRIPT" "$ROOTFS"
+
+sudo rm -f "$ROOTFS/usr/sbin/policy-rc.d"
+if sudo test -e "$WORK_DIR/policy-rc.d"; then
+    sudo cp -a "$WORK_DIR/policy-rc.d" "$ROOTFS/usr/sbin/policy-rc.d"
+fi
 
 # Keep signed repository metadata and final inventory before the chroot is removed.
 mkdir -p "$OUTPUT_DIR/provenance"

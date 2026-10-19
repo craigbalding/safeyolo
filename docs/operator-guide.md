@@ -34,6 +34,16 @@ you opened. A running proxy alone does not mean that the agent is running.
 
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
+## Schedule shell work
+
+Inside a running standard Debian guest, use cron for recurring work and at for
+one-off work. Jobs continue while the sandbox runs, even when its coding
+harness exits. Follow the [guest scheduling recipes](../cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md)
+for current environment and credentials, Coord messages, literal tmux input,
+listing, cancellation, diagnostics and image rollout. For work that must be
+triggered while a guest is stopped, use the separate
+[trusted host recipe](coord-operations.md#schedule-an-operator-message).
+
 ## Open an agent desktop
 
 Use the host account and instance selected above. The proxy must be running.

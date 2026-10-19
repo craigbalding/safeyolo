@@ -108,13 +108,18 @@ host privilege.
 
 ## Know what persists
 
+The standard Debian guest runs cron and at independently of the harness.
+Use ordinary `crontab`, `atq` and `atrm`. Put `safeyolo-job` in entries to read
+the current per-run environment, and read Agent API credentials at execution.
+See [scheduling recipes](scheduling.md) before submitting work. The scheduler
+log is `/var/log/safeyolo-scheduling.log`.
+
 `/home/agent` and `/workspace` persist across ordinary stop/run cycles. mise
 installs therefore persist. OS-package persistence is platform-dependent:
 
 - Hardware microVMs normally retain package changes in their per-agent overlay.
-- Linux gVisor discards rootfs-overlay changes when the sandbox stops. Its
-  per-agent apt/apk download caches persist, so reinstalling is faster but
-  still necessary.
+- Default Linux gVisor directory overlays retain package changes. Ephemeral
+  rootfs mode discards them on stop; per-agent package-download caches persist.
 - Ephemeral or snapshot modes may intentionally discard later changes.
 
 Do not rely on a native package being present in a future run unless the task

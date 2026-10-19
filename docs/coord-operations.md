@@ -7,6 +7,42 @@ Guest `safeyolo-coord` calls retain agent attribution.
 SafeYolo owns the host-local, authenticated NATS server's lifecycle. Do not
 launch a second server or edit its generated configuration.
 
+## Schedule an operator message
+
+Use a host scheduler when a message must be sent while the target sandbox is
+stopped. This recipe runs as the trusted host account that owns the instance.
+Its proxy and Coord must be running; the target guest may be stopped.
+Create the room and grant its intended recipient as described below first.
+The example uses room `scheduled-work` and recipient `alice`.
+
+On that host, create `~/scheduled-coord-message.txt` with the intended UTF-8
+message. Keep the file and wrapper in host-owned paths outside agent-writable
+mounts. Create `~/bin/post-scheduled-coord` with this content and make it
+executable. Replace `/absolute/instance` with the selected instance path before
+running it:
+
+```sh
+#!/bin/sh
+set -eu
+exec /absolute/instance/bin/safeyolo --root /absolute/instance coord send scheduled-work --file "$HOME/scheduled-coord-message.txt" --to alice --content-type text/plain
+```
+
+On a Linux host with cron already running, use the owning account's
+`crontab -e` to add a UTC entry. Replace `/absolute/operator-home` with that
+account's home. This entry runs every day at 09:00 UTC when the host timezone
+is UTC; check `date '+%F %T %Z'` first.
+
+```cron
+0 9 * * * /absolute/operator-home/bin/post-scheduled-coord >>/absolute/operator-home/scheduled-coord.log 2>&1
+```
+
+On macOS, the same wrapper can be invoked by an operator-maintained LaunchAgent
+or the host account's existing cron setup. Use that scheduler's timezone and
+missed-run rules. No automatic wake or guest start is provided. History must
+show `sender_kind=operator`, with no agent identity. Check the log and retained
+message after execution; do not repeat an uncertain send without checking
+history. This recipe gives guest jobs no host scheduler or operator credentials.
+
 ## Send and converse
 
 Run commands as the host account that owns your

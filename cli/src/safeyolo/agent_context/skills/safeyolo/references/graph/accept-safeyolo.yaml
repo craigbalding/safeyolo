@@ -252,7 +252,7 @@ nodes:
         - path: proxy/src/host_boot.rs
           sha256: 7d7b1d9cfdedb1713bfe0426552b5fba834cbe2198287332fd1ee42912cd8525
         - path: guest/build-rootfs.sh
-          sha256: 151446ff900c8f1082cfa7ee700fa8df072b93956a6813dd8a9b4cc864d4a409
+          sha256: ff4ab568a23fabc32a8cff38ca0977564a4b1b35e77dec2268feb345c9ead613
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
@@ -415,9 +415,9 @@ nodes:
         - path: guest/build-all.sh
           sha256: 63b9ec48a6fbd6a4ea010a0ccc1a320376a5d0875a5268dec9f7b5652829fc4e
         - path: guest/build-rootfs.sh
-          sha256: 151446ff900c8f1082cfa7ee700fa8df072b93956a6813dd8a9b4cc864d4a409
+          sha256: ff4ab568a23fabc32a8cff38ca0977564a4b1b35e77dec2268feb345c9ead613
         - path: guest/rootfs-customize-hook.sh
-          sha256: 4eb6c8e238826e2aed62dbf13ace2dc6064c493d2bedba19d3d11f4c2fd33b1f
+          sha256: 2cadb63cfd04b26d1841c2551796edcc06e4465d89b5d3bd95976bdf8aceb1c3
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."
       verify: "sha256sum guest/build-all.sh guest/build-rootfs.sh guest/rootfs-customize-hook.sh && skopeo --version && umoci --version && mkfs.ext4 -V"
       run:
