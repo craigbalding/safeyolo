@@ -56,12 +56,12 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-    env:
-      CLEAN_UBUNTU_WORK: ${{ runner.temp }}/clean-arm64-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Select this invocation's fresh VM directory
+        run: printf 'CLEAN_UBUNTU_WORK=%s/clean-arm64-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
       - name: Install VM instruments on the outer runner only
         run: |
           sudo -n apt-get update
