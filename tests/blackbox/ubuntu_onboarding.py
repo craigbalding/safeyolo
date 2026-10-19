@@ -832,23 +832,24 @@ def stop_console_group(pid, fd, row):
 
     def remaining_members():
         nonlocal terminal_open
-        # Darwin can leave a signalled tmux client exiting until its terminal
-        # output drains. Keep reading the owned master while waiting for exit.
-        while terminal_open and time.monotonic() < limit and select.select([fd], [], [], 0)[0]:
-            if not read_console(fd):
-                terminal_open = False
+        # Read one chunk per scan so continuous output cannot delay signals or
+        # deadline checks. Darwin needs the owned PTY drained to finish exit.
+        if terminal_open and select.select([fd], [], [], 0)[0]:
+            terminal_open = bool(read_console(fd))
         return console_group(pid)
 
     remaining = remaining_members()
     if remaining:
         row["observer_terminated_viewer"] = stamp()
         os.killpg(pid, signal.SIGTERM)
+        remaining = remaining_members()
     while remaining and time.monotonic() < limit - 1:
         select.select([fd] if terminal_open else [], [], [], 0.05)
         remaining = remaining_members()
     if remaining:
         shutdown["sigkill"] = stamp()
         os.killpg(pid, signal.SIGKILL)
+        remaining = remaining_members()
         while remaining and time.monotonic() < limit:
             select.select([fd] if terminal_open else [], [], [], 0.05)
             remaining = remaining_members()
@@ -961,6 +962,10 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                         row[key.lower() + "_exit"] = int(match.group(1))
                         if key == "COMMAND" and "launch_result" not in row:
                             record_launch_result(row, pending)
+                            # The launch has finished. Keep the existing exit
+                            # observation window for its remaining diagnostics,
+                            # even when the launch deadline expired with it.
+                            deadline = max(deadline, time.monotonic() + 3)
                 for key in ["DISCOVERY", "VERSION"]:
                     match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
                     if match:
