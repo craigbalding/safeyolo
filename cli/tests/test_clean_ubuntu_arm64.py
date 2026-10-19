@@ -35,6 +35,26 @@ def test_stock_image_requires_both_pinned_size_and_hash(tmp_path):
             m.verify_image(image)
 
 
+def test_boot_receipt_keeps_reached_stages_and_failure_without_a_console_copy(tmp_path):
+    console = tmp_path / "serial.log"
+    console.write_bytes(b"Linux version 6.8.0-134-generic\r\n"
+        b"\x1b[32mFinished apparmor.service - Load AppArmor profiles.\x1b[0m\r\n"
+        b"Cloud-init running 'init-local'\nStarted systemd-networkd.service - Network Configuration.\n"
+        b"FAILED to configure network\nJob systemd-networkd-wait-online.service/start running (2min)\n"
+        b"unselected console output\n")
+    result = m.boot_observation(console)
+    assert result["stages"]["kernel"] == "Linux version 6.8.0-134-generic"
+    assert result["stages"]["apparmor"].startswith("Finished apparmor.service")
+    assert "cloud_init_local" in result["stages"]
+    assert "network" in result["stages"]
+    assert "wait-online" in result["stages"]["last_wait"]
+    assert result["error_or_warning_lines"] == ["FAILED to configure network"]
+    assert "unselected console output" not in json.dumps(result)
+    assert "ssh" not in result["stages"]
+    console.unlink()
+    assert m.boot_observation(console)["available"] is False
+
+
 def test_cleanup_reaps_only_the_owned_child_and_preserves_other_listener():
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])

@@ -1113,6 +1113,7 @@ def signed_out_accounting():
         "required_reading_words": sum(row["words"] for row in x.get("required_reading", [])),
         "canonical_task_submissions": 0,
         "observer_diagnostic_commands": len(x["observations"]),
+        "observer_tmux_commands": x.get("observer_tmux_commands", {}),
         "reading_method": "Displayed instructions and terminal text; command echoes excluded. Repeated text counts again.",
         "limits": "Signed-out endpoint only. No human reading duration or complete first-task command count is claimed."}
     timings = x.setdefault("timings", {})
@@ -1380,6 +1381,7 @@ def main():
     try:
         observe("baseline-sudo-noninteractive", ["sudo", "-n", "true"], 5)
         record_reading("cold", "signed-out observation instructions", SIGNED_OUT_PROSE.encode())
+        print(SIGNED_OUT_PROSE, flush=True)
         started = time.monotonic()
         first = observe("bootstrap-download", DOWNLOAD, 60)
         x["product_commands"].append(first)

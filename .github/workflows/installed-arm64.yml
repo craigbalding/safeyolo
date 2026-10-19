@@ -80,7 +80,8 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: clean-public-install-arm64-${{ github.run_id }}-${{ github.run_attempt }}
-          # No disk, private key, authentication, terminal or private state upload.
+          # Nonsecret reports only. No full boot log, product terminal, disk,
+          # private key, authentication or private state upload.
           path: |
             ${{ env.CLEAN_UBUNTU_WORK }}/reports/fixture.json
             ${{ env.CLEAN_UBUNTU_WORK }}/reports/observation.json

@@ -6,8 +6,9 @@ The outer runner needs qemu-system-aarch64, qemu-img, cloud-localds, ARM64 EFI
 firmware, curl and OpenSSH. These are fixture tools, not target prerequisites.
 The VM uses software execution, its own stock kernel and disk, and no host
 mounts. Cloud-init adds only an SSH key and hostname to the normal Ubuntu user.
-No product, authentication, helper, package or host preparation is staged there.
+No product, vendor authentication, helper, package or host preparation is staged there.
 Only reports/fixture.json and reports/observation.json may be uploaded.
+Full boot logs and product terminal output remain private.
 """
 
 import argparse
@@ -15,6 +16,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shlex
 import signal
 import socket
@@ -29,6 +31,7 @@ IMAGE_ARCHIVE_URL = "http://cloud-images-archive.ubuntu.com/releases/noble/relea
 IMAGE_SHA256 = "7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc"
 IMAGE_BYTES = 615630848
 HOSTNAME = "sy1050-clean-arm64"
+CPU_MODEL = "cortex-a72"
 
 
 def stamp():
@@ -62,6 +65,32 @@ def port_closed(port):
         return True
 
 
+def boot_observation(path):
+    """Retain selected OS startup operands without publishing the console."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        # A missing/unreadable console must stay visible without blocking
+        # disposal of this invocation's VM, disks and private SSH key.
+        return {"available": False, "error": str(error)}
+    plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data).decode(errors="replace")
+    lines = [line.strip() for line in re.split(r"[\r\n]+", plain) if line.strip()]
+    patterns = {
+        "kernel": r"Linux version ", "systemd": r"systemd \d+.*running in system mode",
+        "apparmor": r"Finished.*apparmor.service",
+        "cloud_init_local": r"Cloud-init.*running 'init-local'",
+        "network": r"networkd-wait-online|Network is Online|Network Configuration",
+        "cloud_init_network": r"Cloud-init.*running 'init'|Finished.*cloud-init.service.*Network Stage",
+        "ssh": r"(?:Listening on|Started).*ssh\.(?:socket|service)|OpenBSD Secure Shell",
+        "cloud_init_final": r"Cloud-init.*(?:modules:final|finished at)",
+        "login": r"\blogin:", "last_wait": r"Job .*start running",
+    }
+    stages = {name: line[:400] for name, pattern in patterns.items() for line in lines if re.search(pattern, line)}
+    notices = [line[:400] for line in lines if re.search(r"failed|error|panic|timed out|emergency", line, re.I)]
+    return {"available": True, "bytes": len(data), "stages": stages, "error_or_warning_lines": notices[-6:],
+            "scope": "Selected pre-observer OS lines, capped at 400 characters each. Missing markers do not prove a stage was not reached."}
+
+
 def main():
     def interrupted(signum, frame):
         raise KeyboardInterrupt("Fixture interrupted; stopping its owned VM.")
@@ -84,10 +113,12 @@ def main():
                         "sha256": IMAGE_SHA256, "bytes": IMAGE_BYTES},
               "outer": {"uname": list(os.uname()), "uid": os.getuid(),
                         "kvm_present": Path("/dev/kvm").exists()},
-              "fixture": {"acceleration": "tcg,thread=multi", "cpus": 2, "memory_mib": 4096,
+              "fixture": {"acceleration": "tcg,thread=multi", "cpu_model": CPU_MODEL,
+                          "cpus": 2, "memory_mib": 4096,
                           "disk_gib": 20, "host_mounts": [], "user": "ubuntu", "hostname": HOSTNAME},
               "commands": [], "limits": [
                   "Fixture setup is separate from the two product commands and is not clean-host product time.",
+                  "Fixture monotonic times belong to the outer runner; observation.json uses the target VM's clock.",
                   "Software execution affects timings. No hardware-accelerated latency claim.",
                   "No existing vendor account is supplied to this hosted VM. Signed-out startup is not a first task."]}
     output = reports / "fixture.json"
@@ -100,7 +131,7 @@ def main():
         report["commands"].append(row)
         save()
         try:
-            result = subprocess.run(row["command"], stdout=stdout,
+            result = subprocess.run(row["command"], stdin=subprocess.DEVNULL, stdout=stdout,
                                     stderr=subprocess.PIPE, timeout=timeout)
             row["exit"] = result.returncode
             row["stderr"] = result.stderr.decode(errors="replace")[-4096:]
@@ -128,6 +159,7 @@ def main():
              "--max-time", "240", "--output", image, IMAGE_ARCHIVE_URL], 250)
         verify_image(image)
         report["image"]["verified"] = stamp()
+        print("Pinned stock Ubuntu image verified.", flush=True)
         info = json.loads(run(["qemu-img", "info", "--output=json", image], 10).stdout)
         if info["format"] != "qcow2":
             raise ValueError("Expected the pinned Ubuntu qcow2 disk.")
@@ -138,7 +170,8 @@ def main():
             + "\npackage_update: false\npackage_upgrade: false\n")
         (work / "meta-data").write_text(f"instance-id: {work.name}\nlocal-hostname: {HOSTNAME}\n")
         run(["cloud-localds", seed, work / "user-data", work / "meta-data"], 20)
-        command = ["qemu-system-aarch64", "-machine", "virt", "-cpu", "max", "-accel", "tcg,thread=multi",
+        report["qemu_version"] = run(["qemu-system-aarch64", "--version"], 10).stdout.decode()
+        command = ["qemu-system-aarch64", "-machine", "virt", "-cpu", CPU_MODEL, "-accel", "tcg,thread=multi",
                    "-smp", "2", "-m", "4096", "-bios", "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
                    "-nodefaults", "-display", "none", "-monitor", "none", "-no-reboot",
                    "-serial", f"file:{work / 'serial.log'}",
@@ -150,20 +183,35 @@ def main():
         with (work / "qemu.stderr").open("wb") as errors:
             vm = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors)
         report["vm"] = {"pid": vm.pid, "command": command, "started": stamp()}
+        print("Owned software VM started; waiting for the ordinary Ubuntu account.", flush=True)
         save()
         deadline = time.monotonic() + 600
+        report["ssh_probe_count"] = 0
         while time.monotonic() < deadline:
             if vm.poll() is not None:
                 raise RuntimeError("QEMU exited before the ordinary Ubuntu account became accessible.")
-            probe = subprocess.run(ssh + ["true"], capture_output=True, timeout=15)
-            if probe.returncode == 0:
-                accessible = True
-                break
+            report["ssh_probe_count"] += 1
+            ssh_probe = {"started": stamp()}
+            report["last_ssh_probe"] = ssh_probe
+            try:
+                probe = subprocess.run(ssh + ["true"], stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+                ssh_probe.update(exit=probe.returncode, stderr=probe.stderr.decode(errors="replace")[-2048:])
+                if probe.returncode == 0:
+                    accessible = True
+                    break
+            except subprocess.TimeoutExpired as error:
+                # A slow handshake is a failed readiness sample, not a reason
+                # to discard the remaining boot budget or its partial stderr.
+                ssh_probe.update(timeout=True, error=str(error), stderr=(error.stderr or b"").decode(errors="replace")[-2048:])
+            finally:
+                ssh_probe["ended"] = stamp()
+                save()
             time.sleep(2)
         if not accessible:
-            report["ssh_error"] = probe.stderr.decode(errors="replace")
             raise TimeoutError("Stock Ubuntu did not become accessible within the 10-minute boot budget.")
         report["vm"]["ssh_ready"] = stamp()
+        report["boot"] = boot_observation(work / "serial.log")
+        print("Ordinary Ubuntu account accessible; waiting for cloud-init.", flush=True)
         run(ssh + ["cloud-init status --wait"], 180)
         # Copy only observer source, never product inputs, tools or credentials.
         run(ssh + ["mkdir -p observer/harness"], 20)
@@ -179,9 +227,11 @@ def main():
                     "--platform", "linux-arm64", "--observer-source", args.observer_source,
                     "--observation-dir", "/home/ubuntu/onboarding-observation"]
         report["vm"]["observer_started"] = stamp()
+        print("Starting the public bootstrap observer inside Ubuntu.", flush=True)
         with (work / "observer.stdout").open("wb") as log:
             result = run(ssh + [shlex.join(observer)], 1500, stdout=log, check=False, role="observer")
         report["observer_exit"] = result.returncode
+        print(f"Public observer returned {result.returncode}; collecting its owned cleanup result.", flush=True)
     except (OSError, ValueError, subprocess.SubprocessError, TimeoutError, RuntimeError) as error:
         report["error"] = str(error)
     finally:
@@ -204,6 +254,8 @@ def main():
             if vm is not None:
                 report["vm_cleanup"] = stop_vm(vm)
                 report["qemu_stderr"] = (work / "qemu.stderr").read_text(errors="replace")[-4096:]
+                if not accessible:
+                    report["boot"] = boot_observation(work / "serial.log")
             report["ssh_port_closed"] = port_closed(args.ssh_port)
             # All paths are created inside this invocation's new private directory.
             # Keep the small private logs for diagnosis; dispose disks and keys.
@@ -213,6 +265,7 @@ def main():
             report["owned_disks_and_keys_removed"] = True
             report["ended"] = stamp()
             save()
+            print("Owned VM teardown recorded.", flush=True)
     return 0 if (report.get("observer_exit") == 0 and report.get("ssh_port_closed")
                  and not report.get("error") and not report.get("recovery_error")) else 1
 
