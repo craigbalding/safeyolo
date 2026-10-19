@@ -489,6 +489,7 @@ fn assert_projection(reply: &Reply, runtime: &Runtime, owner: &str) {
 
 struct Reply {
     status: u16,
+    blocked_by: Option<String>,
     body: String,
 }
 impl Reply {
@@ -528,6 +529,11 @@ impl Fixture {
         let (head, body) = response.split_once("\r\n\r\n").unwrap();
         Reply {
             status: head.split_whitespace().nth(1).unwrap().parse().unwrap(),
+            blocked_by: head.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("x-blocked-by")
+                    .then(|| value.trim().to_owned())
+            }),
             body: body.into(),
         }
     }
