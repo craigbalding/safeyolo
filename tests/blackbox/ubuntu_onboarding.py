@@ -1008,7 +1008,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     pending = b""
                     save()
                 for key in ["COMMAND", "DISCOVERY", "VERSION"]:
-                    match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)", pending)
+                    match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)\r?\n", pending)
                     if match:
                         row[key.lower() + "_exit"] = int(match.group(1))
                         if key == "COMMAND" and "launch_result" not in row:

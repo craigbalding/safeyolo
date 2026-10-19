@@ -1117,6 +1117,17 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["launch_result"]["identity_status"], "unavailable")
         self.assertNotIn("PRIVATE", m.out.read_text())
 
+    def test_split_multidigit_exit_marker_is_complete_before_saving_summary(self):
+        stub = m.project / "exit127.py"
+        stub.write_text("raise SystemExit(127)\n")
+        read = os.read
+        with patch.object(m, "LAUNCH", [sys.executable, str(stub)]), \
+             patch.object(m, "witness", autospec=True, return_value={}), \
+             patch.object(m.os, "read", autospec=True, side_effect=lambda fd, count: read(fd, min(count, 1))):
+            row, _ = m.entered("cold", 10)
+        self.assertEqual(row["launch_result"]["command_exit"], 127)
+        self.assertEqual(row["command_exit"], 127)
+
     def test_real_pty_drains_small_final_chunks_after_shell_exit(self):
         read = os.read
         with patch.object(m.os, "read", autospec=True, side_effect=lambda fd, count: read(fd, min(count, 16))):
