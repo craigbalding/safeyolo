@@ -2,9 +2,13 @@
 
 import hashlib
 import importlib.util
+import json
+import os
+import signal
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,8 +81,48 @@ def test_existing_work_directory_is_preserved_before_acquisition(tmp_path):
     marker = work / "operator-file"
     marker.write_text("keep")
     argv = ["clean_ubuntu_arm64.py", "--work-dir", str(work), "--observer-source", "test"]
-    with patch.object(sys, "argv", argv), patch.object(m, "port_closed", autospec=True, return_value=True), \
+    machine = os.uname_result(("Linux", "fixture", "6.8", "test", "aarch64"))
+    with patch.object(sys, "argv", argv), patch.object(m.os, "uname", autospec=True, return_value=machine), \
+            patch.object(m, "port_closed", autospec=True, return_value=True), \
             patch.object(subprocess, "run", autospec=True, side_effect=AssertionError("no external action")):
         with pytest.raises(FileExistsError):
             m.main()
     assert marker.read_text() == "keep"
+
+
+@pytest.mark.skipif(os.uname().machine != "aarch64", reason="the fixture executes only on native ARM64")
+def test_sigterm_during_acquisition_removes_the_owned_partial_disk(tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    curl = tools / "curl"
+    curl.write_text(f"#!{sys.executable}\nimport pathlib, sys, time\n"
+        'pathlib.Path(sys.argv[sys.argv.index("--output") + 1]).write_bytes(b"partial")\n'
+        "time.sleep(120)\n")
+    curl.chmod(0o755)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    work = tmp_path / "vm"
+    marker = tmp_path / "unrelated"
+    marker.write_text("keep")
+    process = subprocess.Popen([sys.executable, str(Path(m.__file__)), "--work-dir", str(work),
+        "--observer-source", "interruption-test", "--ssh-port", str(port)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "PATH": str(tools) + ":" + os.environ["PATH"]})
+    try:
+        deadline = time.monotonic() + 5
+        while not (work / "ubuntu.img").exists() and time.monotonic() < deadline:
+            assert process.poll() is None, process.communicate()
+            time.sleep(0.02)
+        assert (work / "ubuntu.img").exists()
+        process.send_signal(signal.SIGTERM)
+        process.communicate(timeout=10)
+        result = json.loads((work / "reports/fixture.json").read_text())
+        assert process.returncode != 0
+        assert result["owned_disks_and_keys_removed"]
+        assert result["ssh_port_closed"]
+        assert not (work / "ubuntu.img").exists()
+        assert marker.read_text() == "keep"
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
