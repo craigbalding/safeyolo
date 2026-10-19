@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import pty
+import select
 import shlex
 import shutil
 import signal
@@ -1139,6 +1140,7 @@ class ObserverChecks(unittest.TestCase):
                    "Saved agent state is retained.")
         stub = m.project / "deadline-exit127.py"
         stub.write_text(f"print({message!r},flush=True);raise SystemExit(127)\n")
+        m.cli.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(0.3)\nprint('observer-test-version')\n")
         read, monotonic = os.read, time.monotonic
         received = b""
         marker_received = False
@@ -1173,10 +1175,36 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["launch_result"]["error_category"], "coding-agent-observation-timeout")
         self.assertEqual(row["launch_result"]["launch_id"], launch_id)
         self.assertEqual(row["exit_code"], 127)
+        self.assertEqual(row["discovery_exit"], 0)
+        self.assertEqual(row["discovery_stdout"], str(m.cli))
+        self.assertEqual(row["version_exit"], 0)
+        self.assertEqual(row["version_stdout"], "observer-test-version")
         self.assertTrue(row["console_reaped"])
+        self.assertNotIn("observer_terminated_viewer", row)
+        self.assertNotIn("viewer_detach", row)
+        self.assertNotIn("readiness_unclassified_at_deadline", row)
         self.assertNotIn("final_capture_error", row)
         self.assertNotIn(private_text, m.out.read_text())
         self.assertIn(private_text, (m.private / "cold.terminal").read_text())
+
+    def test_completed_launch_does_not_wait_forever_for_stalled_diagnostics(self):
+        m.cli.write_text(f"#!{sys.executable}\nimport signal\nprint('version-stalled',flush=True)\nsignal.pause()\n")
+        started = time.monotonic()
+        with patch.object(m, "LAUNCH", [sys.executable, "-c", "raise SystemExit(127)"]), \
+             patch.object(m, "witness", autospec=True, return_value={}), \
+             patch.dict(os.environ, {"PATH": str(m.cli.parent) + ":" + os.environ["PATH"]}):
+            row, _ = m.entered("cold", 0.1)
+        self.assertLess(time.monotonic() - started, 6)
+        self.assertEqual(row["command_exit"], 127)
+        self.assertEqual(row["launch_result"]["command_exit"], 127)
+        self.assertEqual(row["discovery_exit"], 0)
+        self.assertIn("version-stalled", (m.private / "cold.terminal").read_text())
+        self.assertNotIn("version_exit", row)
+        self.assertNotIn("viewer_detach", row)
+        self.assertIn("observer_terminated_viewer", row)
+        self.assertEqual(row["exit_code"], -signal.SIGTERM)
+        self.assertTrue(row["console_reaped"])
+        self.assertTrue(row["console_group_shutdown"]["verified"])
 
     def test_real_pty_drains_small_final_chunks_after_shell_exit(self):
         read = os.read
@@ -1231,12 +1259,57 @@ class ObserverChecks(unittest.TestCase):
             with self.assertRaises(ChildProcessError):
                 m.child_exited(os.getpid())
 
-    def test_observer_intervention_stays_visible_on_zero_exit(self):
+    def test_console_cleanup_signals_while_output_is_continuously_ready(self):
         code = ("import os,signal\n"
                 "signal.signal(signal.SIGTERM,lambda *_:os._exit(0))\n"
+                "signal.signal(signal.SIGHUP,lambda *_:os._exit(0))\n"
+                "while True:os.write(1,b'NOISY_PRIVATE_OUTPUT\\n'*32768)\n")
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execv(sys.executable, [sys.executable, "-c", code])
+            finally:
+                os._exit(1)
+        read = m.read_console
+        reaped = False
+
+        def slow_read(fd):
+            chunk = read(fd)
+            # Model a slow consumer without replacing the real PTY read.
+            time.sleep(0.002)
+            return chunk
+
+        try:
+            self.assertTrue(select.select([fd], [], [], 3)[0])
+            row = {}
+            with patch.object(m, "read_console", autospec=True, side_effect=slow_read):
+                m.stop_console_group(pid, fd, row)
+            self.assertTrue(row["console_group_shutdown"]["verified"])
+            self.assertEqual(row["console_group_shutdown"]["remaining"], [])
+            self.assertNotIn("sigkill", row["console_group_shutdown"])
+            waited, status = os.waitpid(pid, os.WNOHANG)
+            reaped = waited == pid
+            self.assertTrue(reaped)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+        finally:
+            os.close(fd)
+            if not reaped:
+                # Closing this owned PTY sends HUP to the child's group.
+                os.waitpid(pid, 0)
+
+    def test_observer_intervention_stays_visible_on_zero_exit(self):
+        private_text = "PRIVATE_SHUTDOWN_TERMINAL_CANARY"
+        code = ("import os,signal\n"
+                "def stop(*_):\n"
+                f" data=({private_text!r}+'\\n').encode()*4096\n"
+                " while data:data=data[os.write(1,data):]\n"
+                " os._exit(0)\n"
+                "signal.signal(signal.SIGTERM,stop)\n"
                 "print('Sign in',flush=True)\n"
                 "signal.pause()\n")
-        with patch.object(m, "LAUNCH", ["exec", sys.executable, "-c", code]), \
+        stub = m.project / "shutdown.py"
+        stub.write_text(code)
+        with patch.object(m, "LAUNCH", ["exec", sys.executable, str(stub)]), \
              patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")):
             with self.assertRaisesRegex(ValueError, "capture failed"):
                 m.entered("warm", 2)
@@ -1245,6 +1318,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["exit_code"], 0)
         self.assertTrue(row["console_reaped"])
         self.assertTrue(row["console_group_shutdown"]["verified"])
+        self.assertNotIn("sigkill", row["console_group_shutdown"])
+        self.assertNotIn(private_text, m.out.read_text())
 
     def test_real_pty_unclassified_ui_still_captures_before_detach(self):
         row = self.run_console("UNKNOWN UI", 0.2)
