@@ -6,6 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_doc_cli_flags.py"
 
@@ -21,6 +23,36 @@ def _load_module():
 
 
 mod = _load_module()
+
+
+@pytest.mark.parametrize(("change", "expected"), [
+    ("unchanged", None),
+    ("extra-command", "two tested commands"),
+    ("changed-release", "two tested commands"),
+    ("missing-section", "section is missing"),
+    ("extra-prose", "limit 150"),
+])
+def test_readme_quick_start_drift_runs_in_existing_command_check(
+    tmp_path, monkeypatch, capsys, change, expected,
+):
+    readme = (REPO_ROOT / "README.md").read_text()
+    if change == "extra-command":
+        readme = readme.replace("```sh\ncurl --fail", "```sh\nmkdir first\ncurl --fail", 1)
+    elif change == "changed-release":
+        readme = readme.replace("host-c5ce76019b6c997e282ab05cea0212b492e945d2", "host-" + "0" * 40)
+    elif change == "missing-section":
+        readme = readme.replace("## Quick start", "## Setup", 1)
+    elif change == "extra-prose":
+        readme = readme.replace("## Quick start\n", "## Quick start\n" + "Required reading. " * 76, 1)
+    (tmp_path / "README.md").write_text(readme)
+    surface = mod._load_cli_surface()
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(mod, "ALL_SHIPPED_DOCS", {"README.md"})
+    # Source lookup stays outside the temporary documentation fixture.
+    monkeypatch.setattr(mod, "_load_cli_surface", lambda: surface)
+    assert mod.main() == (1 if expected else 0)
+    if expected:
+        assert expected in capsys.readouterr().err
 
 
 def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():

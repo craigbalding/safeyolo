@@ -11,6 +11,19 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
 
 ## Owner priorities
 
+- **Reach the first result in two commands.** Under #237/#1053, the normal
+  quick start must reach a usable coding agent in at most two commands from
+  the recorded supported host/account/workspace setup. Keep required explanatory
+  prose within 150 words, excluding runnable commands, the task and expected
+  output. Count all required context and instructions, including any required
+  reference or wizard reading. Moving setup out of view does not meet the goal.
+- **Publish the tested commands.** Match the exact accepted #1050 journey,
+  including its bootstrap, release, platform, account and launcher. Show the
+  first task and observable host-visible result separately from installation
+  and launch. Reuse accepted release/retry/refusal proof at its recorded scope.
+  Distinguish required decisions and prose from logs, repeated output and
+  observer work; displayed-word totals do not measure required reading.
+  Keep unproved platforms, account flows and timing limits explicit.
 - **Use one product name.** Under #1053, the product is SafeYolo. Use
   `SafeYolo`, `proxy`, `installer`, `release` and `settings` as appropriate.
   Do not describe a separate “native” edition. This owner decision takes
@@ -56,7 +69,14 @@ VM boot; keep that distinction when discussing native virtualization workloads.
 Report missing setup automation or transport integration as implementation work.
 Do not hide those gaps by adding warnings, inventing commands, or claiming that
 existing helpers perform checks they do not implement.
-For SafeYolo onboarding, identify the concrete gap and its linked owner under
-#237. Keep the actual prerequisites visible until #1050–#1052 and #239 supply
-the accepted first-agent path and tested commands. Terminology changes alone
-do not establish the two-command or 15-second outcome.
+For a longer unavoidable onboarding path, name the actual missing operation,
+its linked owner under #237, and the smallest sufficient product repair.
+Keep the actual prerequisites visible. Do not call a longer warning-filled
+quick start complete or implement a new helper outside the assigned scope.
+Use the accepted #1050 commands and connected AMD64 first-task result as the
+current README input; #1051/#1052 and #239 retain their own accepted scope.
+Use the maintained documentation, command and forbidden-phrase checks to
+challenge drift, including an added mandatory command and an obsolete product
+qualifier. Review required prose and decisions as well as command count.
+Terminology changes and a warm return do not establish the cold 15-second
+outcome. The recorded cold target remains unmet.
