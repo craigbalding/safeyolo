@@ -12,7 +12,7 @@
 #                                       has been captured (if capturing) or
 #                                       that it's safe to proceed (passthrough
 #                                       / restore). Written by the CLI.
-#   3. /safeyolo/guest-init-per-run  — hwclock resync, agent.env sourcing,
+#   3. /safeyolo/guest-init-per-run  — clock correction, agent.env sourcing,
 #                                       agent_token refresh, instructions
 #                                       injection, remount ro, launch
 #                                       agent. (The agent binary and mise

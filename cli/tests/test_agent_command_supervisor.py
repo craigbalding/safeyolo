@@ -230,21 +230,19 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
             "# All per-run setup is complete."
         )
     ]
+    owner_fragment = f"GUEST_HELPER={shlex.quote(str(artifact))}\n" + owner_fragment
     owner_fragment = owner_fragment.replace(
         "COMMAND_SUPERVISOR_STATE=/home/agent/.safeyolo-command-supervisor.json",
         f"COMMAND_SUPERVISOR_STATE={state_path}",
     ).replace(
         "COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop",
         f"COMMAND_SUPERVISOR_STOP={stop_path}",
-    ).replace(
-        "COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/safeyolo-guest",
-        f"COMMAND_SUPERVISOR_SCRIPT={artifact}",
     )
     owner_fragment = owner_fragment.replace(
-        "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise",
+        "exec '$GUEST_HELPER' supervise",
         "export SAFEYOLO_COMMAND_SUPERVISOR_STATE='$COMMAND_SUPERVISOR_STATE'; "
         "export SAFEYOLO_COMMAND_SUPERVISOR_STOP='$COMMAND_SUPERVISOR_STOP'; "
-        "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise",
+        "exec '$GUEST_HELPER' supervise",
     )
     # The test already runs as the guest agent uid; production PID 1 uses
     # `su agent` because it starts as root.
@@ -325,7 +323,7 @@ def test_guest_supervisor_retains_root_transition_caps_only_on_gvisor():
         Path(__file__).resolve().parents[1]
         / "src/safeyolo/guest-init-per-run.sh"
     ).read_text()
-    gvisor_start = source.index("*-gvisor)")
+    gvisor_start = source.index("*-gvisor)", source.index("start_command_supervisor_if_needed()"))
     gvisor_end = source.index(";;", gvisor_start)
     hardware_start = source.index("*)", gvisor_end)
     hardware_end = source.index(";;", hardware_start)

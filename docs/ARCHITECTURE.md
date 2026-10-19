@@ -67,6 +67,48 @@ and a read-only configuration share.
 See the [macOS microVM architecture](microvm-architecture.md) and
 [historical Linux port design](linux-port-design.md) for platform design context.
 
+### Guest wall time
+
+On macOS, guest init runs the native guest helper's `clock-sync` operation
+before agent hooks and commands. The helper reads the virtual real-time clock
+(RTC) at `/sys/class/rtc/rtc0/since_epoch`. It checks that the RTC advances
+across two reads before using the sample. The initial check waits 1.1 seconds
+for an RTC tick. A failed check reports the failure and lets startup continue.
+A guest-root child repeats the check, with five seconds between attempts,
+throughout the VZ session. Linux/gVisor keeps its existing host-tracked clock;
+it starts no clock correction child and receives no host clock capability.
+
+The helper steps the guest wall clock forward or backward when the measured
+difference exceeds one second. The RTC reports whole seconds. The helper checks
+the result and reports a failure if the remaining difference exceeds two seconds.
+Host wall time remains the reference; this is not an independent UTC guarantee.
+TLS certificate verification stays enabled. Clock repair uses no external time
+endpoint and does not depend on cron.
+
+Clock corrections, failures and recovery appear in the existing guest boot or
+console log with the prefix `[guest-clock]`. The current result is also available
+in `/run/safeyolo/clock.json` inside the guest. It includes the source, measured
+offset when available, failure reason and last successful correction time.
+A frozen or unavailable RTC and a denied guest clock adjustment are failures.
+The periodic check retries and reports recovery when the source or permission
+returns. Repeated identical failures do not fill the console log. Guest-root
+processes can still alter guest clocks and diagnostic files. Host audit
+timestamps remain authoritative.
+
+Install the updated guest command assets through the normal package and guest
+update path. Stop and start each existing VZ agent to stage the helper and init
+scripts. A running guest does not acquire the new child until restart. The
+default VZ kernel already exposes the RTC, so this change needs no rootfs
+rebuild. A custom kernel must expose `rtc0` through sysfs. Recreate any manually
+managed snapshot made before the update; its saved init script and helper
+remain old. Guest image publication and promotion retain their existing controls.
+
+Forward steps can skip wall-clock deadlines. Backward steps can repeat a
+wall-clock interval. Snapshot restore also rolls back guest state. Guest
+schedulers must define their own handling of these cases; clock correction
+does not promise exactly-once job execution. The combined clock and scheduler
+test remains part of [the guest scheduling issue](https://github.com/craigbalding/safeyolo/issues/774).
+
 ## Historical Python policy model
 
 All sections below, including policy, PDP, sensors,
