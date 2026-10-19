@@ -19,13 +19,15 @@ How it works
    allowed-flag set for the resolved command.
 4. Placeholder tokens (``$VAR``, ``<PATH>``, ``NAME``, ``PATH/TO/X``)
    and shell operators (``|``, ``&&``, ``\\``) are skipped.
+5. Keep the README quick start bound to the accepted onboarding commands
+   and its 150-word required-prose budget. Human review still checks whether
+   prerequisites or decisions have been hidden outside that section.
 
 Exit codes
 ----------
 
-    0  -- every safeyolo invocation in the docs resolves to a real command
-          and uses only real flags.
-    1  -- at least one invocation is invalid.
+    0  -- documented safeyolo commands/flags and the README quick start match.
+    1  -- a documented invocation or the README quick start has drifted.
     2  -- environment problem (cannot read native usage strings, etc.).
 """
 
@@ -54,6 +56,49 @@ INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 # stop parsing the rest of the line (typical: `safeyolo agent add NAME <PATH>`
 # where NAME and <PATH> are positional placeholders).
 _PLACEHOLDER_RE = re.compile(r"^(?:[A-Z_][A-Z0-9_]*|<[^>]+>|\$\w+|\{[^}]+\})$")
+
+# Exact installed journey: #1050 comment 6263430260, reused by #1053 B.
+# Change these only with a matching accepted journey, not a source-only claim.
+QUICK_START_COMMANDS = (
+    "curl --fail --location --proto '=https' --proto-redir '=https' "
+    "--output install-safeyolo.sh https://raw.githubusercontent.com/"
+    "craigbalding/safeyolo/45d8853a202c04c9f5f8ca772df410ae8ced1844/install.sh",
+    "bash install-safeyolo.sh --release "
+    "host-c5ce76019b6c997e282ab05cea0212b492e945d2 "
+    "--launch . --name first --harness claude --launcher tmux-window",
+)
+
+
+def _check_readme_quick_start() -> list[str]:
+    """Catch command/prose drift; this does not prove a runtime journey."""
+    readme = (REPO_ROOT / "README.md").read_text()
+    match = re.search(r"^## Quick start\n(.*?)(?=^## |\Z)", readme, re.M | re.S)
+    if match is None:
+        return ["#1053: README Quick start section is missing"]
+    commands: list[str] = []
+    prose: list[str] = []
+    in_fence = False
+    for line in match.group(0).splitlines():
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+        elif in_fence:
+            if line.strip():
+                commands.append(line.strip())
+        elif not line.startswith(">"):
+            prose.append(line)
+    problems = []
+    if commands != [*QUICK_START_COMMANDS, "cat index.html"]:
+        problems.append(
+            "#1053: Quick start must match #1050's two tested commands, "
+            "then the separate cat index.html verification; review added setup"
+        )
+    # Task/expected-output blockquotes are excluded. Count all other context,
+    # headings and instructions, with Markdown links rendered as their labels.
+    rendered = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", "\n".join(prose))
+    words = len(rendered.replace("#", "").replace("`", "").split())
+    if words > 150:
+        problems.append(f"#1053: Quick start required prose has {words} words (limit 150)")
+    return problems
 
 
 def _native_cli_surface() -> dict[str, set[str]]:
@@ -211,10 +256,13 @@ def main() -> int:
             if err:
                 problems.append((Path(doc_rel), lineno, line, err))
 
+    for err in _check_readme_quick_start():
+        problems.append((Path("README.md"), 1, "## Quick start", err))
+
     if problems:
         print(
-            "check-doc-cli-flags: user-facing docs reference CLI surface that "
-            "does not exist:",
+            "check-doc-cli-flags: documented commands or the README quick start "
+            "have drifted:",
             file=sys.stderr,
         )
         for doc, lineno, line, err in problems:

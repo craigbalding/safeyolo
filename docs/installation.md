@@ -8,10 +8,17 @@ an inspect and approval walkthrough, use the [operator guide](operator-guide.md)
 Use [operator communication](coord-operations.md) for scripted sends,
 draft-safe chat and room/harness-event observation.
 
+For the tested Ubuntu AMD64 two-command route, use the [README quick
+start](../README.md#quick-start). Everything below is optional reference:
+installation alternatives, earlier bundles, host preparation, builds and recovery.
+The [tested scope](#tested-onboarding-scope) separates installed proof from
+current-source capabilities and remaining platform work.
+
 ## Install and start
 
-On supported Ubuntu or Apple Silicon macOS, use your ordinary host account.
-Download a production archive for your host from the published
+This manual alternative retains the earlier `host-7a38` bundle instructions.
+Use your ordinary host account on Ubuntu 24.04 or Apple Silicon macOS 26.0
+or later. Download a production archive for your host from that earlier
 [release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
 source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use this explicit release;
@@ -25,7 +32,7 @@ minimum glibc or macOS version. A production bundle contains release Rust
 executables; a debug bundle contains dev executables. The macOS development
 helper has the `get-task-allow`
 entitlement for authorized debugging.
-The published archives require glibc 2.39 on Linux and macOS 26.0 on Apple Silicon.
+Those archives require glibc 2.39 on Linux and macOS 26.0 on Apple Silicon.
 Unpacking and installation need Bash, tar and
 the host's SHA-256 tool. They need no compiler, Python, wheel, virtual
 environment or uv tool installation.
@@ -33,7 +40,7 @@ environment or uv tool installation.
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
 For this linked release, prepare the [host runtime](#guest-prerequisites) before installation.
-New source bundles use [automatic Linux host preparation](#linux-host-preparation-in-new-source-bundles).
+The tested newer release and current source use [automatic Linux host preparation](#linux-host-preparation-in-new-source-bundles).
 For an optional archive integrity check, save `SHA256SUMS` beside the archive
 and run `sha256sum --ignore-missing --check SHA256SUMS` on Ubuntu, or
 `shasum -a 256 --ignore-missing --check SHA256SUMS` on macOS. An `OK` result
@@ -116,59 +123,99 @@ safeyolo stop
 
 ## Public bootstrap availability
 
-The source producer also writes `install-safeyolo.sh` beside the host archive.
-An authorized host publication must include that file and the release's
-`SHA256SUMS`. The bootstrap is bound to that host release. The currently
-published host release does not include this bootstrap asset.
+The [README quick start](../README.md#quick-start) uses bootstrap source
+`45d8853a202c04c9f5f8ca772df410ae8ced1844` and the published production host
+`host-c5ce76019b6c997e282ab05cea0212b492e945d2`. These are the exact tested
+identities, rather than GitHub's Latest selector or an untested source build.
+The bootstrap downloads the host package and compatible public guest, prepares
+missing Linux helpers and invokes the installed `agent launch` operation.
+Current source retains this composition; a source capability alone does not
+prove a clean installed journey on every platform.
 
-For Ubuntu AMD64, Ubuntu ARM64 and Apple Silicon macOS, the source bootstrap
-supports the two commands below. Run them in your ordinary host terminal,
-from the workspace you want the agent to read and change, only when the
-selected public release includes the current `install-safeyolo.sh`, host
-preparation, bundled runtime and `agent launch` operation. Bash, curl, tar
-and the host's SHA-256 tool must be
-available. Stop if the download fails. Do not run a previous file left at that
-name. The installer downloads the production host package and compatible
-guest, then creates the default instance at `$HOME/.safeyolo`, unless
-`SAFEYOLO_CONFIG_DIR` or `SAFEYOLO_HOME` selects another root. It exposes
-`safeyolo` in `$HOME/.local/bin` or `/usr/local/bin` when that directory is
-already on PATH. It can request sudo for the command entry and Linux guest
-ownership. Existing unrelated commands are preserved.
+The default instance is `$HOME/.safeyolo`. `SAFEYOLO_CONFIG_DIR` or
+`SAFEYOLO_HOME` can select another root. The installer exposes `safeyolo` in
+`$HOME/.local/bin` or `/usr/local/bin` when that directory is already on PATH.
+It preserves unrelated commands and reports collisions. It can request sudo
+for required host preparation, the command entry and Linux guest ownership.
+Instance files remain owned by your account.
 
-The installer explains Linux package, mapping and AppArmor changes before
-requesting consent. It then invokes the installed `agent launch` operation
-in this terminal. Launch asks before workspace setup and optional copying of
-host Claude authentication and settings. Claude and guest commands can read
-copied authentication. Have a Claude account ready; decline the copy to use
-Claude's `/login` instead. SafeYolo's trusted approval choices retain their
-displayed scope. In tmux, press Ctrl-b then d to return to those choices.
+Put installer options before `--launch`. Arguments after it go to the existing
+`agent launch` command. Omitting `--launch` installs only. `--yes` accepts
+listed host changes; setup, workspace access and optional authentication copying
+still require their own host choices. The command entry works in the same
+terminal after installation. A failed download must stop the procedure: do
+not run a previous file left at the download name.
 
 Trust comes from HTTPS delivery by the official
 `github.com/craigbalding/safeyolo` publisher. A checksum from the same release
 checks integrity; it does not independently authenticate that publisher.
 The bootstrap does not use a remote shell pipe or a package-manager install.
+The release producer also writes a release-bound `install-safeyolo.sh` beside
+the host archive and `SHA256SUMS`; the earlier `host-7a38` release lacks that
+bootstrap asset.
 
-```sh
-curl --fail --location --proto '=https' --proto-redir '=https' --output install-safeyolo.sh https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
-bash install-safeyolo.sh --launch
-```
+### Tested onboarding scope
 
-Put installer options before `--launch`. Arguments after it go to the existing
-`agent launch` command, for example `--launch . --name work --harness claude`.
-Omitting `--launch` installs only. `--yes` accepts host preparation; launch
-still asks for setup, workspace access and optional authentication copying.
-The command entry is usable immediately after installation.
+The [independent connected journey](https://github.com/craigbalding/safeyolo/issues/1050#issuecomment-6263430260)
+supports the README commands and task on fresh Ubuntu 24.04.4 AMD64, ordinary
+UID 1000, with an existing authorized Claude account in its normal host
+locations. Bash, curl, tar, Git, system Python, tmux and suitable subordinate ranges
+were present. Product/runtime/vendor caches, helpers and build tools were absent;
+SafeYolo prepared missing helpers and its runtime. No new-account sign-in is
+proved. Account transport and the observer were test preparation, not new user
+commands. Their preparation is not an exhaustive shell-command count.
 
-This composition is source functionality. Bootstrap publication, clean-host
-first-agent results and complete cold timings remain pending. The two entered
-commands do not imply two interactions or a measured 15-second result.
-The explicit bundle path in [install and start](#install-and-start) remains
-available until a release contains the complete route.
+The selected guest was `guest-2026-10-16.1082`, `linux/amd64`, compatibility
+`v1`. The linked result records all package and guest identities. One task
+produced matching Write/result events and a 627-byte host `index.html`.
+One task-free repeat returned to the same live runtime, launch and conversation
+in 3.086 seconds. This is selected-state evidence, not a whole-home guarantee.
+Earlier release, upgrade, refusal and retry proof retains its original scope.
+
+Setup explains host changes before privilege and asks before workspace access
+or selected authentication/settings copying. Claude and guest tools can read
+copied authentication. Declining setup leaves saved agents/services unchanged.
+Declining authentication copy uses Claude's supported `/login` route, without
+proving a fresh sign-in here. Claude's own tool prompts are disabled;
+SafeYolo's policy still applies.
+
+The same-terminal host controls remain available after Ctrl-b then d in tmux.
+Use `a`, choose a displayed request number, read its effect and enter `approve`,
+`reject`, or Enter to leave it unchanged. Enter backs out of request review;
+Enter at the host controls returns to Claude. `q` exits the client and retains
+state. Stop agents separately when finished. See [agent launchers](agent-launchers.md)
+for other supported terminals and [the operator guide](operator-guide.md) for
+explicit inspection/recovery controls. Credential approval persistently allows
+the selected fingerprints to the displayed destination for all current and
+future agents in this instance, subject to network policy. The tested
+destination was `api.anthropic.com`. Network approval instead grants reusable
+access for the selected agent to the displayed host and port. Reject or leave
+a request unchanged to keep it blocked.
+
+The run records two cold product commands, 15 control interactions and seven
+material decisions. The 4725 displayed words include logs, repeated screens
+and observer/operator rework; they do not measure required reading. Read the
+host's consent and approval effects before deciding. A required reference
+detour or equally long wizard would fail #1053’s short-path outcome.
+
+Cold product start to task Enter took 574.618 seconds; observed success took
+585.095 seconds. These include operator handling and waits. Disjoint
+human/provider/observer waits and measured reading remain unknown.
+The 15-second goal is unmet, with no decision to accept or defer it.
+A short README and warm timing do not complete that goal.
+
+Clean Ubuntu ARM64 first-task onboarding remains unproved: the unknown
+native-start failure and public-route limits remain open under #1050.
+Clean Apple Silicon macOS onboarding also remains open. Accepted prepared
+platform/release results retain their limits. The published ARM64 repair at
+`8405786bb9d6f68d972cb3a1dd29cbfad6b1efcd` and current-source capabilities do
+not establish those clean-platform journeys. #1050/#237 retain remaining
+platform/accounting/timing work; #1053 supplies the short tested documentation.
 
 ## Repeat and retry with the current installer
 
-These behaviors are in the current source installer. The published release
-linked above still requires a fresh root.
+The tested `host-c5ce7601` route and current source retain these behaviors.
+The earlier `host-7a38` manual alternative still requires a fresh root.
 
 A matching installation made with the current installer can be repeated.
 Repeat retains its host, policy, credentials, identity, agent state and selected
@@ -299,23 +346,64 @@ it prevents discovery; the new instance files remain available for recovery.
 
 ## Guest prerequisites
 
-For the linked `host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796` release,
-prepare the platform inputs below before creating an agent. That package
-does not run a Python bootstrap or provision the host operating system. On
-Ubuntu, the host administrator supplies runsc, uidmap, acl, iproute2 and
-util-linux; subordinate user ID (UID) and group ID (GID) ranges must
-cover 100000–165535. Where AppArmor restricts user namespaces, the host
-administrator installs the [retained runsc profile](../cli/src/safeyolo/templates/apparmor-safeyolo-runsc).
-It permits user namespaces for runsc at `/usr/local/bin/runsc`. If your runtime
-is elsewhere, adjust that executable path in the profile before loading it.
-From a host directory where you can save the profile, download the version
-shipped with the published host release, then copy and load it. The installer does not perform this host administration:
+The tested release prepares its missing Linux prerequisites automatically.
+The manual instructions below serve the earlier bundle and prepared/offline
+alternatives.
+
+### Manual Ubuntu preparation for the earlier bundle
+
+The following instructions apply only to the earlier `host-7a38` manual
+alternative, not the README quick start. Use your ordinary Ubuntu host account.
+
+On Ubuntu 24.04, these commands install gVisor and its host tools, add the signed
+gVisor package repository, and permit your account's required user namespaces.
+They need host sudo and change package sources, your subordinate user/group
+ID ranges and the AppArmor profile. That earlier installer does not perform this setup.
+First read your account identity and both allocation files:
 
 ```sh
+id
+cat /etc/subuid
+cat /etc/subgid
+```
+
+Each row is `account:first-ID:count`; its last ID is `first-ID + count - 1`.
+Your account's name or numeric user ID from `id` needs a range covering
+100000–165535 in both files, for example `your-login:100000:65536`.
+If another account owns any part of that range, stop: that earlier release cannot
+select a different range. Use a host where the range is available;
+do not overlap another account's allocation. If your account already has a
+covering range, keep it. Only when a file lacks your range and the range is free,
+run its corresponding command:
+
+```sh
+sudo usermod --add-subuids 100000-165535 "$USER"
+sudo usermod --add-subgids 100000-165535 "$USER"
+```
+
+Then install the host tools and gVisor, and load the namespace profile:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates gnupg uidmap acl iproute2 util-linux apparmor-utils
+curl -fL -o gvisor-archive.key https://gvisor.dev/archive.key
+sudo gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg gvisor-archive.key
+echo 'deb [signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main' | sudo tee /etc/apt/sources.list.d/gvisor.list
+sudo apt-get update
+sudo apt-get install -y runsc
 curl -fL -o apparmor-safeyolo-runsc https://raw.githubusercontent.com/craigbalding/safeyolo/7a38dff14e7e4eacb4095da732ffe06d7c7c5796/cli/src/safeyolo/templates/apparmor-safeyolo-runsc
-sudo install -m 0644 apparmor-safeyolo-runsc /etc/apparmor.d/safeyolo-runsc
+sed 's|/usr/local/bin/runsc|/usr/bin/runsc|' apparmor-safeyolo-runsc > safeyolo-runsc
+sudo install -m 0644 safeyolo-runsc /etc/apparmor.d/safeyolo-runsc
 sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
 ```
+
+### Prepared guests and offline inputs
+
+The earlier `host-7a38` bundle requires the manual preparation above. Its
+[retained runsc profile](../cli/src/safeyolo/templates/apparmor-safeyolo-runsc)
+permits user namespaces for `/usr/local/bin/runsc`. For another runtime path,
+adjust the profile before loading it; the Ubuntu package example above uses
+`/usr/bin/runsc`.
 
 For the Kernel-based Virtual Machine (KVM) platform, the host administrator
 grants the operator and subordinate UID 100000 read/write access to `/dev/kvm`.
@@ -351,11 +439,11 @@ inputs. It does not build a guest or fall back after a failed pull.
 
 ## Linux host preparation in new source bundles
 
-New Linux source bundles include the complete gVisor `release-20261005.0`
-payload for the bundle's architecture. The installer checks its checksums,
+The tested newer Linux release and current source bundles include the complete
+gVisor `release-20261005.0` payload for the bundle's architecture. The installer checks its checksums,
 architecture, executable files and version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
-The older published release linked above still needs its manual prerequisites.
+The earlier `host-7a38` manual alternative still needs its manual prerequisites.
 
 The host-package producer downloads and verifies the pinned upstream runtime.
 The public installer downloads the host archive with that runtime already
