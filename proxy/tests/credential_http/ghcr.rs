@@ -334,11 +334,17 @@ async fn repeated_public_pull_reuse_concurrency_replacement_and_restart() {
             })
             .collect();
         assert_eq!(allowed.len(), 8);
-        assert!(
-            allowed
-                .iter()
-                .all(|row| row["audit"][0]["details"]["observed_anonymous_ghcr_pull"] == true)
-        );
+        let canonical: Vec<Value> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|row: &Value| row["event"] == "security.credential_guard")
+            .collect();
+        assert!(allowed.iter().all(|observation| {
+            canonical.iter().any(|row| {
+                row["request_id"] == observation["request_id"]
+                    && row["details"]["observed_anonymous_ghcr_pull"] == true
+            })
+        }));
         // Restart over the same data/policy retains no token approval or cache.
         let proxy = Proxy::start(fixture.config.clone()).await.unwrap();
         let auth = format!("Bearer {second}");
@@ -1215,8 +1221,8 @@ async fn live_public_manifest_and_small_blob() {
     let observed = rows
         .iter()
         .filter(|row| {
-            row["event"] == "security.credential_guard.evaluated"
-                && row["audit"][0]["details"]["observed_anonymous_ghcr_pull"] == true
+            row["event"] == "security.credential_guard"
+                && row["details"]["observed_anonymous_ghcr_pull"] == true
         })
         .count();
     assert!(

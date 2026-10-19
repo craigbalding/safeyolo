@@ -676,10 +676,10 @@ async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
         .unwrap();
     assert_eq!(guard_event["details"]["outcome"], "allowed");
     assert_eq!(
-        guard_event["evaluations"][0]["finding"]["rule"],
+        guard_event["details"]["evaluations"][0]["finding"]["rule"],
         "synthetic"
     );
-    assert_eq!(guard_event["evaluations"][0]["effect"], "allow");
+    assert_eq!(guard_event["details"]["evaluations"][0]["effect"], "allow");
 
     proxy.shutdown().await;
     origin_task.abort();
@@ -789,10 +789,10 @@ async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_bod
         .unwrap();
     assert_eq!(guard_event["details"]["outcome"], "allowed");
     assert_eq!(
-        guard_event["evaluations"][0]["finding"]["rule"],
+        guard_event["details"]["evaluations"][0]["finding"]["rule"],
         "signed-target"
     );
-    assert_eq!(guard_event["evaluations"][0]["effect"], "allow");
+    assert_eq!(guard_event["details"]["evaluations"][0]["effect"], "allow");
 
     proxy.shutdown().await;
     origin_task.abort();
@@ -945,25 +945,25 @@ async fn native_guard_classifies_unknown_bearers_and_keeps_other_headers_uninspe
     assert_eq!(guard_events[0]["details"]["outcome"], "allowed");
     assert_eq!(guard_events[1]["details"]["outcome"], "blocked");
     assert_eq!(
-        guard_events[1]["evaluations"][0]["finding"]["rule"],
+        guard_events[1]["details"]["evaluations"][0]["finding"]["rule"],
         "unknown_secret"
     );
     assert_eq!(
-        guard_events[1]["evaluations"][0]["finding"]["credential_type"],
+        guard_events[1]["details"]["evaluations"][0]["finding"]["credential_type"],
         "unknown"
     );
     assert_eq!(
-        guard_events[1]["evaluations"][0]["effect"],
+        guard_events[1]["details"]["evaluations"][0]["effect"],
         "require_approval"
     );
     assert_eq!(guard_events[2]["details"]["outcome"], "blocked");
     assert_eq!(
-        guard_events[2]["evaluations"][0]["finding"]["rule"],
+        guard_events[2]["details"]["evaluations"][0]["finding"]["rule"],
         "unknown_secret"
     );
     assert_eq!(guard_events[3]["details"]["outcome"], "no_detection");
     assert!(
-        guard_events[3]["evaluations"]
+        guard_events[3]["details"]["evaluations"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -1207,8 +1207,14 @@ async fn native_guard_live_budget_counts_credential_and_network_charges() {
         .collect::<Vec<_>>();
     assert_eq!(guard_events.len(), 1);
     assert_eq!(guard_events[0]["request_id"], first_id);
-    assert_eq!(guard_events[0]["evaluations"][0]["effect"], "allow");
-    assert_eq!(guard_events[0]["evaluations"][0]["budget_remaining"], 0);
+    assert_eq!(
+        guard_events[0]["details"]["evaluations"][0]["effect"],
+        "allow"
+    );
+    assert_eq!(
+        guard_events[0]["details"]["evaluations"][0]["budget_remaining"],
+        0
+    );
     let network_events = events
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -2671,7 +2677,7 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         .rfind(|event| event["event"] == "security.credential_guard.evaluated")
         .unwrap();
     assert_eq!(
-        last_guard["evaluations"][0]["finding"]["rule"],
+        last_guard["details"]["evaluations"][0]["finding"]["rule"],
         "unknown_secret"
     );
 
@@ -3292,7 +3298,7 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
     assert_ne!(fingerprints[4], fingerprints[5]);
     assert_eq!(fingerprints[0], fingerprints[5]);
     assert_eq!(
-        guard_events[0]["evaluations"][0]["finding"]["header"],
+        guard_events[0]["details"]["evaluations"][0]["finding"]["header"],
         "authorization"
     );
     let forbidden_event = guard_events
@@ -3300,11 +3306,11 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
         .find(|event| event["request_id"] == forbidden_request_id)
         .unwrap();
     assert_eq!(
-        forbidden_event["evaluations"][0]["finding"]["header"],
+        forbidden_event["details"]["evaluations"][0]["finding"]["header"],
         "Authorization"
     );
     assert_eq!(
-        guard_events[5]["evaluations"][0]["finding"]["rule"],
+        guard_events[5]["details"]["evaluations"][0]["finding"]["rule"],
         "synthetic-reloaded"
     );
     assert_eq!(guard_events[0]["details"]["trace"][0]["state"], "evaluated");
@@ -3907,18 +3913,6 @@ async fn native_guard_hmac_exception_survives_reload_and_rejects_other_credentia
     assert_eq!(other.status(), 428);
     let _ = other.collect().await.unwrap();
     assert_eq!(seen.lock().unwrap().len(), 2);
-    let reloaded = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
-    let guard_events = reloaded
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|event| event["event"] == "security.credential_guard.evaluated")
-        .collect::<Vec<_>>();
-    assert_eq!(guard_events.len(), 3);
-    assert_eq!(
-        guard_events[0]["evaluations"][0]["finding"]["fingerprint"],
-        guard_events[1]["evaluations"][0]["finding"]["fingerprint"]
-    );
-    assert_eq!(guard_events[2]["details"]["outcome"], "blocked");
     assert_eq!(
         stats(&directory).await["credential-guard"]["violations_total"],
         1
@@ -3928,6 +3922,18 @@ async fn native_guard_hmac_exception_survives_reload_and_rejects_other_credentia
     let _ = connection_task.await;
     proxy.shutdown().await;
     origin_task.abort();
+    let reloaded = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    let guard_events = reloaded
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "security.credential_guard.evaluated")
+        .collect::<Vec<_>>();
+    assert_eq!(guard_events.len(), 3);
+    assert_eq!(
+        guard_events[0]["details"]["evaluations"][0]["finding"]["fingerprint"],
+        guard_events[1]["details"]["evaluations"][0]["finding"]["fingerprint"]
+    );
+    assert_eq!(guard_events[2]["details"]["outcome"], "blocked");
 }
 
 #[tokio::test]
