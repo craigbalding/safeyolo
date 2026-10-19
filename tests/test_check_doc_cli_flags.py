@@ -27,8 +27,14 @@ mod = _load_module()
 
 @pytest.mark.parametrize(("change", "expected"), [
     ("unchanged", None),
-    ("extra-command", "two tested commands"),
-    ("changed-release", "two tested commands"),
+    ("equivalent-options", None),
+    ("explicit-defaults", None),
+    ("extra-command", "two setup commands"),
+    ("shell-chain", "without shell control flow"),
+    ("changed-source", "official public installer"),
+    ("no-download-failure", "curl's fail"),
+    ("missing-launch", "with --launch"),
+    ("unsupported-launch", "unknown flag `--invented`"),
     ("missing-section", "section is missing"),
     ("extra-prose", "limit 150"),
 ])
@@ -36,10 +42,23 @@ def test_readme_quick_start_drift_runs_in_existing_command_check(
     tmp_path, monkeypatch, capsys, change, expected,
 ):
     readme = (REPO_ROOT / "README.md").read_text()
-    if change == "extra-command":
-        readme = readme.replace("```sh\ncurl --fail", "```sh\nmkdir first\ncurl --fail", 1)
-    elif change == "changed-release":
-        readme = readme.replace("host-c5ce76019b6c997e282ab05cea0212b492e945d2", "host-" + "0" * 40)
+    if change == "equivalent-options":
+        readme = readme.replace("curl -fLO", "curl --location --remote-name --fail", 1)
+        readme = readme.replace("bash install-safeyolo.sh", 'bash "install-safeyolo.sh"', 1)
+    elif change == "explicit-defaults":
+        readme = readme.replace("--launch\n", "--launch . --harness claude --launcher tmux-window\n", 1)
+    elif change == "extra-command":
+        readme = readme.replace("```sh\ncurl ", "```sh\nmkdir first\ncurl ", 1)
+    elif change == "shell-chain":
+        readme = readme.replace("--launch\n", "--launch && mkdir first\n", 1)
+    elif change == "changed-source":
+        readme = readme.replace(mod.QUICK_START_INSTALLER_URL, "https://example.com/install-safeyolo.sh", 1)
+    elif change == "no-download-failure":
+        readme = readme.replace("curl -fLO", "curl -LO", 1)
+    elif change == "missing-launch":
+        readme = readme.replace(" --launch\n", "\n", 1)
+    elif change == "unsupported-launch":
+        readme = readme.replace("--launch\n", "--launch --invented\n", 1)
     elif change == "missing-section":
         readme = readme.replace("## Quick start", "## Setup", 1)
     elif change == "extra-prose":
@@ -58,6 +77,8 @@ def test_readme_quick_start_drift_runs_in_existing_command_check(
 def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
     surface = mod._native_cli_surface()
     for invocation in (
+        "safeyolo agent launch",
+        "safeyolo agent launch PATH --harness claude --launcher tmux-window",
         "safeyolo agent create marker --workspace PATH --memory 640",
         "safeyolo agent start marker --foreground",
         "safeyolo agent shell --persistent marker -c bash",
@@ -78,6 +99,7 @@ def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
         assert mod._validate_line(invocation, surface) is None
     assert "--root" in surface[""]
     assert mod._validate_line("safeyolo agent start marker --invented", surface)
+    assert mod._validate_line("safeyolo agent launch --invented", surface)
     assert mod._validate_line("safeyolo agent up marker", surface)
     assert mod._validate_line("safeyolo coord mattermost run --invented", surface)
     assert mod._validate_line("safeyolo lab --invented", surface)

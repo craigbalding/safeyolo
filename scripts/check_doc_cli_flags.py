@@ -19,9 +19,9 @@ How it works
    allowed-flag set for the resolved command.
 4. Placeholder tokens (``$VAR``, ``<PATH>``, ``NAME``, ``PATH/TO/X``)
    and shell operators (``|``, ``&&``, ``\\``) are skipped.
-5. Keep the README quick start bound to the accepted onboarding commands
-   and its 150-word required-prose budget. Human review still checks whether
-   prerequisites or decisions have been hidden outside that section.
+5. Guard the README's two-command public entry, supported launch options and
+   150-word required-prose budget. Human review checks the complete reader
+   path, including prerequisites and decisions outside that section.
 
 Exit codes
 ----------
@@ -57,19 +57,48 @@ INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 # where NAME and <PATH> are positional placeholders).
 _PLACEHOLDER_RE = re.compile(r"^(?:[A-Z_][A-Z0-9_]*|<[^>]+>|\$\w+|\{[^}]+\})$")
 
-# Exact installed journey: #1050 comment 6263430260, reused by #1053 B.
-# Change these only with a matching accepted journey, not a source-only claim.
-QUICK_START_COMMANDS = (
-    "curl --fail --location --proto '=https' --proto-redir '=https' "
-    "--output install-safeyolo.sh https://raw.githubusercontent.com/"
-    "craigbalding/safeyolo/45d8853a202c04c9f5f8ca772df410ae8ced1844/install.sh",
-    "bash install-safeyolo.sh --release "
-    "host-c5ce76019b6c997e282ab05cea0212b492e945d2 "
-    "--launch . --name first --harness claude --launcher tmux-window",
+QUICK_START_INSTALLER_URL = (
+    "https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh"
 )
 
 
-def _check_readme_quick_start() -> list[str]:
+def _check_quick_start_commands(commands: list[str], surface: dict[str, set[str]]) -> list[str]:
+    """Check the public interface, not qualification fixture identities."""
+    if len(commands) != 3:
+        return ["#1053: Quick start needs two setup commands, then the separate cat index.html verification; review added setup"]
+    try:
+        download, launch, verify = [shlex.split(line) for line in commands]
+    except ValueError as exc:
+        return [f"#1053: invalid quick-start shell quoting: {exc}"]
+    problems = []
+    if re.search(r"[;&|`<>]|\$\(", "\n".join(commands)):
+        problems.append("#1053: Quick start commands must run individually, without shell control flow")
+    # Accept grouped/individual short options and their long spellings.
+    curl_options = set()
+    for option in download[1:-1]:
+        option = {"--fail": "f", "--location": "L", "--remote-name": "O"}.get(option, option)
+        if option.startswith("-"):
+            curl_options.update(option[1:])
+        else:
+            curl_options.add(option)
+    if (
+        download[:1] != ["curl"]
+        or download[-1:] != [QUICK_START_INSTALLER_URL]
+        or curl_options != {"f", "L", "O"}
+    ):
+        problems.append("#1053: download the official public installer with curl's fail, location and remote-name options")
+    if launch[:3] != ["bash", "install-safeyolo.sh", "--launch"]:
+        problems.append("#1053: run the downloaded installer with --launch")
+    else:
+        error = _validate_line("safeyolo agent launch " + shlex.join(launch[3:]), surface)
+        if error:
+            problems.append(f"#1053: installer launch arguments: {error}")
+    if verify != ["cat", "index.html"]:
+        problems.append("#1053: keep cat index.html as the separate host-file verification")
+    return problems
+
+
+def _check_readme_quick_start(surface: dict[str, set[str]]) -> list[str]:
     """Catch command/prose drift; this does not prove a runtime journey."""
     readme = (REPO_ROOT / "README.md").read_text()
     match = re.search(r"^## Quick start\n(.*?)(?=^## |\Z)", readme, re.M | re.S)
@@ -86,12 +115,7 @@ def _check_readme_quick_start() -> list[str]:
                 commands.append(line.strip())
         elif not line.startswith(">"):
             prose.append(line)
-    problems = []
-    if commands != [*QUICK_START_COMMANDS, "cat index.html"]:
-        problems.append(
-            "#1053: Quick start must match #1050's two tested commands, "
-            "then the separate cat index.html verification; review added setup"
-        )
+    problems = _check_quick_start_commands(commands, surface)
     # Task/expected-output blockquotes are excluded. Count all other context,
     # headings and instructions, with Markdown links rendered as their labels.
     rendered = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", "\n".join(prose))
@@ -109,7 +133,7 @@ def _native_cli_surface() -> dict[str, set[str]]:
     """
     surface: dict[str, set[str]] = {"": set()}
     for relative in (
-        "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/demo.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
+        "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/host_launch.rs", "proxy/src/demo.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
         "proxy/src/bin/safeyolo/credential_commands.rs",
         "proxy/src/coord_rooms.rs", "proxy/src/coord_operator.rs", "proxy/src/mattermost.rs",
         "proxy/src/dispatch.rs", "proxy/src/dispatch/request.rs",
@@ -256,7 +280,7 @@ def main() -> int:
             if err:
                 problems.append((Path(doc_rel), lineno, line, err))
 
-    for err in _check_readme_quick_start():
+    for err in _check_readme_quick_start(surface):
         problems.append((Path("README.md"), 1, "## Quick start", err))
 
     if problems:

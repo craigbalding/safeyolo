@@ -21,9 +21,9 @@ Use your ordinary host account on Ubuntu 24.04 or Apple Silicon macOS 26.0
 or later. Download a production archive for your host from that earlier
 [release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
 It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
-source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use this explicit release;
-GitHub's Latest selector still points to an earlier product. This guide also
-covers newer source builds. Check the source commit in your bundle: newer
+source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use that explicit release
+for this manual alternative. The README uses the current host release instead.
+This guide also covers newer source builds. Check the source commit in your bundle: newer
 source features are absent from the linked older release.
 Source builds are an [alternative](#build-a-bundle).
 Existing wheel downloads belong to the earlier Python CLI.
@@ -123,10 +123,13 @@ safeyolo stop
 
 ## Public bootstrap availability
 
-The [README quick start](../README.md#quick-start) uses bootstrap source
-`45d8853a202c04c9f5f8ca772df410ae8ced1844` and the published production host
-`host-c5ce76019b6c997e282ab05cea0212b492e945d2`. These are the exact tested
-identities, rather than GitHub's Latest selector or an untested source build.
+The [README quick start](../README.md#quick-start) downloads the official
+release's `install-safeyolo.sh` through GitHub's Latest link. On 19 October 2026,
+Latest selects the published production host
+`host-c5ce76019b6c997e282ab05cea0212b492e945d2`. The downloaded installer binds
+that host release internally; users do not need to type its source commit.
+The [publication correction](https://github.com/craigbalding/safeyolo/issues/1053#issuecomment-6264370042)
+records the channel change and verified installer identity.
 The bootstrap downloads the host package and compatible public guest, prepares
 missing Linux helpers and invokes the installed `agent launch` operation.
 Current source retains this composition; a source capability alone does not
@@ -157,13 +160,21 @@ bootstrap asset.
 ### Tested onboarding scope
 
 The [independent connected journey](https://github.com/craigbalding/safeyolo/issues/1050#issuecomment-6263430260)
-supports the README commands and task on fresh Ubuntu 24.04.4 AMD64, ordinary
+used bootstrap source `45d8853a202c04c9f5f8ca772df410ae8ced1844`, explicit host
+release `host-c5ce76019b6c997e282ab05cea0212b492e945d2`, workspace `.`, name
+`first`, harness `claude` and launcher `tmux-window`. It completed the first task
+on fresh Ubuntu 24.04.4 AMD64, ordinary
 UID 1000, with an existing authorized Claude account in its normal host
 locations. Bash, curl, tar, Git, system Python, tmux and suitable subordinate ranges
 were present. Product/runtime/vendor caches, helpers and build tools were absent;
 SafeYolo prepared missing helpers and its runtime. No new-account sign-in is
 proved. Account transport and the observer were test preparation, not new user
 commands. Their preparation is not an exhaustive shell-command count.
+
+The shorter README commands use the release-bound public installer and launch
+defaults: current directory, Claude, a workspace-derived name and, in a fresh
+instance, `tmux-window`. Entry and default checks establish equivalence to the
+accepted operations; they do not record another installed onboarding run.
 
 The selected guest was `guest-2026-10-16.1082`, `linux/amd64`, compatibility
 `v1`. The linked result records all package and guest identities. One task
