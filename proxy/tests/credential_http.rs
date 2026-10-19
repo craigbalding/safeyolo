@@ -536,6 +536,31 @@ fn response_header(response: &[u8], name: &str) -> String {
         .unwrap()
 }
 
+async fn credential_event(directory: &std::path::Path, request_id: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let text = match std::fs::read_to_string(directory.join("audit.jsonl")) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => panic!("canonical audit read failed: {error}"),
+            };
+            if let Some(event) = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .find(|event| {
+                    event["event"] == "security.credential_guard.evaluated"
+                        && event["request_id"] == request_id
+                })
+            {
+                return event;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("this request's canonical credential observation did not arrive")
+}
+
 fn single_credential_h1_request(port: u16, path: &str, credential: &str) -> Vec<u8> {
     format!(
         "GET http://127.0.0.1:{port}/{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n"
@@ -1272,12 +1297,11 @@ async fn native_parser_to_guard_invalid_utf8_keeps_known_and_unknown_bearers() {
         let response = raw_round_trip(&socket, &request).await;
         assert!(response.starts_with(b"HTTP/1.1 403"), "{path}");
         assert!(seen.lock().unwrap().is_empty(), "{path}");
-        let event = std::fs::read_to_string(directory.path().join("audit.jsonl"))
-            .unwrap()
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .rfind(|event| event["event"] == "security.credential_guard.evaluated")
-            .unwrap();
+        let event = credential_event(
+            directory.path(),
+            &response_header(&response, "x-safeyolo-request-id"),
+        )
+        .await;
         // Retain the historical parser inputs and known-rule result. The new
         // Bearer requirement also detects values that missed that rule.
         let rule = if row["detected"].as_bool().unwrap() {
@@ -2670,12 +2694,11 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         escaped_literal.starts_with(b"HTTP/1.1 403"),
         "{escaped_literal:?}"
     );
-    let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
-    let last_guard: Value = events
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .rfind(|event| event["event"] == "security.credential_guard.evaluated")
-        .unwrap();
+    let last_guard = credential_event(
+        directory.path(),
+        &response_header(&escaped_literal, "x-safeyolo-request-id"),
+    )
+    .await;
     assert_eq!(
         last_guard["details"]["evaluations"][0]["finding"]["rule"],
         "unknown_secret"
