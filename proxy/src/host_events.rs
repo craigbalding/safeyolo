@@ -1,10 +1,10 @@
 //! Best-effort host operation events in the shared SafeYolo JSONL audit log.
 
-use std::{fs::OpenOptions, io::Write, path::PathBuf};
+use std::{path::PathBuf, time::Duration};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::Error;
+use crate::{Error, audit};
 
 fn log_path() -> PathBuf {
     if let Ok(config) = crate::native_config::read(&crate::host_platform::config_path())
@@ -40,20 +40,21 @@ pub(crate) fn write(
 ) {
     let path = log_path();
     let result = (|| -> Result<(), Error> {
-        std::fs::create_dir_all(path.parent().ok_or("host event has no parent")?)?;
-        let mut value = json!({
-            "schema_version":1,
-            "ts":time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?,
-            "event":event,"kind":kind,"severity":"low",
-            "summary":summary,"agent":agent,"details":details
-        });
-        if let Some(addon) = addon {
-            value["addon"] = addon.into();
+        let kind = match kind {
+            "agent" => audit::Kind::Agent,
+            "traffic" => audit::Kind::Traffic,
+            _ => return Err("host event kind is invalid".into()),
+        };
+        let mut event = audit::Event::new(event, kind, audit::Severity::Low, summary);
+        event.agent = Some(agent.to_owned());
+        event.addon = addon.map(str::to_owned);
+        event.details = details.into();
+        let writer = audit::Writer::new(path, audit::Settings::from_env()?);
+        writer.emit(event)?;
+        // A short host command has no process-owned proxy shutdown to drain it.
+        if !writer.shutdown(Duration::from_secs(5))? {
+            return Err("host audit writer did not drain".into());
         }
-        let mut data = serde_json::to_vec(&value)?;
-        data.push(b'\n');
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        file.write_all(&data)?;
         Ok(())
     })();
     if let Err(error) = result {
