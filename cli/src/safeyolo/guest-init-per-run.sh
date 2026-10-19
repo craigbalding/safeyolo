@@ -57,7 +57,7 @@ ensure_pid1_nofile() {
 }
 
 # --------------------------------------------------------------------------
-# 0. Post-restore fixups (no-ops on cold boot)
+# 0. Initial clock check and restore fixups
 # --------------------------------------------------------------------------
 # VZ provides a guest-local RTC. The native helper checks that it advances
 # before using it. Linux/gVisor already follows the host clock and must not
@@ -71,7 +71,10 @@ case "$(uname -r)" in
     *-gvisor) ;;
     *)
         "$GUEST_HELPER" clock-sync >/dev/console 2>&1 || true
-        setsid nohup "$GUEST_HELPER" clock-sync watch >/dev/console 2>&1 </dev/null &
+        # nohup treats /dev/console as a terminal and redirects its output
+        # to nohup.out. setsid detaches this child while keeping diagnostics
+        # in the console log.
+        setsid "$GUEST_HELPER" clock-sync watch >/dev/console 2>&1 </dev/null &
         CLOCK_SYNC_PID=$!
         ;;
 esac

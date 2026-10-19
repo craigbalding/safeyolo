@@ -19,8 +19,14 @@ const TICK: Duration = Duration::from_millis(1100);
 
 fn read_rtc(path: &Path) -> Result<i64, Error> {
     let mut text = String::new();
-    fs::File::open(path)?.take(64).read_to_string(&mut text)?;
-    Ok(text.trim().parse()?)
+    fs::File::open(path)
+        .and_then(|file| file.take(64).read_to_string(&mut text))
+        .map_err(|error| {
+            format!("cannot read rtc0: {error}; check the VM RTC device and sysfs mount")
+        })?;
+    text.trim()
+        .parse()
+        .map_err(|error| format!("invalid rtc0 epoch: {error}; check the VM RTC device").into())
 }
 
 fn check_tick(before: i64, after: i64) -> Result<(), Error> {
