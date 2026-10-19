@@ -381,8 +381,8 @@ pub struct Outcome<'a> {
     pub response: Response<'a>,
     pub audit: Option<AuditIntent>,
     /// The process-owned handler already attempted this canonical audit. The
-    /// intent remains attached so the diagnostic `proxy.agent_api` record can
-    /// retain its audit and failure markers without submitting a second event.
+    /// intent remains attached so `agent.api_response` can retain its event
+    /// name and failure markers without submitting a second copy of the intent.
     pub audit_owned: bool,
     pub blocked_by: &'static str,
     pub handler_owned: bool,

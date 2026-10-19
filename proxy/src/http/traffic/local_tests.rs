@@ -73,13 +73,30 @@ fn events(directory: &Path) -> Vec<Value> {
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
-        // Preserve all other producer events and their original order.
+        // Compare the existing hook order without the migrated diagnostic facts.
         .filter(|row: &Value| {
             !(row["addon"] == "memory-monitor"
                 && matches!(
                     row["event"].as_str(),
                     Some("ops.startup" | "ops.memory.conn_closed")
                 ))
+        })
+        .filter(|row: &Value| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "traffic.tunnel"
+                        | "traffic.websocket.start"
+                        | "traffic.websocket.message"
+                        | "traffic.websocket.end"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                        | "agent.api_response"
+                        | "gateway.evaluated"
+                )
+            )
         })
         .collect()
 }

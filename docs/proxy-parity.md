@@ -1025,10 +1025,10 @@ acceptance, macOS or real-guest validation.
 
 These requests terminate locally before ordinary inspection and egress. Disabled
 or failed handlers remain contained; CONNECT returns the source transport-guard
-403. Development `proxy.agent_api` evidence records response and audit intents
-without bearer values or URL queries. A failed evidence file write preserves the
-response and sets `X-SafeYolo-Evidence-Error`; source production audit writes also
-preserve responses when their sink fails. Native canonical producers now emit
+403. Canonical `agent.api_response` events record the response status, handler
+result and intent name without copying the intent, bearer values or URL queries.
+Canonical worker file failures remain asynchronous and preserve the response;
+the worker reports the failure to stderr. Native canonical producers emit
 auth failure, handler unavailable, declaration and clear events before traffic
 hooks. A synchronous auth submission error uses the native local guard's 503
 transition. The historical separate-addon source test does not establish the

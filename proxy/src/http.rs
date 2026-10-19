@@ -4853,7 +4853,7 @@ mod tests {
                 );
                 assert_eq!(
                     destination.port,
-                    row["details"]["port"].as_u64().unwrap() as u16,
+                    row["port"].as_u64().unwrap() as u16,
                     "{row}"
                 );
                 assert_eq!(destination.authority.as_bytes(), bytes, "{row}");

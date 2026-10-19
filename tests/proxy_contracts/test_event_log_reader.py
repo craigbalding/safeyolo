@@ -14,7 +14,7 @@ def test_read_events_waits_for_trailing_newline(tmp_path, split):
     last = {"event": "traffic.websocket.end", "detail": "café"}
     record = json.dumps(last, ensure_ascii=False).encode()
     if split == "json":
-        cut = record.index(b"traffic.websocket.end") + len(b"proxy.websocket.en")
+        cut = record.index(b"traffic.websocket.end") + len(b"traffic.websocket.en")
     elif split == "utf8":
         cut = record.index("é".encode()) + 1
     else:
