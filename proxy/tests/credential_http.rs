@@ -1768,8 +1768,8 @@ async fn native_pattern_scanner_rejects_unsupported_request_encoding_before_orig
     );
     assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
-    assert_eq!(rows[scanner]["failure"], "content_decode");
-    assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    assert_eq!(rows[scanner]["details"]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["details"]["error_type"], "ContentDecode");
     assert!(!events.contains("key-unsupported"));
     assert!(!events.contains("request-secret-canary"));
 
@@ -1909,8 +1909,8 @@ async fn native_pattern_scanner_rejects_unsupported_response_encoding_after_cred
     );
     assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
-    assert_eq!(rows[scanner]["failure"], "content_decode");
-    assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    assert_eq!(rows[scanner]["details"]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["details"]["error_type"], "ContentDecode");
     assert!(!events.contains("key-unsupported"));
     assert!(!events.contains("response-secret-canary"));
 
@@ -2192,8 +2192,8 @@ async fn native_pattern_scanner_rejects_unsupported_request_encoding_on_real_h2(
     );
     assert_eq!(rows[credential]["details"]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
-    assert_eq!(rows[scanner]["failure"], "content_decode");
-    assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    assert_eq!(rows[scanner]["details"]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["details"]["error_type"], "ContentDecode");
     assert!(
         !rows.iter().any(|event| {
             event["event"] == "traffic.egress" && event["request_id"] == request_id
@@ -2383,10 +2383,10 @@ async fn run_h2_response_content_case(
     assert!(!audit.contains("key-h2-response"));
     assert!(!audit.contains("h2-response-secret"));
     if let Some(failure) = expected_failure {
-        assert_eq!(rows[scanner]["failure"], failure);
-        assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+        assert_eq!(rows[scanner]["details"]["failure"], failure);
+        assert_eq!(rows[scanner]["details"]["error_type"], "ContentDecode");
     } else {
-        assert!(rows[scanner]["failure"].is_null());
+        assert!(rows[scanner]["details"]["failure"].is_null());
     }
     eprintln!(
         "h2 response observer: status=502 origin_alpn=h2 origin_path=/h2-response origin_authorization=Bearer key-h2-response credential_before_response_scanner=true response_encoding={content_encoding} scanner_failure={} scanner_error_type={} response_body_hex={} raw_canary_retained=false",
@@ -2581,8 +2581,8 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
     assert_eq!(guard["details"]["evaluations"][0]["effect"], "allow");
     let scanner = &rows[pattern];
     assert_eq!(scanner["decision"], "deny");
-    assert_eq!(scanner["direction"], "request");
-    assert_eq!(scanner["failure"], "content_decode");
+    assert_eq!(scanner["details"]["direction"], "request");
+    assert_eq!(scanner["details"]["failure"], "content_decode");
     assert!(!events.contains("key-observation"));
     assert!(!events.contains("key-local-only"));
     assert!(!events.contains("traffic.egress"));
@@ -3033,7 +3033,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     );
     assert_eq!(rows[credential]["details"]["outcome"], "warned");
     assert_eq!(rows[scanner]["decision"], "deny");
-    assert_eq!(rows[scanner]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["details"]["failure"], "content_decode");
     assert!(!events.contains("key-\\xff"));
     assert!(!events.contains("body-canary"));
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
