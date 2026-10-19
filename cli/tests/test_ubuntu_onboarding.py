@@ -1128,6 +1128,56 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(row["launch_result"]["command_exit"], 127)
         self.assertEqual(row["command_exit"], 127)
 
+    def test_complete_launch_result_is_saved_before_a_simultaneous_deadline(self):
+        launch_id = "launch-" + "c" * 32
+        directory = m.root / "agents/first"
+        directory.mkdir(parents=True)
+        (directory / "current-launch.json").write_text(json.dumps({"launch_id": launch_id}))
+        private_text = "PRIVATE_DEADLINE_TERMINAL_CANARY"
+        message = ("Starting or resuming claude.\n" + private_text + "\n"
+                   "safeyolo: First-agent sandbox/harness startup failed: coding-agent observation timed out. "
+                   "Saved agent state is retained.")
+        stub = m.project / "deadline-exit127.py"
+        stub.write_text(f"print({message!r},flush=True);raise SystemExit(127)\n")
+        read, monotonic = os.read, time.monotonic
+        received = b""
+        marker_received = False
+        saved_at_witness = []
+
+        def terminal_read(fd, count):
+            nonlocal received, marker_received
+            chunk = read(fd, count)
+            if os.isatty(fd):
+                received += chunk
+                marker_received = b"SY239_COMMAND_EXIT=127\r\n" in received
+            return chunk
+
+        def clock():
+            return monotonic() + (20 if marker_received else 0)
+
+        def witness(*args, **kwargs):
+            saved_at_witness.append(json.loads(m.out.read_text())["product_commands"][-1].get("launch_result"))
+            return {}
+
+        with patch.object(m, "LAUNCH", [sys.executable, str(stub)]), \
+             patch.object(m, "witness", autospec=True, side_effect=witness), \
+             patch.object(m.os, "read", autospec=True, side_effect=terminal_read), \
+             patch.object(m.time, "monotonic", autospec=True, side_effect=clock), \
+             patch.dict(os.environ, {"PATH": str(m.cli.parent) + ":" + os.environ["PATH"]}):
+            row, _ = m.entered("cold", 10)
+        self.assertTrue(marker_received)
+        self.assertEqual(saved_at_witness, [row["launch_result"]])
+        self.assertEqual(row["command_exit"], 127)
+        self.assertEqual(row["launch_result"]["command_exit"], 127)
+        self.assertEqual(row["launch_result"]["failure_phase"], "sandbox-harness-start")
+        self.assertEqual(row["launch_result"]["error_category"], "coding-agent-observation-timeout")
+        self.assertEqual(row["launch_result"]["launch_id"], launch_id)
+        self.assertEqual(row["exit_code"], 127)
+        self.assertTrue(row["console_reaped"])
+        self.assertNotIn("final_capture_error", row)
+        self.assertNotIn(private_text, m.out.read_text())
+        self.assertIn(private_text, (m.private / "cold.terminal").read_text())
+
     def test_real_pty_drains_small_final_chunks_after_shell_exit(self):
         read = os.read
         with patch.object(m.os, "read", autospec=True, side_effect=lambda fd, count: read(fd, min(count, 16))):

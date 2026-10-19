@@ -943,6 +943,18 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                         x["phase_observations"].append({"phase": phase, "boundary": label, **stamp()})
                         completed.add(label)
                         save()
+                # Save complete command results before any prompt/deadline
+                # action can start diagnostics or clear the search buffer.
+                for key in ["COMMAND", "DISCOVERY", "VERSION"]:
+                    match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)\r?\n", pending)
+                    if match:
+                        row[key.lower() + "_exit"] = int(match.group(1))
+                        if key == "COMMAND" and "launch_result" not in row:
+                            record_launch_result(row, pending)
+                for key in ["DISCOVERY", "VERSION"]:
+                    match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
+                    if match:
+                        row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
                 for label, prompt, answer in [
                     ("host", "Allow these host changes? [y/N]", "y\n"),
                     ("setup", "Run this setup and share this workspace? [y/N]", "y\n"),
@@ -1007,16 +1019,6 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     completed.add("q")
                     pending = b""
                     save()
-                for key in ["COMMAND", "DISCOVERY", "VERSION"]:
-                    match = re.search(rb"SY239_" + key.encode() + rb"_EXIT=(\d+)\r?\n", pending)
-                    if match:
-                        row[key.lower() + "_exit"] = int(match.group(1))
-                        if key == "COMMAND" and "launch_result" not in row:
-                            record_launch_result(row, pending)
-                for key in ["DISCOVERY", "VERSION"]:
-                    match = re.search(rb"SY239_" + key.encode() + rb"_BEGIN\r?\n(.*?)SY239_" + key.encode() + rb"_EXIT=", pending, re.S)
-                    if match:
-                        row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
                 # The shell can exit while its final discovery/version bytes remain queued.
                 if child_exited(pid) and (not terminal_open or not select.select([fd], [], [], 0)[0]):
                     break
