@@ -96,12 +96,12 @@ def main():
     def save():
         output.write_text(json.dumps(report, indent=2) + "\n")
 
-    def run(command, timeout, *, stdout=subprocess.PIPE, input=None, check=True):
-        row = {"role": "fixture/observer", "command": list(map(str, command)), **stamp()}
+    def run(command, timeout, *, stdout=subprocess.PIPE, check=True, role="fixture"):
+        row = {"role": role, "command": list(map(str, command)), **stamp()}
         report["commands"].append(row)
         save()
         try:
-            result = subprocess.run(row["command"], input=input, stdout=stdout,
+            result = subprocess.run(row["command"], stdout=stdout,
                                     stderr=subprocess.PIPE, timeout=timeout)
             row["exit"] = result.returncode
             row["stderr"] = result.stderr.decode(errors="replace")[-4096:]
@@ -175,7 +175,7 @@ def main():
                     "--observation-dir", "/home/ubuntu/onboarding-observation"]
         report["vm"]["observer_started"] = stamp()
         with (work / "observer.stdout").open("wb") as log:
-            result = run(ssh + [shlex.join(observer)], 1500, stdout=log, check=False)
+            result = run(ssh + [shlex.join(observer)], 1500, stdout=log, check=False, role="observer")
         report["observer_exit"] = result.returncode
     except (OSError, ValueError, subprocess.SubprocessError, TimeoutError, RuntimeError) as error:
         report["error"] = str(error)
@@ -187,8 +187,8 @@ def main():
                 recovery = ["python3", "-I", "-B", "observer/ubuntu_onboarding.py", "--host", HOSTNAME,
                             "--platform", "linux-arm64", "--cleanup-only",
                             "--observation-dir", "/home/ubuntu/onboarding-observation"]
-                run(ssh + [shlex.join(recovery)], 100, check=False)
-                result = run(ssh + ["cat onboarding-observation/result.json"], 15, check=False)
+                run(ssh + [shlex.join(recovery)], 100, check=False, role="observer")
+                result = run(ssh + ["cat onboarding-observation/result.json"], 15, check=False, role="observer")
                 if result.returncode == 0:
                     observed = json.loads(result.stdout)
                     (reports / "observation.json").write_text(json.dumps(observed, indent=2) + "\n")
@@ -208,7 +208,8 @@ def main():
             report["owned_disks_and_keys_removed"] = True
             report["ended"] = stamp()
             save()
-    return 0 if report.get("observer_exit") == 0 and report.get("ssh_port_closed") else 1
+    return 0 if (report.get("observer_exit") == 0 and report.get("ssh_port_closed")
+                 and not report.get("error") and not report.get("recovery_error")) else 1
 
 
 if __name__ == "__main__":
