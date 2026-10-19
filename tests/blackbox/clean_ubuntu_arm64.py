@@ -23,6 +23,9 @@ import time
 from pathlib import Path
 
 IMAGE_URL = "https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img"
+# Ubuntu redirects this dated release to its HTTP archive. The trusted task
+# supplies the independent digest; unverified disk bytes never reach QEMU.
+IMAGE_ARCHIVE_URL = "http://cloud-images-archive.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img"
 IMAGE_SHA256 = "7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc"
 IMAGE_BYTES = 615630848
 HOSTNAME = "sy1050-clean-arm64"
@@ -78,7 +81,8 @@ def main():
     reports = work / "reports"
     reports.mkdir()
     report = {"started": stamp(), "observer_source": args.observer_source,
-              "image": {"url": IMAGE_URL, "sha256": IMAGE_SHA256, "bytes": IMAGE_BYTES},
+              "image": {"url": IMAGE_URL, "archive_url": IMAGE_ARCHIVE_URL,
+                        "sha256": IMAGE_SHA256, "bytes": IMAGE_BYTES},
               "outer": {"uname": list(os.uname()), "uid": os.getuid(),
                         "kvm_present": Path("/dev/kvm").exists()},
               "fixture": {"acceleration": "tcg,thread=multi", "cpus": 2, "memory_mib": 4096,
@@ -120,8 +124,8 @@ def main():
     accessible = False
     save()
     try:
-        run(["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
-             "--max-time", "240", "--output", image, IMAGE_URL], 250)
+        run(["curl", "--fail", "--location", "--proto", "=http,https", "--proto-redir", "=http,https",
+             "--max-time", "240", "--output", image, IMAGE_ARCHIVE_URL], 250)
         verify_image(image)
         report["image"]["verified"] = stamp()
         info = json.loads(run(["qemu-img", "info", "--output=json", image], 10).stdout)
