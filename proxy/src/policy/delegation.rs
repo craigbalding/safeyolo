@@ -593,11 +593,10 @@ impl Delegation {
                 }
             }
         }
-        let startup=self.beneficiaries.iter().chain(&self.reviewers).map(|agent| {
-            let config=policy.native.as_ref().map(|n|&n.authored["agents"][&agent.name]);
-            json!({"agent":agent,"folder":config.map(|v|&v["folder"]),"mounts":config.map(|v|&v["mounts"]),"host_script":config.map(|v|&v["host_script"]),"launcher":config.map(|v|&v["launcher"])})
-        }).collect::<Vec<_>>();
-        result.insert("reviewer_startup".into(),digest(&json!({"configuration":startup,"write_paths":policy.reviewer_write_warnings(self)})));
+        result.insert(
+            "reviewer_startup".into(),
+            digest(&json!(policy.reviewer_write_warnings(self))),
+        );
         Ok(result)
     }
     pub(crate) fn dependencies_current(&self, policy: &Policy) -> bool {
@@ -634,12 +633,20 @@ impl Policy {
                 }
             }
             for reviewer in &delegation.reviewers {
+                let home = native
+                    .identity_root
+                    .join("agents")
+                    .join(&reviewer.name)
+                    .join("home");
+                // These are the native Codex/MCP launch and configuration
+                // paths staged by codex-host-setup and stage-coord-native.
+                // An ordinary shared source workspace is not a startup path.
                 let mut trusted = vec![
-                    native
-                        .identity_root
-                        .join("agents")
-                        .join(&reviewer.name)
-                        .join("home"),
+                    home.clone(),
+                    home.join(".codex"),
+                    home.join(".safeyolo"),
+                    home.join(".safeyolo-command"),
+                    home.join(".safeyolo-interactive-command"),
                 ];
                 if let Some(script) =
                     native.authored["agents"][&reviewer.name]["host_script"].as_str()

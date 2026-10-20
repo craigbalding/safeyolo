@@ -409,15 +409,15 @@ def run(args: argparse.Namespace) -> None:
                 "approval": native("approvals", "show", identifier, "--agent", args.worker),
                 "policy_unchanged": (root / "policy.toml").read_text() == selected, "origin_hits": list(hits)})
 
-        for index in range(2):
+        for index in range(3 if delegated_mode else 2):
             model_origin = args.model_unavailable and index == 1
             handler = partial(UnavailableModelOrigin, marker=marker, observe=observe_model) if model_origin else Origin
-            origin = HTTPServer(("127.0.0.3" if model_origin else "127.0.0.2", 0), handler)
+            origin = HTTPServer(("127.0.0.3" if model_origin or delegated_mode and index == 2 else "127.0.0.2", 0), handler)
             origins.append(origin)
             thread = threading.Thread(target=origin.serve_forever, kwargs={"poll_interval": 0.05})
             thread.start()
             threads.append(thread)
-        port, second_port = (origin.server_port for origin in origins)
+        port, second_port = (origin.server_port for origin in origins[:2])
         if delegated_mode:
             # This mode reuses the same owned guests, model launcher, origins,
             # native commands and teardown. The service must be staged before
@@ -431,7 +431,10 @@ def run(args: argparse.Namespace) -> None:
             policy.setdefault("controls", {}).setdefault("credentials", {})["enabled"] = True
             policy.setdefault("credential", {})["delegated-fixture"] = {
                 "match": [r"\Asy769_[0-9a-f]{32}\Z"], "headers": ["authorization"]}
-            policy.setdefault("hosts", {}).setdefault("127.0.0.2", {})["service"] = "delegated-fixture"
+            gateway_port = origins[2].server_port
+            policy.setdefault("hosts", {}).setdefault("127.0.0.3", {})["service"] = "delegated-fixture"
+            for name in names:
+                policy["agents"][name]["hosts"][f"127.0.0.3:{gateway_port}"] = {"egress": "allow"}
             policy["agents"][args.worker].setdefault("services", {})["delegated-fixture"] = {
                 "capability": "writer", "account": "sy769-fixture"}
             policy.setdefault("risk", []).insert(0, {"account": "sy769-fixture", "tactics": ["impact"],
@@ -465,9 +468,10 @@ def run(args: argparse.Namespace) -> None:
             prompt = (
                 "Act as the eligible reviewer for this owned SafeYolo delegated-approval test. "
                 f"Start idle: call the existing MCP wait_for_coord with since_sequence={cursor}, "
-                "limit=1 and timeout_seconds=60. Process each returned object and adopt safe_cursor. "
+                "limit=1 and timeout_seconds=60. Process each returned object and adopt next_cursor. "
                 "For a SafeYolo delegated approval reference, use MCP read_approval with its approval_id. "
-                f"Verify the beneficiary is {args.worker}, destination is 127.0.0.2, and the complete "
+                f"Verify the beneficiary is {args.worker}, destination is 127.0.0.2 for network/credential "
+                "or 127.0.0.3 for gateway, and the complete "
                 "host-generated option is inside one returned delegation. Approve network and credential "
                 "requests with option run; approve the delegated-fixture gateway route with option delegated_once. "
                 "Use MCP resolve_approval with exactly the named delegation and option from that read. "
@@ -509,7 +513,7 @@ def run(args: argparse.Namespace) -> None:
                         authorized = guest(args.worker, "GET", api + "/gateway/services")
                         token = json.loads(authorized["body"])["authorized"]["delegated-fixture"]["token"]
                         selected_headers = {"Authorization": "Bearer " + token}
-                    url = f"http://127.0.0.2:{port}{route}"
+                    url = f"http://127.0.0.3:{gateway_port}{route}" if kind == "gateway" else f"http://127.0.0.2:{port}{route}"
                     before = len(hits)
                     blocked = guest(args.worker, method, url, headers=selected_headers)
                     assert blocked["status"] == 428 and len(hits) == before, f"{kind}: missing real blocker"
@@ -541,7 +545,7 @@ def run(args: argparse.Namespace) -> None:
                         token = json.loads(authorized["body"])["authorized"]["delegated-fixture"]["token"]
                         selected_headers = {"Authorization": "Bearer " + token}
                     permitted = guest(args.worker, method, url, headers=selected_headers)
-                    assert permitted["status"] == 200 and permitted["body"] == marker
+                    assert permitted["status"] == 200 and permitted["body"] == marker, f"{kind}: retry status={permitted['status']}; origin hits={len(hits)}"
                     assert len(hits) == before + 1 and received[-1]["method"] == method
                     assert received[-1]["path"] == route
                     if kind == "credential":

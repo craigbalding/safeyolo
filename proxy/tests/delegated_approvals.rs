@@ -302,10 +302,16 @@ async fn delegated_credentials_are_run_scoped_and_never_change_the_shared_baseli
     let f = Fixture::new().await;
     let backend = runs(&f);
     let _backend = Backend(backend);
-    let source = f
+    let mut source = f
         .source()
-        .replace("egress='prompt'", "egress='allow'")
+        .replace("egress='prompt'", "egress='deny'")
         .replace("enabled=false", "enabled=true");
+    for agent in ["worker", "helper", "peer"] {
+        source.push_str(&format!(
+            "\n[agents.{agent}.hosts.'{}']\negress='allow'\n",
+            f.address
+        ));
+    }
     f.apply(&source).await;
     let header = format!("Authorization: Bearer {SECRET}\r\n");
     let blocked = f
@@ -428,7 +434,10 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
     // acknowledgment of this service envelope.
     f.apply(&format!(
         "{}\n[agents.peer.hosts.'other.invalid']\negress='allow'\n",
-        f.source()
+        f.source().replace(
+            "[agents.helper]",
+            "[agents.helper]\nmounts=['/tmp:/unrelated:ro']"
+        )
     ))
     .await;
     let inventory = f
@@ -537,6 +546,39 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
 }
 
 #[tokio::test]
+async fn preview_warns_when_worker_can_write_reviewer_codex_configuration() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    let target = f.root.path().join("agents/helper/home/.codex");
+    fs::create_dir_all(&target).unwrap();
+    let source = f.source().replace(
+        "[agents.worker]",
+        &format!(
+            "[agents.worker]\nmounts=[{}]\n",
+            json!(format!("{}:/reviewer-config", target.display()))
+        ),
+    );
+    f.apply(&source).await;
+    let view = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(proposal(&f)),
+        )
+        .await
+        .json();
+    assert!(
+        view["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains(".codex")),
+        "{view}"
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn same_connection_rechecks_revocation_and_the_current_run() {
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full};
@@ -559,7 +601,7 @@ async fn same_connection_rechecks_revocation_and_the_current_run() {
     let observer = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut bytes = [0; 4096];
-        stream.read(&mut bytes).await.unwrap();
+        assert!(stream.read(&mut bytes).await.unwrap() > 0);
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
             .await

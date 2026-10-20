@@ -165,20 +165,28 @@ pub(crate) async fn notify(runtime: &crate::Runtime, record: &Record) {
     };
     let mut reviewers = std::collections::BTreeMap::new();
     for delegation in policy.delegations().values() {
-        if record
-            .authority
-            .options
-            .iter()
-            .any(|option| delegation.contains(record, &option.id))
+        if delegation.dependencies_current(policy)
+            && record
+                .authority
+                .options
+                .iter()
+                .any(|option| delegation.contains(record, &option.id))
         {
             for reviewer in &delegation.reviewers {
-                reviewers.insert(reviewer.agent_id.clone(), reviewer.name.clone());
+                reviewers
+                    .entry(reviewer.agent_id.clone())
+                    .or_insert_with(|| {
+                        (
+                            reviewer.name.clone(),
+                            format!("{}:{}", reviewer.agent_id, delegation.revision()),
+                        )
+                    });
             }
         }
     }
-    for (id, name) in reviewers {
+    for (id, (name, delivery_key)) in reviewers {
         let store = runtime.audit.approvals().clone();
-        let (approval, recipient) = (record.approval_id.clone(), id.clone());
+        let (approval, recipient) = (record.approval_id.clone(), delivery_key.clone());
         let attempted = tokio::task::spawn_blocking(move || {
             store.claim_reviewer_delivery(&approval, &recipient)
         })
@@ -200,7 +208,7 @@ pub(crate) async fn notify(runtime: &crate::Runtime, record: &Record) {
         };
         let _ = tokio::task::spawn_blocking(move || {
             store.decide(&approval, |record| {
-                record.reviewer_delivery.insert(id, status.into());
+                record.reviewer_delivery.insert(delivery_key, status.into());
                 Ok(())
             })
         })

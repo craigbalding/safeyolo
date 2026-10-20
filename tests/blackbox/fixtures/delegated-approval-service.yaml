@@ -1,6 +1,6 @@
 schema_version: 1
 name: delegated-fixture
-default_host: 127.0.0.2
+default_host: 127.0.0.3
 capabilities:
   writer:
     routes:

@@ -1237,9 +1237,13 @@ fn evaluate(
     };
     let network = credential.effect == Effect::Allow;
     let decision = if network {
-        match policy.evaluate(
+        // Current native ingress carries the worker's effective network
+        // policy, including its run permission. A credential grant must not
+        // fall back to an unrelated name-less network decision.
+        let run = request.identity.run();
+        match policy.evaluate_for_run(
             NetworkRequest {
-                agent: None,
+                agent: run.map(|run| run.agent.as_str()),
                 host: request.host,
                 port: Some(request.port),
                 method: request.method,
@@ -1247,6 +1251,7 @@ fn evaluate(
             },
             now_ms,
             true,
+            run,
         ) {
             Ok(decision) => decision,
             Err(_) => return failed(),
