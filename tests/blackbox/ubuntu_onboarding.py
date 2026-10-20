@@ -835,17 +835,17 @@ def stop_console_group(pid, fd, row):
 
     def remaining_members(deadline):
         nonlocal terminal_open
-        # Drain finite TERM responses between scans. Bound each burst so
-        # continuous output cannot delay ownership checks or signal deadlines.
-        drain_until = min(deadline, time.monotonic() + 0.05)
+        # Drain through gaps in finite TERM responses until EOF or the signal
+        # deadline. Then refresh ownership before any further signal.
         while terminal_open:
-            timeout = drain_until - time.monotonic()
+            timeout = deadline - time.monotonic()
             if timeout <= 0 or not select.select([fd], [], [], timeout)[0]:
                 break
             terminal_open = bool(read_console(fd))
         return console_group(pid)
 
-    remaining = remaining_members(limit - 1)
+    # Keep the initial drain short so continuous output cannot postpone TERM.
+    remaining = remaining_members(min(limit - 1, time.monotonic() + 0.05))
     if remaining:
         row["observer_terminated_viewer"] = stamp()
         os.killpg(pid, signal.SIGTERM)

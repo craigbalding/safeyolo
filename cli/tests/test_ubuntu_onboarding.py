@@ -1301,11 +1301,23 @@ class ObserverChecks(unittest.TestCase):
                 os.waitpid(pid, 0)
 
     def test_observer_intervention_stays_visible_on_zero_exit(self):
+        self.check_finite_term_response(gapped=False)
+
+    def test_observer_intervention_stays_visible_on_zero_exit_with_gapped_output(self):
+        self.check_finite_term_response(gapped=True)
+
+    def check_finite_term_response(self, gapped):
         private_text = "PRIVATE_SHUTDOWN_TERMINAL_CANARY"
-        code = ("import os,signal\n"
+        write = " while data:data=data[os.write(1,data):]\n"
+        if gapped:
+            write = (" while data:\n"
+                     "  chunk,data=data[:4096],data[4096:]\n"
+                     "  while chunk:chunk=chunk[os.write(1,chunk):]\n"
+                     "  time.sleep(0.002)\n")
+        code = ("import os,signal,time\n"
                 "def stop(*_):\n"
                 f" data=({private_text!r}+'\\n').encode()*4096\n"
-                " while data:data=data[os.write(1,data):]\n"
+                + write +
                 " os._exit(0)\n"
                 "signal.signal(signal.SIGTERM,stop)\n"
                 "print('Sign in',flush=True)\n"

@@ -119,9 +119,28 @@ async fn owned_json_requires_real_native_approval_and_cleanup_preserves_peer() {
         assert_eq!(approval["action"]["host"], "127.0.0.1");
         assert_eq!(approval["action"]["port"], fixture.port);
         let id = approval["request_id"].as_str().unwrap();
-        let view = operator_commands::approval(root.path(), id, Some(&demo.agent.name))
+        let other_fixture = Fixture::start(root.path(), "other-port".into())
             .await
             .unwrap();
+        assert!(
+            other_fixture
+                .pending_approval(&demo.agent)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        other_fixture.stop().await.unwrap();
+        let mut wrong_identity = demo.agent.clone();
+        wrong_identity.id = peer_agent.id.clone();
+        assert!(
+            fixture
+                .pending_approval(&wrong_identity)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (selected_id, view) = fixture.pending_approval(&demo.agent).await.unwrap().unwrap();
+        assert_eq!(selected_id, id);
         assert_eq!(view["approval"]["target"], "127.0.0.1");
         assert_eq!(view["action"]["host"], "127.0.0.1");
         assert_eq!(view["action"]["agent_id"], demo.agent.id);
