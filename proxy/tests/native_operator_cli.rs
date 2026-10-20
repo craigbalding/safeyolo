@@ -374,6 +374,15 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
     )
     .await;
     let id = original["approval_id"].as_str().unwrap();
+    // Command Centre consumes these display fields from the canonical record.
+    assert_eq!(original["event"], "security.network_guard");
+    assert!(original["summary"].is_string());
+    assert_eq!(original["approval"]["approval_type"], "network_egress");
+    assert_eq!(original["approval"]["key"], id);
+    assert_eq!(
+        original["approval"]["scope_hint"]["port"],
+        fixture.address.port()
+    );
     assert_ne!(id, first.id());
     assert!(
         first

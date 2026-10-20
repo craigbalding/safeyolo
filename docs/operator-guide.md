@@ -329,6 +329,11 @@ remain inspectable; assisted approval needs a new durable request. Missing
 approval state fails closed; it is not reconstructed from traffic logs. Direct
 policy and service commands remain available for explicit operator changes.
 
+In macOS Command Centre, the approval window shows the same approval ID and
+fixed effects. Select an offered option when needed. **Cancel** closes the
+window and leaves the request pending. **Deny** records a refusal without adding
+a policy deny rule. Reconnect reads the recorded outcome before another decision.
+
 ## Recover from a failed operation
 
 If `inspect` reports `inspect requires a terminal`, open it in an interactive

@@ -53,6 +53,7 @@ extension ModelTests {
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
+        try await testGatewayOptionAndExpiredOutcome()
         try await testPreparedNetworkRequestsAndOpenWindows()
         try await testNetworkResolutionLostReplyAndReconnect()
         try await testDisabledEventsAndRecovery()
@@ -195,12 +196,12 @@ extension ModelTests {
 
     @MainActor
     private static func testCanonicalNetworkResolution() async throws {
-        let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(#"{"event":"proxy.network_guard","request_id":"req-canonical","agent":"worker","summary":"Reusable network access","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#.utf8))
+        let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(#"{"event":"proxy.network_guard","approval_id":"apr-canonical","request_id":"req-canonical","agent":"worker","summary":"Reusable network access","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#.utf8))
         let effect = "Allow reusable network access for worker (ag-worker) to origin port 443 until explicitly removed."
         for (status, message) in [("approved", "Approved"), ("rejected", "Rejected")] {
             snapshot()
             defer { StubURLProtocol.responsesByPath = [:] }
-            StubURLProtocol.responsesByPath["/admin/approvals/req-canonical"] = (200, Data("{\"request_id\":\"req-canonical\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8))
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-canonical"] = (200, Data("{\"approval_id\":\"apr-canonical\",\"request_id\":\"req-canonical\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8))
             let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
                 eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
                 expectedInstanceID: "sy-connection-test", session: stubSession())
@@ -210,6 +211,45 @@ extension ModelTests {
             try await until { result != nil }
             let observed = try result!.get()
             precondition(observed == .decided("\(message). \(effect)"), "Use the canonical outcome and scope even when the other decision won")
+        }
+    }
+
+    @MainActor
+    private static func testGatewayOptionAndExpiredOutcome() async throws {
+        let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(#"{"approval_id":"apr-gateway","request_id":"req-gateway","event":"gateway.risky_route","agent":"worker","summary":"Fixed gateway route","approval":{"required":true,"approval_type":"gateway_risky_route","key":"apr-gateway","target":"fixture"},"options":[{"id":"once","effect":"Allow once","status":"available"},{"id":"remembered","effect":"Allow with existing TTL","status":"available"}]}"#.utf8))
+        let path = "/admin/approvals/apr-gateway"
+        for status in ["approved", "expired"] {
+            snapshot()
+            defer { StubURLProtocol.responsesByPath = [:]; StubURLProtocol.requestHandler = nil }
+            let resultData = Data("""
+            {"approval_id":"apr-gateway","request_id":"req-gateway","status":"\(status)","effect":"Fixed gateway route"}
+            """.utf8)
+            StubURLProtocol.responsesByPath[path] = (200, resultData)
+            var posts = 0
+            StubURLProtocol.requestHandler = { request in
+                if request.url?.path == path, request.httpMethod == "POST" {
+                    posts += 1
+                    let stream = request.httpBodyStream
+                    stream?.open()
+                    defer { stream?.close() }
+                    var bytes = [UInt8](repeating: 0, count: 1024)
+                    let count = stream?.read(&bytes, maxLength: bytes.count) ?? 0
+                    let payload = try JSONSerialization.jsonObject(with: request.httpBody ?? Data(bytes.prefix(max(0, count)))) as! [String:String]
+                    precondition(payload == ["decision":"approve", "option":"remembered"])
+                    return (status == "expired" ? 409 : 200, resultData)
+                }
+                return StubURLProtocol.responsesByPath[request.url!.path]!
+            }
+            let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+                eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+                expectedInstanceID: "sy-connection-test", session: stubSession())
+            defer { client.stop() }
+            var result: Result<ResolutionResult, Error>?
+            client.resolve(event, allow: true, option: "remembered") { result = $0 }
+            try await until { result != nil }
+            let observed = try result!.get()
+            precondition(observed == .decided("\(status.capitalized). Fixed gateway route"))
+            precondition(client.approvalOutcomes["apr-gateway"]?.status == status && posts == 1)
         }
     }
 
@@ -226,24 +266,24 @@ extension ModelTests {
         func prompt(_ id: String, agent: String = "worker", reason: String? = nil) -> [String: Any] {
             var details: [String: Any] = ["network_action": action(agent), "effect": effect]
             if let reason { details["untrusted_reason_text"] = reason }
-            return ["event": "security.network_guard", "kind": "security", "severity": "high", "request_id": id,
+            return ["event": "security.network_guard", "kind": "security", "severity": "high", "approval_id": "apr-" + id.dropFirst(4), "request_id": id,
                     "agent": agent, "host": "owned.example", "summary": effect,
                     "approval": ["required": true, "approval_type": "network_egress",
                                  "key": "\(agent):owned.example:443", "target": "owned.example:443", "scope_hint": ["port": 443]],
                     "details": details]
         }
         func record(_ id: String, status: String = "pending", agent: String = "worker", reason: String? = nil) throws -> Data {
-            var value: [String: Any] = ["request_id": id, "status": status, "effect": effect, "action": action(agent)]
+            var value: [String: Any] = ["approval_id": "apr-" + id.dropFirst(4), "request_id": id, "status": status, "effect": effect, "action": action(agent)]
             if let reason { value["untrusted_reason_text"] = reason }
             return try JSONSerialization.data(withJSONObject: value)
         }
-        let path = "/admin/approvals/req-selected"
+        let path = "/admin/approvals/apr-selected"
         var selected = prompt("req-selected")
         let newer = prompt("req-newer")
         let helper = prompt("req-helper", agent: "helper")
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
         for id in ["req-selected", "req-newer", "req-helper"] {
-            StubURLProtocol.responsesByPath["/admin/approvals/\(id)"] = (200, try record(id, agent: id == "req-helper" ? "helper" : "worker"))
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(id.dropFirst(4))"] = (200, try record(id, agent: id == "req-helper" ? "helper" : "worker"))
         }
         let socket = StubEventSocket()
         let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
@@ -254,14 +294,14 @@ extension ModelTests {
         var presentations = 0
         client.onNewApproval = { event in presentations += 1; presenter.show(event, client: client) }
         defer {
-            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("network:\(id)") }
+            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("apr-\(id.dropFirst(4))") }
             client.stop()
         }
         client.start()
-        try await until { socket.receiving && client.networkOutcomes.count == 3 }
-        precondition(Set(client.approvals.map(\.id)) == Set(["network:req-selected", "network:req-newer", "network:req-helper"]))
-        let selectedWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" }!
-        let newerWindow = NSApp.windows.first { $0.identifier?.rawValue == "network:req-newer" }!
+        try await until { socket.receiving && client.approvalOutcomes.count == 3 }
+        precondition(Set(client.approvals.map(\.id)) == Set(["apr-selected", "apr-newer", "apr-helper"]))
+        let selectedWindow = NSApp.windows.first { $0.identifier?.rawValue == "apr-selected" }!
+        let newerWindow = NSApp.windows.first { $0.identifier?.rawValue == "apr-newer" }!
         precondition(selectedWindow !== newerWindow && presentations == 3)
         presenter.show(client.approvals.first { $0.requestID == "req-selected" }!, client: client)
         let hosting = selectedWindow.contentViewController as! NSHostingController<ApprovalView>
@@ -278,19 +318,19 @@ extension ModelTests {
         preparation["approval"] = annotation
         let preparedEvent = try JSONSerialization.data(withJSONObject: preparation)
         try await client.ingestOperatorEventData(preparedEvent)
-        precondition(NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" } === selectedWindow)
+        precondition(NSApp.windows.first { $0.identifier?.rawValue == "apr-selected" } === selectedWindow)
         precondition(presentations == 3, "Preparation updates the open window without another prompt")
         precondition(hosting.rootView.displayedEffect == effect)
         precondition(hosting.rootView.quotedUntrustedReason == "\"\(reason)\"")
-        precondition(client.networkOutcomes["req-newer"]?.untrustedReasonText == nil)
+        precondition(client.approvalOutcomes["apr-newer"]?.untrustedReasonText == nil)
         try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(reason)\""])
 
         // A different request's decision cannot invent this request's outcome.
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
-        StubURLProtocol.responsesByPath["/admin/approvals/req-newer"] = (200, try record("req-newer", status: "approved"))
+        StubURLProtocol.responsesByPath["/admin/approvals/apr-newer"] = (200, try record("req-newer", status: "approved"))
         try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Allowed another request"}"#.utf8))
-        precondition(client.networkOutcomes["req-selected"]?.status == "pending")
-        precondition(client.networkOutcomes["req-newer"]?.status == "approved")
+        precondition(client.approvalOutcomes["apr-selected"]?.status == "pending")
+        precondition(client.approvalOutcomes["apr-newer"]?.status == "approved")
 
         var posts = 0
         var responseStatus = 409
@@ -318,12 +358,12 @@ extension ModelTests {
             clickApprovalControl(selectedWindow, allow)
             try await until { posts == expectedPosts && approvalTextField(selectedWindow, "\(status)") != nil }
             try await checkApprovalLayout(selectedWindow, text: [effect, "\(status)"])
-            precondition(client.networkOutcomes["req-selected"]?.status == "pending")
+            precondition(client.approvalOutcomes["apr-selected"]?.status == "pending")
         }
         precondition(posts == 2, "Neither refusal replays the decision")
         StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
         try await client.ingestOperatorEventData(preparedEvent)
-        precondition(client.unavailableNetworkOutcomes.contains("req-selected"))
+        precondition(client.unavailableApprovalOutcomes.contains("apr-selected"))
         try await checkApprovalLayout(selectedWindow, text: ["Approval evidence unavailable"])
 
         // Growing content must remain reachable in the existing window,
@@ -339,14 +379,14 @@ extension ModelTests {
         let scroll = approvalScrollView(selectedWindow)!
         precondition(scroll.documentView!.bounds.height > scroll.contentView.bounds.height)
         precondition(hosting.rootView.quotedUntrustedReason == "\"\(longReason)\"")
-        precondition(NSApp.windows.first { $0.identifier?.rawValue == "network:req-selected" } === selectedWindow && presentations == 3)
+        precondition(NSApp.windows.first { $0.identifier?.rawValue == "apr-selected" } === selectedWindow && presentations == 3)
 
         StubURLProtocol.responsesByPath[path] = (200, try record("req-selected", status: "approved", reason: longReason))
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [helper]]))
         try await client.ingestOperatorEventData(Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Selected request committed"}"#.utf8))
-        precondition(hosting.rootView.networkOutcome?.status == "approved")
+        precondition(hosting.rootView.approvalOutcome?.status == "approved")
         precondition(hosting.rootView.displayedEffect == effect)
-        precondition(!client.unavailableNetworkOutcomes.contains("req-selected") && posts == 2)
+        precondition(!client.unavailableApprovalOutcomes.contains("apr-selected") && posts == 2)
         try await checkApprovalLayout(selectedWindow, terminal: true, text: ["Approved"])
     }
 
@@ -354,12 +394,12 @@ extension ModelTests {
     private static func testNetworkResolutionLostReplyAndReconnect() async throws {
         snapshot()
         defer { StubURLProtocol.responsesByPath = [:]; StubURLProtocol.requestHandler = nil }
-        let path = "/admin/approvals/req-reconcile"
+        let path = "/admin/approvals/apr-reconcile"
         let effect = "Allow reusable network access for worker (ag-worker) to origin port 443 until explicitly removed."
-        let pending = #"{"event":"proxy.network_guard","request_id":"req-reconcile","agent":"worker","summary":"Reusable worker/origin/443 authority","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#
+        let pending = #"{"event":"proxy.network_guard","approval_id":"apr-reconcile","request_id":"req-reconcile","agent":"worker","summary":"Reusable worker/origin/443 authority","approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},"details":{"network_action":{"kind":"network_allow"}}}"#
         let event = try JSONDecoder().decode(ApprovalEvent.self, from: Data(pending.utf8))
         func record(_ status: String) -> Data {
-            Data("{\"request_id\":\"req-reconcile\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8)
+            Data("{\"approval_id\":\"apr-reconcile\",\"request_id\":\"req-reconcile\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8)
         }
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, Data("{\"approvals\":[\(pending)]}".utf8))
         StubURLProtocol.responsesByPath[path] = (200, record("pending"))
@@ -374,7 +414,7 @@ extension ModelTests {
             retryPause: { try await gate.pause() })
         defer { client.stop(); gate.release() }
         client.start()
-        try await until { first.receiving && client.networkOutcomes["req-reconcile"]?.status == "pending" }
+        try await until { first.receiving && client.approvalOutcomes["apr-reconcile"]?.status == "pending" }
 
         // The other client resolves while Commander is disconnected. Its next
         // canonical read must retain the terminal scope after pending vanishes.
@@ -383,12 +423,12 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, Data(#"{"approvals":[]}"#.utf8))
         StubURLProtocol.responsesByPath[path] = (200, record("approved"))
         gate.release()
-        try await until { second.receiving && client.networkOutcomes["req-reconcile"]?.status == "approved" }
+        try await until { second.receiving && client.approvalOutcomes["apr-reconcile"]?.status == "approved" }
         precondition(client.approvals.isEmpty)
-        precondition(client.networkOutcomes["req-reconcile"]?.display == "Approved. \(effect)")
+        precondition(client.approvalOutcomes["apr-reconcile"]?.display == "Approved. \(effect)")
         StubURLProtocol.responsesByPath[path] = (503, Data(#"{"error":"evidence unavailable"}"#.utf8))
         second.messages.append(approvalEvent)
-        try await until { client.unavailableNetworkOutcomes.contains("req-reconcile") }
+        try await until { client.unavailableApprovalOutcomes.contains("apr-reconcile") }
 
         var posts = 0
         StubURLProtocol.responsesByPath[path] = (200, record("pending"))
@@ -406,7 +446,7 @@ extension ModelTests {
         let observed = try result!.get()
         precondition(observed == .decided("Approved. \(effect)"))
         precondition(posts == 1, "A lost committed response must be read, never reposted")
-        precondition(!client.unavailableNetworkOutcomes.contains("req-reconcile"))
+        precondition(!client.unavailableApprovalOutcomes.contains("apr-reconcile"))
     }
 
     @MainActor

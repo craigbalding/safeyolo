@@ -374,14 +374,34 @@ impl Record {
         let effect = chosen
             .and_then(|id| self.authority.options.iter().find(|option| option.id == id))
             .or_else(|| self.authority.options.first())
-            .map(|option| &option.effect);
+            .map(|option| option.effect.as_str())
+            .unwrap_or(
+                "No approval option is available. Configure a credential and make a new request.",
+            );
+        let (event, approval_type) = match self.authority.action["kind"].as_str() {
+            Some("network_allow") => ("security.network_guard", "network_egress"),
+            Some("credential_allow") => ("security.credential_guard", "credential"),
+            Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
+            Some("service_authorize") => ("gateway.request_access", "service"),
+            _ => ("gateway.contract_binding_requested", "contract_binding"),
+        };
+        let target = self
+            .authority
+            .action
+            .get("host")
+            .or_else(|| self.authority.action.get("service"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let mut view = json!({"approval_id":self.approval_id,"request_id":self.request_id,
             "status":self.current_status(policy)?,"created_at":self.created_at,
             "action":self.authority.action,"authority":self.authority,
             "agent":self.authority.action["agent"],
-            "summary":self.authority.options.first().map(|option| &option.effect),
+            "host":self.authority.action["host"],"event":event,
+            "summary":self.authority.options.first().map(|option| option.effect.as_str()).unwrap_or(effect),
             "approval":{"required":self.current_status(policy)? == "pending",
-                "target":self.authority.action.get("host").or_else(|| self.authority.action.get("service"))},
+                "target":target,"approval_type":approval_type,"key":self.approval_id,
+                "scope_hint":{"agent_id":self.authority.action["agent_id"],"port":self.authority.port}},
+            "details":{"service":self.authority.action["service"],"method":self.authority.method,"path":self.authority.action["path"]},
             "authority_digest":self.authority_digest,"options":self.authority.options,
             "effect":effect,
             "option":receipt.as_ref().map(|value| &value["option"]).unwrap_or(&json!(self.option)),
@@ -390,7 +410,7 @@ impl Record {
             view["untrusted_reason_text"] = json!(reason);
         }
         if self.authority.action["kind"] == "network_allow" {
-            view["details"] = json!({"network_action":self.authority.action});
+            view["details"]["network_action"] = self.authority.action.clone();
             if let Some(reason) = &self.untrusted_reason_text {
                 view["details"]["untrusted_reason_text"] = json!(reason);
             }
