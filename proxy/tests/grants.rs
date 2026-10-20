@@ -1105,6 +1105,7 @@ fn differential_persisted_lifecycle_and_controlled_once_reuse() {
                             service: "gmail".into(),
                             method: "DELETE".into(),
                             path: pattern.into(),
+                            literal_path: false,
                             scope: GrantScope::Once,
                             created: "2024-01-01T00:00:00Z".into(),
                             expires: "2024-01-01T01:00:00Z".into(),

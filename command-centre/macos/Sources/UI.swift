@@ -404,21 +404,22 @@ struct ApprovalView: View {
 
     @State private var busy = false
     @State private var error: String?
+    @State private var selectedOption: String?
 
     var currentEvent: ApprovalEvent {
         client.approvals.first { $0.id == event.id } ?? event
     }
 
-    var networkOutcome: NetworkApprovalResolution? {
-        guard event.details?.networkAction?.kind == "network_allow", let id = event.requestID else { return nil }
-        return client.networkOutcomes[id]
+    var approvalOutcome: ApprovalResolution? {
+        guard let id = event.outcomeID else { return nil }
+        return client.approvalOutcomes[id]
     }
 
-    var displayedEffect: String { networkOutcome?.effect ?? currentEvent.summary }
-    var quotedUntrustedReason: String? { networkOutcome?.quotedUntrustedReason ?? currentEvent.quotedUntrustedReason }
+    var displayedEffect: String { approvalOutcome?.effect ?? currentEvent.summary }
+    var quotedUntrustedReason: String? { approvalOutcome?.quotedUntrustedReason ?? currentEvent.quotedUntrustedReason }
 
     private var evidenceUnavailable: Bool {
-        event.requestID.map { client.unavailableNetworkOutcomes.contains($0) } ?? false
+        event.outcomeID.map { client.unavailableApprovalOutcomes.contains($0) } ?? false
     }
 
     var body: some View {
@@ -427,10 +428,20 @@ struct ApprovalView: View {
                 approvalDetails
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let options = currentEvent.options, options.count > 1 {
+                Picker("Approval option", selection: $selectedOption) {
+                    Text("Choose an option").tag(nil as String?)
+                    ForEach(options) { option in
+                        Text(verbatim: option.id + (option.available ? "" : " (\(option.status ?? "unavailable"))"))
+                            .tag(Optional(option.id))
+                            .disabled(!option.available)
+                    }
+                }
+            }
             Divider()
             HStack {
                 Button("Deny") { decide(allow: false) }
-                    .disabled(busy || networkOutcome?.terminal == true)
+                    .disabled(busy || approvalOutcome?.terminal == true)
                     .accessibilityLabel("Deny")
                     .accessibilityIdentifier("deny-button")
                 Spacer()
@@ -440,10 +451,15 @@ struct ApprovalView: View {
                     .accessibilityIdentifier("cancel-button")
                 Button("Allow") { decide(allow: true) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(busy || networkOutcome?.terminal == true)
+                    .disabled(busy || approvalOutcome?.terminal == true)
                     .keyboardShortcut(.defaultAction)
                     .accessibilityLabel("Allow")
                     .accessibilityIdentifier("allow-button")
+            }
+        }
+        .onAppear {
+            if selectedOption == nil, currentEvent.options?.contains(where: { $0.id == "once" && $0.available }) == true {
+                selectedOption = "once"
             }
         }
         .padding(20)
@@ -466,9 +482,18 @@ struct ApprovalView: View {
                 row("Agent", currentEvent.agent ?? "Unknown agent")
                 row("Action", currentEvent.approval.approvalType.replacingOccurrences(of: "_", with: " "))
                 row("Target", currentEvent.target)
-                if currentEvent.details?.networkAction?.kind == "network_allow", let id = currentEvent.requestID { row("Request", id) }
+                if let id = currentEvent.approvalID { row("Approval", id) }
+                if let id = currentEvent.requestID { row("Request", id) }
                 if let method = currentEvent.details?.method { row("Method", method) }
                 if let path = currentEvent.details?.path { row("Path", path) }
+            }
+
+            if let options = currentEvent.options, options.count > 1 {
+                ForEach(options) { option in
+                    Text(verbatim: "\(option.id): \(option.effect)")
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if let reason = quotedUntrustedReason {
@@ -483,7 +508,7 @@ struct ApprovalView: View {
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if let outcome = networkOutcome, outcome.terminal {
+            } else if let outcome = approvalOutcome, outcome.terminal {
                 Text(verbatim: outcome.display)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -518,7 +543,7 @@ struct ApprovalView: View {
     private func decide(allow: Bool) {
         busy = true
         error = nil
-        client.resolve(currentEvent, allow: allow) { result in
+        client.resolve(currentEvent, allow: allow, option: allow ? selectedOption : nil) { result in
             switch result {
             case .success(.desktop(let presentation)):
                 NSPasteboard.general.clearContents()
@@ -575,16 +600,16 @@ struct CommandCentreMenu: View {
                     }
                 }
             }
-            ForEach(client.networkOutcomes.keys.sorted(), id: \.self) { id in
-                if let outcome = client.networkOutcomes[id] {
-                    if client.unavailableNetworkOutcomes.contains(id) {
+            ForEach(client.approvalOutcomes.keys.sorted(), id: \.self) { id in
+                if let outcome = client.approvalOutcomes[id] {
+                    if client.unavailableApprovalOutcomes.contains(id) {
                         Text("Approval outcome unavailable: \(id)")
                     } else if outcome.terminal {
                         Text(outcome.display).textSelection(.enabled)
                     }
                 }
             }
-            ForEach(client.unavailableNetworkOutcomes.subtracting(client.networkOutcomes.keys).sorted(), id: \.self) { id in
+            ForEach(client.unavailableApprovalOutcomes.subtracting(client.approvalOutcomes.keys).sorted(), id: \.self) { id in
                 Text("Approval evidence unavailable: \(id). Direct policy controls remain available.")
             }
             Divider()

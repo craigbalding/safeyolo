@@ -587,10 +587,13 @@ def run(args: argparse.Namespace) -> None:
         assert guest(args.worker, "GET", f"http://127.0.0.2:{second_port}/{marker}")["status"] == 403
         assert hits == [(port, f"/{marker}")] * 2, "authority reached an unselected caller or port"
         saved = tomllib.loads((root / "policy.toml").read_text())
-        assert saved["agents"][args.worker]["hosts"][f"127.0.0.2:{port}"]["approval_request_id"] == identifier
+        approval_id = view["body"]["approval_id"]
+        assert saved["agents"][args.worker]["hosts"][f"127.0.0.2:{port}"]["approval_id"] == approval_id
+        receipt = json.loads(saved["approval_results"][approval_id])
+        assert receipt["authority_digest"] == view["body"]["authority_digest"]
         result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
                   "proxy_sha256": proxy_identity["sha256"], "runtime": runtime, "guests": guests, "request_id": identifier,
-                  "action": action, "effect": view["body"]["effect"], "origin_hits": hits,
+                  "approval_id": approval_id, "action": action, "effect": view["body"]["effect"], "origin_hits": hits,
                   "scope_controls": "Helper and second port refused"}
         if args.interfaces:
             result["interface"] = {"native_helper": helper_identity,

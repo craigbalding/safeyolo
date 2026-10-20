@@ -76,6 +76,7 @@ fn context() -> AppliedContext {
 }
 fn destination(path: &str, port: u16) -> super::super::Destination {
     super::super::Destination {
+        selected_ip: None,
         host: "127.0.0.2".into(),
         policy_host: "127.0.0.2".into(),
         port,
@@ -457,6 +458,16 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
         .filter(|event| event["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 7);
+    assert!(events.iter().all(|event| !matches!(
+        event["event"].as_str(),
+        Some("traffic.connection" | "traffic.connect_request")
+    )));
+    assert!(
+        egress
+            .iter()
+            .all(|event| event["details"].get("target").is_none()
+                && event["details"].get("stage").is_none())
+    );
     assert!(
         egress
             .iter()
@@ -468,6 +479,9 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     let second = store.get_flow(2).unwrap().unwrap();
     let third = store.get_flow(3).unwrap().unwrap();
     let fourth = store.get_flow(4).unwrap().unwrap();
+    for ordinary in [&first, &second, &third, &fourth] {
+        assert!(ordinary["connection_json"].is_null());
+    }
     assert_eq!(first["evidence_owner"], "alice");
     assert_eq!(first["test_agent"], "declared-tool");
     assert_eq!(first["source_id"], "192.0.2.20");

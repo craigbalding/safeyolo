@@ -9,6 +9,13 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "connect-route-wait-seconds"
+source = "proxy/src/tunnels.rs"
+pattern = 'ROUTE_WAIT: Duration = Duration::from_secs\((?P<seconds>\d+)\)'
+docs = ["docs/CONFIGURATION.md", "cli/src/safeyolo/agent_context/skills/safeyolo/references/troubleshooting.md"]
+must_contain_any = ["{seconds}-second", "{seconds} seconds"]
+
+[[assertion]]
 name = "vm-proxy-admission"
 source = "cli/src/safeyolo/guest-proxy-forwarder.sh"
 pattern = 'max-children=(?P<maximum>\d+),backlog=(?P<backlog>\d+)'
@@ -196,7 +203,7 @@ must_contain = "port {port}"
 [[assertion]]
 name = "approval-audit-http-confirmed"
 source = "proxy/src/http.rs"
-pattern = 'runtime\.audit\.emit_confirmed\(audit\.to_event\(\)\)\.await'
+pattern = 'let submission = if audit\.kind == agent_api::AuditKind::FlowReadAll[\s\S]*?is_some_and\(\|approval\| approval\.required\)[\s\S]*?runtime\.audit\.emit_confirmed\(event\)\.await'
 docs = ["docs/proxy-parity.md"]
 must_contain = "Approval-bearing Agent API requests"
 

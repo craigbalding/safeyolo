@@ -102,10 +102,12 @@ def origin_certificate(directory):
 class Origin(socketserver.ThreadingTCPServer):
     def __init__(self, pem, protocols, *, race_window=0, max_streams=100, capture_frames=False,
                  keylog=None, port=0, goaway_after=None, idle_timeout=5, response_bytes=0,
-                 early_response=False, first_tls_gate=None):
+                 early_response=False, first_tls_gate=None, host="127.0.0.1"):
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.context.load_cert_chain(pem)
         self.context.set_alpn_protocols(protocols)
+        self.sni = []
+        self.context.set_servername_callback(lambda _stream, name, _context: self.sni.append(name))
         if keylog is not None:
             self.context.keylog_filename = str(keylog)
         self.protocols = protocols
@@ -127,7 +129,8 @@ class Origin(socketserver.ThreadingTCPServer):
         self.early_response = early_response
         self.first_tls_gate = first_tls_gate
         self.first_tls_hello = threading.Event()
-        super().__init__(("127.0.0.1", port), OriginHandler)
+        self.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        super().__init__((host, port), OriginHandler)
 
     def get_request(self):
         request = super().get_request()
@@ -137,7 +140,8 @@ class Origin(socketserver.ThreadingTCPServer):
 
     @property
     def authority(self):
-        return f"127.0.0.1:{self.server_address[1]}"
+        host = self.server_address[0]
+        return f"[{host}]:{self.server_address[1]}" if ":" in host else f"{host}:{self.server_address[1]}"
 
 
 class OriginHandler(socketserver.BaseRequestHandler):

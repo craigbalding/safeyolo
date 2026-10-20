@@ -98,12 +98,13 @@ where
         body,
         source_request_id,
         None,
+        None,
     )
     .await
 }
 
-/// Internal production entry point that supplies the process-owned plumb
-/// mailbox without exposing that private owner type through `Controls`.
+/// Internal production entry point that supplies runtime approval checks and
+/// the plumb mailbox without exposing private owners through `Controls`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     request: Request<'_>,
@@ -115,6 +116,7 @@ pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     body: RequestBody<'_, B>,
     source_request_id: Option<&str>,
     plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
+    state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome<'p>, B::Error>
 where
     B: Body<Data = Bytes> + Unpin,
@@ -158,6 +160,7 @@ where
                 request,
                 controls.audit,
                 policy,
+                state,
                 id,
                 crate::policy::evidence::Read::Diagnostic,
             )
@@ -169,7 +172,7 @@ where
         let PolicyState::Ready(policy) = &policy else {
             return Ok(response(503, json!({"error":"policy unavailable"})));
         };
-        return approvals::respond(request, controls.audit, policy, body).await;
+        return approvals::respond(request, controls.audit, policy, state, body).await;
     }
     if route(request) == "/trace" {
         return Ok(trace::respond(request, controls.traces));

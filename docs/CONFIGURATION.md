@@ -113,13 +113,69 @@ rejected. IP addresses, wildcards, domain suffixes, URL paths and port filters
 are not supported. A listed host does not include its subdomains or redirect
 destinations. Selection uses the logical request destination and trusted
 listener identity. Request headers and resolved addresses cannot select the
-parent. CONNECT retains its admitted authority for inner requests. A selected
+parent. After CONNECT binds its logical name, inner requests retain that name
+and port. A selected
 parent connection, TLS or CONNECT failure does not fall back to direct egress.
 
 Runtime listeners, audit, trace and capture settings take effect on restart.
 Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
 values and zero/negative handling in [settings](settings.md).
+
+### Select a target IP
+
+On the host, edit the active instance's `config.toml` and restart SafeYolo.
+Add `target_ip_mappings` as a top-level key. In this example, replace
+`example.com` and `203.0.113.42` with the permitted hostname and owned endpoint.
+The endpoint must serve a certificate valid for that hostname. Agent `zx`
+must already exist:
+
+```toml
+target_ip_mappings = [{host="example.com", ip="203.0.113.42", port=443, agents=["zx"]}]
+```
+
+Agent `zx` can then make an ordinary `https://example.com/` request. SafeYolo
+uses that IP and retains `example.com` for TLS verification, inspection and
+hostname policy. A selected parent receives `CONNECT 203.0.113.42:443`.
+The parent needs no destination-reporting extension. IPv6 literals are also
+accepted in `ip`, without brackets. Omit `port` to match any requested port;
+the mapping does not change the port. Omit `agents`, or use `[]`, to apply the
+mapping to all agents. An empty mapping list retains ordinary routing.
+
+Hostnames match exactly, ignoring ASCII case and one final root dot. Wildcards,
+URLs and numeric mapping hostnames are invalid. Different IPs in overlapping
+hostname, port and agent scopes are rejected at startup. Duplicate entries
+that select the same IP are allowed. An explicit client IP that conflicts with
+an applicable operator mapping fails; neither selection silently replaces the
+other. Changing runtime mappings requires a restart. Policy changes take
+effect through the existing policy lifecycle. A request in an admitted tunnel
+retains its endpoint and receives current policy checks; a conflicting mapping
+refuses the request instead of moving it. New connections use the current
+configuration.
+
+Both the hostname and selected IP/port receive the applicable network checks.
+Credential and service checks retain their logical destination. Existing
+allow, deny and approval defaults apply. The selected IP can differ from DNS;
+SafeYolo does not require a DNS lookup to validate the selection. Reserved
+local destinations, protected Admin endpoints and provider routes retain
+their containment. A mapping does not redirect those routes.
+
+For client-selected addresses, agents can use ordinary curl `--connect-to`.
+See the [agent example and failure diagnosis](../cli/src/safeyolo/agent_context/skills/safeyolo/references/troubleshooting.md#select-a-target-ip).
+A numeric CONNECT waits for client protocol/name information only when that
+information is needed to choose the route. This wait has a fixed 30-second
+deadline. Timeout or cancellation closes it without an outbound attempt.
+Server-first clients cannot use this ambiguous path. Known routes retain
+server-first behavior, and literal-IP TLS can omit DNS SNI. Later HTTP
+requests remain bound to the accepted logical name, endpoint and port.
+
+The CONNECT response contains `X-SafeYolo-Request-Id`, including when later
+TLS fails. Its 2xx status acknowledges the client tunnel; use the linked
+canonical [explanation](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#selected-ip-connection-evidence)
+for actual direct/parent connection, TLS and HTTP outcomes. Eligible stored
+exchanges and live traffic retain the same target association. Existing
+capture and ownership rules still apply. Old stored rows leave new metadata
+unknown. A parent's requested endpoint is not an observed origin socket peer.
 
 ## Workspace and memory
 

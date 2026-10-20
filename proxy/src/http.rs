@@ -51,6 +51,7 @@ mod network_trace;
 mod probe;
 mod request_body;
 mod request_context;
+mod selected_ip;
 mod test_context;
 #[cfg(test)]
 mod trace_tests;
@@ -429,7 +430,7 @@ pub(crate) fn response(status: StatusCode, message: &str) -> Response<Body> {
         .unwrap()
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct PolicyRequest<'a> {
     agent_id: &'a str,
     connection_id: &'a str,
@@ -470,11 +471,13 @@ pub(crate) struct Destination {
     uri_authority: String,
     scheme: String,
     path: String,
+    selected_ip: Option<selected_ip::SelectedIp>,
 }
 
 /// CONNECT owns one admitted endpoint and its first destination connection.
 /// Inner requests may consume that connection only after their own checks pass.
 pub(crate) struct Tunnel {
+    connect_request_id: String,
     destination: Destination,
     upstream: tokio::sync::Mutex<Option<Connected>>,
     sessions: upstream_h2::Sessions,
@@ -565,6 +568,13 @@ impl Destination {
             }
         }
         Ok(Self {
+            selected_ip: tunnel
+                .and_then(|tunnel| tunnel.selected_ip.clone())
+                .or_else(|| {
+                    (request.method() == Method::CONNECT)
+                        .then(|| host.parse().ok().map(selected_ip::SelectedIp::client))
+                        .flatten()
+                }),
             host,
             policy_host,
             port,
@@ -642,6 +652,29 @@ struct AllowedRequest<'a> {
     destination: &'a Destination,
     identity: &'a ConnectionIdentity,
     request_id: &'a str,
+    recording: Option<&'a flow_recording::Recording>,
+}
+
+impl AllowedRequest<'_> {
+    fn observe_upstream(
+        &self,
+        observation: &mut crate::traffic_view::UpstreamConnectionObservation,
+        live: Option<&crate::traffic_view::Exchange>,
+        stage: &str,
+        outcome: &str,
+    ) {
+        if observation.target.is_null() {
+            return;
+        }
+        observation.target["stage"] = json!(stage);
+        observation.target["outcome"] = json!(outcome);
+        if let Some(recording) = self.recording {
+            recording.connection(observation);
+        }
+        if let Some(live) = live {
+            live.upstream_connection(observation.clone());
+        }
+    }
 }
 
 /// The target form for ordinary HTTP/1 requests on the selected stream.
@@ -942,6 +975,9 @@ async fn open_egress_for_flow(
     phase_timeout: Option<Duration>,
 ) -> Result<Connected, Error> {
     let destination = allowed.destination;
+    // A numeric selection through an ordinary parent must not be re-resolved
+    // from an absolute HTTP request's logical hostname either.
+    let tunnel = tunnel || destination.selected_ip.is_some();
     if probe::is_host(&destination.host) {
         return Err(probe::refuse_transport(
             runtime,
@@ -953,9 +989,14 @@ async fn open_egress_for_flow(
         return Err("reserved destination cannot egress".into());
     }
     let parent = parent_for_destination(runtime, allowed.identity, destination);
+    let parent_url = parent.and(runtime.config.parent_proxy.as_deref());
+    let endpoint = destination
+        .selected_ip
+        .as_ref()
+        .map_or_else(|| destination.host.clone(), |target| target.ip.to_string());
     let (host, port, tls, route_name) = match parent {
         Some(parent) => (parent.host.as_str(), parent.port, parent.tls, "parent"),
-        None => (destination.host.as_str(), destination.port, false, "direct"),
+        None => (endpoint.as_str(), destination.port, false, "direct"),
     };
     if is_reserved(host) {
         return Err("reserved destination cannot be an egress route".into());
@@ -963,6 +1004,9 @@ async fn open_egress_for_flow(
     if runtime
         .admin_shield
         .blocks_host(&destination.host, destination.port)
+        || runtime
+            .admin_shield
+            .blocks_request_destination(&endpoint, destination.port)
         || runtime.admin_shield.blocks_host(host, port)
     {
         return Err(AdminPortAccess.into());
@@ -979,10 +1023,25 @@ async fn open_egress_for_flow(
         route,
         started,
     );
+    if destination.selected_ip.is_some() {
+        observation.target = selected_ip::facts(destination);
+        observation.target["route"] = json!(route_name);
+        observation.target["parent"] = json!(parent_url);
+    }
+    allowed.observe_upstream(&mut observation, live, "connection_attempt", "pending");
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
     let record_egress = || {
+        let mut details = json!({
+            "host": destination.host, "port": destination.port, "route": route_name,
+        });
+        if destination.selected_ip.is_some() {
+            details["target"] = selected_ip::facts(destination);
+            details["parent"] = json!(parent_url);
+            details["stage"] = json!("connection_attempt");
+            details["outcome"] = json!("pending");
+        }
         if let Err(error) = runtime.audit.emit(allowed.identity.request_event(
             "traffic.egress",
             crate::audit::Kind::Traffic,
@@ -992,11 +1051,7 @@ async fn open_egress_for_flow(
                 crate::network_guard::sanitize(&destination.host),
                 destination.port
             ),
-            json!({
-            "host": destination.host,
-            "port": destination.port,
-            "route": route_name
-            }),
+            details,
         )) {
             // Route observation cannot revoke already-admitted transport.
             eprintln!("Egress audit submission failed: {error}");
@@ -1015,10 +1070,14 @@ async fn open_egress_for_flow(
     let connecting: Result<TcpStream, Error> = resolve_and_connect_egress(
         phase_timeout,
         || async move {
-            tokio::net::lookup_host((host, port))
-                .await
-                .map(|addresses| addresses.collect())
-                .map_err(Into::into)
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                Ok(vec![std::net::SocketAddr::new(ip, port)])
+            } else {
+                tokio::net::lookup_host((host, port))
+                    .await
+                    .map(|addresses| addresses.collect())
+                    .map_err(Into::into)
+            }
         },
         |address| async move { TcpStream::connect(address).await.map_err(Into::into) },
         |address| {
@@ -1042,12 +1101,53 @@ async fn open_egress_for_flow(
     let socket = match connecting {
         Ok(socket) => socket,
         Err(error) => {
+            if destination.selected_ip.is_some() {
+                observation.target["reason"] = json!(error.to_string());
+            }
+            allowed.observe_upstream(
+                &mut observation,
+                live,
+                if direct {
+                    "direct_connect"
+                } else {
+                    "parent_tcp"
+                },
+                "failed",
+            );
+            selected_ip::record(
+                runtime,
+                allowed.identity,
+                allowed.request_id,
+                destination,
+                if direct {
+                    "direct_connect"
+                } else {
+                    "parent_tcp"
+                },
+                "failed",
+                json!({"route": route_name, "reason": error.to_string(), "outbound": if recorded { "attempted" } else { "not_attempted" }}),
+            );
             if let Some(observation) = &mut connection_audit {
                 observation.failed(&error.to_string());
             }
             return Err(error);
         }
     };
+    selected_ip::record(
+        runtime,
+        allowed.identity,
+        allowed.request_id,
+        destination,
+        if direct {
+            "direct_connect"
+        } else {
+            "parent_tcp"
+        },
+        "complete",
+        json!({"route": route_name, "direct_peer": if direct { Some(socket.peer_addr()?.to_string()) } else { None },
+            "parent": parent_url,
+            "outbound": "connected"}),
+    );
     let peer = if direct {
         let setup = crate::circuit_runtime::now();
         observation.tcp_setup = Some(setup);
@@ -1056,6 +1156,9 @@ async fn open_egress_for_flow(
         }
         let address = socket.peer_addr()?;
         observation.peer = Some(address);
+        if destination.selected_ip.is_some() {
+            observation.target["direct_peer"] = json!(address.to_string());
+        }
         match address.ip() {
             std::net::IpAddr::V4(address) => Some(address),
             _ => None,
@@ -1097,6 +1200,16 @@ async fn open_egress_for_flow(
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
+    allowed.observe_upstream(
+        &mut observation,
+        live,
+        if direct {
+            "direct_connect"
+        } else {
+            "parent_tcp"
+        },
+        "complete",
+    );
     let parent_connection: Result<BoxStream, Error> = async {
         let mut stream: BoxStream = if tls {
             let name = ServerName::try_from(host.to_owned())?;
@@ -1104,15 +1217,24 @@ async fn open_egress_for_flow(
                 .tls
                 .clone()
                 .ok_or("HTTPS parent TLS was not configured")?;
-            Box::new(
-                refresh_parent_tls_phase(phase_timeout, async {
+            selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "pending", json!({"parent": parent_url, "verification_name": host}));
+            let tls = refresh_parent_tls_phase(phase_timeout, async {
                     TlsConnector::from(tls)
                         .connect(name, socket)
                         .await
                         .map_err(Into::into)
                 })
-                .await?,
-            )
+                .await;
+            match tls {
+                Ok(tls) => {
+                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}));
+                    Box::new(tls)
+                }
+                Err(error) => {
+                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "failed", json!({"parent": parent_url, "verification_name": host, "reason": error.to_string()}));
+                    return Err(error);
+                }
+            }
         } else {
             socket
         };
@@ -1126,10 +1248,10 @@ async fn open_egress_for_flow(
             let task = HttpTask::unobserved(allowed.tasks.spawn(async move {
                 let _ = connection.with_upgrades().await;
             }));
-            let target = if destination.host.contains(':') {
-                format!("[{}]:{}", destination.host, destination.port)
+            let target = if endpoint.contains(':') {
+                format!("[{}]:{}", endpoint, destination.port)
             } else {
-                format!("{}:{}", destination.host, destination.port)
+                format!("{}:{}", endpoint, destination.port)
             };
             let request = Request::builder()
                 .method(Method::CONNECT)
@@ -1141,6 +1263,15 @@ async fn open_egress_for_flow(
                 sender.send_request(request).await.map_err(Into::into)
             })
             .await?;
+            if destination.selected_ip.is_some() {
+                observation.target["parent_requested_target"] = json!(target);
+                observation.target["parent_connect_status"] = json!(response.status().as_u16());
+            }
+            allowed.observe_upstream(&mut observation, live, "parent_connect", if response.status().is_success() { "complete" } else { "failed" });
+            selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_connect",
+                if response.status().is_success() { "complete" } else { "failed" },
+                json!({"route": "parent", "parent": parent_url, "parent_requested_target": target,
+                    "parent_connect_status": response.status().as_u16(), "direct_peer": null, "outbound": "attempted"}));
             if !response.status().is_success() {
                 return Err("parent proxy refused CONNECT".into());
             }
@@ -1157,6 +1288,19 @@ async fn open_egress_for_flow(
     let mut stream = match parent_connection {
         Ok(stream) => stream,
         Err(error) => {
+            if destination.selected_ip.is_some() {
+                observation.target["reason"] = json!(error.to_string());
+            }
+            allowed.observe_upstream(&mut observation, live, "parent_connection", "failed");
+            selected_ip::record(
+                runtime,
+                allowed.identity,
+                allowed.request_id,
+                destination,
+                "parent_connection",
+                "failed",
+                json!({"route": route_name, "reason": error.to_string(), "outbound": "attempted"}),
+            );
             if let Some(observation) = &mut connection_audit {
                 observation.failed(&error.to_string());
             }
@@ -1247,18 +1391,65 @@ async fn open_outbound(
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         }
         let name = ServerName::try_from(destination.host.clone())?;
+        if destination.selected_ip.is_some() {
+            connection.observation.target["tls_verification_name"] = json!(destination.host);
+        }
+        allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "pending");
+        selected_ip::record(
+            runtime,
+            allowed.identity,
+            allowed.request_id,
+            destination,
+            "origin_tls",
+            "pending",
+            json!({"verification_name": destination.host}),
+        );
         let tls = refresh_origin_tls_phase(phase_timeout, async {
             TlsConnector::from(Arc::new(config))
                 .connect(name, stream)
                 .await
                 .map_err(Into::into)
         })
-        .await?;
+        .await;
+        let tls = match tls {
+            Ok(tls) => tls,
+            Err(error) => {
+                if destination.selected_ip.is_some() {
+                    connection.observation.target["reason"] = json!(error.to_string());
+                }
+                allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "failed");
+                selected_ip::record(
+                    runtime,
+                    allowed.identity,
+                    allowed.request_id,
+                    destination,
+                    "origin_tls",
+                    "failed",
+                    json!({"verification_name": destination.host, "reason": error.to_string()}),
+                );
+                return Err(error);
+            }
+        };
+        selected_ip::record(
+            runtime,
+            allowed.identity,
+            allowed.request_id,
+            destination,
+            "origin_tls",
+            "complete",
+            json!({"verification_name": destination.host, "certificate_verified": true}),
+        );
         http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
         stream = Box::new(tls);
         let completed = crate::circuit_runtime::now();
         connection.observation.tls_setup = Some(completed);
+        if destination.selected_ip.is_some() {
+            connection.observation.target["tls_verification_name"] = json!(destination.host);
+            connection.observation.target["tls_result"] = json!("certificate_verified");
+        }
+        allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "complete");
         if let Some(live) = live {
+            live.upstream_connection(connection.observation.clone());
             live.upstream_tls(completed);
         }
     }
@@ -1346,7 +1537,23 @@ async fn decide(
             trace.error("GuardError");
         }
         let outcome = result?;
-        if let Some(event) = approval_event {
+        let mut pending = None;
+        if let Some(mut event) = approval_event {
+            pending = crate::approvals::pending::bind_network(
+                &runtime.audit,
+                policy,
+                &mut event,
+                &crate::policy::NetworkRequest {
+                    agent: identity.request_agent(),
+                    host: request.host,
+                    port: Some(request.port),
+                    method: request.method,
+                    path: request.path,
+                },
+                request.scheme,
+                runtime.credential_guard.as_ref(),
+            )
+            .await?;
             if let Err(error) = runtime.audit.emit_confirmed(event).await {
                 if let Some(trace) = &trace {
                     trace.error("AuditError");
@@ -1373,14 +1580,20 @@ async fn decide(
             "trace": outcome.trace,
             "trace_requested": request.trace_requested,
             "metadata": outcome.metadata,
-            "pdp": outcome.pdp
+            "pdp": outcome.pdp,
+            "approval_id": (outcome.kind == OutcomeKind::Allowed).then(||
+                policy.network_approval(identity.request_agent(), request.host, request.port)).flatten()
             }),
         ))?;
         let allow = outcome.kind != OutcomeKind::Blocked;
         let (status, headers, body) = match outcome.response {
             Some(response) => {
                 let body = String::from_utf8(response.body_bytes())?;
-                (Some(response.status), response.headers, Some(body))
+                let mut headers = response.headers;
+                if let Some(record) = &pending {
+                    headers.push(("x-safeyolo-approval-id".into(), record.approval_id.clone()));
+                }
+                (Some(response.status), headers, Some(body))
             }
             None => (None, Vec::new(), None),
         };
@@ -1463,7 +1676,8 @@ fn record_agent_api(
 // destination, and upgrade ownership explicitly, as `forward` does.
 #[allow(clippy::too_many_arguments)]
 async fn local_agent_api<B>(
-    runtime: &Runtime,
+    runtime: &Arc<Runtime>,
+    state: &RuntimeState,
     traffic: Arc<traffic::Traffic>,
     identity: &ConnectionIdentity,
     request_id: &str,
@@ -1591,6 +1805,7 @@ where
             },
             Some(request_id),
             Some(runtime.plumb.as_ref()),
+            Some(state),
         )
         .await?
     } else {
@@ -1603,15 +1818,24 @@ where
     if !outcome.audit_owned
         && let Some(audit) = &outcome.audit
     {
+        let mut event = audit.to_event();
+        let pending =
+            crate::approvals::pending::bind_agent_request(runtime, &mut event, request_id).await?;
+        if let Some(record) = &pending {
+            outcome
+                .response
+                .headers
+                .push(("x-safeyolo-approval-id".into(), record.approval_id.clone()));
+        }
         let submission = if audit.kind == agent_api::AuditKind::FlowReadAll
             || audit
                 .approval
                 .as_ref()
                 .is_some_and(|approval| approval.required)
         {
-            runtime.audit.emit_confirmed(audit.to_event()).await
+            runtime.audit.emit_confirmed(event).await
         } else {
-            runtime.audit.emit(audit.to_event()).map(|_| ())
+            runtime.audit.emit(event).map(|_| ())
         };
         if let Err(error) = submission {
             evidence_failed = true;
@@ -1942,6 +2166,7 @@ async fn execute_refresh(
     let outbound = open_outbound(
         runtime,
         &AllowedRequest {
+            recording: None,
             tasks,
             destination: &destination,
             identity,
@@ -2192,6 +2417,7 @@ where
         {
             let reply = local_agent_api(
                 &runtime,
+                &state,
                 traffic
                     .as_ref()
                     .expect("ordinary local HTTP traffic")
@@ -2271,38 +2497,52 @@ where
     if let Some(trace) = &trace {
         trace.enable(hygiene.trace_requested);
     }
-    let decision = decide(
-        &runtime,
-        identity,
-        &PolicyRequest {
-            agent_id: identity.request_agent().unwrap_or(""),
-            connection_id: &identity.connection_id,
-            request_id,
-            method: request.method().as_str(),
-            // CONNECT carries an authority, without an HTTP scheme or path.
-            // Routing defaults must not become path-condition policy inputs.
-            scheme: if request.method() == Method::CONNECT {
-                ""
-            } else {
-                &destination.scheme
-            },
-            host: &destination.policy_host,
-            port: destination.port,
-            path: if request.method() == Method::CONNECT {
-                ""
-            } else {
-                &destination.path
-            },
-            header_names: ordered_headers
-                .iter()
-                .map(|(name, _)| std::str::from_utf8(name))
-                .collect::<Result<_, _>>()?,
-            body_present,
-            trace_requested: hygiene.trace_requested,
+    let policy_request = PolicyRequest {
+        agent_id: identity.request_agent().unwrap_or(""),
+        connection_id: &identity.connection_id,
+        request_id,
+        method: request.method().as_str(),
+        // CONNECT carries an authority, without an HTTP scheme or path.
+        // Routing defaults must not become path-condition policy inputs.
+        scheme: if request.method() == Method::CONNECT {
+            ""
+        } else {
+            &destination.scheme
         },
-        trace.as_ref(),
-    )
-    .await?;
+        host: &destination.policy_host,
+        port: destination.port,
+        path: if request.method() == Method::CONNECT {
+            ""
+        } else {
+            &destination.path
+        },
+        header_names: ordered_headers
+            .iter()
+            .map(|(name, _)| std::str::from_utf8(name))
+            .collect::<Result<_, _>>()?,
+        body_present,
+        trace_requested: hygiene.trace_requested,
+    };
+    let mut decision = decide(&runtime, identity, &policy_request, trace.as_ref()).await?;
+    // Both identities use the existing guard and approval owner. Hostname
+    // permission never suppresses a selected endpoint's applicable policy.
+    if decision.allow
+        && let Some(target) = &destination.selected_ip
+    {
+        let ip = target.ip.to_string();
+        if destination.host != ip {
+            decision = decide(
+                &runtime,
+                identity,
+                &PolicyRequest {
+                    host: &ip,
+                    ..policy_request.clone()
+                },
+                trace.as_ref(),
+            )
+            .await?;
+        }
+    }
     if decision.allow != (decision.decision == "allow") {
         return Err("inconsistent policy decision".into());
     }
@@ -2350,8 +2590,9 @@ where
         if protected_parent {
             return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
         }
-        // Admission precedes DNS/dial. Eager connection supports protocols whose
-        // server greets the client before receiving any client bytes.
+        // Only a numeric CONNECT with hostname-dependent routing needs to wait.
+        // Known routes retain their existing server-first establishment.
+        let deferred = selected_ip::route_needs_name(&runtime, identity, destination);
         // Source logging selects a destination before DNS. Keep the existing
         // later transport matcher, including its resolved-peer behavior.
         // Freeze the generation used for admission before DNS/dial. The same
@@ -2369,31 +2610,44 @@ where
                 host: &destination.host,
                 port: destination.port,
             });
-        let connected = open_egress_for_flow(
-            &runtime,
-            &AllowedRequest {
-                tasks: &upgrades,
-                destination,
-                identity,
-                request_id,
-            },
-            true,
-            Some(&passthrough_matcher),
-            ignored,
-            live.as_deref(),
-            None,
-        )
-        .await?;
-        let Connected {
-            stream,
-            h1_request_form,
-            peer,
-            observation,
-        } = connected;
-        let passthrough = passthrough_matcher.matches(&destination.host, destination.port, peer);
+        let connected = if deferred {
+            None
+        } else {
+            Some(
+                open_egress_for_flow(
+                    &runtime,
+                    &AllowedRequest {
+                        recording: None,
+                        tasks: &upgrades,
+                        destination,
+                        identity,
+                        request_id,
+                    },
+                    true,
+                    Some(&passthrough_matcher),
+                    ignored,
+                    live.as_deref(),
+                    None,
+                )
+                .await?,
+            )
+        };
+        let passthrough = !deferred
+            && passthrough_matcher.matches(
+                &destination.host,
+                destination.port,
+                connected.as_ref().and_then(|connection| connection.peer),
+            );
+        let mut waiting = selected_ip::RouteWaitAudit::new(
+            runtime.clone(),
+            identity,
+            request_id,
+            destination,
+            deferred,
+        );
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();
-        let destination = destination.clone();
+        let mut destination = destination.clone();
         let request_id = request_id.to_owned();
         if !allow_upgrades {
             return Err("nested CONNECT is unsupported".into());
@@ -2401,6 +2655,7 @@ where
         let mut stop = upgrades.stop.clone();
         let descendants = upgrades.clone();
         upgrades.spawn_upgrade(async move {
+            let mut outbound_attempted = !deferred;
             let result: Result<(), Error> = async {
                 if *stop.borrow() {
                     return Ok(());
@@ -2408,6 +2663,10 @@ where
                 let client: BoxStream = tokio::select! {
                     _ = stop.changed() => return Ok(()),
                     result = upgrade => Box::new(TokioIo::new(result?)),
+                };
+                let (stream, connection_facts) = match connected {
+                    Some(Connected { stream, h1_request_form, peer, observation }) => (Some(stream), Some((h1_request_form, peer, observation))),
+                    None => (None, None),
                 };
                 let classification = if passthrough {
                     tunnels::Classification {
@@ -2417,14 +2676,67 @@ where
                         tls_server_name: None,
                     }
                 } else {
-                    tunnels::classify(client, stream, &mut stop).await?
+                    match tunnels::classify(client, stream, &mut stop).await {
+                        Ok(classification) => classification,
+                        Err(error) => {
+                            waiting.end(match error.downcast_ref::<tunnels::RouteWaitEnded>() {
+                                Some(tunnels::RouteWaitEnded::Timeout) => "timeout",
+                                Some(tunnels::RouteWaitEnded::Cancelled | tunnels::RouteWaitEnded::ClientClosed) => "cancelled",
+                                None => "failed",
+                            });
+                            return Err(error);
+                        }
+                    }
                 };
                 let tunnels::Classification {
                     protocol: classified_protocol,
                     client,
-                    mut server,
+                    server,
                     tls_server_name,
                 } = classification;
+                waiting.end("complete");
+                if classified_protocol == Protocol::Tls && selected_ip::bind_tls_name(&mut destination, tls_server_name.as_deref())? {
+                    selected_ip::apply_mapping(&mut destination, &runtime, &identity)?;
+                    if is_reserved(&destination.host) || probe::is_host(&destination.host) {
+                        return Err("reserved logical destination cannot use a selected IP".into());
+                    }
+                    if runtime.admin_shield.blocks_request_destination(&destination.host, destination.port) {
+                        return Err(AdminPortAccess.into());
+                    }
+                    if runtime.policy.as_ref().and_then(crate::policy::Policy::gateway)
+                        .and_then(|gateway| gateway.provider_for_host(&destination.policy_host)).is_some() {
+                        return Err("provider destination cannot use an ordinary selected-IP tunnel".into());
+                    }
+                    let decision = decide(&runtime, &identity, &PolicyRequest {
+                        agent_id: identity.request_agent().unwrap_or(""), connection_id: &identity.connection_id,
+                        request_id: &request_id, method: "CONNECT", scheme: "", host: &destination.policy_host,
+                        port: destination.port, path: "", header_names: Vec::new(), body_present: false, trace_requested: false,
+                    }, None).await?;
+                    if !decision.allow {
+                        return Err("logical hostname policy refused CONNECT".into());
+                    }
+                    selected_ip::record(&runtime, &identity, &request_id, &destination, "logical_target", "allowed", json!({"outbound": if deferred { "not_attempted" } else { "connected" }}));
+                }
+                if *stop.borrow() {
+                    return Err(tunnels::RouteWaitEnded::Cancelled.into());
+                }
+                let (mut server, h1_request_form, peer, mut observation) = match (server, connection_facts) {
+                    (Some(server), Some((form, peer, observation))) => (server, form, peer, observation),
+                    (None, None) => {
+                        let ignored = passthrough_matcher.matches(&destination.host, destination.port, None)
+                            .then_some(crate::ignored_host_logger::SelectedDestination { host: &destination.host, port: destination.port });
+                        outbound_attempted = true;
+                        let Connected { stream, h1_request_form, peer, observation } = open_egress_for_flow(
+                            &runtime, &AllowedRequest { recording: None, tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
+                            true, Some(&passthrough_matcher), ignored, None, None,
+                        ).await?;
+                        (stream, h1_request_form, peer, observation)
+                    }
+                    _ => unreachable!("CONNECT classification preserves its upstream owner"),
+                };
+                if destination.selected_ip.is_some() {
+                    observation.target["logical_host"] = json!(destination.host);
+                }
                 let protocol = classified_protocol;
                 let sni_passthrough = !passthrough
                     && protocol == Protocol::Tls
@@ -2479,19 +2791,28 @@ where
                         .as_ref()
                         .ok_or("TLS CA is not configured")?
                         .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
+                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "pending", json!({"verification_name": destination.host}));
                     let tls = tokio::select! {
-                        _ = stop.changed() => return Ok(()),
-                        result = TlsAcceptor::from(config).accept(client) => result?,
+                        _ = stop.changed() => Err("client TLS cancelled".into()),
+                        result = TlsAcceptor::from(config).accept(client) => result.map_err(|error| -> Error { error.into() }),
                     };
+                    let tls = match tls {
+                        Ok(tls) => tls,
+                        Err(error) => {
+                            selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "failed", json!({"reason": error.to_string(), "verification_name": destination.host}));
+                            return Err(error);
+                        }
+                    };
+                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "complete", json!({"verification_name": destination.host}));
                     let http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
                     (Box::new(tls), http2, "https")
                 } else {
                     (client, false, "http")
                 };
-                let mut destination = destination;
                 destination.scheme = scheme.into();
                 let tunnel = Arc::new(Tunnel {
-                    destination,
+                    connect_request_id: request_id.clone(),
+                    destination: destination.clone(),
                     sessions: upstream_h2::Sessions::default(),
                     connected_runtime: Arc::downgrade(&runtime),
                     upstream: tokio::sync::Mutex::new(Some(Connected {
@@ -2501,10 +2822,11 @@ where
                         observation,
                     })),
                 });
-                serve_tunnel_http(state, identity, tunnel, client, http2, stop, descendants).await
+                serve_tunnel_http(state, identity.clone(), tunnel, client, http2, stop, descendants).await
             }
             .await;
             if let Err(error) = result {
+                selected_ip::record(&runtime, &identity, &request_id, &destination, "connect_tunnel", "failed", json!({"reason": error.to_string(), "client_connect_status": 200, "outbound": if outbound_attempted { "attempted" } else { "not_attempted" }, "last_reached_stage": error.downcast_ref::<tunnels::RouteWaitEnded>().map(|_| "route_wait")}));
                 eprintln!("CONNECT {request_id} ended: {error}");
                 return Err(error);
             }
@@ -2598,9 +2920,39 @@ where
         publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
         // Canonical audit is emitted exactly once per guard intent. The
         // attribution is trusted UDS identity; no credential value enters it.
-        for intent in &outcome.audit {
-            let event = intent.event(identity.audit_attribution());
-            if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+        let mut events: Vec<_> = outcome
+            .audit
+            .iter()
+            .map(|intent| intent.event(identity.audit_attribution()))
+            .collect();
+        let pending = crate::approvals::pending::bind_credentials(
+            &runtime.audit,
+            policy,
+            &mut events,
+            &crate::policy::NetworkRequest {
+                agent: identity.request_agent(),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            outcome
+                .response
+                .as_ref()
+                .is_some_and(|reply| reply.status == 428),
+            guard,
+        )
+        .await?;
+        for mut event in events {
+            crate::approvals::pending::correlate_credential(policy, &mut event);
+            if event.decision == Some(crate::audit::Decision::RequireApproval)
+                || (pending.is_some()
+                    && event
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.required))
+            {
                 runtime.audit.emit_confirmed(event).await?;
             } else {
                 runtime.audit.emit(event)?;
@@ -2631,6 +2983,11 @@ where
                 blocked
                     .headers_mut()
                     .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            if let Some(record) = &pending {
+                blocked
+                    .headers_mut()
+                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
             }
             strip_hop_headers(blocked.headers_mut());
             traffic::local_reply(
@@ -2707,6 +3064,12 @@ where
         let provider_name = snapshot
             .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))
             .map(str::to_owned);
+        if provider_name.is_some() && destination.selected_ip.is_some() {
+            return Ok((
+                prior_block(gateway_response(403, "GATEWAY_AUTH_REQUIRED", request_id)?),
+                "deny".into(),
+            ));
+        }
         if ordered_headers
             .recording_pairs()
             .filter(|(_, value)| crate::services::has_gateway_token(value))
@@ -2882,13 +3245,34 @@ where
                                 "connection_id":identity.connection_id,
                             })
                             .into();
-                            if risk.effect == crate::policy::Effect::Prompt {
+                            let pending = if risk.effect == crate::policy::Effect::Prompt {
+                                let pending = crate::approvals::pending::bind_risky(
+                                    &runtime,
+                                    &mut audit,
+                                    crate::policy::NetworkRequest {
+                                        agent: Some(agent),
+                                        host: &destination.policy_host,
+                                        port: Some(destination.port),
+                                        method,
+                                        path: &destination.path,
+                                    },
+                                    &destination.scheme,
+                                    &credential,
+                                )
+                                .await?;
                                 runtime.audit.emit_confirmed(audit).await?;
+                                pending
                             } else {
                                 runtime.audit.emit(audit)?;
-                            }
-                            let reply =
+                                None
+                            };
+                            let mut reply =
                                 gateway_response(status, "GATEWAY_RISKY_ROUTE", request_id)?;
+                            if let Some(record) = pending {
+                                reply
+                                    .headers_mut()
+                                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
+                            }
                             return Ok((prior_block(reply), "deny".into()));
                         }
                     }
@@ -2899,6 +3283,7 @@ where
 "capability": credential.capability,
 "method": request.method().as_str(),
 "path": risky_path
+,"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id)
 })))?;
                 }
                 let full_url = crate::credentials::Secret::new(format!(
@@ -3106,9 +3491,39 @@ where
             }
         };
         publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
-        for intent in &outcome.audit {
-            let event = intent.event(identity.audit_attribution());
-            if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+        let mut events: Vec<_> = outcome
+            .audit
+            .iter()
+            .map(|intent| intent.event(identity.audit_attribution()))
+            .collect();
+        let pending = crate::approvals::pending::bind_credentials(
+            &runtime.audit,
+            policy,
+            &mut events,
+            &crate::policy::NetworkRequest {
+                agent: identity.request_agent(),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            outcome
+                .response
+                .as_ref()
+                .is_some_and(|reply| reply.status == 428),
+            guard,
+        )
+        .await?;
+        for mut event in events {
+            crate::approvals::pending::correlate_credential(policy, &mut event);
+            if event.decision == Some(crate::audit::Decision::RequireApproval)
+                || (pending.is_some()
+                    && event
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.required))
+            {
                 runtime.audit.emit_confirmed(event).await?;
             } else {
                 runtime.audit.emit(event)?;
@@ -3139,6 +3554,11 @@ where
                 blocked
                     .headers_mut()
                     .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            if let Some(record) = &pending {
+                blocked
+                    .headers_mut()
+                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
             }
             strip_hop_headers(blocked.headers_mut());
             traffic::local_reply(
@@ -3350,6 +3770,7 @@ where
         }
     }
     let allowed = AllowedRequest {
+        recording: Some(recording.as_ref()),
         tasks: &upgrades,
         destination,
         identity,
@@ -3378,6 +3799,19 @@ where
         )
     };
     let outbound_http2 = outbound.http2();
+    recording.connection(outbound.observation());
+    // A reused H2 connection's original TLS event belongs to another inner
+    // request. Associate its observed facts with this request explicitly;
+    // explain must not include that sibling to recover connection evidence.
+    selected_ip::record(
+        &runtime,
+        identity,
+        request_id,
+        destination,
+        "upstream_connection",
+        "associated",
+        json!({"upstream": outbound.observation().snapshot()}),
+    );
     *request.uri_mut() = request_uri(
         destination,
         &format!(
@@ -3480,6 +3914,15 @@ where
         }
     };
     completion.headers_received();
+    selected_ip::record(
+        &runtime,
+        identity,
+        request_id,
+        destination,
+        "http_response",
+        "received",
+        json!({"http_status": upstream.status().as_u16()}),
+    );
     let _ = completion.try_finish();
     if let Some(live) = &live {
         let version = format!("{:?}", upstream.version());
@@ -3906,10 +4349,78 @@ pub(crate) fn serve_request(
         );
         let _pending_recording = recording.pending();
         let destination =
-            Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
+            Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination))
+                .and_then(|mut destination| {
+                    if let Err(error) =
+                        selected_ip::apply_mapping(&mut destination, &runtime, &identity)
+                    {
+                        selected_ip::record(
+                            &runtime,
+                            &identity,
+                            &request_id,
+                            &destination,
+                            "target_selection",
+                            "failed",
+                            json!({"reason": error.to_string(), "outbound": "not_attempted"}),
+                        );
+                        return Err(error);
+                    }
+                    if destination.selected_ip.is_some() {
+                        selected_ip::record(
+                            &runtime,
+                            &identity,
+                            &request_id,
+                            &destination,
+                            "target_selection",
+                            "pending_policy",
+                            json!({"outbound": "not_attempted"}),
+                        );
+                    }
+                    Ok(destination)
+                });
+        // A physical connection can carry unrelated requests. Link only the
+        // requests parsed inside this selected-IP CONNECT, including refusals.
+        let connect_link_failed = tunnel
+            .as_ref()
+            .filter(|tunnel| tunnel.destination.selected_ip.is_some())
+            .is_some_and(|tunnel| {
+                runtime
+                    .audit
+                    .emit(identity.request_event(
+                        "traffic.connect_request",
+                        crate::audit::Kind::Traffic,
+                        &request_id,
+                        "HTTP request belongs to CONNECT",
+                        json!({
+                            "host": tunnel.destination.host,
+                            "port": tunnel.destination.port,
+                            "connect_request_id": tunnel.connect_request_id,
+                        }),
+                    ))
+                    .is_err()
+            });
+        if let Ok(destination) = &destination {
+            recording.target(
+                destination,
+                tunnel
+                    .as_ref()
+                    .map(|tunnel| tunnel.connect_request_id.as_str()),
+            );
+        }
         let live = destination.as_ref().ok().and_then(|destination| {
             live_view::begin(&runtime, &identity, &request_id, &request, destination)
         });
+        if let (Some(live), Some(tunnel)) = (
+            &live,
+            tunnel
+                .as_ref()
+                .filter(|tunnel| tunnel.destination.selected_ip.is_some()),
+        ) {
+            live.metadata(&serde_json::Map::from_iter([(
+                "connect_request_id".into(),
+                json!(tunnel.connect_request_id),
+            )]));
+        }
         if destination
             .as_ref()
             .is_ok_and(|destination| probe::is_host(&destination.host))
@@ -4058,7 +4569,7 @@ pub(crate) fn serve_request(
                 evidence_failed: false,
             }
         };
-        let mut local_evidence_failed = circuit.evidence_failed();
+        let mut local_evidence_failed = connect_link_failed || circuit.evidence_failed();
         if matches!(
             circuit,
             crate::circuit_runtime::ResponseOutcome::Exception { .. }

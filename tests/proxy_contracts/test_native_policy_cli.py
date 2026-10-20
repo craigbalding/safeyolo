@@ -458,9 +458,10 @@ def test_installed_credential_approval_keeps_destination_scope(tmp_path):
                    and row["event"] == "security.credential_guard" for row in log_view["events"])
         assert CUSTOM_TOKEN not in logs.stdout
         pending = instance.admin("GET", "/admin/approvals")
-        approval = next(row for row in pending["approvals"] if row.get("request_id") == event["request_id"])
         fingerprint = event["details"]["fingerprint"]
-        assert approval["approval"]["key"] == fingerprint
+        # This listener has no durable agent ID. Its 428 and explicit
+        # fingerprint controls remain usable without assisted authority.
+        assert pending["approvals"] == []
         assert CUSTOM_TOKEN not in json.dumps(pending)
         approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
         assert approved.returncode == 0, approved.stderr
@@ -639,7 +640,7 @@ rules = [{action="credential:use", resource="forbidden.invalid/*", effect="deny"
         for token in tokens:
             event = send(token, expected=428)
             pending = instance.admin("GET", "/admin/approvals")
-            assert any(row.get("request_id") == event["request_id"] for row in pending["approvals"])
+            assert pending["approvals"] == []  # No durable agent IDs in this fixture.
             assert all(secret not in json.dumps(pending) for secret in tokens)
             fingerprint = event["details"]["fingerprint"]
             fingerprints.append(fingerprint)
@@ -1048,8 +1049,13 @@ def test_installed_unlisted_destination_effects(tmp_path, effect, status):
     with origin_server() as origin, native_instance(
         tmp_path, parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
     ) as instance:
-        instance.apply(f'[hosts]\n"*" = {{egress="{effect}"}}\n')
-        delivered(instance, origin, "unlisted.invalid:8123", status=status, pending=effect == "prompt")
+        source = f'[hosts]\n"*" = {{egress="{effect}"}}\n'
+        instance.apply(source)
+        delivered(instance, origin, "unlisted.invalid:8123", status=status)
+        if effect == "prompt":
+            assert instance.admin("GET", "/admin/approvals")["approvals"] == []
+            instance.apply(source + '\n[agents.alice]\nagent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n')
+            delivered(instance, origin, "unlisted.invalid:8123", status=428, pending=True)
 
 
 @pytest.mark.parametrize("global_effect,agent_effect,status", [("deny", "allow", 200), ("allow", "deny", 403)])

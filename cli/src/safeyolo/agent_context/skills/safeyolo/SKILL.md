@@ -59,6 +59,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
 - Read [Troubleshooting and escalation](references/troubleshooting.md) for
   blocked responses, proxy/TLS failures, logs, request correlation, and exact
   host commands to ask the operator to run.
+- For a client-selected destination IP, read [Select a target IP](references/troubleshooting.md#select-a-target-ip).
+  It covers ordinary curl syntax, the CONNECT response ID and linked evidence
+  after a TLS failure. Address acquisition is separate from target selection.
 - Read [Guest tools and privilege](references/guest-tools.md) before installing
   native packages, diagnosing `sudo`, using Linux `setpriv`, or deciding
   whether an operator root shell is actually necessary.
