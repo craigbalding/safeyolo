@@ -40,9 +40,16 @@ must_contain = "~/.safeyolo/data/{key_name}"
 name = "rootfs-size-mb"
 source = "guest/build-rootfs.sh"
 pattern = 'ROOTFS_SIZE_MB="\$\{ROOTFS_SIZE_MB:-(?P<size_mb>\d+)\}"'
-docs = ["guest/README.md"]
+docs = ["guest/README.md", "docs/microvm-architecture.md"]
 must_contain = "{size_mb} MiB"
 forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
+
+[[assertion]]
+name = "vz-writable-overlay-gib"
+source = "proxy/src/host_platform.rs"
+pattern = 'file\.set_len\((?P<size_gib>\d+) \* 1024 \* 1024 \* 1024\)'
+docs = ["docs/microvm-architecture.md"]
+must_contain = "{size_gib} GiB sparse file"
 
 [[assertion]]
 name = "default-agent-memory-mib"
