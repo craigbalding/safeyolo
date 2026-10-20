@@ -192,8 +192,12 @@ jobs:
         with:
           name: linux-guest-${{ inputs.architecture }}-${{ inputs.profile }}
           path: |
-            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest*
-            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord*
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest.version
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest.sha256
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord.version
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord.sha256
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/native-input.json
           if-no-files-found: error
       - name: Retain complete Linux production bundle

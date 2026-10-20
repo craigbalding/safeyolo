@@ -156,11 +156,15 @@ def download_artifact(artifact: dict, directory: Path, names: list[str], *, lega
     if actual != artifact["digest"]:
         raise ValueError("artifact ZIP checksum differs")
     with zipfile.ZipFile(archive_zip) as bundle:
-        if legacy_input and sorted(bundle.namelist()) == sorted(set(names) - {INPUT_RECEIPT}):
+        members = sorted(bundle.namelist())
+        legacy_names = sorted(set(names) - {INPUT_RECEIPT})
+        legacy_guest = "safeyolo-guest" in names and members == sorted([*legacy_names, "safeyolo-guest.d"])
+        if legacy_input and (members == legacy_names or legacy_guest):
             # Old raw artifacts have no toolchain/flags receipt. Compile the
             # current source rather than infer identity or alter those bytes.
+            # Old guest upload globs also included Cargo's depfile.
             return False
-        if sorted(bundle.namelist()) != sorted(names):
+        if members != sorted(names):
             raise ValueError("selected artifact is incomplete or has unexpected files")
         # Read only fixed names. Never extract paths supplied by the ZIP.
         for name in names:

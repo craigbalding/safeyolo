@@ -88,8 +88,15 @@ def inputs(tmp_path, request):
                  "--output", str(directory), cwd=source, env=environment)
     assert result.returncode == 0, result.stderr
     receipt = json.loads((directory / selection.INPUT_RECEIPT).read_bytes())
-    payload = {name: (directory / name).read_bytes()
-               for name in [*selection.native_input_files(kind), selection.INPUT_RECEIPT]}
+    # Cargo leaves this file beside the guest executable. Select archive
+    # members from the producer's actual patterns, independently of the reader.
+    (guest / "safeyolo-guest.d").write_text("safeyolo-guest: fixture source\n")
+    steps = WORKFLOW["jobs"]["build"]["steps"]
+    upload = next(step for step in steps if step.get("with", {}).get("name") ==
+                  "linux-" + kind + "-${{ inputs.architecture }}-${{ inputs.profile }}")
+    patterns = upload["with"]["path"].replace("${{ inputs.profile == 'production' && 'release' || 'debug' }}", "release")
+    payload = {path.name: path.read_bytes() for pattern in patterns.splitlines()
+               for path in source.glob(pattern) if path.is_file()}
     shutil.rmtree(directory)
     arch = environment["INPUT_PLATFORM"].split("-")[1]
     name = f"linux-{kind}-{arch}-production"
@@ -116,7 +123,6 @@ def inputs(tmp_path, request):
         Path(environment["API_ROUTES"]).write_text(json.dumps(routes))
 
     prepare()
-    steps = WORKFLOW["jobs"]["build"]["steps"]
     step = next(step for step in steps if step.get("id") == f"reuse_{kind}")
     return {"source": source, "environment": environment, "kind": kind, "directory": directory, "receipt": receipt,
             "payload": payload, "artifact": artifact, "routes": routes,
@@ -275,3 +281,54 @@ def test_mac_selection_uses_its_platform_job_and_propagates_failure(inputs, fail
     if not failure:
         assert "Reused darwin-host-arm64-production" in result.stdout
         assert (data["directory"] / selection.INPUT_RECEIPT).read_bytes() == data["payload"][selection.INPUT_RECEIPT]
+
+
+@pytest.mark.parametrize("inputs", ["guest"], indirect=True)
+@pytest.mark.parametrize("archive_kind", ["current", "legacy", "current-extra", "legacy-extra", "legacy-damaged"])
+def test_guest_producer_zip_members_allow_reuse_or_legacy_build(inputs, tmp_path, archive_kind):
+    data = inputs
+    archive_path = Path(data["environment"]["ARTIFACT_ZIP"])
+    if archive_kind.startswith("legacy"):
+        output = tmp_path / "old-producer"
+        output.mkdir()
+        for name, content in data["payload"].items():
+            (output / name).write_bytes(content)
+        (output / "safeyolo-guest.d").write_text("safeyolo-guest: fixture source\n")
+        if archive_kind == "legacy-extra":
+            (output / "safeyolo-guest.unexpected").write_text("unrecognized upload member\n")
+        # These are the old workflow patterns observed in artifact12250797504.
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            for pattern in ("safeyolo-guest*", "safeyolo-coord*"):
+                for path in output.glob(pattern):
+                    archive.write(path, path.name)
+        with zipfile.ZipFile(archive_path) as archive:
+            assert "safeyolo-guest.d" in archive.namelist()
+            assert selection.INPUT_RECEIPT not in archive.namelist()
+    else:
+        # The fixture staged a depfile before applying the current YAML paths.
+        # A fresh upload must leave it out while retaining the full receipt.
+        assert "safeyolo-guest.d" not in data["payload"]
+        assert selection.INPUT_RECEIPT in data["payload"]
+        if archive_kind == "current-extra":
+            with zipfile.ZipFile(archive_path, "a") as archive:
+                archive.writestr("unexpected/payload", b"unrecognized upload path")
+    data["artifact"]["digest"] = "sha256:" + packages.sha256(archive_path)
+    Path(data["environment"]["API_ROUTES"]).write_text(json.dumps(data["routes"]))
+    if archive_kind == "legacy-damaged":
+        with archive_path.open("ab") as output:
+            output.write(b"changed after the producer digest")
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", data["step"]["run"],
+                 cwd=data["source"], env=data["environment"])
+    outputs = Path(data["environment"]["GITHUB_OUTPUT"])
+    if archive_kind in {"current", "legacy"}:
+        assert result.returncode == 0, result.stderr
+        reused = "true" if archive_kind == "current" else "false"
+        assert outputs.read_text() == f"reused={reused}\n"
+        if archive_kind == "current":
+            assert (data["directory"] / selection.INPUT_RECEIPT).read_bytes() == data["payload"][selection.INPUT_RECEIPT]
+        else:
+            assert not data["directory"].exists()
+    else:
+        assert result.returncode != 0, result.stdout
+        assert not outputs.exists()
+        assert not data["directory"].exists()
