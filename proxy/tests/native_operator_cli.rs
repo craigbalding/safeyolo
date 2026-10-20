@@ -212,6 +212,12 @@ async fn pending_gateway_approval_uses_existing_grants_and_survives_restart_with
         after["options"][1]["status"], "expired",
         "the old proxy session must remain bound"
     );
+    let agent_view = fixture
+        .agent("worker", "GET", &format!("/approvals/{id}"), None)
+        .await;
+    assert_eq!(agent_view.status, 200);
+    assert_eq!(agent_view.json()["status"], after["status"]);
+    assert_eq!(agent_view.json()["options"], after["options"]);
     assert!(
         !cli(
             fixture.root.path(),
@@ -530,6 +536,26 @@ async fn pending_credential_approval_binds_the_whole_request_and_preserves_share
     assert_eq!(view["action"]["kind"], "credential_allow");
     assert_eq!(view["status"], "pending");
     assert!(!view.to_string().contains(token));
+    for args in [
+        vec!["approvals", "list", "--json"],
+        vec!["approvals", "list", "--agent", "worker", "--json"],
+    ] {
+        let listed = success(fixture.root.path(), &args).await;
+        let entries = listed["approvals"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "{listed}");
+        assert_eq!(entries[0]["approval_id"], id);
+        assert_eq!(entries[0]["action"]["agent_id"], WORKER_ID);
+    }
+    assert!(
+        success(
+            fixture.root.path(),
+            &["approvals", "list", "--agent", "helper", "--json"]
+        )
+        .await["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let retry = fixture
         .request("worker", fixture.address, "GET", "/marker", &header)
         .await;
@@ -818,6 +844,12 @@ async fn pending_gateway_approval_expires_with_its_bound_vault_credential() {
     let expired = success(fixture.root.path(), &["approvals", "show", id, "--json"]).await;
     assert_eq!(expired["status"], "expired");
     assert_eq!(expired["authority_digest"], view["authority_digest"]);
+    let agent_view = fixture
+        .agent("worker", "GET", &format!("/approvals/{id}"), None)
+        .await;
+    assert_eq!(agent_view.status, 200);
+    assert_eq!(agent_view.json()["status"], expired["status"]);
+    assert_eq!(agent_view.json()["options"], expired["options"]);
     let after: String = database
         .query_row(
             "SELECT record FROM approvals WHERE approval_id=?1",
@@ -831,6 +863,142 @@ async fn pending_gateway_approval_expires_with_its_bound_vault_credential() {
             .admin(
                 "POST",
                 &format!("/admin/approvals/{id}"),
+                Some(json!({"decision":"approve","option":"remembered"}))
+            )
+            .await
+            .status,
+        409
+    );
+    assert!(
+        success(fixture.root.path(), &["services", "grants"]).await["grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        timeout(Duration::from_millis(30), fixture.origin.accept())
+            .await
+            .is_err()
+    );
+    drop(database);
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_gateway_credential_replacement_has_the_same_agent_and_operator_status() {
+    let fixture = Fixture::new().await;
+    fs::write(
+        fixture.root.path().join("data/credentials.key"),
+        "synthetic-pending-vault-key",
+    )
+    .unwrap();
+    let vault = safeyolo_proxy::credentials::Vault::unlock(
+        fixture.root.path().join("data/credentials.enc"),
+        &safeyolo_proxy::credentials::Secret::new("synthetic-pending-vault-key"),
+    )
+    .unwrap();
+    vault
+        .store(safeyolo_proxy::credentials::Credential::new(
+            "fixture",
+            "bearer",
+            safeyolo_proxy::credentials::Secret::new("synthetic-original-credential-496"),
+        ))
+        .unwrap();
+    let service = PENDING_SERVICE.replace("capabilities:",
+        "auth:\n  type: bearer\n  header: Authorization\n  scheme: Bearer\n  allow_http: true\ncapabilities:");
+    fs::write(fixture.root.path().join("services/pending.yaml"), service).unwrap();
+    let policy = format!(
+        "{}\n[hosts.'{}']\nservice='pending_fixture'\n[agents.worker.services.pending_fixture]\ncapability='operate'\ntoken='fixture'\naccount='agent'\n[[risk]]\nagent='worker'\nservice='pending_fixture'\ntactics=['impact']\ndecision='require_approval'\n",
+        fixture
+            .source()
+            .replace("egress='prompt'", "egress='allow'"),
+        fixture.address.ip()
+    );
+    fs::write(fixture.root.path().join("policy.toml"), policy).unwrap();
+    let fixture = restart(fixture).await;
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let header = format!(
+        "Authorization: Bearer {}\r\n",
+        authorized["services"]["pending_fixture"]["token"]
+            .as_str()
+            .unwrap()
+    );
+    let blocked = fixture
+        .request("worker", fixture.address, "POST", "/v1/alpha", &header)
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    let id = view["approval_id"].as_str().unwrap().to_owned();
+    let path = format!("/approvals/{id}");
+    let initial = fixture.agent("worker", "GET", &path, None).await;
+    assert_eq!(initial.status, 200);
+    assert_eq!(initial.json()["status"], "pending");
+    assert!(initial.json().get("details").is_none());
+    assert!(initial.json().get("untrusted_reason_text").is_none());
+    assert_eq!(fixture.agent("peer", "GET", &path, None).await.status, 404);
+
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(fixture.root.path())
+        .args(["credentials", "add", "fixture", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    command
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-replacement-credential-496\n")
+        .await
+        .unwrap();
+    let output = timeout(LIMIT, command.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let source = fixture.source();
+    let database =
+        rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
+    let saved = || {
+        database
+            .query_row(
+                "SELECT record FROM approvals WHERE approval_id=?1",
+                [&id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before = saved();
+    let operator = fixture.admin("GET", &format!("/admin{path}"), None).await;
+    assert_eq!(operator.status, 200);
+    assert_eq!(operator.json()["status"], "superseded");
+    let agent = fixture.agent("worker", "GET", &path, None).await;
+    assert_eq!(agent.status, 200);
+    assert_eq!(agent.json()["status"], operator.json()["status"]);
+    assert_eq!(agent.json()["options"], operator.json()["options"]);
+    assert_eq!(
+        agent.json()["authority_digest"],
+        initial.json()["authority_digest"]
+    );
+    assert_eq!(agent.json()["approval"]["required"], false);
+    assert_eq!(fixture.agent("peer", "GET", &path, None).await.status, 404);
+    assert_eq!(saved(), before, "inspection changed stored authority");
+    assert_eq!(fixture.source(), source, "inspection changed policy");
+    assert_eq!(
+        fixture
+            .admin(
+                "POST",
+                &format!("/admin{path}"),
                 Some(json!({"decision":"approve","option":"remembered"}))
             )
             .await

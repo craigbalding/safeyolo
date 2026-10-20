@@ -377,7 +377,10 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
         approvals.retain(|view| {
             view["agent"] == name
                 && (view["event"] != "security.credential_guard"
-                    || view["details"]["agent_id"] == current["agent_id"])
+                    || view["action"]
+                        .get("agent_id")
+                        .unwrap_or(&view["details"]["agent_id"])
+                        == &current["agent_id"])
         });
     }
     // Routine projections contain only the canonical summary and identity.

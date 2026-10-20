@@ -1486,6 +1486,7 @@ fn record_agent_api(
 #[allow(clippy::too_many_arguments)]
 async fn local_agent_api<B>(
     runtime: &Arc<Runtime>,
+    state: &RuntimeState,
     traffic: Arc<traffic::Traffic>,
     identity: &ConnectionIdentity,
     request_id: &str,
@@ -1613,6 +1614,7 @@ where
             },
             Some(request_id),
             Some(runtime.plumb.as_ref()),
+            Some(state),
         )
         .await?
     } else {
@@ -2223,6 +2225,7 @@ where
         {
             let reply = local_agent_api(
                 &runtime,
+                &state,
                 traffic
                     .as_ref()
                     .expect("ordinary local HTTP traffic")
