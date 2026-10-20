@@ -9,14 +9,24 @@ set -eu
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 account=sy-seatbelt-test
 entry=/Library/PrivilegedHelperTools/seatbelt-agent
-[ ! -e "$entry" ] || { echo "Entry already exists: $entry" >&2; exit 1; }
-! dscl . -read "/Users/$account" >/dev/null 2>&1 || { echo 'Test account already exists' >&2; exit 1; }
-[ ! -e "/Users/$account" ] || { echo 'Test home already exists' >&2; exit 1; }
-! dscl . -list /Users UniqueID | awk '$2 == 59900 { found=1 } END { exit !found }' || exit 1
-if /usr/bin/pgrep -U 59900 >/dev/null; then
-    echo 'Processes already use the test UID; refusing to reuse it' >&2
+[ ! -e "$entry" ] && [ ! -L "$entry" ] || { echo "Entry already exists: $entry" >&2; exit 1; }
+[ ! -e "/Users/$account" ] && [ ! -L "/Users/$account" ] || { echo 'Test home already exists' >&2; exit 1; }
+[ ! -e /etc/sudoers.d/seatbelt-acceptance-test ] && [ ! -L /etc/sudoers.d/seatbelt-acceptance-test ] || exit 1
+accounts=$(dscl . -list /Users UniqueID) || {
+    echo 'Cannot inspect local accounts and UIDs; refusing allocation' >&2
+    exit 1
+}
+if printf '%s\n' "$accounts" | awk -v account="$account" \
+    '$1 == account || $2 == 59900 { found=1 } END { exit !found }'; then
+    echo 'Test account or UID already exists' >&2
     exit 1
 fi
+process_status=0
+/usr/bin/pgrep -U 59900 >/dev/null || process_status=$?
+[ "$process_status" = 1 ] || {
+    echo 'Cannot establish absence of test-UID processes; refusing allocation' >&2
+    exit 1
+}
 lab=$(mktemp -d /Library/PrivilegedHelperTools/seatbelt-test.XXXXXX)
 chmod 755 "$lab"
 created=no
@@ -46,9 +56,16 @@ cleanup() {
             printf 'Cannot establish crontab absence; retain account and %s for inspection.\n' "$lab" >&2
             exit 1
         fi
-        if /bin/launchctl print user/59900 >/dev/null 2>&1; then
-            /bin/launchctl bootout user/59900 || result=1
+        launchd_clean=yes
+        launchd_status=0
+        /bin/launchctl print user/59900 > "$lab/launchd.before" 2>&1 || launchd_status=$?
+        if [ "$launchd_status" = 0 ]; then
+            /bin/launchctl bootout user/59900 > "$lab/launchd.bootout" 2>&1 || launchd_clean=no
+            launchd_status=0
+            /bin/launchctl print user/59900 > "$lab/launchd.after" 2>&1 || launchd_status=$?
         fi
+        # launchctl print returns 113 for an absent domain on macOS.
+        [ "$launchd_status" = 113 ] || launchd_clean=no
         # All processes of this freshly allocated UID belong to the fixture.
         # Signals may race an exit; success depends on observing absence below.
         /usr/bin/pkill -TERM -U 59900 >/dev/null 2>&1 || true
@@ -66,7 +83,16 @@ cleanup() {
         done
         if [ "$process_status" != 1 ]; then
             echo 'Cleanup failed: could not establish absence of test-UID processes' >&2
-            result=1
+        fi
+        if [ "$launchd_clean" != yes ]; then
+            echo 'Cleanup failed: could not establish test launchd domain removal' >&2
+        fi
+        # The live client's root daemon is outside the test UID. Its marker
+        # remains until its own daemon/session checks and wait have succeeded.
+        if [ "$process_status" != 1 ] || [ "$launchd_clean" != yes ] || \
+            [ -e "$lab/live-sshd.pending" ] || [ -L "$lab/live-sshd.pending" ]; then
+            printf 'Cleanup uncertain; retain account, entry, home and %s for inspection.\n' "$lab" >&2
+            exit 1
         fi
         dscl . -delete "/Users/$account"
         rm -rf "$entry" "/Users/$account"
@@ -80,7 +106,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-[ ! -e /etc/sudoers.d/seatbelt-acceptance-test ] || exit 1
 dscl . -create "/Users/$account"
 created=yes
 dscl . -create "/Users/$account" UniqueID 59900

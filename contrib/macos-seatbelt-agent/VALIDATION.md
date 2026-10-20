@@ -1,5 +1,48 @@
 # macOS Seatbelt acceptance records
 
+## Disposable fixture safety correction, 2026-10-20
+
+The account fixture previously treated failed account/UID/process inspection as
+absence. Its cleanup could remove the account, entry, home and diagnostic lab
+while UID processes remained or could not be inspected. Lens reproduced these
+branches at both PR #1159's first head and its base; the new crontab guard did
+not introduce them.
+
+The correction requires successful local account/UID inspection and process
+status 1 before allocation. Existing targets and symlinks at the reserved home,
+entry and sudoers paths refuse allocation. Cleanup retains the account, entry,
+home and lab when UID-process absence or launchd removal cannot be established.
+The live client retains a marker until it observes no root SSH session children
+and reaps its tracked root daemon. The outer cleanup honors that marker.
+Cleanup first attempts to revoke temporary admin membership and removes the
+temporary sudoers file. The exact-owned-crontab comparison and retention of
+unknown crontabs are preserved.
+
+`uv run --frozen --no-sync python -m unittest -v
+tests/test_seatbelt_fixture_safety.py` ran three tests with 27 cases on Linux.
+The same source ran with system Python 3.9.6 and `/bin/sh` on the existing Tart
+macOS 26.6.2 guest. All cases passed. The controlled cases redirect deletion to
+temporary files and stub account, scheduler and process commands. They cover
+legitimate absence/removal, inspection errors, live processes, failed launchd
+removal, unknown cron state and uncertain root daemon/session teardown. Shell
+syntax and Python compilation also passed on that guest. No account was
+allocated and no real root SSH daemon was started by these controls.
+
+Sylab owns the reserved account witness. After independent source safety review,
+the staged command is `sudo -n /bin/sh
+/Users/admin/forge622-source.xdiCKZ/test-configure-ssh.sh`. Refresh the reserved
+account/UID/path absence and concurrent-use exclusion immediately before the
+run. Expect consumer/alias/crontab diagnosis, activation/rollback and a real SSH
+session through the selected private config. Require the root-daemon/session
+cleanup message, UID-process absence, launchd-domain removal and account/home/
+entry removal. On uncertainty, require a nonzero result and the printed retained
+lab path, with its root SSH log and marker intact. The running SSH daemon is
+never reloaded. Actual account/session teardown remains unverified here.
+
+The [physical VZ witness procedure](VZ-WITNESS.md) supplies the missing boot,
+SSH banner, manual VirtioFS mount, bidirectional share markers, host canary and
+owned teardown commands. That procedure is prepared, not an execution result.
+
 ## Execution-boundary hardening, 2026-10-20
 
 Forge ran `python3 test-boundary.py` outside Seatbelt in the approved Tart guest

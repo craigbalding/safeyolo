@@ -19,6 +19,41 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, timeout=20, **kwargs)
 
 
+def stop_sshd(daemon, lab):
+    """Retain the fixture marker unless root sessions and the daemon are gone."""
+    try:
+        # All client calls have ended and the CONNECT relay is closed. Check
+        # children while their tracked parent is still alive, before stopping
+        # that parent could orphan a root sshd session.
+        if daemon.poll() is not None:
+            raise RuntimeError(f"sshd exited before session inspection; retain {lab}")
+        deadline = time.monotonic() + 5
+        while True:
+            children = subprocess.run(["/usr/bin/pgrep", "-P", str(daemon.pid)],
+                                      capture_output=True, timeout=5)
+            with (lab / "live-sshd.children").open("ab") as log:
+                log.write(f"parent={daemon.pid} pgrep_status={children.returncode}\n".encode())
+                log.write(children.stdout + children.stderr)
+            if children.returncode == 1:
+                if daemon.poll() is not None:
+                    raise RuntimeError(f"sshd exited during session inspection; retain {lab}")
+                break
+            if children.returncode != 0 or time.monotonic() >= deadline:
+                raise RuntimeError(f"Cannot establish sshd session absence; retain {lab}")
+            time.sleep(0.1)
+    finally:
+        # Always stop the exact Popen child, including after inspection errors.
+        # Popen's poll/wait track that child rather than a reusable stored PID.
+        daemon.terminate()
+        try:
+            daemon.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            daemon.kill()
+            daemon.wait(timeout=5)
+    (lab / "live-sshd.pending").unlink()
+    print("PASS: root SSH daemon reaped; no SSH session children remained")
+
+
 def main():
     lab = Path(sys.argv[1])
     account = sys.argv[2]
@@ -55,8 +90,12 @@ def main():
     proxy.daemon_threads = True
     proxy_thread = threading.Thread(target=proxy.serve_forever)
     with (lab / "live-sshd.log").open("w") as log:
+        pending = lab / "live-sshd.pending"
+        pending.write_text(f"/usr/sbin/sshd -D -e -f {config}\n")
         daemon = subprocess.Popen(["/usr/sbin/sshd", "-D", "-e", "-f", str(config)], stdout=log, stderr=log)
         try:
+            with pending.open("a") as marker:
+                marker.write(f"pid={daemon.pid} port={ssh_port}\n")
             deadline = time.monotonic() + 10
             while True:
                 assert daemon.poll() is None, (lab / "live-sshd.log").read_text()
@@ -92,16 +131,13 @@ def main():
             assert rejected.returncode == 255 and b"Host key verification failed" in rejected.stderr
             print("PASS: generated client config, fresh confined SSH login, binary stdin/stdout and host-key mismatch rejection")
         finally:
-            if proxy_thread.is_alive():
-                proxy.shutdown()
-                proxy_thread.join(timeout=5)
-            proxy.server_close()
-            daemon.terminate()
             try:
-                daemon.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                daemon.kill()
-                daemon.wait(timeout=5)
+                if proxy_thread.is_alive():
+                    proxy.shutdown()
+                    proxy_thread.join(timeout=5)
+                proxy.server_close()
+            finally:
+                stop_sshd(daemon, lab)
 
 
 if __name__ == "__main__":
