@@ -24,17 +24,28 @@ cleanup() {
     result=$?
     trap - EXIT
     if [ "$created" = yes ]; then
-        # Only this fixture account may have a crontab created by the test.
-        if /usr/bin/crontab -u "$account" -l > "$lab/cron.current" 2> "$lab/cron.error"; then
-            if [ -f "$lab/owned.crontab" ] && cmp -s "$lab/owned.crontab" "$lab/cron.current"; then
-                /usr/bin/crontab -u "$account" -r || result=1
-            else
-                echo 'Unknown crontab on the owned account; retain it for inspection.' >&2
-                exit 1
-            fi
-        fi
         dseditgroup -o edit -d "$account" -t user admin >/dev/null 2>&1 || true
         rm -f /etc/sudoers.d/seatbelt-acceptance-test
+        umask 077
+        if [ -f "$lab/cron.current" ]; then chmod 600 "$lab/cron.current"; fi
+        # Only this fixture account may have a crontab created by the test.
+        cron_status=0
+        LC_ALL=C /usr/bin/crontab -u "$account" -l > "$lab/cron.current" 2> "$lab/cron.error" || cron_status=$?
+        if [ "$cron_status" = 0 ]; then
+            if [ -f "$lab/owned.crontab" ] && cmp -s "$lab/owned.crontab" "$lab/cron.current"; then
+                /usr/bin/crontab -u "$account" -r || {
+                    printf 'Owned crontab cleanup failed; retain account and %s for inspection.\n' "$lab" >&2
+                    exit 1
+                }
+            else
+                printf 'Unknown crontab; retain account and %s for inspection.\n' "$lab" >&2
+                exit 1
+            fi
+        elif [ "$cron_status" != 1 ] || ! awk -v expected="crontab: no crontab for $account" \
+            '$0 == expected { found=1 } END { exit !found }' "$lab/cron.error"; then
+            printf 'Cannot establish crontab absence; retain account and %s for inspection.\n' "$lab" >&2
+            exit 1
+        fi
         if /bin/launchctl print user/59900 >/dev/null 2>&1; then
             /bin/launchctl bootout user/59900 || result=1
         fi
