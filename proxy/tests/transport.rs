@@ -837,7 +837,7 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
                 .iter()
                 .filter(|event| {
                     event["event"] == "security.network_guard.evaluated"
-                        && event["method"] == method
+                        && event["details"]["method"] == method
                 })
                 .count(),
             1
@@ -956,7 +956,7 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         events(&config)
             .iter()
             .filter(|event| { event["event"] == "security.network_guard.evaluated" })
-            .all(|event| event["method"] == "CONNECT")
+            .all(|event| event["details"]["method"] == "CONNECT")
     );
     let mut adjacent = connect_tls(
         &config.listeners[0].socket_path,
@@ -1500,7 +1500,8 @@ async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighb
         event["host"] == "sni.alias.invalid" && event["addon"] == "ignored-host-logger"
     }));
     assert!(events(&config).iter().any(|event| {
-        event["event"] == "security.network_guard.evaluated" && event["method"] == "CONNECT"
+        event["event"] == "security.network_guard.evaluated"
+            && event["details"]["method"] == "CONNECT"
     }));
 
     if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
@@ -3491,14 +3492,14 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_deliver
     assert_eq!(
         decisions
             .iter()
-            .filter(|row| row["method"] == "GET")
+            .filter(|row| row["details"]["method"] == "GET")
             .count(),
         1
     );
     assert!(
         decisions
             .iter()
-            .any(|row| row["method"] == "GET" && row["scheme"] == "https")
+            .any(|row| row["details"]["method"] == "GET" && row["details"]["scheme"] == "https")
     );
     proxy.shutdown().await;
 }
