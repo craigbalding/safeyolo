@@ -1,7 +1,7 @@
 # Contained SSH development on macOS
 
 Give your SafeYolo agent a shell on a physical Mac when a VM won't do.
-The default Seatbelt profile allows writes in the dedicated account's home and
+The default Seatbelt profile allows development writes in the dedicated account's home and
 denies IP networking and access to other users' homes. The `sandbox-exec`
 interface is deprecated; see
 [why we use Seatbelt](REFERENCE.md#why-seatbelt) and its
@@ -9,6 +9,11 @@ interface is deprecated; see
 
 [Residual process visibility is an accepted risk](REFERENCE.md#process-visibility-and-accepted-risk).
 Use a dedicated account; host commands run as that user may be visible to the agent.
+Keep the account's tools beneath the confined SSH entry. Review
+[external consumers](REFERENCE.md#external-consumer-review) before enabling access:
+an existing host scheduler or IDE can execute files the agent writes, even when
+the agent cannot create a new job. The profile protects `Library/LaunchAgents`
+and refuses service registration. Existing host processes need a separate check.
 
 ## 1. Ask your agent for an SSH key
 
@@ -41,8 +46,8 @@ account or toolchain differs.
 
 From any directory, create a **Standard account with the short name `sy-agent`**
 and home `/Users/sy-agent`. The command prompts for the new account's password;
-keep that password outside the agent. The agent can read and change everything
-in its home. If the account already exists, skip creation and follow the
+keep that password outside the agent. Development files in the home are writable;
+`Library/LaunchAgents` is protected. If the account already exists, skip creation and follow the
 [existing-account checks](REFERENCE.md#reuse-an-existing-account).
 
 ```sh
@@ -80,6 +85,23 @@ sudo dseditgroup -o edit -a sy-agent -t user com.apple.access_ssh
 
 ### Install and configure the confined login
 
+First complete the [external-consumer review](REFERENCE.md#external-consumer-review).
+Keep coding shells, tmux, Git, compilers and tests inside the confined entry.
+For existing host consumers, protect their consumed inputs, apply confinement,
+or explicitly neutralize executable configuration. Correct each identified unsafe
+consumer before confirming the review. Keep unverified observations explicit.
+The helper rejects an existing account crontab and symlinked `Library` or
+`LaunchAgents`; it does not remove jobs. `--reviewed-consumers` confirms your
+review, rather than an automatic host audit.
+
+The following block installs the baseline for a new account. For an existing
+installation, stop its workloads and tmux server, merge the new denial rules
+into its adapted profile, and use the profile installation steps in
+[optional VZ updates](REFERENCE.md#optional-vz-workloads). Preserve its
+operator-approved adaptations. Restart sessions as described in
+[daily work](REFERENCE.md#daily-work-and-tmux) and
+[validation](REFERENCE.md#validation-and-adaptation).
+
 From the checkout root, run these commands individually, stopping on any error.
 Replace `CLIENT_PUBLIC_KEY` with the line your agent returned. The commands
 replace the installed launcher files and append the key, preserving other agents'
@@ -113,7 +135,7 @@ keep that connection open until the agent's login works.
 From the same directory on your Mac, run:
 
 ```sh
-sudo ./configure-ssh --host mac.example.net --port 22
+sudo ./configure-ssh --host mac.example.net --port 22 --reviewed-consumers
 ```
 
 ## 3. Give the connection instructions to your agent

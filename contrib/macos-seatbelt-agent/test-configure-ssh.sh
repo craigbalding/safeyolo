@@ -24,6 +24,15 @@ cleanup() {
     result=$?
     trap - EXIT
     if [ "$created" = yes ]; then
+        # Only this fixture account may have a crontab created by the test.
+        if /usr/bin/crontab -u "$account" -l > "$lab/cron.current" 2> "$lab/cron.error"; then
+            if [ -f "$lab/owned.crontab" ] && cmp -s "$lab/owned.crontab" "$lab/cron.current"; then
+                /usr/bin/crontab -u "$account" -r || result=1
+            else
+                echo 'Unknown crontab on the owned account; retain it for inspection.' >&2
+                exit 1
+            fi
+        fi
         dseditgroup -o edit -d "$account" -t user admin >/dev/null 2>&1 || true
         rm -f /etc/sudoers.d/seatbelt-acceptance-test
         if /bin/launchctl print user/59900 >/dev/null 2>&1; then
@@ -98,7 +107,7 @@ fixture() {
     cp "$lab/base" "$config"
     fragment="$config.seatbelt-$account.conf"
 }
-run() { /bin/sh "$tool" --user "$account" --config "$config" "$@"; }
+run() { /bin/sh "$tool" --user "$account" --config "$config" --reviewed-consumers "$@"; }
 shell_value() { dscl . -read "/Users/$account" UserShell; }
 rejected() {
     expected=$1
@@ -191,6 +200,47 @@ chmod +a "$account allow read" "$entry/agent-dev.sb"
 run --check
 chmod -N "$entry/agent-dev.sb"
 echo 'PASS: admin, sudo and modifying ACLs rejected; read-only ACL accepted'
+
+fixture external_consumer
+home="/Users/$account"
+mkdir -p "$home/Library/LaunchAgents"
+cat > "$home/Library/LaunchAgents/owned-consumer.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>org.safeyolo.owned-consumer</string>
+<key>ProgramArguments</key><array><string>$home/watcher.sh</string></array></dict></plist>
+PLIST
+if /bin/sh "$tool" --user "$account" --config "$config" --check > "$lab/output" 2>&1; then
+    echo 'Expected external-consumer review before activation' >&2
+    exit 1
+fi
+awk -v path="$home/Library/LaunchAgents/owned-consumer.plist" 'index($0, path) { found=1 } END { exit !found }' "$lab/output"
+awk '/reviewed-consumers/ { found=1 } END { exit !found }' "$lab/output"
+[ ! -e "$fragment" ]
+# Correct the identified consumer to use only a protected system executable
+# before the fixture confirms the external-consumer review.
+sed "s|<string>$home/watcher.sh</string>|<string>/usr/bin/true</string>|" \
+    "$home/Library/LaunchAgents/owned-consumer.plist" > "$lab/corrected-consumer"
+cat "$lab/corrected-consumer" > "$home/Library/LaunchAgents/owned-consumer.plist"
+run --check
+rm "$home/Library/LaunchAgents/owned-consumer.plist"
+mv "$home/Library/LaunchAgents" "$home/Library/LaunchAgents.before"
+ln -s "$home/Library/LaunchAgents.before" "$home/Library/LaunchAgents"
+rejected 'LaunchAgents must be absent or a real directory'
+rm "$home/Library/LaunchAgents"
+mv "$home/Library/LaunchAgents.before" "$home/Library/LaunchAgents"
+mv "$home/Library" "$home/Library.before"
+ln -s "$home/Library.before" "$home/Library"
+rejected 'Library must be a real directory'
+rm "$home/Library"
+mv "$home/Library.before" "$home/Library"
+printf '0 0 1 1 * %s/watcher.sh\n' "$home" > "$lab/owned.crontab"
+/usr/bin/crontab -u "$account" "$lab/owned.crontab"
+rejected 'pre-existing crontab'
+/usr/bin/crontab -u "$account" -l > "$lab/cron.current"
+cmp "$lab/owned.crontab" "$lab/cron.current"
+/usr/bin/crontab -u "$account" -r
+echo 'PASS: external consumer identified; aliases and pre-existing crontab rejected without activation'
 
 fixture unsafe_config_directory
 chmod g+w "$(dirname "$config")"

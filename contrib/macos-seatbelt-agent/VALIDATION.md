@@ -1,5 +1,64 @@
 # macOS Seatbelt acceptance records
 
+## Execution-boundary hardening, 2026-10-20
+
+Forge ran `python3 test-boundary.py` outside Seatbelt in the approved Tart guest
+on macOS 26.6.2 (25G83), arm64. The operator process used the existing `admin`
+account, UID 501. Each confined process used the supplied policy with
+`AGENT_HOME` set to a fresh owned subdirectory. This was a scoped-process test,
+not a converted dedicated account or a Bristol installation. System Python
+was 3.9.6. Command Line Tools compiled the Objective-C helper; ad-hoc signatures
+passed `codesign --verify --strict`.
+
+| Actual operation | Observation |
+| --- | --- |
+| `launchctl bootstrap` and `submit` | Refused; the outside observer found no owned service. The kernel logged `deny job-creation`. |
+| LaunchAgents create, modify, directory rename and hardlink | EPERM. Replacing `Library` was also denied. Ordinary rc and cache writes worked. |
+| Modern SMAppService LoginItem, LaunchAgent and LaunchDaemon registration | All three refused; the outside observer found no registration. Direct lookup of `com.apple.xpc.smd` returned `BOOTSTRAP_NOT_PRIVILEGED` (1100) inside confinement and succeeded outside. |
+| Identical signed SMAppService bundles outside confinement | LoginItem and LaunchAgent reached enabled status (1). LaunchDaemon reached requiresApproval (2), despite the API returning false/EPERM. Each was explicitly unregistered and checked as status 0 before cleanup. No daemon approval was given. |
+| `open -n -a` and direct LaunchServices API | Refused with no marker; the same application launched outside confinement and read the outside canary. |
+| AppleEvent to a live owned receiver | The outside sender received a reply. The confined sender failed; lookup of `com.apple.coreservices.appleevents` returned 1100. No unrelated application was targeted. |
+| `crontab`, `at -t 209901010000` and `batch` | `sandbox-exec` refused the setuid executables with EPERM. The outside observer found no crontab and an unchanged at queue. No scheduler setting was changed. |
+| Existing unsafe launchd job, then confined `kickstart` | The helper ran with PPID 1 and read the outside canary. The job was removed through its exact owned label. `deny job-creation` alone does not confine a pre-existing consumer. |
+| Corrected existing job, then confined `kickstart` | launchd ran the system `sandbox-exec` with a profile outside the writable test home, before reaching the same helper. The helper's outside-file read failed with EPERM. |
+| Developer workload through the supplied policy | Home read/write, PTY, UDS exchange, child supervision, C/Swift compile and execute, and tmux passed. The outside-file/symlink and live TCP checks were denied. |
+
+The modern LaunchAgent/LaunchDaemon calls reported code-signing inspection
+errors inside the sandbox. The positive controls establish that these were
+usable signed fixtures. The observed broker denial is preserved as an explicit
+narrow policy rule. LoginItem's confined error was a disconnected socket.
+Neither those error strings nor a false registration return alone establishes
+absence; the outside status observations supply that check.
+
+Trusted log inspection for the owned processes recorded denied Mach lookups
+for `com.apple.xpc.smd`, `com.apple.CoreServices.coreservicesd`,
+`com.apple.coreservices.launchservicesd`, `com.apple.coreservices.quarantine-resolver`,
+`com.apple.lsd.mapdb`, `com.apple.lsd.modifydb`, and
+`com.apple.coreservices.appleevents`. These names describe this OS observation;
+they are not a new allowance list. Other incidental denial messages were not
+turned into permissions.
+
+The final grouped run returned `status: pass` and removed its fixture. Registered
+services and launchd jobs were unregistered through their owner before removing
+bundles. The owned AppleEvent receiver was terminated and reaped. The live TCP
+listener received no connections. No factory policy, SSH or account setting was
+installed or changed.
+
+The changed native account checker compiles with `-Wall -Wextra -Werror -O2` on
+this guest. The new account/consumer cases in `test-configure-ssh.sh`, real SSH
+under the changed setup, and physical VZ under the changed profile remain
+unverified. Existing dated results below retain their original source and scope.
+
+The approved Bristol SSH route confirmed macOS 26.6.2/25G83 and UID 502. Its
+installed profile and grants were left unchanged. A separate candidate copy,
+formed by appending only the new denials to that installed profile, failed to
+attach inside the existing confined SSH session: `sandbox_apply: Operation not
+permitted`, exit 71, before `/usr/bin/true` ran. A trusted host process outside
+that entry must launch the scoped physical witness. This refusal is not a VZ
+result or evidence that the host has no external consumers.
+
+## Earlier accepted workloads
+
 The entry, profile and probe in this contribution were exercised through a real
 SSH daemon in the operator's disposable Tart guest on 2026-09-13. Nothing was
 installed on the physical host during those runs. The test used a dedicated non-admin `sy-seatbelt-test` account

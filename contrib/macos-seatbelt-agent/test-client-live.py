@@ -30,7 +30,8 @@ def main():
     run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(host_key))
     config = lab / "live-sshd_config"
     config.write_text(f"ListenAddress 127.0.0.1\nPort {ssh_port}\nHostKey {host_key}\nUsePAM no\nAllowUsers {account}\n")
-    run("/bin/sh", str(source / "configure-ssh"), "--user", account, "--config", str(config))
+    run("/bin/sh", str(source / "configure-ssh"), "--user", account, "--config", str(config),
+        "--reviewed-consumers")
 
     class ConnectProxy(socketserver.StreamRequestHandler):
         def handle(self):
