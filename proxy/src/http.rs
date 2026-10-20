@@ -1117,7 +1117,7 @@ async fn open_egress_for_flow(
                 },
                 "failed",
                 json!({"route": route_name, "reason": error.to_string(), "outbound": if recorded { "attempted" } else { "not_attempted" }}),
-            )?;
+            );
             if let Some(observation) = &mut connection_audit {
                 observation.failed(&error.to_string());
             }
@@ -1138,7 +1138,7 @@ async fn open_egress_for_flow(
         json!({"route": route_name, "direct_peer": if direct { Some(socket.peer_addr()?.to_string()) } else { None },
             "parent": parent_url,
             "outbound": "connected"}),
-    )?;
+    );
     let peer = if direct {
         let setup = crate::circuit_runtime::now();
         observation.tcp_setup = Some(setup);
@@ -1206,7 +1206,7 @@ async fn open_egress_for_flow(
                 .tls
                 .clone()
                 .ok_or("HTTPS parent TLS was not configured")?;
-            selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "pending", json!({"parent": parent_url, "verification_name": host}))?;
+            selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "pending", json!({"parent": parent_url, "verification_name": host}));
             let tls = refresh_parent_tls_phase(phase_timeout, async {
                     TlsConnector::from(tls)
                         .connect(name, socket)
@@ -1216,11 +1216,11 @@ async fn open_egress_for_flow(
                 .await;
             match tls {
                 Ok(tls) => {
-                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}))?;
+                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}));
                     Box::new(tls)
                 }
                 Err(error) => {
-                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "failed", json!({"parent": parent_url, "verification_name": host, "reason": error.to_string()}))?;
+                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "failed", json!({"parent": parent_url, "verification_name": host, "reason": error.to_string()}));
                     return Err(error);
                 }
             }
@@ -1258,7 +1258,7 @@ async fn open_egress_for_flow(
             selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_connect",
                 if response.status().is_success() { "complete" } else { "failed" },
                 json!({"route": "parent", "parent": parent_url, "parent_requested_target": target,
-                    "parent_connect_status": response.status().as_u16(), "direct_peer": null, "outbound": "attempted"}))?;
+                    "parent_connect_status": response.status().as_u16(), "direct_peer": null, "outbound": "attempted"}));
             if !response.status().is_success() {
                 return Err("parent proxy refused CONNECT".into());
             }
@@ -1285,7 +1285,7 @@ async fn open_egress_for_flow(
                 "parent_connection",
                 "failed",
                 json!({"route": route_name, "reason": error.to_string(), "outbound": "attempted"}),
-            )?;
+            );
             if let Some(observation) = &mut connection_audit {
                 observation.failed(&error.to_string());
             }
@@ -1386,7 +1386,7 @@ async fn open_outbound(
             "origin_tls",
             "pending",
             json!({"verification_name": destination.host}),
-        )?;
+        );
         let tls = refresh_origin_tls_phase(phase_timeout, async {
             TlsConnector::from(Arc::new(config))
                 .connect(name, stream)
@@ -1407,7 +1407,7 @@ async fn open_outbound(
                     "origin_tls",
                     "failed",
                     json!({"verification_name": destination.host, "reason": error.to_string()}),
-                )?;
+                );
                 return Err(error);
             }
         };
@@ -1419,7 +1419,7 @@ async fn open_outbound(
             "origin_tls",
             "complete",
             json!({"verification_name": destination.host, "certificate_verified": true}),
-        )?;
+        );
         http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
         stream = Box::new(tls);
         let completed = crate::circuit_runtime::now();
@@ -2623,7 +2623,7 @@ where
             request_id,
             destination,
             deferred,
-        )?;
+        );
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();
         let mut destination = destination.clone();
@@ -2694,7 +2694,7 @@ where
                     if !decision.allow {
                         return Err("logical hostname policy refused CONNECT".into());
                     }
-                    selected_ip::record(&runtime, &identity, &request_id, &destination, "logical_target", "allowed", json!({"outbound": if deferred { "not_attempted" } else { "connected" }}))?;
+                    selected_ip::record(&runtime, &identity, &request_id, &destination, "logical_target", "allowed", json!({"outbound": if deferred { "not_attempted" } else { "connected" }}));
                 }
                 if *stop.borrow() {
                     return Err(tunnels::RouteWaitEnded::Cancelled.into());
@@ -2768,7 +2768,7 @@ where
                         .as_ref()
                         .ok_or("TLS CA is not configured")?
                         .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
-                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "pending", json!({"verification_name": destination.host}))?;
+                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "pending", json!({"verification_name": destination.host}));
                     let tls = tokio::select! {
                         _ = stop.changed() => Err("client TLS cancelled".into()),
                         result = TlsAcceptor::from(config).accept(client) => result.map_err(|error| -> Error { error.into() }),
@@ -2776,11 +2776,11 @@ where
                     let tls = match tls {
                         Ok(tls) => tls,
                         Err(error) => {
-                            selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "failed", json!({"reason": error.to_string(), "verification_name": destination.host}))?;
+                            selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "failed", json!({"reason": error.to_string(), "verification_name": destination.host}));
                             return Err(error);
                         }
                     };
-                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "complete", json!({"verification_name": destination.host}))?;
+                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "complete", json!({"verification_name": destination.host}));
                     let http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
                     (Box::new(tls), http2, "https")
                 } else {
@@ -2803,7 +2803,7 @@ where
             }
             .await;
             if let Err(error) = result {
-                selected_ip::record(&runtime, &identity, &request_id, &destination, "connect_tunnel", "failed", json!({"reason": error.to_string(), "client_connect_status": 200, "outbound": if outbound_attempted { "attempted" } else { "not_attempted" }, "last_reached_stage": error.downcast_ref::<tunnels::RouteWaitEnded>().map(|_| "route_wait")}))?;
+                selected_ip::record(&runtime, &identity, &request_id, &destination, "connect_tunnel", "failed", json!({"reason": error.to_string(), "client_connect_status": 200, "outbound": if outbound_attempted { "attempted" } else { "not_attempted" }, "last_reached_stage": error.downcast_ref::<tunnels::RouteWaitEnded>().map(|_| "route_wait")}));
                 eprintln!("CONNECT {request_id} ended: {error}");
                 return Err(error);
             }
@@ -3788,7 +3788,7 @@ where
         "upstream_connection",
         "associated",
         json!({"upstream": outbound.observation().snapshot()}),
-    )?;
+    );
     *request.uri_mut() = request_uri(
         destination,
         &format!(
@@ -3899,7 +3899,7 @@ where
         "http_response",
         "received",
         json!({"http_status": upstream.status().as_u16()}),
-    )?;
+    );
     let _ = completion.try_finish();
     if let Some(live) = &live {
         let version = format!("{:?}", upstream.version());
@@ -4339,7 +4339,7 @@ pub(crate) fn serve_request(
                             "target_selection",
                             "failed",
                             json!({"reason": error.to_string(), "outbound": "not_attempted"}),
-                        )?;
+                        );
                         return Err(error);
                     }
                     if destination.selected_ip.is_some() {
@@ -4351,7 +4351,7 @@ pub(crate) fn serve_request(
                             "target_selection",
                             "pending_policy",
                             json!({"outbound": "not_attempted"}),
-                        )?;
+                        );
                     }
                     Ok(destination)
                 });

@@ -111,7 +111,7 @@ pub(super) fn record(
     stage: &str,
     outcome: &str,
     extra: Value,
-) -> Result<(), Error> {
+) {
     let mut details = facts(destination);
     let fields = details.as_object_mut().expect("target facts are an object");
     fields.insert("stage".into(), stage.into());
@@ -130,8 +130,11 @@ pub(super) fn record(
         details,
     );
     event.host = Some(destination.policy_host.clone());
-    runtime.audit.emit(event)?;
-    Ok(())
+    // Traffic observations follow the existing egress-event contract. An
+    // observation error cannot undo a request already admitted or delivered.
+    if let Err(error) = runtime.audit.emit(event) {
+        eprintln!("connection observation failed: {error}");
+    }
 }
 
 /// A dropped upgrade task must leave a terminal no-contact observation too.
@@ -150,7 +153,7 @@ impl RouteWaitAudit {
         request_id: &str,
         destination: &Destination,
         active: bool,
-    ) -> Result<Self, Error> {
+    ) -> Self {
         if active {
             record(
                 &runtime,
@@ -164,21 +167,21 @@ impl RouteWaitAudit {
                     "outbound": "not_attempted", "client_connect_status": 200,
                     "wait_seconds": crate::tunnels::ROUTE_WAIT.as_secs(),
                 }),
-            )?;
+            );
         }
-        Ok(Self {
+        Self {
             runtime,
             identity: identity.clone(),
             request_id: request_id.into(),
             destination: destination.clone(),
             active,
-        })
+        }
     }
 
     pub(super) fn end(&mut self, outcome: &str) {
         if self.active {
             self.active = false;
-            let _ = record(
+            record(
                 &self.runtime,
                 &self.identity,
                 &self.request_id,

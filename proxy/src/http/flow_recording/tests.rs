@@ -247,6 +247,24 @@ fn record_builder_matches_fourteen_actual_source_projections() {
             "response_body_hex".into(),
             hex(&actual.response_body.content).into(),
         );
+        // The retained source projections predate connection observations.
+        // Check the additive field without changing their old-field oracle.
+        let connection: Value = serde_json::from_str(
+            actual
+                .metadata
+                .remove("connection_json")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(connection["target"]["logical_host"], "127.0.0.2", "{name}");
+        assert_eq!(
+            connection["target"]["requested_port"], selected.port,
+            "{name}"
+        );
+        assert!(connection["target"]["requested_ip"].is_null(), "{name}");
+        assert!(connection["target"]["effective_ip"].is_null(), "{name}");
         assert_eq!(
             Value::Object(actual.metadata.clone()),
             expected[0],
