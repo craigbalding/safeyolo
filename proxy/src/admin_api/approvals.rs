@@ -146,6 +146,9 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     state: Option<&crate::RuntimeState>,
     service_audit: Option<ServiceAudit<'_>>,
 ) -> Result<Outcome, Error> {
+    if let Some(path) = path.strip_suffix("/context") {
+        return context(request, path, policy, audit, state).await;
+    }
     let (path, explain) = path
         .strip_suffix("/explain")
         .map_or((path, false), |path| (path, true));
@@ -295,4 +298,147 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 Err(_) => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"resolution unavailable; read canonical outcome before retrying; direct policy controls remain available"})),
         })
     }).await?.await.map_err(|_| Error::ServiceMutation)?
+}
+
+async fn context<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    path: &str,
+    policy: Option<&Policy>,
+    audit: Option<&Arc<crate::audit::Writer>>,
+    state: Option<&crate::RuntimeState>,
+) -> Result<Outcome, Error> {
+    let Some(id) = path
+        .strip_prefix("/admin/approvals/")
+        .filter(|id| !id.contains('/') && pending::valid_id(id))
+    else {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"approval unavailable"}),
+        ));
+    };
+    let (Some(policy), Some(writer)) = (policy, audit) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"approval context unavailable; ordinary decisions remain available"}),
+        ));
+    };
+    let ask = request.method() == Method::POST;
+    if !ask && request.method() != Method::GET {
+        return Ok(unsupported(request.method()));
+    }
+    if ask {
+        match read_json(request).await? {
+            ParsedBody::Absent => {}
+            ParsedBody::Value(data)
+                if data.0.as_object().is_some_and(|fields| fields.is_empty()) => {}
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            _ => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"context question and recipient come from the canonical approval; send an empty object"}),
+                ));
+            }
+        }
+    }
+    let (writer, policy, state, id) = (
+        writer.clone(),
+        policy.clone(),
+        state.cloned(),
+        id.to_owned(),
+    );
+    let work_writer = writer.clone();
+    let work_policy = policy.clone();
+    let work_state = state.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        if ask {
+            pending::context::request(&work_writer, &work_policy, work_state.as_ref(), &id)
+                .map(|(record, exchange, created)| (record, Some(exchange), created))
+        } else {
+            pending::lookup(&work_writer, &id)?
+                .map(|record| (record, None, false))
+                .ok_or_else(|| crate::approvals::ApprovalError {
+                    kind: crate::approvals::ErrorKind::Invalid,
+                    message: "canonical approval unavailable".into(),
+                })
+        }
+    })
+    .await
+    .map_err(|_| Error::ServiceMutation)?;
+    let (record, exchange, created) = match prepared {
+        Ok(value) => value,
+        Err(error) => return Ok(context_error(error)),
+    };
+    if created {
+        let coord = state
+            .as_ref()
+            .and_then(|state| state.read().ok().map(|runtime| runtime.coord.clone()));
+        let delivery = if let Some(coord) = coord {
+            let question =
+                pending::context::question(&record, exchange.as_ref().expect("new exchange"));
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                coord.ask_approval_context(
+                    record.authority.action["agent"].as_str().unwrap_or(""),
+                    record.authority.action["agent_id"].as_str().unwrap_or(""),
+                    &question,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(_)) => "sent",
+                Ok(Err(error)) if !error.unknown => "unavailable",
+                _ => "unknown",
+            }
+        } else {
+            "unavailable"
+        };
+        let (work_writer, work_record) = (writer.clone(), record.clone());
+        let context_id = exchange.as_ref().expect("new exchange").context_id.clone();
+        tokio::task::spawn_blocking(move || {
+            pending::context::delivery(&work_writer, &work_record, &context_id, delivery)
+        })
+        .await
+        .map_err(|_| Error::ServiceMutation)?
+        .map_err(|_| Error::ServiceMutation)?;
+    }
+    let (work_writer, work_record) = (writer.clone(), record.clone());
+    let value = tokio::task::spawn_blocking(move || {
+        pending::context::view(&work_writer, &policy, &work_record, state.as_ref())
+    })
+    .await
+    .map_err(|_| Error::ServiceMutation)?;
+    let value = match value {
+        Ok(value) => value,
+        Err(error) => return Ok(context_error(error)),
+    };
+    if ask
+        && writer
+            .emit_confirmed(pending::context::event(&record, &value, false))
+            .await
+            .is_err()
+    {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"context audit unavailable; read context before retrying; approval is unchanged"}),
+        ));
+    }
+    Ok(response(
+        if created {
+            StatusCode::ACCEPTED
+        } else {
+            StatusCode::OK
+        },
+        value,
+    ))
+}
+
+fn context_error(error: crate::approvals::ApprovalError) -> Outcome {
+    response(
+        if error.kind == crate::approvals::ErrorKind::Io {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::CONFLICT
+        },
+        json!({"error":error.to_string()}),
+    )
 }

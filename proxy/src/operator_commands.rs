@@ -20,11 +20,13 @@ safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|mes
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
 safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
+safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
+safeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
 
 inspect keeps selection only in this session; it never changes a script's target.
 Factory roles come from the existing selected snapshot; live state supplies readiness.
@@ -33,6 +35,7 @@ Generated commands are saved or displayed as evidence, never executed.
 Sharing permits selected diagnostic/approval reads only. Helper prepares; the human decides.
 Each approval shows its fixed permission and options. Inspect leaves it pending.
 Explain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.
+Ask sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.
 Network approval is reusable for the selected agent and host/port. Credential approval changes shared persistent policy.
 Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
@@ -238,6 +241,83 @@ async fn explain(
         json!({"option":option}),
     )
     .await
+}
+
+async fn approval_context(
+    root: &Path,
+    id: &str,
+    agent: Option<&str>,
+    ask: bool,
+) -> Result<Value, Error> {
+    let view = approval(root, id, agent).await?;
+    let id = view
+        .get("approval_id")
+        .unwrap_or(&view["request_id"])
+        .as_str()
+        .ok_or("approval identity unavailable")?;
+    admin(
+        root,
+        &format!("/admin/approvals/{}/context", encoded(id)),
+        if ask { Method::POST } else { Method::GET },
+        if ask { json!({}) } else { Value::Null },
+    )
+    .await
+}
+
+// ASCII JSON quoting also contains bidi and Unicode line/paragraph controls.
+// Plain rendering limits each field; --json retains the bounded full response.
+fn context_json(value: &Value) -> Result<String, Error> {
+    let encoded = serde_json::to_string_pretty(value)?;
+    let mut output = String::new();
+    for ch in encoded.chars() {
+        if ch.is_ascii() && ch != '\u{7f}' {
+            output.push(ch);
+        } else {
+            for unit in ch.encode_utf16(&mut [0; 2]) {
+                use std::fmt::Write;
+                write!(output, "\\u{unit:04x}")?;
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn show_context(view: &Value) -> Result<(), Error> {
+    println!(
+        "Agent-provided context — UNTRUSTED\nApproval: {} | Status: {}\nFrom agent: {} ({})\nContext: {} | Delivery: {}",
+        safe(text(&view["approval_id"])),
+        safe(text(&view["approval_status"])),
+        safe(text(&view["agent"])),
+        safe(text(&view["agent_id"])),
+        safe(text(&view["context"]["status"])),
+        safe(text(&view["context"]["delivery"]))
+    );
+    for (label, key) in [
+        ("Task", "task"),
+        ("Reason", "reason"),
+        ("Next step", "next_step"),
+        ("Fallback", "fallback"),
+    ] {
+        if let Some(value) = view["context"]["response"][key]
+            .as_str()
+            .filter(|value| !value.is_empty())
+        {
+            let visible: String = value.chars().take(512).collect();
+            println!(
+                "  Untrusted {label}: {}{}",
+                context_json(&json!(visible))?,
+                if visible.len() < value.len() {
+                    " [truncated; use --json]"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+    println!(
+        "Agent text does not change SafeYolo's explanation or authority. Approve/reject remains available while the approval is pending."
+    );
+    Ok(())
 }
 
 fn show_explanation(view: &Value) -> Result<(), Error> {
@@ -574,7 +654,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         let mut selected_option: Option<String> = None;
         loop {
             let Some(answer) = crate::host_launch::input(
-                "approve / reject / explain [OPTION] (e) / Enter to leave unchanged: ",
+                "approve / reject / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
             )?
             else {
                 return Ok(());
@@ -586,17 +666,29 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
                     break;
                 }
                 ["reject"] => ("reject", None),
+                [decision @ ("ask" | "a" | "context" | "c")] => (*decision, None),
                 [decision @ ("approve" | "explain" | "e")] => (*decision, selected_option.clone()),
                 [decision @ ("approve" | "explain" | "e"), option] => {
                     (*decision, Some((*option).into()))
                 }
                 _ => {
                     println!(
-                        "Choose approve, reject or explain, with an offered option when needed."
+                        "Choose approve, reject, explain, ask or context, with an offered option when needed."
                     );
                     continue;
                 }
             };
+            if matches!(decision, "ask" | "a" | "context" | "c") {
+                match approval_context(root, id, Some(agent), matches!(decision, "ask" | "a")).await
+                {
+                    Ok(context) => show_context(&context)?,
+                    Err(error) => eprintln!(
+                        "Agent context unavailable: {}. Approve/reject remains available.",
+                        safe(&error.to_string())
+                    ),
+                }
+                continue;
+            }
             if matches!(decision, "explain" | "e") {
                 match explain(root, id, Some(agent), option.as_deref()).await {
                     Ok(explanation) => {
@@ -853,8 +945,34 @@ async fn helper(options: &Options) -> Result<Value, Error> {
     } else {
         approval.clone()
     };
+    if matches!(*operation, "context" | "respond") {
+        let path = format!("{approval}/context");
+        let current = native_client::helper(
+            options.socket.as_deref(),
+            token,
+            &path,
+            Method::GET,
+            Value::Null,
+        )
+        .await?;
+        if *operation == "context" {
+            return Ok(current);
+        }
+        let reason = options
+            .reason
+            .as_ref()
+            .ok_or("respond requires --reason; context is untrusted text")?;
+        return native_client::helper(
+            options.socket.as_deref(),
+            token,
+            &path,
+            Method::POST,
+            json!({"context_id":current["context"]["context_id"],"context":{"reason":reason}}),
+        )
+        .await;
+    }
     if !matches!(*operation, "show" | "diagnostic" | "prepare") {
-        return Err("Helper supports show, diagnostic and typed preparation only".into());
+        return Err("Helper supports show, diagnostic, prepare, context and respond".into());
     }
     let read = native_client::helper(
         options.socket.as_deref(),
@@ -953,7 +1071,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             }
         }
         println!(
-            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | review | share ID HELPER | approve ID | reject ID | logs | diagnose | attach | back | quit"
+            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | logs | diagnose | attach | back | quit"
         );
         print!("inspect> ");
         std::io::stdout().flush()?;
@@ -1026,6 +1144,9 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                     )
                 }
                 "review" => review_pending(root, name).await,
+                "ask" | "context" => show_context(
+                    &approval_context(root, rest.trim(), Some(name), command == "ask").await?,
+                ),
                 "approve" | "reject" => {
                     let view = approval(root, rest, Some(name)).await?;
                     show_approval(&view)?;
@@ -1097,6 +1218,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                 }
                 [] | ["list"] => pending(root, options.agent.as_deref()).await?,
                 ["show", id] => approval(root, id, options.agent.as_deref()).await?,
+                [command @ ("ask" | "context"), id] => {
+                    approval_context(root, id, options.agent.as_deref(), *command == "ask").await?
+                }
                 ["explain", id] => {
                     explain(
                         root,
@@ -1133,7 +1257,14 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         }
         _ => return Err("usage: safeyolo inspect --help".into()),
     };
-    if !options.json && value.get("why_stopped").is_some() {
+    if value.get("context").is_some() && value["trust"] == "untrusted" {
+        if options.json || args[0] == "helper" {
+            println!("{}", context_json(&value)?);
+            Ok(())
+        } else {
+            show_context(&value)
+        }
+    } else if !options.json && value.get("why_stopped").is_some() {
         show_explanation(&value)
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)
