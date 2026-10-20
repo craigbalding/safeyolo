@@ -572,8 +572,8 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+pub(crate) fn verified_stop_backend(name: &str) -> Result<Option<std::os::fd::OwnedFd>, Error> {
+    use std::os::fd::{FromRawFd, OwnedFd};
 
     let run = read(name)?
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
@@ -582,9 +582,7 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     if run["run_id"].as_str() == Some(id.trim_start_matches("safeyolo-"))
         && (saved_backend_is_dead(&run) || stopped_before_backend(name, &run, &root, &id)?)
     {
-        // The owner may have exited before stop acquired its lock. Only
-        // matching dead metadata is retired; no process needs signalling.
-        return remove_runsc_state(&root, &id);
+        return Ok(None);
     }
     let pid = crate::host_platform::backend_pid(name)
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
@@ -603,6 +601,21 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     {
         return Err("backend birth, run or namespaces are unverified; no process was signalled; backend state was preserved".into());
     }
+    Ok(Some(backend))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
+    use std::os::fd::AsRawFd;
+
+    let backend = verified_stop_backend(name)?;
+    let id = id(name)?;
+    let root = crate::host_platform::runsc_root();
+    let Some(backend) = backend else {
+        // The owner may have exited before stop acquired its lock. Only
+        // matching dead metadata is retired; no process needs signalling.
+        return remove_runsc_state(&root, &id);
+    };
     if unsafe {
         libc::syscall(
             libc::SYS_pidfd_send_signal,

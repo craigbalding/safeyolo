@@ -336,7 +336,7 @@ pub(crate) struct IssuedAccess {
 
 impl IssuedAccess {
     pub fn active(&self, policy: &Policy) -> bool {
-        if !self.active_snapshot(policy) {
+        if !self.active_snapshot(policy) || !self.stored(policy) {
             return false;
         }
         let Some(path) = policy.baseline_path.as_ref() else {
@@ -348,7 +348,22 @@ impl IssuedAccess {
         let Ok(saved) = policy.reload_native_source(&source, path) else {
             return false;
         };
-        self.active_snapshot(&saved)
+        self.active_snapshot(&saved) && self.stored(&saved)
+    }
+
+    fn stored(&self, policy: &Policy) -> bool {
+        let kind = match self.action["kind"].as_str() {
+            Some("network_allow") => "network_grants",
+            Some("credential_allow") => "credential_grants",
+            // Gateway permissions belong to the gateway grant store. Its
+            // caller checks the recorded grant and this authority together.
+            Some("gateway_route") => return true,
+            _ => return false,
+        };
+        policy
+            .issued_access(&self.beneficiary.agent, kind)
+            .iter()
+            .any(|grant| grant == self)
     }
 
     pub(crate) fn active_snapshot(&self, policy: &Policy) -> bool {

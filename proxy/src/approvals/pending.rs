@@ -799,10 +799,39 @@ pub(crate) fn current_view(
         };
     }
     view["approval"]["required"] = json!(view["status"] == "pending");
+    // Policy publication locks the grant store before the runtime. Release
+    // this runtime read before inspecting that store in the same order.
+    let gateway_grants = runtime
+        .as_deref()
+        .and_then(|runtime| runtime.gateway_grants.clone());
+    drop(runtime);
     if view["status"] == "approved" && view["result"].get("issued_access").is_some() {
         let issued: crate::policy::delegation::IssuedAccess =
             serde_json::from_value(view["result"]["issued_access"].clone()).map_err(unavailable)?;
-        view["grant_active"] = json!(issued.active(policy));
+        let stored = if issued.action["kind"] == "gateway_route" {
+            match gateway_grants {
+                Some(store) => store
+                    .list_grants_for_agent(
+                        &issued.beneficiary.agent,
+                        time::OffsetDateTime::now_utc(),
+                    )?
+                    .iter()
+                    .any(|grant| {
+                        !grant.expired
+                            && view["result"]["grant_id"] == grant.grant.grant_id
+                            && grant.grant.delegated.as_deref().is_some_and(|value| {
+                                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
+                                    value,
+                                )
+                                .is_ok_and(|saved| saved == issued)
+                            })
+                    }),
+                None => false,
+            }
+        } else {
+            true
+        };
+        view["grant_active"] = json!(stored && issued.active(policy));
         if policy
             .approval_result(&record.approval_id)
             .map_err(invalid)?

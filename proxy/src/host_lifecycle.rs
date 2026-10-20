@@ -2091,8 +2091,13 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     };
     let current = crate::host_agents::refresh(agent)?;
     let agent = &current;
+    let observed = crate::host_runs::observe(&agent.name).await;
+    if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
+        crate::host_platform::check_stop_sandbox(&agent.name).await?;
+    }
     if let Some(mut run) = crate::host_runs::read(&agent.name)?
         && run["agent_id"] == agent.id
+        && matches!(run["state"].as_str(), Some("starting" | "running"))
     {
         run["state"] = "stopping".into();
         crate::host_runs::save(&agent.name, &run)?;

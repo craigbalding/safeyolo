@@ -168,7 +168,10 @@ existing reservation, completion and release rules. They do not guarantee
 exactly-once external effects after a crash or an ambiguous response.
 
 If a decision response is lost, read the canonical approval before another
-call. Policy receipts recover a committed decision when its final database
+call. An approved decision remains approved after its access is consumed,
+removed or expired. `grant_active` reports whether the issued permission still
+exists and has current authority. Repeating the decision does not restore it.
+Policy receipts recover a committed decision when its final database
 status write was lost. An unconfirmed activation is reported explicitly;
 inspect `policy show` and the canonical grant before repairing policy. No
 held request or uncertain external write is replayed automatically.

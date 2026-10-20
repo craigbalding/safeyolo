@@ -398,13 +398,97 @@ async fn delegated_credentials_are_run_scoped_and_never_change_the_shared_baseli
     f.stop().await;
 }
 
+async fn assert_grant_readback(f: &Fixture, id: &str, option: &str, active: bool) -> Value {
+    let canonical = f
+        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .await
+        .json();
+    assert_eq!(canonical["status"], "approved", "{canonical}");
+    assert_eq!(canonical["grant_active"], active, "{canonical}");
+    let before = f.source();
+    let repeated = decide(f, "peer", id, "approve", option).await;
+    assert_eq!(repeated.status, 200, "{}", repeated.json());
+    assert_eq!(repeated.json()["status"], "approved");
+    assert_eq!(repeated.json()["grant_active"], active);
+    assert_eq!(
+        f.source(),
+        before,
+        "terminal resolution issued access again"
+    );
+    canonical
+}
+
+#[tokio::test]
+async fn removed_run_grants_keep_the_approved_decision_without_restoring_access() {
+    for kind in ["network_grants", "credential_grants"] {
+        let f = Fixture::new().await;
+        let _backend = Backend(runs(&f));
+        let header = if kind == "credential_grants" {
+            f.apply(
+                &f.source()
+                    .replace("egress='prompt'", "egress='allow'")
+                    .replace("enabled=false", "enabled=true"),
+            )
+            .await;
+            format!("Authorization: Bearer {SECRET}\r\n")
+        } else {
+            String::new()
+        };
+        let blocked = f
+            .request("worker", f.address, "GET", "/marker", &header)
+            .await;
+        assert_eq!(blocked.status, 428);
+        let id = blocked.id();
+        let mut input = proposal(&f);
+        if kind == "credential_grants" {
+            let canonical = f
+                .admin("GET", &format!("/admin/approvals/{id}"), None)
+                .await
+                .json();
+            input["delegation"]["scopes"] = json!([{"type":"credential","host":f.address.ip().to_string(),"fingerprints":canonical["action"]["credentials"]}]);
+        }
+        delegate(&f, input).await;
+        assert_eq!(
+            decide(&f, "helper", &id, "approve", "run").await.status,
+            200
+        );
+        let approved = assert_grant_readback(&f, &id, "run", true).await;
+        let mut source: toml_edit::DocumentMut = f.source().parse().unwrap();
+        assert!(
+            source["agents"]["worker"][kind]
+                .as_table_like_mut()
+                .unwrap()
+                .remove(approved["approval_id"].as_str().unwrap())
+                .is_some()
+        );
+        // Challenge the current policy snapshot as well as canonical readback:
+        // the saved typed permission has gone before the next policy reload.
+        fs::write(f.root.path().join("policy.toml"), source.to_string()).unwrap();
+        let removed = assert_grant_readback(&f, &id, "run", false).await;
+        assert_eq!(removed["result"], approved["result"]);
+        assert_eq!(
+            f.request("worker", f.address, "GET", "/marker", &header)
+                .await
+                .status,
+            428
+        );
+        no_origin(&f).await;
+        f.stop().await;
+    }
+}
+
 #[tokio::test]
 async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorization_separate() {
     let f = Fixture::new().await;
     let backend = runs(&f);
     let _backend = Backend(backend);
     fs::write(f.root.path().join("services/fixture.yaml"),format!("schema_version: 1\nname: fixture\ndefault_host: {}\ncapabilities:\n  writer:\n    routes:\n      - methods: [POST, GET]\n        path: /write\nrisky_routes:\n  - path: /write\n    methods: [POST]\n    tactics: [impact]\n",f.address.ip())).unwrap();
-    let mut source = f.source().replace("egress='prompt'", "egress='allow'");
+    // Keep the finite grant-consumption/removal/expiry sequence within the
+    // fixture's normal policy budget. Budget enforcement stays enabled.
+    let mut source = f
+        .source()
+        .replace("egress='prompt'", "egress='allow'")
+        .replace("budget=40", "budget=400");
     source.push_str(&format!("\n[hosts.'{}']\nservice='fixture'\n[agents.worker.services.fixture]\ncapability='writer'\naccount='agent'\n[[risk]]\naccount='agent'\ntactics=['impact']\ndecision='require_approval'\n",f.address.ip()));
     fs::write(f.root.path().join("policy.toml"), source).unwrap();
     let f = f.restart().await;
@@ -470,6 +554,7 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
             .status,
         200
     );
+    let approved = assert_grant_readback(&f, &id, "delegated_once", true).await;
     // Native policy publication rotates gateway bearer tokens. Refresh through
     // the existing gateway client path before retrying the approved route.
     let current = f
@@ -511,6 +596,18 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
     let (first, ()) = tokio::join!(first, concurrency);
     assert_eq!(first.status, 200);
     observer.await.unwrap();
+    let consumed = assert_grant_readback(&f, &id, "delegated_once", false).await;
+    assert_eq!(consumed["result"], approved["result"]);
+    let source: toml::Value = toml::from_str(&f.source()).unwrap();
+    assert!(
+        source["agents"]["worker"]
+            .get("grants")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .all(|grant| grant.get("grant_id").and_then(toml::Value::as_str)
+                != approved["result"]["grant_id"].as_str())
+    );
     let refreshed = f
         .agent("worker", "GET", "/gateway/services", None)
         .await
@@ -540,6 +637,72 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
         403
     );
     no_origin(&f).await;
+    for disposition in ["removed", "expired"] {
+        let refreshed = f
+            .agent("worker", "GET", "/gateway/services", None)
+            .await
+            .json();
+        let header = format!(
+            "Authorization: Bearer {}\r\n",
+            refreshed["authorized"]["fixture"]["token"]
+                .as_str()
+                .unwrap()
+        );
+        let blocked = f
+            .request("worker", f.address, "POST", "/write", &header)
+            .await;
+        assert_eq!(
+            blocked.status,
+            428,
+            "{}",
+            String::from_utf8_lossy(&blocked.body)
+        );
+        let id = blocked.id();
+        assert_eq!(
+            decide(&f, "helper", &id, "approve", "run").await.status,
+            200
+        );
+        let approved = assert_grant_readback(&f, &id, "run", true).await;
+        let grant_id = approved["result"]["grant_id"].as_str().unwrap();
+        if disposition == "removed" {
+            assert_eq!(
+                f.admin("DELETE", &format!("/admin/gateway/grants/{grant_id}"), None)
+                    .await
+                    .status,
+                200
+            );
+        } else {
+            let mut source: toml_edit::DocumentMut = f.source().parse().unwrap();
+            let grants = source["agents"]["worker"]["grants"]
+                .as_array_of_tables_mut()
+                .unwrap();
+            let grant = grants
+                .iter_mut()
+                .find(|grant| grant["grant_id"].as_str() == Some(grant_id))
+                .unwrap();
+            grant["expires"] = toml_edit::value("2000-01-01T00:00:00Z");
+            f.apply(&source.to_string()).await;
+        }
+        let inactive = assert_grant_readback(&f, &id, "run", false).await;
+        assert_eq!(inactive["result"], approved["result"]);
+        let refreshed = f
+            .agent("worker", "GET", "/gateway/services", None)
+            .await
+            .json();
+        let header = format!(
+            "Authorization: Bearer {}\r\n",
+            refreshed["authorized"]["fixture"]["token"]
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            f.request("worker", f.address, "POST", "/write", &header)
+                .await
+                .status,
+            428
+        );
+        no_origin(&f).await;
+    }
     // Loading a changed service definition invalidates the acknowledged
     // envelope, including across proxy restart with the same names and run.
     let definition = f.root.path().join("services/fixture.yaml");
@@ -688,6 +851,7 @@ async fn expiry_explicit_denial_and_independent_permission_have_distinct_effects
     }
     assert_eq!(f.network("worker", f.address).await.status, 428);
     no_origin(&f).await;
+    assert_grant_readback(&f, &id, "run", false).await;
     input["expected_revision"] = json!(revision);
     input["delegation"]["grant_seconds"] = Value::Null;
     input["delegation"]["definition_revisions"] = json!({});
