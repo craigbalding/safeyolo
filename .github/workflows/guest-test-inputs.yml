@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -29,6 +30,7 @@ jobs:
       CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
       SAFEYOLO_BUILD_PROFILE: ${{ inputs.profile }}
+      SAFEYOLO_CARGO_RESERVE_GIB: "10"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,10 +71,57 @@ jobs:
             guest/command -> target
           shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
+      - name: Reuse matching Linux guest inputs
+        id: reuse_guest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_PLATFORM: linux-${{ inputs.architecture }}
+          REQUIRE_SUCCESSFUL_RUN: ${{ inputs.retain_packages && inputs.profile == 'production' }}
+        run: |
+          qualification=()
+          if [[ "$REQUIRE_SUCCESSFUL_RUN" == true ]]; then qualification+=(--require-successful-run); fi
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          python3 scripts/select_blackbox_artifacts.py --native-input guest \
+            --platform "$INPUT_PLATFORM" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+            --branch "$DEFAULT_BRANCH" --output "guest/command/target/$directory" "${qualification[@]}"
       - name: Build Linux guest executables and receipts
+        if: steps.reuse_guest.outputs.reused != 'true'
         run: scripts/build_guest_command.sh
-      - name: Build Linux host test inputs
+      - name: Check Linux guest input identity
+        shell: bash
+        run: |
+          source scripts/native_package.sh
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          for binary in safeyolo-guest safeyolo-coord; do
+            helper="guest/command/target/$directory/$binary"
+            native_executable "$helper" "$(host_platform)"
+            [[ $("$helper" --version) == "$binary "*" commit=$SAFEYOLO_BUILD_REVISION profile=$SAFEYOLO_BUILD_PROFILE" ]]
+            [[ $("$helper" --version) == "$(cat "$helper.version")" ]]
+            [[ $(file_sha256 "$helper") == "$(cat "$helper.sha256")" ]]
+          done
+      - name: Reuse matching Linux host inputs
+        id: reuse_host
         if: inputs.host_inputs && (inputs.architecture == 'amd64' || inputs.retain_packages)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_PLATFORM: linux-${{ inputs.architecture }}
+          REQUIRE_SUCCESSFUL_RUN: ${{ inputs.retain_packages && inputs.profile == 'production' }}
+        run: |
+          qualification=()
+          if [[ "$REQUIRE_SUCCESSFUL_RUN" == true ]]; then qualification+=(--require-successful-run); fi
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          python3 scripts/select_blackbox_artifacts.py --native-input host \
+            --platform "$INPUT_PLATFORM" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+            --branch "$DEFAULT_BRANCH" --output "proxy/target/$directory" "${qualification[@]}"
+      - name: Build Linux host test inputs
+        if: inputs.host_inputs && (inputs.architecture == 'amd64' || inputs.retain_packages) && steps.reuse_host.outputs.reused != 'true'
         run: |
           options=()
           if [ "$SAFEYOLO_BUILD_PROFILE" = production ]; then options+=(--release); fi
@@ -81,8 +130,36 @@ jobs:
           directory=debug
           if [ "$SAFEYOLO_BUILD_PROFILE" = production ]; then directory=release; fi
           verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
+      - name: Verify reused Linux host test inputs
+        if: steps.reuse_host.outputs.reused == 'true'
+        shell: bash
+        run: |
+          source scripts/native_package.sh
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
+      - name: Record fresh Linux input receipts
+        shell: bash
+        env:
+          REUSED_GUEST: ${{ steps.reuse_guest.outputs.reused }}
+          REUSED_HOST: ${{ steps.reuse_host.outputs.reused }}
+          HOST_INPUTS: ${{ inputs.host_inputs && (inputs.architecture == 'amd64' || inputs.retain_packages) }}
+        run: |
+          source scripts/native_package.sh
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          if [[ "$REUSED_GUEST" != true ]]; then
+            python3 scripts/select_blackbox_artifacts.py --native-input guest --save-native-input \
+              --platform "$(host_platform)" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+              --output "guest/command/target/$directory"
+          fi
+          if [[ "$HOST_INPUTS" == true && "$REUSED_HOST" != true ]]; then
+            python3 scripts/select_blackbox_artifacts.py --native-input host --save-native-input \
+              --platform "$(host_platform)" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+              --output "proxy/target/$directory"
+          fi
       - name: Upload Linux host test inputs
-        if: inputs.host_inputs && inputs.architecture == 'amd64'
+        if: inputs.host_inputs && (inputs.architecture == 'amd64' || inputs.retain_packages)
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: linux-host-${{ inputs.architecture }}-${{ inputs.profile }}
@@ -90,6 +167,7 @@ jobs:
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-proxy
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/native-input.json
           if-no-files-found: error
 
       - name: Build Linux guest terminal input
@@ -116,6 +194,7 @@ jobs:
           path: |
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-guest*
             guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord*
+            guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/native-input.json
           if-no-files-found: error
       - name: Retain complete Linux production bundle
         if: inputs.retain_packages && inputs.profile == 'production'
@@ -146,6 +225,8 @@ jobs:
     env:
       CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
+      SAFEYOLO_BUILD_PROFILE: ${{ inputs.profile }}
+      SAFEYOLO_CARGO_RESERVE_GIB: "10"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,11 +244,27 @@ jobs:
             guest/command -> target
           shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
+      - name: Reuse matching Mac host inputs
+        id: reuse_host
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REQUIRE_SUCCESSFUL_RUN: ${{ inputs.retain_packages && inputs.profile == 'production' }}
+        run: |
+          qualification=()
+          if [[ "$REQUIRE_SUCCESSFUL_RUN" == true ]]; then qualification+=(--require-successful-run); fi
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          python3 scripts/select_blackbox_artifacts.py --native-input host \
+            --platform darwin-arm64 --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+            --branch "$DEFAULT_BRANCH" --output "proxy/target/$directory" "${qualification[@]}"
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: linux-guest-arm64-${{ inputs.profile }}
           path: guest/command/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}
       - name: Build and check Mac host test inputs
+        if: steps.reuse_host.outputs.reused != 'true'
         env:
           SAFEYOLO_BUILD_PROFILE: ${{ inputs.profile }}
         run: |
@@ -177,6 +274,24 @@ jobs:
           scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy "${options[@]}"
           source scripts/native_package.sh
           verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
+      - name: Verify reused Mac host test inputs
+        if: steps.reuse_host.outputs.reused == 'true'
+        shell: bash
+        run: |
+          source scripts/native_package.sh
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          chmod +x "guest/command/target/$directory/safeyolo-guest" "guest/command/target/$directory/safeyolo-coord"
+          verify_native_artifacts "proxy/target/$directory" "guest/command/target/$directory" "$SAFEYOLO_BUILD_PROFILE" "$(host_platform)"
+      - name: Record fresh Mac input receipt
+        if: steps.reuse_host.outputs.reused != 'true'
+        shell: bash
+        run: |
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then directory=release; fi
+          python3 scripts/select_blackbox_artifacts.py --native-input host --save-native-input \
+            --platform darwin-arm64 --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+            --output "proxy/target/$directory"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: darwin-host-arm64-${{ inputs.profile }}
@@ -184,6 +299,7 @@ jobs:
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-proxy
+            proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/native-input.json
           if-no-files-found: error
       - name: Download matching guest terminal for the production bundle
         if: inputs.retain_packages && inputs.profile == 'production'
