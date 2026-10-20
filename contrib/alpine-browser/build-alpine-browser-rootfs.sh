@@ -9,29 +9,39 @@
 # Chromium is baked in alongside the noVNC stack so the core SafeYolo desktop
 # launcher can open a browser immediately after first boot.
 #
-# Operator workflow (the agent must already be running):
-#     safeyolo agent add web . \
-#         --rootfs-script contrib/alpine-browser/build-alpine-browser-rootfs.sh
-#     safeyolo agent desktop web --browser https://example.com --open
+# Prepare the image explicitly, then supply it to the native installation or
+# a stopped agent. See contrib/ROOTFS_SCRIPT_GUIDE.md for inputs and paths.
+# After starting the agent, `safeyolo agent present NAME` opens its desktop.
 #
-# Runs on Linux (native) or inside the safeyolo-builder Lima VM on macOS.
+# Runs on Linux, including a Lima builder with the required inputs mounted.
 # Host deps (Linux): skopeo, umoci, curl, tar, sha256sum.
 # e2fsprogs only for the ext4 output (macOS).
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_NAME:?must be invoked via safeyolo agent add --rootfs-script}"
+: "${SAFEYOLO_AGENT_NAME:?set the agent name (see contrib/ROOTFS_SCRIPT_GUIDE.md)}"
 : "${SAFEYOLO_ROOTFS_WORK_DIR:?}"
 : "${SAFEYOLO_GUEST_SRC_DIR:?}"
 : "${SAFEYOLO_TARGET_ARCH:?}"
 
 # --- Pins. Bump the tag; re-pull for a fresh digest. ---
-ALPINE_TAG="3.20"
+ALPINE_TAG="3.22"
 ALPINE_IMAGE="docker://alpine:${ALPINE_TAG}"
 
 case "$SAFEYOLO_TARGET_ARCH" in
     arm64|amd64) ;;
     *) echo "Unsupported SAFEYOLO_TARGET_ARCH: $SAFEYOLO_TARGET_ARCH" >&2; exit 1 ;;
 esac
+
+# Match the default and Kali builders: downloads stay unprivileged; ownership,
+# chroot and filesystem operations use command-scoped root access.
+BUILDER_UID="$(id -u)"
+BUILDER_GID="$(id -g)"
+SUDO=()
+if [ "$BUILDER_UID" -ne 0 ]; then
+    sudo -v
+    SUDO=(sudo)
+fi
+_as_root() { "${SUDO[@]}" "$@"; }
 
 # --- Tools check (fail fast with clear messages). ---
 for tool in skopeo umoci curl tar sha256sum; do
@@ -52,12 +62,10 @@ skopeo --override-arch="$SAFEYOLO_TARGET_ARCH" --override-os=linux \
     copy "$ALPINE_IMAGE" "oci:$OCI_DIR:alpine-${ALPINE_TAG}"
 
 echo "=== Unpacking ==="
-# No --rootless: SafeYolo runs this script as VM-root (sudo -E wrapper in
-# vm.py::_run_rootfs_script_lima). --rootless leaves xattrs/modes that
-# mkfs.ext4 -d can't read back when packing the final image.
-umoci unpack --image "$OCI_DIR:alpine-${ALPINE_TAG}" "$SAFEYOLO_ROOTFS_WORK_DIR/unpack"
-rm -rf "$TREE"
-mv "$SAFEYOLO_ROOTFS_WORK_DIR/unpack/rootfs" "$TREE"
+# No --rootless: preserve image ownership and modes for chroot and ext4.
+_as_root umoci unpack --image "$OCI_DIR:alpine-${ALPINE_TAG}" "$SAFEYOLO_ROOTFS_WORK_DIR/unpack"
+_as_root rm -rf "$TREE"
+_as_root mv "$SAFEYOLO_ROOTFS_WORK_DIR/unpack/rootfs" "$TREE"
 
 # --- Add packages. Chroot so apk uses the tree's own resolver/config. ---
 echo "=== Installing Alpine packages ==="
@@ -74,25 +82,30 @@ echo "=== Installing Alpine packages ==="
 #   mise          -- Alpine's native musl-linked package
 #   nodejs/npm    -- native musl-linked Node toolchain for Codex/web tooling
 #   chromium      -- headful browser shown through noVNC
-#   nss-tools     -- certutil, used by the chrome wrapper to trust SafeYolo CA
-cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
-chroot "$TREE" /sbin/apk add --no-cache \
+#   nss-tools     -- certutil, used by the staged browser launcher for CA trust
+_as_root cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
+_as_root chroot "$TREE" /sbin/apk add --no-cache \
     bash socat ca-certificates shadow openssh-server curl git jq sudo mise nodejs npm \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
     xvfb x11vnc font-noto procps-ng util-linux-misc \
     nss-tools dbus fluxbox xterm chromium
 
+NOVNC_STAGE="$SAFEYOLO_ROOTFS_WORK_DIR/novnc-stage"
 bash "$SAFEYOLO_GUEST_SRC_DIR/install-novnc-assets.sh" \
-    "$TREE" "$SAFEYOLO_ROOTFS_WORK_DIR/.download-cache"
+    "$NOVNC_STAGE" "$SAFEYOLO_ROOTFS_WORK_DIR/.download-cache"
+_as_root cp -a "$NOVNC_STAGE/usr/share/novnc" "$TREE/usr/share/"
+_as_root chown -R 0:0 "$TREE/usr/share/novnc"
+_as_root chmod -R a+rX "$TREE/usr/share/novnc"
 
 # SafeYolo stages its current desktop lifecycle/browser helper at
 # /safeyolo/guest-desktop on every run. This rootfs supplies only the optional
 # graphical capability packages, so it cannot drift from the CLI contract.
 
 # --- SafeYolo guest bits. ---
-source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
-install_safeyolo_guest_common "$TREE"
+_as_root env SAFEYOLO_GUEST_SRC_DIR="$SAFEYOLO_GUEST_SRC_DIR" \
+    bash -c 'set -euo pipefail; source "$1"; install_safeyolo_guest_common "$2"' \
+    bash "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh" "$TREE"
 
 # apk honours http_proxy / https_proxy natively. The shared guest installer
 # supplies the sudo compatibility shim and preserves proxy + CA variables.
@@ -106,14 +119,18 @@ if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     # per-agent 256 GiB overlay (/dev/vdb), so the base only needs to hold
     # the build-time tree (Alpine base + X stack, a few hundred MB).
     truncate -s 2G "$SAFEYOLO_ROOTFS_OUT_EXT4"
-    mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$TREE" "$SAFEYOLO_ROOTFS_OUT_EXT4"
+    _as_root mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$TREE" "$SAFEYOLO_ROOTFS_OUT_EXT4"
+    _as_root chown "$BUILDER_UID:$BUILDER_GID" "$SAFEYOLO_ROOTFS_OUT_EXT4"
 fi
 if [ -n "${SAFEYOLO_ROOTFS_OUT_TREE:-}" ]; then
     echo "=== Staging tree → $SAFEYOLO_ROOTFS_OUT_TREE ==="
     # gVisor mounts the directory directly; no packing needed. cp -a preserves
     # ownership/perms/xattrs (sshd host keys, /etc/shadow, suid bits).
-    mkdir -p "$(dirname "$SAFEYOLO_ROOTFS_OUT_TREE")"
-    cp -a "$TREE/." "$SAFEYOLO_ROOTFS_OUT_TREE/"
+    _as_root mkdir -p "$(dirname "$SAFEYOLO_ROOTFS_OUT_TREE")"
+    _as_root cp -a "$TREE/." "$SAFEYOLO_ROOTFS_OUT_TREE/"
+    # Native Linux startup requires the tree to belong to mapped sandbox root.
+    _as_root chmod 0755 "$SAFEYOLO_ROOTFS_OUT_TREE"
+    _as_root chown -R 100000:100000 "$SAFEYOLO_ROOTFS_OUT_TREE"
 fi
 
 # Per-agent apk cache persisted across restarts so runtime `apk add` is warm.

@@ -45,26 +45,33 @@ chooses outputs and owns their temporary work directory and cleanup:
 | Variable | Meaning |
 |---|---|
 | `SAFEYOLO_AGENT_NAME` | Name of the agent for which you prepare the image. |
-| `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image (set when the host running SafeYolo is macOS). Not set on Linux. |
-| `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** as a directory (set when the host is Linux). gVisor reads it as OCI root.path. Not set on macOS. |
+| `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image for the macOS VZ runtime. The build runs on Linux, including a Linux builder VM on macOS. |
+| `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** for Linux gVisor. gVisor reads it as OCI root.path. |
 | `SAFEYOLO_ROOTFS_WORK_DIR` | An empty disk-backed scratch directory owned by this build; clean it after the command finishes. |
-| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to SafeYolo's guest support files: the source checkout's `guest/` directory with matching guest support. Contains `safeyolo-guest-init`, `safeyolo-sudo`, and `install-guest-common.sh`. |
+| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to the source checkout's `guest/` directory. Contains `rootfs/safeyolo-guest-init`, `rootfs/safeyolo-sudo`, and `install-guest-common.sh`. |
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
 | `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
 Exactly one output variable is set for each invocation:
 
-- On macOS, `SAFEYOLO_ROOTFS_OUT_EXT4` names the ext4 image to create.
-- On Linux, `SAFEYOLO_ROOTFS_OUT_TREE` names the unpacked directory tree to
+- For macOS VZ, `SAFEYOLO_ROOTFS_OUT_EXT4` names the ext4 image to create.
+- For Linux gVisor, `SAFEYOLO_ROOTFS_OUT_TREE` names the unpacked directory tree to
   populate.
 
 Handle both branches if the script supports both host platforms. Always create
 `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS`; write an empty file when no package cache
 should persist.
 
-For example, from the trusted source checkout on Linux, prepare an Alpine
-tree for a fresh installation. Select the architecture for the actual
-runtime and keep host inputs separate from agent-writable files:
+Both Alpine examples select Alpine 3.22 and its matching `main` and `community`
+repositories. Do not upgrade a 3.20 tree by adding newer repositories.
+The minimal variant supplies the common developer tools. The browser variant
+also includes Chromium and the desktop packages.
+
+For example, from the trusted source checkout on a matching-architecture Linux
+builder, prepare an Alpine tree for a fresh installation. Install `skopeo`,
+`umoci`, curl, tar and coreutils first. The builder uses sudo for unpacking,
+chroot package installation and output ownership. Select the architecture for
+the actual runtime and keep host inputs separate from agent-writable files:
 
 ```sh
 work=$(mktemp -d "$HOME/rootfs-build.XXXXXX")
@@ -127,8 +134,11 @@ must meet these requirements:
 1. **`/usr/local/bin/safeyolo-guest-init`** — SafeYolo's boot orchestrator
    executes this file as process ID 1. On macOS, the initramfs reaches it through
    `switch_root`. On Linux, the OCI entrypoint executes it directly.
-2. **A userland that runs on Linux 6.12** — glibc ≥ 2.17 or musl; any
-   modern distro from 2018 onwards is fine.
+2. **A compatible Linux userland** — the host package stages `safeyolo-guest`
+   and `safeyolo-coord` at boot. Their C library requirements must match the
+   rootfs. A Linux executable built for glibc does not automatically run on
+   Alpine's musl. Test the installed guest executables as well as the image's
+   shell and packages.
 3. **The right architecture** — use `$SAFEYOLO_TARGET_ARCH` to pull the
    matching image or bootstrap the right package set.
 4. **These runtime packages**, which SafeYolo's boot scripts rely on:
@@ -136,7 +146,7 @@ must meet these requirements:
    - `socat` 1.8+ (used by `guest-proxy-forwarder` and
      `guest-shell-bridge`; the 1.8 release added `VSOCK-LISTEN` /
      `VSOCK-CONNECT`, which these pumps require on macOS. Debian trixie,
-     Alpine 3.20+, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
+     Alpine 3.22, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
    - `openssh-server` (sshd — entrypoint for `safeyolo agent shell`)
    - `ca-certificates` (trust store — SafeYolo's man-in-the-middle certificate
      authority (CA) certificate is appended at
@@ -217,7 +227,7 @@ direct user rule is what makes the capability work in pre-existing shells.
 
 ## Minimal example
 
-See `contrib/alpine-minimal/build-alpine-rootfs.sh` — ~60 lines, pulls an
+See `contrib/alpine-minimal/build-alpine-rootfs.sh`. It pulls an
 Alpine OCI image with `skopeo`, unpacks with `umoci`, adds the same small
 agent-facing toolkit as the default base with `apk add`, calls
 `install_safeyolo_guest_common`, packs to the
