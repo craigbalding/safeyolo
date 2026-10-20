@@ -164,8 +164,9 @@ pub struct Config {
     /// Development override for the process audit path. Without it, startup
     /// uses SAFEYOLO_LOG_PATH and the production default.
     pub audit_log_path: Option<PathBuf>,
-    /// Migration diagnostics, separate from the canonical audit stream.
-    pub event_log: PathBuf,
+    /// Deserialize old generated settings without retaining or using a path.
+    #[serde(default, rename = "event_log", skip_serializing)]
+    pub retired_event_log: serde::de::IgnoredAny,
     pub parent_proxy: Option<String>,
     /// An empty list applies no agent filter; names match the accepted listener.
     #[serde(default)]
@@ -300,12 +301,12 @@ impl Config {
                 return Err("listeners need an agent identity and a unique socket path".into());
             }
         }
-        for path in [&self.readiness_file, &self.event_log]
+        for path in [&self.readiness_file]
             .into_iter()
             .chain(self.policy_file.iter())
         {
             if !paths.insert(path) {
-                return Err("listener, policy, readiness and event paths must be distinct".into());
+                return Err("listener, policy and readiness paths must be distinct".into());
             }
         }
         if let Some(token) = &self.via_token
@@ -400,7 +401,7 @@ mod tests {
     fn parent_host_filter_defaults_validates_and_serializes() {
         let mut source = json!({
             "listeners": [], "policy_file": "policy.toml",
-            "readiness_file": "ready", "event_log": "events",
+            "readiness_file": "ready",
             "parent_proxy": "http://parent.example:18080"
         });
         let default: Config = serde_json::from_value(source.clone()).unwrap();
@@ -481,9 +482,7 @@ mod tests {
         let base = json!({
             "listeners": [],
             "policy_file": "policy.json",
-            "readiness_file": "ready",
-            "event_log": "events"
-        });
+            "readiness_file": "ready",});
         let default: Config = serde_json::from_value(base.clone()).unwrap();
         assert!(default.credential_guard_block);
         let mut alias = base;

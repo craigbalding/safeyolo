@@ -179,15 +179,18 @@ impl Completion {
             // credential material. Recording failure cannot alter the already
             // applied response or release a fail-closed reservation.
             if let Ok(runtime) = self.state.read() {
-                let _ = runtime.record(serde_json::json!({
-                    "event":"proxy.gateway",
-                    "request_id":self.request_id,
-                    "agent":self.identity.request_agent(),
-                    "host":self.host,
-                    "grant_id":grant_id,
-                    "outcome":outcome,
-                    "status":result.ok().map(|status| status.as_u16()),
-                }));
+                let _ = runtime.audit.emit(self.identity.request_event(
+                    "gateway.evaluated",
+                    crate::audit::Kind::Gateway,
+                    &self.request_id,
+                    "Gateway request observation",
+                    serde_json::json!({
+                    "host": self.host,
+                    "grant_id": grant_id,
+                    "outcome": outcome,
+                    "status": result.ok().map(|status| status.as_u16())
+                    }),
+                ));
             }
         }
         // Non-2xx, reset and downstream cancellation drop the lease and
@@ -515,11 +518,17 @@ mod tests {
                 "readiness_file":directory.path().join("ready"),
                 "flow_store_enabled": false,
                 "audit_log_path": directory.path().join("audit.jsonl"),
-                "event_log":if full_sink {std::path::PathBuf::from("/dev/full")} else {directory.path().join("events.jsonl")},
                 "circuit_breaker_enabled":true,
             }))
             .unwrap();
             let runtime = crate::Runtime::new(config, "completion-fixture", None, None).unwrap();
+            if full_sink {
+                runtime
+                    .audit
+                    .wait_for_drain(Duration::from_secs(2))
+                    .unwrap();
+                runtime.audit.poison_for_test();
+            }
             Self {
                 directory,
                 state: Arc::new(RwLock::new(Arc::new(runtime))),
@@ -562,11 +571,27 @@ mod tests {
         }
 
         fn events(&self) -> Vec<Value> {
-            std::fs::read_to_string(self.directory.path().join("events.jsonl"))
+            assert!(
+                self.state
+                    .read()
+                    .unwrap()
+                    .audit
+                    .wait_for_drain(LIMIT)
+                    .unwrap()
+            );
+            let path = self.directory.path().join("audit.jsonl");
+            if !path.exists() {
+                return Vec::new();
+            }
+            std::fs::read_to_string(path)
                 .unwrap()
                 .lines()
                 .map(|line| serde_json::from_str(line).unwrap())
-                .filter(|event: &Value| event["event"] == "proxy.circuit")
+                .filter(|event: &Value| {
+                    event["event"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("ops.circuit_breaker."))
+                })
                 .collect()
         }
 
@@ -664,10 +689,10 @@ mod tests {
                 assert!(body.is_err(), "{name}");
             }
             let _ = tokio::time::timeout(LIMIT, &mut driver.0).await.unwrap().unwrap();
-            // Existing circuit canonical errors suppress its later children;
-            // only its separate diagnostic failure changes this evidence flag.
-            assert_eq!(completion.try_finish(), Some(false), "{name}");
-            assert_eq!(completion.try_finish(), Some(false), "{name}");
+            // Canonical submission errors keep committed memory bytes and
+            // suppress later hooks while marking the evidence failure.
+            assert_eq!(completion.try_finish(), Some(poison), "{name}");
+            assert_eq!(completion.try_finish(), Some(poison), "{name}");
             let stats = runtime.memory_monitor.get_stats(crate::memory_runtime::sample, || 1.).unwrap().json().unwrap();
             assert_eq!(stats["total_flows"], 0, "response cannot invent request completion");
             assert_eq!(stats["connections"][0]["bytes_received"], expected_bytes, "{name}");
@@ -1306,9 +1331,19 @@ mod tests {
             assert_eq!(fixture.failures(), complete.then(|| json!(1)), "{terminal}");
             assert_eq!(fixture.events().len(), usize::from(complete), "{terminal}");
             let gateway =
-                std::fs::read_to_string(fixture.directory.path().join("events.jsonl")).unwrap();
-            assert_eq!(gateway.matches("\"event\":\"proxy.gateway\"").count(), 1);
-            assert!(gateway.contains("\"outcome\":\"grant_retained\""));
+                std::fs::read_to_string(fixture.directory.path().join("audit.jsonl")).unwrap();
+            assert_eq!(
+                gateway
+                    .lines()
+                    .filter(|line| serde_json::from_str::<Value>(line).unwrap()["event"]
+                        == "gateway.evaluated")
+                    .count(),
+                1
+            );
+            assert!(gateway.lines().any(
+                |line| serde_json::from_str::<Value>(line).unwrap()["details"]["outcome"]
+                    == "grant_retained"
+            ));
         }
     }
 
@@ -1414,8 +1449,26 @@ mod tests {
         assert_eq!(completion.try_finish(), Some(true));
         assert_eq!(
             fixture.failures(),
-            Some(json!(1)),
-            "failed evidence did not roll back or replay the response"
+            None,
+            "the failed audit did not publish a new host state"
+        );
+        let counters = fixture
+            .state
+            .read()
+            .unwrap()
+            .circuits
+            .stats_document(
+                true,
+                crate::circuit_runtime::now(),
+                &mut rand::random::<f64>,
+            )
+            .unwrap()
+            .value
+            .json()
+            .unwrap();
+        assert_eq!(
+            counters["opens_total"], 1,
+            "the reached open counter must not roll back or replay"
         );
     }
 }

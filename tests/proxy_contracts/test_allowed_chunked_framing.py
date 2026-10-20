@@ -206,8 +206,8 @@ def test_allowed_chunked_request_finishes_at_origin(proxy_backend, tmp_path, siz
                 client = connection(proxy.paths["alice"])
                 client.sock.settimeout(8)
                 status, headers, body = send_chunked(client, target, payload)
-            requests = proxy.events("proxy.request")
-            egress = proxy.events("proxy.egress")
+            requests = proxy.events("traffic.request_outcome")
+            egress = proxy.events("traffic.egress")
             audit = read_events(directory / "audit.jsonl")
             retain_observation(
                 proxy_backend, size, directory, origin,
@@ -219,8 +219,8 @@ def test_allowed_chunked_request_finishes_at_origin(proxy_backend, tmp_path, siz
             assert "x-blocked-by" not in headers
             assert headers["x-safeyolo-request-id"] != FORGED_REQUEST_ID
             assert len(requests) == 1
-            assert requests[0]["decision"] == "allow" and requests[0]["status"] == 200
-            assert len(egress) == 1 and egress[0]["port"] == port
+            assert requests[0]["decision"] == "allow" and requests[0]["details"]["status"] == 200
+            assert len(egress) == 1 and egress[0]["details"]["port"] == port
             assert not any(row.get("decision") == "deny" for row in audit)
 
         assert len(origin.wait_requests(2)) == 2, origin.requests

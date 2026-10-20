@@ -196,6 +196,9 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     let fields = value
         .as_object_mut()
         .ok_or("configuration must be a table")?;
+    // Ignore the retired diagnostic path in already-generated configurations.
+    // Historical files stay on disk; all new events use audit_log_path.
+    fields.shift_remove("event_log");
     for key in [
         "addons",
         "native_product",
@@ -268,7 +271,6 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         ("admin_api_token_file", "data/admin_token"),
         ("readiness_file", "data/ready.json"),
         ("audit_log_path", "logs/audit.jsonl"),
-        ("event_log", "logs/events.jsonl"),
         ("flow_store_db_path", "logs/flows.sqlite3"),
         ("circuit_state_file", "data/circuits.json"),
         ("gateway_builtin_services_dir", "builtin-services"),
@@ -284,7 +286,6 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         "admin_api_token_file",
         "readiness_file",
         "audit_log_path",
-        "event_log",
         "flow_store_db_path",
         "circuit_state_file",
         "gateway_builtin_services_dir",
@@ -643,10 +644,13 @@ tailnet_port=8443
             config.readiness_file,
             directory.path().join("state/ready-marker.json")
         );
-        assert_eq!(
-            config.event_log,
-            directory.path().join("records/diagnostics.jsonl")
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("event_log")
+                .is_none()
         );
+        assert!(!directory.path().join("records/diagnostics.jsonl").exists());
         assert_eq!(config.reload_id.as_deref(), Some("owned-reload"));
         assert!(
             !config.agent_api_enabled && !config.sse_streaming_enabled && config.sse_stream_json

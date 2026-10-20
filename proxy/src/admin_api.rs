@@ -265,38 +265,6 @@ impl CircuitResetAudit {
         });
         crate::network_guard::sanitize(&text)
     }
-
-    pub fn events(&self, client_ip: &str) -> [Value; 2] {
-        let safe_host = self.safe_host();
-        // AuditEvent.host rejects non-string scalars. Source write_event then
-        // preserves only its minimal fallback envelope for the reset event.
-        let mut reset = json!({
-            "event":"proxy.circuit", "audit_intent":"ops.circuit_breaker.reset",
-            "kind":"ops", "severity":"medium", "summary":format!("Circuit reset for {safe_host}"),
-        });
-        if self.host.is_string() {
-            reset["addon"] = json!("circuit-breaker");
-            reset["host"] = self.host.clone();
-            reset["details"] = json!({});
-        }
-        // The separate admin event accepts an Any host; Pydantic's JSON output
-        // converts nonfinite numbers to null in this audit field only.
-        let encoded = Zeroizing::new(crate::python_json::encode(&self.host));
-        let audit_host = if matches!(encoded.as_str(), "NaN" | "Infinity" | "-Infinity") {
-            Value::Null
-        } else {
-            self.host.clone()
-        };
-        [
-            reset,
-            json!({
-                "event":"proxy.admin_api", "audit_intent":"admin.circuit_breaker_reset",
-                "kind":"admin", "severity":"medium", "addon":"admin-api",
-                "summary":format!("Circuit breaker reset: {safe_host}"),
-                "details":{"client_ip":client_ip,"host":audit_host},
-            }),
-        ]
-    }
 }
 
 impl Drop for CircuitResetAudit {

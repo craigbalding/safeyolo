@@ -64,7 +64,6 @@ def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
                 "listeners": [{"agent_id": "alice", "socket_path": str(socket_path)}],
                 "policy_file": str(path.parent / "policy.toml"),
                 "readiness_file": str(readiness),
-                "event_log": str(path.parent / "events.jsonl"),
             }
         )
     )
@@ -326,7 +325,7 @@ def test_native_toml_inspection_uses_instance_relative_paths_and_runtime_default
     observed = smoke_module._native_config(config, tmp_path)["raw"]
     assert observed["readiness_file"] == str(root / "data/selected-ready.json")
     assert observed["audit_log_path"] == str(root / "logs/audit.jsonl")
-    assert observed["event_log"] == str(root / "logs/events.jsonl")
+    assert "event_log" not in observed
     if ca_path is None:
         assert "tls_ca_file" not in observed
     else:

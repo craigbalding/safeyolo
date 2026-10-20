@@ -1922,7 +1922,6 @@ mod tests {
             "admin_api_token_file": root.join("operator-token"),
             "readiness_file": root.join("ready.json"),
             "audit_log_path": root.join("audit.jsonl"),
-            "event_log": root.join("events.jsonl"),
             "via_token": "plumb-shutdown-test"
         }))
         .unwrap()

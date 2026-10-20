@@ -195,7 +195,7 @@ fn config(root: &Path) -> Config {
         readiness_file: root.join("ready.json"),
         reload_id: None,
         audit_log_path: Some(root.join("audit.jsonl")),
-        event_log: root.join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
@@ -514,7 +514,8 @@ async fn wait_for_gateway_outcome(path: &Path, outcome: &str) -> Value {
         if let Ok(content) = std::fs::read_to_string(path)
             && let Some(event) = content.lines().find_map(|line| {
                 let value = serde_json::from_str::<Value>(line).ok()?;
-                (value["event"] == "proxy.gateway" && value["outcome"] == outcome).then_some(value)
+                (value["event"] == "gateway.evaluated" && value["details"]["outcome"] == outcome)
+                    .then_some(value)
             })
         {
             return event;
@@ -871,7 +872,7 @@ async fn run_live_refresh_response_case(
             .expect("proxy shutdown hung during activation failure")
             .unwrap();
         wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
-        let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+        let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
         let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
         assert!(audit.contains(expected_reason));
         assert!(!events.contains("synthetic-activation-failed"));
@@ -927,7 +928,7 @@ async fn run_live_refresh_response_case(
     assert!(origin_seen.lock().unwrap().is_empty());
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert!(audit.contains("gateway.refresh_failed"));
     assert!(audit.contains(expected_reason));
@@ -1315,7 +1316,7 @@ async fn run_live_superseded_case(mutation: LiveVaultMutation, response_timeout:
             }
         }
     }
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert!(events.contains("REFRESH_SUPERSEDED"));
     wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
@@ -1453,7 +1454,7 @@ async fn run_live_cancellation_case(shutdown: bool) {
         });
         tokio::time::timeout(
             Duration::from_secs(3),
-            wait_for_gateway_outcome(&root_path.join("events.jsonl"), "refresh_follower"),
+            wait_for_gateway_outcome(&root_path.join("audit.jsonl"), "refresh_follower"),
         )
         .await
         .expect("follower did not join the held refresh");
@@ -2165,9 +2166,17 @@ min_length = 1000
             .expose_secret(),
         "synthetic-two-old"
     );
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
-    assert_eq!(audit.matches("REFRESH_ACTIVATION").count(), 2);
+    assert_eq!(
+        audit
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["event"] == "gateway.refresh_failed"
+                && row["details"]["reason_code"] == "REFRESH_ACTIVATION")
+            .count(),
+        2
+    );
     assert!(!events.contains("synthetic-shutdown-failed"));
     assert!(!audit.contains("synthetic-shutdown-failed"));
     origin_one_task.abort();
@@ -2805,19 +2814,19 @@ token = "other-secret"
     let _ = stop_tx.send(());
     watcher.await.unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let event_rows: Vec<Value> = events
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(event_rows.iter().any(|row| {
-        row["event"] == "proxy.network_guard"
+        row["event"] == "security.network_guard.evaluated"
             && row["request_id"] == wrong_port_request_id
-            && row["port"] == wrong_port
-            && row["outcome"] == "blocked"
+            && row["details"]["port"] == wrong_port
+            && row["details"]["outcome"] == "blocked"
     }));
     assert!(!event_rows.iter().any(|row| {
-        row["event"] == "proxy.gateway" && row["request_id"] == wrong_port_request_id
+        row["event"] == "gateway.evaluated" && row["request_id"] == wrong_port_request_id
     }));
     assert!(audit.contains("gateway.request_access"));
     assert!(audit.contains("gateway.allow"));
@@ -3038,7 +3047,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     {
         eprintln!(
             "token request timed out; events: {}",
-            std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
+            std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default()
         );
         eprintln!("token rows: {:?}", token_seen.lock().unwrap());
         panic!("token endpoint was not reached");
@@ -3105,7 +3114,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     });
     let follower_observed = tokio::time::timeout(
         Duration::from_secs(3),
-        wait_for_gateway_outcome(&root_path.join("events.jsonl"), "refresh_follower"),
+        wait_for_gateway_outcome(&root_path.join("audit.jsonl"), "refresh_follower"),
     )
     .await;
     assert!(
@@ -3124,7 +3133,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     assert!(
         follower_observed.is_ok(),
         "follower did not join shared flight; events: {}",
-        std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
+        std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default()
     );
     let responses = tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(&mut first, &mut second)
@@ -3213,15 +3222,21 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     proxy.shutdown().await;
     let audit_text = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default();
-    let event_text = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default();
+    let audit_rows: Vec<Value> = audit_text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let event_count = |name: &str| audit_rows.iter().filter(|row| row["event"] == name).count();
     let evidence = json!({
         "workload": "service-access-oauth-refresh-approval-under-native-traffic",
         "backend": ready["backend"],
         "instance_id": ready["instance_id"],
-        "service_request_access_event_count": audit_text.matches("gateway.request_access").count(),
-        "service_authorized_event_count": audit_text.matches("admin.agent_service_authorized").count(),
-        "approval_event_count": audit_text.matches("gateway.allow").count(),
-        "refresh_follower_event_count": event_text.matches("refresh_follower").count(),
+        "service_request_access_event_count": event_count("gateway.request_access"),
+        "service_authorized_event_count": event_count("admin.agent_service_authorized"),
+        "approval_event_count": event_count("gateway.allow"),
+        "refresh_follower_event_count": audit_rows.iter().filter(|row|
+            row["event"] == "gateway.evaluated" && row["details"]["outcome"] == "refresh_follower"
+        ).count(),
         "oauth_token_requests": token_seen.lock().unwrap().len(),
         "oauth_refresh_held_during_controls": true,
         "service_approval_elapsed_ms": approval_elapsed.as_secs_f64() * 1000.0,
@@ -3506,31 +3521,52 @@ headers = ["authorization"]
     assert!(origin_seen.lock().unwrap().is_empty());
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     let request_id = response_header(&denied, "x-safeyolo-request-id").unwrap();
-    let event_rows: Vec<Value> = std::fs::read_to_string(root_path.join("events.jsonl"))
+    wait_for_audit_count(
+        &root_path.join("audit.jsonl"),
+        "security.credential_guard.evaluated",
+        &request_id,
+        2,
+    )
+    .await;
+    let event_rows: Vec<Value> = std::fs::read_to_string(root_path.join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(event_rows.iter().any(|row| {
-        row["event"] == "proxy.credential_guard"
+        row["event"] == "security.credential_guard.evaluated"
             && row["request_id"] == request_id
-            && row["outcome"] == "blocked"
+            && row["details"]["outcome"] == "blocked"
     }));
     let guard_rows: Vec<_> = event_rows
         .iter()
-        .filter(|row| row["event"] == "proxy.credential_guard" && row["request_id"] == request_id)
+        .filter(|row| {
+            row["event"] == "security.credential_guard.evaluated" && row["request_id"] == request_id
+        })
         .collect();
     assert_eq!(
         guard_rows.len(),
         2,
         "each final credential gets one guard evaluation"
     );
-    assert_eq!(guard_rows[0]["evaluations"].as_array().unwrap().len(), 2);
-    assert_eq!(guard_rows[1]["evaluations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        guard_rows[0]["details"]["evaluations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        guard_rows[1]["details"]["evaluations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
         !event_rows
             .iter()
-            .any(|row| { row["event"] == "proxy.gateway" && row["request_id"] == request_id })
+            .any(|row| { row["event"] == "gateway.evaluated" && row["request_id"] == request_id })
     );
     wait_for_audit_count(
         &root_path.join("audit.jsonl"),
@@ -3543,13 +3579,15 @@ headers = ["authorization"]
     assert_eq!(
         audit
             .lines()
-            .filter(|line| line.contains("security.credential_guard") && line.contains(&request_id))
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["event"] == "security.credential_guard"
+                && row["request_id"] == request_id)
             .count(),
         3,
         "unrelated credentials are audited once despite final gateway checking"
     );
     assert!(!audit.contains(replacement));
-    let finding = &guard_rows[1]["evaluations"][0]["finding"];
+    let finding = &guard_rows[1]["details"]["evaluations"][0]["finding"];
     assert_eq!(finding["credential_type"], credential_type);
     let _ = stop_tx.send(());
     watcher.await.unwrap();
@@ -3744,16 +3782,16 @@ target_hosts = ["localhost"]
     origin_task.abort();
 
     let canaries = [gateway_token.as_str(), DISCLOSURE_CREDENTIAL_CANARY];
-    let event_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("events.jsonl"), &canaries);
+    let event_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("audit.jsonl"), &canaries);
     let gateway_event = event_rows
         .iter()
-        .find(|row| row["event"] == "proxy.gateway" && row["request_id"] == request_id)
+        .find(|row| row["event"] == "gateway.evaluated" && row["request_id"] == request_id)
         .unwrap();
     assert_eq!(
-        gateway_event["metadata"]["gateway_injected_header"],
+        gateway_event["details"]["metadata"]["gateway_injected_header"],
         serde_json::Value::Null
     );
-    assert_eq!(gateway_event["stats"]["injected"], 0);
+    assert_eq!(gateway_event["details"]["stats"]["injected"], 0);
 
     let audit_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("audit.jsonl"), &canaries);
     let gateway_audit = audit_rows

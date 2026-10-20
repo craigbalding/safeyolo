@@ -596,7 +596,7 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
         {
             continue;
         }
-        rows.push_back(json!({"ts":row["ts"],"event":row["event"],"agent":row["agent"],"request_id":row["request_id"],"decision":row["decision"],"summary":row["summary"]}));
+        rows.push_back(row);
         if rows.len() > options.lines {
             rows.pop_front();
         }

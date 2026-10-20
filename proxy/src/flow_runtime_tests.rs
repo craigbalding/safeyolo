@@ -14,7 +14,6 @@ fn config(directory: &Path, enabled: bool) -> Config {
         "listeners":[], "policy_file":policy, "data_dir":directory.join("data"), "flow_store_enabled":enabled,
         "flow_store_db_path":directory.join("flows.sqlite3"),
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "readiness_file":directory.join("ready.json"),
     }))
     .unwrap()
@@ -730,10 +729,15 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
         b"635-audit-failure-request",
         b"635-audit-failure-response",
         move || {
-            *event_owner.events.lock().unwrap() = std::fs::OpenOptions::new()
-                .write(true)
-                .open("/dev/full")
-                .unwrap();
+            assert!(
+                event_owner
+                    .audit
+                    .wait_for_drain(Duration::from_secs(2))
+                    .unwrap()
+            );
+            let path = event_owner.config.audit_log_path.as_ref().unwrap();
+            std::fs::rename(path, path.with_extension("saved")).unwrap();
+            std::fs::create_dir(path).unwrap();
         },
     )
     .await;
@@ -743,10 +747,15 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
     );
     assert!(failed_response.starts_with(b"HTTP/1.1 200"));
     assert!(failed_response.ends_with(b"635-audit-failure-response"));
+    // File failures are reported by the canonical worker, after submission.
     assert!(
-        failed_response
-            .windows(b"x-safeyolo-evidence-error: true".len())
-            .any(|window| window.eq_ignore_ascii_case(b"x-safeyolo-evidence-error: true"))
+        proxy
+            .runtime
+            .read()
+            .unwrap()
+            .audit
+            .wait_for_drain(Duration::from_secs(2))
+            .unwrap()
     );
     tokio::time::timeout(Duration::from_secs(3), async {
         while store.get_flow(1).unwrap().is_none() {
@@ -759,6 +768,9 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
     // Restore only the event-evidence destination. The same process and flow
     // recorder continue, so a later successful write proves recovery rather
     // than a new isolated store accidentally hiding the first failure.
+    let audit_path = healthy.audit_log_path.as_ref().unwrap();
+    std::fs::remove_dir(audit_path).unwrap();
+    std::fs::rename(audit_path.with_extension("saved"), audit_path).unwrap();
     proxy.reload(healthy.clone()).await.unwrap();
     let recovered_response = record_wire_flow_case_observe_with_hook(
         directory.path(),
@@ -795,16 +807,19 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
         stats,
         json!({"recorded":2,"errors":0,"skipped":0,"queue_dropped":0,"write_errors":0})
     );
-    let event_rows = std::fs::read_to_string(&healthy.event_log).unwrap();
+    let event_rows = std::fs::read_to_string(healthy.audit_log_path.as_ref().unwrap()).unwrap();
     let recovered_event_count = event_rows
         .lines()
-        .filter(|line| line.contains("\"event\":\"proxy.request\""))
+        .filter(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["event"] == "traffic.request_outcome"
+        })
         .count();
     println!("635.evidence.recovered_event_rows={recovered_event_count}");
     assert!(
         event_rows
             .lines()
-            .any(|line| line.contains("\"event\":\"proxy.request\"")),
+            .any(|line| serde_json::from_str::<Value>(line).unwrap()["event"]
+                == "traffic.request_outcome"),
         "recovered event sink must retain a later request-evidence row"
     );
 

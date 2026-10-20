@@ -809,15 +809,15 @@ fn apply(
         }
         Ok(RequestOutcome::Warn { reason, .. }) => provenance.decision(*reason, false, port),
         Ok(RequestOutcome::Block { reason, .. }) => provenance.decision(*reason, true, port),
-        Ok(RequestOutcome::PriorResponse | RequestOutcome::NotTargetHost) => Ok(false),
+        Ok(RequestOutcome::PriorResponse | RequestOutcome::NotTargetHost) => Ok(()),
         Err(error) => {
             trace_core_error(hook, error.kind());
             report_core_error(error.kind());
             return Err(error.kind() == ContextErrorKind::Poisoned);
         }
     };
-    let failed = match submitted {
-        Ok(failed) => failed,
+    match submitted {
+        Ok(()) => (),
         Err(error) => {
             if let Some(hook) = hook {
                 hook.error(error.trace_reason());
@@ -826,8 +826,7 @@ fn apply(
             return Err(error.evidence_failed());
         }
     };
-    // Canonical submission succeeded. An asynchronous writer sink failure does
-    // not undo terminal counters; a separate diagnostic failure only marks evidence.
+    // An asynchronous canonical writer failure does not undo terminal counters.
     match application.finish() {
         Ok(outcome) => {
             if let Some(hook) = hook {
@@ -843,12 +842,12 @@ fn apply(
                     RequestOutcome::Block { .. } => {}
                 }
             }
-            Ok(failed)
+            Ok(false)
         }
         Err(error) => {
             trace_core_error(hook, error.kind());
             report_core_error(error.kind());
-            Err(failed || error.kind() == ContextErrorKind::Poisoned)
+            Err(error.kind() == ContextErrorKind::Poisoned)
         }
     }
 }

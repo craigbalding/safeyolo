@@ -34,7 +34,7 @@ def api_proxy(backend, directory, **options):
                 yield proxy
             finally:
                 assert parent.accepts == 0 and parent.requests == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
 
 
 def api_request(proxy, path="/health", *, agent="alice", method="GET", auth=f"Bearer {TOKEN}",
@@ -46,7 +46,7 @@ def api_request(proxy, path="/health", *, agent="alice", method="GET", auth=f"Be
     status, response_headers, body = result
     # Exact response bytes and attribution are evidence; synthetic bearer bytes
     # stay in the fixture token file and request, outside the observation log.
-    with (proxy.event_log.parent / "agent-api-wire.jsonl").open("a") as output:
+    with (proxy.audit_log.parent / "agent-api-wire.jsonl").open("a") as output:
         output.write(json.dumps({
             "method": method, "path": path, "host": host, "trusted_agent": agent,
             "authorization_present": auth is not None, "status": status,
@@ -122,7 +122,7 @@ def test_agent_api_plumb_conversations_trailing_slash(proxy_backend, tmp_path):
             assert_api_response(api_request(proxy, "/plumb/conversations/", auth=None), 401, AUTH_REQUIRED)
             local_accepts = parent.accepts
             assert local_accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
             status, _, body = send_request(proxy.paths["alice"],
                                            "http://target.invalid:8123/ordinary-control")
@@ -142,7 +142,7 @@ def test_agent_api_trailing_dot_alias_remains_local(proxy_backend, tmp_path):
                           parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
             result = api_request(proxy, host=HOST + ".", agent="bob")
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
             assert_api_response(result, 200, HEALTH)
 
 
@@ -197,7 +197,7 @@ def test_agent_api_lookup_uses_trusted_identity_without_spending_budget(proxy_ba
                         "host": "target.invalid", "port": 443, "method": "GET", "path": "/",
                         "agent": agent, "effect": "allow" if agent == "alice" else "deny", "reason": "",
                     })
-            assert parent.accepts == 0 and proxy.events("proxy.egress") == []
+            assert parent.accepts == 0 and proxy.events("traffic.egress") == []
             # The rate=1 policy admits two requests using its existing burst
             # allowance. Read-only lookups above must not consume that allowance.
             for expected in (200, 200, 429):
@@ -208,7 +208,7 @@ def test_agent_api_lookup_uses_trusted_identity_without_spending_budget(proxy_ba
                 "host": "target.invalid", "port": 443, "method": "GET", "path": "/", "agent": "alice",
                 "effect": "budget_exceeded", "reason": "Request budget exceeded for target.invalid",
             })
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
             assert time.monotonic() - started < 30, "Scenario crossed the intended no-refill window"
 
 
@@ -229,7 +229,7 @@ def raw_api_request(proxy, *, method="GET", auth_headers=()):
         # for a tunnel body that has no HTTP message framing.
         body = b"" if method == "CONNECT" and response.status == 200 else response.read()
         result = response.status, dict(response.getheaders()), body
-    with (proxy.event_log.parent / "agent-api-raw-wire.jsonl").open("a") as output:
+    with (proxy.audit_log.parent / "agent-api-raw-wire.jsonl").open("a") as output:
         output.write(json.dumps({
             "method": method, "target": target, "authorization_fields": len(auth_headers),
             "status": result[0], "headers": result[1], "body_hex": body.hex(),
@@ -302,21 +302,15 @@ def test_agent_api_lookup_uses_last_valid_policy_reload(proxy_backend, tmp_path)
 
 
 @pytest.mark.parametrize("case", ["health", "handler-backstop", "wrong-token"])
-def test_agent_api_response_survives_development_evidence_failure(proxy_backend, tmp_path, case):
-    """Fail actual sink writes while preserving the already-local API response.
-
-    This exercises the development evidence writer. The source production
-    audit writer has separate retained ENOSPC specimens; native production
-    audit persistence is outside this fixture's contract.
-    """
+def test_agent_api_response_survives_canonical_worker_write_failure(proxy_backend, tmp_path, case):
+    """The canonical worker reports file failure without changing the API reply."""
     full = Path("/dev/full")
     if not full.exists():
         pytest.skip("Requires /dev/full to inject a real write failure")
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    sink = directory / "events.jsonl"
-    # Native keeps an open descriptor, so select the failing sink before
-    # launch. Never read /dev/full through RunningProxy.events or read_events.
+    sink = directory / "audit.jsonl"
+    # Never read /dev/full through RunningProxy.events or read_events.
     sink.symlink_to(full)
     try:
         with origin_server() as parent:
@@ -331,18 +325,9 @@ def test_agent_api_response_survives_development_evidence_failure(proxy_backend,
                     assert_api_response(result, 401, {"error": "Invalid agent token"})
                 else:
                     assert_api_response(result, 200, HEALTH)
-                headers = {name.lower(): value for name, value in result[1].items()}
-                if proxy_backend == "rust":
-                    assert headers["x-safeyolo-evidence-error"] == "true"
-                    assert "request evidence write failed:" in (directory / "process.log").read_text()
                 assert proxy.process.poll() is None
                 assert parent.accepts == 0 and parent.requests == []
-                (directory / "evidence-write-failure.json").write_text(json.dumps({
-                    "case": case, "sink": str(full),
-                    "native_evidence_marker": headers.get("x-safeyolo-evidence-error"),
-                    "status": result[0], "origin_accepts": parent.accepts,
-                    "event_log_read": False, "source_production_audit_failure_claim": False,
-                }, indent=2) + "\n")
+        assert "audit writer flush failed" in (directory / "process.log").read_text()
     finally:
         # Retained artifacts must never lead a reader into this endless device.
         sink.unlink()

@@ -253,7 +253,7 @@ def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backe
             pending_before = admin.pending_approvals()
             grants_before = admin.list_gateway_grants()
             assert not [row for row in pending_before if row["event"] in control_events]
-            egress_before = len(proxy.events("proxy.egress"))
+            egress_before = len(proxy.events("traffic.egress"))
             missing = object()
 
             def reject_field(route, field, value):
@@ -274,7 +274,7 @@ def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backe
                 assert json.loads(raw) == {"error": "service and capability are required"}
                 assert VAULT_CREDENTIAL.encode() not in raw and token.encode() not in raw
                 assert origin.accepts == len(origin.requests) == 0
-                assert len(proxy.events("proxy.egress")) == egress_before
+                assert len(proxy.events("traffic.egress")) == egress_before
 
             shapes = [None, False, 0, "redirect", [], ["redirect"], [[{"service": "redirect"}]]]
             for route in ("request-access", "submit-binding"):
@@ -293,7 +293,7 @@ def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backe
                     ] == "true"
                     assert VAULT_CREDENTIAL.encode() not in raw and token.encode() not in raw
                     assert origin.accepts == len(origin.requests) == 0
-                    assert len(proxy.events("proxy.egress")) == egress_before
+                    assert len(proxy.events("traffic.egress")) == egress_before
 
                 invalid_values = [None, False, True, 0, 7, 1.25, "", [], ["redirect"], {},
                                   {"nested": ["redirect"]}, missing]
@@ -329,7 +329,7 @@ def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backe
             assert not [row for row in read_events(directory / "audit.jsonl")
                         if row["event"] in control_events]
             assert origin.accepts == len(origin.requests) == 0
-            assert len(proxy.events("proxy.egress")) == egress_before
+            assert len(proxy.events("traffic.egress")) == egress_before
 
             status, _, body = request(
                 proxy.paths["alice"], f"http://127.0.0.1:{port}/v1/items?account=alpha",
@@ -340,7 +340,7 @@ def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backe
             assert _authorization(_wire(origin.requests[0])) == [
                 f"Bearer {VAULT_CREDENTIAL}".encode()
             ]
-            egress_before = len(proxy.events("proxy.egress"))
+            egress_before = len(proxy.events("traffic.egress"))
 
             def valid_request(route, body):
                 status, _, raw = request(
@@ -363,7 +363,7 @@ def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backe
             assert {row["event"] for row in admin.pending_approvals()
                     if row["event"] in control_events} == control_events
             assert origin.accepts == len(origin.requests) == 1
-            assert len(proxy.events("proxy.egress")) == egress_before
+            assert len(proxy.events("traffic.egress")) == egress_before
 
 
 def test_running_gateway_scope_blocks_unbound_requests_before_origin(proxy_backend, tmp_path):
@@ -461,7 +461,7 @@ def test_running_gateway_scope_blocks_unbound_requests_before_origin(proxy_backe
         for response in responses:
             assert VAULT_CREDENTIAL.encode() not in response
             assert token.encode() not in response
-        for name in ("audit.jsonl", "events.jsonl"):
+        for name in ("audit.jsonl",):
             events = (directory / name).read_bytes()
             assert VAULT_CREDENTIAL.encode() not in events, name
             assert token.encode() not in events, name
@@ -506,14 +506,14 @@ def test_running_gateway_plain_http_injection_setting(proxy_backend, tmp_path, a
                                 if name.lower() == "location")
                 assert location == f"https://127.0.0.1:{port}/v1/items?account=alpha"
                 assert origin.accepts == 0 and origin.requests == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
             assert token.encode() not in body and VAULT_CREDENTIAL.encode() not in body
 
         audit_rows = [json.loads(line) for line in (directory / "audit.jsonl").read_text().splitlines()]
         event = "gateway.http_injection_allowed" if allow_http else "gateway.https_redirect"
         assert sum(row["event"] == event for row in audit_rows) == 1
         assert all(row["agent"] == "alice" for row in audit_rows if row["event"] == event)
-        for name in ("audit.jsonl", "events.jsonl"):
+        for name in ("audit.jsonl",):
             routine = (directory / name).read_bytes()
             assert token.encode() not in routine and VAULT_CREDENTIAL.encode() not in routine
 
@@ -605,7 +605,7 @@ use_default_credential_rules = false
             "synthetic-gateway-vault", "unknown_secret",
         }
         assert len(denied) == 2 and all(row["decision"] == "require_approval" for row in denied)
-        for name in ("audit.jsonl", "events.jsonl"):
+        for name in ("audit.jsonl",):
             routine = (directory / name).read_bytes()
             assert all(secret.encode() not in routine
                        for secret in (token, VAULT_CREDENTIAL, unknown))

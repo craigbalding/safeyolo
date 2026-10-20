@@ -10,6 +10,7 @@ import json
 import pytest
 
 from safeyolo.api import AdminAPI, APIError
+from tests.proxy_contracts.harness import read_events
 from tests.proxy_contracts.harness import request as send_request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_agent_api_contract import api_request, assert_api_response
@@ -152,7 +153,7 @@ def test_operator_client_registers_activates_and_clears_task_policy(pytestconfig
             assert client.get_policy("task/beta") == {"task_id": "beta", "policy": {}}
             check_task_state(1, 4, initial["policy_hash"], 0)
 
-            before = len(proxy.events("proxy.egress")), origin.accepts
+            before = len(proxy.events("traffic.egress")), origin.accepts
             for agent, method, target in (
                 ("alice", "GET", base_url + "/admin/policy/task/alpha"),
                 ("bob", "CONNECT", f"127.0.0.1:{port}"),
@@ -162,21 +163,21 @@ def test_operator_client_registers_activates_and_clears_task_policy(pytestconfig
                 )
                 assert status == 403 and json.loads(body) == SHIELD_BODY
                 assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "admin-shield"
-            assert (len(proxy.events("proxy.egress")), origin.accepts) == before
+            assert (len(proxy.events("traffic.egress")), origin.accepts) == before
             assert client.health() == {"status": "ok"}
 
-            events = proxy.events("proxy.admin_api")
-            updates = [event for event in events if event["audit_intent"] == "admin.task_policy_update"]
-            assert [(event["task_id"], event["permission_count"]) for event in updates] == [
+            events = read_events(proxy.audit_log)
+            updates = [event for event in events if event["event"] == "admin.task_policy_update"]
+            assert [(event["details"]["task_id"], event["details"]["permission_count"]) for event in updates] == [
                 ("alpha", 1),
                 ("alpha", 1),
                 ("alpha", 0),
                 ("beta", 0),
             ]
-            clears = [event for event in events if event["audit_intent"] == "admin.task_policy_clear"]
-            assert [event["task_id"] for event in clears] == ["alpha"]
-            assert sum(event["audit_intent"] == "admin.auth_failure" for event in events) == 2
-            for path in (proxy.event_log, directory / "process.log", proxy.readiness_file):
+            clears = [event for event in events if event["event"] == "admin.task_policy_clear"]
+            assert [event["details"]["task_id"] for event in clears] == ["alpha"]
+            assert sum(event["event"] == "admin.auth_failure" for event in events) == 2
+            for path in (proxy.audit_log, directory / "process.log", proxy.readiness_file):
                 contents = path.read_text()
                 for private in (TOKEN, NEXT_TOKEN, RAW_CANARY):
                     assert private not in contents and private.encode().hex() not in contents

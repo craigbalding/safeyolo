@@ -98,7 +98,7 @@ def budget_proxy(backend, tmp_path, policy, monkeypatch):
                 with socket.socket() as closed:
                     closed.settimeout(1)
                     assert closed.connect_ex(("127.0.0.1", port)) != 0
-                for path in (directory / "events.jsonl", directory / "audit.jsonl", directory / "process.log"):
+                for path in (directory / "audit.jsonl", directory / "audit.jsonl", directory / "process.log"):
                     if path.exists():
                         data = path.read_bytes()
                         assert TOKEN.encode() not in data and TOKEN.encode().hex().encode() not in data
@@ -145,7 +145,7 @@ def operator_wire(proxy, port, method, path, *, body=b"", token=TOKEN):
         responses.append(
             {"status": int(lines[0].split()[1]), "body": json.loads(response_body), "body_hex": response_body.hex()}
         )
-    with (proxy.event_log.parent / "operator-budget-wire.jsonl").open("a") as output:
+    with (proxy.audit_log.parent / "operator-budget-wire.jsonl").open("a") as output:
         output.write(
             json.dumps(
                 {
@@ -162,25 +162,25 @@ def operator_wire(proxy, port, method, path, *, body=b"", token=TOKEN):
 
 
 def read_shared(proxy, parent, port, expected):
-    before = parent.accepts, len(proxy.events("proxy.egress"))
+    before = parent.accepts, len(proxy.events("traffic.egress"))
     for agent in ("alice", "bob"):
         read_budgets(proxy, parent, expected, agent=agent)
     responses = operator_wire(proxy, port, "GET", "/admin/budgets")
     assert len(responses) == 1 and responses[0]["status"] == 200
     assert responses[0]["body"] == expected
     assert bytes.fromhex(responses[0]["body_hex"]) == json.dumps(expected, indent=2).encode()
-    assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+    assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
 
 
 def hit(proxy, parent, host, status, *, agent="alice"):
-    before = parent.accepts, len(proxy.events("proxy.egress"))
+    before = parent.accepts, len(proxy.events("traffic.egress"))
     result = send_request(proxy.paths[agent], f"http://{host}/operator-budget")
     if status == 200:
         assert result[0] == 200 and result[2] == b"hello"
-        assert (parent.accepts, len(proxy.events("proxy.egress"))) == (before[0] + 1, before[1] + 1)
+        assert (parent.accepts, len(proxy.events("traffic.egress"))) == (before[0] + 1, before[1] + 1)
     else:
         assert_rejection(*result, status, host)
-        assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+        assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
 
 
 def reset(client, resource=None):
@@ -190,15 +190,7 @@ def reset(client, resource=None):
 
 
 def reset_audits(proxy, backend):
-    if backend == "python":
-        return [
-            event["event"]
-            for event in read_events(proxy.event_log.parent / "audit.jsonl")
-            if event["event"] in RESET_EVENTS
-        ]
-    return [
-        event["audit_intent"] for event in proxy.events("proxy.admin_api") if event.get("audit_intent") in RESET_EVENTS
-    ]
+    return [event["event"] for event in read_events(proxy.audit_log) if event["event"] in RESET_EVENTS]
 
 
 @pytest.mark.parametrize("scope", ["per-host", "global"])
@@ -213,9 +205,9 @@ def test_network_request_limit_scope_and_recovery(proxy_backend, tmp_path, monke
 
         def send(agent, host):
             target = f"http://{host}/request-limit"
-            before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            before = (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress")))
             status, headers, body = send_request(proxy.paths[agent], target)
-            after = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            after = (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress")))
             if status == 200:
                 assert body == b"hello"
                 forwarded.append({"method": "GET", "target": target})
@@ -262,8 +254,8 @@ def test_network_request_limit_scope_and_recovery(proxy_backend, tmp_path, monke
         assert send("alice", "alpha.invalid") == 200
 
         assert parent.accepts == len(parent.requests) == len(forwarded)
-        requests = proxy.events("proxy.request")
-        assert [(event["agent"], event["host"], event["port"], event["status"]) for event in requests] == [
+        requests = proxy.events("traffic.request_outcome")
+        assert [(event["agent"], event["host"], event["details"]["port"], event["details"]["status"]) for event in requests] == [
             (attempt["agent"], attempt["host"], 80, attempt["status"]) for attempt in attempts
         ]
         assert [event["request_id"] for event in requests] == [
@@ -276,7 +268,7 @@ def test_network_request_limit_scope_and_recovery(proxy_backend, tmp_path, monke
             if event.get("event") == "security.network_guard" and event.get("decision") == "budget_exceeded"
         ]
         assert [(event["agent"], event["host"], event["request_id"]) for event in denials] == [
-            (event["agent"], event["host"], event["request_id"]) for event in requests if event["status"] == 429
+            (event["agent"], event["host"], event["request_id"]) for event in requests if event["details"]["status"] == 429
         ]
         assert_no_refill(started)
 
@@ -296,9 +288,9 @@ def test_network_request_limit_recovers_after_refill(proxy_backend, tmp_path, sc
             forwarded = []
 
             def attempt():
-                before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+                before = (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress")))
                 status, headers, body = send_request(proxy.paths["alice"], target)
-                after = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+                after = (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress")))
                 if status == 200:
                     assert body == b"hello"
                     assert after == tuple(count + 1 for count in before)
@@ -380,7 +372,7 @@ def test_operator_all_reset_clears_global_limit_with_auth_and_shield_boundaries(
             responses = operator_wire(proxy, port, method, path, body=b"{}", token=token)
             assert len(responses) == 1 and responses[0]["status"] == 401
             read_shared(proxy, parent, port, exhausted)
-        before = parent.accepts, len(proxy.events("proxy.egress"))
+        before = parent.accepts, len(proxy.events("traffic.egress"))
         for agent, method, target in (
             ("alice", "POST", client.base_url + "/admin/budgets/reset"),
             ("bob", "CONNECT", f"127.0.0.1:{port}"),
@@ -395,7 +387,7 @@ def test_operator_all_reset_clears_global_limit_with_auth_and_shield_boundaries(
             assert status == 403
             assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "admin-shield"
             assert json.loads(body)["message"] == "Admin API not accessible through proxy"
-        assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+        assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
         read_shared(proxy, parent, port, exhausted)
         assert reset_audits(proxy, proxy_backend) == []
         reset(client, ALPHA)
@@ -431,12 +423,12 @@ def test_operator_malformed_budget_reset_is_terminal_without_mutation(
         exhausted = report([ALPHA])
         read_shared(proxy, parent, port, exhausted)
         assert reset_audits(proxy, proxy_backend) == []
-        before = parent.accepts, len(proxy.events("proxy.egress"))
+        before = parent.accepts, len(proxy.events("traffic.egress"))
         responses = operator_wire(proxy, port, "POST", "/admin/budgets/reset", body=payload)
         assert len(responses) == 1
         assert responses[0]["status"] == 400
         assert responses[0]["body"]["error"] == "Malformed JSON in request body"
-        assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+        assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
         read_shared(proxy, parent, port, exhausted)
         assert reset_audits(proxy, proxy_backend) == []
         hit(proxy, parent, "alpha.invalid", 429)
@@ -447,7 +439,7 @@ def test_operator_malformed_budget_reset_is_terminal_without_mutation(
         read_shared(proxy, parent, port, report())
         assert reset_audits(proxy, proxy_backend) == RESET_EVENTS
         hit(proxy, parent, "alpha.invalid", 200)
-        (proxy.event_log.parent / "operator-budget-malformed.json").write_text(
+        (proxy.audit_log.parent / "operator-budget-malformed.json").write_text(
             json.dumps(
                 {
                     "input_hex": payload.hex(),

@@ -115,7 +115,6 @@ pub use config::{AgentListener, Config, Inspection, PlumbConfig};
 
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
     io::Write,
     os::unix::fs::{FileTypeExt, MetadataExt},
     os::unix::io::AsRawFd,
@@ -304,25 +303,6 @@ impl ConnectionIdentity {
             .filter(|agent| !agent.is_empty())
     }
 
-    /// Preserve the accepted listener label for diagnostic records. This is
-    /// transport provenance only; scoped consumers use `request_agent`, which
-    /// remains empty for unavailable or conflicting snapshots.
-    fn transport_agent(&self) -> Option<&str> {
-        self.reconciled
-            .as_deref()
-            .and_then(|identity| identity.uds_agent.as_deref())
-            .or_else(|| {
-                self.reconciled
-                    .as_deref()
-                    .filter(|identity| {
-                        identity.status == agent_discovery::IdentityStatus::Unavailable
-                    })
-                    .map(|_| self.agent_id.as_str())
-            })
-            .or_else(|| self.reconciled.is_none().then_some(self.agent_id.as_str()))
-            .filter(|agent| !agent.is_empty())
-    }
-
     fn request_identity(&self) -> network_guard::Identity<'_> {
         match self.reconciled.as_deref() {
             Some(identity) => match identity.status {
@@ -364,6 +344,29 @@ impl ConnectionIdentity {
                 .into(),
             ),
         }
+    }
+
+    /// Correlate request observations with the reconciled ingress identity.
+    /// The connection ID is transport-owned, never supplied by request headers.
+    fn request_event(
+        &self,
+        name: &str,
+        kind: audit::Kind,
+        request_id: &str,
+        summary: impl Into<String>,
+        mut details: Value,
+    ) -> audit::Event {
+        let mut event = audit::Event::new(name, kind, audit::Severity::Low, summary);
+        event.agent = self.request_agent().map(str::to_owned);
+        event.request_id = Some(request_id.to_owned());
+        event.host = details
+            .get("host")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        event.attribution = Some(self.audit_attribution());
+        details["connection_id"] = json!(self.connection_id);
+        event.details = details.into();
+        event
     }
 }
 
@@ -417,7 +420,6 @@ pub(crate) struct Runtime {
     /// transport, namespace, and cleanup remain stable.
     pub(crate) coord: Arc<agent_api::CoordClient>,
     via_token: String,
-    events: Arc<Mutex<File>>,
     instance_id: String,
 }
 
@@ -741,12 +743,15 @@ impl Runtime {
             } else {
                 None
             };
-            let mut startup_transitions = Vec::new();
             if previous.is_none()
                 && let Some(path) = circuit_runtime::state_path(&config)
             {
                 match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
-                    Ok(outcome) => startup_transitions = outcome.events,
+                    Ok(outcome) => {
+                        for transition in outcome.events {
+                            audit.emit(transition.audit_event(None, None))?;
+                        }
+                    }
                     Err(_) => eprintln!("Circuit state load failed"),
                 }
             }
@@ -786,18 +791,9 @@ impl Runtime {
                     .via_token
                     .clone()
                     .unwrap_or_else(|| default_via.to_owned()),
-                events: Arc::new(Mutex::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&config.event_log)?,
-                )),
                 config,
                 instance_id: default_via.to_owned(),
             };
-            if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
-                eprintln!("Circuit startup evidence write failed");
-            }
             if previous.is_none() {
                 runtime.configure_declarations()?;
             }
@@ -843,20 +839,6 @@ impl Runtime {
             }
             None => self.test_context.configure_declarations(None, options)?,
         }
-        Ok(())
-    }
-
-    fn record(&self, mut event: Value) -> Result<(), Error> {
-        if self.config.native_product {
-            policy::native::name_control_fields(&mut event);
-        }
-        self.record_bytes(serde_json::to_vec(&event)?)
-    }
-
-    fn record_bytes(&self, mut bytes: Vec<u8>) -> Result<(), Error> {
-        bytes.push(b'\n');
-        let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
-        events.write_all(&bytes)?;
         Ok(())
     }
 }

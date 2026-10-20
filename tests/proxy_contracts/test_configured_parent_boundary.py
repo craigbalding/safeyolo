@@ -209,7 +209,7 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             assert direct_origin.accepts == 1
 
             before = parent.accepts
-            egress_before = len(proxy.events("proxy.egress"))
+            egress_before = len(proxy.events("traffic.egress"))
             audit_path = directory / "parent" / "audit.jsonl"
             for path, target, method in (
                 (proxy.paths["alice"], parent_url + "/physical-denied", "GET"),
@@ -222,7 +222,7 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
                 response_headers = {name.lower(): value for name, value in headers.items()}
                 assert response_headers["x-blocked-by"] == "network-guard"
                 assert parent.accepts == before and direct_origin.accepts == 1
-                assert len(proxy.events("proxy.egress")) == egress_before
+                assert len(proxy.events("traffic.egress")) == egress_before
                 wait_for_reserved_audit(
                     audit_path, before_audit, "security.network_guard",
                     request_id=response_headers["x-safeyolo-request-id"],
@@ -231,14 +231,14 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             assert parent.accepts == 4
             assert egress_before == 4
             if proxy_backend == "rust":
-                assert [(row["host"], row["route"]) for row in proxy.events("proxy.egress")] == [
+                assert [(row["host"], row["details"]["route"]) for row in proxy.events("traffic.egress")] == [
                     (HTTP_HOST, "parent"),
                     (TUNNEL_HOST, "parent"),
                     ("localhost", "parent"),
                     ("localhost", "parent"),
                 ]
             else:
-                assert [(row["host"], row["port"]) for row in proxy.events("proxy.egress")] == [
+                assert [(row["host"], row["details"]["port"]) for row in proxy.events("traffic.egress")] == [
                     parent.server_address
                 ] * 4
             assert len(parent.requests) == 4
@@ -301,7 +301,7 @@ def test_selected_parent_mixed_agents_http_connect_and_spoofed_headers(proxy_bac
             assert [row["method"] for row in origin.requests] == ["GET"] * 4
             assert [row["target"] for row in origin.requests] == ["/route", "/tunnel"] * 2
             assert all(head.startswith(b"GET /") for head in origin.request_heads)
-            assert [(row["agent"], row["route"]) for row in proxy.events("proxy.egress")] == [
+            assert [(row["agent"], row["details"]["route"]) for row in proxy.events("traffic.egress")] == [
                 ("alice", "parent"), ("alice", "parent"), ("bob", "direct"), ("bob", "direct"),
             ] * 2
 
@@ -381,7 +381,7 @@ def test_selected_parent_connection_failure_has_no_direct_fallback(proxy_backend
                 if not failed:
                     direct_accepts += 2
                 assert origin.accepts == direct_accepts
-            assert [(row["agent"], row["route"]) for row in proxy.events("proxy.egress")] == [
+            assert [(row["agent"], row["details"]["route"]) for row in proxy.events("traffic.egress")] == [
                 ("alice", "parent" if parent_configured else "direct"),
                 ("alice", "parent" if parent_configured else "direct"),
                 ("bob", "direct"), ("bob", "direct"),
@@ -474,7 +474,7 @@ def test_destination_filter_mixed_http_and_verified_https(proxy_backend, tmp_pat
                 expected_events.extend([(agent, "localhost", "direct")] * 2)
             assert direct_http.accepts == direct_tls.accepts == 2
             assert all(head.startswith(b"GET /route HTTP/1.1\r\n") for head in direct_http.request_heads)
-            assert [(row["agent"], row["host"], row["route"]) for row in proxy.events("proxy.egress")] == expected_events
+            assert [(row["agent"], row["host"], row["details"]["route"]) for row in proxy.events("traffic.egress")] == expected_events
             assert [row["kind"] for row in parent.requests] == ["http", "connect"] * (4 if not agents else 2)
             assert all(row["target"].startswith(b"http://") for row in parent.requests if row["kind"] == "http")
 
@@ -486,7 +486,7 @@ def test_destination_filter_mixed_http_and_verified_https(proxy_backend, tmp_pat
                         status, _, _ = request(proxy.paths[agent], target, method=method)
                         assert status == (503 if host == "_safeyolo.proxy.internal" and method == "GET" else 403)
                         assert (parent.accepts, direct_http.accepts, direct_tls.accepts) == before
-            assert len(proxy.events("proxy.egress")) == len(expected_events)
+            assert len(proxy.events("traffic.egress")) == len(expected_events)
 
 
 def test_exact_destination_boundaries_and_connect_authority(proxy_backend, tmp_path):
@@ -554,6 +554,6 @@ def test_selected_parent_tls_failure_and_unmatched_direct_control(proxy_backend,
         status, _, body = request(proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/route")
         assert (status, body) == (200, b"hello")
         assert origin.accepts == 1 and plaintext_parent.accepts == 2
-        assert [(row["host"], row["route"]) for row in proxy.events("proxy.egress")] == [
+        assert [(row["host"], row["details"]["route"]) for row in proxy.events("traffic.egress")] == [
             ("localhost", "parent"), ("localhost", "parent"), ("127.0.0.1", "direct"),
         ]

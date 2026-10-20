@@ -87,7 +87,7 @@ impl Fixture {
             "listeners":(["worker","helper","peer"].map(|name| json!({"agent_id":name,"socket_path":root.path().join(format!("{name}.sock"))}))),
             "admin_port":0,"admin_api_token_file":root.path().join("admin_token"),
             "readiness_file":root.path().join("ready.json"),"audit_log_path":root.path().join("audit.jsonl"),
-            "event_log":root.path().join("events.jsonl"),"circuit_breaker_enabled":false,
+            "circuit_breaker_enabled":false,
             "flow_store_enabled":true,"flow_store_db_path":root.path().join("flows.sqlite3")
             ,"gateway_builtin_services_dir":root.path().join("builtin-services"),"gateway_services_dir":root.path().join("services")
         })).unwrap();

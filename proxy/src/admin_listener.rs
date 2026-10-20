@@ -21,7 +21,6 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
     net::{TcpListener, TcpStream},
@@ -479,78 +478,7 @@ async fn serve_connection(
             .await?
             .submit_audit_with_desktop_confirmation(&runtime.audit, &client_ip, &path)
             .await?;
-            let audits = outcome.audit().map(|intent| match intent {
-                admin_api::Audit::AuthenticationFailed => vec![json!({
-                    "event":"proxy.admin_api", "audit_intent":"admin.auth_failure",
-                    "client_ip":client_ip, "path":path,
-                    "reason":"invalid_or_missing_token",
-                })],
-                admin_api::Audit::TaskUpdated {
-                    task_id,
-                    permission_count,
-                } => vec![json!({
-                    "event":"proxy.admin_api", "audit_intent":"admin.task_policy_update",
-                    "client_ip":client_ip, "task_id":task_id,
-                    "permission_count":permission_count,
-                })],
-                admin_api::Audit::TaskCleared { task_id } => vec![json!({
-                    "event":"proxy.admin_api", "audit_intent":"admin.task_policy_clear",
-                    "client_ip":client_ip, "task_id":task_id,
-                })],
-                admin_api::Audit::CircuitReset(reset) => reset.events(&client_ip).into(),
-                admin_api::Audit::ServiceAuthorized(_) => vec![json!({
-                    "event":"proxy.admin_api", "audit_intent":"admin.agent_service_authorized",
-                    "client_ip":client_ip,
-                })],
-                admin_api::Audit::ServiceRevoked(_) => vec![json!({
-                    "event":"proxy.admin_api", "audit_intent":"admin.agent_service_revoked",
-                    "client_ip":client_ip,
-                })],
-                admin_api::Audit::TrafficScopeUpdated(_) => vec![json!({
-                    "event":"proxy.admin_api", "audit_intent":"admin.traffic_scope_update",
-                    "client_ip":client_ip,
-                })],
-                admin_api::Audit::BudgetsReset(reset) => {
-                    let safe_resource = reset.safe_resource();
-                    let engine_resource = if reset.resets_all() {
-                        serde_json::Value::String("all".into())
-                    } else {
-                        reset.resource().clone()
-                    };
-                    vec![
-                        json!({"event":"proxy.admin_api", "audit_intent":"admin.budget_reset",
-                            "kind":"admin", "severity":"medium", "addon":"policy-engine",
-                            "summary":if reset.resets_all() { "All budgets reset".into() }
-                                else { format!("Budget reset for {safe_resource}") },
-                            "resource":engine_resource}),
-                        json!({"event":"proxy.admin_api", "audit_intent":"admin.budgets_reset",
-                            "kind":"admin", "severity":"medium", "addon":"admin-api",
-                            "summary":format!("Budget counters reset: {safe_resource}"),
-                            "client_ip":client_ip, "resource":reset.resource()}),
-                    ]
-                }
-                admin_api::Audit::PolicyMutation(_)
-                | admin_api::Audit::PolicyActivated
-                | admin_api::Audit::ModeChanged { .. } => {
-                    vec![]
-                }
-                admin_api::Audit::PlumbMutation(_)
-                | admin_api::Audit::DesktopPresented(_)
-                | admin_api::Audit::DesktopPresentationFailed(_) => vec![],
-            });
-            // Diagnostic sink failures remain separate from canonical producer
-            // exceptions. Attempt each diagnostic without claiming rollback.
-            let mut failed = false;
-            for event in audits.into_iter().flatten() {
-                failed |= runtime.record(event).is_err();
-            }
-            let mut response = outcome.into_response();
-            if failed {
-                eprintln!("Operator API evidence write failed");
-                response
-                    .headers_mut()
-                    .insert("x-safeyolo-evidence-error", "true".parse().unwrap());
-            }
+            let response = outcome.into_response();
             Ok::<_, admin_api::Error>(close_http_response(response))
         }
     });

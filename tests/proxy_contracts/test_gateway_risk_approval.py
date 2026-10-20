@@ -131,7 +131,7 @@ def _agent_request(proxy, agent, path, token, *, method="GET"):
     status, headers, body = result
     assert b"sgw_" not in body
     assert all("sgw_" not in value for value in headers.values())
-    with _WIRE_LOG_LOCK, (proxy.event_log.parent / "gateway-wire.jsonl").open("a") as output:
+    with _WIRE_LOG_LOCK, (proxy.audit_log.parent / "gateway-wire.jsonl").open("a") as output:
         output.write(json.dumps({
             "trusted_agent": agent, "method": method,
             "logical_host": "127.0.0.1", "logical_port": path[0], "path": path[1],
@@ -205,6 +205,7 @@ egress = "deny"
 [addons.credential_guard]
 enabled = true
 detection_level = "none"
+standard_auth_headers = []
 [addons.credential_guard.settings]
 use_default_credential_rules = false
 [addons.credential_guard.settings.entropy]
@@ -407,10 +408,10 @@ def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
             assert any(row.get("event") == "admin.gateway_grant"
                        and row.get("details", {}).get("grant_id") == grant_id for row in audit)
             if proxy_backend == "rust":
-                assert any(row.get("event") == "proxy.gateway"
-                           and row.get("outcome") == "grant_consumed"
-                           and row.get("grant_id") == grant_id
-                           for row in read_events(proxy.event_log))
+                assert any(row.get("event") == "gateway.evaluated"
+                           and row.get("details", {}).get("outcome") == "grant_consumed"
+                           and row.get("details", {}).get("grant_id") == grant_id
+                           for row in read_events(proxy.audit_log))
             else:
                 assert any(row.get("event") == "gateway.grant_consumed"
                            and row.get("details", {}).get("grant_id") == grant_id for row in audit)

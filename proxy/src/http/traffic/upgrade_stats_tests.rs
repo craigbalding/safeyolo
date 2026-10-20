@@ -29,7 +29,7 @@ fn config(directory: &Path) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
         "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),
+        "audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":""
     }))
@@ -70,6 +70,23 @@ fn records(directory: &Path) -> Vec<Value> {
                     Some("ops.startup" | "ops.memory.conn_closed" | "ops.memory.ws_closed")
                 ))
         })
+        .filter(|row: &Value| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "traffic.tunnel"
+                        | "traffic.websocket.start"
+                        | "traffic.websocket.message"
+                        | "traffic.websocket.end"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                        | "agent.api_response"
+                        | "gateway.evaluated"
+                )
+            )
+        })
         .collect()
 }
 fn drained_records(runtime: &Runtime, directory: &Path) -> Vec<Value> {
@@ -81,7 +98,7 @@ fn cleanup(directory: &Path) {
     assert!(!directory.join("ready").exists());
 }
 fn diagnostic_events(directory: &Path) -> Vec<Value> {
-    std::fs::read_to_string(directory.join("events"))
+    std::fs::read_to_string(directory.join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -225,25 +242,25 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     let events = diagnostic_events(directory.path());
     let egress: Vec<_> = events
         .iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["host"], host);
-    assert_eq!(egress[0]["port"], port);
+    assert_eq!(egress[0]["details"]["port"], port);
     assert_eq!(
         events
             .iter()
-            .filter(|row| row["event"] == "proxy.websocket.message")
+            .filter(|row| row["event"] == "traffic.websocket.message")
             .count(),
         2
     );
     let end: Vec<_> = events
         .iter()
-        .filter(|row| row["event"] == "proxy.websocket.end")
+        .filter(|row| row["event"] == "traffic.websocket.end")
         .collect();
     assert_eq!(end.len(), 1);
-    assert_eq!(end[0]["close_code"], 1000);
-    assert_eq!(end[0]["drained"], true);
+    assert_eq!(end[0]["details"]["close_code"], 1000);
+    assert_eq!(end[0]["details"]["drained"], true);
 }
 
 // No Debug implementation: diagnostics should not print an authorized request.
@@ -389,15 +406,15 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
     let events = diagnostic_events(directory.path());
     let egress: Vec<_> = events
         .iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["host"], host);
-    assert_eq!(egress[0]["port"], port);
+    assert_eq!(egress[0]["details"]["port"], port);
     assert_eq!(
         events
             .iter()
-            .filter(|row| row["audit_intent"] == "admin.auth_failure")
+            .filter(|row| row["event"] == "admin.auth_failure")
             .count(),
         3
     );
@@ -406,7 +423,8 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    for name in ["events", "audit.jsonl"] {
+    {
+        let name = "audit.jsonl";
         let bytes = std::fs::read_to_string(directory.path().join(name)).unwrap();
         assert!(
             !bytes.contains(&token),
@@ -562,24 +580,27 @@ async fn active_websocket_shutdown_joins_direct_and_connect_owners_across_reload
         let events = diagnostic_events(directory.path());
         let messages: Vec<_> = events
             .iter()
-            .filter(|row| row["event"] == "proxy.websocket.message")
+            .filter(|row| row["event"] == "traffic.websocket.message")
             .collect();
         assert_eq!(messages.len(), 2);
         let ended: Vec<_> = events
             .iter()
-            .filter(|row| row["event"] == "proxy.websocket.end")
+            .filter(|row| row["event"] == "traffic.websocket.end")
             .collect();
         assert_eq!(ended.len(), 1);
-        assert_eq!(ended[0]["outcome"], "shutdown");
-        assert_eq!(ended[0]["drained"], true);
+        assert_eq!(ended[0]["details"]["outcome"], "shutdown");
+        assert_eq!(ended[0]["details"]["drained"], true);
         assert_eq!(ended[0]["agent"], "alice");
         for message in messages {
-            assert_eq!(message["connection_id"], ended[0]["connection_id"]);
+            assert_eq!(
+                message["details"]["connection_id"],
+                ended[0]["details"]["connection_id"]
+            );
         }
         assert_eq!(
             events
                 .iter()
-                .filter(|row| row["event"] == "proxy.egress")
+                .filter(|row| row["event"] == "traffic.egress")
                 .count(),
             1,
             "CONNECT must reuse its admitted socket"

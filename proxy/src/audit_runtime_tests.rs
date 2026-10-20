@@ -10,7 +10,7 @@ use crate::{
 use std::{
     collections::BTreeSet,
     ffi::CString,
-    fs,
+    fs::{self, OpenOptions},
     io::Read,
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
 };
@@ -67,8 +67,7 @@ fn config(directory: &Path, sink: &Path) -> Config {
     std::fs::write(&policy, "{}").unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"data_dir":directory.join("data"),"flow_store_enabled":false,"audit_log_path":sink,
-        "event_log":directory.join("diagnostics.jsonl"),"readiness_file":directory.join("ready"),
+        "policy_file":policy,"data_dir":directory.join("data"),"flow_store_enabled":false,"audit_log_path":sink,"readiness_file":directory.join("ready"),
     }))
     .unwrap()
 }
@@ -384,7 +383,8 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 std::fs::write(invalid.policy_file.as_ref().unwrap(), failed_policy.to_string()).unwrap();
                 // Fail after both owners have been cloned into the candidate;
                 // dropping that candidate must not close the shared queue.
-                invalid.event_log = directory.to_owned();
+                invalid.tls_ca_file = Some(directory.join("invalid-ca.pem"));
+                std::fs::write(invalid.tls_ca_file.as_ref().unwrap(), "invalid PEM").unwrap();
                 assert!(proxy.reload(invalid).await.is_err());
                 let retained = proxy.runtime.read().unwrap().clone();
                 assert!(Arc::ptr_eq(&current, &retained));

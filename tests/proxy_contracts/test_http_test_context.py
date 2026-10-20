@@ -183,7 +183,7 @@ def test_missing_context_blocks_before_parent_accept_without_waiting_for_body(pr
                 assert json.loads(response.read())["type"] == "missing_context"
             finally:
                 client.close()
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
         assert parent.accepts == 0 and parent.requests == []
         events = proxy.events("security.test_context")
         assert len(events) == 1 and events[0]["decision"] == "deny"
@@ -204,7 +204,7 @@ def test_valid_explicit_context_preserves_bodies_and_trusted_source_phases(proxy
         assert events[0]["details"]["request_body_snippet"] == payload.decode()
         assert events[1]["details"]["response_body_snippet"] == reply.decode(errors="replace")
         assert isinstance(events[1]["details"]["duration_ms"], int)
-        assert len(proxy.events("proxy.egress")) == 1
+        assert len(proxy.events("traffic.egress")) == 1
 
 
 def test_declared_context_stays_in_its_trusted_slot_and_malformed_header_cannot_fall_back(proxy_backend, tmp_path):
@@ -225,7 +225,7 @@ def test_declared_context_stays_in_its_trusted_slot_and_malformed_header_cannot_
             denial = request_events(proxy, response_headers["x-safeyolo-request-id"])
             assert len(denial) == 1 and denial[0]["decision"] == "deny"
             assert denial[0]["agent"] == agent and "phase" not in denial[0]["details"]
-        assert len(proxy.events("proxy.egress")) == 1
+        assert len(proxy.events("traffic.egress")) == 1
 
 
 @pytest.mark.parametrize("invalid_phase", ["request", "response"])
@@ -239,7 +239,7 @@ def test_content_decode_failure_preserves_wire_bytes_and_reached_event_phase(pro
         assert_parent_request(parent, payload)
         phases = ["response"] if invalid_phase == "request" else ["request"]
         assert_phases(request_events(proxy, headers["x-safeyolo-request-id"]), phases)
-        assert len(proxy.events("proxy.egress")) == 1
+        assert len(proxy.events("traffic.egress")) == 1
 
 
 @pytest.mark.parametrize("known_length", [True, False], ids=["known-length", "unknown-length"])
@@ -279,4 +279,4 @@ def test_ordinary_early_response_before_request_eom_has_no_provenance(proxy_back
         assert parent.requests[0]["body"] is None
         assert HEADER.lower() not in parent.requests[0]["headers"]
         assert proxy.events("security.test_context") == []
-        assert len(proxy.events("proxy.egress")) == 1
+        assert len(proxy.events("traffic.egress")) == 1

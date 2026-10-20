@@ -70,7 +70,7 @@ def test_generated_request_ids_follow_owned_effects(proxy_backend, tmp_path):
                         marker = f"effect-{len(identifiers)}-{suffix}"
                         other = "bob" if agent == "alice" else "alice"
                         before = (origin.accepts, len(origin.requests),
-                                  len(proxy.events("proxy.egress")))
+                                  len(proxy.events("traffic.egress")))
                         client = clients[agent]
                         client.request("GET", f"http://127.0.0.1:{port}{path}", headers={
                             claim_name: other,
@@ -97,7 +97,7 @@ def test_generated_request_ids_follow_owned_effects(proxy_backend, tmp_path):
                         else:
                             assert headers["x-blocked-by"] == "network-guard"
                             assert origin.accepts == before[0]
-                            assert len(proxy.events("proxy.egress")) == before[2]
+                            assert len(proxy.events("traffic.egress")) == before[2]
                         evidence = request_evidence(
                             proxy, agent, identifier, host="127.0.0.1", port=port,
                             method="GET", status=expected,
@@ -107,11 +107,11 @@ def test_generated_request_ids_follow_owned_effects(proxy_backend, tmp_path):
                         )
                         previous = connection_ids.setdefault(agent, evidence["connection_id"])
                         assert previous == evidence["connection_id"]
-                        events = [event for event in proxy.events("proxy.request")
+                        events = [event for event in proxy.events("traffic.request_outcome")
                                   if event.get("request_id") == identifier]
                         assert len(events) == 1
-                        assert {key: events[0][key] for key in
-                                ("agent", "host", "port", "status", "decision", "connection_id")} == {
+                        assert {**{key: events[0][key] for key in ("agent", "host", "decision")},
+                                **{key: events[0]["details"][key] for key in ("port", "status", "connection_id")}} == {
                             "agent": agent, "host": "127.0.0.1", "port": port,
                             "status": expected,
                             "decision": "allow" if expected == 200 else "deny",
@@ -203,7 +203,7 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
             # declaration. Bob may create and use only his own context.
             bob_run = "context-bob-owned"
             bob_context = f"run={bob_run};agent=alice;test=request-ids"
-            before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            before = (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress")))
             bob_declared = scoped_api(
                 proxy, "bob", "/api/test-context/current?agent=alice&source_id=10.0.0.2",
                 method="POST", body=json.dumps({"context": bob_context, "ttl": 60}).encode(),
@@ -214,7 +214,7 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
             }
             assert scoped_api(proxy, "bob", "/api/test-context/current?agent=alice")["context"] == bob_declared["context"]
             assert scoped_api(proxy, "alice", "/api/test-context/current")["context"] == declared["context"]
-            assert (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress"))) == before
+            assert (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress"))) == before
 
             status, headers, body = request(proxy.paths["bob"], target + "/bob-declared", headers=forged)
             assert status == 200 and body == b"hello"
@@ -232,7 +232,7 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
             assert bob_owned["flow"]["test_agent"] == "alice"
             assert bob_owned["flow"]["evidence_owner"] == "bob"
 
-            before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            before = (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress")))
             assert scoped_api(proxy, "bob", "/api/test-context/current?agent=alice", method="DELETE") == {
                 "status": "cleared",
             }
@@ -240,10 +240,10 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
                 "agent": "bob", "context": None,
             }
             assert scoped_api(proxy, "alice", "/api/test-context/current")["context"] == declared["context"]
-            assert (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress"))) == before
+            assert (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress"))) == before
             status, headers, body = request(proxy.paths["bob"], target + "/bob-cleared", headers=forged)
             assert status == 428 and json.loads(body)["type"] == "missing_context"
-            assert (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress"))) == before
+            assert (parent.accepts, len(parent.requests), len(proxy.events("traffic.egress"))) == before
             identifier = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
             scoped = request_evidence(
                 proxy, "bob", identifier, host="context.invalid", port=8123,
@@ -308,25 +308,25 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
 
             observed_ids = ({identifier for _, identifier, _ in denials} |
                             {identifier for identifier, _ in owned} | {bob_owned_id})
-            runtime = {event["request_id"]: event for event in proxy.events("proxy.request")
+            runtime = {event["request_id"]: event for event in proxy.events("traffic.request_outcome")
                        if event["request_id"] in observed_ids}
             assert len(runtime) == len(denials) + len(owned) + 1
-            assert all(event["host"] == "context.invalid" and event["port"] == 8123
+            assert all(event["host"] == "context.invalid" and event["details"]["port"] == 8123
                        for event in runtime.values())
             for agent, identifier, evidence in denials:
                 assert runtime[identifier]["agent"] == agent
-                assert runtime[identifier]["status"] == 428
+                assert runtime[identifier]["details"]["status"] == 428
                 assert runtime[identifier]["decision"] == "deny"
-                assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+                assert runtime[identifier]["details"]["connection_id"] == evidence["connection_id"]
             for identifier, evidence in owned:
                 assert runtime[identifier]["agent"] == "alice"
-                assert runtime[identifier]["status"] == 200
+                assert runtime[identifier]["details"]["status"] == 200
                 assert runtime[identifier]["decision"] == "allow"
-                assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+                assert runtime[identifier]["details"]["connection_id"] == evidence["connection_id"]
             assert runtime[bob_owned_id]["agent"] == "bob"
-            assert runtime[bob_owned_id]["status"] == 200
+            assert runtime[bob_owned_id]["details"]["status"] == 200
             assert runtime[bob_owned_id]["decision"] == "allow"
-            assert runtime[bob_owned_id]["connection_id"] == bob_owned["connection_id"]
+            assert runtime[bob_owned_id]["details"]["connection_id"] == bob_owned["connection_id"]
 
             deadline = time.monotonic() + 2
             while True:
@@ -347,12 +347,12 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
             assert context_mutations[0]["details"]["declared_agent"] == "bob"
             assert context_mutations[1]["details"]["trusted_agent"] == "bob"
             assert context_mutations[1]["details"]["declared_agent"] == "alice"
-            local_runtime = {event["request_id"]: event for event in proxy.events("proxy.request")
+            local_runtime = {event["request_id"]: event for event in proxy.events("traffic.request_outcome")
                              if event["host"].lower().rstrip(".") == "_safeyolo.proxy.internal"}
             for event in context_mutations:
                 runtime_event = local_runtime[event["request_id"]]
                 assert runtime_event["agent"] == event["agent"]
-                assert runtime_event["status"] == 200 and runtime_event["decision"] == "local"
+                assert runtime_event["details"]["status"] == 200 and runtime_event["details"]["decision"] == "local"
             assert len(parent.requests) == 4
 
 
@@ -472,11 +472,11 @@ effect = "deny"
             ]
             for observation in observations:
                 for inner in observation["inner"]:
-                    events = [event for event in proxy.events("proxy.request")
+                    events = [event for event in proxy.events("traffic.request_outcome")
                               if event.get("request_id") == inner["request_id"]]
                     assert len(events) == 1
-                    assert {key: events[0][key] for key in
-                            ("agent", "host", "port", "status", "decision", "connection_id")} == {
+                    assert {**{key: events[0][key] for key in ("agent", "host", "decision")},
+                            **{key: events[0]["details"][key] for key in ("port", "status", "connection_id")}} == {
                         "agent": observation["agent"], "host": "127.0.0.1",
                         "port": origin.server_address[1], "status": inner["status"],
                         "decision": "allow" if inner["status"] == 200 else "deny",
@@ -654,8 +654,8 @@ def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_ba
                     assert actual == status, (target, actual, body)
                     assert relay.accepts == len(relay.request_heads) == relay_accepts
                     assert origin.accepts == len(origin.requests) == origin_accepts
-                    assert len(first.events("proxy.egress")) == relay_accepts
-                    assert len(peer.events("proxy.egress")) == origin_accepts
+                    assert len(first.events("traffic.egress")) == relay_accepts
+                    assert len(peer.events("traffic.egress")) == origin_accepts
                     identifier = {key.lower(): value for key, value in headers.items()}[
                         "x-safeyolo-request-id"]
                     assert identifier.startswith("req-")
@@ -684,19 +684,19 @@ def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_ba
                            for headers in origin.via_headers)
                 assert all(b"fixture-via-canary" in head for head in origin.request_heads)
                 assert len(set(client_ids)) == 3
-                first_requests = first.events("proxy.request")
+                first_requests = first.events("traffic.request_outcome")
                 assert len(first_requests) == 4
                 by_id = {row["request_id"]: row for row in first_requests}
                 assert len(by_id) == 4
-                assert [(by_id[identifier]["status"], by_id[identifier]["decision"])
+                assert [(by_id[identifier]["details"]["status"], by_id[identifier]["decision"])
                         for identifier in client_ids] == [(508, "allow"), (200, "allow"), (200, "allow")]
                 blocked = next(row for row in first_requests if row["request_id"] not in client_ids)
-                assert (blocked["status"], blocked["decision"], blocked["agent"],
-                        blocked["host"], blocked["port"]) == (
+                assert (blocked["details"]["status"], blocked["decision"], blocked["agent"],
+                        blocked["host"], blocked["details"]["port"]) == (
                     508, "deny", "alice", "target.invalid", 8123,
                 )
-                peer_requests = peer.events("proxy.request")
-                assert [(row["host"], row["status"], row["decision"], row["agent"])
+                peer_requests = peer.events("traffic.request_outcome")
+                assert [(row["host"], row["details"]["status"], row["decision"], row["agent"])
                         for row in peer_requests] == [
                     ("target.invalid", 200, "allow", "alice"),
                     ("control.invalid", 200, "allow", "alice"),
@@ -872,10 +872,10 @@ def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_back
         result["origin_observation"]["stream_chunks_available"] * 16384
     )
     assert result["origin_observation"]["stream_finished_after_cancel"] is True
-    events = [event for event in read_events(tmp_path / proxy_backend / "events.jsonl")
-              if event.get("event") == "proxy.request"]
+    events = [event for event in read_events(tmp_path / proxy_backend / "audit.jsonl")
+              if event.get("event") == "traffic.request_outcome"]
     assert len(events) == (2 if proxy_backend == "rust" else 1)
-    assert all(int(event.get("status", 500)) == 200 for event in events)
+    assert all(int(event["details"]["status"]) == 200 for event in events)
     assert sum(event.get("request_id") == result["control_request_id"] for event in events) == 1
 
 
@@ -899,12 +899,12 @@ def test_concurrent_policy_decisions_keep_agent_scope(proxy_backend, tmp_path):
 
         by_request = {identifier: (agent, status) for agent, status, identifier in outcomes}
         assert len(by_request) == 160
-        events = proxy.events("proxy.request")
+        events = proxy.events("traffic.request_outcome")
         assert len(events) == 160
         for event in events:
-            assert by_request[event["request_id"]] == (event["agent"], event["status"])
+            assert by_request[event["request_id"]] == (event["agent"], event["details"]["status"])
             assert event["decision"] == ("allow" if event["agent"] == "alice" else "deny")
-        egress = proxy.events("proxy.egress")
+        egress = proxy.events("traffic.egress")
         assert len(egress) == 80
         assert all(event["agent"] == "alice" for event in egress)
         assert len(origin.requests) == origin.accepts == 80
@@ -959,14 +959,14 @@ def test_persistent_http1_requests_keep_routing_and_identity_isolated(proxy_back
         assert origin.accepts >= 1
         assert all(request["connection_id"] for request in origin.requests)
 
-    events = proxy.events("proxy.request")
+    events = proxy.events("traffic.request_outcome")
     assert len(events) == 4
     assert [event["agent"] for event in events] == ["alice", "alice", "bob", "bob"]
-    assert [event["status"] for event in events] == [200, 200, 403, 403]
-    alice_event_ids = {event["connection_id"] for event in events[:2]}
-    bob_event_ids = {event["connection_id"] for event in events[2:]}
+    assert [event["details"]["status"] for event in events] == [200, 200, 403, 403]
+    alice_event_ids = {event["details"]["connection_id"] for event in events[:2]}
+    bob_event_ids = {event["details"]["connection_id"] for event in events[2:]}
     assert len(alice_event_ids) == len(bob_event_ids) == 1
     assert alice_event_ids.isdisjoint(bob_event_ids)
-    egress = proxy.events("proxy.egress")
+    egress = proxy.events("traffic.egress")
     assert egress
     assert all(event["agent"] == "alice" for event in egress)

@@ -310,26 +310,11 @@ fn record_pattern_decision(
         "failure": decision.failure,
         "error_type": decision.error_type,
         "metadata": decision.metadata,
+        "connection_id": identity.connection_id,
     })
     .into();
     runtime.audit.emit(audit)?;
-    runtime.record(json!({
-        "event": "security.pattern_scanner",
-        "kind": "security",
-        "severity": if denied { "high" } else { "medium" },
-        "addon": "pattern-scanner",
-        "decision": if denied { "deny" } else if logged { "log" } else { "allow" },
-        "direction": direction,
-        "outcome": decision.outcome,
-        "finding": decision.finding,
-        "failure": decision.failure,
-        "error_type": decision.error_type,
-        "metadata": decision.metadata,
-        "host": destination.policy_host,
-        "request_id": request_id,
-        "agent": identity.request_agent(),
-        "connection_id": identity.connection_id,
-    }))
+    Ok(())
 }
 
 /// Attach the ordinary local-response completion marker after the request
@@ -998,11 +983,24 @@ async fn open_egress_for_flow(
         live.upstream_connection(observation.clone());
     }
     let record_egress = || {
-        runtime.record(json!({
-            "event": "proxy.egress", "agent": allowed.identity.request_agent(),
-            "connection_id": allowed.identity.connection_id, "request_id": allowed.request_id,
-            "host": destination.host, "port": destination.port, "route": route_name,
-        }))
+        if let Err(error) = runtime.audit.emit(allowed.identity.request_event(
+            "traffic.egress",
+            crate::audit::Kind::Traffic,
+            allowed.request_id,
+            format!(
+                "Egress attempt via {route_name} to {}:{}",
+                crate::network_guard::sanitize(&destination.host),
+                destination.port
+            ),
+            json!({
+            "host": destination.host,
+            "port": destination.port,
+            "route": route_name
+            }),
+        )) {
+            // Route observation cannot revoke already-admitted transport.
+            eprintln!("Egress audit submission failed: {error}");
+        }
     };
     let mut connection_audit = ignored.map(|selected| {
         ignored_host::ConnectionAudit::new(runtime.audit.clone(), allowed.identity, selected)
@@ -1034,7 +1032,7 @@ async fn open_egress_for_flow(
             if recorded {
                 Ok(())
             } else {
-                record_egress()?;
+                record_egress();
                 recorded = true;
                 Ok(())
             }
@@ -1359,17 +1357,25 @@ async fn decide(
                 network_trace::observe(trace.as_ref(), intent);
             }
         }
-        // Development guard evidence excludes the URL query and application
-        // bytes. Canonical security audit has its own process-owned writer.
-        runtime.record(json!({
-            "event": "proxy.network_guard", "agent": identity.request_agent(),
-            "connection_id": request.connection_id, "request_id": request.request_id,
-            "host": request.host, "port": request.port,
-            "method": request.method, "scheme": request.scheme,
-            "outcome": outcome.kind, "trace": outcome.trace,
+        // Keep guard evaluation metadata without copying canonical audit intents.
+        // URL queries and application bytes stay excluded.
+        runtime.audit.emit(identity.request_event(
+            "security.network_guard.evaluated",
+            crate::audit::Kind::Security,
+            request.request_id,
+            "Network guard evaluated request",
+            json!({
+            "host": request.host,
+            "port": request.port,
+            "method": request.method,
+            "scheme": request.scheme,
+            "outcome": outcome.kind,
+            "trace": outcome.trace,
             "trace_requested": request.trace_requested,
-            "audit": outcome.audit, "metadata": outcome.metadata, "pdp": outcome.pdp,
-        }))?;
+            "metadata": outcome.metadata,
+            "pdp": outcome.pdp
+            }),
+        ))?;
         let allow = outcome.kind != OutcomeKind::Blocked;
         let (status, headers, body) = match outcome.response {
             Some(response) => {
@@ -1435,92 +1441,22 @@ fn record_agent_api(
     request_id: &str,
     outcome: &crate::agent_api::Outcome<'_>,
 ) -> Result<(), Error> {
-    let audit = outcome.audit.as_ref().map(|audit| {
-        let kind = if matches!(
-            audit.kind,
-            crate::agent_api::AuditKind::GatewayAccessRequested
-                | crate::agent_api::AuditKind::GatewayBindingSubmitted
-                | crate::agent_api::AuditKind::DesktopPresentRequested
-                | crate::agent_api::AuditKind::PlumbRequested
-                | crate::agent_api::AuditKind::PlumbMessageBlocked
-                | crate::agent_api::AuditKind::PlumbMessageFlagged
-                | crate::agent_api::AuditKind::PlumbMessageAllowed
-                | crate::agent_api::AuditKind::PlumbConversationClosed
-        ) {
-            if matches!(
-                audit.kind,
-                crate::agent_api::AuditKind::PlumbRequested
-                    | crate::agent_api::AuditKind::PlumbMessageBlocked
-                    | crate::agent_api::AuditKind::PlumbMessageFlagged
-                    | crate::agent_api::AuditKind::PlumbMessageAllowed
-                    | crate::agent_api::AuditKind::PlumbConversationClosed
-            ) {
-                "plumb"
-            } else {
-                if audit.kind == crate::agent_api::AuditKind::DesktopPresentRequested {
-                    "agent"
-                } else {
-                    "gateway"
-                }
-            }
-        } else {
-            "security"
-        };
-        let mut event = json!({
-            "event": audit.event, "kind": kind,
-            "severity": audit.severity, "addon": audit.addon,
-            "summary": audit.summary, "agent": audit.agent,
-            "request_id": audit.request_id, "host": audit.host,
-            "details": audit.details,
-        });
-        if matches!(
-            audit.kind,
-            crate::agent_api::AuditKind::AuthenticationFailed
-                | crate::agent_api::AuditKind::HandlerUnavailable
-                | crate::agent_api::AuditKind::CoordPublishOutcomeUnknown
-        ) {
-            event["decision"] = json!("deny");
-        } else if matches!(
-            audit.kind,
-            crate::agent_api::AuditKind::GatewayAccessRequested
-                | crate::agent_api::AuditKind::GatewayBindingSubmitted
-                | crate::agent_api::AuditKind::DesktopPresentRequested
-                | crate::agent_api::AuditKind::PlumbRequested
-        ) {
-            event["decision"] = json!("require_approval");
-        } else if matches!(audit.kind, crate::agent_api::AuditKind::PlumbMessageBlocked) {
-            event["decision"] = json!("deny");
-        } else if matches!(
-            audit.kind,
-            crate::agent_api::AuditKind::PlumbMessageFlagged
-                | crate::agent_api::AuditKind::PlumbMessageAllowed
-        ) {
-            event["decision"] = json!("allow");
-        } else if audit.kind == crate::agent_api::AuditKind::PlumbConversationClosed {
-            event["decision"] = json!("log");
-        }
-        if let Some(approval) = &audit.approval {
-            event["approval"] = json!({
-                "required":approval.required,
-                "approval_type":approval.approval_type.as_str(),
-                "key":approval.key,
-                "target":approval.target,
-                "scope_hint":approval.scope_hint,
-            });
-        }
-        event
-    });
-    // Development evidence remains separate from the canonical writer. On a
-    // synchronous submission failure, retain the attempted intent/status before
-    // recording the changed terminal outcome; neither row is a second emission.
-    runtime.record(json!({
-        "event": "proxy.agent_api", "agent": identity.transport_agent(),
-        "connection_id": identity.connection_id, "request_id": request_id,
-        "status": outcome.response.status, "blocked_by": outcome.blocked_by,
-        "handler_owned": outcome.handler_owned, "audit": audit,
-        "failure": outcome.failure.map(|failure| format!("{failure:?}")),
-        "policy_evaluations": outcome.policy_evaluations,
-    }))
+    // Retain the response/handler result without copying the canonical intent.
+    // An intent name on a failed submission is not a second event emission.
+    runtime.audit.emit(identity.request_event(
+        "agent.api_response",
+        crate::audit::Kind::Agent,
+        request_id,
+        "Agent API response",
+        json!({
+            "status": outcome.response.status, "blocked_by": outcome.blocked_by,
+            "handler_owned": outcome.handler_owned,
+            "audit_event": outcome.audit.as_ref().map(|audit| audit.event),
+            "failure": outcome.failure.map(|failure| format!("{failure:?}")),
+            "policy_evaluations": outcome.policy_evaluations,
+        }),
+    ))?;
+    Ok(())
 }
 
 // `Traffic` is only the request snapshot; retain connection identity,
@@ -1692,8 +1628,7 @@ where
             }
         }
     }
-    evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err()
-        | crate::circuit_runtime::record_transitions(runtime, &outcome.circuit_events, None);
+    evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err();
     // The existing API reader supplies only a scalar observation. Its Body
     // terminal is insufficient on H2 NO_ERROR reset: require parser success.
     // Early routes never wait for an unread body merely to generate traffic.
@@ -1833,18 +1768,16 @@ fn circuit_admission(
         Err(error) => {
             crate::circuit_runtime::trace_error(trace.as_ref(), &error);
             eprintln!("Circuit request operation failed: {:?}", error.kind());
-            let failed = crate::circuit_runtime::record_transitions(&runtime, error.events(), None);
-            return (None, failed, true);
+            return (None, false, true);
         }
     };
     crate::circuit_runtime::trace_request_decision(trace.as_ref(), &outcome.value);
-    let mut failed = crate::circuit_runtime::record_transitions(&runtime, &outcome.events, None);
     let RequestDecision::Blocked {
         status,
         retry_after_seconds,
     } = outcome.value
     else {
-        return (None, failed, false);
+        return (None, false, false);
     };
     let reply = (|| -> Result<Response<Body>, Error> {
         let state = serde_json::to_value(status.state)?
@@ -1852,7 +1785,7 @@ fn circuit_admission(
             .unwrap()
             .to_owned();
         let count = crate::circuit_runtime::count_text(&status.failure_count)?;
-        let mut details = indexmap::IndexMap::from([
+        let details = indexmap::IndexMap::from([
             ("circuit_state".into(), json!(state).into()),
             ("failure_count".into(), status.failure_count.clone()),
             ("retry_after".into(), json!(retry_after_seconds).into()),
@@ -1876,37 +1809,8 @@ fn circuit_admission(
         security.request_id = Some(request_id.to_owned());
         security.decision = Some(crate::audit::Decision::Deny);
         security.attribution = Some(identity.audit_attribution());
-        security.details = CircuitValue::Object(details.clone());
+        security.details = CircuitValue::Object(details);
         runtime.audit.emit(security)?;
-        let audit = CircuitValue::Object(indexmap::IndexMap::from([
-            ("event".into(), json!("proxy.circuit").into()),
-            (
-                "audit_intent".into(),
-                json!("security.circuit_breaker").into(),
-            ),
-            ("kind".into(), json!("security").into()),
-            ("severity".into(), json!("high").into()),
-            ("addon".into(), json!("circuit-breaker").into()),
-            ("decision".into(), json!("deny").into()),
-            ("host".into(), json!(host).into()),
-            ("agent".into(), json!(identity.request_agent()).into()),
-            ("request_id".into(), json!(request_id).into()),
-            (
-                "summary".into(),
-                json!(format!(
-                    "Circuit breaker open for {} ({count} failures)",
-                    crate::network_guard::sanitize(host),
-                ))
-                .into(),
-            ),
-            (
-                "details".into(),
-                CircuitValue::Object(std::mem::take(&mut details)),
-            ),
-        ]));
-        failed |= runtime
-            .record_bytes(audit.render_audit_json()?.into_bytes())
-            .is_err();
         let body = crate::python_json::encode(&json!({
             "error": format!("Service temporarily unavailable: {host}"),
             "domain": host,
@@ -1914,7 +1818,7 @@ fn circuit_admission(
             "retry_after_seconds": retry_after_seconds,
             "message": format!("Circuit breaker open for {host}. Service has failed {count} times. Will retry in {retry_after_seconds} seconds."),
         }));
-        let mut reply = Response::builder()
+        let reply = Response::builder()
             .status(StatusCode::SERVICE_UNAVAILABLE)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CONTENT_LENGTH, body.len())
@@ -1923,17 +1827,12 @@ fn circuit_admission(
             .header("x-circuit-state", state)
             .header(header::RETRY_AFTER, retry_after_seconds.to_string())
             .body(full(body))?;
-        if failed {
-            reply
-                .headers_mut()
-                .insert("x-safeyolo-evidence-error", "true".parse()?);
-        }
         Ok(reply)
     })();
     match reply {
         Ok(reply) => {
             crate::circuit_runtime::trace_request_blocked(trace.as_ref());
-            (Some(reply), failed, false)
+            (Some(reply), false, false)
         }
         Err(error) => {
             if let Some(error) = error.downcast_ref::<crate::circuits::Error>() {
@@ -1944,7 +1843,7 @@ fn circuit_admission(
                 trace.error("CircuitResponseError");
             }
             eprintln!("Circuit request response construction failed");
-            (None, failed, true)
+            (None, false, true)
         }
     }
 }
@@ -1996,17 +1895,19 @@ fn publish_gateway_evidence(
             .audit
             .emit(intent.event(identity.audit_attribution()))?;
     }
-    runtime.record(json!({
-        "event": "proxy.gateway",
-        "agent": identity.request_agent(),
-        "connection_id": identity.connection_id,
-        "request_id": request_id,
+    runtime.audit.emit(identity.request_event(
+        "gateway.evaluated",
+        crate::audit::Kind::Gateway,
+        request_id,
+        "Gateway request observation",
+        json!({
         "metadata": evidence.metadata,
         "trace": evidence.trace,
         "stats": evidence.stats,
         "body_scope": "contract_body_checked_when_buffered",
-        "query_scope": "signed_query_preserved_in_full_url",
-    }))?;
+        "query_scope": "signed_query_preserved_in_full_url"
+        }),
+    ))?;
     Ok(())
 }
 
@@ -2186,13 +2087,15 @@ async fn resolve_refresh(
             // outcome contain no endpoint, form, response, or credential data.
             // It also makes the shared-flight boundary visible to the native
             // live workflow before its held leader is released.
-            runtime.record(json!({
-                "event": "proxy.gateway",
-                "agent": identity.request_agent(),
-                "connection_id": identity.connection_id,
-                "request_id": request_id,
-                "outcome": "refresh_follower",
-            }))?;
+            runtime.audit.emit(identity.request_event(
+                "gateway.evaluated",
+                crate::audit::Kind::Gateway,
+                request_id,
+                "Gateway request observation",
+                json!({
+                "outcome": "refresh_follower"
+                }),
+            ))?;
             waiter.wait().await
         }
     };
@@ -2552,14 +2455,21 @@ where
                 if protocol == Protocol::Opaque {
                     let started = std::time::Instant::now();
                     let result = tunnels::relay(client, server, stop).await;
-                    runtime.record(json!({
-                        "event": "proxy.tunnel", "agent": identity.request_agent(),
-                        "connection_id": identity.connection_id, "request_id": request_id,
-                        "host": destination.host, "port": destination.port,
+                    runtime.audit.emit(identity.request_event(
+                        "traffic.tunnel",
+                        crate::audit::Kind::Traffic,
+                        &request_id,
+                        "Tunnel relay ended",
+                        json!({
+                        "host": destination.host,
+                        "port": destination.port,
                         "coverage": if passthrough { "configured_passthrough" } else { "opaque" },
-                        "uploaded_bytes": result.uploaded, "downloaded_bytes": result.downloaded,
-                        "duration_ms": started.elapsed().as_millis(), "outcome": result.outcome,
-                    }))?;
+                        "uploaded_bytes": result.uploaded,
+                        "downloaded_bytes": result.downloaded,
+                        "duration_ms": started.elapsed().as_millis(),
+                        "outcome": result.outcome
+                        }),
+                    ))?;
                     return Ok(());
                 }
                 let (client, http2, scheme): (BoxStream, bool, &str) = if protocol == Protocol::Tls
@@ -2696,21 +2606,22 @@ where
                 runtime.audit.emit(event)?;
             }
         }
-        runtime.record(json!({
-            "event": "proxy.credential_guard",
-            "agent": identity.request_agent(),
-            "connection_id": identity.connection_id,
-            "request_id": request_id,
+        runtime.audit.emit(identity.request_event(
+            "security.credential_guard.evaluated",
+            crate::audit::Kind::Security,
+            request_id,
+            "Credential guard evaluated request",
+            json!({
             "host": destination.policy_host,
             "port": destination.port,
             "outcome": outcome.kind,
             "trace": outcome.trace,
-            "audit": outcome.audit,
             "metadata": outcome.metadata,
             "evaluations": outcome.evaluations,
             "body_scope": "headers_only",
-            "query_scope": "policy_context_only",
-        }))?;
+            "query_scope": "policy_context_only"
+            }),
+        ))?;
         if let Some(enforcement) = outcome.response {
             let body = enforcement.body_bytes();
             let mut blocked = Response::builder()
@@ -2968,6 +2879,7 @@ where
                                 "description":risky.description,
                                 "group":risky.group,
                                 "effect":risk.effect,
+                                "connection_id":identity.connection_id,
                             })
                             .into();
                             if risk.effect == crate::policy::Effect::Prompt {
@@ -2975,35 +2887,19 @@ where
                             } else {
                                 runtime.audit.emit(audit)?;
                             }
-                            runtime.record(json!({
-                                "event":"proxy.gateway",
-                                "agent":identity.request_agent(),
-                                "connection_id":identity.connection_id,
-                                "request_id":request_id,
-                                "outcome":"risky_route_blocked",
-                                "service":credential.service,
-                                "capability":credential.capability,
-                                "method":request.method().as_str(),
-                                "path":risky_path,
-                                "effect":risk.effect,
-                            }))?;
                             let reply =
                                 gateway_response(status, "GATEWAY_RISKY_ROUTE", request_id)?;
                             return Ok((prior_block(reply), "deny".into()));
                         }
                     }
                     grant_lease = granted;
-                    runtime.record(json!({
-                        "event":"proxy.gateway",
-                        "agent":identity.request_agent(),
-                        "connection_id":identity.connection_id,
-                        "request_id":request_id,
-                        "outcome":if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
-                        "service":credential.service,
-                        "capability":credential.capability,
-                        "method":request.method().as_str(),
-                        "path":risky_path,
-                    }))?;
+                    runtime.audit.emit(identity.request_event("gateway.evaluated", crate::audit::Kind::Gateway, request_id, "Gateway request observation", json!({
+"outcome": if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
+"service": credential.service,
+"capability": credential.capability,
+"method": request.method().as_str(),
+"path": risky_path
+})))?;
                 }
                 let full_url = crate::credentials::Secret::new(format!(
                     "{}://{}{}",
@@ -3218,21 +3114,22 @@ where
                 runtime.audit.emit(event)?;
             }
         }
-        runtime.record(json!({
-            "event": "proxy.credential_guard",
-            "agent": identity.request_agent(),
-            "connection_id": identity.connection_id,
-            "request_id": request_id,
+        runtime.audit.emit(identity.request_event(
+            "security.credential_guard.evaluated",
+            crate::audit::Kind::Security,
+            request_id,
+            "Credential guard evaluated request",
+            json!({
             "host": destination.policy_host,
             "port": destination.port,
             "outcome": outcome.kind,
             "trace": outcome.trace,
-            "audit": outcome.audit,
             "metadata": outcome.metadata,
             "evaluations": outcome.evaluations,
             "body_scope": "headers_only",
-            "query_scope": "policy_context_only",
-        }))?;
+            "query_scope": "policy_context_only"
+            }),
+        ))?;
         if let Some(enforcement) = outcome.response {
             let body = enforcement.body_bytes();
             let mut blocked = Response::builder()
@@ -3643,24 +3540,46 @@ where
             let _live_session = live_session;
             let _connection = connection;
             let result: Result<(), Error> = async {
-                if *stop.borrow() { return Ok(()); }
+                if *stop.borrow() {
+                    return Ok(());
+                }
                 let (client, server) = tokio::select! {
                     _ = stop.changed() => return Ok(()),
                     result = async { tokio::try_join!(client_upgrade, server_upgrade) } => result?,
                 };
                 let memory = crate::memory_runtime::WebSocket::new(
-                    &runtime, &session.identity.connection_id, &memory_host,
+                    &runtime,
+                    &session.identity.connection_id,
+                    &memory_host,
                 );
-                runtime.record(json!({
-                    "event": "proxy.websocket.start", "agent": session.identity.request_agent(),
-                    "connection_id": session.identity.connection_id, "request_id": session.request_id,
-                    "host": session.host, "port": session.port,
+                runtime.audit.emit(session.identity.request_event(
+                    "traffic.websocket.start",
+                    crate::audit::Kind::Traffic,
+                    &session.request_id,
+                    "WebSocket relay started",
+                    json!({
+                    "host": session.host,
+                    "port": session.port,
                     "subprotocol": negotiated.subprotocol,
-                    "compressed_client": negotiated.client.is_some(), "compressed_server": negotiated.server.is_some(),
-                }))?;
-                crate::websocket_relay::relay(Box::new(TokioIo::new(client)), Box::new(TokioIo::new(server)), negotiated, session, stop, memory, descendants).await
-            }.await;
-            if result.is_err() { eprintln!("WebSocket connection ended with an error"); }
+                    "compressed_client": negotiated.client.is_some(),
+                    "compressed_server": negotiated.server.is_some()
+                    }),
+                ))?;
+                crate::websocket_relay::relay(
+                    Box::new(TokioIo::new(client)),
+                    Box::new(TokioIo::new(server)),
+                    negotiated,
+                    session,
+                    stop,
+                    memory,
+                    descendants,
+                )
+                .await
+            }
+            .await;
+            if result.is_err() {
+                eprintln!("WebSocket connection ended with an error");
+            }
         });
         return Ok((
             Response::from_parts(parts, full(Bytes::new())),
@@ -4178,8 +4097,6 @@ pub(crate) fn serve_request(
         // Upstream response headers cannot classify a local enforcement action.
         let admin_blocked = decision == "admin_port_access";
         let mut record = json!({
-            "event": "proxy.request", "agent": identity.request_agent(),
-            "connection_id": identity.connection_id, "request_id": request_id,
             "host": destination.as_ref().ok().map(|d| &d.policy_host),
             "port": destination.as_ref().ok().map(|d| d.port),
             "status": reply.status().as_u16(),
@@ -4200,7 +4117,19 @@ pub(crate) fn serve_request(
             record["blocked_by"] = json!(crate::admin_shield::REJECTION.blocked_by);
             record["block_reason"] = json!(crate::admin_shield::REJECTION.block_reason);
         }
-        if let Err(error) = runtime.record(record) {
+        let mut event = identity.request_event(
+            "traffic.request_outcome",
+            crate::audit::Kind::Traffic,
+            &request_id,
+            "Proxy response prepared",
+            record,
+        );
+        event.decision = match if admin_blocked { "deny" } else { &decision } {
+            "allow" => Some(crate::audit::Decision::Allow),
+            "deny" => Some(crate::audit::Decision::Deny),
+            _ => None,
+        };
+        if let Err(error) = runtime.audit.emit(event) {
             eprintln!("request evidence write failed: {error}");
             reply
                 .headers_mut()
@@ -4297,7 +4226,6 @@ mod tests {
             "readiness_file": directory.join("ready.json"),
             "flow_store_enabled": false,
             "audit_log_path": directory.join("audit.jsonl"),
-            "event_log": directory.join("events.jsonl"),
             "ignore_hosts": [initial_ignore]
         }))
         .unwrap()
@@ -4729,16 +4657,16 @@ mod tests {
                 "{} parent-address matcher created passthrough lifecycle: {lifecycle:?}",
                 if cidr_matcher { "CIDR" } else { "exact" }
             );
-            let egress = std::fs::read_to_string(&config.event_log)
+            let egress = std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
                 .unwrap()
                 .lines()
                 .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .filter(|event| event["event"] == "proxy.egress")
+                .filter(|event| event["event"] == "traffic.egress")
                 .collect::<Vec<_>>();
             assert_eq!(egress.len(), 1);
             assert_eq!(egress[0]["host"], "unrelated.invalid");
-            assert_eq!(egress[0]["port"], 443);
-            assert_eq!(egress[0]["route"], "parent");
+            assert_eq!(egress[0]["details"]["port"], 443);
+            assert_eq!(egress[0]["details"]["route"], "parent");
             proxy.shutdown().await;
         }
     }

@@ -26,7 +26,7 @@ fn runtime(directory: &Path) -> Runtime {
     std::fs::write(&scanner, r#"{"scan_patterns":[{"name":"owned-marker","pattern":"PROJ-12345","scope":"body","action":"block"}]}"#).unwrap();
     let config: Config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"data_dir":directory.join("data"),"event_log":directory.join("diagnostics.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),
         "audit_log_path":directory.join("audit.jsonl"),"readiness_file":directory.join("ready"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_state_file":"","agent_map_file":"",
@@ -257,15 +257,20 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
                 assert_eq!(report["websockets"][0]["messages"], 2);
                 assert_eq!(report["websockets"][0]["domain"], HOST);
             }
-            let rows: Vec<Value> =
-                std::fs::read_to_string(directory.path().join("diagnostics.jsonl"))
+            assert!(
+                runtime
+                    .audit
+                    .wait_for_drain(Duration::from_secs(2))
                     .unwrap()
-                    .lines()
-                    .map(|line| serde_json::from_str(line).unwrap())
-                    .collect();
+            );
+            let rows: Vec<Value> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
             assert_eq!(rows.len(), 2);
-            assert_eq!(rows[0]["dropped"], true);
-            assert_eq!(rows[1]["dropped"], false);
+            assert_eq!(rows[0]["details"]["dropped"], true);
+            assert_eq!(rows[1]["details"]["dropped"], false);
             drop(memory);
             if !poisoned {
                 assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
@@ -338,11 +343,11 @@ async fn cancellation_during_scanner_prevents_message_publication() {
     owner.run(async { Ok(()) }).await;
     assert!(messages.recv().await.is_none());
     let diagnostics =
-        std::fs::read_to_string(directory.path().join("diagnostics.jsonl")).unwrap_or_default();
+        std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap_or_default();
     assert!(
         !diagnostics
             .lines()
-            .any(|line| line.contains("proxy.websocket.message")),
+            .any(|line| line.contains("traffic.websocket.message")),
         "canceled inspection must not publish message evidence"
     );
     drop(memory);
@@ -353,10 +358,14 @@ async fn cancellation_during_scanner_prevents_message_publication() {
 #[tokio::test]
 async fn relay_diagnostic_error_still_ends_the_session() {
     let directory = tempfile::tempdir().unwrap();
-    let mut runtime = runtime(directory.path());
-    runtime.events = Arc::new(Mutex::new(
-        std::fs::File::open(directory.path().join("diagnostics.jsonl")).unwrap(),
-    ));
+    let runtime = runtime(directory.path());
+    assert!(
+        runtime
+            .audit
+            .wait_for_drain(Duration::from_secs(2))
+            .unwrap()
+    );
+    runtime.audit.poison_for_test();
     let runtime = Arc::new(runtime);
     let memory = memory_runtime::WebSocket::new(&runtime, ID, HOST);
     let (client, _client_peer) = tokio::io::duplex(1024);
@@ -384,12 +393,11 @@ async fn relay_diagnostic_error_still_ends_the_session() {
     owner.run(async { Ok(()) }).await;
     assert!(
         result.is_err(),
-        "owned read-only diagnostic file cannot be written"
+        "the canonical writer must report the injected submission failure"
     );
+    // Cleanup is observable in memory even when the single writer is unavailable.
     assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
-    let events = records(&runtime, directory.path());
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["event"], "ops.memory.ws_closed");
+    assert!(runtime.audit.shutdown(Duration::from_secs(1)).is_err());
 }
 
 #[tokio::test]

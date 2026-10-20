@@ -44,7 +44,7 @@ fn lazy_file_creation_order_and_close_drain() {
 
 #[test]
 fn rotation_uses_source_suffix_and_runs_before_whole_batch() {
-    for name in ["events.jsonl", "events."] {
+    for name in ["audit.jsonl", "events."] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(name);
         let writer = Writer::new(

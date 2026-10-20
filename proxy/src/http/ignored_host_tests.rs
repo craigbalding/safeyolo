@@ -31,7 +31,6 @@ fn config(directory: &Path, authority: &str, matched: bool, allowed: bool) -> Co
         "policy_file":directory.join("policy.json"),"data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":"",
         "ignore_hosts":if matched { vec![authority] } else { vec![] }
@@ -330,9 +329,9 @@ async fn unmatched_opaque_and_policy_denial_do_not_create_logger_sessions() {
         } else {
             assert!(head.starts_with(b"HTTP/1.1 403"));
             assert!(
-                !records(directory.path(), "events.jsonl")
+                !records(directory.path(), "audit.jsonl")
                     .iter()
-                    .any(|row| row["event"] == "proxy.egress")
+                    .any(|row| row["event"] == "traffic.egress")
             );
         }
         drop(client);

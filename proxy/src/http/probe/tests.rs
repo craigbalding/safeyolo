@@ -49,8 +49,7 @@ impl Fixture {
         let configuration: Config = serde_json::from_value(json!({
             "listeners":[{"agent_id":"alice","source_id":"192.0.2.10","socket_path":directory.path().join("alice.sock")},
                 {"agent_id":"bob","source_id":"192.0.2.11","socket_path":directory.path().join("bob.sock")}],
-            "policy_file":directory.path().join("policy.json"), "data_dir":directory.path().join("data"), "readiness_file":directory.path().join("ready"),
-            "event_log":directory.path().join("events.jsonl"), "audit_log_path":directory.path().join("audit.jsonl"),
+            "policy_file":directory.path().join("policy.json"), "data_dir":directory.path().join("data"), "readiness_file":directory.path().join("ready"), "audit_log_path":directory.path().join("audit.jsonl"),
             "flow_store_enabled":true, "flow_store_db_path":directory.path().join("flows.sqlite3"),
             "circuit_breaker_enabled":true, "circuit_state_file":"", "sse_stream_json":stream_json,
         })).unwrap();
@@ -81,8 +80,12 @@ impl Fixture {
 
     async fn stop(self) -> Vec<Value> {
         timeout(LIMIT, self.proxy.shutdown()).await.unwrap();
-        let diagnostics = records(self.directory.path(), "events.jsonl");
-        assert!(!diagnostics.iter().any(|row| row["event"] == "proxy.egress"));
+        let diagnostics = records(self.directory.path(), "audit.jsonl");
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|row| row["event"] == "traffic.egress")
+        );
         assert!(
             self.runtime
                 .flow_recorder
