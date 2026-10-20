@@ -1486,6 +1486,60 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         ));
     }
     if method == Method::GET && path == "/admin/approvals" {
+        if let (Some(writer), Some(policy)) = (audit, policy)
+            && writer.approvals_enabled()
+        {
+            let (writer, policy, state) = (writer.clone(), policy.clone(), task_state.cloned());
+            return tokio::task::spawn_blocking(move || {
+                let records = match writer.approvals().list() {
+                    Ok(records) => records,
+                    Err(error) => {
+                        return Ok(response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error":error.to_string()}),
+                        ));
+                    }
+                };
+                let mut views = Vec::new();
+                for record in records {
+                    match crate::approvals::pending::current_view(
+                        &writer,
+                        &policy,
+                        &record,
+                        state.as_ref(),
+                    ) {
+                        Ok(view) if view["status"] == "pending" => views.push(view),
+                        Ok(_) => {}
+                        Err(error) => {
+                            return Ok(response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                json!({"error":error.to_string()}),
+                            ));
+                        }
+                    }
+                }
+                // Plumb and desktop keep their existing owners. Historical
+                // prompts stay readable, but canonical requests appear once.
+                if let Some(events) = pending_approvals(writer.path()).as_array() {
+                    views.extend(
+                        events
+                            .iter()
+                            .filter(|event| {
+                                event["details"]["approval_id"].is_null()
+                                    && (policy.native_controls().is_none()
+                                        || matches!(
+                                            event["approval"]["approval_type"].as_str(),
+                                            Some("plumb" | "desktop_present")
+                                        ))
+                            })
+                            .cloned(),
+                    );
+                }
+                Ok(response(StatusCode::OK, json!({"approvals":views})))
+            })
+            .await
+            .map_err(|_| Error::ServiceMutation)?;
+        }
         return Ok(response(
             StatusCode::OK,
             json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),

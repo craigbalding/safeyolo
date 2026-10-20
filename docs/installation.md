@@ -865,10 +865,15 @@ First, read Worker's pending request with the operator client:
 safeyolo approvals list --agent worker
 ```
 
-A network prompt records `request_id` and
-`details.network_action`. The action binds Worker's durable identity, the host,
-the port and the relevant network-policy revision. Historical prompts without
-that binding remain available through their existing operator actions.
+A network prompt records a host-owned `approval_id`, its traffic `request_id`
+and `details.network_action`. Equivalent retries retain the approval ID while
+each attempt has its own traffic ID. The action binds Worker's durable identity,
+the host, the port and the relevant network-policy revision. The pending record
+also binds the method and resource. Inspection leaves the record pending.
+See [pending approvals](operator-guide.md#inspect-a-pending-approval) for the
+decision, expiry and restart behavior. Historical prompts remain readable.
+Assisted decisions require a new durable request. Explicit policy controls
+remain available.
 
 Replace `REQUEST_ID` with the selected pending request and grant Helper its
 diagnostic and approval reads:

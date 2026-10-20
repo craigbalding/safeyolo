@@ -269,6 +269,66 @@ a running, attachable command. A missing terminal produces an error and keeps
 your selection; attach does not launch another command. Returning from the
 terminal or using `back` also keeps the selected agent.
 
+## Inspect a pending approval
+
+When a request needs approval, SafeYolo gives it an `approval_id` that starts
+with `apr-`. Each traffic attempt also has its own `request_id`. Equivalent
+retries share the pending approval. A changed method, destination, resource,
+credential binding or offered scope gets a new approval.
+
+On the host, use your configured agent name in place of `work`. Copy
+`APPROVAL_ID` from the pending list. These commands leave the approval pending:
+
+```sh
+safeyolo approvals list --agent work --json
+safeyolo approvals show APPROVAL_ID --agent work --json
+```
+
+You can inspect traffic, logs and the approval again before deciding. The
+approval retains its original authority and options. Expect `status: pending`
+after inspection. Agent prose and Helper reasons cannot change that authority.
+
+Read the stated effect before deciding. Network approval changes the existing
+agent-specific host/port policy until removed. Credential approval changes the
+existing shared fingerprint/destination policy for all current and future
+agents in the instance. Rejection changes neither policy. Gateway route
+approval uses the exact method and path, including case and literal wildcard
+characters. Approval defaults to the existing `once` grant. Use
+`--option session` or `--option remembered` only when the approval offers that
+option. Service access can require an offered `credential:NAME` option. Contract binding saves the
+fixed contract values and does not authorize service access by itself.
+
+To decide the selected approval, run one of these host commands:
+
+```sh
+safeyolo approvals approve APPROVAL_ID --agent work --json
+safeyolo approvals reject APPROVAL_ID --agent work --json
+```
+
+The command returns the recorded `approved` or `rejected` result. After approval,
+repeat the original request from the agent to use the existing permission.
+
+An approval can have a `pending`, `approved`, `rejected`, `expired` or
+`superseded` state. Inspection does not change that state. Expiry or a material
+policy, service or identity change prevents approval of old authority. An old
+session option expires when the proxy restarts. Other pending authority can
+survive restart while its bound inputs remain valid. Known credential expiry
+also expires a request bound to that credential. Ordinary network and inline
+credential approvals have no added pending timeout.
+
+Terminal decisions remain inspectable. Repeating a decision returns its saved
+result; it cannot create another grant or change the chosen lifetime. A
+successful response still consumes a `once` grant under the existing gateway
+rules. The approval record does not restore that consumed grant. If a new request
+still needs approval after a terminal decision, it gets a new approval ID.
+
+SafeYolo keeps pending authority in the instance's host-owned data directory.
+Audit events correlate traffic IDs, approval IDs, inspection and decisions.
+Audit display text does not supply permission. Historical audit-only requests
+remain inspectable; assisted approval needs a new durable request. Missing
+approval state fails closed; it is not reconstructed from traffic logs. Direct
+policy and service commands remain available for explicit operator changes.
+
 ## Recover from a failed operation
 
 If `inspect` reports `inspect requires a terminal`, open it in an interactive
@@ -286,9 +346,9 @@ safeyolo approvals show REQUEST_ID --agent work
 
 `approved` or `rejected` is the recorded outcome. If the item is still pending,
 restore the connection and read its current scope before deciding. A relevant
-policy change or recreated agent can make the action stale; approval returns
-409. Obtain a new request from the agent and review that new ID. You can still
-reject the stale item without changing network permission.
+policy change or recreated agent can supersede the action; approval returns
+409. Expired and superseded IDs remain inspectable. Obtain a new request from
+the agent and review its new approval ID.
 
 The Admin API is the host's administrative application programming interface.
 If inspect cannot reach it, leave with `quit` and run these commands in the same host terminal. Logs and diagnose use the configured local

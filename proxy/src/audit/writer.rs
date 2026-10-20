@@ -152,6 +152,8 @@ struct Worker {
 /// One process owner should retain this writer across Runtime reloads. Creation
 /// is inert; file access and the worker start on the first emission only.
 pub struct Writer {
+    approvals: crate::approvals::pending::Store,
+    approvals_enabled: bool,
     named_controls: bool,
     path: PathBuf,
     settings: Settings,
@@ -185,6 +187,10 @@ impl Writer {
 
     pub fn new(path: PathBuf, settings: Settings) -> Self {
         Self {
+            approvals: crate::approvals::pending::Store::new(
+                path.with_extension("approvals.sqlite3"),
+            ),
+            approvals_enabled: false,
             named_controls: false,
             path,
             queue: Arc::new(Queue {
@@ -200,6 +206,25 @@ impl Writer {
     pub(crate) fn with_named_controls(mut self, enabled: bool) -> Self {
         self.named_controls = enabled;
         self
+    }
+    pub(crate) fn with_approvals(mut self, path: PathBuf) -> Self {
+        self.approvals = crate::approvals::pending::Store::new(path);
+        // An unavailable approval store must block new decisions, without
+        // changing requests already permitted by the existing policy.
+        if self.approvals.initialize().is_err() {
+            eprintln!(
+                "Pending approval state unavailable; new approval requests and decisions will fail closed."
+            );
+        }
+        self.approvals_enabled = true;
+        self
+    }
+
+    pub(crate) fn approvals(&self) -> &crate::approvals::pending::Store {
+        &self.approvals
+    }
+    pub(crate) fn approvals_enabled(&self) -> bool {
+        self.approvals_enabled
     }
     #[cfg(test)]
     pub(crate) fn poison_for_test(&self) {
