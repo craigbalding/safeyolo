@@ -83,7 +83,7 @@ impl Fixture {
         fs::write(root.path().join("policy.toml"), format!(
             "budget=40\n[hosts]\n'{address}'={{egress='prompt'}}\n[agents.worker]\nagent_id='{WORKER_ID}'\n[agents.helper]\nagent_id='{HELPER_ID}'\n[agents.peer]\nagent_id='ag-33333333333333333333333333333333'\n[controls.credentials]\nenabled=false\n"
         )).unwrap();
-        let config: Config = serde_json::from_value(json!({
+        let mut config: Config = serde_json::from_value(json!({
             "native_product":true,"data_dir":data,"flow_pruner_max":max_flows,"policy_file":root.path().join("policy.toml"),
             "listeners":(["worker","helper","peer"].map(|name| json!({"agent_id":name,"socket_path":root.path().join(format!("{name}.sock"))}))),
             "admin_port":0,"admin_api_token_file":root.path().join("admin_token"),
@@ -92,6 +92,7 @@ impl Fixture {
             "flow_store_enabled":true,"flow_store_db_path":root.path().join("flows.sqlite3")
             ,"gateway_builtin_services_dir":root.path().join("builtin-services"),"gateway_services_dir":root.path().join("services")
         })).unwrap();
+        config.native_config_dir = Some(root.path().to_owned());
         let proxy = Proxy::start(config.clone()).await.unwrap();
         let ready: Value =
             serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();

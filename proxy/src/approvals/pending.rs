@@ -13,6 +13,7 @@ use crate::{
     policy::Policy,
 };
 
+pub(crate) mod context;
 mod explanation;
 mod gateway;
 pub(crate) use explanation::explain;
@@ -175,7 +176,9 @@ impl Store {
                status TEXT NOT NULL, record TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS equivalent_pending ON approvals(authority_digest, status);
              CREATE TABLE IF NOT EXISTS approval_requests (
-               request_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(approval_id));"
+               request_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(approval_id));
+             CREATE TABLE IF NOT EXISTS approval_context (
+               approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);"
         ).map_err(unavailable)?;
         Ok(())
     }

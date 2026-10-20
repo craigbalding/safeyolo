@@ -309,6 +309,50 @@ You can inspect traffic, logs and the approval again before deciding. The
 approval retains its original authority and options. Expect `status: pending`
 after inspection. Agent prose and Helper reasons cannot change that authority.
 
+To ask the requesting agent why the operation helps its task, keep the same
+approval ID and run these commands on the host:
+
+```sh
+safeyolo approvals ask APPROVAL_ID --agent work
+safeyolo approvals context APPROVAL_ID --agent work
+```
+
+`ask` stores a fixed question and sends it to the existing `work-agent` Coord
+room. The agent must receive that room's attention to answer automatically.
+Factory preparation already supplies the private agent room and membership.
+For an individual agent, start Coord with `safeyolo coord start`. If its room
+does not exist, create it with `safeyolo coord room create work-agent`, then
+grant receipt with `safeyolo coord grant work-agent work receive`. These are
+host commands. They do not grant network, credential or service access.
+
+In `inspect`, use `ask APPROVAL_ID` and `context APPROVAL_ID`. In the numbered
+`review` interface, use `a` to ask and `c` to read the reply. You can still use
+`e` for the separate SafeYolo explanation, then approve or reject the same
+request. Context does not select or change an approval option.
+
+Every reply appears under **Agent-provided context — UNTRUSTED**, with the
+requesting agent's name and durable ID. Its task, reason, next step and fallback
+are agent claims. SafeYolo does not verify those claims or use them to change
+the fixed authority. Each field is limited to 2048 UTF-8 bytes. Plain terminal
+output quotes and escapes the text and shows at most 512 characters per field.
+Use `--json` to read the complete bounded response; Unicode and terminal controls
+remain escaped. The question does not ask the agent to supply security wording.
+
+The reply deadline is 120 seconds. `waiting`, `timed_out`, unavailable delivery,
+or an agent that is busy or offline does not approve, reject or expire the
+approval. Approve/reject remains available. Repeating `ask` while a question is
+open reads that exchange without resending it. After a timeout, an explicit
+`ask` sends a new question for the same approval. An old or duplicate response
+cannot replace a recorded reply. An uncertain delivery is shown as `unknown`;
+SafeYolo does not automatically resend it. The agent can also read its question
+through the [approval-context Agent API](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approval-context).
+
+Context has its own stored record and audit events,
+`admin.approval_context_requested` and `agent.approval_context_responded`.
+SafeYolo explanation and operator-decision events remain separate. If context
+storage or audit fails, the command reports the failure. Read `context` before
+retrying an uncertain write. Ordinary approval controls remain available.
+
 Read the stated effect before deciding. Network approval changes the existing
 agent-specific host/port policy until removed. Credential approval changes the
 existing shared fingerprint/destination policy for all current and future
