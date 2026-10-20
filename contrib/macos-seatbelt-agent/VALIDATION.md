@@ -13,7 +13,7 @@ passed `codesign --verify --strict`.
 | Actual operation | Observation |
 | --- | --- |
 | `launchctl bootstrap` and `submit` | Refused; the outside observer found no owned service. The kernel logged `deny job-creation`. |
-| LaunchAgents create, modify, directory rename and hardlink | EPERM. Replacing `Library` was also denied. Ordinary rc and cache writes worked. |
+| LaunchAgents directory/file creation, modification, directory rename and hardlink | EPERM. Replacing `Library` was also denied. Ordinary rc and cache writes worked. |
 | Modern SMAppService LoginItem, LaunchAgent and LaunchDaemon registration | All three refused; the outside observer found no registration. Direct lookup of `com.apple.xpc.smd` returned `BOOTSTRAP_NOT_PRIVILEGED` (1100) inside confinement and succeeded outside. |
 | Identical signed SMAppService bundles outside confinement | LoginItem and LaunchAgent reached enabled status (1). LaunchDaemon reached requiresApproval (2), despite the API returning false/EPERM. Each was explicitly unregistered and checked as status 0 before cleanup. No daemon approval was given. |
 | `open -n -a` and direct LaunchServices API | Refused with no marker; the same application launched outside confinement and read the outside canary. |
@@ -43,6 +43,9 @@ services and launchd jobs were unregistered through their owner before removing
 bundles. The owned AppleEvent receiver was terminated and reaped. The live TCP
 listener received no connections. No factory policy, SSH or account setting was
 installed or changed.
+A focused follow-up also denied creation of an absent `LaunchAgents` directory
+and modification of the corrected job's profile outside the writable test home.
+The profile bytes remained unchanged; that fixture was removed.
 
 The changed native account checker compiles with `-Wall -Wextra -Werror -O2` on
 this guest. The new account/consumer cases in `test-configure-ssh.sh`, real SSH

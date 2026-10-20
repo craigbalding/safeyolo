@@ -169,6 +169,8 @@ def launchd_probes(home, binary, prefix, identity, trusted_policy):
             "/usr/bin/sandbox-exec", "-f", str(trusted_policy),
             "-D", f"AGENT_HOME={home}", "-D", "TOOLCHAIN_ROOT=/opt/homebrew", str(binary),
         ], "RunAtLoad": False})
+        refusal([*prefix, "/bin/sh", "-c", 'printf poison > "$1"', "sh", str(trusted_policy)])
+        assert trusted_policy.read_bytes() == (home / "candidate.sb").read_bytes()
         checked(["/bin/launchctl", "bootstrap", domain, str(plist)])
         checked([*prefix, "/bin/launchctl", "kickstart", target])
         corrected = marker_result(marker)
@@ -238,6 +240,10 @@ for name, operation in [
 print("LaunchAgents create/modify/rename/link and Library replacement denied; rc/cache writes work")
 ''')
     print(checked([*prefix, "/usr/bin/python3", str(script)]).strip(), flush=True)
+    # Also check the directory itself when absent, not just files below it.
+    shutil.rmtree(home / "Library/LaunchAgents")
+    refusal([*prefix, "/bin/mkdir", str(home / "Library/LaunchAgents")])
+    assert not (home / "Library/LaunchAgents").exists()
 
 
 def delegation_probes(home, app, binary, prefix):
