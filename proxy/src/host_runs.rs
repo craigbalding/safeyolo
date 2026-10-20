@@ -572,7 +572,9 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn verified_stop_backend(name: &str) -> Result<Option<std::os::fd::OwnedFd>, Error> {
+pub(crate) fn verified_stop_backend(
+    name: &str,
+) -> Result<(String, Option<std::os::fd::OwnedFd>), Error> {
     use std::os::fd::{FromRawFd, OwnedFd};
 
     let run = read(name)?
@@ -582,7 +584,7 @@ pub(crate) fn verified_stop_backend(name: &str) -> Result<Option<std::os::fd::Ow
     if run["run_id"].as_str() == Some(id.trim_start_matches("safeyolo-"))
         && (saved_backend_is_dead(&run) || stopped_before_backend(name, &run, &root, &id)?)
     {
-        return Ok(None);
+        return Ok((id, None));
     }
     let pid = crate::host_platform::backend_pid(name)
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
@@ -601,15 +603,14 @@ pub(crate) fn verified_stop_backend(name: &str) -> Result<Option<std::os::fd::Ow
     {
         return Err("backend birth, run or namespaces are unverified; no process was signalled; backend state was preserved".into());
     }
-    Ok(Some(backend))
+    Ok((id, Some(backend)))
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     use std::os::fd::AsRawFd;
 
-    let backend = verified_stop_backend(name)?;
-    let id = id(name)?;
+    let (id, backend) = verified_stop_backend(name)?;
     let root = crate::host_platform::runsc_root();
     let Some(backend) = backend else {
         // The owner may have exited before stop acquired its lock. Only
