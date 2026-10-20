@@ -832,6 +832,11 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
             "{}",
             String::from_utf8_lossy(&reply)
         );
+        tokio::time::timeout(Duration::from_secs(2), origin)
+            .await
+            .unwrap()
+            .unwrap();
+        proxy.shutdown().await;
         assert_eq!(
             events(&config)
                 .iter()
@@ -842,10 +847,6 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
                 .count(),
             1
         );
-        tokio::time::timeout(Duration::from_secs(2), origin)
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
             events(&config)
                 .iter()
@@ -853,7 +854,6 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
                 .count(),
             1
         );
-        proxy.shutdown().await;
     }
 }
 
@@ -3471,6 +3471,11 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_deliver
         .await
         .is_err()
     );
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+    proxy.shutdown().await;
     let egress = events(&config)
         .into_iter()
         .filter(|event| event["event"] == "traffic.egress")
@@ -3481,10 +3486,6 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_deliver
             .iter()
             .all(|event| event["host"] == "localhost" && event["details"]["port"] == port)
     );
-    tokio::time::timeout(Duration::from_secs(2), origin)
-        .await
-        .unwrap()
-        .unwrap();
     let decisions: Vec<_> = events(&config)
         .into_iter()
         .filter(|event| event["event"] == "security.network_guard.evaluated")
@@ -3501,7 +3502,6 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_deliver
             .iter()
             .any(|row| row["details"]["method"] == "GET" && row["details"]["scheme"] == "https")
     );
-    proxy.shutdown().await;
 }
 
 async fn intercepted_https_origin_case(
