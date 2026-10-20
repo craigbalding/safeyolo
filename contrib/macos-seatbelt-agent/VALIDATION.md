@@ -1,5 +1,81 @@
 # macOS Seatbelt acceptance records
 
+## Account fixture inputs and noncreating observer, 2026-10-20
+
+The first account attempt stopped before allocation because
+`/Library/PrivilegedHelperTools` was absent. Sylab created only that missing
+parent as root:wheel with mode 0755. The second attempt used staged source
+`b48c1712f607259badda97b704dad53e9df50cd8` on Tart macOS 26.6.2/25G83, with
+administrator user ID (UID) 501 and disposable account UID 59900. Its setup,
+repeat, precedence, path, environment, startup, admin/sudo, access control list
+(ACL), hardlink, consumer, crontab and rollback controls passed. The full script
+exited 1 before fresh Secure Shell (SSH) login because no usable native SSH
+transport was selected. The retired Python
+`safeyolo` 0.1.1 on the ordinary PATH does not provide `ssh-proxy`.
+
+The cleanup then retained the account and diagnostic lab. On this OS, its
+`launchctl print user/59900` check created the domain it was meant to observe.
+Sylab independently observed domain and process absence after a successful
+scoped bootout. The direct print recreated the domain with the print command's
+process ID (PID) as its creator and started `distnoted`. A second scoped bootout restored
+absence. `launchctl print system` observed both states without creating the
+user domain.
+
+The permanent cleanup now reads the system inventory's `subdomains` section.
+It matches the complete `user/59900` entry. Failed, incomplete or unknown
+inventory retains the fixture and diagnostics. An existing domain still gets
+only the scoped bootout, followed by another system inventory. UID signals,
+exact-owned-crontab checks, temporary privilege revocation and tracked root
+daemon/session guards retain their existing scope.
+
+The account fixture now calls `configure-client --check` before allocation.
+That check reuses the actual client's executable selection, version check and
+`ssh-proxy --help` command. It does not read keys, prompt for a destination or
+write client files. `SAFEYOLO_SSH_PROXY_EXECUTABLE` takes precedence over
+`SAFEYOLO_CLI` and discovery. A missing or unsupported selection fails before
+fixture allocation; it does not silently select another transport.
+
+For this correction, Linux passed four focused tests with 40 controlled cases.
+On Tart macOS 26.6.2 with system Python 3.9.6, the same cases and the native
+system-inventory presence/absence/error test passed. The native check read
+existing domains and an absent control UID; it did not open a user domain or
+touch UID 59900. The actual retained executable also passed the root fixture's
+preallocation prefix with the recipe's filtered environment and `sudo` options.
+No account or root SSH daemon was started. The separate test inputs were removed.
+From the checkout root, the focused command is:
+
+```sh
+python3 -I -B tests/test_seatbelt_fixture_safety.py -v FixtureSafetyTests SystemDomainInventoryTests
+```
+
+Sylab selected the existing native executable
+`/Users/admin/forge769-correction-9925aada/proxy/target/debug/safeyolo` through
+`SAFEYOLO_SSH_PROXY_EXECUTABLE`. Its version reported commit
+`9925aadac447c51d52a3a24e2b56f554b921aaef`, profile `debug`. Its SHA-256 was
+`bf6408363438c1976da580c0ea08213fa112603949fce500d8e20c7cd5408636`.
+Both version and `ssh-proxy --help` exited 0. The `ssh_proxy.rs` source matched
+the b48c module, with SHA-256
+`3e969f1f6bc9de8584a87c23d36675501ebe31206a61ad6d0231a47ef91228f8`.
+This identifies the retained transport; it is not a b48c production binary.
+
+The unchanged b48c client script then passed at 23:40:44–23:40:45 UTC using the
+retained account and client key in a separate owned subdirectory. Generated
+configuration, fresh confined SSH identity, binary standard input/output, outside-canary
+denial and host-key mismatch rejection passed. The tracked root daemon was
+reaped with no session children, and its pending marker was absent.
+
+Sylab separately verified owned cleanup at 23:43:00.661760 UTC. Root daemons
+94358 and 94562 were absent; pending markers and the account crontab were absent.
+Temporary admin membership and the sudoers file were revoked. Successful
+account/UID inspection found no reserved account or UID. The noncreating system
+inventory found no user domain, and `pgrep` returned 1. The account, home, entry,
+sudoers file and lab were removed. The created parent was empty and removed.
+The original full script remains a failed run. Its passed sections, the client
+continuation and the independent cleanup are distinct observations. No new
+account run or client continuation is needed for this fixture correction.
+Lens still owns criterion acceptance. Physical Bristol VZ remains unverified
+under the separate [VZ procedure](VZ-WITNESS.md).
+
 ## Existing LaunchAgents aliases, 2026-10-20
 
 Lens found that `a883eca23e1501c3c5aeee4dd2a7fca484724136` allowed a write through
@@ -28,10 +104,10 @@ preflight and denied a direct confined write while an ordinary cache write worke
 The native test driver compiles and invokes the actual post-identity filesystem
 function in `check-account.c`, using `clang -Wall -Wextra -Werror -O2`. It does
 not invoke the root account/scheduler/SSH entrypoint. Linux passed the existing
-three tests with 27 cases and skipped the six Mac-only tests. The reserved root
-fixture includes writable-hardlink refusal, protected-hardlink acceptance and
-unaliased controls, but that complete account witness remains unverified with
-Sylab. The physical VZ witness also remains unverified.
+three tests with 27 cases and skipped the six Mac-only tests. Sylab later
+observed the reserved root fixture's writable-hardlink refusal,
+protected-hardlink acceptance and unaliased controls at b48c, as recorded above.
+The physical VZ witness remains unverified.
 
 ## Disposable fixture safety correction, 2026-10-20
 
@@ -61,16 +137,11 @@ removal, unknown cron state and uncertain root daemon/session teardown. Shell
 syntax and Python compilation also passed on that guest. No account was
 allocated and no real root SSH daemon was started by these controls.
 
-Sylab owns the reserved account witness. After independent source safety review,
-the staged command is `sudo -n /bin/sh
-/Users/admin/forge622-source.xdiCKZ/test-configure-ssh.sh`. Refresh the reserved
-account/UID/path absence and concurrent-use exclusion immediately before the
-run. Expect consumer/alias/crontab diagnosis, activation/rollback and a real SSH
-session through the selected private config. Require the root-daemon/session
-cleanup message, UID-process absence, launchd-domain removal and account/home/
-entry removal. On uncertainty, require a nonzero result and the printed retained
-lab path, with its root SSH log and marker intact. The running SSH daemon is
-never reloaded. Actual account/session teardown remains unverified here.
+The later operator observations above complete the reserved account execution
+and cleanup. They do not turn the failed original script into a passing run.
+The running SSH daemon was never reloaded. On cleanup uncertainty, the fixture
+must still return nonzero and retain the printed lab path with its root SSH log
+and pending marker intact.
 
 The [physical VZ witness procedure](VZ-WITNESS.md) supplies the missing boot,
 SSH banner, manual VirtioFS mount, bidirectional share markers, host canary and
@@ -124,9 +195,10 @@ and modification of the corrected job's profile outside the writable test home.
 The profile bytes remained unchanged; that fixture was removed.
 
 The changed native account checker compiles with `-Wall -Wextra -Werror -O2` on
-this guest. The new account/consumer cases in `test-configure-ssh.sh`, real SSH
-under the changed setup, and physical VZ under the changed profile remain
-unverified. Existing dated results below retain their original source and scope.
+this guest. At that scoped-process test, the new account/consumer cases and real
+SSH were unverified. The later operator observations above cover those account
+operations at b48c. Physical VZ under the changed profile remains unverified.
+Existing dated results below retain their original source and scope.
 
 The approved Bristol SSH route confirmed macOS 26.6.2/25G83 and UID 502. Its
 installed profile and grants were left unchanged. A separate candidate copy,
@@ -293,10 +365,29 @@ removing the account and files. A failed cleanup makes the suite fail.
 
 **Use a disposable Mac VM with Command Line Tools and SSH host keys provisioned.
 In an administrator terminal, change to this checkout's
-`contrib/macos-seatbelt-agent` directory before running:**
+`contrib/macos-seatbelt-agent` directory. Set `native` below to the absolute path
+of an existing macOS native SafeYolo command-line interface (CLI) or Coord
+executable with `ssh-proxy`. Preserve the configured proxy and certificate
+authority (CA) environment. This is the ordinary fresh
+fixture recipe; it is not a command to repeat the completed 2026-10-20 run.**
+
+If `/Library/PrivilegedHelperTools` is absent, create only that parent. Leave
+an existing directory's ownership and mode intact:
 
 ```sh
-sudo /bin/sh ./test-configure-ssh.sh
+if [ ! -e /Library/PrivilegedHelperTools ] && [ ! -L /Library/PrivilegedHelperTools ]; then
+    sudo -n install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools
+fi
+```
+
+Pass the selected executable explicitly through `sudo`. The fixture checks it
+before allocating the account. The live client inherits the selection and CA
+variables; its isolated CONNECT relay supplies only the test's proxy URL.
+
+```sh
+native=/absolute/path/to/native/safeyolo
+sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,SSL_CERT_FILE,REQUESTS_CA_BUNDLE,NODE_EXTRA_CA_CERTS \
+    env SAFEYOLO_SSH_PROXY_EXECUTABLE="$native" /bin/sh ./test-configure-ssh.sh
 ```
 
 The suite redirects the system startup-file check to a fixture. Failure cases

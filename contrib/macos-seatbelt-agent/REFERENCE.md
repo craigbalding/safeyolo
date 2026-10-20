@@ -446,6 +446,11 @@ Claude/Codex/Pi guest, it discovers the matching Linux native Coord executable
 at `$HOME/.safeyolo/safeyolo-coord`, staged by the existing native host setup.
 Both dispatch `ssh-proxy HOST PORT` to the same native CONNECT implementation.
 Set `SAFEYOLO_SSH_PROXY_EXECUTABLE` to an explicit executable if needed.
+This takes precedence over `SAFEYOLO_CLI` and automatic discovery.
+Run `configure-client --check` with the same environment to check the selected
+executable's identity and `ssh-proxy` support without reading keys or changing
+client files. Pass the explicit selection through `sudo` when running the root
+account fixture. `sudo` can use a different PATH.
 Do not copy a macOS host binary into a Linux client or a host Admin credential
 into the guest. A missing or incompatible native transport fails preparation;
 there is no Python or direct-network fallback.

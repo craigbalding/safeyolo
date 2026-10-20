@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +13,12 @@ from unittest import TestCase, main, skipUnless
 from unittest.mock import create_autospec, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "contrib/macos-seatbelt-agent"
+
+
+def system_inventory(*domains):
+    # launchctl print system on macOS 26.6.2 lists domains as bare entries.
+    entries = "".join(f"\t\t{domain}\n" for domain in domains)
+    return f"system = {{\n\ttype = system\n\tsubdomains = {{\n{entries}\t}}\n}}\n"
 
 
 def shell_source(tmp_path):
@@ -60,7 +68,9 @@ def check_cleanup(tmp_path, case):
     if case == "owned_cron":
         (tmp_path / "lab/owned.crontab").write_text("owned\n")
     source = shell_source(tmp_path)
-    cleanup = source[source.index("cleanup() {"):source.index("trap cleanup EXIT")]
+    cleanup = source[source.index("test_user_domain_status() {"):source.index("trap cleanup EXIT")]
+    absent = shlex.quote(system_inventory("pid/339", "user/501", "user/599000"))
+    present = shlex.quote(system_inventory("pid/339", "user/59900", "user/501"))
     script = f"""
 set -eu
 account=sy-seatbelt-test
@@ -85,14 +95,21 @@ crontab() {{
 }}
 launchctl() {{
     if [ "$1" = bootout ]; then
+        [ "$2" = user/59900 ] || return 98
         touch '{tmp_path}/bootout'
         [ '{case}' != bootout_failed ]
     else
+        [ "$1 $2" = 'print system' ] || return 98
         case '{case}' in
-            launchd_error) return 3;;
-            still_loaded) return 0;;
-            loaded|bootout_failed) [ -e '{tmp_path}/bootout' ] && return 113; return 0;;
-            *) return 113;;
+            launchd_error) echo 'inspection failed' >&2; return 3;;
+            missing_domains) printf 'system = {{\n}}\n';;
+            malformed_domains) printf 'system = {{\n\tsubdomains = {{\nunknown\n\t}}\n}}\n';;
+            truncated_domains) printf 'system = {{\n\tsubdomains = {{\n';;
+            still_loaded) printf '%s' {present};;
+            loaded|bootout_failed)
+                if [ -e '{tmp_path}/bootout' ]; then printf '%s' {absent}
+                else printf '%s' {present}; fi;;
+            *) printf '%s' {absent};;
         esac
     fi
 }}
@@ -108,6 +125,7 @@ exit 0
     assert not (tmp_path / "sudoers").exists()
     if not clean:
         assert str(tmp_path / "lab") in result.stderr
+        assert (tmp_path / "lab/launchd.before").exists() or case in {"unknown_cron", "cron_error"}
     if case == "owned_cron":
         assert (tmp_path / "cron_removed").exists()
 
@@ -158,7 +176,8 @@ class FixtureSafetyTests(TestCase):
     def test_cleanup(self):
         for case in ("absent", "loaded", "owned_cron", "process_live", "process_error",
                      "launchd_error", "bootout_failed", "still_loaded", "root_pending",
-                     "unknown_cron", "cron_error"):
+                     "unknown_cron", "cron_error", "missing_domains", "malformed_domains",
+                     "truncated_domains"):
             with self.subTest(case=case), TemporaryDirectory() as directory:
                 check_cleanup(Path(directory), case)
 
@@ -167,6 +186,82 @@ class FixtureSafetyTests(TestCase):
                      "session_live", "already_exited", "exited_during_inspection"):
             with self.subTest(case=case), TemporaryDirectory() as directory:
                 check_sshd(Path(directory), case)
+
+    def test_client_executable_selection(self):
+        script = (SOURCE / "test-configure-ssh.sh").read_text()
+        preflight = script[:script.index("\naccount=")]
+        source_assignment = next(line for line in preflight.splitlines() if line.startswith("source_dir="))
+        preflight = preflight.replace(source_assignment, f"source_dir={shlex.quote(str(SOURCE))}")
+        preflight = "uname() { echo Darwin; }\nid() { echo 0; }\n" + preflight + "\necho ALLOCATION_REACHED\n"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = root / "native cli"
+            retired = root / "safeyolo"
+            calls = root / "calls"
+            for path, supported in ((native, True), (retired, False)):
+                path.write_text(
+                    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SELECTION_LOG"\n'
+                    'if [ "$1" = --version ]; then echo "safeyolo 0.1.1"; exit 0; fi\n'
+                    + ('exit 0\n' if supported else 'echo "No such command: ssh-proxy" >&2; exit 64\n'))
+                path.chmod(0o755)
+            for case in ("explicit", "cli_variable", "missing", "retired", "path_retired"):
+                with self.subTest(case=case):
+                    calls.unlink(missing_ok=True)
+                    env = {**os.environ, "HOME": directory, "PATH": f"{directory}:/usr/bin:/bin",
+                           "SELECTION_LOG": str(calls)}
+                    env.pop("SAFEYOLO_SSH_PROXY_EXECUTABLE", None)
+                    env.pop("SAFEYOLO_CLI", None)
+                    if case == "cli_variable":
+                        env["SAFEYOLO_CLI"] = str(native)
+                    elif case != "path_retired":
+                        env["SAFEYOLO_CLI"] = str(retired if case == "explicit" else native)
+                        env["SAFEYOLO_SSH_PROXY_EXECUTABLE"] = str({
+                            "explicit": native, "missing": root / "missing", "retired": retired,
+                        }[case])
+                    ready = case in {"explicit", "cli_variable"}
+                    for command in ([str(SOURCE / "configure-client"), "--check"], ["/bin/sh", "-c", preflight]):
+                        calls.unlink(missing_ok=True)
+                        result = subprocess.run(command, env=env, input="", text=True,
+                                                capture_output=True, timeout=10)
+                        self.assertEqual(result.returncode == 0, ready, result.stderr)
+                        if command[0] == "/bin/sh":
+                            self.assertEqual("ALLOCATION_REACHED" in result.stdout, ready)
+                        if case == "missing":
+                            self.assertIn("executable is missing", result.stderr)
+                            self.assertFalse(calls.exists())
+                        else:
+                            self.assertEqual(calls.read_text().splitlines(), ["--version", "ssh-proxy --help"])
+                            if not ready:
+                                self.assertIn("No such command", result.stderr)
+                    self.assertFalse((root / ".ssh/seatbelt-agent").exists())
+
+
+@skipUnless(sys.platform == "darwin", "requires native launchctl system inventory")
+class SystemDomainInventoryTests(TestCase):
+    def test_native_presence_absence_and_error(self):
+        source = (SOURCE / "test-configure-ssh.sh").read_text()
+        observer = source[source.index("test_user_domain_status() {"):source.index("cleanup() {")]
+        with TemporaryDirectory() as directory:
+            inventory = Path(directory) / "system"
+            # These commands only inspect the system inventory. They never
+            # open, allocate, boot out or signal any user domain or account.
+            first = subprocess.run(["/bin/launchctl", "print", "system"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            users = re.findall(r"^\t\tuser/([0-9]+)$", first.stdout, re.MULTILINE)
+            self.assertTrue(users, "no existing user domain for the positive control")
+            absent = next(uid for uid in ("4294967294", "4294967293") if uid not in users)
+            for uid, expected in ((users[0], 0), (absent, 1)):
+                result = subprocess.run(["/bin/sh", "-c", observer.replace("user/59900", f"user/{uid}")
+                                         + '\ntest_user_domain_status "$1"', "observer", str(inventory)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertNotIn(f"\t\tuser/{absent}\n", inventory.read_text())
+            result = subprocess.run(["/bin/sh", "-c", "launchctl() { echo denied >&2; return 5; }\n"
+                                     + observer.replace("/bin/launchctl", "launchctl")
+                                     + '\ntest_user_domain_status "$1"', "observer", str(inventory)],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("denied", inventory.with_suffix(".error").read_text())
 
 
 @skipUnless(sys.platform == "darwin", "requires native macOS filesystem and Seatbelt")

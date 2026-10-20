@@ -7,6 +7,9 @@ set -eu
     exit 1
 }
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+# Check the same selected native transport used by the live client before
+# allocating an account or creating any fixture files.
+"$source_dir/configure-client" --check
 account=sy-seatbelt-test
 entry=/Library/PrivilegedHelperTools/seatbelt-agent
 [ ! -e "$entry" ] && [ ! -L "$entry" ] || { echo "Entry already exists: $entry" >&2; exit 1; }
@@ -30,6 +33,28 @@ process_status=0
 lab=$(mktemp -d /Library/PrivilegedHelperTools/seatbelt-test.XXXXXX)
 chmod 755 "$lab"
 created=no
+test_user_domain_status() {
+    # Directly printing an absent user domain can create it on macOS 26.6.2.
+    # Inspect the system domain's existing subdomains without opening that user.
+    /bin/launchctl print system > "$1" 2> "$1.error" || return 2
+    awk '
+        NR == 1 && $0 == "system = {" { system_domain=1 }
+        $0 == "\tsubdomains = {" {
+            if (domains || complete) invalid=1
+            domains=1
+            next
+        }
+        domains {
+            if ($0 == "\t}") { domains=0; complete=1; next }
+            if (NF != 1 || $1 !~ /^[^[:space:]\/]+\/[0-9]+$/) invalid=1
+            if ($1 == "user/59900") present=1
+        }
+        END {
+            if (!system_domain || !complete || domains || invalid || $0 != "}") exit 2
+            exit (present ? 0 : 1)
+        }
+    ' "$1"
+}
 cleanup() {
     result=$?
     trap - EXIT
@@ -58,14 +83,13 @@ cleanup() {
         fi
         launchd_clean=yes
         launchd_status=0
-        /bin/launchctl print user/59900 > "$lab/launchd.before" 2>&1 || launchd_status=$?
+        test_user_domain_status "$lab/launchd.before" || launchd_status=$?
         if [ "$launchd_status" = 0 ]; then
             /bin/launchctl bootout user/59900 > "$lab/launchd.bootout" 2>&1 || launchd_clean=no
             launchd_status=0
-            /bin/launchctl print user/59900 > "$lab/launchd.after" 2>&1 || launchd_status=$?
+            test_user_domain_status "$lab/launchd.after" || launchd_status=$?
         fi
-        # launchctl print returns 113 for an absent domain on macOS.
-        [ "$launchd_status" = 113 ] || launchd_clean=no
+        [ "$launchd_status" = 1 ] || launchd_clean=no
         # All processes of this freshly allocated UID belong to the fixture.
         # Signals may race an exit; success depends on observing absence below.
         /usr/bin/pkill -TERM -U 59900 >/dev/null 2>&1 || true
