@@ -6,6 +6,10 @@ _prepare_safeyolo_lab_bashrc() {
     local marker_start='# >>> safeyolo-lab PATH >>>'
     local marker_end='# <<< safeyolo-lab PATH <<<'
     local contents='' block padded prefix end_prefix end_offset
+    local lab_command='safeyolo-lab'
+    if [ "${2:-codex}" = claude ]; then
+        lab_command='safeyolo-lab --harness claude'
+    fi
 
     if [ -e "$bashrc" ] && [ ! -f "$bashrc" ]; then
         printf 'The Bash startup path is not a regular file: %s\n' "$bashrc" >&2
@@ -38,7 +42,7 @@ fi
 case $- in
     *i*)
         if [ -z "${TMUX:-}" ] && [ "${PWD:-}" = "$HOME" ] && [ -x "$HOME/.local/bin/safeyolo-lab" ]; then
-            printf '\''SafeYolo lab: run safeyolo-lab\n'\''
+            printf '\''SafeYolo lab: run '"$lab_command"'\n'\''
         fi
         ;;
 esac

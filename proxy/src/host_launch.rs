@@ -269,7 +269,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             return Ok(0);
         }
         println!(
-            "Optional host state: copy selected identity fields from ~/.claude.json, ~/.claude/.credentials.json, settings.json, plugins, commands, agents and skills (except SafeYolo's reserved skill) into this agent home. Claude and guest commands can read the copied authentication. Sessions and history are excluded. Declining leaves host authentication untouched; use Claude's login in the guest."
+            "Optional host state: copy selected identity fields from ~/.claude.json, ~/.claude/.credentials.json, settings.json, plugins, commands, agents and skills (except SafeYolo's reserved skills) into this agent home. Claude and guest commands can read the copied authentication. Sessions and history are excluded. Declining leaves host authentication untouched; use Claude's login in the guest."
         );
         let copy = consent("Copy this selected host authentication and settings? [y/N] ")?;
         let mut settings = vec![
