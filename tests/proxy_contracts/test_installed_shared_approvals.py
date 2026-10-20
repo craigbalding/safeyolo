@@ -140,8 +140,9 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
             (directory / "config-share/host-launch-context.json").write_text(json.dumps({
                 "agent_id": ids[name], "generation": generation}))
         state["run_id"] = generation
-        nats = os.environ["SAFEYOLO_COORD_NATS_BINARY"]
-        started = instance.cli("coord", "start", "--binary", nats)
+        instance.environment["SAFEYOLO_NATS_TEST_INSTANCE"] = str(root)
+        nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+        started = instance.cli("coord", "start", *(["--binary", nats] if nats else []))
         assert started.returncode == 0, started.stderr
         for operands in (("coord", "room", "create", "helper-agent"),
                          ("coord", "grant", "helper-agent", args.helper)):

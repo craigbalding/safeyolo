@@ -7,6 +7,9 @@ serves two owned HTTP origins, then stops both guests and the owned proxy.
 Real Helper mode waits for a human decision and retains its private raw events.
 Model-unavailable mode observes a live Codex request receiving an owned 503,
 then checks that the pending action still requires a direct operator decision.
+Delegated mode instead lets the eligible Codex reviewer decide three typed
+requests through native MCP tools. It requires the separate fixture service
+and checks owned origin effects without a human decision.
 Python is used only for the black-box driver and guest request transport.
 """
 
@@ -431,8 +434,15 @@ def run(args: argparse.Namespace) -> None:
             policy.setdefault("controls", {}).setdefault("credentials", {})["enabled"] = True
             policy.setdefault("credential", {})["delegated-fixture"] = {
                 "match": [r"\Asy769_[0-9a-f]{32}\Z"], "headers": ["authorization"]}
+            # This owned service uses ordinary gateway tokens. Preconfigure
+            # their credential destination permission separately from the
+            # delegated risky-route permission; neither may bypass the other.
+            policy["credential"]["delegated-gateway-fixture"] = {
+                "match": [r"\Asgw_[0-9a-f]{64}\Z"], "headers": ["authorization"],
+                "allowed_hosts": ["127.0.0.3"]}
             gateway_port = origins[2].server_port
             policy.setdefault("hosts", {}).setdefault("127.0.0.3", {})["service"] = "delegated-fixture"
+            policy["hosts"]["127.0.0.3"]["allow"] = ["delegated-gateway-fixture:*"]
             for name in names:
                 policy["agents"][name]["hosts"][f"127.0.0.3:{gateway_port}"] = {"egress": "allow"}
             policy["agents"][args.worker].setdefault("services", {})["delegated-fixture"] = {
@@ -530,15 +540,19 @@ def run(args: argparse.Namespace) -> None:
                     deadline = time.monotonic() + 120
                     while True:
                         canonical = native("approvals", "show", identifier, "--agent", args.worker)
-                        if canonical["status"] != "pending":
+                        if canonical["status"] not in {"pending", "activation_unconfirmed"}:
                             break
-                        if running.done():
+                        if running.done() and canonical["status"] == "pending":
                             running.result()
                             raise AssertionError("reviewer ended with a pending approval")
                         assert time.monotonic() < deadline, f"{kind}: canonical decision was not observed"
                         time.sleep(0.05)
                     assert canonical["status"] == "approved", f"{kind}: reviewer did not approve"
                     assert canonical["result"]["issued_access"]["reviewer"]["agent_id"] == ids[args.helper]
+                    issued = canonical["result"]["issued_access"]
+                    assert guest(args.worker, "POST", api + f"/approvals/{identifier}/resolve", {
+                        "decision": "approve", "delegation": issued["delegation"], "option": issued["option"]},
+                        headers={"X-SafeYolo-Agent": args.helper})["status"] in {403, 409}
                     if kind == "gateway":
                         # Existing policy publication rotates gateway tokens.
                         authorized = guest(args.worker, "GET", api + "/gateway/services")
@@ -552,7 +566,9 @@ def run(args: argparse.Namespace) -> None:
                         assert received[-1]["authorization_sha256"] == hashlib.sha256(("Bearer " + secret).encode()).hexdigest()
                     if kind == "gateway":
                         assert guest(args.worker, method, url, headers=selected_headers)["status"] == 428
-                    assert guest(args.helper, method, url, headers=selected_headers)["status"] in {403, 428}
+                    forged = {**(selected_headers or {}), "X-SafeYolo-Agent": args.worker,
+                              "X-SafeYolo-Agent-ID": ids[args.worker]}
+                    assert guest(args.helper, method, url, headers=forged)["status"] in {403, 428}
                     assert guest(args.worker, "GET", f"http://127.0.0.2:{second_port}/{marker}")["status"] == 403
                     assert len(hits) == before + 1, "foreign caller/port or consumed once grant reached origin"
                     exchanges.append({"type": kind, "approval_id": identifier, "origin": received[-1]})
