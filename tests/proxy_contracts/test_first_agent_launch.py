@@ -406,9 +406,12 @@ def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path
             stale = instance.cli("approvals", decision, identifier, "--agent", "alice", "--json")
             if change == "identity":
                 assert stale.returncode != 0 and "selected current agent" in stale.stderr
+            elif change == "policy_allow":
+                assert stale.returncode != 0 and "superseded" in stale.stderr
+                assert instance.admin("GET", f"/admin/approvals/{identifier}")["status"] == "superseded"
             else:
                 assert stale.returncode == 0, stale.stderr
-                assert json.loads(stale.stdout)["status"] == ("rejected" if change == "refusal" else "superseded")
+                assert json.loads(stale.stdout)["status"] == "rejected"
         assert instance.policy.read_bytes() == before and origin.accepts == 0
 
 
