@@ -471,7 +471,7 @@ pub(crate) struct Destination {
     uri_authority: String,
     scheme: String,
     path: String,
-    selected_ip: Option<selected_ip::Target>,
+    selected_ip: Option<selected_ip::SelectedIp>,
 }
 
 /// CONNECT owns one admitted endpoint and its first destination connection.
@@ -572,7 +572,7 @@ impl Destination {
                 .and_then(|tunnel| tunnel.selected_ip.clone())
                 .or_else(|| {
                     (request.method() == Method::CONNECT)
-                        .then(|| host.parse().ok().map(selected_ip::Target::client))
+                        .then(|| host.parse().ok().map(selected_ip::SelectedIp::client))
                         .flatten()
                 }),
             host,
@@ -652,6 +652,26 @@ struct AllowedRequest<'a> {
     destination: &'a Destination,
     identity: &'a ConnectionIdentity,
     request_id: &'a str,
+    recording: Option<&'a flow_recording::Recording>,
+}
+
+impl AllowedRequest<'_> {
+    fn observe_upstream(
+        &self,
+        observation: &mut crate::traffic_view::UpstreamConnectionObservation,
+        live: Option<&crate::traffic_view::Exchange>,
+        stage: &str,
+        outcome: &str,
+    ) {
+        observation.target["stage"] = json!(stage);
+        observation.target["outcome"] = json!(outcome);
+        if let Some(recording) = self.recording {
+            recording.connection(observation);
+        }
+        if let Some(live) = live {
+            live.upstream_connection(observation.clone());
+        }
+    }
 }
 
 /// The target form for ordinary HTTP/1 requests on the selected stream.
@@ -966,6 +986,7 @@ async fn open_egress_for_flow(
         return Err("reserved destination cannot egress".into());
     }
     let parent = parent_for_destination(runtime, allowed.identity, destination);
+    let parent_url = parent.and(runtime.config.parent_proxy.as_deref());
     let endpoint = destination
         .selected_ip
         .as_ref()
@@ -982,7 +1003,7 @@ async fn open_egress_for_flow(
         .blocks_host(&destination.host, destination.port)
         || runtime
             .admin_shield
-            .blocks_host(&endpoint, destination.port)
+            .blocks_request_destination(&endpoint, destination.port)
         || runtime.admin_shield.blocks_host(host, port)
     {
         return Err(AdminPortAccess.into());
@@ -1001,8 +1022,8 @@ async fn open_egress_for_flow(
     );
     observation.target = selected_ip::facts(destination);
     observation.target["route"] = json!(route_name);
-    observation.target["parent"] =
-        json!(parent.map(|parent| format!("{}:{}", parent.host, parent.port)));
+    observation.target["parent"] = json!(parent_url);
+    allowed.observe_upstream(&mut observation, live, "connection_attempt", "pending");
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
@@ -1021,7 +1042,7 @@ async fn open_egress_for_flow(
             "port": destination.port,
             "route": route_name,
             "target": selected_ip::facts(destination),
-            "parent": parent.map(|parent| format!("{}:{}", parent.host, parent.port)),
+            "parent": parent_url,
             "stage": "connection_attempt", "outcome": "pending",
             }),
         )) {
@@ -1073,6 +1094,17 @@ async fn open_egress_for_flow(
     let socket = match connecting {
         Ok(socket) => socket,
         Err(error) => {
+            observation.target["reason"] = json!(error.to_string());
+            allowed.observe_upstream(
+                &mut observation,
+                live,
+                if direct {
+                    "direct_connect"
+                } else {
+                    "parent_tcp"
+                },
+                "failed",
+            );
             selected_ip::record(
                 runtime,
                 allowed.identity,
@@ -1104,7 +1136,7 @@ async fn open_egress_for_flow(
         },
         "complete",
         json!({"route": route_name, "direct_peer": if direct { Some(socket.peer_addr()?.to_string()) } else { None },
-            "parent": parent.map(|parent| format!("{}:{}", parent.host, parent.port)),
+            "parent": parent_url,
             "outbound": "connected"}),
     )?;
     let peer = if direct {
@@ -1157,6 +1189,16 @@ async fn open_egress_for_flow(
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
+    allowed.observe_upstream(
+        &mut observation,
+        live,
+        if direct {
+            "direct_connect"
+        } else {
+            "parent_tcp"
+        },
+        "complete",
+    );
     let parent_connection: Result<BoxStream, Error> = async {
         let mut stream: BoxStream = if tls {
             let name = ServerName::try_from(host.to_owned())?;
@@ -1164,15 +1206,24 @@ async fn open_egress_for_flow(
                 .tls
                 .clone()
                 .ok_or("HTTPS parent TLS was not configured")?;
-            Box::new(
-                refresh_parent_tls_phase(phase_timeout, async {
+            selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "pending", json!({"parent": parent_url, "verification_name": host}))?;
+            let tls = refresh_parent_tls_phase(phase_timeout, async {
                     TlsConnector::from(tls)
                         .connect(name, socket)
                         .await
                         .map_err(Into::into)
                 })
-                .await?,
-            )
+                .await;
+            match tls {
+                Ok(tls) => {
+                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}))?;
+                    Box::new(tls)
+                }
+                Err(error) => {
+                    selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "failed", json!({"parent": parent_url, "verification_name": host, "reason": error.to_string()}))?;
+                    return Err(error);
+                }
+            }
         } else {
             socket
         };
@@ -1203,9 +1254,10 @@ async fn open_egress_for_flow(
             .await?;
             observation.target["parent_requested_target"] = json!(target);
             observation.target["parent_connect_status"] = json!(response.status().as_u16());
+            allowed.observe_upstream(&mut observation, live, "parent_connect", if response.status().is_success() { "complete" } else { "failed" });
             selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_connect",
                 if response.status().is_success() { "complete" } else { "failed" },
-                json!({"route": "parent", "parent": format!("{host}:{port}"), "parent_requested_target": target,
+                json!({"route": "parent", "parent": parent_url, "parent_requested_target": target,
                     "parent_connect_status": response.status().as_u16(), "direct_peer": null, "outbound": "attempted"}))?;
             if !response.status().is_success() {
                 return Err("parent proxy refused CONNECT".into());
@@ -1223,6 +1275,8 @@ async fn open_egress_for_flow(
     let mut stream = match parent_connection {
         Ok(stream) => stream,
         Err(error) => {
+            observation.target["reason"] = json!(error.to_string());
+            allowed.observe_upstream(&mut observation, live, "parent_connection", "failed");
             selected_ip::record(
                 runtime,
                 allowed.identity,
@@ -1322,6 +1376,8 @@ async fn open_outbound(
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         }
         let name = ServerName::try_from(destination.host.clone())?;
+        connection.observation.target["tls_verification_name"] = json!(destination.host);
+        allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "pending");
         selected_ip::record(
             runtime,
             allowed.identity,
@@ -1341,6 +1397,8 @@ async fn open_outbound(
         let tls = match tls {
             Ok(tls) => tls,
             Err(error) => {
+                connection.observation.target["reason"] = json!(error.to_string());
+                allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "failed");
                 selected_ip::record(
                     runtime,
                     allowed.identity,
@@ -1368,6 +1426,7 @@ async fn open_outbound(
         connection.observation.tls_setup = Some(completed);
         connection.observation.target["tls_verification_name"] = json!(destination.host);
         connection.observation.target["tls_result"] = json!("certificate_verified");
+        allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "complete");
         if let Some(live) = live {
             live.upstream_connection(connection.observation.clone());
             live.upstream_tls(completed);
@@ -2086,6 +2145,7 @@ async fn execute_refresh(
     let outbound = open_outbound(
         runtime,
         &AllowedRequest {
+            recording: None,
             tasks,
             destination: &destination,
             identity,
@@ -2536,6 +2596,7 @@ where
                 open_egress_for_flow(
                     &runtime,
                     &AllowedRequest {
+                        recording: None,
                         tasks: &upgrades,
                         destination,
                         identity,
@@ -2645,7 +2706,7 @@ where
                             .then_some(crate::ignored_host_logger::SelectedDestination { host: &destination.host, port: destination.port });
                         outbound_attempted = true;
                         let Connected { stream, h1_request_form, peer, observation } = open_egress_for_flow(
-                            &runtime, &AllowedRequest { tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
+                            &runtime, &AllowedRequest { recording: None, tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
                             true, Some(&passthrough_matcher), ignored, None, None,
                         ).await?;
                         (stream, h1_request_form, peer, observation)
@@ -2653,7 +2714,6 @@ where
                     _ => unreachable!("CONNECT classification preserves its upstream owner"),
                 };
                 observation.target["logical_host"] = json!(destination.host);
-                observation.target["connect_request_id"] = json!(request_id);
                 let protocol = classified_protocol;
                 let sni_passthrough = !passthrough
                     && protocol == Protocol::Tls
@@ -3687,6 +3747,7 @@ where
         }
     }
     let allowed = AllowedRequest {
+        recording: Some(recording.as_ref()),
         tasks: &upgrades,
         destination,
         identity,
@@ -3715,10 +3776,19 @@ where
         )
     };
     let outbound_http2 = outbound.http2();
-    recording.connection(
-        outbound.observation(),
-        tunnel.map(|tunnel| tunnel.connect_request_id.as_str()),
-    );
+    recording.connection(outbound.observation());
+    // A reused H2 connection's original TLS event belongs to another inner
+    // request. Associate its observed facts with this request explicitly;
+    // explain must not include that sibling to recover connection evidence.
+    selected_ip::record(
+        &runtime,
+        identity,
+        request_id,
+        destination,
+        "upstream_connection",
+        "associated",
+        json!({"upstream": outbound.observation().snapshot()}),
+    )?;
     *request.uri_mut() = request_uri(
         destination,
         &format!(

@@ -113,7 +113,8 @@ rejected. IP addresses, wildcards, domain suffixes, URL paths and port filters
 are not supported. A listed host does not include its subdomains or redirect
 destinations. Selection uses the logical request destination and trusted
 listener identity. Request headers and resolved addresses cannot select the
-parent. CONNECT retains its admitted authority for inner requests. A selected
+parent. After CONNECT binds its logical name, inner requests retain that name
+and port. A selected
 parent connection, TLS or CONNECT failure does not fall back to direct egress.
 
 Runtime listeners, audit, trace and capture settings take effect on restart.

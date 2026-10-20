@@ -136,6 +136,9 @@ does not observe the parent's origin-side socket. `origin_tls` records the
 verification name and result. `http_response` records the observed HTTP
 status. A pending stage alone does not establish completion. A failed stage
 retains its reason; inspect earlier events for the last completed operation.
+For an HTTPS parent, `parent_tls` records verification of the parent itself.
+`upstream_connection` associates an inner request with its observed connection
+facts, including verified TLS when an HTTP/2 connection is reused.
 
 `status: complete` describes the retained explanation lookup. It does not
 describe network success. Missing or expired events leave a limit on the

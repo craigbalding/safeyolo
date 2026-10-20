@@ -472,6 +472,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             open_egress_for_flow(
                 &runtime,
                 &AllowedRequest {
+                    recording: None,
                     tasks: &crate::connection_tasks::ConnectionTasks::new(
                         tokio::sync::watch::channel(false).1,
                     ),

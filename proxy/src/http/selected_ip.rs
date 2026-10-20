@@ -10,13 +10,13 @@ use crate::{ConnectionIdentity, Error, Runtime};
 use super::Destination;
 
 #[derive(Clone)]
-pub(super) struct Target {
+pub(super) struct SelectedIp {
     pub(super) requested_ip: Option<IpAddr>,
     pub(super) ip: IpAddr,
     pub(super) source: &'static str,
 }
 
-impl Target {
+impl SelectedIp {
     pub(super) fn client(ip: IpAddr) -> Self {
         Self {
             requested_ip: Some(ip),
@@ -43,7 +43,7 @@ pub(super) fn apply_mapping(
                 return Err("operator mapping conflicts with the admitted target IP".into());
             }
         } else {
-            destination.selected_ip = Some(Target {
+            destination.selected_ip = Some(SelectedIp {
                 requested_ip: None,
                 ip,
                 source: "operator_mapping",
@@ -122,13 +122,15 @@ pub(super) fn record(
             .expect("connection details are an object")
             .clone(),
     );
-    runtime.audit.emit(identity.request_event(
+    let mut event = identity.request_event(
         "traffic.connection",
         crate::audit::Kind::Traffic,
         request_id,
         format!("Connection {stage}: {outcome}"),
         details,
-    ))?;
+    );
+    event.host = Some(destination.policy_host.clone());
+    runtime.audit.emit(event)?;
     Ok(())
 }
 
@@ -158,7 +160,7 @@ impl RouteWaitAudit {
                 "route_wait",
                 "pending",
                 json!({
-                "missing_information": "client protocol and logical TLS name",
+                "missing_information": "client protocol prefix or a complete TLS ClientHello",
                     "outbound": "not_attempted", "client_connect_status": 200,
                     "wait_seconds": crate::tunnels::ROUTE_WAIT.as_secs(),
                 }),
@@ -184,7 +186,7 @@ impl RouteWaitAudit {
                 "route_wait",
                 outcome,
                 json!({
-                    "missing_information": if outcome == "complete" { None } else { Some("client protocol and logical TLS name") },
+                    "missing_information": if outcome == "complete" { None } else { Some("client protocol prefix or a complete TLS ClientHello") },
                     "outbound": "not_attempted", "client_connect_status": 200,
                 }),
             );

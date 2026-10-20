@@ -359,7 +359,7 @@ impl FlowStore {
             )),
             _ => None,
         };
-        let mut values = SqlParams(Vec::with_capacity(52));
+        let mut values = SqlParams(Vec::with_capacity(53));
         for field in METADATA_COLUMNS {
             let value = match *field {
                 "evidence_owner" => owner,

@@ -9,6 +9,13 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "connect-route-wait-seconds"
+source = "proxy/src/tunnels.rs"
+pattern = 'ROUTE_WAIT: Duration = Duration::from_secs\((?P<seconds>\d+)\)'
+docs = ["docs/CONFIGURATION.md", "cli/src/safeyolo/agent_context/skills/safeyolo/references/troubleshooting.md"]
+must_contain_any = ["{seconds}-second", "{seconds} seconds"]
+
+[[assertion]]
 name = "vm-proxy-admission"
 source = "cli/src/safeyolo/guest-proxy-forwarder.sh"
 pattern = 'max-children=(?P<maximum>\d+),backlog=(?P<backlog>\d+)'

@@ -42,6 +42,7 @@ struct Record {
     head: Option<Head>,
     error: Option<Zeroizing<String>>,
     metadata_encoding_error: bool,
+    connect_request_id: Option<String>,
 }
 
 impl Drop for Record {
@@ -256,6 +257,7 @@ impl Recording {
             .record
             .as_mut()
         {
+            record.connect_request_id = connect_request_id.map(str::to_owned);
             record.metadata.insert("connection_json".into(), python_json::encode(&json!({
                 "target": super::selected_ip::facts(destination), "connect_request_id": connect_request_id,
             })).into());
@@ -265,7 +267,6 @@ impl Recording {
     pub(super) fn connection(
         &self,
         observation: &crate::traffic_view::UpstreamConnectionObservation,
-        connect_request_id: Option<&str>,
     ) {
         if let Some(record) = self
             .state
@@ -275,7 +276,7 @@ impl Recording {
             .as_mut()
         {
             let mut connection = observation.snapshot();
-            connection["connect_request_id"] = json!(connect_request_id);
+            connection["connect_request_id"] = json!(record.connect_request_id);
             record.metadata.insert(
                 "connection_json".into(),
                 python_json::encode(&connection).into(),

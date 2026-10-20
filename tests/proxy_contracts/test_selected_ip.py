@@ -5,6 +5,7 @@ import json
 import os
 import pwd
 import shutil
+import signal
 import socket
 import socketserver
 import ssl
@@ -13,9 +14,14 @@ import time
 import uuid
 from contextlib import ExitStack, contextmanager
 
+import httpx
 import pytest
+import tomlkit
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from safeyolo.rust_proxy import _ensure_signing_ca
+from tests.blackbox.host.uds_transport import UDSProxyTransport
 from tests.proxy_contracts.harness import child_process, launch_proxy, read_events, request
 from tests.proxy_contracts.test_authority_consistency import (
     ALLOWED,
@@ -26,7 +32,8 @@ from tests.proxy_contracts.test_authority_consistency import (
     _host,
     _server,
 )
-from tests.proxy_contracts.test_http2_contract import origin_certificate, origin_server
+from tests.proxy_contracts.test_gateway_redirect import _origin as redirect_origin
+from tests.proxy_contracts.test_http2_contract import h2_requests, origin_certificate, origin_server
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 from tests.proxy_contracts.test_outbound_effects import _completed_connect_trace, _outbound_ip_addresses
 
@@ -47,7 +54,7 @@ use_default_credential_rules = false
 '''
 
 
-def _curl_selected(path, ca, output, *, host, port, ip=None, http2=False, secret=True, capture=False):
+def _curl_selected(path, ca, output, *, host, port, ip=None, http2=False, secret=True, capture=False, repeat=1):
     curl = shutil.which("curl")
     assert curl is not None, "This boundary requires real curl"
     with _server(CurlProxy(path)) as bridge:
@@ -62,7 +69,7 @@ def _curl_selected(path, ca, output, *, host, port, ip=None, http2=False, secret
             command += ["--header", "Authorization: Bearer " + SECRET.decode()]
         if capture:
             command += ["--header", "X-SafeYolo-Test-Context: run=selected-ip;agent=alice"]
-        command += [f"https://{host}:{port}/selected-ip"]
+        command += [f"https://{host}:{port}/selected-ip"] * repeat
         result = subprocess.run(command, capture_output=True, timeout=10)
         assert not bridge.errors, bridge.errors
     ids = [line.split(":", 1)[1].strip() for line in output.read_text().splitlines()
@@ -261,20 +268,20 @@ def test_installed_curl_selected_ip_keeps_tls_http_credential_and_evidence(tmp_p
         port = origin.server_address[1]
         result, ids = _curl_selected(instance.paths["alice"], ca / "mitmproxy-ca-cert.pem", tmp_path / "curl-headers.txt",
                                      host=ALLOWED, port=port, ip=ip if selection == "client" else None,
-                                     http2=http2, capture=True)
+                                     http2=http2, capture=True, repeat=2 if http2 else 1)
         assert result.returncode == 0, result.stderr.decode()
-        assert result.stdout == b"hello"
+        assert result.stdout == b"hello" * (2 if http2 else 1)
         assert origin.accepts == 1 and origin.sni == [ALLOWED]
         assert origin.negotiated_alpn == ["h2" if http2 else "http/1.1"]
-        assert len(origin.requests) == 1
+        assert len(origin.requests) == (2 if http2 else 1)
         if http2:
             assert origin.requests[0][":authority"] == f"{ALLOWED}:{port}"
             assert origin.requests[0]["authorization"] == "Bearer " + SECRET.decode()
         else:
             head = origin.requests[0]["head"].encode("latin1")
             assert _host(head) == f"{ALLOWED}:{port}" and SECRET in head
-        assert len(ids) == 2
-        outer, inner = ids
+        assert len(ids) == (3 if http2 else 2)
+        outer, inner = ids[:2]
         explanation = instance.agent_api("alice", "/explain?request_id=" + inner)
         assert explanation["status"] == "complete"
         assert {row["request_id"] for row in explanation["events"]} == {outer, inner}
@@ -282,12 +289,19 @@ def test_installed_curl_selected_ip_keeps_tls_http_credential_and_evidence(tmp_p
         deadline = time.monotonic() + 5
         while True:
             flows = instance.agent_api("alice", "/api/flows/search?run=selected-ip")["flows"]
-            if flows:
+            if len(flows) == (2 if http2 else 1):
                 break
             assert time.monotonic() < deadline, explanation
             time.sleep(0.02)
         flow = next(row for row in flows if row["request_id"] == inner)
         connection = json.loads(flow["connection_json"])
+        if http2:
+            other = next(row for row in flows if row["request_id"] == ids[2])
+            assert json.loads(other["connection_json"])["id"] == connection["id"]
+            reused = instance.agent_api("alice", "/explain?request_id=" + ids[2])
+            assert {row["request_id"] for row in reused["events"]} == {outer, ids[2]}
+            assert any(row["details"].get("upstream", {}).get("target", {}).get("tls_result") == "certificate_verified"
+                       for row in reused["events"])
         target = connection["target"]
         assert connection["connect_request_id"] == outer and connection["route"] == route.replace("squid", "parent")
         assert target["logical_host"] == ALLOWED and target["effective_ip"] == ip
@@ -295,6 +309,9 @@ def test_installed_curl_selected_ip_keeps_tls_http_credential_and_evidence(tmp_p
         assert target["selection_source"] == ("client_connect" if selection == "client" else "operator_mapping")
         assert target["tls_verification_name"] == ALLOWED and target["tls_result"] == "certificate_verified"
         assert flow["evidence_owner"] == "alice"
+        live = instance.admin("GET", "/admin/traffic/flows/" + inner)
+        assert live["upstream"]["target"] == target
+        assert live["metadata"]["connect_request_id"] == outer
         if route == "squid":
             expected = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
             assert target["parent_requested_target"] == expected and target["parent_connect_status"] == 200
@@ -433,3 +450,346 @@ def test_selected_origin_certificate_failure_remains_explainable(tmp_path, unuse
                    and row["verification_name"] == ALLOWED for row in facts)
         assert not any(row["stage"] == "http_response" for row in facts)
         assert origin.accepts == 1 and origin.sni == [ALLOWED] and origin.requests == []
+
+
+def _fragmented_tls_request(raw, ca, hostname, port, cuts, before_complete):
+    """Let OpenSSL produce TLS; split only the bytes on the untrusted wire."""
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    context = ssl.create_default_context(cafile=ca)
+    context.set_alpn_protocols(["http/1.1"])
+    client = context.wrap_bio(incoming, outgoing, server_hostname=hostname)
+    with pytest.raises(ssl.SSLWantReadError):
+        client.do_handshake()
+    hello = outgoing.read()
+    positions = sorted({1, len(hello) - 1, *(cut % (len(hello) - 1) + 1 for cut in cuts)})
+    offset = 0
+    for end in positions:
+        raw.sendall(hello[offset:end])
+        offset = end
+        before_complete()
+    raw.sendall(hello[offset:])
+
+    def flush():
+        if outgoing.pending:
+            raw.sendall(outgoing.read())
+
+    while True:
+        try:
+            client.do_handshake()
+            flush()
+            break
+        except ssl.SSLWantReadError:
+            flush()
+            data = raw.recv(65536)
+            assert data, "proxy closed before TLS handshake"
+            incoming.write(data)
+    client.write(f"GET /fragmented HTTP/1.1\r\nHost: {hostname}:{port}\r\nConnection: close\r\n\r\n".encode())
+    flush()
+    response = bytearray()
+    while True:
+        try:
+            data = client.read(65536)
+            if not data:
+                break
+            response.extend(data)
+            if b"\r\n\r\n" in response:
+                head, body = bytes(response).split(b"\r\n\r\n", 1)
+                length = next(int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")
+                              if line.lower().startswith(b"content-length:"))
+                if len(body) == length:
+                    break
+        except ssl.SSLWantReadError:
+            flush()
+            data = raw.recv(65536)
+            if not data:
+                incoming.write_eof()
+            else:
+                incoming.write(data)
+        except ssl.SSLZeroReturnError:
+            break
+    return bytes(response)
+
+
+@settings(max_examples=6, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(cuts=st.lists(st.integers(min_value=0, max_value=65535), min_size=0, max_size=5))
+def test_fragmented_client_hello_selects_only_after_complete_information(tmp_path, unused_tcp_port, cuts):
+    """Generated wire splits cannot cause speculative contact or lose the TLS name."""
+    directory = tmp_path / uuid.uuid4().hex
+    directory.mkdir()
+    context, certificate = _certificate(directory, ALLOWED)
+    trust = directory / "origin-roots.pem"
+    trust.write_bytes(certificate)
+    proxy_dir = directory / "proxy"
+    _ensure_signing_ca(proxy_dir / "ca")
+    with _server(Origin("fragmented-origin", tls_context=context)) as origin, \
+         ordinary_squid(directory / "squid", unused_tcp_port) as (parent, _access), \
+         launch_proxy("rust", proxy_dir, POLICY, native_product=True, tls=True, upstream_ca=trust,
+                      agent_api=True, parent_proxy=parent, parent_proxy_hosts=[ALLOWED]) as proxy:
+        port = origin.server_address[1]
+        raw, outer = _raw_connect(proxy.paths["alice"], f"127.0.0.1:{port}")
+        def no_contact():
+            events = _explain(proxy.paths, "alice", outer)["events"]
+            assert any(row["event"] == "traffic.connection" and row["details"]["stage"] == "route_wait" for row in events)
+            assert not any(row["event"] == "traffic.egress" for row in events)
+            assert origin.accepts == 0
+        with raw:
+            response = _fragmented_tls_request(raw, proxy_dir / "ca/mitmproxy-ca-cert.pem", ALLOWED, port, cuts, no_contact)
+        assert response.startswith(b"HTTP/1.1 200") and response.endswith(b"fragmented-origin")
+        assert origin.accepts == 1 and origin.sni == [ALLOWED]
+        assert [row["details"]["route"] for row in proxy.events("traffic.egress")] == ["parent"]
+
+
+def _reload_mapping(proxy, directory, mappings):
+    path = directory / "config.toml"
+    config = tomlkit.parse(path.read_text())
+    config["target_ip_mappings"] = mappings
+    marker = uuid.uuid4().hex
+    config["reload_id"] = marker
+    path.write_text(tomlkit.dumps(config))
+    os.kill(proxy.process.pid, signal.SIGHUP)
+    deadline = time.monotonic() + 5
+    while json.loads(proxy.readiness_file.read_text()).get("reload_id") != marker:
+        assert proxy.process.poll() is None
+        assert time.monotonic() < deadline, (directory / "process.log").read_text()
+        time.sleep(0.01)
+
+
+def test_operator_mapping_scope_conflict_reconnect_and_config_change(tmp_path, unused_tcp_port):
+    _context, certificate = _certificate(tmp_path, ALLOWED)
+    trust = tmp_path / "origin-roots.pem"
+    trust.write_bytes(certificate)
+    directory = tmp_path / "proxy"
+    _ensure_signing_ca(directory / "ca")
+    mappings = [{"host": ALLOWED, "ip": ip, "agents": [agent]} for agent, ip in (("alice", "127.0.0.1"), ("bob", "127.0.0.2"))]
+    with origin_server(tmp_path / f"{ALLOWED}.pem", protocols=("http/1.1",)) as first, \
+         origin_server(tmp_path / f"{ALLOWED}.pem", protocols=("http/1.1",), host="127.0.0.2", port=first.server_address[1]) as second, \
+         ordinary_squid(tmp_path / "squid", unused_tcp_port) as (parent, _access), \
+         launch_proxy("rust", directory, POLICY, native_product=True, tls=True, upstream_ca=trust,
+                      agent_api=True, parent_proxy=parent, parent_proxy_hosts=[ALLOWED], target_ip_mappings=mappings) as proxy:
+        port = first.server_address[1]
+        ca = directory / "ca/mitmproxy-ca-cert.pem"
+        for agent in ("alice", "bob", "alice"):
+            result, _ids = _curl_selected(proxy.paths[agent], ca, tmp_path / "headers", host=ALLOWED, port=port)
+            assert result.returncode == 0 and result.stdout == b"hello", result
+        assert (len(first.requests), len(second.requests)) == (2, 1)
+        before = first.accepts, second.accepts
+        conflict, ids = _curl_selected(proxy.paths["bob"], ca, tmp_path / "headers", host=ALLOWED, port=port, ip="127.0.0.1")
+        assert conflict.returncode != 0 and len(ids) == 1
+        assert (first.accepts, second.accepts) == before
+        assert any("conflicts" in row["details"].get("reason", "")
+                   for row in _explain(proxy.paths, "bob", ids[0])["events"])
+        raw, _outer = _raw_connect(proxy.paths["alice"], f"{ALLOWED}:{port}")
+        with ssl.create_default_context(cafile=ca).wrap_socket(raw, server_hostname=ALLOWED) as pinned:
+            _reload_mapping(proxy, directory, [{"host": ALLOWED, "ip": "127.0.0.2", "agents": ["alice", "bob"]}])
+            pinned.sendall(f"GET /old HTTP/1.1\r\nHost: {ALLOWED}:{port}\r\nConnection: close\r\n\r\n".encode())
+            response = http.client.HTTPResponse(pinned)
+            response.begin()
+            assert response.status == 400
+            response.read()
+        assert (len(first.requests), len(second.requests)) == (2, 1)
+        result, _ids = _curl_selected(proxy.paths["alice"], ca, tmp_path / "headers", host=ALLOWED, port=port)
+        assert result.returncode == 0 and result.stdout == b"hello", result
+        assert (len(first.requests), len(second.requests)) == (2, 2)
+
+
+@pytest.mark.parametrize("boundary", ["ip", "port", "hostname", "credential", "approval"])
+def test_selected_ip_keeps_both_network_and_credential_policy(tmp_path, boundary):
+    context, certificate = _certificate(tmp_path, ALLOWED)
+    trust = tmp_path / "origin-roots.pem"
+    trust.write_bytes(certificate)
+    directory = tmp_path / "proxy"
+    _ensure_signing_ca(directory / "ca")
+    trace = tmp_path / "connect.trace"
+    with _server(Origin("must-not-receive-http", tls_context=context)) as origin, _server(Origin("observer-control")) as control:
+        port = origin.server_address[1]
+        control_port = control.server_address[1]
+        policy = tomlkit.parse(POLICY)
+        policy["hosts"][f"127.0.0.1:{control_port}"] = {"egress": "allow"}
+        if boundary in {"ip", "port"}:
+            key = "127.0.0.1" if boundary == "ip" else f"127.0.0.1:{port}"
+            policy["hosts"][key] = {"egress": "deny"}
+        elif boundary == "hostname":
+            policy["hosts"][ALLOWED]["egress"] = "deny"
+        else:
+            policy["hosts"][ALLOWED]["allow"] = []
+            if boundary == "credential":
+                policy["hosts"][ALLOWED]["rules"] = [
+                    {"action": "credential:use", "resource": f"{ALLOWED}/*", "effect": "deny"},
+                ]
+        with launch_proxy("rust", directory, tomlkit.dumps(policy), native_product=True, tls=True,
+                          upstream_ca=trust, agent_api=True, parent_proxy="http://127.0.0.1:1",
+                          parent_proxy_hosts=["unmatched.invalid"], connect_trace_path=trace,
+                          target_ip_mappings=[{"host": "control.invalid", "ip": "127.0.0.1", "port": control_port}]) as proxy:
+            assert request(proxy.paths["alice"], f"http://control.invalid:{control_port}/control")[0] == 200
+            result, ids = _curl_selected(proxy.paths["alice"], directory / "ca/mitmproxy-ca-cert.pem", tmp_path / "headers",
+                                         host=ALLOWED, port=port, ip="127.0.0.1")
+            assert ids
+            if boundary in {"ip", "port", "hostname"}:
+                assert result.returncode != 0 and origin.accepts == 0, (result, origin.accepts)
+            else:
+                assert result.returncode == 0 and len(ids) == 2
+                assert (b"403" if boundary == "credential" else b"428") in (tmp_path / "headers").read_bytes()
+                if boundary == "approval":
+                    body = json.loads(result.stdout)
+                    assert body["reason_codes"] == ["REQUIRE_APPROVAL"]
+                    assert body["event_id"] == "evt_" + ids[-1]
+            assert origin.requests == [] and origin.application_bytes == []
+            events = _explain(proxy.paths, "alice", ids[-1])["events"]
+            control_event = "security.credential_guard" if boundary in {"credential", "approval"} else "security.network_guard"
+            assert any(row["event"] == control_event and row["decision"] in {"deny", "require_approval"} for row in events)
+    if boundary in {"ip", "port", "hostname"}:
+        addresses = _outbound_ip_addresses(_completed_connect_trace(trace, proxy.process.pid))
+        assert all(f"htons({control_port})" in address for address in addresses), addresses
+
+
+@pytest.mark.parametrize("name", ["_safeyolo.proxy.internal", "proofspot.safeyolo.internal"])
+def test_selected_ip_cannot_turn_reserved_or_provider_names_into_ordinary_egress(tmp_path, name):
+    from tests.proxy_contracts.test_gateway_provider import SERVICE
+
+    directory = tmp_path / "proxy"
+    builtin = tmp_path / "builtin"
+    services = tmp_path / "services"
+    builtin.mkdir()
+    services.mkdir()
+    (services / "proofspot.yaml").write_text(SERVICE)
+    policy = POLICY + '''
+[hosts."proofspot.safeyolo.internal"]
+egress="allow"
+service="proofspot"
+[agents.alice]
+agent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[agents.proofspot]
+agent_id="ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+'''
+    _ensure_signing_ca(directory / "ca")
+    with _server(Origin("must-not-connect")) as origin, \
+         launch_proxy("rust", directory, policy, native_product=True, tls=True, agent_api=True,
+                      gateway_builtin_services_dir=builtin, gateway_services_dir=services,
+                      parent_proxy="http://127.0.0.1:1", parent_proxy_hosts=[ALLOWED]) as proxy:
+        result, ids = _curl_selected(proxy.paths["alice"], directory / "ca/mitmproxy-ca-cert.pem", tmp_path / "headers",
+                                     host=name, port=origin.server_address[1], ip="127.0.0.1", secret=False)
+        assert result.returncode != 0 and len(ids) == 1
+        assert origin.accepts == 0 and origin.requests == []
+        facts = [row["details"] for row in _explain(proxy.paths, "alice", ids[0])["events"]
+                 if row["event"] == "traffic.connection"]
+        assert any(row["outcome"] == "failed" and row.get("outbound") == "not_attempted" for row in facts)
+
+
+@pytest.mark.parametrize("http2", [False, True])
+def test_selected_tunnel_keeps_inner_authority_pinned(tmp_path, http2):
+    context, certificate = _certificate(tmp_path, ALLOWED)
+    trust = tmp_path / "origin-roots.pem"
+    trust.write_bytes(certificate)
+    directory = tmp_path / "proxy"
+    _ensure_signing_ca(directory / "ca")
+    with _server(Origin("must-not-receive-http", tls_context=context)) as origin, \
+         launch_proxy("rust", directory, POLICY, native_product=True, tls=True, upstream_ca=trust, agent_api=True) as proxy:
+        port = origin.server_address[1]
+        raw, outer = _raw_connect(proxy.paths["alice"], f"127.0.0.1:{port}")
+        client = ssl.create_default_context(cafile=directory / "ca/mitmproxy-ca-cert.pem")
+        client.set_alpn_protocols(["h2" if http2 else "http/1.1"])
+        with client.wrap_socket(raw, server_hostname=ALLOWED) as stream:
+            if http2:
+                response = h2_requests(stream, [[(":method", "GET"), (":scheme", "https"),
+                                                (":authority", f"other.invalid:{port}"), (":path", "/escape"),
+                                                ("authorization", "Bearer " + SECRET.decode())]])[0]
+                assert response["headers"][":status"] == "400"
+                inner = response["headers"]["x-safeyolo-request-id"]
+            else:
+                stream.sendall(f"GET /escape HTTP/1.1\r\nHost: other.invalid:{port}\r\nAuthorization: Bearer {SECRET.decode()}\r\nConnection: close\r\n\r\n".encode())
+                response = http.client.HTTPResponse(stream)
+                response.begin()
+                assert response.status == 400
+                response.read()
+                inner = response.getheader("X-SafeYolo-Request-Id")
+        assert {row["request_id"] for row in _explain(proxy.paths, "alice", inner)["events"]} == {outer, inner}
+        assert origin.requests == [] and origin.application_bytes == [] and origin.sni == []
+
+
+def test_named_mapping_does_not_admit_an_unrelated_sni(tmp_path):
+    context, certificate = _certificate(tmp_path, ALLOWED)
+    trust = tmp_path / "origin-roots.pem"
+    trust.write_bytes(certificate)
+    directory = tmp_path / "proxy"
+    _ensure_signing_ca(directory / "ca")
+    with _server(Origin("must-not-receive-http", tls_context=context)) as origin, \
+         launch_proxy("rust", directory, POLICY, native_product=True, tls=True, upstream_ca=trust, agent_api=True,
+                      target_ip_mappings=[{"host": ALLOWED, "ip": "127.0.0.1"}]) as proxy:
+        raw, outer = _raw_connect(proxy.paths["alice"], f"{ALLOWED}:{origin.server_address[1]}")
+        with raw, pytest.raises(ssl.SSLError):
+            ssl.create_default_context(cafile=directory / "ca/mitmproxy-ca-cert.pem").wrap_socket(raw, server_hostname="other.invalid")
+        facts = [row["details"] for row in _explain(proxy.paths, "alice", outer)["events"] if row["event"] == "traffic.connection"]
+        assert any(row["stage"] == "client_tls" and row["outcome"] == "failed" for row in facts)
+        assert origin.requests == [] and origin.sni == []
+
+
+@pytest.mark.parametrize("route", ["direct", "squid"])
+def test_redirect_receives_its_own_mapping_and_policy_checks(tmp_path, unused_tcp_port, route):
+    policy = POLICY + '\n[hosts."denied.invalid"]\negress="deny"\n'
+    with ExitStack() as stack:
+        first = stack.enter_context(redirect_origin("127.0.0.1"))
+        second = stack.enter_context(redirect_origin("127.0.0.2"))
+        first_port, second_port = first.server_address[1], second.server_address[1]
+        first.redirect_to = f"http://denied.invalid:{second_port}"
+        parent, _access = stack.enter_context(ordinary_squid(tmp_path / "squid", unused_tcp_port)) if route == "squid" else (None, None)
+        proxy = stack.enter_context(launch_proxy("rust", tmp_path / "proxy", policy, native_product=True, agent_api=True,
+                                   parent_proxy=parent, parent_proxy_hosts=[ALLOWED], target_ip_mappings=[
+                                       {"host": ALLOWED, "ip": "127.0.0.1"}, {"host": "denied.invalid", "ip": "127.0.0.2"},
+                                   ]))
+        with httpx.Client(transport=UDSProxyTransport(proxy.paths["alice"]), follow_redirects=True, timeout=5) as client:
+            response = client.get(f"http://{ALLOWED}:{first_port}/plain-redirect")
+        assert response.status_code == 403
+        assert len(response.history) == 1 and response.history[0].status_code == 302
+        assert first.accepts == 1 and second.accepts == 0
+        old = response.history[0].headers["x-safeyolo-request-id"]
+        new = response.headers["x-safeyolo-request-id"]
+        assert old != new
+        assert {row["request_id"] for row in _explain(proxy.paths, "alice", new)["events"]} == {new}
+
+
+def test_installed_selected_ip_uses_existing_credential_approval_and_policy_reload(tmp_path):
+    context, certificate = _certificate(tmp_path, ALLOWED)
+    trust = tmp_path / "origin-roots.pem"
+    trust.write_bytes(certificate)
+    ca = tmp_path / "ca"
+    _ensure_signing_ca(ca)
+    extra = (f'tls_ca_file = {json.dumps(str(ca / "mitmproxy-ca.pem"))}\n'
+             f'upstream_ca_file = {json.dumps(str(trust))}\n'
+             f'target_ip_mappings = [{{host="{ALLOWED}",ip="127.0.0.1",agents=["alice"]}}]\n')
+    source = POLICY.replace('allow = ["synthetic-selected-ip:*"]', 'allow = []')
+    with _server(Origin("approved-target", tls_context=context)) as origin, \
+         native_instance(tmp_path, source, agent_api=True, extra_config=extra) as instance:
+        port = origin.server_address[1]
+        first, ids = _curl_selected(instance.paths["alice"], ca / "mitmproxy-ca-cert.pem", tmp_path / "headers", host=ALLOWED, port=port)
+        assert first.returncode == 0 and b"428" in (tmp_path / "headers").read_bytes()
+        assert origin.requests == []
+        events = instance.agent_api("alice", "/explain?request_id=" + ids[-1])["events"]
+        fingerprint = next(row["details"]["fingerprint"] for row in events if row["event"] == "security.credential_guard")
+        approved = instance.cli("credentials", "approve", fingerprint, "--destination", ALLOWED)
+        assert approved.returncode == 0, approved.stderr
+        second, _ids = _curl_selected(instance.paths["alice"], ca / "mitmproxy-ca-cert.pem", tmp_path / "headers", host=ALLOWED, port=port)
+        assert second.returncode == 0 and second.stdout == b"approved-target"
+        assert len(origin.requests) == 1 and SECRET in origin.requests[0]["head"]
+        before = origin.accepts
+        instance.apply(source + f'\n[hosts."127.0.0.1:{port}"]\negress="deny"\n')
+        denied, _ids = _curl_selected(instance.paths["alice"], ca / "mitmproxy-ca-cert.pem", tmp_path / "headers", host=ALLOWED, port=port)
+        assert denied.returncode != 0
+        assert origin.accepts == before and len(origin.requests) == 1
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "::ffff:127.0.0.1"])
+def test_mapped_admin_endpoint_is_blocked_before_selected_parent_contact(tmp_path, unused_tcp_port, ip):
+    with ordinary_squid(tmp_path / "squid", unused_tcp_port) as (parent, access), \
+         launch_proxy("rust", tmp_path / "proxy", POLICY, native_product=True, agent_api=True,
+                      admin_port=0, parent_proxy=parent, parent_proxy_hosts=[ALLOWED],
+                      target_ip_mappings=[{"host": ALLOWED, "ip": ip}]) as proxy:
+        marker = json.loads(proxy.readiness_file.read_text())
+        assert marker["pid"] == proxy.process.pid
+        status, headers, _body = request(proxy.paths["alice"], f"http://{ALLOWED}:{marker['admin_port']}/health")
+        assert status == 403 and headers.get("x-blocked-by") == "admin-shield", (status, headers)
+        identifier = headers["x-safeyolo-request-id"]
+        events = _explain(proxy.paths, "alice", identifier)["events"]
+        assert any(row["event"] == "traffic.request_outcome" and row["details"].get("blocked_by") == "admin-shield" for row in events)
+        assert proxy.events("traffic.egress") == []
+    # The fixture's socket readiness probe can produce a headerless log row.
+    assert not any(line.startswith(("CONNECT ", "GET ")) for line in access.read_text().splitlines())
