@@ -989,8 +989,16 @@ approval operations retain their separate owners.
 
 From a clean committed checkout on the target host, use Bash and the Rust
 toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
-ldd, curl and a tar with zstd support for the pinned gVisor payload. The
+ldd, curl, musl-tools and a tar with zstd support for the pinned gVisor payload. The
 assembler verifies the downloaded archive and reuses its checked cache.
+On the Linux build host, install the Rust musl target for its architecture:
+`x86_64-unknown-linux-musl` on AMD64 or `aarch64-unknown-linux-musl` on ARM64,
+using `rustup target add TARGET`. The default builder links the two guest
+helpers statically with musl so Alpine guests need no glibc compatibility
+package. Host executables keep their existing GNU target. The guest compiler
+is `musl-gcc`; target-specific Cargo linker and C compiler overrides remain
+available. An explicit `SAFEYOLO_GUEST_TARGET` keeps the configured cross-build
+target and its target-specific artifact directory.
 macOS needs Command Line Tools and a signed VM helper build. Prepared
 runtime inputs contain the `tmux` executable for this host. The assembler
 copies its resolved non-system libraries. This Ubuntu example selects

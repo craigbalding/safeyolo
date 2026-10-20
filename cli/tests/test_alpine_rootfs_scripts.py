@@ -40,6 +40,7 @@ case "$tool" in
     [ "$TEST_FAILURE" != apk ] || exit 42
     ;;
   chown) [ "$TEST_FAILURE" != ownership ] || exit 43 ;;
+  truncate) : > "${@: -1}" ;;
   mkfs.ext4)
     [ "$TEST_FAILURE" != pack ] || exit 44
     printf 'packed\\n' > "${@: -1}"
@@ -48,7 +49,7 @@ esac
 """
     )
     driver.chmod(0o755)
-    for name in ("id", "sudo", "skopeo", "umoci", "chroot", "chown", "mkfs.ext4"):
+    for name in ("id", "sudo", "skopeo", "umoci", "chroot", "chown", "truncate", "mkfs.ext4"):
         (tools / name).symlink_to(driver)
     guest = tmp_path / "guest"
     guest.mkdir()

@@ -137,11 +137,11 @@ must meet these requirements:
 1. **`/usr/local/bin/safeyolo-guest-init`** — SafeYolo's boot orchestrator
    executes this file as process ID 1. On macOS, the initramfs reaches it through
    `switch_root`. On Linux, the OCI entrypoint executes it directly.
-2. **A compatible Linux userland** — the host package stages `safeyolo-guest`
-   and `safeyolo-coord` at boot. Their C library requirements must match the
-   rootfs. A Linux executable built for glibc does not automatically run on
-   Alpine's musl. Test the installed guest executables as well as the image's
-   shell and packages.
+2. **Compatible guest executables** — boot stages `safeyolo-guest`;
+   first-party host setups stage `safeyolo-coord` in the agent home. Current
+   source builds link both guest helpers statically with musl. Earlier
+   glibc-built helpers do not automatically load on Alpine. Test the installed
+   guest executables as well as the image's shell and packages.
 3. **The right architecture** — use `$SAFEYOLO_TARGET_ARCH` to pull the
    matching image or bootstrap the right package set.
 4. **These runtime packages**, which SafeYolo's boot scripts rely on:

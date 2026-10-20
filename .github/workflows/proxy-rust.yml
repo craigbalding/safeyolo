@@ -201,6 +201,13 @@ jobs:
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 
+      - name: Install Linux guest build tools
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y -qq --no-install-recommends musl-tools
+          rustup target add "$(uname -m)-unknown-linux-musl"
+
       - name: Build the native guest command artifact
         id: linux_guest_inputs
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
