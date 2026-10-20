@@ -109,7 +109,7 @@ async fn native_envelopes_and_committed_mutations_match_actual_source() {
             gateway: None,
             memory: None,
             traces: None,
-            discovery: None,
+            agents: None,
             audit: None,
             flows: None,
             circuits: None,

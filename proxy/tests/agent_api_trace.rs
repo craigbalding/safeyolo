@@ -84,7 +84,7 @@ async fn call_with_clock(
             gateway: None,
             memory: None,
             traces: store.map(|store| TraceContext { store, now }),
-            discovery: None,
+            agents: None,
             audit: None,
             flows: None,
             circuits: None,

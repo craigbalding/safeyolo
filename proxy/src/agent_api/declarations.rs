@@ -12,12 +12,18 @@ pub struct Controls<'a> {
     pub gateway: Option<GatewayContext<'a>>,
     pub memory: Option<MemoryContext<'a>>,
     pub traces: Option<TraceContext<'a>>,
-    pub discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
+    pub agents: Option<AgentReportContext<'a>>,
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
     pub coord: Option<CoordContext<'a>>,
+}
+
+/// Listener reports retain the existing global view after bearer authentication.
+pub struct AgentReportContext<'a> {
+    pub activity: &'a crate::agent_activity::AgentActivity,
+    pub listeners: &'a [crate::AgentListener],
 }
 
 /// Trace expiry samples wall time only when an authorized lookup is reached.
@@ -235,7 +241,7 @@ where
         return plumb::respond(request, body, plumb, controls.audit.cloned()).await;
     }
     if route(request) == "/agents" {
-        return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
+        return Ok(agents::respond(request, controls.agents));
     }
     if let Some(route) = flows::recognize(request) {
         return flows::respond(

@@ -548,7 +548,6 @@ mod tests {
                     agent_id: "alice".into(),
                     connection_id: "owned-connection".into(),
                     source_id: None,
-                    reconciled: None,
                 },
                 "owned-request".into(),
                 "owned.invalid".into(),
@@ -640,7 +639,7 @@ mod tests {
                 runtime.audit.poison_for_test();
             }
             let identity = ConnectionIdentity {
-                agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None, reconciled: None,
+                agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
             };
             let mut request = Request::builder().uri("http://owned.invalid/")
                 .body(Empty::<Bytes>::new()).unwrap();
@@ -807,7 +806,6 @@ mod tests {
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,
-                reconciled: None,
             },
             "owned-request".into(),
             "owned.invalid".into(),
@@ -1244,7 +1242,6 @@ mod tests {
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,
-                reconciled: None,
             },
             "owned-request".into(),
             "owned.invalid".into(),

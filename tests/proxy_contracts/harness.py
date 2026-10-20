@@ -125,7 +125,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None,
-                 agent_map=None, stream_large_bodies=None, credential_head_decision=False,
+                 agent_addresses=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
@@ -142,23 +142,17 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
     # Darwin's default temp root leaves too little sun_path for reloaded listeners.
     socket_root = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR") or ("/tmp" if sys.platform == "darwin" else None)
     with tempfile.TemporaryDirectory(prefix="sy-contract-", dir=socket_root) as sockets, ExitStack() as stack:
-        if agent_map is None:
+        if agent_addresses is None:
             paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
                      for index, name in enumerate(agents, 2)}
         else:
-            from safeyolo.sockets import path_for
-
-            if not isinstance(agent_map, dict) or not all(
+            if not isinstance(agent_addresses, dict) or not all(
                 isinstance(name, str) and isinstance(ip, str)
-                for name, ip in agent_map.items()
+                for name, ip in agent_addresses.items()
             ):
-                raise ValueError("agent_map must map agent names to IPv4 strings")
-            data_dir = directory / "data"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            (data_dir / "agent_map.json").write_text(
-                json.dumps({name: {"ip": ip} for name, ip in agent_map.items()})
-            )
-            paths = {name: str(path_for(name, ip)) for name, ip in agent_map.items()}
+                raise ValueError("agent_addresses must map agent names to IPv4 strings")
+            paths = {name: str(Path(sockets) / f"{ip}_{name}" / "proxy.sock")
+                     for name, ip in agent_addresses.items()}
         config = {
             "listeners": [{"agent_id": name, "socket_path": path} for name, path in paths.items()],
             # Native policy startup creates its process-owned credential HMAC
@@ -174,8 +168,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
         Path(config["data_dir"]).mkdir(parents=True, exist_ok=True)
-        if agent_map is not None:
-            config["agent_map_file"] = str(directory / "data" / "agent_map.json")
         if inspection is not None:
             config["inspection"] = {"policy_file": str(policy), **inspection}
         for name, value in (("network_guard_enabled", network_guard_enabled),

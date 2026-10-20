@@ -1511,8 +1511,7 @@ pub(crate) async fn start(
         }
         let prepared: Result<(), Error> = async {
             crate::host_runs::save(&agent.name, &run)?;
-            crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;
-            sync_agent_listeners().await
+            sync_agent_listeners(Some((&agent.name, Some(&ip)))).await
         }
         .await;
         if let Err(error) = prepared {
@@ -1550,10 +1549,7 @@ pub(crate) async fn start(
         .await;
         if let Err(error) = boot {
             let mut failures = Vec::new();
-            if let Err(rollback) = crate::host_platform::update_agent_map(&agent.name, None) {
-                failures.push(format!("agent-map rollback failed: {rollback}"));
-            }
-            if let Err(rollback) = sync_agent_listeners().await {
+            if let Err(rollback) = sync_agent_listeners(Some((&agent.name, None))).await {
                 failures.push(format!("listener rollback failed: {rollback}"));
             }
             if !failures.is_empty() {
@@ -1627,8 +1623,7 @@ async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error>
         return Err("preboot runtime identity changed; saved state was preserved".into());
     }
     std::fs::remove_file(crate::host_runs::path(&agent.name))?;
-    crate::host_platform::update_agent_map(&agent.name, None)?;
-    sync_agent_listeners().await
+    sync_agent_listeners(Some((&agent.name, None))).await
 }
 
 /// Reuse a live launch without selecting another launcher.
@@ -1711,7 +1706,9 @@ fn tmux_session() -> Result<String, Error> {
     Ok(format!("{session}-{}", instance.trim()))
 }
 
-pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
+pub(crate) async fn sync_agent_listeners(
+    change: Option<(&str, Option<&str>)>,
+) -> Result<(), Error> {
     let path = crate::host_platform::config_path();
     if !path.is_file() {
         return Ok(());
@@ -1725,7 +1722,6 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
             .await??;
     let cwd = crate::host_platform::config_dir();
-    let sockets = crate::host_platform::config_dir().join("data/sockets");
     let source = std::fs::read(&path)?;
     let native = path
         .extension()
@@ -1751,44 +1747,48 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         } else {
             cwd.join(path)
         };
-        let managed = path.file_name().is_some_and(|name| name == "proxy.sock")
-            && path.parent().and_then(std::path::Path::parent) == Some(sockets.as_path())
-            && path
-                .parent()
-                .and_then(std::path::Path::file_name)
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.split_once('_'))
-                .is_some_and(|(ip, name)| {
-                    ip.parse::<std::net::Ipv4Addr>().is_ok()
-                        && crate::host_platform::valid_agent_name(name)
-                });
+        let managed = crate::host_platform::is_managed_agent_listener(&crate::AgentListener {
+            agent_id: entry
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or("agent listeners need agent_id strings")?
+                .into(),
+            socket_path: path,
+            source_id: None,
+        });
         if !managed {
             retained.push(entry.clone());
         }
     }
-    let map_path = crate::host_platform::agent_map_path()?;
-    let map: serde_json::Map<String, Value> = match std::fs::read(map_path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .or_else(|_| crate::host_platform::agent_map_from_runs())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            crate::host_platform::agent_map_from_runs()?
-        }
-        Err(error) => return Err(error.into()),
+    // Reuse startup's backend/generation reconciliation. A prepared start
+    // supplies its listener before the backend exists, so the guest can reach
+    // the proxy from its first instruction. A failed boot removes its listener
+    // without discarding an uncertain backend record. No separate map is written.
+    let mut current = if native {
+        crate::native_config::read(&path)?
+    } else {
+        serde_json::from_value(config.clone())?
     };
-    for (name, entry) in map {
-        let Some(ip) = entry.get("ip").and_then(Value::as_str) else {
-            continue;
-        };
-        if !crate::host_platform::valid_agent_name(&name)
-            || ip.parse::<std::net::Ipv4Addr>().is_err()
-        {
-            return Err("invalid agent listener identity".into());
+    crate::host_commands::restore_attachments(&mut current).await?;
+    if let Some((name, ip)) = change {
+        current.listeners.retain(|entry| {
+            entry.agent_id != name || !crate::host_platform::is_managed_agent_listener(entry)
+        });
+        if let Some(ip) = ip {
+            current
+                .listeners
+                .push(crate::host_platform::agent_proxy_listener(name, ip));
         }
-        let path = sockets.join(format!("{ip}_{name}")).join("proxy.sock");
-        if path.as_os_str().as_bytes().len() > if cfg!(target_os = "macos") { 104 } else { 108 } {
-            return Err("agent socket path exceeds platform limit".into());
+    }
+    for entry in current.listeners {
+        if crate::host_platform::is_managed_agent_listener(&entry) {
+            if entry.socket_path.as_os_str().as_bytes().len()
+                > if cfg!(target_os = "macos") { 104 } else { 108 }
+            {
+                return Err("agent socket path exceeds platform limit".into());
+            }
+            retained.push(serde_json::to_value(entry)?);
         }
-        retained.push(json!({"agent_id":name,"socket_path":path,"source_id":ip}));
     }
     let requested = uuid::Uuid::new_v4().simple().to_string();
     config["listeners"] = Value::Array(retained);
@@ -2101,12 +2101,11 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     }
     #[cfg(target_os = "linux")]
     crate::linux_host::shares::cleanup_stopped(&agent.name).await?;
-    crate::host_platform::update_agent_map(&agent.name, None)?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)? {
         run["state"] = "stopped".into();
         crate::host_runs::save(&agent.name, &run)?;
     }
-    sync_agent_listeners().await?;
+    sync_agent_listeners(Some((&agent.name, None))).await?;
     crate::host_events::write(
         &agent.name,
         "agent.stopped",

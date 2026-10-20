@@ -319,7 +319,7 @@ not indicate who initiated the traffic. Delegated operator traffic can remain
 agent-queryable while recording `initiator=operator`.
 
 In the normal per-agent configuration, flow results and bodies are scoped to
-the calling agent by service-discovery attribution.
+the calling agent from its accepted host-owned Unix domain socket listener.
 
 Each recorded flow carries an attribution spine in addition to the legacy
 `agent_id` alias:

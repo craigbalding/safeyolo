@@ -446,7 +446,6 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             agent_id: "alice".into(),
             connection_id: "owned-lifecycle-seam".into(),
             source_id: Some(SOURCE.into()),
-            reconciled: None,
         };
         let request = hyper::Request::builder()
             .method("CONNECT")
@@ -630,7 +629,6 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
         agent_id: "alice".into(),
         connection_id: "owned-pending-seam".into(),
         source_id: Some(SOURCE.into()),
-        reconciled: None,
     };
     let selected = || SelectedDestination {
         host: HOST,

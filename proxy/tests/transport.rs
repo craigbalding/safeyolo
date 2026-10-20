@@ -37,7 +37,6 @@ fn config(directory: &TempDir) -> Config {
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
-        agent_map_file: String::new(),
         data_dir: Some(directory.path().join("data")),
         listeners: ["alice", "bob"]
             .iter()
@@ -2310,7 +2309,19 @@ async fn origin() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
 #[tokio::test]
 async fn two_agents_cannot_spoof_identity_and_denied_requests_never_reach_egress() {
     let directory = tempfile::tempdir().unwrap();
-    let config = config(&directory);
+    let mut config = config(&directory);
+    for listener in &mut config.listeners {
+        listener.source_id = Some("192.0.2.10".into());
+    }
+    std::fs::create_dir_all(directory.path().join("data")).unwrap();
+    std::fs::write(
+        directory.path().join("data/agent_map.json"),
+        br#"{"bob":{"ip":"192.0.2.10"}}"#,
+    )
+    .unwrap();
+    // A stale inode supplies no owner. Binding the configured listener must
+    // recover this path before any real HTTP request is admitted.
+    drop(std::os::unix::net::UnixListener::bind(&config.listeners[0].socket_path).unwrap());
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let (authority, contacts, origin) = origin().await;
     let target = format!("http://{authority}/signed?a=1&a=2&value=%2F");
@@ -2332,6 +2343,10 @@ async fn two_agents_cannot_spoof_identity_and_denied_requests_never_reach_egress
     )
     .await;
     assert!(denied.starts_with("HTTP/1.1 403"));
+    let connect = raw(&config.listeners[1].socket_path,
+        "CONNECT must-not-resolve.invalid:443 HTTP/1.1\r\nHost: must-not-resolve.invalid:443\r\nX-SafeYolo-Agent: alice\r\nX-Forwarded-For: 192.0.2.10\r\nConnection: close\r\n\r\n").await;
+    assert!(connect.starts_with("HTTP/1.1 403"), "{connect}");
+    assert_eq!(contacts.load(Ordering::SeqCst), 1);
     let recorded = events(&config);
     let egress: Vec<_> = recorded
         .iter()
@@ -2585,6 +2600,9 @@ async fn reload_adds_removes_and_reassigns_listeners_without_changing_inflight_i
             source_id: None,
         },
     ];
+    // A pathname loss during an admitted request must rebind for new accepts
+    // without changing that existing request's owner.
+    std::fs::remove_file(&alice_path).unwrap();
     proxy.reload(config.clone()).await.unwrap();
     release.send(()).unwrap();
     assert!(pending.await.unwrap().starts_with("HTTP/1.1 200"));

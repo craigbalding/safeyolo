@@ -348,26 +348,43 @@ pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
         }
     }
     let mut active = std::collections::HashMap::new();
-    let map_path = crate::host_platform::agent_map_path()?;
-    if let Ok(source) = std::fs::read(&map_path)
-        && let Ok(map) =
-            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&source)
-    {
-        for (other, entry) in map {
-            let Some(ip) = entry.get("ip").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            let Ok([10, 200, third, fourth]) = ip
-                .parse::<std::net::Ipv4Addr>()
-                .map(|ip| ip.octets())
-                .map_err(|_| ())
-            else {
-                continue;
-            };
-            let address = u16::from(third) * 256 + u16::from(fourth);
-            if address > 0 {
-                active.insert(other, address - 1);
-            }
+    let configured = crate::native_config::read(&crate::host_platform::config_path())?;
+    for other in list()? {
+        // A damaged run cannot replace the retained host listener source.
+        // Persistent policy slots still reserve addresses for these agents.
+        let run = crate::host_runs::read(&other.name).ok().flatten();
+        if run.as_ref().is_some_and(|run| run["state"] == "stopped") {
+            continue;
+        }
+        let saved_ip = run
+            .as_ref()
+            .filter(|run| {
+                run["agent_id"] == other.id
+                    && crate::host_runs::id(&other.name).ok().as_deref()
+                        == run["run_id"]
+                            .as_str()
+                            .map(|id| format!("safeyolo-{id}"))
+                            .as_deref()
+            })
+            .and_then(|run| run["ip"].as_str());
+        let listener_ip = configured
+            .listeners
+            .iter()
+            .find(|listener| {
+                listener.agent_id == other.name
+                    && crate::host_platform::is_managed_agent_listener(listener)
+            })
+            .and_then(|listener| listener.source_id());
+        let Some(ip) = saved_ip.or(listener_ip.as_deref()) else {
+            continue;
+        };
+        let Ok([10, 200, third, fourth]) = ip.parse::<std::net::Ipv4Addr>().map(|ip| ip.octets())
+        else {
+            continue;
+        };
+        let address = u16::from(third) * 256 + u16::from(fourth);
+        if address > 0 {
+            active.insert(other.name, address - 1);
         }
     }
     for (other, slot) in active.iter() {

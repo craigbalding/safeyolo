@@ -467,36 +467,25 @@ async fn explain_child(directory: &Path) {
 }
 
 #[test]
-fn discovery_reports_prior_observations_and_survives_reload() {
-    const CHILD: &str = "SAFEYOLO_DISCOVERY_HTTP_FIXTURE";
+fn listener_reports_and_scoped_consumers_ignore_claimed_identity() {
+    const CHILD: &str = "SAFEYOLO_LISTENER_IDENTITY_FIXTURE";
     if let Some(directory) = std::env::var_os(CHILD) {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap()
-            .block_on(discovery_child(Path::new(&directory)));
+            .block_on(listener_child(Path::new(&directory)));
         return;
     }
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "http::agent_audit_tests::discovery_reports_prior_observations_and_survives_reload",
-            "--nocapture",
-        ])
-        .env(CHILD, directory.path())
-        .env("SAFEYOLO_DATA_DIR", directory.path())
-        .env(
-            "SAFEYOLO_LOG_PATH",
-            directory.path().join("unused-fallback.jsonl"),
-        )
-        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
-        .env_remove("SAFEYOLO_LOG_MAX_MB")
-        .env_remove("SAFEYOLO_LOG_BACKUPS")
-        .output()
-        .unwrap();
+        .args(["--exact", "http::agent_audit_tests::listener_reports_and_scoped_consumers_ignore_claimed_identity", "--nocapture"])
+        .env(CHILD, directory.path()).env("SAFEYOLO_DATA_DIR", directory.path())
+        .env("SAFEYOLO_LOG_PATH", directory.path().join("unused-fallback.jsonl"))
+        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX").env_remove("SAFEYOLO_LOG_MAX_MB").env_remove("SAFEYOLO_LOG_BACKUPS")
+        .output().unwrap();
     assert!(
         output.status.success(),
         "{}\n{}",
@@ -506,6 +495,7 @@ fn discovery_reports_prior_observations_and_survives_reload() {
     for name in [
         "alice.sock",
         "bob.sock",
+        "unknown.sock",
         "ready",
         "unused.sqlite3",
         "unused-fallback.jsonl",
@@ -514,550 +504,232 @@ fn discovery_reports_prior_observations_and_survives_reload() {
     }
 }
 
-fn discovery_map(path: &Path, value: Value, seconds: u64) {
-    use std::fs::{File, FileTimes};
-    std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-    File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_times(
-            FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds)),
-        )
-        .unwrap();
-}
-
-fn discovery_document(runtime: &crate::Runtime) -> Value {
-    serde_json::from_str(
-        &runtime
-            .agent_discovery
-            .get_agents(&runtime.audit, crate::circuit_runtime::now)
-            .unwrap()
-            .render_json(false)
-            .unwrap(),
+async fn listener_child(directory: &Path) {
+    let mut configuration = config(directory);
+    configuration.flow_store_enabled = true;
+    configuration.flow_store_db_path = directory.join("flows.sqlite3");
+    std::fs::write(
+        configuration.policy_file.as_ref().unwrap(),
+        json!({"permissions":[
+            {"action":"network:request", "resource":"*", "effect":"allow"}
+        ]})
+        .to_string(),
     )
-    .unwrap()
-}
+    .unwrap();
+    for agent in ["bob", "unknown"] {
+        configuration.listeners.push(crate::AgentListener {
+            agent_id: agent.into(),
+            socket_path: directory.join(format!("{agent}.sock")),
+            // Identical claimed source slots cannot select another listener's owner.
+            source_id: Some("192.0.2.10".into()),
+        });
+    }
+    // An old or agent-written map and metadata are no longer identity inputs.
+    let map = directory.join("data/agent_map.json");
+    std::fs::create_dir_all(map.parent().unwrap()).unwrap();
+    std::fs::write(
+        &map,
+        br#"{"bob":{"ip":"192.0.2.10"},"intruder":{"ip":"192.0.2.11"}}"#,
+    )
+    .unwrap();
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let initial = send(directory, "GET", "/agents?agent=forged", Some(TOKEN), b"").await;
+    assert!(initial.starts_with(b"HTTP/1.1 200"));
+    let initial: Value = serde_json::from_slice(body(&initial)).unwrap();
+    assert_eq!(initial["count"], 3);
+    assert_eq!(initial["agents"]["alice"], json!({"ip":"192.0.2.10"}));
+    assert_eq!(initial["agents"]["bob"], json!({"ip":"192.0.2.10"}));
+    assert!(initial["agents"].get("intruder").is_none());
+    assert!(!initial.to_string().contains("socket"));
 
-async fn discovered(directory: &Path, agent: &str) -> Value {
+    let mut alice = UnixStream::connect(directory.join("alice.sock"))
+        .await
+        .unwrap();
+    let mut bob = UnixStream::connect(directory.join("bob.sock"))
+        .await
+        .unwrap();
+    for stream in [&mut alice, &mut bob] {
+        let reply =
+            keepalive_request(stream, "POST", "/api/test-context/current?agent=forged").await;
+        // No JSON body was supplied. Reaching body validation proves that a
+        // stale map no longer removes the accepted listener's authority.
+        assert!(
+            reply.starts_with(b"HTTP/1.1 400"),
+            "{}",
+            String::from_utf8_lossy(&reply)
+        );
+    }
+    let declaration = br#"{"context":"run=R;agent=bob;test=claimed","ttl":60}"#;
+    let reply = send(
+        directory,
+        "POST",
+        "/api/test-context/current?agent=bob",
+        Some(TOKEN),
+        declaration,
+    )
+    .await;
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(body(&reply)).unwrap()["agent"],
+        "alice"
+    );
     let reply = send_as(
         directory,
-        agent,
+        "bob",
         "GET",
-        "/agents?agent=forged-identity",
+        "/api/test-context/current?agent=alice",
         Some(TOKEN),
         b"",
     )
     .await;
     assert!(reply.starts_with(b"HTTP/1.1 200"));
-    serde_json::from_slice(body(&reply)).unwrap()
-}
-
-async fn discovery_child(directory: &Path) {
-    let mut configuration = config(directory);
-    configuration.listeners.push(crate::config::AgentListener {
-        agent_id: "bob".into(),
-        socket_path: directory.join("bob.sock"),
-        source_id: Some("192.0.2.11".into()),
-    });
-    configuration.agent_map_file = directory
-        .join("agent-map.json")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    discovery_map(
-        Path::new(&configuration.agent_map_file),
-        json!({
-            "alice":{"ip":"192.0.2.10"}, "bob":{"ip":"192.0.2.11"}, "unseen":{}
-        }),
-        100,
-    );
-    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
-    let runtime = proxy.runtime.read().unwrap().clone();
-    let first = discovered(directory, "alice").await;
     assert_eq!(
-        first,
-        json!({"agents":{"alice":{"ip":"192.0.2.10"},"bob":{"ip":"192.0.2.11"},"unseen":{"ip":null}},"count":3})
-    );
-    let after_alice = discovery_document(&runtime);
-    assert!(after_alice["agents"]["alice"]["last_seen"].is_number());
-    assert!(after_alice["agents"]["bob"].get("last_seen").is_none());
-    let from_bob = discovered(directory, "bob").await;
-    assert_eq!(
-        from_bob["agents"]["alice"]["last_seen"],
-        after_alice["agents"]["alice"]["last_seen"]
-    );
-    assert!(from_bob["agents"]["bob"].get("last_seen").is_none());
-    let both = discovery_document(&runtime);
-    assert!(both["agents"]["bob"]["last_seen"].is_number());
-    assert!(both["agents"].get("forged-identity").is_none());
-
-    // CONNECT admission has a separate observation even when containment
-    // responds locally. The reserved target cannot resolve or open a socket.
-    runtime
-        .agent_discovery
-        .observe_trusted("bob", || 1.)
-        .unwrap();
-    let mut stream = UnixStream::connect(directory.join("bob.sock"))
-        .await
-        .unwrap();
-    stream.write_all(b"CONNECT _safeyolo.proxy.internal:80 HTTP/1.1\r\nHost: _safeyolo.proxy.internal:80\r\nConnection: close\r\n\r\n").await.unwrap();
-    let mut denied = Vec::new();
-    timeout(LIMIT, stream.read_to_end(&mut denied))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(denied.starts_with(b"HTTP/1.1 403"));
-    assert!(
-        discovery_document(&runtime)["agents"]["bob"]["last_seen"]
-            .as_f64()
-            .unwrap()
-            > 1.
+        serde_json::from_slice::<Value>(body(&reply)).unwrap()["agent"],
+        "bob"
     );
 
-    // A different configured file publishes new metadata but retains observed
-    // history and the shared owner used by the API and operator statistics.
-    configuration.agent_map_file = directory.join("next-map.json").to_str().unwrap().to_owned();
-    discovery_map(
-        Path::new(&configuration.agent_map_file),
-        json!({
-            "alice":{"ip":"192.0.2.10"}, "bob":{"ip":"192.0.2.11"}, "new-agent":{}
-        }),
-        200,
-    );
+    // A listener with no usable owner cannot gain Alice's scope from a body,
+    // query, header or the old map. Keep global reports bearer protected.
+    for (method, path, content) in [
+        (
+            "POST",
+            "/api/test-context/current?agent=alice",
+            declaration.as_slice(),
+        ),
+        (
+            "GET",
+            "/api/flows/search?evidence_owner=alice",
+            b"".as_slice(),
+        ),
+        (
+            "GET",
+            "/trace?request_id=req-00000000000000000000000000000000&agent=alice",
+            b"".as_slice(),
+        ),
+        (
+            "POST",
+            "/gateway/request-access?agent=alice",
+            br#"{"service":"demo","capability":"read","agent":"alice"}"#.as_slice(),
+        ),
+    ] {
+        let reply = send_as(directory, "unknown", method, path, Some(TOKEN), content).await;
+        assert!(
+            reply.starts_with(b"HTTP/1.1 403"),
+            "{method} {path}: {}",
+            String::from_utf8_lossy(&reply)
+        );
+    }
+    let rejected = send(directory, "GET", "/agents", None, b"").await;
+    assert!(rejected.starts_with(b"HTTP/1.1 401"));
+    let before = proxy.runtime.read().unwrap().agent_activity.clone();
+    std::fs::write(&map, b"not-json").unwrap();
     proxy.reload(configuration.clone()).await.unwrap();
-    let current = proxy.runtime.read().unwrap().clone();
     assert!(std::sync::Arc::ptr_eq(
-        &runtime.agent_discovery,
-        &current.agent_discovery
+        &before,
+        &proxy.runtime.read().unwrap().agent_activity
     ));
-    let after_reload = discovery_document(&current);
-    assert_eq!(
-        after_reload["agents"]["alice"]["last_seen"],
-        both["agents"]["alice"]["last_seen"]
-    );
-    assert!(after_reload["agents"].get("unseen").is_none());
-    assert_eq!(after_reload["agents"]["new-agent"], json!({"ip":null}));
-    let stats = crate::operator_stats::document(&current);
-    let stats: Value = serde_json::from_str(&stats.render_json(false).unwrap()).unwrap();
-    assert_eq!(
-        stats["service-discovery"]["map_file"],
-        configuration.agent_map_file
-    );
-    assert_eq!(stats["service-discovery"]["known_ips"], 2);
-    assert_eq!(stats["service-discovery"]["agents_seen"], 3);
-    assert_eq!(
-        stats["service-discovery"]["agents"]["bob"]["last_seen"],
-        after_reload["agents"]["bob"]["last_seen"]
-    );
-
-    let mut broken = configuration.clone();
-    broken.agent_map_file = directory
-        .join("broken-map.json")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    discovery_map(Path::new(&broken.agent_map_file), json!([]), 300);
-    proxy.reload(broken.clone()).await.unwrap();
-    assert!(
-        runtime
-            .agent_discovery
-            .matches_path(&broken.agent_map_file)
-            .unwrap()
-    );
-    // Request-boundary reconciliation contains the malformed top-level map
-    // error and keeps the accepted listener owner authoritative. The direct
-    // /agents report below retains its source-visible AttributeError, while
-    // an ordinary reserved request still reaches its local response and
-    // advances only alice's last-seen value.
-    let health_with_malformed_map = send(directory, "GET", "/health", Some(TOKEN), b"").await;
-    assert!(health_with_malformed_map.starts_with(b"HTTP/1.1 200"));
-    let invalid_report = send(directory, "GET", "/agents", Some(TOKEN), b"").await;
-    assert!(invalid_report.starts_with(b"HTTP/1.1 500"));
-    assert_eq!(
-        serde_json::from_slice::<Value>(body(&invalid_report)).unwrap()["error"],
-        "Internal error: AttributeError"
-    );
-    proxy.reload(configuration.clone()).await.unwrap();
-    assert!(
-        runtime
-            .agent_discovery
-            .matches_path(&configuration.agent_map_file)
-            .unwrap()
-    );
-    assert!(discovery_document(&runtime)["agents"]["alice"]["last_seen"].is_number());
-
-    // A later listener-bind failure keeps the published config but can occur
-    // after discovery configured its shared path. Restoring the old config
-    // must compare the owner's actual path rather than the published config.
-    let occupied = directory.join("occupied.sock");
-    std::fs::write(&occupied, b"owned regular file must survive").unwrap();
-    broken.listeners.push(crate::config::AgentListener {
-        agent_id: "unused".into(),
-        socket_path: occupied.clone(),
-        source_id: None,
+    for (stream, agent) in [(&mut alice, "alice"), (&mut bob, "bob")] {
+        let reply =
+            keepalive_request(stream, "GET", "/api/test-context/current?agent=forged").await;
+        assert!(reply.starts_with(b"HTTP/1.1 200"));
+        assert_eq!(
+            serde_json::from_slice::<Value>(body(&reply)).unwrap()["agent"],
+            agent
+        );
+    }
+    drop(alice);
+    drop(bob);
+    // FlowStore requires applied test context and ordinary proxy traffic.
+    // Reach a real origin with contradictory context claims on both listeners.
+    let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = origin.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        }
     });
-    assert!(proxy.reload(broken.clone()).await.is_err());
-    assert!(
-        runtime
-            .agent_discovery
-            .matches_path(&broken.agent_map_file)
+    for agent in ["alice", "bob", "unknown"] {
+        let mut stream = UnixStream::connect(directory.join(format!("{agent}.sock")))
+            .await
+            .unwrap();
+        stream.write_all(format!("GET http://{address}/owned-flow HTTP/1.1\r\nHost: {address}\r\nX-SafeYolo-Agent: alice\r\nX-Forwarded-For: 192.0.2.11\r\nX-SafeYolo-Test-Context: run=listener;agent=claimed;test=identity\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        let mut reply = Vec::new();
+        timeout(LIMIT, stream.read_to_end(&mut reply))
+            .await
             .unwrap()
-    );
-    proxy.reload(configuration.clone()).await.unwrap();
-    assert!(
-        runtime
-            .agent_discovery
-            .matches_path(&configuration.agent_map_file)
-            .unwrap()
-    );
-    assert_eq!(
-        std::fs::read(&occupied).unwrap(),
-        b"owned regular file must survive"
-    );
-
-    let records = drained(&proxy, directory);
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| record["event"] == "agent.discovered")
-            .count(),
-        2
-    );
-    discovery_map(
-        Path::new(&configuration.agent_map_file),
-        json!({
-            "alice":{"ip":"192.0.2.10"}, "bob":{"ip":"192.0.2.11"}, "charlie":{"ip":"192.0.2.12"}
-        }),
-        400,
-    );
-    runtime
-        .agent_discovery
-        .observe_trusted("alice", || 1.)
-        .unwrap();
-    runtime.audit.poison_for_test();
-    let health = send(directory, "GET", "/health", Some(TOKEN), b"").await;
-    assert!(health.starts_with(b"HTTP/1.1 200"));
-    let after_failure = discovery_document(&runtime);
-    assert_eq!(after_failure["agents"]["charlie"]["ip"], "192.0.2.12");
-    assert!(
-        after_failure["agents"]["alice"]["last_seen"]
-            .as_f64()
-            .unwrap()
-            > 1.
-    );
-
-    configuration.agent_map_file.clear();
+            .unwrap();
+        // The existing global allow also permits an ownerless request. Its
+        // claimed agent must still gain neither scoped API access nor a row.
+        let status = "200";
+        assert!(
+            reply.starts_with(format!("HTTP/1.1 {status}").as_bytes()),
+            "{}",
+            String::from_utf8_lossy(&reply)
+        );
+    }
+    timeout(LIMIT, origin_task).await.unwrap().unwrap();
+    let report = send(directory, "GET", "/agents", Some(TOKEN), b"").await;
+    let report: Value = serde_json::from_slice(body(&report)).unwrap();
+    for agent in ["alice", "bob"] {
+        assert!(report["agents"][agent]["last_seen"].is_number());
+        assert!(report["agents"][agent]["idle_seconds"].as_f64().unwrap() >= 0.);
+    }
+    assert!(report["agents"]["unknown"].get("last_seen").is_none());
+    configuration
+        .listeners
+        .retain(|listener| listener.agent_id != "bob");
     proxy.reload(configuration).await.unwrap();
-    assert_eq!(
-        discovery_document(&runtime)["agents"]["alice"]["last_seen"],
-        after_failure["agents"]["alice"]["last_seen"]
-    );
-    proxy.shutdown().await;
     assert!(
-        !self::records(&directory.join("audit.jsonl"))
+        UnixStream::connect(directory.join("bob.sock"))
+            .await
+            .is_err()
+    );
+    let report = send(directory, "GET", "/agents", Some(TOKEN), b"").await;
+    let report: Value = serde_json::from_slice(body(&report)).unwrap();
+    assert_eq!(report["count"], 2);
+    assert!(report["agents"].get("bob").is_none());
+    let rows = drained(&proxy, directory);
+    assert!(
+        rows.iter()
+            .any(|row| row["event"] == "security.test_context_declared" && row["agent"] == "alice")
+    );
+    let unavailable: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "security.agent_identity_unavailable")
+        .collect();
+    assert_eq!(unavailable.len(), 5);
+    assert!(unavailable.iter().all(|row| row.get("agent").is_none()));
+    assert!(
+        !rows
             .iter()
-            .any(|row| row["event"] == "traffic.egress")
+            .any(|row| row["event"] == "security.agent_identity_conflict"
+                || row["event"] == "agent.discovered")
     );
     assert!(
         !std::fs::read_to_string(directory.join("audit.jsonl"))
             .unwrap()
             .contains(TOKEN)
     );
-}
-
-#[test]
-fn conflicted_request_snapshot_quarantines_scoped_consumers() {
-    const CHILD: &str = "SAFEYOLO_IDENTITY_CONSUMER_FIXTURE";
-    if let Some(directory) = std::env::var_os(CHILD) {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(conflicted_child(Path::new(&directory)));
-        return;
-    }
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "http::agent_audit_tests::conflicted_request_snapshot_quarantines_scoped_consumers",
-            "--nocapture",
-        ])
-        .env(CHILD, directory.path())
-        .env("SAFEYOLO_DATA_DIR", directory.path())
-        .env(
-            "SAFEYOLO_LOG_PATH",
-            directory.path().join("unused-fallback.jsonl"),
-        )
-        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
-        .env_remove("SAFEYOLO_LOG_MAX_MB")
-        .env_remove("SAFEYOLO_LOG_BACKUPS")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-async fn conflicted_child(directory: &Path) {
-    let mut configuration = config(directory);
-    configuration.agent_map_file = directory
-        .join("agent-map.json")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    discovery_map(
-        Path::new(&configuration.agent_map_file),
-        json!({"bob":{"ip":"192.0.2.10"}}),
-        100,
-    );
-    let proxy = Proxy::start(configuration).await.unwrap();
-    let startup = drained(&proxy, directory);
-    assert_eq!(
-        names(&startup),
-        ["agent.discovered", "ops.policy_reload", "ops.startup"]
-    );
-
-    // A malformed body and a forged query value must not be read or become
-    // an owner when the listener/map sources disagree.
-    let declaration = send_as(
-        directory,
-        "alice",
-        "POST",
-        "/api/test-context/current?agent=forged",
-        Some(TOKEN),
-        b"not-json",
-    )
-    .await;
-    assert!(declaration.starts_with(b"HTTP/1.1 403"));
-    assert!(String::from_utf8_lossy(body(&declaration)).contains("Could not identify agent"));
-
-    // Flow, trace and gateway access routes all consume the same ownerless
-    // snapshot before scoped providers or request-body decoding.
-    for (method, path, content) in [
-        (
-            "GET",
-            "/api/flows/search?evidence_owner=bob&agent=forged",
-            b"".as_slice(),
-        ),
-        (
-            "GET",
-            "/trace?request_id=req-00000000000000000000000000000000&agent=bob",
-            b"".as_slice(),
-        ),
-        (
-            "POST",
-            "/gateway/request-access?agent=bob",
-            b"[]".as_slice(),
-        ),
-    ] {
-        let reply = send_as(directory, "alice", method, path, Some(TOKEN), content).await;
-        assert!(reply.starts_with(b"HTTP/1.1 403"), "{method} {path}");
-    }
-
-    // Discovery reporting remains a local administrative read, but it must
-    // show no last-seen owner for either side of the conflict.
-    let report = send_as(
-        directory,
-        "alice",
-        "GET",
-        "/agents?agent=forged",
-        Some(TOKEN),
-        b"",
-    )
-    .await;
-    assert!(report.starts_with(b"HTTP/1.1 200"));
-    let report: Value = serde_json::from_slice(body(&report)).unwrap();
-    assert!(report["agents"]["bob"].get("last_seen").is_none());
-    assert!(!serde_json::to_string(&report).unwrap().contains("forged"));
-
-    let records = drained(&proxy, directory);
-    let conflicts: Vec<&Value> = records
-        .iter()
-        .filter(|record| record["event"] == "security.agent_identity_conflict")
-        .collect();
-    assert_eq!(conflicts.len(), 5);
-    for record in conflicts {
-        assert!(record.get("agent").is_none());
-        assert_eq!(record["details"]["uds_agent"], "alice");
-        assert_eq!(record["details"]["mapped_agent"], "bob");
-        assert_eq!(
-            record["details"]["attribution"]["attribution_status"],
-            "conflict"
-        );
-        assert!(
-            record["details"]["attribution"]
-                .get("evidence_owner")
-                .is_none()
-        );
-    }
-    assert!(!records.iter().any(|record| {
-        record.to_string().contains("forged") || record.to_string().contains("agent\\\":\\\"bob")
-    }));
-}
-
-#[test]
-fn map_replacement_quarantines_two_reused_agent_connections() {
-    const CHILD: &str = "SAFEYOLO_IDENTITY_REUSE_FIXTURE";
-    if let Some(directory) = std::env::var_os(CHILD) {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(reused_identity_child(Path::new(&directory)));
-        return;
-    }
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "http::agent_audit_tests::map_replacement_quarantines_two_reused_agent_connections",
-            "--nocapture",
-        ])
-        .env(CHILD, directory.path())
-        .env("SAFEYOLO_DATA_DIR", directory.path())
-        .env(
-            "SAFEYOLO_LOG_PATH",
-            directory.path().join("unused-fallback.jsonl"),
-        )
-        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
-        .env_remove("SAFEYOLO_LOG_MAX_MB")
-        .env_remove("SAFEYOLO_LOG_BACKUPS")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    for name in [
-        "alice.sock",
-        "bob.sock",
-        "ready",
-        "unused.sqlite3",
-        "unused-fallback.jsonl",
-    ] {
-        assert!(!directory.path().join(name).exists(), "{name}");
-    }
-}
-
-async fn reused_identity_child(directory: &Path) {
-    let mut configuration = config(directory);
-    let mut bob = configuration.listeners[0].clone();
-    bob.agent_id = "bob".into();
-    bob.socket_path = directory.join("bob.sock");
-    bob.source_id = Some("192.0.2.11".into());
-    configuration.listeners.push(bob);
-    configuration.agent_map_file = directory
-        .join("agent-map.json")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    discovery_map(
-        Path::new(&configuration.agent_map_file),
-        json!({
-            "alice":{"ip":"192.0.2.10"},
-            "bob":{"ip":"192.0.2.11"}
-        }),
-        100,
-    );
-    let proxy = Proxy::start(configuration.clone()).await.unwrap();
-    let startup = drained(&proxy, directory);
-    assert_eq!(
-        names(&startup),
-        [
-            "agent.discovered",
-            "agent.discovered",
-            "ops.policy_reload",
-            "ops.startup"
-        ]
-    );
-
-    let mut alice_connection = UnixStream::connect(directory.join("alice.sock"))
-        .await
-        .unwrap();
-    let mut bob_connection = UnixStream::connect(directory.join("bob.sock"))
-        .await
-        .unwrap();
-
-    // Both real listener identities can use one persistent H1 connection at
-    // the same time while the map still agrees with the host-owned sockets.
-    let (alice_ok, bob_ok) = tokio::join!(
-        keepalive_request(&mut alice_connection, "GET", "/health"),
-        keepalive_request(&mut bob_connection, "GET", "/health"),
-    );
-    assert!(alice_ok.starts_with(b"HTTP/1.1 200"));
-    assert!(bob_ok.starts_with(b"HTTP/1.1 200"));
-    let before = discovery_document(&proxy.runtime.read().unwrap());
-    let alice_seen = before["agents"]["alice"].get("last_seen").cloned();
-    let bob_seen = before["agents"]["bob"].get("last_seen").cloned();
-
-    // A changed map is observed on the next request boundary. The existing
-    // connections retain their listener owners, but both requests are
-    // quarantined because the map now claims the opposite owner.
-    discovery_map(
-        Path::new(&configuration.agent_map_file),
-        json!({
-            "alice":{"ip":"192.0.2.11"},
-            "bob":{"ip":"192.0.2.10"}
-        }),
-        200,
-    );
-    let (alice_denied, bob_denied) = tokio::join!(
-        keepalive_request(
-            &mut alice_connection,
-            "GET",
-            "/api/test-context/current?agent=forged",
-        ),
-        keepalive_request(
-            &mut bob_connection,
-            "GET",
-            "/api/test-context/current?agent=forged",
-        ),
-    );
-    assert!(alice_denied.starts_with(b"HTTP/1.1 403"));
-    assert!(bob_denied.starts_with(b"HTTP/1.1 403"));
-    drop(alice_connection);
-    drop(bob_connection);
-
-    // Conflict handling cannot update either side's last-seen state, and the
-    // event retains both trusted sources for independent attribution review.
-    let after = discovery_document(&proxy.runtime.read().unwrap());
-    assert_eq!(
-        after["agents"]["alice"].get("last_seen").cloned(),
-        alice_seen
-    );
-    assert_eq!(after["agents"]["bob"].get("last_seen").cloned(), bob_seen);
-    let records = drained(&proxy, directory);
-    let conflicts: Vec<&Value> = records
-        .iter()
-        .filter(|record| record["event"] == "security.agent_identity_conflict")
-        .collect();
-    assert_eq!(conflicts.len(), 2);
-    assert!(conflicts.iter().any(|record| {
-        record["details"]["uds_agent"] == "alice"
-            && record["details"]["mapped_agent"] == "bob"
-            && record["details"]["attribution"]["attribution_status"] == "conflict"
-    }));
-    assert!(conflicts.iter().any(|record| {
-        record["details"]["uds_agent"] == "bob"
-            && record["details"]["mapped_agent"] == "alice"
-            && record["details"]["attribution"]["attribution_status"] == "conflict"
-    }));
-    assert!(conflicts.iter().all(|record| {
-        record.get("agent").is_none()
-            && record["details"]["attribution"]
-                .get("evidence_owner")
-                .is_none()
-    }));
     proxy.shutdown().await;
+    let database = rusqlite::Connection::open(directory.join("flows.sqlite3")).unwrap();
+    for agent in ["alice", "bob"] {
+        let count: i64 = database.query_row(
+            "SELECT count(*) FROM flows WHERE evidence_owner=?1 AND agent_id=?1 AND trusted_transport_identity=?1 AND attribution_status='resolved'",
+            [agent], |row| row.get(0),
+        ).unwrap();
+        assert!(count > 0, "no listener-owned stored flow for {agent}");
+    }
+    let invalid: i64 = database.query_row(
+        "SELECT count(*) FROM flows WHERE evidence_owner IS NULL OR evidence_owner NOT IN ('alice','bob')",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(invalid, 0);
 }

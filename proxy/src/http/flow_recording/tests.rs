@@ -17,7 +17,6 @@ fn identity(agent: &str) -> ConnectionIdentity {
         agent_id: agent.into(),
         connection_id: "owned-connection".into(),
         source_id: Some("192.0.2.20".into()),
-        reconciled: None,
     }
 }
 

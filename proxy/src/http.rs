@@ -1776,7 +1776,10 @@ where
                     store: &runtime.traces,
                     now: &crate::circuit_runtime::now,
                 }),
-                discovery: Some(&runtime.agent_discovery),
+                agents: Some(agent_api::AgentReportContext {
+                    activity: &runtime.agent_activity,
+                    listeners: &runtime.config.listeners,
+                }),
                 audit: Some(&runtime.audit),
                 flows: runtime.flow_recorder.store(),
                 circuits: runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
@@ -2364,15 +2367,15 @@ where
 {
     let pipeline_probe = probe::is_host(&destination.host);
     let client_version = request.version();
-    // CONNECT has no ordinary traffic request hook; retain its source
-    // observation at the reached admission point after the snapshot exists.
+    // CONNECT has no ordinary traffic request hook. Observe its accepted
+    // listener at admission, without consulting a second identity source.
     if request.method() == Method::CONNECT
-        && let Some(snapshot) = identity.reconciled_snapshot()
+        && let Some(agent) = identity.request_agent()
         && let Err(error) = runtime
-            .agent_discovery
-            .observe_reconciled(&snapshot, crate::circuit_runtime::now)
+            .agent_activity
+            .observe(agent, crate::circuit_runtime::now())
     {
-        eprintln!("Agent discovery observation failed: {error}");
+        eprintln!("Agent activity observation failed: {error}");
     }
     let traffic = (request.method() != Method::CONNECT)
         .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
@@ -4317,35 +4320,28 @@ pub(crate) fn serve_request(
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
-        let identity = match runtime.agent_discovery.reconcile(
-            crate::agent_discovery::IdentitySources {
-                uds_agent: Some(&identity.agent_id),
-                client_ip: identity.source_id.as_deref(),
-                request_id: Some(&request_id),
-                defer_observation: true,
-                ..Default::default()
-            },
-            &runtime.audit,
-            crate::circuit_runtime::now,
-        ) {
-            Ok(reconciled) => identity.with_reconciled(reconciled),
-            Err(error) => {
-                // A request-boundary identity event is part of the source
-                // hook. Preserve its reached error and do not run consumers
-                // against an unverified listener/map result.
-                eprintln!("request {request_id} identity reconciliation failed: {error}");
+        if identity.request_agent().is_none() {
+            let mut event = identity.request_event(
+                "security.agent_identity_unavailable",
+                crate::audit::Kind::Security,
+                &request_id,
+                "Traffic has no trusted agent identity",
+                json!({"reason":"no_trusted_identity"}),
+            );
+            event.addon = Some("identity".into());
+            event.severity = crate::audit::Severity::Medium;
+            event.decision = Some(crate::audit::Decision::Log);
+            if runtime.audit.emit(event).is_err() {
                 return Ok(response(StatusCode::BAD_GATEWAY, "Proxy request failed"));
             }
-        };
+        }
         let connect = request.method() == Method::CONNECT;
         let head = request.method() == Method::HEAD;
-        let recording = flow_recording::Recording::new_with_discovery(
+        let recording = flow_recording::Recording::new(
             runtime.flow_recorder.clone(),
             identity.clone(),
             request_id.clone(),
             !connect,
-            runtime.agent_discovery.clone(),
-            runtime.audit.clone(),
         );
         let _pending_recording = recording.pending();
         let destination =

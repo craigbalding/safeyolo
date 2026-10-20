@@ -107,13 +107,16 @@ interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYolo. No host firewall rule participates in this
 boundary.
 
-The host owns the socket directory named `<ip>_<agent>`. The CLI uses the agent
-map to configure each managed Rust listener with its socket path, agent
-identity, and source address. When the listener accepts a connection, it
-assigns the configured agent identity to that connection. The agent cannot
-choose another agent's socket path. On Linux, a synthetic loopback address
-supplies the `<ip>` attribution value. It is not an external interface or a
-direct egress path.
+The host creates each managed proxy socket at
+`~/.safeyolo/agents/<agent-name>/proxy/proxy.sock`. The native listener
+configuration binds that socket to the agent name and source address. When the
+listener accepts a connection, it fixes those values for the connection.
+Request headers, guest metadata and IP claims cannot select another owner.
+The proxy does not read an agent map to establish or reconcile identity.
+Linux mounts only the agent's dedicated proxy directory into the sandbox.
+On Linux, a synthetic loopback address supplies attribution. It is not an
+external interface or a direct egress path. Existing explicit operator
+listeners keep their configured paths.
 
 For a resolved service-gateway token, SafeYolo rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded

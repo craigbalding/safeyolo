@@ -5,8 +5,8 @@
 pub mod admin_api;
 mod admin_listener;
 pub mod admin_shield;
+pub mod agent_activity;
 pub mod agent_api;
-pub mod agent_discovery;
 pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
@@ -288,65 +288,46 @@ pub(crate) struct ConnectionIdentity {
     agent_id: String,
     connection_id: String,
     source_id: Option<String>,
-    /// The immutable request-boundary reconciliation, when this identity is
-    /// being consumed by request hooks. Listener accept identities leave this
-    /// empty and are reconciled once for each request.
-    reconciled: Option<Arc<agent_discovery::ReconciledIdentity>>,
 }
 
 impl ConnectionIdentity {
     fn request_agent(&self) -> Option<&str> {
-        self.reconciled
-            .as_deref()
-            .map(|identity| identity.agent.as_deref())
-            .unwrap_or(Some(&self.agent_id))
-            .filter(|agent| !agent.is_empty())
+        let agent = self.agent_id.trim();
+        (!agent.is_empty() && !matches!(agent, "unknown" | "default")).then_some(agent)
     }
 
     fn request_identity(&self) -> network_guard::Identity<'_> {
-        match self.reconciled.as_deref() {
-            Some(identity) => match identity.status {
-                agent_discovery::IdentityStatus::Resolved => network_guard::Identity::Resolved(
-                    identity.agent.as_deref().expect("resolved identity owner"),
-                ),
-                agent_discovery::IdentityStatus::Conflict => network_guard::Identity::Conflict,
-                agent_discovery::IdentityStatus::Unavailable => {
-                    network_guard::Identity::Unavailable
-                }
-            },
-            None => network_guard::Identity::Resolved(&self.agent_id),
-        }
-    }
-
-    fn with_reconciled(mut self, identity: agent_discovery::ReconciledIdentity) -> Self {
-        self.reconciled = Some(Arc::new(identity));
-        self
-    }
-
-    fn reconciled_snapshot(&self) -> Option<Arc<agent_discovery::ReconciledIdentity>> {
-        self.reconciled.clone()
+        self.request_agent().map_or(
+            network_guard::Identity::Unavailable,
+            network_guard::Identity::Resolved,
+        )
     }
 
     fn audit_attribution(&self) -> audit::Attribution {
-        if let Some(identity) = self.reconciled.as_deref() {
-            return identity.audit_attribution();
-        }
+        let agent = self.request_agent();
         audit::Attribution {
-            evidence_owner: Some(self.agent_id.clone()),
-            trusted_transport_identity: Some(self.agent_id.clone()),
+            evidence_owner: agent.map(str::to_owned),
+            trusted_transport_identity: agent.map(str::to_owned),
             initiator: Some(audit::Initiator::Unknown),
-            status: Some(audit::AttributionStatus::Resolved),
+            status: Some(if agent.is_some() {
+                audit::AttributionStatus::Resolved
+            } else {
+                audit::AttributionStatus::Unavailable
+            }),
             provenance: Some(
-                serde_json::json!({
-                    "transport_source": "uds",
-                    "uds_agent": self.agent_id.chars().take(128).collect::<String>(),
-                })
+                match agent {
+                    Some(agent) => serde_json::json!({
+                        "transport_source": "uds",
+                        "uds_agent": agent.chars().take(128).collect::<String>(),
+                    }),
+                    None => serde_json::json!({"reason":"no_trusted_identity"}),
+                }
                 .into(),
             ),
         }
     }
 
-    /// Correlate request observations with the reconciled ingress identity.
+    /// Correlate request observations with the accepted listener identity.
     /// The connection ID is transport-owned, never supplied by request headers.
     fn request_event(
         &self,
@@ -411,7 +392,7 @@ pub(crate) struct Runtime {
     traffic_view: Arc<traffic_view::TrafficView>,
     audit: Arc<audit::Writer>,
     request_logger: Arc<request_logger::RequestLogger>,
-    agent_discovery: Arc<agent_discovery::AgentDiscovery>,
+    agent_activity: Arc<agent_activity::AgentActivity>,
     metrics: Arc<metrics::Metrics>,
     traces: Arc<trace::TraceStore>,
     memory_monitor: Arc<memory_monitor::MemoryMonitor>,
@@ -646,9 +627,9 @@ impl Runtime {
             let request_logger = previous
                 .map(|runtime| runtime.request_logger.clone())
                 .unwrap_or_default();
-            let agent_discovery = previous
-                .map(|runtime| runtime.agent_discovery.clone())
-                .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
+            let agent_activity = previous
+                .map(|runtime| runtime.agent_activity.clone())
+                .unwrap_or_default();
             let metrics = previous
                 .map(|runtime| runtime.metrics.clone())
                 .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
@@ -783,7 +764,7 @@ impl Runtime {
                 traffic_view,
                 audit: audit.clone(),
                 request_logger,
-                agent_discovery,
+                agent_activity,
                 metrics,
                 traces,
                 memory_monitor,
@@ -798,20 +779,7 @@ impl Runtime {
             if previous.is_none() {
                 runtime.configure_declarations()?;
             }
-            if !runtime
-                .agent_discovery
-                .matches_path(&runtime.config.agent_map_file)?
-                && let Err(error) = runtime
-                    .agent_discovery
-                    .configure(&runtime.config.agent_map_file, &runtime.audit)
-            {
-                // The source addon dispatcher logs configuration exceptions and
-                // keeps running. Reporting metadata is not a startup requirement.
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "Agent discovery configuration failed: {error}"
-                );
-            }
+
             Ok(runtime)
         })();
         // Catalog errors can start the writer before a Runtime exists. Drain
@@ -1524,7 +1492,6 @@ async fn accept_agents(
                         agent_id: agent_id.clone(),
                         connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
                         source_id: source_id.clone(),
-                        reconciled: None,
                     };
                     // Register before spawning so even an unpolled canceled
                     // task owns cleanup. One guard spans all inner upgrades.

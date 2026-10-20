@@ -459,7 +459,7 @@ async fn serve_connection(
                     instance_id: Some(&runtime.instance_id),
                     command_centre: access.command_centre.as_ref(),
                     operator_modes: Some(&runtime.operator_modes),
-                    agent_discovery: Some(&runtime.agent_discovery),
+                    agent_activity: Some(&runtime.agent_activity),
                     listeners: &runtime.config.listeners,
                     audit: Some(&runtime.audit),
                     client_ip: Some(&client_ip),
