@@ -7,6 +7,7 @@ use std::{
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::Command,
+    sync::Mutex,
     time::Duration,
 };
 
@@ -20,6 +21,10 @@ use tokio::{
 
 const TOKEN: &str = "desktop-native-token";
 const ID: &str = "ag-11111111111111111111111111111111";
+
+// The fixtures change the process environment. Hold this lock outside the Tokio
+// runtime so all remaining tasks stop before the next fixture changes its inputs.
+static DESKTOP_TEST_ENV: Mutex<()> = Mutex::new(());
 
 #[path = "support/owned_run.rs"]
 mod owned_run;
@@ -264,8 +269,17 @@ async fn action_request(
     response
 }
 
-#[tokio::test]
-async fn typed_desktop_action_binds_approval_and_keeps_preview_access_with_operator() {
+#[test]
+fn typed_desktop_action_binds_approval_and_keeps_preview_access_with_operator() {
+    let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check_typed_desktop_action());
+}
+
+async fn check_typed_desktop_action() {
     let root = TempDir::new().unwrap();
     fixture(root.path());
     fs::write(root.path().join("policy.toml"),format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[controls.credentials]\nenabled=false\n")).unwrap();
@@ -891,8 +905,18 @@ fi
     proxy.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
+#[test]
+fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
+    let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check_native_admin_desktop());
+}
+
+async fn check_native_admin_desktop() {
     let root = TempDir::new().unwrap();
     let guest = UnixListener::bind(root.path().join("guest.sock")).unwrap();
     fixture(root.path());
@@ -1597,9 +1621,18 @@ fi
 
 /// Real browser/noVNC/native bridge/X11 evidence with controlled runsc control.
 /// The installed platform witness separately proves the real runtime leg.
-#[tokio::test]
+#[test]
 #[ignore = "needs Playwright Python, noVNC 1.6 assets, native guest helper, Xvfb and x11vnc"]
-async fn native_desktop_real_browser() {
+fn native_desktop_real_browser() {
+    let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check_native_desktop_real_browser());
+}
+
+async fn check_native_desktop_real_browser() {
     let storage = std::env::var("SAFEYOLO_DESKTOP_STORAGE").unwrap();
     let root = TempDir::new_in(storage).unwrap();
     fixture(root.path());
