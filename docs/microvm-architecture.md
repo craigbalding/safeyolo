@@ -167,15 +167,19 @@ On Linux, gVisor reads the shared `~/.safeyolo/share/rootfs-tree/` directory.
 The launcher selects a per-agent file-backed overlay under
 `~/.safeyolo/agents/<name>/overlay/`. Linux does not use the 2 GiB ext4
 image or create the macOS overlay disk. Its backing filesystem supplies
-the disk space.
+the disk space. This Linux upper belongs to the current sandbox run.
+Recreating the sandbox discards its root changes; the home, workspace and
+cache mounts provide persistent storage.
 
 On both platforms, `/home/agent` and `/workspace` are separate writable
 host mounts. The home lives in `~/.safeyolo/agents/<name>/home/`; the
 workspace is the operator-selected project directory. mise runtimes, shell
 history and agent state in the home persist across stops. Project files
 remain in the workspace. These mounts use their host filesystem's capacity,
-independently of the root overlay's capacity. Linux also mounts the paths
-in `cache-paths.txt` from per-agent host cache directories.
+outside the macOS root overlay's ext4 limit. The mounts can share one host
+filesystem with each other and with the root overlay's backing file. Their
+free space is shared; do not add their reported capacities. Linux also mounts
+the paths in `cache-paths.txt` from per-agent host cache directories.
 
 With `--ephemeral`, root changes use a memory-backed overlay and disappear
 on stop. The persistent home and workspace remain separate mounts.
@@ -187,7 +191,8 @@ Source: [native platform launch](../proxy/src/host_platform.rs),
 ### Check available space
 
 In a running agent shell, check the root and the two writable host mounts
-separately:
+separately. On Linux, root capacity and inode counts can be synthetic. Use
+the Linux host check below to find the backing filesystem's free space.
 
 ```sh
 df -h / /home/agent /workspace
@@ -211,12 +216,27 @@ file. Apple File System (APFS) clones can share blocks, so adding `du`
 results does not give exclusive physical space used. The host volume can
 also run out of free space before the guest reaches its ext4 limit.
 
+On a Linux host with the default installation, replace `NAME` with the
+agent name and `WORKSPACE` with its host project path. Check the filesystems
+that hold the writable upper, persistent home and workspace:
+
+```sh
+df -h ~/.safeyolo/agents/NAME/overlay ~/.safeyolo/agents/NAME/home "WORKSPACE"
+```
+
+These host results show backing filesystem capacity and free space. Linux
+guest root `df` can report synthetic capacity. It does not establish a disk
+limit or the host's available space. Directory `du` alone can also miss
+gVisor's open, unlinked backing file, as the Linux measurement below shows.
+
 ### Measured macOS footprint
 
 On 20 October 2026, an owned Apple Silicon VZ guest used the qualified
 `guest-2026-10-17.39055525961001` image and host package source
-`acdd7b4bdb19f72a84dfbf0f2ca434950650cadb`. The storage construction and
-mounts match the source at `87382b0a969712b7646ed764eb970df32f7ce67f`.
+`acdd7b4bdb19f72a84dfbf0f2ca434950650cadb`. The guest image source was
+`51e2e3da38517edaf48a95d3f04f952681699345`. The storage construction and
+mounts were checked against source at
+`a8e04e461705efe31f7c8aeac761a5798f9577f7`.
 These are observations from one workload, not reservations or quotas.
 
 The offline workload selected prepared Node 22.23.2 and Python 3.12.12 with
@@ -246,26 +266,73 @@ with 25.06 GiB available at the start. They did not report root capacity.
 
 The observer recorded 26 samples, with a 0.5-second pause plus probe time
 between samples, and snapshots before, after and after stop. The highest
-recorded values can miss a shorter transient peak. Full Linux/gVisor
-measurements remain unverified; the Linux description above comes from
-the current launch and mount code. See [issue #355](https://github.com/craigbalding/safeyolo/issues/355)
-for the remaining cross-platform measurement work.
+recorded values can miss a shorter transient peak.
+
+### Measured Linux footprint
+
+On 20 October 2026, an owned AMD64 Linux VM ran production CLI and proxy
+source `c5ce76019b6c997e282ab05cea0212b492e945d2`, gVisor
+`release-20261005.0` and guest `guest-2026-10-16.1082`. Its storage launch
+and mount code is unchanged at source
+`a8e04e461705efe31f7c8aeac761a5798f9577f7`. The figures below describe
+the installed packages named here.
+
+The same prepared Node, Python, Make, pytest, httpx and TypeScript workload
+completed with exit status 0. It used the same project source and offline
+setup described for macOS. The observer recorded 36 live samples, with a
+0.5-second pause plus probe time between samples, and before, after and
+stopped snapshots. These observations can miss shorter transient peaks.
+
+| Host storage | Fresh boot | After workload | Highest recorded allocation |
+| --- | ---: | ---: | ---: |
+| Shared rootfs tree | 378.59 MiB | 378.59 MiB | 378.59 MiB |
+| Persistent home | 16 KiB | 313.50 MiB | 331.10 MiB |
+| Workspace, including offline inputs and project | 100.46 MiB | 194.00 MiB | 194.00 MiB |
+
+The workspace included 100.46 MiB of unchanged offline inputs and a
+93.53 MiB project after the workload. The project is already in the
+workspace total. Per-agent host cache directories stayed at 28 KiB.
+`/home/agent` and `/workspace` reported the same 18.33 GiB backing volume,
+with 8.56 GiB available before the workload and 8.16 GiB after it. These
+figures describe one shared volume, not two independent disks.
+
+Guest root `df` reported a synthetic 9,223,372,036,854,771,712-byte
+capacity. Its used count rose from 3,821,568 to 4,718,592 bytes. The
+normal-user observer missed the live backing file during the full workload;
+an empty overlay directory did not prove zero allocation.
+
+A separate root-only observation restarted the same stopped instance and
+installed cached Make. It did not repeat the full toolchain workload. The
+observer verified the owned runtime's process identity and read its open,
+unlinked filestore descriptor. The file had a 1,073,741,824-byte logical
+length at both observations. Allocated blocks occupied 3,821,568 bytes
+(3.64 MiB) fresh and 4,718,592 bytes (4.50 MiB) after Make. That logical
+length alone does not establish a fixed disk limit. No Linux volume was
+filled to test exhaustion.
+
+Both platform workloads and the separate probes completed owned-runtime
+cleanup. The Linux measurement VM was shut down. The observations and their
+limits are recorded in [issue #355](https://github.com/craigbalding/safeyolo/issues/355).
 
 ### When storage fills
 
 The macOS root overlay has a finite ext4 capacity even though its backing
 file is sparse. Root package files and other writes outside host mounts
 consume that capacity. Home, project and Linux cache writes consume space
-on their respective host filesystems. A full filesystem or exhausted
-inodes can prevent new files and package installation. Check the affected
-mount before removing unneeded files.
+on their respective host filesystems. The Linux file-backed upper also
+needs space on its backing filesystem. A full filesystem or exhausted inodes
+can prevent new files and package installation. `/tmp` and an ephemeral
+root upper use memory-backed storage. Check the affected mount before
+removing unneeded files, and check host free space for a file-backed upper.
 
 A separate VZ guest with a deliberately smaller 128 MiB test overlay
 demonstrated root exhaustion without filling the host volume. A bounded
 write stopped after 105,852,928 bytes with `No space left on device` and
 exit status 1. Root `df` reported zero available bytes. Removing the test
 file allowed a new write. The default 256 GiB overlay was not filled;
-host-volume exhaustion and memory-overlay exhaustion were not induced.
+Linux exhaustion, host-volume exhaustion and memory-overlay exhaustion
+were not induced. The failure and recovery observation applies to the
+small macOS test overlay.
 
 ## Agent map and native listeners
 

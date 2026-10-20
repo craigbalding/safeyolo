@@ -18,8 +18,8 @@ Use the terminal on a workstation or headless server; the Mac GUI is optional.
 
 - A separate sandbox and persistent home for each agent: hardware-backed Linux
   microVMs on Apple Silicon macOS, rootless gVisor on Linux. See
-  [storage capacity and use](docs/microvm-architecture.md#persistence) for root,
-  home and workspace limits.
+  [storage capacity and use](docs/microvm-architecture.md#persistence) for how
+  root, home and workspace use disk space.
 - Mediated network access with per-agent host policies, approvals, rate budgets
   and service capabilities. Sandboxes have no external network interface.
 - Host-owned service credentials and scoped credential enforcement. A network

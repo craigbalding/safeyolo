@@ -323,8 +323,8 @@ Eliminating sudo entirely would require either a user-namespace chroot (rootless
 ## Troubleshooting
 
 **`mkfs.ext4: No space left on device`**
-During a build, this error means content exceeded the base image size.
-The script uses a fixed 2048 MiB ext4 (see
+During a build, check free space on the build host and whether the staged
+content fits the base image. The script defaults to a 2048 MiB ext4 (see
 `ROOTFS_SIZE_MB` in `build-rootfs.sh`); override it with
 `ROOTFS_SIZE_MB=4096 ./build-rootfs.sh` if you're staging a rootfs script that
 adds bulky packages. Alternatively, trim the customize-hook or the extras
