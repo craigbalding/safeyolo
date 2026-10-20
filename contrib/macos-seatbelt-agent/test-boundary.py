@@ -137,7 +137,7 @@ def marker_result(marker):
     return json.loads(marker.read_text())
 
 
-def launchd_probes(home, binary, prefix, identity, trusted_policy):
+def launchd_probes(home, binary, prefix, identity, consumer_profile_path):
     domain = f"gui/{os.getuid()}"
     checked(["/bin/launchctl", "print", domain])
     label, submitted = identity + ".direct", identity + ".submit"
@@ -166,11 +166,11 @@ def launchd_probes(home, binary, prefix, identity, trusted_policy):
         # Correct that consumer: protected system code attaches the protected
         # profile before reaching the same agent-writable executable.
         write_plist(plist, {"Label": label, "ProgramArguments": [
-            "/usr/bin/sandbox-exec", "-f", str(trusted_policy),
+            "/usr/bin/sandbox-exec", "-f", str(consumer_profile_path),
             "-D", f"AGENT_HOME={home}", "-D", "TOOLCHAIN_ROOT=/opt/homebrew", str(binary),
         ], "RunAtLoad": False})
-        refusal([*prefix, "/bin/sh", "-c", 'printf poison > "$1"', "sh", str(trusted_policy)])
-        assert trusted_policy.read_bytes() == (home / "candidate.sb").read_bytes()
+        refusal([*prefix, "/bin/sh", "-c", 'printf poison > "$1"', "sh", str(consumer_profile_path)])
+        assert consumer_profile_path.read_bytes() == (home / "candidate.sb").read_bytes()
         checked(["/bin/launchctl", "bootstrap", domain, str(plist)])
         checked([*prefix, "/bin/launchctl", "kickstart", target])
         corrected = marker_result(marker)
@@ -324,8 +324,8 @@ def main():
     (home / "Library/LaunchAgents").mkdir(parents=True)
     (home / "tmp").mkdir()
     app, binary = make_bundle(home, source, canary, identity)
-    trusted_policy = root / "trusted.sb"
-    shutil.copyfile(args.profile, trusted_policy)
+    consumer_profile_path = root / "consumer-profile.sb"
+    shutil.copyfile(args.profile, consumer_profile_path)
     policy = home / "candidate.sb"
     shutil.copyfile(args.profile, policy)
     prefix = [
@@ -337,7 +337,7 @@ def main():
     print(json.dumps({"fixture": str(root), "identity": identity, "uid": os.getuid(),
                       "platform": checked(["/usr/bin/sw_vers"])}), flush=True)
     service_probes(binary, prefix)
-    launchd_probes(home, binary, prefix, identity, trusted_policy)
+    launchd_probes(home, binary, prefix, identity, consumer_profile_path)
     path_probes(home, prefix)
     scheduler_probes(home, prefix, identity)
     delegation_probes(home, app, binary, prefix)
