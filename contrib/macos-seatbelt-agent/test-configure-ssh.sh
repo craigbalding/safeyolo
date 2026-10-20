@@ -259,6 +259,21 @@ sed "s|<string>$home/watcher.sh</string>|<string>/usr/bin/true</string>|" \
     "$home/Library/LaunchAgents/owned-consumer.plist" > "$lab/corrected-consumer"
 cat "$lab/corrected-consumer" > "$home/Library/LaunchAgents/owned-consumer.plist"
 run --check
+cp "$home/Library/LaunchAgents/owned-consumer.plist" "$lab/consumer.before"
+chown "$account":staff "$home/Library/LaunchAgents/owned-consumer.plist"
+ln "$home/Library/LaunchAgents/owned-consumer.plist" "$home/earlier-hardlink"
+rejected 'LaunchAgents file has writable hardlink aliases'
+awk -v path="$home/Library/LaunchAgents/owned-consumer.plist" \
+    'index($0, path) { found=1 } END { exit !found }' "$lab/output"
+cmp "$lab/consumer.before" "$home/earlier-hardlink"
+cmp "$lab/consumer.before" "$home/Library/LaunchAgents/owned-consumer.plist"
+# The same linked inode is safe when this account cannot modify its data,
+# attributes or permissions. Keep that existing consumer usable.
+chown root:wheel "$home/Library/LaunchAgents/owned-consumer.plist"
+run --check
+rm "$home/earlier-hardlink"
+run --check
+echo 'PASS: writable pre-existing hardlink rejected without changes; protected and unaliased controls accepted'
 rm "$home/Library/LaunchAgents/owned-consumer.plist"
 mv "$home/Library/LaunchAgents" "$home/Library/LaunchAgents.before"
 ln -s "$home/Library/LaunchAgents.before" "$home/Library/LaunchAgents"

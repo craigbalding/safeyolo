@@ -1,5 +1,38 @@
 # macOS Seatbelt acceptance records
 
+## Existing LaunchAgents aliases, 2026-10-20
+
+Lens found that `a883eca23e1501c3c5aeee4dd2a7fca484724136` allowed a write through
+a hardlink created outside `LaunchAgents` before confinement. The protected
+file's contents changed. A focused owner probe also changed a protected input
+through a pre-existing symlink to a writable file elsewhere in the test home.
+Neither probe registered a job or demonstrated outside execution.
+
+The filesystem preflight now inspects existing files throughout `LaunchAgents`.
+It refuses writable multiply-linked files, including files whose owner can
+restore write access. It also checks external symlink targets and their parents
+with the existing account permission checks. Internal symlinks and inputs that
+the account cannot modify remain usable. The checker names unsafe or unknown
+inputs and does not remove or replace them. Privileged installation paths still
+require root ownership.
+
+On the existing Tart guest, macOS 26.6.2/25G83 and system Python 3.9.6 as UID501,
+the focused module passed nine tests: the earlier 27 fixture cases and seven
+native filesystem cases. The new cases cover writable and read-only-owner
+hardlinks, a nested hardlink, an unaliased file with an internal symlink, an
+external writable target, a protected system-file target and an unresolved link.
+Unsafe files and aliases remained present with unchanged contents. After the
+unsafe extra link was removed, preflight passed. The unaliased control passed
+preflight and denied a direct confined write while an ordinary cache write worked.
+
+The native test driver compiles and invokes the actual post-identity filesystem
+function in `check-account.c`, using `clang -Wall -Wextra -Werror -O2`. It does
+not invoke the root account/scheduler/SSH entrypoint. Linux passed the existing
+three tests with 27 cases and skipped the six Mac-only tests. The reserved root
+fixture includes writable-hardlink refusal, protected-hardlink acceptance and
+unaliased controls, but that complete account witness remains unverified with
+Sylab. The physical VZ witness also remains unverified.
+
 ## Disposable fixture safety correction, 2026-10-20
 
 The account fixture previously treated failed account/UID/process inspection as
@@ -18,8 +51,8 @@ Cleanup first attempts to revoke temporary admin membership and removes the
 temporary sudoers file. The exact-owned-crontab comparison and retention of
 unknown crontabs are preserved.
 
-`uv run --frozen --no-sync python -m unittest -v
-tests/test_seatbelt_fixture_safety.py` ran three tests with 27 cases on Linux.
+At `a883eca23e1501c3c5aeee4dd2a7fca484724136`, `uv run --frozen --no-sync python -m
+unittest -v tests/test_seatbelt_fixture_safety.py` ran three tests with 27 cases on Linux.
 The same source ran with system Python 3.9.6 and `/bin/sh` on the existing Tart
 macOS 26.6.2 guest. All cases passed. The controlled cases redirect deletion to
 temporary files and stub account, scheduler and process commands. They cover

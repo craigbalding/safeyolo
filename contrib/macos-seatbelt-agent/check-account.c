@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <grp.h>
 #include <libgen.h>
 #include <membership.h>
@@ -16,16 +17,17 @@
 #include <limits.h>
 #include <unistd.h>
 
-static void fail(const char *message, const char *path) {
+static _Noreturn void fail(const char *message, const char *path) {
     fprintf(stderr, "configure-ssh: %s: %s\n", message, path);
     exit(1);
 }
 
-static void protected_path(const char *path) {
+static void protected_path(const char *path, int require_root) {
     struct stat st;
-    if (lstat(path, &st) || S_ISLNK(st.st_mode) || st.st_uid != 0 ||
-        (st.st_mode & (S_IWGRP | S_IWOTH)))
-        fail("expected root ownership, no symlink or group/other write bits", path);
+    if (lstat(path, &st) || S_ISLNK(st.st_mode) ||
+        (require_root && (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)))))
+        fail(require_root ? "expected root ownership, no symlink or group/other write bits" :
+             "expected an inspectable path without symlinks", path);
     const int rights[] = {
         _WRITE_OK, _APPEND_OK, _DELETE_OK, _WATTR_OK, _WEXT_OK,
         _WPERM_OK, _CHOWN_OK, S_ISDIR(st.st_mode) ? _RMFILE_OK : _WRITE_OK
@@ -38,15 +40,15 @@ static void protected_path(const char *path) {
     }
 }
 
-static void protected_tree(const char *path) {
+static void protected_tree(const char *path, int require_root) {
     char *copy = strdup(path);
     if (!copy)
         fail("cannot allocate path", path);
-    protected_path(copy);
+    protected_path(copy, require_root);
     while (strcmp(copy, "/") != 0) {
         char *parent = dirname(copy);
         memmove(copy, parent, strlen(parent) + 1);
-        protected_path(copy);
+        protected_path(copy, require_root);
     }
     free(copy);
 }
@@ -78,6 +80,62 @@ static void scheduler_state(const struct passwd *pw) {
     closedir(jobs);
 }
 
+static void check_launchagents_files(const char *path) {
+    char root[PATH_MAX];
+    if (!realpath(path, root))
+        fail("cannot resolve LaunchAgents", path);
+    char *paths[] = {root, NULL};
+    FTS *files = fts_open(paths, FTS_PHYSICAL | FTS_NOCHDIR, NULL);
+    if (!files)
+        fail("cannot inspect LaunchAgents files", path);
+    for (;;) {
+        errno = 0;
+        FTSENT *entry = fts_read(files);
+        if (!entry) {
+            if (errno) fail("cannot enumerate LaunchAgents files", path);
+            break;
+        }
+        if (entry->fts_info == FTS_ERR || entry->fts_info == FTS_NS ||
+            entry->fts_info == FTS_DNR || entry->fts_info == FTS_DC)
+            fail("cannot inspect LaunchAgents input", entry->fts_path);
+        const char *file = entry->fts_path;
+        struct stat st;
+        if (entry->fts_info == FTS_SL || entry->fts_info == FTS_SLNONE) {
+            char target[PATH_MAX];
+            if (!realpath(file, target))
+                fail("cannot resolve LaunchAgents symlink", file);
+            /* An internal target has the same pathname protection. An external
+             * target and its parents must already resist account changes.
+             */
+            if (strncmp(target, root, strlen(root)) ||
+                (target[strlen(root)] != '/' && target[strlen(root)] != '\0')) {
+                fprintf(stderr, "configure-ssh: LaunchAgents symlink %s points to %s\n", file, target);
+                protected_tree(target, 0);
+                continue;
+            }
+            if (stat(file, &st))
+                fail("cannot inspect LaunchAgents symlink target", file);
+        } else if (entry->fts_info == FTS_F) {
+            st = *entry->fts_statp;
+        } else {
+            continue;
+        }
+        if (!S_ISREG(st.st_mode) || st.st_nlink < 2) continue;
+        /* All hardlinks share permissions. Read-only mode alone is insufficient
+         * when this account can restore write access through another name.
+         */
+        const int rights[] = {_WRITE_OK, _APPEND_OK, _WATTR_OK, _WEXT_OK, _WPERM_OK, _CHOWN_OK};
+        for (size_t i = 0; i < sizeof(rights) / sizeof(rights[0]); ++i) {
+            if (access(file, rights[i]) == 0)
+                fail("LaunchAgents file has writable hardlink aliases; resolve or protect them before conversion", file);
+            if (errno != EACCES && errno != EPERM && errno != EROFS)
+                fail("cannot check LaunchAgents hardlink permissions", file);
+        }
+    }
+    if (fts_close(files))
+        fail("cannot finish LaunchAgents file inspection", path);
+}
+
 static void launchagents_path(const char *home) {
     char path[PATH_MAX];
     struct stat st;
@@ -95,6 +153,7 @@ static void launchagents_path(const char *home) {
     if (lstat(path, &st) == 0) {
         if (!S_ISDIR(st.st_mode))
             fail("LaunchAgents must be absent or a real directory, not a symlink", path);
+        check_launchagents_files(path);
     } else if (errno != ENOENT) {
         fail("cannot inspect LaunchAgents", path);
     }
@@ -120,7 +179,7 @@ int main(int argc, char **argv) {
         fail("cannot adopt account identity for permission checks", argv[1]);
     launchagents_path(pw->pw_dir);
     for (int i = 3; i < argc; ++i)
-        protected_tree(argv[i]);
+        protected_tree(argv[i], 1);
     /* Exercise the binary, compiled account/home and actual profile without
      * a shell, startup files, cache creation or another user-controlled input.
      */

@@ -283,8 +283,18 @@ other login paths.
 The checker also rejects an existing account crontab and reports account-owned
 at/batch jobs. It creates `Library` as the account if absent, including during
 `--check`, then checks `Library` and any `LaunchAgents` directory without following
-symlinks. This is the only home-directory preparation in preflight. No existing
-home entry is removed or replaced. Complete the
+symlinks. It inspects existing files throughout `LaunchAgents` before activation.
+Hardlinks share file contents and permissions across all their names. If the
+account can change a multiply-linked file, including its attributes or
+permissions, setup refuses and names that file. Resolve the extra links or
+protect the shared file from account changes, then rerun the check. Read-only
+mode alone is insufficient when the account owns the file and can restore write
+access. File symlinks may point inside the protected directory. An outside
+target and all its parents must resist account changes under the existing kernel
+permission checks. Unresolved or uninspectable inputs refuse activation.
+
+Creating `Library` is the only home-directory preparation in preflight. No
+existing home entry is removed or replaced. Complete the
 [external-consumer review](#external-consumer-review) before confirming it with
 `--reviewed-consumers`.
 

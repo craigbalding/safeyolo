@@ -1,10 +1,13 @@
 """Exercise the disposable Mac fixture's admission and uncertain cleanup paths."""
 
 import importlib.util
+import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest import TestCase, main
+from unittest import TestCase, main, skipUnless
 from unittest.mock import create_autospec, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "contrib/macos-seatbelt-agent"
@@ -164,6 +167,108 @@ class FixtureSafetyTests(TestCase):
                      "session_live", "already_exited", "exited_during_inspection"):
             with self.subTest(case=case), TemporaryDirectory() as directory:
                 check_sshd(Path(directory), case)
+
+
+@skipUnless(sys.platform == "darwin", "requires native macOS filesystem and Seatbelt")
+class LaunchAgentsAliasTests(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        build = TemporaryDirectory(prefix="seatbelt-preflight-", dir=Path.home())
+        cls.addClassCleanup(build.cleanup)
+        driver = Path(build.name) / "check-launchagents.c"
+        # Run the actual post-identity filesystem check as this normal test
+        # user. The root account/scheduler/SSH entrypoint is never called.
+        driver.write_text('#define main account_preflight_main\n#include '
+                          + json.dumps(str(SOURCE / "check-account.c"))
+                          + '\n#undef main\nint main(int argc, char **argv) {\n'
+                          'if (argc != 2) return 2; launchagents_path(argv[1]); return 0; }\n')
+        cls.binary = Path(build.name) / "check-launchagents"
+        compiled = subprocess.run(["/usr/bin/xcrun", "clang", "-Wall", "-Wextra", "-Werror", "-O2",
+                                   str(driver), "-o", str(cls.binary)], capture_output=True, text=True, timeout=30)
+        if compiled.returncode:
+            raise RuntimeError(compiled.stderr)
+
+    def setUp(self):
+        directory = TemporaryDirectory(prefix="seatbelt-alias-", dir=Path.home())
+        self.addCleanup(directory.cleanup)
+        self.home = Path(directory.name) / "home"
+        self.inputs = self.home / "Library/LaunchAgents"
+        self.inputs.mkdir(parents=True)
+        self.plist = self.inputs / "owned.plist"
+        self.plist.write_text("original")
+
+    def preflight(self):
+        return subprocess.run([str(self.binary), str(self.home)], capture_output=True, text=True, timeout=10)
+
+    def test_preexisting_hardlinks_are_refused_without_changes(self):
+        for mode in (0o644, 0o444):
+            with self.subTest(mode=oct(mode)):
+                alias = self.home / "earlier-hardlink"
+                os.link(self.plist, alias)
+                self.plist.chmod(mode)
+                result = self.preflight()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("writable hardlink aliases", result.stderr)
+                self.assertIn(str(self.plist), result.stderr)
+                self.assertEqual(self.plist.read_text(), "original")
+                self.assertEqual(alias.read_text(), "original")
+                self.plist.chmod(0o644)
+                alias.unlink()
+                self.assertEqual(self.preflight().returncode, 0)
+
+    def test_nested_hardlink_is_refused(self):
+        nested = self.inputs / "nested"
+        nested.mkdir()
+        self.plist.rename(nested / "owned.plist")
+        os.link(nested / "owned.plist", self.home / "earlier-hardlink")
+        result = self.preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(nested / "owned.plist"), result.stderr)
+        self.assertEqual((nested / "owned.plist").read_text(), "original")
+        self.assertEqual((self.home / "earlier-hardlink").read_text(), "original")
+
+    def test_unaliased_and_internal_symlink_inputs_remain_protected(self):
+        (self.inputs / "internal.plist").symlink_to(self.plist)
+        self.assertEqual(self.preflight().returncode, 0)
+        result = subprocess.run(["/usr/bin/sandbox-exec", "-f", str(SOURCE / "agent-dev.sb"),
+                                 "-D", f"AGENT_HOME={self.home}", "-D", "TOOLCHAIN_ROOT=/opt/homebrew",
+                                 "/usr/bin/python3", "-I", "-B", "-c",
+                                 'import errno,sys; from pathlib import Path\n'
+                                 'home=Path(sys.argv[1]); (home/"ordinary-cache").write_text("works")\n'
+                                 'try: (home/"Library/LaunchAgents/owned.plist").write_text("changed")\n'
+                                 'except OSError as error: assert error.errno == errno.EPERM, error\n'
+                                 'else: raise AssertionError("protected write succeeded")\n', str(self.home)],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.plist.read_text(), "original")
+        self.assertEqual((self.home / "ordinary-cache").read_text(), "works")
+
+    def test_symlink_to_writable_home_input_is_refused(self):
+        target = self.home / "editable-input"
+        self.plist.rename(target)
+        self.plist.symlink_to(target)
+        result = self.preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(self.plist), result.stderr)
+        self.assertIn(str(target), result.stderr)
+        self.assertTrue(self.plist.is_symlink())
+        self.assertEqual(target.read_text(), "original")
+
+    def test_symlink_to_protected_system_input_is_accepted(self):
+        target = next(Path("/System/Library/LaunchAgents").glob("*.plist"))
+        self.plist.unlink()
+        self.plist.symlink_to(target)
+        result = self.preflight()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.plist.resolve(), target.resolve())
+
+    def test_unresolved_symlink_is_refused_without_removal(self):
+        self.plist.unlink()
+        self.plist.symlink_to(self.home / "missing-input")
+        result = self.preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(self.plist), result.stderr)
+        self.assertTrue(self.plist.is_symlink())
 
 
 if __name__ == "__main__":
