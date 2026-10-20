@@ -90,7 +90,7 @@ def response_event(proxy, headers, *, agent, status):
             break
         time.sleep(0.025)
     assert len(rows) == 1, (identifier, rows)
-    assert rows[0]["agent"] == agent and rows[0]["status"] == status, rows[0]
+    assert rows[0]["agent"] == agent and rows[0]["details"]["status"] == status, rows[0]
     return identifier
 
 

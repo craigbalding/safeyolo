@@ -575,7 +575,7 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
                 error_events = [event for event in events if event["details"]["status"] == 502]
                 assert len(error_events) == 1
                 assert error_events[0]["agent"] == "alice"
-                assert error_events[0]["decision"] == "error"
+                assert error_events[0]["details"]["decision"] == "error"
             (directory / "mtls-negative-observation.json").write_text(
                 json.dumps(
                     {

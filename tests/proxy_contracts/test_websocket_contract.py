@@ -559,13 +559,13 @@ def test_scanner_across_websocket_storage_transition(proxy_backend, tmp_path, tl
                 target = [row for row in events if row["details"]["message_bytes"] == size
                           and row["details"]["from_client"] == (direction == "request")]
                 assert len(target) == 1, (name, events)
-                assert target[0]["fragments"] == 2, (name, target)
-                assert target[0]["spilled"] == (size > 65536), (name, target)
-                assert target[0]["dropped"] is blocked, (name, target)
-                assert target[0]["inspection"]["outcome"] == outcome, (name, target)
-                assert target[0]["failure"] is None, (name, target)
+                assert target[0]["details"]["fragments"] == 2, (name, target)
+                assert target[0]["details"]["spilled"] == (size > 65536), (name, target)
+                assert target[0]["details"]["dropped"] is blocked, (name, target)
+                assert target[0]["details"]["inspection"]["outcome"] == outcome, (name, target)
+                assert target[0]["details"]["failure"] is None, (name, target)
                 if outcome != "no_match":
-                    assert target[0]["inspection"]["finding"]["rule_name"] == (
+                    assert target[0]["details"]["inspection"]["finding"]["rule_name"] == (
                         "storage-warning" if name == "deflate-warn" else "project-id"
                     ), (name, target)
     if proxy_backend == "python":

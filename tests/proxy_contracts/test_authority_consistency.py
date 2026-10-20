@@ -524,7 +524,7 @@ def test_inner_port_and_root_dot_authorities_do_not_inherit_connect(proxy_backen
                     assert forbidden.accepts == 0 and forbidden.requests == []
                     # Python's lazy strategy may reject before opening its
                     # parent leg; any leg that opens must keep the outer route.
-                    assert all(row["target"] == outer and row["details"]["route"] == "allowed-tls"
+                    assert all(row["target"] == outer and row["route"] == "allowed-tls"
                                for row in parent.requests)
 
             # Omitting the default port is a valid spelling of this endpoint.

@@ -86,6 +86,61 @@ fn initialize(root: &Path) {
     .unwrap();
 }
 
+#[test]
+fn host_events_preserve_configured_audit_rotation_and_retention() {
+    use std::io::{Seek, SeekFrom};
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let config = root.join("config.toml");
+    let mut document = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    document["audit"]["max_bytes"] = toml_edit::value(100_000_000);
+    document["audit"]["backups"] = toml_edit::value(10);
+    fs::write(config, document.to_string()).unwrap();
+    let log = root.join("logs/audit.jsonl");
+    let backup = root.join("logs/audit.jsonl.5");
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    fs::write(&backup, b"retained historical backup\n").unwrap();
+    let mut current = fs::File::create(&log).unwrap();
+    current
+        .write_all(b"{\"event\":\"historical\",\"summary\":\"")
+        .unwrap();
+    std::io::copy(&mut std::io::repeat(b' ').take(51_000_000), &mut current).unwrap();
+    current.write_all(b"\"}\n").unwrap();
+    drop(current);
+    let before = fs::metadata(&log).unwrap().len();
+
+    assert_eq!(
+        value(cli(&root, &["agent", "stop", "marker"]))["runtime_state"],
+        "stopped"
+    );
+    assert!(fs::metadata(&log).unwrap().len() > before);
+    assert!(!root.join("logs/audit.jsonl.1").exists());
+    assert_eq!(fs::read(&backup).unwrap(), b"retained historical backup\n");
+    let mut current = fs::File::open(&log).unwrap();
+    current.seek(SeekFrom::Start(before)).unwrap();
+    let mut appended = String::new();
+    current.read_to_string(&mut appended).unwrap();
+    let event: Value = serde_json::from_str(appended.trim()).unwrap();
+    assert_eq!(event["event"], "agent.stopped");
+    assert_eq!(event["agent"], "marker");
+    assert_eq!(event["details"]["reason"], "user_request");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn holder_stop_pins_the_original_birth_and_run_before_delete() {

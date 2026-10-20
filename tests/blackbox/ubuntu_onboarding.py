@@ -274,10 +274,13 @@ def network_probe(phase, kind, code, deadline):
                     continue
                 selected = {"request_id": event["request_id"],
                             "correlation": "request-id" if request_id else "host-and-time-window-only"}
-                if type(event.get("status")) is int and 100 <= event["details"]["status"] <= 599:
-                    selected["status"] = event["details"]["status"]
-                if event.get("decision") in ["allow", "deny", "error", "invalid", "admin_port_access"]:
-                    selected["decision"] = event["decision"]
+                details = event.get("details")
+                status = details.get("status") if isinstance(details, dict) else None
+                if type(status) is int and 100 <= status <= 599:
+                    selected["status"] = status
+                decision = details.get("decision") if isinstance(details, dict) else None
+                if decision in ["allow", "deny", "error", "invalid", "admin_port_access"]:
+                    selected["decision"] = decision
                 log["matches"].append(selected)
             log["matches_truncated"] = len(log["matches"]) > 16
             log["matches"] = log["matches"][:16]
@@ -676,7 +679,7 @@ def witness(phase, start_marker=False, connected=False):
     x[phase] = row
     save()
     capture(row, "runtime", live_record)
-    row["details"]["status"] = observe(phase + "-status", [cli, "--root", root, "agent", "status", "first"])
+    row["status"] = observe(phase + "-status", [cli, "--root", root, "agent", "status", "first"])
     capture(row, "launch", launch_record)
     capture(row, "terminal_attachment", lambda: terminal_attachment(phase, row["launch"]))
     capture(row, "processes", processes)

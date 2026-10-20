@@ -222,7 +222,7 @@ def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path
             }
             assert parent.accepts == 2 and len(parent.requests) == 2
             local = [row for row in proxy.events("traffic.request_outcome") if row["host"].lower().rstrip(".") == HOST]
-            assert local and all(row["decision"] == "local" for row in local)
+            assert local and all(row["details"]["decision"] == "local" for row in local)
             deadline = time.monotonic() + 2
             while True:
                 mutations = [row for row in read_events(directory / "audit.jsonl")

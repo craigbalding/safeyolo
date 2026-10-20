@@ -156,7 +156,7 @@ class _ParentRequest(socketserver.BaseRequestHandler):
             assert len(hosts) == 1, hosts
             host = urlsplit("http://" + hosts[0].decode("ascii")).hostname
             origin = self.server.origins[host]
-            observed["details"]["route"] = origin.name
+            observed["route"] = origin.name
             with self.server.lock:
                 self.server.requests.append(observed)
             absolute_target = observed["target"].decode("utf-8")
@@ -389,7 +389,6 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                 assert framed[0] == 200, framed
             assert len(proxy.events("traffic.egress")) == parent.accepts
             for secret in (token, VAULT_CREDENTIAL.encode()):
-                assert secret not in (directory / "audit.jsonl").read_bytes()
                 assert secret not in (directory / "audit.jsonl").read_bytes()
             assert forbidden.accepts == 0 and forbidden.requests == []
 

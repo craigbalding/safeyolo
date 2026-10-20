@@ -261,7 +261,7 @@ def short_https_connections(backend, directory, count):
                     "proxy_request_events": len(request_events),
                     "proxy_events_total": len(all_request_events),
                     "connect_events": len(all_request_events) - len(request_events),
-                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                    "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
                 },
             },
             "resource_samples": resource_samples,
@@ -274,7 +274,7 @@ def short_https_connections(backend, directory, count):
                 "request_events": len(request_events),
                 "proxy_events_total": len(all_request_events),
                 "connect_events": len(all_request_events) - len(request_events),
-                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
             },
             "proxy_identity": proxy_identity(proxy),
             "limitation": "sequential fresh HTTP/1.1-over-TLS requests and one control request; no concurrent or long-duration claim",
@@ -525,7 +525,7 @@ def concurrent_short_admin_workload(
                     "expected": expected_requests,
                     "origin_connections": origin.accepts,
                     "proxy_request_events": len(request_events),
-                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                    "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
                 },
             },
             "batches_result": batches_result,
@@ -536,7 +536,7 @@ def concurrent_short_admin_workload(
             },
             "proxy_observation": {
                 "request_events": len(request_events),
-                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
             },
             "proxy_identity": proxy_identity(proxy),
             "limitation": (
@@ -770,7 +770,7 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
             assert release_at <= origin.stream_release_seen_at <= origin.stream_finished_at
             request_events = [event for event in read_events(proxy.audit_log)
                               if event.get("event") == "traffic.request_outcome"]
-            error_events = [event for event in request_events if int(event.get("status", 200)) >= 400]
+            error_events = [event for event in request_events if int(event["details"]["status"]) >= 400]
             assert origin.requests == [
                 {"method": "GET", "target": "/stream-slow"},
                 {"method": "GET", "target": "/control"},

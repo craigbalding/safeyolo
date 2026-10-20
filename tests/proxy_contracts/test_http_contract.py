@@ -110,8 +110,8 @@ def test_generated_request_ids_follow_owned_effects(proxy_backend, tmp_path):
                         events = [event for event in proxy.events("traffic.request_outcome")
                                   if event.get("request_id") == identifier]
                         assert len(events) == 1
-                        assert {key: events[0][key] for key in
-                                ("agent", "host", "port", "status", "decision", "connection_id")} == {
+                        assert {**{key: events[0][key] for key in ("agent", "host", "decision")},
+                                **{key: events[0]["details"][key] for key in ("port", "status", "connection_id")}} == {
                             "agent": agent, "host": "127.0.0.1", "port": port,
                             "status": expected,
                             "decision": "allow" if expected == 200 else "deny",
@@ -315,18 +315,18 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
                        for event in runtime.values())
             for agent, identifier, evidence in denials:
                 assert runtime[identifier]["agent"] == agent
-                assert runtime[identifier]["status"] == 428
+                assert runtime[identifier]["details"]["status"] == 428
                 assert runtime[identifier]["decision"] == "deny"
-                assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+                assert runtime[identifier]["details"]["connection_id"] == evidence["connection_id"]
             for identifier, evidence in owned:
                 assert runtime[identifier]["agent"] == "alice"
-                assert runtime[identifier]["status"] == 200
+                assert runtime[identifier]["details"]["status"] == 200
                 assert runtime[identifier]["decision"] == "allow"
-                assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+                assert runtime[identifier]["details"]["connection_id"] == evidence["connection_id"]
             assert runtime[bob_owned_id]["agent"] == "bob"
-            assert runtime[bob_owned_id]["status"] == 200
+            assert runtime[bob_owned_id]["details"]["status"] == 200
             assert runtime[bob_owned_id]["decision"] == "allow"
-            assert runtime[bob_owned_id]["connection_id"] == bob_owned["connection_id"]
+            assert runtime[bob_owned_id]["details"]["connection_id"] == bob_owned["connection_id"]
 
             deadline = time.monotonic() + 2
             while True:
@@ -352,7 +352,7 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
             for event in context_mutations:
                 runtime_event = local_runtime[event["request_id"]]
                 assert runtime_event["agent"] == event["agent"]
-                assert runtime_event["status"] == 200 and runtime_event["decision"] == "local"
+                assert runtime_event["details"]["status"] == 200 and runtime_event["details"]["decision"] == "local"
             assert len(parent.requests) == 4
 
 
@@ -475,8 +475,8 @@ effect = "deny"
                     events = [event for event in proxy.events("traffic.request_outcome")
                               if event.get("request_id") == inner["request_id"]]
                     assert len(events) == 1
-                    assert {key: events[0][key] for key in
-                            ("agent", "host", "port", "status", "decision", "connection_id")} == {
+                    assert {**{key: events[0][key] for key in ("agent", "host", "decision")},
+                            **{key: events[0]["details"][key] for key in ("port", "status", "connection_id")}} == {
                         "agent": observation["agent"], "host": "127.0.0.1",
                         "port": origin.server_address[1], "status": inner["status"],
                         "decision": "allow" if inner["status"] == 200 else "deny",
@@ -688,11 +688,11 @@ def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_ba
                 assert len(first_requests) == 4
                 by_id = {row["request_id"]: row for row in first_requests}
                 assert len(by_id) == 4
-                assert [(by_id[identifier]["status"], by_id[identifier]["decision"])
+                assert [(by_id[identifier]["details"]["status"], by_id[identifier]["decision"])
                         for identifier in client_ids] == [(508, "allow"), (200, "allow"), (200, "allow")]
                 blocked = next(row for row in first_requests if row["request_id"] not in client_ids)
-                assert (blocked["status"], blocked["decision"], blocked["agent"],
-                        blocked["host"], blocked["port"]) == (
+                assert (blocked["details"]["status"], blocked["decision"], blocked["agent"],
+                        blocked["host"], blocked["details"]["port"]) == (
                     508, "deny", "alice", "target.invalid", 8123,
                 )
                 peer_requests = peer.events("traffic.request_outcome")
@@ -875,7 +875,7 @@ def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_back
     events = [event for event in read_events(tmp_path / proxy_backend / "audit.jsonl")
               if event.get("event") == "traffic.request_outcome"]
     assert len(events) == (2 if proxy_backend == "rust" else 1)
-    assert all(int(event.get("status", 500)) == 200 for event in events)
+    assert all(int(event["details"]["status"]) == 200 for event in events)
     assert sum(event.get("request_id") == result["control_request_id"] for event in events) == 1
 
 
@@ -957,7 +957,7 @@ def test_persistent_http1_requests_keep_routing_and_identity_isolated(proxy_back
             "/second?part=two%2Fthree",
         ]
         assert origin.accepts >= 1
-        assert all(request["details"]["connection_id"] for request in origin.requests)
+        assert all(request["connection_id"] for request in origin.requests)
 
     events = proxy.events("traffic.request_outcome")
     assert len(events) == 4

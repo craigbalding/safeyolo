@@ -530,8 +530,11 @@ class ObserverChecks(unittest.TestCase):
                 self.wfile.write(b"PRIVATE_BODY_SENTINEL")
                 with (logs / "audit.jsonl").open("a") as stream:
                     for identifier in ("req-" + "2" * 32, request_id):
-                        stream.write(json.dumps({"event": "proxy.request", "host": "httpbin.org", "status": 502,
-                            "request_id": identifier, "decision": self.decision, "private": "PRIVATE_EVENT_SENTINEL"}) + "\n")
+                        stream.write(json.dumps({"event": "traffic.request_outcome", "host": "httpbin.org",
+                            "request_id": identifier,
+                            **({"decision": self.decision} if self.decision == "allow" else {}),
+                            "details": {"status": 502, "decision": self.decision,
+                                        "private": "PRIVATE_EVENT_SENTINEL"}}) + "\n")
                 with (logs / "proxy.log").open("a") as stream:
                     stream.write(f"request {request_id} failed: PRIVATE_ERROR_SENTINEL\n")
             def log_message(self, *_args):

@@ -119,7 +119,7 @@ def wait_staged(origin, paths, body):
             timeout=5,
         ), [(row[":path"], bytes(row["body"]), row.get("ended")) for row in origin.requests]
         rows = [row for row in origin.requests if row[":path"] in paths]
-        assert len({row["details"]["connection_id"] for row in rows}) == 1
+        assert len({row["connection_id"] for row in rows}) == 1
         assert len({row["stream_id"] for row in rows}) == len(paths)
         assert {row["alpn"] for row in rows} == {"h2"}
         return rows
@@ -222,7 +222,7 @@ def test_cold_and_warm_h2_streams_reach_origin_before_gate(proxy_backend, tmp_pa
             with origin.lock:
                 assert all(bytes(row["body"]) == body and row["ended_ns"] - staged_at >= 200_000_000 for row in rows)
                 assert origin.accepts == 1
-                assert len({row["details"]["connection_id"] for row in origin.requests}) == 1
+                assert len({row["connection_id"] for row in origin.requests}) == 1
         events = proxy.events("traffic.request_outcome")
         inner = [row for row in events if row.get("details", {}).get("coverage") == "native_network_guard_circuits_and_test_context"]
         assert len(inner) == 2 * count

@@ -6,13 +6,17 @@ use serde_json::Value;
 
 use crate::{Error, audit};
 
-fn log_path() -> PathBuf {
+fn log_settings() -> Result<(PathBuf, audit::Settings), Error> {
     if let Ok(config) = crate::native_config::read(&crate::host_platform::config_path())
         && let Some(path) = config.audit_log_path
     {
-        return path;
+        let settings = match config.native_settings {
+            Some(settings) => settings.audit.writer_settings(),
+            None => audit::Settings::from_env()?,
+        };
+        return Ok((path, settings));
     }
-    std::env::var_os("SAFEYOLO_LOG_PATH")
+    let path = std::env::var_os("SAFEYOLO_LOG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             let directory = std::env::var_os("SAFEYOLO_LOGS_DIR")
@@ -27,7 +31,8 @@ fn log_path() -> PathBuf {
                         .join("safeyolo")
                 });
             directory.join("safeyolo.jsonl")
-        })
+        });
+    Ok((path, audit::Settings::from_env()?))
 }
 
 pub(crate) fn write(
@@ -38,8 +43,8 @@ pub(crate) fn write(
     addon: Option<&str>,
     details: Value,
 ) {
-    let path = log_path();
     let result = (|| -> Result<(), Error> {
+        let (path, settings) = log_settings()?;
         let kind = match kind {
             "agent" => audit::Kind::Agent,
             "traffic" => audit::Kind::Traffic,
@@ -49,7 +54,7 @@ pub(crate) fn write(
         event.agent = Some(agent.to_owned());
         event.addon = addon.map(str::to_owned);
         event.details = details.into();
-        let writer = audit::Writer::new(path, audit::Settings::from_env()?);
+        let writer = audit::Writer::new(path, settings);
         writer.emit(event)?;
         // A short host command has no process-owned proxy shutdown to drain it.
         if !writer.shutdown(Duration::from_secs(5))? {

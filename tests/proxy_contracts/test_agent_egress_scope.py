@@ -145,12 +145,12 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
                         guard = guards[identifier]
                         assert guard["agent"] == agent
                         assert guard["decision"] == ("deny" if status == 403 else "require_approval")
-                first_ids = {runtime[identifier]["connection_id"] for _, _, identifier in cases[:5]}
-                second_ids = {runtime[identifier]["connection_id"] for _, _, identifier in cases[5:]}
+                first_ids = {runtime[identifier]["details"]["connection_id"] for _, _, identifier in cases[:5]}
+                second_ids = {runtime[identifier]["details"]["connection_id"] for _, _, identifier in cases[5:]}
                 assert len(first_ids) == len(second_ids) == 1
                 assert first_ids != second_ids
-            assert runtime[results["alice"][0][2]]["connection_id"] != (
-                runtime[results["bob"][0][2]]["connection_id"]
+            assert runtime[results["alice"][0][2]]["details"]["connection_id"] != (
+                runtime[results["bob"][0][2]]["details"]["connection_id"]
             )
 
             # Check origin accepts as well as completed requests on fresh and
@@ -191,8 +191,8 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
                       if row["event"] == "security.network_guard"}
             for agent, authority, status, identifier in observed:
                 destination = urlsplit(f"http://{authority}")
-                assert (runtime[identifier]["agent"], runtime[identifier]["status"],
-                        runtime[identifier]["host"], runtime[identifier]["port"]) == (
+                assert (runtime[identifier]["agent"], runtime[identifier]["details"]["status"],
+                        runtime[identifier]["host"], runtime[identifier]["details"]["port"]) == (
                     agent, status, destination.hostname, destination.port or 80,
                 )
                 if status != 200:
@@ -312,4 +312,4 @@ def test_forged_body_agent_cannot_cross_uds_listener(proxy_backend, tmp_path):
             assert parent.requests[0]["body"] == json.dumps({"agent": "bob", "agent_id": "bob"}).encode()
             runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
             for agent, identifier, status in observed:
-                assert (runtime[identifier]["agent"], runtime[identifier]["status"]) == (agent, status)
+                assert (runtime[identifier]["agent"], runtime[identifier]["details"]["status"]) == (agent, status)

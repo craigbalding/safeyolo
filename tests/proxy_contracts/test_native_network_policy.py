@@ -663,7 +663,7 @@ def test_native_invalid_configuration_reload_keeps_policy(proxy_backend, tmp_pat
                 time.sleep(0.025)
             for agent, identifier in denied_ids:
                 assert requests[identifier]["agent"] == agent
-                assert requests[identifier]["status"] == 403
+                assert requests[identifier]["details"]["status"] == 403
                 assert requests[identifier]["decision"] == "deny"
                 assert audit[identifier]["agent"] == agent and audit[identifier]["decision"] == "deny"
             before_ready = proxy.readiness_file.stat()
