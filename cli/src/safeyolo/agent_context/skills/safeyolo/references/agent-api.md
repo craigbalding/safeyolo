@@ -142,8 +142,9 @@ facts, including verified TLS when an HTTP/2 connection is reused.
 
 `status: complete` describes the retained explanation lookup. It does not
 describe network success. Missing or expired events leave a limit on the
-explanation. Eligible FlowStore rows carry `connection_json`; old rows leave
-it null. Live traffic shows the same selected target and reached upstream
+explanation. Eligible selected-IP FlowStore rows carry `connection_json`;
+old rows and requests without a selection leave it null. Live traffic shows
+the same selected target and reached upstream
 facts. Selection does not enable body capture or change evidence ownership.
 
 ## Trace wire vocabulary

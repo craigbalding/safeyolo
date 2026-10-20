@@ -228,21 +228,22 @@ impl Recording {
                 String::new()
             }
         };
-        let connection = record
-            .metadata
-            .remove("connection_json")
-            .unwrap_or_else(|| {
+        let connection = record.metadata.remove("connection_json").or_else(|| {
+            destination.selected_ip.as_ref().map(|_| {
                 python_json::encode(&json!({"target": super::selected_ip::facts(destination)}))
                     .into()
-            });
+            })
+        });
         record.metadata = object(json!({
             "scheme": destination.scheme, "host": host, "port": destination.port,
             "method": request.method().as_str(), "path": destination.path.split('?').next().unwrap_or(""),
             "query_string": query_json(&destination.path), "full_url": full_url,
             "request_content_type": content_type, "is_websocket": websocket,
             "request_headers_json": headers_json(&pairs, None, redact_header),
-            "connection_json": connection,
         }));
+        if let Some(connection) = connection {
+            record.metadata.insert("connection_json".into(), connection);
+        }
     }
 
     pub(super) fn target(
@@ -250,6 +251,9 @@ impl Recording {
         destination: &super::Destination,
         connect_request_id: Option<&str>,
     ) {
+        if destination.selected_ip.is_none() {
+            return;
+        }
         if let Some(record) = self
             .state
             .lock()
@@ -268,6 +272,9 @@ impl Recording {
         &self,
         observation: &crate::traffic_view::UpstreamConnectionObservation,
     ) {
+        if observation.target.is_null() {
+            return;
+        }
         if let Some(record) = self
             .state
             .lock()

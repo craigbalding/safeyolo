@@ -663,6 +663,9 @@ impl AllowedRequest<'_> {
         stage: &str,
         outcome: &str,
     ) {
+        if observation.target.is_null() {
+            return;
+        }
         observation.target["stage"] = json!(stage);
         observation.target["outcome"] = json!(outcome);
         if let Some(recording) = self.recording {
@@ -1020,14 +1023,25 @@ async fn open_egress_for_flow(
         route,
         started,
     );
-    observation.target = selected_ip::facts(destination);
-    observation.target["route"] = json!(route_name);
-    observation.target["parent"] = json!(parent_url);
+    if destination.selected_ip.is_some() {
+        observation.target = selected_ip::facts(destination);
+        observation.target["route"] = json!(route_name);
+        observation.target["parent"] = json!(parent_url);
+    }
     allowed.observe_upstream(&mut observation, live, "connection_attempt", "pending");
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
     let record_egress = || {
+        let mut details = json!({
+            "host": destination.host, "port": destination.port, "route": route_name,
+        });
+        if destination.selected_ip.is_some() {
+            details["target"] = selected_ip::facts(destination);
+            details["parent"] = json!(parent_url);
+            details["stage"] = json!("connection_attempt");
+            details["outcome"] = json!("pending");
+        }
         if let Err(error) = runtime.audit.emit(allowed.identity.request_event(
             "traffic.egress",
             crate::audit::Kind::Traffic,
@@ -1037,14 +1051,7 @@ async fn open_egress_for_flow(
                 crate::network_guard::sanitize(&destination.host),
                 destination.port
             ),
-            json!({
-            "host": destination.host,
-            "port": destination.port,
-            "route": route_name,
-            "target": selected_ip::facts(destination),
-            "parent": parent_url,
-            "stage": "connection_attempt", "outcome": "pending",
-            }),
+            details,
         )) {
             // Route observation cannot revoke already-admitted transport.
             eprintln!("Egress audit submission failed: {error}");
@@ -1094,7 +1101,9 @@ async fn open_egress_for_flow(
     let socket = match connecting {
         Ok(socket) => socket,
         Err(error) => {
-            observation.target["reason"] = json!(error.to_string());
+            if destination.selected_ip.is_some() {
+                observation.target["reason"] = json!(error.to_string());
+            }
             allowed.observe_upstream(
                 &mut observation,
                 live,
@@ -1147,7 +1156,9 @@ async fn open_egress_for_flow(
         }
         let address = socket.peer_addr()?;
         observation.peer = Some(address);
-        observation.target["direct_peer"] = json!(address.to_string());
+        if destination.selected_ip.is_some() {
+            observation.target["direct_peer"] = json!(address.to_string());
+        }
         match address.ip() {
             std::net::IpAddr::V4(address) => Some(address),
             _ => None,
@@ -1252,8 +1263,10 @@ async fn open_egress_for_flow(
                 sender.send_request(request).await.map_err(Into::into)
             })
             .await?;
-            observation.target["parent_requested_target"] = json!(target);
-            observation.target["parent_connect_status"] = json!(response.status().as_u16());
+            if destination.selected_ip.is_some() {
+                observation.target["parent_requested_target"] = json!(target);
+                observation.target["parent_connect_status"] = json!(response.status().as_u16());
+            }
             allowed.observe_upstream(&mut observation, live, "parent_connect", if response.status().is_success() { "complete" } else { "failed" });
             selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_connect",
                 if response.status().is_success() { "complete" } else { "failed" },
@@ -1275,7 +1288,9 @@ async fn open_egress_for_flow(
     let mut stream = match parent_connection {
         Ok(stream) => stream,
         Err(error) => {
-            observation.target["reason"] = json!(error.to_string());
+            if destination.selected_ip.is_some() {
+                observation.target["reason"] = json!(error.to_string());
+            }
             allowed.observe_upstream(&mut observation, live, "parent_connection", "failed");
             selected_ip::record(
                 runtime,
@@ -1376,7 +1391,9 @@ async fn open_outbound(
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         }
         let name = ServerName::try_from(destination.host.clone())?;
-        connection.observation.target["tls_verification_name"] = json!(destination.host);
+        if destination.selected_ip.is_some() {
+            connection.observation.target["tls_verification_name"] = json!(destination.host);
+        }
         allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "pending");
         selected_ip::record(
             runtime,
@@ -1397,7 +1414,9 @@ async fn open_outbound(
         let tls = match tls {
             Ok(tls) => tls,
             Err(error) => {
-                connection.observation.target["reason"] = json!(error.to_string());
+                if destination.selected_ip.is_some() {
+                    connection.observation.target["reason"] = json!(error.to_string());
+                }
                 allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "failed");
                 selected_ip::record(
                     runtime,
@@ -1424,8 +1443,10 @@ async fn open_outbound(
         stream = Box::new(tls);
         let completed = crate::circuit_runtime::now();
         connection.observation.tls_setup = Some(completed);
-        connection.observation.target["tls_verification_name"] = json!(destination.host);
-        connection.observation.target["tls_result"] = json!("certificate_verified");
+        if destination.selected_ip.is_some() {
+            connection.observation.target["tls_verification_name"] = json!(destination.host);
+            connection.observation.target["tls_result"] = json!("certificate_verified");
+        }
         allowed.observe_upstream(&mut connection.observation, live, "origin_tls", "complete");
         if let Some(live) = live {
             live.upstream_connection(connection.observation.clone());
@@ -2713,7 +2734,9 @@ where
                     }
                     _ => unreachable!("CONNECT classification preserves its upstream owner"),
                 };
-                observation.target["logical_host"] = json!(destination.host);
+                if destination.selected_ip.is_some() {
+                    observation.target["logical_host"] = json!(destination.host);
+                }
                 let protocol = classified_protocol;
                 let sni_passthrough = !passthrough
                     && protocol == Protocol::Tls
@@ -4356,23 +4379,26 @@ pub(crate) fn serve_request(
                     Ok(destination)
                 });
         // A physical connection can carry unrelated requests. Link only the
-        // requests parsed inside this particular CONNECT, including refusals.
-        let connect_link_failed = tunnel.as_ref().is_some_and(|tunnel| {
-            runtime
-                .audit
-                .emit(identity.request_event(
-                    "traffic.connect_request",
-                    crate::audit::Kind::Traffic,
-                    &request_id,
-                    "HTTP request belongs to CONNECT",
-                    json!({
-                        "host": tunnel.destination.host,
-                        "port": tunnel.destination.port,
-                        "connect_request_id": tunnel.connect_request_id,
-                    }),
-                ))
-                .is_err()
-        });
+        // requests parsed inside this selected-IP CONNECT, including refusals.
+        let connect_link_failed = tunnel
+            .as_ref()
+            .filter(|tunnel| tunnel.destination.selected_ip.is_some())
+            .is_some_and(|tunnel| {
+                runtime
+                    .audit
+                    .emit(identity.request_event(
+                        "traffic.connect_request",
+                        crate::audit::Kind::Traffic,
+                        &request_id,
+                        "HTTP request belongs to CONNECT",
+                        json!({
+                            "host": tunnel.destination.host,
+                            "port": tunnel.destination.port,
+                            "connect_request_id": tunnel.connect_request_id,
+                        }),
+                    ))
+                    .is_err()
+            });
         if let Ok(destination) = &destination {
             recording.target(
                 destination,
@@ -4384,7 +4410,12 @@ pub(crate) fn serve_request(
         let live = destination.as_ref().ok().and_then(|destination| {
             live_view::begin(&runtime, &identity, &request_id, &request, destination)
         });
-        if let (Some(live), Some(tunnel)) = (&live, &tunnel) {
+        if let (Some(live), Some(tunnel)) = (
+            &live,
+            tunnel
+                .as_ref()
+                .filter(|tunnel| tunnel.destination.selected_ip.is_some()),
+        ) {
             live.metadata(&serde_json::Map::from_iter([(
                 "connect_request_id".into(),
                 json!(tunnel.connect_request_id),

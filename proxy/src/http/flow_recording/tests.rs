@@ -247,24 +247,6 @@ fn record_builder_matches_fourteen_actual_source_projections() {
             "response_body_hex".into(),
             hex(&actual.response_body.content).into(),
         );
-        // The retained source projections predate connection observations.
-        // Check the additive field without changing their old-field oracle.
-        let connection: Value = serde_json::from_str(
-            actual
-                .metadata
-                .remove("connection_json")
-                .unwrap()
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(connection["target"]["logical_host"], "127.0.0.2", "{name}");
-        assert_eq!(
-            connection["target"]["requested_port"], selected.port,
-            "{name}"
-        );
-        assert!(connection["target"]["requested_ip"].is_null(), "{name}");
-        assert!(connection["target"]["effective_ip"].is_null(), "{name}");
         assert_eq!(
             Value::Object(actual.metadata.clone()),
             expected[0],
@@ -476,6 +458,16 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
         .filter(|event| event["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 7);
+    assert!(events.iter().all(|event| !matches!(
+        event["event"].as_str(),
+        Some("traffic.connection" | "traffic.connect_request")
+    )));
+    assert!(
+        egress
+            .iter()
+            .all(|event| event["details"].get("target").is_none()
+                && event["details"].get("stage").is_none())
+    );
     assert!(
         egress
             .iter()
@@ -487,6 +479,9 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     let second = store.get_flow(2).unwrap().unwrap();
     let third = store.get_flow(3).unwrap().unwrap();
     let fourth = store.get_flow(4).unwrap().unwrap();
+    for ordinary in [&first, &second, &third, &fourth] {
+        assert!(ordinary["connection_json"].is_null());
+    }
     assert_eq!(first["evidence_owner"], "alice");
     assert_eq!(first["test_agent"], "declared-tool");
     assert_eq!(first["source_id"], "192.0.2.20");

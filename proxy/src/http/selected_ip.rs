@@ -112,6 +112,9 @@ pub(super) fn record(
     outcome: &str,
     extra: Value,
 ) {
+    if destination.selected_ip.is_none() {
+        return;
+    }
     let mut details = facts(destination);
     let fields = details.as_object_mut().expect("target facts are an object");
     fields.insert("stage".into(), stage.into());

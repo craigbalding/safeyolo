@@ -133,7 +133,7 @@ impl UpstreamConnectionObservation {
     }
 
     pub(crate) fn snapshot(&self) -> Value {
-        json!({
+        let mut snapshot = json!({
             "id": self.id.as_str(),
             "route": match self.route {
                 UpstreamRoute::Direct => "direct",
@@ -144,8 +144,11 @@ impl UpstreamConnectionObservation {
             "started": self.started,
             "tcp_setup": self.tcp_setup,
             "tls_setup": self.tls_setup,
-            "target": self.target,
-        })
+        });
+        if !self.target.is_null() {
+            snapshot["target"] = self.target.clone();
+        }
+        snapshot
     }
 }
 
