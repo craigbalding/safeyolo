@@ -472,6 +472,68 @@ impl CredentialGuard {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+    /// Bind a vaulted reference to its current contents without serializing a
+    /// secret-bearing record or retaining plaintext in approval state.
+    pub(crate) fn approval_binding(&self, credential: &crate::credentials::Credential) -> String {
+        let reference = zeroize::Zeroizing::new(
+            serde_json::to_string(&credential.reference).expect("credential reference"),
+        );
+        let expires_at = credential
+            .expires_at
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(crate::approvals::pending::normalized_expiry);
+        let fields = [
+            Some(credential.name.as_str()),
+            Some(credential.credential_type.as_str()),
+            Some(credential.value.expose_secret()),
+            Some(reference.as_str()),
+            credential
+                .refresh_token
+                .as_ref()
+                .map(crate::credentials::Secret::expose_secret),
+            credential.token_url.as_deref(),
+            credential.client_id.as_deref(),
+            credential
+                .client_secret
+                .as_ref()
+                .map(crate::credentials::Secret::expose_secret),
+            expires_at.as_deref(),
+        ];
+        let mut binding = hmac::Context::with_key(&self.key);
+        binding.update(b"safeyolo.pending-credential.v1");
+        for field in fields {
+            binding.update(&[u8::from(field.is_some())]);
+            if let Some(field) = field {
+                binding.update(&(field.len() as u64).to_be_bytes());
+                binding.update(field.as_bytes());
+            }
+        }
+        format!(
+            "hmac256:{}",
+            binding
+                .sign()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
+
+    pub(crate) fn approval_resource(&self, target: &str) -> String {
+        let mut binding = hmac::Context::with_key(&self.key);
+        binding.update(b"safeyolo.pending-resource.v1");
+        binding.update(target.as_bytes());
+        format!(
+            "hmac256:{}",
+            binding
+                .sign()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
     fn detect(&self, snapshot: &Snapshot, headers: &[Header<'_>]) -> Result<Vec<Detection>> {
         let mut detections = Vec::<Detection>::new();
         for header in headers {

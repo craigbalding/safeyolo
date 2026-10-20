@@ -64,6 +64,7 @@ pub(crate) struct Fixture {
     pub(crate) admin: u16,
     pub(crate) address: std::net::SocketAddr,
     pub(crate) origin: Arc<tokio::net::TcpListener>,
+    pub(crate) config: Config,
 }
 impl Fixture {
     pub(crate) async fn new() -> Self {
@@ -91,7 +92,7 @@ impl Fixture {
             "flow_store_enabled":true,"flow_store_db_path":root.path().join("flows.sqlite3")
             ,"gateway_builtin_services_dir":root.path().join("builtin-services"),"gateway_services_dir":root.path().join("services")
         })).unwrap();
-        let proxy = Proxy::start(config).await.unwrap();
+        let proxy = Proxy::start(config.clone()).await.unwrap();
         let ready: Value =
             serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
         let admin = ready["admin_port"]
@@ -105,6 +106,7 @@ impl Fixture {
             admin,
             address,
             origin: Arc::new(origin),
+            config,
         }
     }
 
@@ -146,10 +148,21 @@ impl Fixture {
     }
 
     pub(crate) async fn network(&self, agent: &str, address: std::net::SocketAddr) -> Reply {
+        self.request(agent, address, "GET", "/marker", "").await
+    }
+
+    pub(crate) async fn request(
+        &self,
+        agent: &str,
+        address: std::net::SocketAddr,
+        method: &str,
+        path: &str,
+        headers: &str,
+    ) -> Reply {
         let mut stream = UnixStream::connect(self.root.path().join(format!("{agent}.sock")))
             .await
             .unwrap();
-        stream.write_all(format!("GET http://{address}/marker HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        stream.write_all(format!("{method} http://{address}{path} HTTP/1.1\r\nHost: {address}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         receive(&mut stream).await
     }
 
@@ -224,5 +237,28 @@ impl Fixture {
 
     pub(crate) async fn stop(self) {
         self.proxy.shutdown().await;
+    }
+
+    pub(crate) async fn restart(self) -> Self {
+        let Self {
+            root,
+            proxy,
+            address,
+            origin,
+            config,
+            ..
+        } = self;
+        proxy.shutdown().await;
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let ready: Value =
+            serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+        Self {
+            root,
+            proxy,
+            address,
+            origin,
+            admin: ready["admin_port"].as_u64().unwrap().try_into().unwrap(),
+            config,
+        }
     }
 }

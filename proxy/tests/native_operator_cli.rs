@@ -47,7 +47,7 @@ async fn success(root: &Path, args: &[&str]) -> Value {
     let output = cli(root, args).await;
     assert!(
         output.status.success(),
-        "{}",
+        "{args:?}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
@@ -69,6 +69,1105 @@ async fn read_http_head(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     })
     .await
     .unwrap()
+}
+
+async fn restart(fixture: Fixture) -> Fixture {
+    let fixture = fixture.restart().await;
+    configure(&fixture);
+    fixture
+}
+
+async fn audited_stop(fixture: Fixture) -> Vec<Value> {
+    let Fixture { proxy, root, .. } = fixture;
+    proxy.shutdown().await;
+    fs::read_to_string(root.path().join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+const PENDING_SERVICE: &str = r#"
+schema_version: 1
+name: pending_fixture
+default_host: 127.0.0.1
+capabilities:
+  operate:
+    routes:
+      - methods: [GET, POST, PUT]
+        path: /v1/*
+risky_routes:
+  - path: /v1/*
+    methods: [POST, PUT]
+    tactics: [impact]
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_gateway_approval_uses_existing_grants_and_survives_restart_without_replay() {
+    let mut fixture = Fixture::new().await;
+    configure(&fixture);
+    fs::write(
+        fixture.root.path().join("services/pending.yaml"),
+        PENDING_SERVICE.replace("127.0.0.1", &fixture.address.ip().to_string()),
+    )
+    .unwrap();
+    assert!(fixture.proxy.reload_services_if_changed().await.unwrap());
+    let policy = format!(
+        "{}\n[hosts.'{}']\nservice='pending_fixture'\n[[risk]]\nagent='worker'\nservice='pending_fixture'\ntactics=['impact']\ndecision='require_approval'\n",
+        fixture
+            .source()
+            .replace("egress='prompt'", "egress='allow'"),
+        fixture.address.ip()
+    );
+    fixture.apply(&policy).await;
+    let access = fixture
+        .agent(
+            "worker",
+            "POST",
+            "/gateway/request-access",
+            Some(
+                json!({"service":"pending_fixture","capability":"operate","reason":"first reason"}),
+            ),
+        )
+        .await;
+    assert_eq!(access.status, 202, "{}", access.json());
+    let approval = success(
+        fixture.root.path(),
+        &["approvals", "show", &access.id(), "--json"],
+    )
+    .await;
+    let access_id = approval["approval_id"].as_str().unwrap();
+    let repeated = fixture.agent("worker", "POST", "/gateway/request-access", Some(json!({"service":"pending_fixture","capability":"operate","reason":"different agent prose"}))).await;
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", &repeated.id(), "--json"]
+        )
+        .await["approval_id"],
+        access_id
+    );
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "approve", access_id, "--json"]
+        )
+        .await["status"],
+        "approved"
+    );
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let token = authorized["services"]["pending_fixture"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let header = format!("Authorization: Bearer {token}\r\n");
+    let blocked = fixture
+        .request("worker", fixture.address, "POST", "/v1/Alpha*", &header)
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    let id = view["approval_id"].as_str().unwrap().to_owned();
+    assert_eq!(view["action"]["kind"], "gateway_route");
+    assert!(!view.to_string().contains(&token));
+    assert_eq!(view["options"].as_array().unwrap().len(), 3);
+    let database_path = fixture.root.path().join("data/approvals.sqlite3");
+    let pending_record: String = rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .query_row(
+            "SELECT record FROM approvals WHERE approval_id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for (method, path) in [("PUT", "/v1/Alpha*"), ("POST", "/v1/beta")] {
+        let changed = fixture
+            .request("worker", fixture.address, method, path, &header)
+            .await;
+        assert_eq!(changed.status, 428);
+        assert_ne!(
+            success(
+                fixture.root.path(),
+                &["approvals", "show", &changed.id(), "--json"]
+            )
+            .await["approval_id"],
+            id
+        );
+    }
+    let changed = fixture
+        .admin(
+            "POST",
+            &format!("/admin/approvals/{id}"),
+            Some(json!({"decision":"approve","option":"remembered","action":{"path":"/v1/other"}})),
+        )
+        .await;
+    assert_eq!(changed.status, 400);
+    let mut fixture = restart(fixture).await;
+    let after = success(fixture.root.path(), &["approvals", "show", &id, "--json"]).await;
+    assert_eq!(after["status"], "pending");
+    assert_eq!(after["authority_digest"], view["authority_digest"]);
+    assert_eq!(
+        after["options"][1]["status"], "expired",
+        "the old proxy session must remain bound"
+    );
+    let agent_view = fixture
+        .agent("worker", "GET", &format!("/approvals/{id}"), None)
+        .await;
+    assert_eq!(agent_view.status, 200);
+    assert_eq!(agent_view.json()["status"], after["status"]);
+    assert_eq!(agent_view.json()["options"], after["options"]);
+    assert!(
+        !cli(
+            fixture.root.path(),
+            &["approvals", "approve", &id, "--option", "session", "--json"]
+        )
+        .await
+        .status
+        .success()
+    );
+    let path = format!("/admin/approvals/{id}");
+    let (first, second) = tokio::join!(
+        fixture.admin(
+            "POST",
+            &path,
+            Some(json!({"decision":"approve","option":"once"}))
+        ),
+        fixture.admin(
+            "POST",
+            &path,
+            Some(json!({"decision":"approve","option":"once"}))
+        )
+    );
+    assert_eq!(first.status, 200, "{}", first.json());
+    assert_eq!(
+        second.json()["result"]["grant_id"],
+        first.json()["result"]["grant_id"]
+    );
+    let grants = success(fixture.root.path(), &["services", "grants"]).await;
+    assert_eq!(grants["grants"].as_array().unwrap().len(), 1);
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let token = authorized["services"]["pending_fixture"]["token"]
+        .as_str()
+        .unwrap();
+    let header = format!("Authorization: Bearer {token}\r\n");
+    assert_eq!(
+        fixture
+            .request(
+                "worker",
+                fixture.address,
+                "POST",
+                "/v1/Alpha-other",
+                &header
+            )
+            .await
+            .status,
+        428,
+        "an agent path wildcard widened the literal grant"
+    );
+    let origin = fixture.origin.clone();
+    let witness = tokio::spawn(async move {
+        let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+        let request = read_http_head(&mut stream).await;
+        assert!(request.starts_with(b"POST /v1/Alpha* HTTP/1.1"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nmarker")
+            .await
+            .unwrap();
+    });
+    assert_eq!(
+        fixture
+            .request("worker", fixture.address, "POST", "/v1/Alpha*", &header)
+            .await
+            .status,
+        200
+    );
+    witness.await.unwrap();
+    // Recreate the narrow crash window: the grant and its policy receipt were
+    // committed, but the approval database did not record the terminal state.
+    // The once grant has already been consumed, so recovery must not restore it.
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute(
+            "UPDATE approvals SET status='pending', record=?1 WHERE approval_id=?2",
+            rusqlite::params![pending_record, id],
+        )
+        .unwrap();
+    fixture = restart(fixture).await;
+    let recovered = success(fixture.root.path(), &["approvals", "show", &id, "--json"]).await;
+    assert_eq!(recovered["status"], "approved");
+    assert_eq!(
+        recovered["result"]["grant_id"],
+        first.json()["result"]["grant_id"]
+    );
+    let recovered = fixture
+        .admin(
+            "POST",
+            &path,
+            Some(json!({"decision":"approve","option":"remembered"})),
+        )
+        .await;
+    assert_eq!(recovered.status, 200);
+    assert_eq!(
+        recovered.json()["result"]["grant_id"],
+        first.json()["result"]["grant_id"]
+    );
+    let approved = success(
+        fixture.root.path(),
+        &[
+            "approvals",
+            "approve",
+            &id,
+            "--option",
+            "remembered",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(approved["result"]["scope"], "once");
+    assert!(
+        success(fixture.root.path(), &["services", "grants"]).await["grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let header = format!(
+        "Authorization: Bearer {}\r\n",
+        authorized["services"]["pending_fixture"]["token"]
+            .as_str()
+            .unwrap()
+    );
+    let next = fixture
+        .request("worker", fixture.address, "POST", "/v1/Alpha*", &header)
+        .await;
+    assert_eq!(next.status, 428);
+    assert_ne!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", &next.id(), "--json"]
+        )
+        .await["approval_id"],
+        id
+    );
+    let grant_id = first.json()["result"]["grant_id"].clone();
+    let events = audited_stop(fixture).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "admin.approval_decided"
+                && event["details"]["approval_id"] == id
+                && event["details"]["result"]["grant_id"] == grant_id)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "gateway.evaluated"
+                && event["details"]["grant_id"] == grant_id)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_network_approval_survives_inspection_and_resolves_through_native_cli() {
+    let fixture = Fixture::new().await;
+    configure(&fixture);
+    let first = fixture.network("worker", fixture.address).await;
+    assert_eq!(first.status, 428);
+    let original = success(
+        fixture.root.path(),
+        &["approvals", "show", &first.id(), "--json"],
+    )
+    .await;
+    let id = original["approval_id"].as_str().unwrap();
+    // Command Centre consumes these display fields from the canonical record.
+    assert_eq!(original["event"], "security.network_guard");
+    assert!(original["summary"].is_string());
+    assert_eq!(original["approval"]["approval_type"], "network_egress");
+    assert_eq!(original["approval"]["key"], id);
+    assert_eq!(
+        original["approval"]["scope_hint"]["port"],
+        fixture.address.port()
+    );
+    assert_ne!(id, first.id());
+    assert!(
+        first
+            .head
+            .to_ascii_lowercase()
+            .contains(&format!("x-safeyolo-approval-id: {id}"))
+    );
+    let retry = fixture.network("worker", fixture.address).await;
+    assert_ne!(retry.id(), first.id());
+    let repeated = success(
+        fixture.root.path(),
+        &["approvals", "show", &retry.id(), "--json"],
+    )
+    .await;
+    assert_eq!(repeated, original);
+    let database =
+        rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
+    let saved = || {
+        database
+            .query_row(
+                "SELECT record FROM approvals WHERE approval_id=?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before = saved();
+    let policy = fixture.source();
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "show", id, "--json"]).await,
+        original
+    );
+    assert_eq!(saved(), before, "inspection changed the approval");
+    assert_eq!(fixture.source(), policy, "inspection changed policy");
+    let listed = success(fixture.root.path(), &["approvals", "list", "--json"]).await;
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["approvals"][0]["approval_id"], id);
+    for (method, path) in [("POST", "/marker"), ("GET", "/other")] {
+        let changed = fixture
+            .request("worker", fixture.address, method, path, "")
+            .await;
+        assert_eq!(changed.status, 428);
+        assert_ne!(
+            success(
+                fixture.root.path(),
+                &["approvals", "show", &changed.id(), "--json"]
+            )
+            .await["approval_id"],
+            id
+        );
+    }
+    assert_eq!(
+        fixture
+            .admin(
+                "POST",
+                &format!("/admin/approvals/{id}"),
+                Some(json!({"decision":"approve","action":{"host":"changed.example"}}))
+            )
+            .await
+            .status,
+        400
+    );
+    let fixture = restart(fixture).await;
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "show", id, "--json"]).await["authority_digest"],
+        original["authority_digest"]
+    );
+    let approved = success(fixture.root.path(), &["approvals", "approve", id, "--json"]).await;
+    assert_eq!(approved["status"], "approved");
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "reject", id, "--json"]).await,
+        approved
+    );
+    let origin = fixture.origin.clone();
+    let witness = tokio::spawn(async move {
+        let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+        let request = read_http_head(&mut stream).await;
+        assert!(request.starts_with(b"GET /marker HTTP/1.1"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nmarker")
+            .await
+            .unwrap();
+    });
+    assert_eq!(fixture.network("worker", fixture.address).await.status, 200);
+    witness.await.unwrap();
+    assert_eq!(fixture.network("peer", fixture.address).await.status, 428);
+    let (other, address) = test_owned_endpoint::bind().await;
+    assert_eq!(fixture.network("worker", address).await.status, 403);
+    assert!(
+        timeout(Duration::from_millis(30), other.accept())
+            .await
+            .is_err()
+    );
+    let events = audited_stop(fixture).await;
+    assert!(events.iter().any(|event| event["request_id"] == first.id()
+        && event["details"]["approval_id"] == id));
+    for name in [
+        "admin.approval_inspected",
+        "admin.approval_decided",
+        "security.network_guard.evaluated",
+    ] {
+        assert!(
+            events
+                .iter()
+                .any(|event| event["event"] == name && event["details"]["approval_id"] == id),
+            "missing correlation for {name}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_credential_approval_binds_the_whole_request_and_preserves_shared_policy() {
+    let fixture = Fixture::new().await;
+    configure(&fixture);
+    fixture
+        .apply(
+            &fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'")
+                .replace("enabled=false", "enabled=true")
+                .replace("budget=40", "budget=4000"),
+        )
+        .await;
+    let token = "synthetic-pending-credential-496";
+    let header = format!("Authorization: Bearer {token}\r\n");
+    let blocked = fixture
+        .request("worker", fixture.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    assert!(
+        blocked
+            .head
+            .to_ascii_lowercase()
+            .contains("x-safeyolo-approval-id:"),
+        "initial: {} {}",
+        blocked.head,
+        blocked.json()
+    );
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    let id = view["approval_id"].as_str().unwrap();
+    assert_eq!(view["action"]["kind"], "credential_allow");
+    assert_eq!(view["status"], "pending");
+    assert!(!view.to_string().contains(token));
+    for args in [
+        vec!["approvals", "list", "--json"],
+        vec!["approvals", "list", "--agent", "worker", "--json"],
+    ] {
+        let listed = success(fixture.root.path(), &args).await;
+        let entries = listed["approvals"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "{listed}");
+        assert_eq!(entries[0]["approval_id"], id);
+        assert_eq!(entries[0]["action"]["agent_id"], WORKER_ID);
+    }
+    assert!(
+        success(
+            fixture.root.path(),
+            &["approvals", "list", "--agent", "helper", "--json"]
+        )
+        .await["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let retry = fixture
+        .request("worker", fixture.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", &retry.id(), "--json"]
+        )
+        .await["approval_id"],
+        id
+    );
+    for (method, path, credentials) in [
+        ("POST", "/marker", header.as_str()),
+        ("GET", "/other", header.as_str()),
+        (
+            "GET",
+            "/marker",
+            "Authorization: Bearer another-synthetic-credential-496\r\n",
+        ),
+    ] {
+        let changed = fixture
+            .request("worker", fixture.address, method, path, credentials)
+            .await;
+        assert_eq!(changed.status, 428);
+        assert!(
+            changed
+                .head
+                .to_ascii_lowercase()
+                .contains("x-safeyolo-approval-id:"),
+            "changed {method} {path}: {} {}",
+            changed.head,
+            changed.json()
+        );
+        assert_ne!(
+            success(
+                fixture.root.path(),
+                &["approvals", "show", &changed.id(), "--json"]
+            )
+            .await["approval_id"],
+            id
+        );
+    }
+    let before = fixture.source();
+    let rejected = success(fixture.root.path(), &["approvals", "reject", id, "--json"]).await;
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(
+        fixture.source(),
+        before,
+        "refusal changed credential policy"
+    );
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "approve", id, "--json"]).await,
+        rejected
+    );
+    let fresh = fixture
+        .request("worker", fixture.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(fresh.status, 428);
+    assert!(
+        fresh
+            .head
+            .to_ascii_lowercase()
+            .contains("x-safeyolo-approval-id:"),
+        "fresh: {} {}",
+        fresh.head,
+        fresh.json()
+    );
+    let fresh = success(
+        fixture.root.path(),
+        &["approvals", "show", &fresh.id(), "--json"],
+    )
+    .await;
+    let fresh_id = fresh["approval_id"].as_str().unwrap();
+    assert_ne!(id, fresh_id);
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "approve", fresh_id, "--json"]
+        )
+        .await["status"],
+        "approved"
+    );
+    let origin = fixture.origin.clone();
+    let witness = tokio::spawn(async move {
+        let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+        let bytes = read_http_head(&mut stream).await;
+        assert!(String::from_utf8(bytes).unwrap().contains(token));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nmarker")
+            .await
+            .unwrap();
+    });
+    // The existing credential permission is shared by all agents at this host.
+    assert_eq!(
+        fixture
+            .request("peer", fixture.address, "GET", "/marker", &header)
+            .await
+            .status,
+        200
+    );
+    witness.await.unwrap();
+    assert!(!fixture.source().contains(token));
+    let database =
+        rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
+    let mut statement = database.prepare("SELECT record FROM approvals").unwrap();
+    for record in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+    {
+        assert!(!record.unwrap().contains(token));
+    }
+    let events = audited_stop(fixture).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "security.credential_guard"
+                && event["decision"] == "allow"
+                && event["details"]["approval_id"] == fresh_id)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_pending_authority_fails_closed_and_does_not_block_existing_network_access() {
+    let fixture = Fixture::new().await;
+    configure(&fixture);
+    let blocked = fixture.network("worker", fixture.address).await;
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    let id = view["approval_id"].as_str().unwrap();
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "approve", id, "--json"]).await["status"],
+        "approved"
+    );
+    let pending = fixture.network("peer", fixture.address).await;
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &pending.id(), "--json"],
+    )
+    .await;
+    let pending_id = view["approval_id"].as_str().unwrap();
+    let database = fixture.root.path().join("data/approvals.sqlite3");
+    let held = fixture.root.path().join("data/held-approvals.sqlite3");
+    fs::rename(&database, &held).unwrap();
+    let source = fixture.source();
+    assert_eq!(
+        fixture
+            .admin("GET", &format!("/admin/approvals/{pending_id}"), None)
+            .await
+            .status,
+        503
+    );
+    assert_eq!(
+        fixture
+            .admin(
+                "POST",
+                &format!("/admin/approvals/{pending_id}"),
+                Some(json!({"decision":"approve"}))
+            )
+            .await
+            .status,
+        503
+    );
+    assert_eq!(fixture.source(), source);
+    let origin = fixture.origin.clone();
+    let witness = tokio::spawn(async move {
+        let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+        read_http_head(&mut stream).await;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nmarker")
+            .await
+            .unwrap();
+    });
+    assert_eq!(fixture.network("worker", fixture.address).await.status, 200);
+    witness.await.unwrap();
+    fs::rename(&held, &database).unwrap();
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", pending_id, "--json"]
+        )
+        .await["status"],
+        "pending"
+    );
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "DELETE FROM approval_requests WHERE approval_id=?1",
+            [pending_id],
+        )
+        .unwrap();
+    connection
+        .execute("DELETE FROM approvals WHERE approval_id=?1", [pending_id])
+        .unwrap();
+    drop(connection);
+    // A retained modern audit prompt cannot recreate missing host authority.
+    assert_eq!(
+        fixture
+            .admin("GET", &format!("/admin/approvals/{}", pending.id()), None)
+            .await
+            .status,
+        503
+    );
+    assert_ne!(
+        fixture
+            .admin(
+                "POST",
+                &format!("/admin/approvals/{}", pending.id()),
+                Some(json!({"decision":"approve"}))
+            )
+            .await
+            .status,
+        200
+    );
+    assert_eq!(fixture.source(), source);
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_gateway_approval_expires_with_its_bound_vault_credential() {
+    let fixture = Fixture::new().await;
+    fs::write(
+        fixture.root.path().join("data/credentials.key"),
+        "synthetic-pending-vault-key",
+    )
+    .unwrap();
+    let vault = safeyolo_proxy::credentials::Vault::unlock(
+        fixture.root.path().join("data/credentials.enc"),
+        &safeyolo_proxy::credentials::Secret::new("synthetic-pending-vault-key"),
+    )
+    .unwrap();
+    let secret = "synthetic-pending-vault-secret-496";
+    let mut credential = safeyolo_proxy::credentials::Credential::new(
+        "fixture",
+        "bearer",
+        safeyolo_proxy::credentials::Secret::new(secret),
+    );
+    credential.expires_at = Some(
+        (time::OffsetDateTime::now_utc() + time::Duration::seconds(4))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
+    vault.store(credential).unwrap();
+    let service = PENDING_SERVICE.replace("127.0.0.1", &fixture.address.ip().to_string()).replace("capabilities:",
+        "auth:\n  type: bearer\n  header: Authorization\n  scheme: Bearer\n  allow_http: true\ncapabilities:");
+    fs::write(fixture.root.path().join("services/pending.yaml"), service).unwrap();
+    let policy = format!(
+        "{}\n[hosts.'{}']\nservice='pending_fixture'\n[agents.worker.services.pending_fixture]\ncapability='operate'\ntoken='fixture'\naccount='agent'\n[[risk]]\nagent='worker'\nservice='pending_fixture'\ntactics=['impact']\ndecision='require_approval'\n",
+        fixture
+            .source()
+            .replace("egress='prompt'", "egress='allow'"),
+        fixture.address.ip()
+    );
+    fs::write(fixture.root.path().join("policy.toml"), policy).unwrap();
+    let fixture = restart(fixture).await;
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let token = authorized["services"]["pending_fixture"]["token"]
+        .as_str()
+        .unwrap();
+    let header = format!("Authorization: Bearer {token}\r\n");
+    let blocked = fixture
+        .request("worker", fixture.address, "POST", "/v1/alpha", &header)
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    let id = view["approval_id"].as_str().unwrap();
+    assert_eq!(view["status"], "pending");
+    assert!(!view.to_string().contains(secret));
+    assert!(!view.to_string().contains(token));
+    let database =
+        rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
+    let before: String = database
+        .query_row(
+            "SELECT record FROM approvals WHERE approval_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let expired = success(fixture.root.path(), &["approvals", "show", id, "--json"]).await;
+    assert_eq!(expired["status"], "expired");
+    assert_eq!(expired["authority_digest"], view["authority_digest"]);
+    let agent_view = fixture
+        .agent("worker", "GET", &format!("/approvals/{id}"), None)
+        .await;
+    assert_eq!(agent_view.status, 200);
+    assert_eq!(agent_view.json()["status"], expired["status"]);
+    assert_eq!(agent_view.json()["options"], expired["options"]);
+    let after: String = database
+        .query_row(
+            "SELECT record FROM approvals WHERE approval_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, before, "inspection persisted an expiry transition");
+    assert_eq!(
+        fixture
+            .admin(
+                "POST",
+                &format!("/admin/approvals/{id}"),
+                Some(json!({"decision":"approve","option":"remembered"}))
+            )
+            .await
+            .status,
+        409
+    );
+    assert!(
+        success(fixture.root.path(), &["services", "grants"]).await["grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        timeout(Duration::from_millis(30), fixture.origin.accept())
+            .await
+            .is_err()
+    );
+    drop(database);
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_gateway_credential_replacement_has_the_same_agent_and_operator_status() {
+    let fixture = Fixture::new().await;
+    fs::write(
+        fixture.root.path().join("data/credentials.key"),
+        "synthetic-pending-vault-key",
+    )
+    .unwrap();
+    let vault = safeyolo_proxy::credentials::Vault::unlock(
+        fixture.root.path().join("data/credentials.enc"),
+        &safeyolo_proxy::credentials::Secret::new("synthetic-pending-vault-key"),
+    )
+    .unwrap();
+    vault
+        .store(safeyolo_proxy::credentials::Credential::new(
+            "fixture",
+            "bearer",
+            safeyolo_proxy::credentials::Secret::new("synthetic-original-credential-496"),
+        ))
+        .unwrap();
+    let service = PENDING_SERVICE.replace("capabilities:",
+        "auth:\n  type: bearer\n  header: Authorization\n  scheme: Bearer\n  allow_http: true\ncapabilities:");
+    fs::write(fixture.root.path().join("services/pending.yaml"), service).unwrap();
+    let policy = format!(
+        "{}\n[hosts.'{}']\nservice='pending_fixture'\n[agents.worker.services.pending_fixture]\ncapability='operate'\ntoken='fixture'\naccount='agent'\n[[risk]]\nagent='worker'\nservice='pending_fixture'\ntactics=['impact']\ndecision='require_approval'\n",
+        fixture
+            .source()
+            .replace("egress='prompt'", "egress='allow'"),
+        fixture.address.ip()
+    );
+    fs::write(fixture.root.path().join("policy.toml"), policy).unwrap();
+    let fixture = restart(fixture).await;
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let header = format!(
+        "Authorization: Bearer {}\r\n",
+        authorized["services"]["pending_fixture"]["token"]
+            .as_str()
+            .unwrap()
+    );
+    let blocked = fixture
+        .request("worker", fixture.address, "POST", "/v1/alpha", &header)
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    let id = view["approval_id"].as_str().unwrap().to_owned();
+    let path = format!("/approvals/{id}");
+    let initial = fixture.agent("worker", "GET", &path, None).await;
+    assert_eq!(initial.status, 200);
+    assert_eq!(initial.json()["status"], "pending");
+    assert!(initial.json().get("details").is_none());
+    assert!(initial.json().get("untrusted_reason_text").is_none());
+    assert_eq!(fixture.agent("peer", "GET", &path, None).await.status, 404);
+
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(fixture.root.path())
+        .args(["credentials", "add", "fixture", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    command
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-replacement-credential-496\n")
+        .await
+        .unwrap();
+    let output = timeout(LIMIT, command.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let source = fixture.source();
+    let database =
+        rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
+    let saved = || {
+        database
+            .query_row(
+                "SELECT record FROM approvals WHERE approval_id=?1",
+                [&id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before = saved();
+    let operator = fixture.admin("GET", &format!("/admin{path}"), None).await;
+    assert_eq!(operator.status, 200);
+    assert_eq!(operator.json()["status"], "superseded");
+    let agent = fixture.agent("worker", "GET", &path, None).await;
+    assert_eq!(agent.status, 200);
+    assert_eq!(agent.json()["status"], operator.json()["status"]);
+    assert_eq!(agent.json()["options"], operator.json()["options"]);
+    assert_eq!(
+        agent.json()["authority_digest"],
+        initial.json()["authority_digest"]
+    );
+    assert_eq!(agent.json()["approval"]["required"], false);
+    assert_eq!(fixture.agent("peer", "GET", &path, None).await.status, 404);
+    assert_eq!(saved(), before, "inspection changed stored authority");
+    assert_eq!(fixture.source(), source, "inspection changed policy");
+    assert_eq!(
+        fixture
+            .admin(
+                "POST",
+                &format!("/admin{path}"),
+                Some(json!({"decision":"approve","option":"remembered"}))
+            )
+            .await
+            .status,
+        409
+    );
+    assert!(
+        success(fixture.root.path(), &["services", "grants"]).await["grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        timeout(Duration::from_millis(30), fixture.origin.accept())
+            .await
+            .is_err()
+    );
+    drop(database);
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_contract_binding_uses_the_fixed_values_and_existing_gateway_enforcement() {
+    let mut fixture = Fixture::new().await;
+    configure(&fixture);
+    let service = format!(
+        r#"
+schema_version: 1
+name: pending_fixture
+default_host: {}
+capabilities:
+  operate:
+    routes:
+      - methods: [GET]
+        path: /v1/projects/*
+    contract:
+      template: pending.projects.v1
+      bindings:
+        project:
+          type: enum
+          options: [alpha, beta]
+      operations:
+        - name: read
+          request:
+            method: GET
+            path: /v1/projects/{{project}}
+            path_params:
+              project:
+                equals_var: project
+      enforcement:
+        request_shape: enforced
+"#,
+        fixture.address.ip()
+    );
+    fs::write(fixture.root.path().join("services/pending.yaml"), service).unwrap();
+    assert!(fixture.proxy.reload_services_if_changed().await.unwrap());
+    fixture
+        .apply(&format!(
+            "{}\n[hosts.'{}']\nservice='pending_fixture'\n",
+            fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'"),
+            fixture.address.ip()
+        ))
+        .await;
+    success(
+        fixture.root.path(),
+        &[
+            "services",
+            "authorize",
+            "worker",
+            "pending_fixture",
+            "--capability",
+            "operate",
+        ],
+    )
+    .await;
+    let mut ids = Vec::new();
+    for project in ["alpha", "beta"] {
+        let requested = fixture.agent("worker", "POST", "/gateway/submit-binding", Some(json!({"service":"pending_fixture","capability":"operate","bindings":{"project":project}}))).await;
+        assert_eq!(requested.status, 202, "{}", requested.json());
+        let view = success(
+            fixture.root.path(),
+            &["approvals", "show", &requested.id(), "--json"],
+        )
+        .await;
+        assert_eq!(view["action"]["bindings"]["project"], project);
+        ids.push(view["approval_id"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(ids[0], ids[1]);
+    let approved = success(
+        fixture.root.path(),
+        &["approvals", "approve", &ids[0], "--json"],
+    )
+    .await;
+    assert_eq!(approved["status"], "approved");
+    assert!(
+        approved["result"]["binding_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("cbs")
+    );
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", &ids[1], "--json"]
+        )
+        .await["status"],
+        "superseded"
+    );
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    let token = authorized["services"]["pending_fixture"]["token"]
+        .as_str()
+        .unwrap();
+    let headers = format!("Authorization: Bearer {token}\r\n");
+    assert_eq!(
+        fixture
+            .request(
+                "worker",
+                fixture.address,
+                "GET",
+                "/v1/projects/beta",
+                &headers
+            )
+            .await
+            .status,
+        403
+    );
+    assert!(
+        timeout(Duration::from_millis(30), fixture.origin.accept())
+            .await
+            .is_err()
+    );
+    let origin = fixture.origin.clone();
+    let witness = tokio::spawn(async move {
+        let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+        assert!(
+            read_http_head(&mut stream)
+                .await
+                .starts_with(b"GET /v1/projects/alpha HTTP/1.1")
+        );
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nmarker")
+            .await
+            .unwrap();
+    });
+    assert_eq!(
+        fixture
+            .request(
+                "worker",
+                fixture.address,
+                "GET",
+                "/v1/projects/alpha",
+                &headers
+            )
+            .await
+            .status,
+        200
+    );
+    witness.await.unwrap();
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "approve", &ids[0], "--json"]
+        )
+        .await["result"],
+        approved["result"]
+    );
+    fixture.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -260,7 +1359,10 @@ async fn native_helper_reads_prepares_and_human_resolves_without_evidence_copyin
     assert!(!pending.to_string().contains(SECRET));
     assert!(!pending.to_string().contains(&foreign));
     let logs = success(root, &["logs", "--agent", "worker"]).await;
-    assert!(!logs.to_string().contains(SECRET));
+    assert!(
+        logs.to_string().contains(SECRET),
+        "operator logs retain the current raw audit evidence"
+    );
     assert!(!logs.to_string().contains(&foreign));
     let shown = cli(root, &["approvals", "show", &id]).await;
     assert!(shown.status.success());

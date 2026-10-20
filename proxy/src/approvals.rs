@@ -1,6 +1,6 @@
-//! Network approvals are durable host-policy edits, not independent grants.
-//! Prompt metadata retains the current audit schema. Gateway once/session grants
-//! are a separate capability and are not represented here.
+//! Native pending records identify fixed network, credential and gateway
+//! requests. Decisions use existing host-policy edits and the gateway grant
+//! store. Audit text cannot create pending authority.
 
 use std::{
     fmt,
@@ -20,6 +20,7 @@ use crate::policy::{
 };
 
 pub(crate) mod network_action;
+pub(crate) mod pending;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -49,7 +50,7 @@ impl From<std::io::Error> for ApprovalError {
         }
     }
 }
-type Result<T> = std::result::Result<T, ApprovalError>;
+pub(crate) type Result<T> = std::result::Result<T, ApprovalError>;
 fn invalid(message: impl Into<String>) -> ApprovalError {
     ApprovalError {
         kind: ErrorKind::Invalid,

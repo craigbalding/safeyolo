@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::approvals::network_action;
+use crate::approvals::pending;
 
 pub(super) fn credential_view<'a>(
     events: impl IntoIterator<Item = &'a Value>,
@@ -18,6 +19,14 @@ pub(super) fn credential_view<'a>(
     let Some(first) = matching.first() else {
         return Ok(None);
     };
+    if matching
+        .iter()
+        .any(|event| event.pointer("/details/approval_id").is_some())
+    {
+        return Err(
+            "canonical approval state unavailable; audit text cannot replace its authority",
+        );
+    }
     let agent = first["agent"]
         .as_str()
         .ok_or("credential request has no agent")?;
@@ -113,6 +122,7 @@ pub(super) fn credential_record(
 #[serde(deny_unknown_fields)]
 struct Resolution {
     decision: network_action::Decision,
+    option: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -135,7 +145,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         .map_or((path, false), |path| (path, true));
     let Some(id) = path
         .strip_prefix("/admin/approvals/")
-        .filter(|id| !id.contains('/') && crate::agent_api::valid_request_id(id))
+        .filter(|id| !id.contains('/') && crate::approvals::pending::valid_id(id))
     else {
         return Ok(response(
             StatusCode::NOT_FOUND,
@@ -149,8 +159,22 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         ));
     };
     if request.method() == Method::GET && !share {
-        let (policy, writer, id) = (policy.clone(), writer.clone(), id.to_owned());
+        let (policy, writer, id, state) = (
+            policy.clone(),
+            writer.clone(),
+            id.to_owned(),
+            state.cloned(),
+        );
         return tokio::task::spawn_blocking(move || {
+            match pending::lookup(&writer, &id) {
+                Ok(Some(record)) => return Ok(match pending::inspect(&writer, &policy, &record, state.as_ref()) {
+                    Ok(view) => response(StatusCode::OK, view),
+                    Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error.to_string()})),
+                }),
+                Ok(None) if id.starts_with("apr-") => return Ok(response(StatusCode::NOT_FOUND, json!({"error":"approval unavailable"}))),
+                Ok(None) => {},
+                Err(error) => return Ok(response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error.to_string()}))),
+            }
             match credential_record(&writer, &policy, &id) {
                 Ok(Some(view)) => return Ok(response(StatusCode::OK, view)),
                 Ok(None) => {},
@@ -202,7 +226,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     if !share && resolution.is_none() {
         return Ok(response(
             StatusCode::BAD_REQUEST,
-            json!({"error":"supply only decision: approve or reject; scope comes from the canonical request"}),
+            json!({"error":"supply decision: approve or reject, and an offered option when required; scope comes from the canonical approval"}),
         ));
     }
     let (Some(state), Some(owner)) = (state, service_audit) else {
@@ -216,7 +240,12 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         let result = if let Some(input) = selected {
             network_action::share_reads(&state, &writer, &id, &input.helper, &input.helper_id)
         } else if let Some(input) = resolution {
-            network_action::resolve(&state, &writer, &id, input.decision)
+            match pending::resolve(&state, &writer, &id, input.decision, input.option.as_deref()) {
+                Ok(Some(result)) => Ok(result),
+                Ok(None) if id.starts_with("apr-") => Ok((404, json!({"error":"approval unavailable"}))),
+                Ok(None) => Ok((404, json!({"error":"durable approval unavailable; make a new request or use explicit policy controls"}))),
+                Err(error) => Ok((if error.kind == crate::approvals::ErrorKind::Io {503} else {409}, json!({"error":error.to_string()}))),
+            }
         } else { return Err(Error::ServiceMutation); };
         Ok(match result {
             Ok((status, value)) => response(StatusCode::from_u16(status).map_err(|_| Error::ServiceMutation)?, value),

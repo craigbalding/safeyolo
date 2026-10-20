@@ -17,13 +17,14 @@ pub(super) fn request_id(path: &str) -> Option<(&str, bool)> {
     let (id, prepare) = suffix
         .strip_suffix("/prepare")
         .map_or((suffix, false), |id| (id, true));
-    (!id.contains('/') && super::valid_request_id(id)).then_some((id, prepare))
+    (!id.contains('/') && crate::approvals::pending::valid_id(id)).then_some((id, prepare))
 }
 
 pub(super) async fn read(
     request: Request<'_>,
     writer: Option<&Arc<Writer>>,
     policy: &Policy,
+    state: Option<&crate::RuntimeState>,
     id: &str,
     read: Read,
 ) -> Outcome<'static> {
@@ -36,13 +37,34 @@ pub(super) async fn read(
             json!({"error":"evidence unavailable; direct operator controls remain available"}),
         );
     };
-    let (writer, policy, caller, id) = (
+    let (writer, policy, state, caller, id) = (
         writer.clone(),
         policy.clone(),
+        state.cloned(),
         caller.to_owned(),
         id.to_owned(),
     );
     match tokio::task::spawn_blocking(move || {
+        match crate::approvals::pending::lookup(&writer, &id) {
+            Ok(Some(record)) => {
+                let action = &record.authority.action;
+                let owner = action["agent"].as_str().unwrap_or("");
+                if policy.evidence_agent_id(owner) != action["agent_id"].as_str()
+                    || (caller != owner && policy.evidence_reader(&caller, &id, read).as_deref() != Some(owner)) {
+                    return response(404, json!({"error":"selected evidence unavailable or not granted"}));
+                }
+                return match crate::approvals::pending::current_view(&writer, &policy, &record, state.as_ref()) {
+                    Ok(mut view) => {
+                        if let Some(fields) = view.as_object_mut() { fields.shift_remove("untrusted_reason_text"); fields.shift_remove("details"); }
+                        if read == Read::Diagnostic { view["diagnostic"] = json!({"decision":"require_approval","agent":action["agent"],"host":action["host"],"port":action["port"]}); }
+                        response(200, view)
+                    }
+                    Err(_) => response(503, json!({"error":"approval state unavailable"})),
+                };
+            }
+            Ok(None) => {},
+            Err(_) => return response(503, json!({"error":"approval state unavailable"})),
+        }
         match network_action::record(&writer, &policy, &id) {
             Ok(Some(record)) if record.readable(&policy, &caller, &id, read) => {
                 let mut value = record.view(&id, false);
@@ -62,6 +84,7 @@ pub(super) async fn respond<B>(
     request: Request<'_>,
     writer: Option<&Arc<Writer>>,
     policy: &Policy,
+    state: Option<&crate::RuntimeState>,
     body: RequestBody<'_, B>,
 ) -> Result<Outcome<'static>, B::Error>
 where
@@ -71,7 +94,7 @@ where
         return Ok(response(404, json!({"error":"approval unavailable"})));
     };
     if !prepare && request.method == "GET" {
-        return Ok(read(request, writer, policy, id, Read::Approval).await);
+        return Ok(read(request, writer, policy, state, id, Read::Approval).await);
     }
     if !prepare || request.method != "POST" {
         return Ok(response(405, json!({"error":"Method Not Allowed"})));

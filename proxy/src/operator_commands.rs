@@ -18,7 +18,8 @@ pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
-safeyolo [--root ROOT] approvals list|show ID|approve ID|reject ID [--agent NAME] [--json]
+safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
+safeyolo [--root ROOT] approvals show|approve|reject ID [--option ID] [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
@@ -30,7 +31,10 @@ Factory roles come from the existing selected snapshot; live state supplies read
 Exports: raw, raw_request, raw_response, curl, httpie, har, zhar.
 Generated commands are saved or displayed as evidence, never executed.
 Sharing permits selected diagnostic/approval reads only. Helper prepares; the human decides.
-Approval allows reusable Worker access to the selected host/port until explicitly removed.
+Each approval shows its fixed permission and options. Inspect leaves it pending.
+Network approval is reusable for the selected agent and host/port. Credential approval changes shared persistent policy.
+Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
+Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.";
 
@@ -87,6 +91,7 @@ struct Options {
     socket: Option<PathBuf>,
     token: Option<PathBuf>,
     reason: Option<String>,
+    option: Option<String>,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -106,7 +111,7 @@ impl Options {
                 }
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
-                | "--expect" => {
+                | "--expect" | "--option" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -120,6 +125,7 @@ impl Options {
                         "--socket" => options.socket = Some(value.into()),
                         "--token-file" => options.token = Some(value.into()),
                         "--reason" => options.reason = Some(value.clone()),
+                        "--option" => options.option = Some(value.clone()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -192,7 +198,7 @@ async fn admin(_root: &Path, path: &str, method: Method, body: Value) -> Result<
 }
 
 pub(crate) async fn approval(root: &Path, id: &str, agent: Option<&str>) -> Result<Value, Error> {
-    if !crate::agent_api::valid_request_id(id) {
+    if !crate::approvals::pending::valid_id(id) {
         return Err("invalid request ID".into());
     }
     let view = admin(
@@ -218,6 +224,18 @@ fn show_approval(view: &Value) -> Result<(), Error> {
         safe(text(&view["status"])),
         safe(text(&view["effect"]))
     );
+    if let Some(id) = view["approval_id"].as_str() {
+        println!("Approval: {}", safe(id));
+    }
+    if let Some(options) = view["options"].as_array() {
+        for option in options {
+            println!(
+                "Option {}: {}",
+                safe(text(&option["id"])),
+                safe(text(&option["effect"]))
+            );
+        }
+    }
     if view["action"]["kind"] == "credential_allow" {
         println!(
             "Credential fingerprints: {}",
@@ -244,10 +262,27 @@ pub(crate) async fn resolve(
     decision: &str,
     agent: Option<&str>,
 ) -> Result<Value, Error> {
+    resolve_with_option(root, id, decision, agent, None).await
+}
+
+async fn resolve_with_option(
+    root: &Path,
+    id: &str,
+    decision: &str,
+    agent: Option<&str>,
+    option: Option<&str>,
+) -> Result<Value, Error> {
     let preview = approval(root, id, agent).await?;
-    let resolved = resolve_preview(root, &preview, decision, agent).await?;
-    if resolved["status"] == "stale" {
-        return Err(text(&resolved["effect"]).to_owned().into());
+    let resolved = resolve_preview(root, &preview, decision, agent, option).await?;
+    if matches!(
+        resolved["status"].as_str(),
+        Some("stale" | "expired" | "superseded")
+    ) {
+        return Err(format!(
+            "Approval is {}; make and inspect a new request.",
+            text(&resolved["status"])
+        )
+        .into());
     }
     Ok(resolved)
 }
@@ -257,8 +292,11 @@ async fn resolve_preview(
     inspected: &Value,
     decision: &str,
     agent: Option<&str>,
+    option: Option<&str>,
 ) -> Result<Value, Error> {
-    let id = inspected["request_id"]
+    let id = inspected
+        .get("approval_id")
+        .unwrap_or(&inspected["request_id"])
         .as_str()
         .ok_or("request ID unavailable")?;
     if inspected["status"] == "stale" {
@@ -286,44 +324,12 @@ async fn resolve_preview(
     if preview["status"] != "pending" {
         return Ok(preview);
     }
-    if preview["action"]["kind"] == "credential_allow" {
-        if !matches!(decision, "approve" | "reject") {
-            return Err("choose approve or reject".into());
-        }
-        let action = &preview["action"];
-        if decision == "approve" {
-            let result = admin(root, "/admin/policy/baseline/approve", Method::POST,
-                json!({"destination":action["host"],"cred_id":action["credentials"],"approval_request_id":id,"approval_action":action})).await;
-            if let Err(error) = result {
-                // Read once after an uncertain mutation. Never repeat it.
-                if let Ok(current) = approval(root, id, agent).await
-                    && current["status"] == "stale"
-                {
-                    return Ok(current);
-                }
-                return Err(format!("credential decision not confirmed: {error}; inspect approvals and policy before deciding again").into());
-            }
-        } else {
-            for credential in action["credentials"]
-                .as_array()
-                .ok_or("credential scope is unavailable")?
-            {
-                admin(root, "/admin/policy/baseline/deny", Method::POST,
-                    json!({"destination":action["host"],"cred_id":credential,"approval_request_id":id})).await
-                    .map_err(|error| format!("credential refusal not confirmed: {error}; inspect approvals before deciding again"))?;
-            }
-        }
-        let mut resolved = preview;
-        resolved["status"] = if decision == "approve" {
-            "approved"
-        } else {
-            "rejected"
-        }
-        .into();
-        return Ok(resolved);
-    }
     let path = format!("/admin/approvals/{}", encoded(id));
-    match admin(root, &path, Method::POST, json!({"decision":decision})).await {
+    let mut input = json!({"decision":decision});
+    if let Some(option) = option {
+        input["option"] = json!(option);
+    }
+    match admin(root, &path, Method::POST, input).await {
         Ok(value) => Ok(value),
         Err(error) => {
             // One canonical read, never a replay of an uncertain mutation.
@@ -371,12 +377,15 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
         approvals.retain(|view| {
             view["agent"] == name
                 && (view["event"] != "security.credential_guard"
-                    || view["details"]["agent_id"] == current["agent_id"])
+                    || view["action"]
+                        .get("agent_id")
+                        .unwrap_or(&view["details"]["agent_id"])
+                        == &current["agent_id"])
         });
     }
     // Routine projections contain only the canonical summary and identity.
     for view in approvals {
-        *view = json!({"request_id":view["request_id"],"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"],"action":view["action"]});
+        *view = json!({"approval_id":view.get("approval_id").unwrap_or(&view["request_id"]),"request_id":view["request_id"],"status":view.get("status").unwrap_or(&json!("pending")),"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"],"action":view["action"],"options":view["options"]});
     }
     Ok(value)
 }
@@ -419,7 +428,9 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             println!("Choose a displayed request number.");
             continue;
         };
-        let id = entry["request_id"]
+        let id = entry
+            .get("approval_id")
+            .unwrap_or(&entry["request_id"])
             .as_str()
             .ok_or("request ID unavailable")?;
         let view = match approval(root, id, Some(agent)).await {
@@ -451,7 +462,22 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         match crate::host_launch::input("approve / reject / Enter to leave unchanged: ")?.as_deref()
         {
             Some(decision @ ("approve" | "reject")) => {
-                show_approval(&resolve_preview(root, &view, decision, Some(agent)).await?)?;
+                let option = if decision == "approve"
+                    && view["action"]["kind"] == "service_authorize"
+                    && view["options"]
+                        .as_array()
+                        .is_some_and(|options| options.len() > 1)
+                {
+                    crate::host_launch::input("Option ID (Enter leaves pending): ")?
+                } else {
+                    None
+                };
+                if option.as_deref() == Some("") {
+                    continue;
+                }
+                show_approval(
+                    &resolve_preview(root, &view, decision, Some(agent), option.as_deref()).await?,
+                )?;
             }
             _ => println!("Request unchanged."),
         }
@@ -662,7 +688,7 @@ async fn helper(options: &Options) -> Result<Value, Error> {
     let [operation, id] = parts.as_slice() else {
         return Err("usage: safeyolo helper --help".into());
     };
-    if !crate::agent_api::valid_request_id(id) {
+    if !crate::approvals::pending::valid_id(id) {
         return Err("invalid request ID".into());
     }
     let token = options
@@ -841,7 +867,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 "approve" | "reject" => {
                     let view = approval(root, rest, Some(name)).await?;
                     show_approval(&view)?;
-                    show_approval(&resolve_preview(root, &view, command, Some(name)).await?)
+                    show_approval(&resolve_preview(root, &view, command, Some(name), None).await?)
                 }
                 "share" => {
                     let (id, helper) = rest.split_once(' ').ok_or("share requires ID HELPER")?;
@@ -910,7 +936,14 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                 [] | ["list"] => pending(root, options.agent.as_deref()).await?,
                 ["show", id] => approval(root, id, options.agent.as_deref()).await?,
                 [decision @ ("approve" | "reject"), id] => {
-                    resolve(root, id, decision, options.agent.as_deref()).await?
+                    resolve_with_option(
+                        root,
+                        id,
+                        decision,
+                        options.agent.as_deref(),
+                        options.option.as_deref(),
+                    )
+                    .await?
                 }
                 ["share", id] => {
                     share(
