@@ -105,7 +105,7 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None, agent_map=None):
+                    capture=False, extra_config="", platform_assets=None, agent_addresses=None):
     artifacts, guest_artifacts, profile = native_inputs()
     root = directory / "installed"
     try:
@@ -139,13 +139,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         socket_parent = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR")
         with tempfile.TemporaryDirectory(prefix="sy-native-", dir=socket_parent) as sockets:
             paths = {name: str(Path(sockets) / f"{name}.sock") for name in ("alice", "bob")}
-            if agent_map is not None:
-                from tests.blackbox.installed_host_smoke import _agent_map
-
-                (root / "data/agent_map.json").write_text(json.dumps({
-                    name: {"ip": ip} for name, ip in agent_map.items()
-                }))
-                paths = {row["agent_id"]: row["path"] for row in _agent_map(root)}
+            if agent_addresses is not None:
+                paths = {name: str(Path(sockets) / f"{name}.sock") for name in agent_addresses}
             configuration = (f'admin_port = 0\nflow_store_enabled = {str(capture).lower()}\n'
                              f'agent_api_enabled = {str(services or agent_api).lower()}\n')
             if parent_proxy:
@@ -161,7 +156,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             configuration += extra_config
             for index, (name, path) in enumerate(paths.items(), 2):
                 configuration += (f'[[listeners]]\nagent_id = "{name}"\nsocket_path = {json.dumps(path)}\n'
-                                  f'source_id = {json.dumps(agent_map[name] if agent_map is not None else f"10.0.0.{index}")}\n')
+                                  f'source_id = {json.dumps(agent_addresses[name] if agent_addresses is not None else f"10.0.0.{index}")}\n')
             (root / "config.toml").write_text(configuration)
             environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
                                SAFEYOLO_CONFIG_DIR=str(root),
@@ -1020,9 +1015,9 @@ esac
         assert saved["trace"] == {"ttl_s": 12}
         assert saved["command_centre"]["events_port"] == events_port
         assert json.loads((instance.root / "data/ready.json").read_text())["reload_id"] == saved["reload_id"]
-        # Custom ingress remains intact; the other host-owned slot is added.
+        # Custom ingress remains intact. The retired map cannot add another listener.
         assert {entry["socket_path"] for entry in saved["listeners"]} == {
-            *instance.paths.values(), str(instance.root / "data/sockets/10.0.0.3_bob/proxy.sock"),
+            *instance.paths.values(),
         }
         assert instance.cli("config", "check", str(instance.root / "config.toml")).returncode == 0
 
@@ -1117,7 +1112,7 @@ def test_installed_policy_overrides_coexist_with_degraded_host_identity_and_atta
             context = json.dumps({"agent_id": agent_id, "generation": run_id, "ip": "10.200.0.8"}).encode()
             (agent / "runtime.json").write_bytes(runtime)
             (agent / "config-share/host-launch-context.json").write_bytes(context)
-            # Startup must rebuild a corrupt derived map through the same host
+            # Startup must ignore a corrupt retired map and use the same host
             # enumeration, while keeping Alice/Bob's explicit listeners.
             (instance.root / "data/agent_map.json").write_text("corrupt")
             explicit = tomllib.loads((instance.root / "config.toml").read_text())["listeners"]
@@ -1129,13 +1124,13 @@ def test_installed_policy_overrides_coexist_with_degraded_host_identity_and_atta
                 observed = json.loads(status.stdout)
                 assert (observed["agent_id"], observed["run_id"], observed["runtime_state"]) == (agent_id, run_id, "degraded")
                 assert observed["proxy_attachment"]["state"] == "ready"
-                socket_path = instance.root / "data/sockets/10.200.0.8_marker/proxy.sock"
+                socket_path = instance.root / "agents/marker/proxy/proxy.sock"
                 assert socket_path.is_socket()
                 instance.paths["marker"] = str(socket_path)
                 listeners = tomllib.loads((instance.root / "config.toml").read_text())["listeners"]
                 assert all(entry in listeners for entry in explicit)
                 assert {"agent_id": "marker", "source_id": "10.200.0.8", "socket_path": str(socket_path)} in listeners
-                assert json.loads((instance.root / "data/agent_map.json").read_text())["marker"]["ip"] == "10.200.0.8"
+                assert (instance.root / "data/agent_map.json").read_text() == "corrupt"
                 delivered(instance, origin, "override.invalid:8123", status=200)
                 delivered(instance, origin, "override.invalid:8123", agent="bob", status=403)
                 delivered(instance, origin, "override.invalid:8123", agent="marker", status=403)

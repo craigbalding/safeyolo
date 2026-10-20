@@ -165,10 +165,10 @@ def test_native_restart_consumer_uses_real_start_and_checks_sandbox_continuity(t
     from tests.blackbox.host.lifecycle.test_token_lifecycle import TestLiveAgentLifecycle
 
     directory = tmp_path_factory.mktemp("restart")
-    with native_instance(directory, agent_api=True, agent_map={"alice": "10.0.0.2"}) as instance:
+    with native_instance(directory, agent_api=True, agent_addresses={"alice": "10.0.0.2"}) as instance:
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(instance.root))
         monkeypatch.setenv("SAFEYOLO_TEST_AGENT", "alice")
-        listener = smoke._agent_map(instance.root)[0]
+        listener = smoke._agent_listeners(instance.root)[0]
         socket_path = Path(listener["path"])
         sandbox = {"name": "alice", "agent_id": "ag-owned", "run_id": "0123456789abcdef0123456789abcdef",
                    "runtime_state": "running"}

@@ -86,7 +86,7 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             .and_then(|name| name.to_str())
             .ok_or("config has no filename")?,
         &format!(
-            "{}\ntls_ca_file = \"certs/mitmproxy-ca.pem\"\nagent_map_file = \"data/agent_map.json\"\n",
+            "{}\ntls_ca_file = \"certs/mitmproxy-ca.pem\"\n",
             include_str!("../../config/native/config.toml")
         ),
     )?;

@@ -31,13 +31,13 @@ from pathlib import Path
 if __package__:
     from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _agent_map, _native_config, _sha256
+    from .installed_host_smoke import _agent_listeners, _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
     from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _agent_map, _native_config, _sha256
+    from installed_host_smoke import _agent_listeners, _native_config, _sha256
     from installed_ingress import installed_identity, runsc_identity
     from installed_workloads import control
 from urllib.parse import urlencode, urlsplit
@@ -468,7 +468,7 @@ def main() -> None:
         peer_added = True
         checked([cli, "agent", "start", PEER, "--sandbox-only"], timeout=120)
         prepare_guest_tests(cli, PEER)
-        peer_listeners = [item for item in _agent_map(config_dir) if item["agent_id"] == PEER]
+        peer_listeners = [item for item in _agent_listeners(config_dir) if item["agent_id"] == PEER]
         assert len(peer_listeners) == 1 and peer_listeners[0]["path"] != listener["path"]
         peer_socket = Path(peer_listeners[0]["path"])
         assert peer_socket.is_socket(), "second guest has no installed native proxy listener"

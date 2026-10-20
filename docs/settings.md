@@ -19,6 +19,11 @@ implementation history and revision-specific proof. In those sections,
 “native” names that implementation distinction. For current configuration
 keys, go to [runtime settings](#runtime-settings).
 
+The retired `agent_map_file` key is ignored when reading an existing
+`config.toml`. New configurations omit it. The proxy does not read that file
+or use its entries to identify an agent. Listener configuration supplies the
+owner and source IP.
+
 ## Operator entry responsibilities
 
 [Native operator commands](operator-guide.md) use one selected instance and
@@ -211,7 +216,6 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | New config.toml key | Type and default | Starting input and consumer |
 | --- | --- | --- |
 | `listeners` | Array of tables; `[]` | Generated listeners; UDS listener preparation. Each table has string `agent_id`, `socket_path`, and optional `source_id`. The listener supplies identity; `source_id` supplies the declaration slot. |
-| `agent_map_file` | Path; empty | Generated discovery map path; agent discovery. Empty uses listener identity alone. |
 | `data_dir` | Path; `data` | Generated runtime directory; HMAC, Agent API and durable instance identity. |
 | `policy_file` | Path; `policy.toml` | Policy path; shared policy compiler and watcher. |
 | `admin_port` | Integer; `9090` | `proxy.admin_port`; loopback Admin listener. |

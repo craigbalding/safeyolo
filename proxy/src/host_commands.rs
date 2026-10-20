@@ -35,8 +35,7 @@ pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
 pub async fn prepare_proxy(config: &mut crate::Config) -> Result<(), Error> {
     if let Some(path) = config.native_config_path.clone() {
         host_platform::in_config(path.clone(), async {
-            restore_attachments(config).await?;
-            host_lifecycle::sync_agent_listeners().await?;
+            host_lifecycle::sync_agent_listeners(None).await?;
             *config = crate::native_config::read(&path)?;
             Ok::<_, Error>(())
         })
@@ -202,15 +201,18 @@ pub(crate) async fn stop_proxy() -> Result<(), Error> {
 
 pub(crate) async fn restore_attachments(config: &mut crate::Config) -> Result<(), Error> {
     let root = host_platform::config_dir();
-    let sockets = root.join("data/sockets");
     // Reconstruct only the owned per-agent projection. Explicit operator
     // listeners retain their existing owner and configuration.
-    for agent in host_agents::list()? {
+    let agents = host_agents::list()?;
+    config.listeners.retain(|listener| {
+        !host_platform::is_managed_agent_listener(listener)
+            || agents.iter().any(|agent| agent.name == listener.agent_id)
+    });
+    for agent in agents {
         let observed = host_runs::observe(&agent.name).await;
         if observed["runtime_state"] == "stopped" {
-            host_platform::update_agent_map(&agent.name, None)?;
             config.listeners.retain(|entry| {
-                entry.agent_id != agent.name || !entry.socket_path.starts_with(&sockets)
+                entry.agent_id != agent.name || !host_platform::is_managed_agent_listener(entry)
             });
             continue;
         }
@@ -231,17 +233,22 @@ pub(crate) async fn restore_attachments(config: &mut crate::Config) -> Result<()
         else {
             continue;
         };
-        host_platform::update_agent_map(&agent.name, Some(ip))?;
+        // A running guest can still hold the old dedicated directory mount.
+        // Preserve that accepted path when its host-owned source is unchanged.
+        let listener = config
+            .listeners
+            .iter()
+            .find(|entry| {
+                entry.agent_id == agent.name
+                    && entry.source_id().as_deref() == Some(ip)
+                    && host_platform::is_managed_agent_listener(entry)
+            })
+            .cloned()
+            .unwrap_or_else(|| host_platform::agent_proxy_listener(&agent.name, ip));
         config.listeners.retain(|entry| {
-            entry.agent_id != agent.name || !entry.socket_path.starts_with(&sockets)
+            entry.agent_id != agent.name || !host_platform::is_managed_agent_listener(entry)
         });
-        config.listeners.push(crate::AgentListener {
-            agent_id: agent.name.clone(),
-            source_id: Some(ip.into()),
-            socket_path: sockets
-                .join(format!("{ip}_{}", agent.name))
-                .join("proxy.sock"),
-        });
+        config.listeners.push(listener);
     }
     Ok(())
 }

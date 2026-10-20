@@ -6,7 +6,7 @@ import os
 import socket
 from pathlib import Path
 
-from installed_host_smoke import _agent_map, _native_config, _probe_agent_health
+from installed_host_smoke import _agent_listeners, _native_config, _probe_agent_health
 
 
 def _request(
@@ -45,7 +45,7 @@ class TestInstalledNative:
         config_dir = Path(os.environ["SAFEYOLO_CONFIG_DIR"])
         agent = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
         test_context = f"run=installed-native;agent={agent}"
-        listeners = {item["agent_id"]: item for item in _agent_map(config_dir)}
+        listeners = {item["agent_id"]: item for item in _agent_listeners(config_dir)}
         listener = listeners[agent]
         assert _probe_agent_health(listener, config_dir)["status"] == 200
 
