@@ -173,8 +173,7 @@ impl Delegation {
                     if service.is_empty()
                         || capability.is_empty()
                         || method.is_empty()
-                        || (method != "*"
-                            && !method.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-'))
+                        || (method != "*" && hyper::Method::from_bytes(method.as_bytes()).is_err())
                         || method != &method.to_ascii_uppercase()
                         || !path.starts_with('/')
                         || path.contains('#')
@@ -263,7 +262,7 @@ impl Delegation {
                     && a["binding_id"].as_str() == binding_id.as_deref()
                     && a["method"]
                         .as_str()
-                        .is_some_and(|m| method == "*" || method == m)
+                        .is_some_and(|m| method == "*" || method.eq_ignore_ascii_case(m))
                     && a["path"]
                         .as_str()
                         .is_some_and(|p| crate::services::resource_matches(p, path))

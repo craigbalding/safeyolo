@@ -429,6 +429,18 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
     no_origin(&f).await;
     let mut input = proposal(&f);
     input["delegation"]["scopes"] = json!([{"type":"gateway_route","service":"fixture","capability":"writer","binding_id":null,"method":"POST","path":"/write"}]);
+    input["delegation"]["scopes"][0]["method"] = json!("M-SEARCH2");
+    assert_eq!(
+        f.admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(input.clone())
+        )
+        .await
+        .status,
+        200
+    );
+    input["delegation"]["scopes"][0]["method"] = json!("POST");
     let (_, revision) = delegate(&f, input).await;
     // An unrelated peer's network edit cannot require a fresh operator
     // acknowledgment of this service envelope.
