@@ -87,12 +87,20 @@ _as_root cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 # The builder's trusted CA path is outside the fresh chroot. Give only this
 # apk invocation a temporary copy, outside ca-certificates' import directory,
 # so the build proxy CA does not enter the guest's system trust bundle.
-APK_ENV=()
+# Ordinary build-host sudo can reset these variables. Pass only configured
+# proxy values to apk, including an explicitly empty bypass list.
+APK_ENV=(env)
+for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
+    if [ "${!proxy_name+x}" = x ]; then
+        APK_ENV+=("$proxy_name=${!proxy_name}")
+    fi
+done
 APK_BUILD_CA=""
 if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
     APK_BUILD_CA="$(_as_root mktemp "$TREE/tmp/safeyolo-apk-ca.XXXXXX")"
+    trap '_as_root rm -f "$APK_BUILD_CA"' EXIT
     _as_root install -m 0644 "$SSL_CERT_FILE" "$APK_BUILD_CA"
-    APK_ENV=(env "SSL_CERT_FILE=${APK_BUILD_CA#"$TREE"}") # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
+    APK_ENV+=("SSL_CERT_FILE=${APK_BUILD_CA#"$TREE"}") # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
 fi
 _as_root chroot "$TREE" "${APK_ENV[@]}" /sbin/apk add --no-cache \
     bash socat ca-certificates shadow openssh-server curl git jq sudo mise nodejs npm \
@@ -102,6 +110,7 @@ _as_root chroot "$TREE" "${APK_ENV[@]}" /sbin/apk add --no-cache \
     nss-tools dbus fluxbox xterm chromium
 if [ -n "$APK_BUILD_CA" ]; then
     _as_root rm -f "$APK_BUILD_CA"
+    trap - EXIT
 fi
 
 NOVNC_STAGE="$SAFEYOLO_ROOTFS_WORK_DIR/novnc-stage"

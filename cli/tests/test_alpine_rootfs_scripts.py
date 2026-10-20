@@ -4,8 +4,10 @@ The image/package tools are doubles. Real image builds and guest boot remain
 separate acceptance checks.
 """
 
+import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,9 +17,14 @@ BUILDERS = (
     REPO_ROOT / "contrib/alpine-minimal/build-alpine-rootfs.sh",
     REPO_ROOT / "contrib/alpine-browser/build-alpine-browser-rootfs.sh",
 )
+PROXY_VARIABLES = (
+    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy",
+)
 
 
-def _run_builder(tmp_path, builder, output, arch="arm64", failure="", build_ca=True):
+def _run_builder(
+    tmp_path, builder, output, arch="arm64", failure="", build_ca=True, proxies=None,
+):
     tools = tmp_path / "bin"
     tools.mkdir()
     driver = tools / "driver"
@@ -29,14 +36,27 @@ printf '|%s' "$@" >> "$TEST_CALLS"
 printf '\\n' >> "$TEST_CALLS"
 case "$tool" in
   id) echo 12345 ;;
-  sudo) [ "${1-}" = -v ] && exit 0; exec "$@" ;;
+  sudo)
+    [ "${1-}" = -v ] && exit 0
+    exec env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \\
+      -u NO_PROXY -u no_proxy -u SSL_CERT_FILE "$@"
+    ;;
   skopeo) exit 0 ;;
   umoci) mkdir -p "${@: -1}/rootfs/"{etc,tmp,usr/local/bin,usr/share} ;;
   chroot)
-    if [ "${2-}" = env ]; then
-      ca_path=${3#SSL_CERT_FILE=}
-      [ "$(cat "$1$ca_path")" = build-test-ca ] || exit 45
+    tree=$1
+    shift
+    if [ "${1-}" = env ]; then
+      shift
+      while [[ ${1-} == *=* ]]; do
+        export "$1"
+        shift
+      done
     fi
+    if [ -n "${SSL_CERT_FILE-}" ]; then
+      [ "$(cat "$tree$SSL_CERT_FILE")" = build-test-ca ] || exit 45
+    fi
+    "$TEST_PYTHON" -c 'import json, os; print(json.dumps({k: os.environ[k] for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE") if k in os.environ}))'
     [ "$TEST_FAILURE" != apk ] || exit 42
     ;;
   chown) [ "$TEST_FAILURE" != ownership ] || exit 43 ;;
@@ -66,6 +86,7 @@ esac
         "PATH": f"{tools}:{os.environ['PATH']}",
         "TEST_CALLS": str(calls),
         "TEST_FAILURE": failure,
+        "TEST_PYTHON": str(Path(sys.executable).resolve()),
         "SAFEYOLO_AGENT_NAME": "alpine-test",
         "SAFEYOLO_TARGET_ARCH": arch,
         "SAFEYOLO_GUEST_SRC_DIR": str(guest),
@@ -73,6 +94,9 @@ esac
         f"SAFEYOLO_ROOTFS_OUT_{output}": str(destination),
         "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(tmp_path / "cache-paths.txt"),
     }
+    for name in PROXY_VARIABLES:
+        env.pop(name, None)
+    env.update(proxies or {})
     if build_ca:
         certificate = tmp_path / "build-ca.pem"
         certificate.write_text("build-test-ca\n")
@@ -124,7 +148,27 @@ def test_alpine_builder_uses_image_trust_without_build_ca(tmp_path, builder):
     assert result.returncode == 0, result.stderr
     apk = next(call for call in calls if call.startswith("chroot|"))
     assert "|/sbin/apk|add|" in apk
-    assert "|env|" not in apk
+    assert "SSL_CERT_FILE=" not in apk
+    assert json.loads(result.stdout.splitlines()[3]) == {}
+
+
+@pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)
+@pytest.mark.parametrize("build_ca", (False, True))
+def test_alpine_builder_preserves_configured_proxies(tmp_path, builder, build_ca):
+    proxies = {
+        "HTTP_PROXY": "http://build-proxy.invalid:8080",
+        "HTTPS_PROXY": "http://build-proxy.invalid:8081",
+        "http_proxy": "http://build-proxy.invalid:8082",
+        "https_proxy": "http://build-proxy.invalid:8083",
+        "NO_PROXY": "localhost,127.0.0.1,example with spaces",
+        "no_proxy": "",
+    }
+    result, _, _ = _run_builder(tmp_path, builder, "TREE", build_ca=build_ca, proxies=proxies)
+
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(result.stdout.splitlines()[3])
+    assert {name: actual[name] for name in PROXY_VARIABLES} == proxies
+    assert ("SSL_CERT_FILE" in actual) == build_ca
 
 
 @pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)
@@ -140,3 +184,4 @@ def test_alpine_builder_does_not_report_failed_output_as_success(
     assert result.returncode == status, result.stderr
     assert "built successfully" not in result.stdout
     assert not (tmp_path / "cache-paths.txt").exists()
+    assert not list((tmp_path / "work/tree/tmp").glob("safeyolo-apk-ca.*"))

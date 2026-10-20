@@ -70,10 +70,13 @@ also includes Chromium and the desktop packages.
 For example, from the trusted source checkout on a matching-architecture Linux
 builder, prepare an Alpine tree for a fresh installation. Install `skopeo`,
 `umoci`, curl, tar and coreutils first. The builder uses sudo for unpacking,
-chroot package installation and output ownership. If the build environment sets
+chroot package installation and output ownership. The Alpine builders pass
+configured `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`
+and `no_proxy` values to APK explicitly, so build-host sudo can reset its
+ordinary environment. If the build environment sets
 `SSL_CERT_FILE` to a readable certificate file, the Alpine builders use a
 temporary copy for HTTPS package downloads. They remove the copy before
-packaging. Select the architecture for
+packaging and on package-install failure. Select the architecture for
 the actual runtime and keep host inputs separate from agent-writable files:
 
 ```sh
