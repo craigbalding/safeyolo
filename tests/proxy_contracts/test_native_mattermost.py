@@ -293,6 +293,60 @@ def semantic_body():
                        "allowed_actions": ["approve", "reject", "revise"]})
 
 
+def test_native_flat_conversation_without_projection_and_same_channel_reply(exchange):
+    instance, remote = exchange
+    assert once(instance).returncode == 0
+    assert history(instance) == [] and remote.projected() == []
+    texts = ["Hello café\nPlease reply here.", "!safeyolo approve checked", "!safeyolo unknown"]
+    incoming = [remote.add(body=text) for text in texts]
+    result = once(instance)
+    assert result.returncode == 0, result.stderr
+    messages = operator_requests(instance)
+    assert len(messages) == len(incoming) and remote.creates == 0
+    adapter_id = json.loads(messages[0]["body"])["adapter_id"]
+    assert len(adapter_id) == 64
+    for message, post in zip(messages, incoming, strict=True):
+        assert message["sender_agent_id"] is None and message["sender_agent_name"] is None
+        assert message["content_type"] == "text/plain"
+        assert json.loads(message["body"]) == {
+            "schema": SCHEMA, "adapter_id": adapter_id, "kind": "message", "action": None,
+            "text": post["message"], "correlation": {
+                "mattermost_post_id": post["id"], "mattermost_root_post_id": "",
+                "mattermost_channel_id": CHANNEL,
+            },
+        }
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 0
+    agent_send(instance, "# Reply\n\nHello **operator**.\n\n- Same channel\n- @all stays quiet")
+    assert once(instance).returncode == 0
+    reply, = remote.projected()
+    assert reply["channel_id"] == CHANNEL and reply["root_id"] == ""
+    html = MarkdownIt("commonmark").render(reply["message"])
+    assert "<h1>Reply</h1>" in html and "<strong>operator</strong>" in html
+    assert "＠all" in html and html.count("Canonical provenance") == 1
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 1
+
+
+def test_native_flat_invalid_shapes_identity_and_timestamps_are_refused(exchange):
+    instance, remote = exchange
+    assert once(instance).returncode == 0
+    bad = [{"root_id": value} for value in (None, False, 1, [], {}, " ", "x" * 25, "X" * 26)]
+    bad += [{"message": value} for value in (None, False, 1, [], {}, "", " \n\t", "é" * 32769)]
+    bad += [{"user_id": "u" * 26}, {"channel_id": "d" * 26}, {"edit_at": 1},
+            {"delete_at": 1}, {"create_at": 1}, {"create_at": False}]
+    posts = [remote.add(body="not admitted", **fields) for fields in bad]
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == [] and remote.creates == 0
+    with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
+        assert db.execute("SELECT COUNT(*) FROM inbound_post WHERE status='ignored'").fetchone()[0] == len(posts)
+    remote.add(body="operator deactivated after startup")
+    with remote.lock:
+        remote.human["delete_at"] = 1
+    assert once(instance).returncode != 0
+    assert operator_requests(instance) == []
+
+
 def test_native_exchange_authority_restart_and_backend_isolation(exchange):
     instance, remote = exchange
     # A second granted room remains canonical and is never selected by this
@@ -491,11 +545,13 @@ def test_native_uncertain_projection_reconciles_or_refuses_retry(exchange, outco
         assert remote.creates == 1
 
 
-def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):
+@pytest.mark.parametrize("threaded", [False, True], ids=["channel", "thread"])
+def test_native_uncertain_coord_reply_never_replays_after_restart(exchange, threaded):
     instance, remote = exchange
-    agent_send(instance, "question")
+    if threaded:
+        agent_send(instance, "question")
     assert once(instance).returncode == 0
-    remote.add(root=remote.projected()[0]["id"], body="unknown acceptance")
+    remote.add(root=remote.projected()[0]["id"] if threaded else "", body="unknown acceptance")
     before = asyncio.run(stream_control(instance, no_ack=True))
     try:
         failed = once(instance)

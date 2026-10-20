@@ -70,6 +70,32 @@ workflow. A valid click appends one structured canonical coord operator
 message. The coordinator or workflow consuming coord decides what that action
 means.
 
+### Channel conversation and threaded replies
+
+The configured human can send a new top-level text post in a mapped channel.
+The adapter appends it once to the mapped room as a canonical operator message.
+No earlier Coord message or Mattermost thread is needed. Agent replies use the
+existing projection path and create new posts in the same channel.
+
+The body uses the existing `safeyolo.coord.mattermost.operator/v1` JSON envelope.
+A top-level post has `kind="message"`, `action=null`, and the original `text`.
+Its `correlation` contains `mattermost_post_id`, `mattermost_channel_id`, and
+`mattermost_root_post_id=""`. It has no `coord_msg_id`. Text such as
+`!safeyolo approve` remains conversation because the post has no action target.
+
+Replies to a known projected thread retain their real `coord_msg_id` and use
+`kind="reply"` or the existing typed `!safeyolo ACTION` form. Interactive
+callbacks retain their capability and projection checks. Unknown threads,
+malformed roots or bodies, edited or deleted posts, and posts from another
+human or channel do not become canonical operator messages. The adapter
+revalidates the configured human on each poll and does not project its own
+inbound messages back into Mattermost.
+
+This update needs no configuration, token, mapping, state path, or tunnel
+change. Restart only the adapter with its existing command and state. For an
+installed historical Python adapter, use the narrow
+[4116 compatibility update](coord-mattermost-4116-update.md).
+
 ### Fixed operator-request schema
 
 The body has exactly these keys:
@@ -98,7 +124,7 @@ schema, not a generic card or forms framework:
 
 The current complete vocabulary is `acknowledge`, `approve`, `reject`,
 `defer`, `revise`, `publish`, and `open-issue`. Free-form input remains an
-ordinary Mattermost thread reply.
+ordinary Mattermost channel message or thread reply.
 
 ### Interactive callback boundary
 
@@ -298,8 +324,9 @@ appear in URLs, command lines, repository files, state rows, health responses,
 or logs.
 
 If an append reports an unknown outcome, inspect the mapped room's canonical
-history for the exact Mattermost post, original Coord message and action
-correlations before deciding whether a separate operator send is needed. Do
+history for the exact Mattermost post and any actual thread or action
+correlations before deciding whether a separate operator send is needed. A
+top-level message has no original Coord target. Do
 not repeat a button click or reset a cursor to force a retry. A pending button
 remains unavailable while routine projection and replies continue. A pending
 free-text append stops the adapter and is not replayed on restart.
@@ -321,4 +348,5 @@ replacement guards and rendering. These checks establish the selected client
 contract; live-account/mobile deployment acceptance is outside that scope.
 The older Python fixtures and macOS probe scripts remain repository test
 tooling under `tests/legacy_mattermost` and `scripts/accept_mattermost_macos*.py`.
-They are excluded from production packages and do not establish behavior.
+They are excluded from production packages and do not establish native adapter
+behavior. The historical compatibility candidate has its own source and tests.

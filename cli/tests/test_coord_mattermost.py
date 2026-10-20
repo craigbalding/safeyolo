@@ -9,12 +9,15 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from markdown_it import MarkdownIt
 from typer.testing import CliRunner
 
@@ -288,6 +291,70 @@ def install_coord(monkeypatch: pytest.MonkeyPatch, coord: CoordHarness) -> None:
 
 
 @pytest.mark.asyncio
+async def test_flat_conversation_needs_no_projection_and_does_not_echo(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    remote, coord = FakeMattermost(), CoordHarness()
+    install_coord(monkeypatch, coord)
+    adapter = mattermost.MattermostAdapter(config, mattermost.MattermostState(config), remote)
+    await adapter.run_once(verify=True)
+    assert coord.messages == [] and remote.posts == []
+    incoming = [remote.operator_reply("", text) for text in (
+        "Hello café\nPlease reply here.", "!safeyolo approve checked", "!safeyolo unknown",
+    )]
+    await adapter.run_once()
+    assert len(coord.send_calls) == len(incoming) and remote.create_calls == []
+    for call, post in zip(coord.send_calls, incoming, strict=True):
+        assert call["sender_kind"] == "operator" and call["sender_agent_id"] is None
+        assert json.loads(call["body"]) == {
+            "schema": mattermost.ADAPTER_SCHEMA, "adapter_id": config.adapter_id,
+            "kind": "message", "action": None, "text": post["message"], "correlation": {
+                "mattermost_post_id": post["id"], "mattermost_root_post_id": "",
+                "mattermost_channel_id": CHANNEL_ID,
+            },
+        }
+    restarted = mattermost.MattermostAdapter(config, mattermost.MattermostState(config), remote)
+    await restarted.run_once()
+    assert len(coord.send_calls) == len(incoming) and remote.create_calls == []
+    coord.messages.append(coord_envelope(4, body="# Reply\n\nHello **operator**.\n\n- Same channel"))
+    await restarted.run_once()
+    reply, = remote.create_calls
+    assert reply["channel_id"] == CHANNEL_ID
+    html = MarkdownIt("commonmark").render(reply["message"])
+    assert "<h1>Reply</h1>" in html and "<strong>operator</strong>" in html
+    assert html.count("Canonical provenance") == 1
+
+
+def test_generated_flat_root_and_body_shapes(tmp_path, monkeypatch):
+    scalar = st.one_of(st.none(), st.booleans(), st.integers(), st.text(max_size=80))
+    value = st.one_of(scalar, st.lists(scalar, max_size=3), st.dictionaries(st.text(max_size=8), scalar, max_size=3))
+
+    @settings(max_examples=60, deadline=None)
+    @given(root=st.one_of(st.just(""), value), text=st.one_of(st.just("!safeyolo approve"), value))
+    def check(root, text):
+        async def probe():
+            with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
+                config = make_config(Path(directory))
+                remote, coord = FakeMattermost(), CoordHarness()
+                install_coord(monkeypatch, coord)
+                state = mattermost.MattermostState(config)
+                adapter = mattermost.MattermostAdapter(config, state, remote)
+                post = remote.operator_reply(root, text)
+                await adapter._process_inbound_post(config.rooms[0], post)
+                valid = root == "" and isinstance(text, str) and bool(text.strip())
+                assert len(coord.send_calls) == int(valid)
+                if valid:
+                    body = json.loads(coord.send_calls[0]["body"])
+                    assert body["text"] == text and body["kind"] == "message" and body["action"] is None
+                    assert "coord_msg_id" not in body["correlation"]
+                await adapter._process_inbound_post(config.rooms[0], post)
+                assert len(coord.send_calls) == int(valid)
+
+        asyncio.run(probe())
+
+    check()
+
+
+@pytest.mark.asyncio
 async def test_exact_operator_reply_is_local_operator_and_replay_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -365,17 +432,21 @@ async def test_typed_actions_are_structured_but_not_executed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("kwargs", "message", "reason"),
+    ("threaded", "kwargs", "message", "reason"),
     [
-        ({"user_id": "x" * 26}, "ordinary reply", "not_configured_operator"),
-        ({"channel_id": OTHER_CHANNEL_ID}, "ordinary reply", "channel_mismatch"),
-        ({"edit_at": 1}, "ordinary reply", "edited_or_deleted"),
-        ({}, "!safeyolo owner-now", "malformed_body_or_action"),
+        (True, {"user_id": "x" * 26}, "ordinary reply", "not_configured_operator"),
+        (False, {"user_id": "x" * 26}, "ordinary message", "not_configured_operator"),
+        (True, {"channel_id": OTHER_CHANNEL_ID}, "ordinary reply", "channel_mismatch"),
+        (False, {"channel_id": OTHER_CHANNEL_ID}, "ordinary message", "channel_mismatch"),
+        (True, {"edit_at": 1}, "ordinary reply", "edited_or_deleted"),
+        (False, {"edit_at": 1}, "ordinary message", "edited_or_deleted"),
+        (True, {}, "!safeyolo owner-now", "malformed_body_or_action"),
     ],
 )
 async def test_untrusted_or_ambiguous_inbound_posts_never_become_operator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    threaded: bool,
     kwargs: dict[str, Any],
     message: str,
     reason: str,
@@ -387,7 +458,7 @@ async def test_untrusted_or_ambiguous_inbound_posts_never_become_operator(
     install_coord(monkeypatch, coord)
     adapter = mattermost.MattermostAdapter(config, state, remote)
     await adapter.run_once()
-    post = remote.operator_reply(remote.posts[0]["id"], message, **kwargs)
+    post = remote.operator_reply(remote.posts[0]["id"] if threaded else "", message, **kwargs)
     if kwargs.get("channel_id") == OTHER_CHANNEL_ID:
         await adapter._process_inbound_post(config.rooms[0], post)
     else:
@@ -1027,17 +1098,18 @@ async def test_unknown_outbound_without_remote_match_is_never_retried(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("threaded", [False, True], ids=["channel", "thread"])
 async def test_uncertain_coord_append_is_not_replayed_after_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threaded: bool
 ) -> None:
     config = make_config(tmp_path)
     state = mattermost.MattermostState(config)
     remote = FakeMattermost()
-    coord = CoordHarness([coord_envelope(1)])
+    coord = CoordHarness([coord_envelope(1)] if threaded else [])
     install_coord(monkeypatch, coord)
     adapter = mattermost.MattermostAdapter(config, state, remote)
     await adapter.run_once()
-    reply = remote.operator_reply(remote.posts[0]["id"], "one trusted attempt")
+    reply = remote.operator_reply(remote.posts[0]["id"] if threaded else "", "one trusted attempt")
     attempts = 0
 
     async def uncertain_send(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
