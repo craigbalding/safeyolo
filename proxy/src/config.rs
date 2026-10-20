@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, net::IpAddr, path::PathBuf};
 
 use hyper::Uri;
 use serde::{Deserialize, Serialize};
@@ -174,6 +174,9 @@ pub struct Config {
     /// An empty list applies no destination filter to the shared parent.
     #[serde(default)]
     pub parent_proxy_hosts: Vec<String>,
+    /// Exact hostname selections; an empty agent list applies to all agents.
+    #[serde(default)]
+    pub target_ip_mappings: Vec<TargetIpMapping>,
     pub upstream_ca_file: Option<PathBuf>,
     pub tls_ca_file: Option<PathBuf>,
     /// Canonical exact entries emitted by the existing CLI's normalize_ignore_hosts.
@@ -183,6 +186,34 @@ pub struct Config {
     pub inspection: Option<Inspection>,
     #[serde(default)]
     pub plumb: PlumbConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetIpMapping {
+    pub host: String,
+    pub ip: IpAddr,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+fn exact_dns_host(value: &str, field: &str) -> Result<String, Error> {
+    let invalid = || format!("{field} entries must be exact DNS hostnames");
+    crate::http::validate_hostname(value).map_err(|_| invalid())?;
+    let host = crate::host_names::encode_idna2003(value)?.to_ascii_lowercase();
+    crate::http::validate_hostname(&host).map_err(|_| invalid())?;
+    let host = host.strip_suffix('.').unwrap_or(&host);
+    if host.contains(':')
+        || crate::admin_shield::numeric_address(host).is_some()
+        || host
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err(invalid().into());
+    }
+    Ok(host.to_owned())
 }
 
 fn enabled() -> bool {
@@ -319,29 +350,54 @@ impl Config {
             return Err("via_token must be one RFC token of at most 128 characters".into());
         }
         self.parent()?;
+        let names = self
+            .target_ip_mappings
+            .iter()
+            .map(|mapping| exact_dns_host(&mapping.host, "target_ip_mappings"))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, mapping) in self.target_ip_mappings.iter().enumerate() {
+            for (previous, other) in self.target_ip_mappings[..index].iter().enumerate() {
+                if names[index] == names[previous]
+                    && mapping.ip != other.ip
+                    && (mapping.port.is_none()
+                        || other.port.is_none()
+                        || mapping.port == other.port)
+                    && (mapping.agents.is_empty()
+                        || other.agents.is_empty()
+                        || mapping
+                            .agents
+                            .iter()
+                            .any(|agent| other.agents.contains(agent)))
+                {
+                    return Err("target_ip_mappings conflict for an overlapping hostname, port and agent scope".into());
+                }
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) fn target_ip_for(
+        &self,
+        host: &str,
+        port: u16,
+        agent: Option<&str>,
+    ) -> Option<IpAddr> {
+        self.target_ip_mappings.iter().find_map(|mapping| {
+            (mapping.port.is_none_or(|expected| expected == port)
+                && (mapping.agents.is_empty()
+                    || agent
+                        .is_some_and(|agent| mapping.agents.iter().any(|entry| entry == agent)))
+                && exact_dns_host(&mapping.host, "target_ip_mappings")
+                    .is_ok_and(|name| name.eq_ignore_ascii_case(host.trim_end_matches('.'))))
+            .then_some(mapping.ip)
+        })
     }
 
     pub(crate) fn parent(&self) -> Result<Option<ParentProxy>, Error> {
         let destination_hosts = self
             .parent_proxy_hosts
             .iter()
-            .map(|value| {
-                let invalid = || "parent_proxy_hosts entries must be exact DNS hostnames";
-                crate::http::validate_hostname(value).map_err(|_| invalid())?;
-                let host = crate::host_names::encode_idna2003(value)?.to_ascii_lowercase();
-                crate::http::validate_hostname(&host).map_err(|_| invalid())?;
-                let host = host.strip_suffix('.').unwrap_or(&host);
-                if host.contains(':')
-                    || crate::admin_shield::numeric_address(host).is_some()
-                    || host
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || byte == b'.')
-                {
-                    return Err(invalid().into());
-                }
-                Ok(host.to_owned())
-            })
+            .map(|value| exact_dns_host(value, "parent_proxy_hosts"))
             .collect::<Result<Vec<_>, Error>>()?;
         let Some(value) = self.parent_proxy.as_deref().filter(|v| !v.is_empty()) else {
             return Ok(None);
@@ -396,6 +452,109 @@ fn resolve_credential_guard_block(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn target_ip_mappings_keep_exact_hostname_port_and_agent_scope() {
+        let mut source = json!({
+            "listeners": [], "policy_file": "policy.toml", "readiness_file": "ready"
+        });
+        let config: Config = serde_json::from_value(source.clone()).unwrap();
+        assert!(config.target_ip_mappings.is_empty());
+        assert_eq!(config.target_ip_for("owned.test", 443, Some("alice")), None);
+        source["target_ip_mappings"] = json!([
+            {"host":"Owned.Test.", "ip":"192.0.2.10", "port":443, "agents":["alice"]},
+            {"host":"owned.test", "ip":"2001:db8::10", "port":443, "agents":["bob"]},
+            {"host":"owned.test", "ip":"192.0.2.11", "port":8443, "agents":["alice"]},
+            {"host":"bücher.example", "ip":"2001:db8::11"}
+        ]);
+        let config: Config = serde_json::from_value(source.clone()).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.target_ip_for("owned.test", 443, Some("alice")),
+            Some("192.0.2.10".parse().unwrap())
+        );
+        assert_eq!(
+            config.target_ip_for("OWNED.TEST.", 443, Some("bob")),
+            Some("2001:db8::10".parse().unwrap())
+        );
+        assert_eq!(
+            config.target_ip_for("owned.test", 8443, Some("alice")),
+            Some("192.0.2.11".parse().unwrap())
+        );
+        assert_eq!(config.target_ip_for("owned.test", 80, Some("alice")), None);
+        assert_eq!(config.target_ip_for("other.test", 443, Some("alice")), None);
+        assert_eq!(
+            config.target_ip_for("owned.test", 443, Some("mallory")),
+            None
+        );
+        assert_eq!(config.target_ip_for("owned.test", 443, None), None);
+        assert_eq!(
+            config.target_ip_for("xn--bcher-kva.example", 443, None),
+            Some("2001:db8::11".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn target_ip_mappings_reject_invalid_and_conflicting_operator_input() {
+        let base = json!({
+            "listeners": [], "policy_file": "policy.toml", "readiness_file": "ready"
+        });
+        for mapping in [
+            json!(null),
+            json!("owned.test"),
+            json!([]),
+            json!({"host":"owned.test"}),
+            json!({"host":"owned.test", "ip":"other.test"}),
+            json!({"host":"owned.test", "ip":123}),
+            json!({"host":"owned.test", "ip":"127.0.0.1:443"}),
+            json!({"host":"owned.test", "ip":"::1", "agents":"alice"}),
+            json!({"host":"owned.test", "ip":"::1", "port":65536}),
+            json!({"host":"owned.test", "ip":"::1", "port":"443"}),
+        ] {
+            let mut source = base.clone();
+            source["target_ip_mappings"] = json!([mapping]);
+            assert!(
+                serde_json::from_value::<Config>(source).is_err(),
+                "{mapping}"
+            );
+        }
+        for host in [
+            "",
+            "*.test",
+            "owned.test:443",
+            "127.0.0.1",
+            "2130706433",
+            "::1",
+            "owned.test/path",
+        ] {
+            let mut source = base.clone();
+            source["target_ip_mappings"] = json!([{"host":host,"ip":"127.0.0.1"}]);
+            assert!(
+                serde_json::from_value::<Config>(source)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{host}"
+            );
+        }
+        for scope in [json!({}), json!({"agents":["alice"]}), json!({"port":443})] {
+            let mut source = base.clone();
+            let mut second = scope;
+            second["host"] = json!("OWNED.TEST.");
+            second["ip"] = json!("2001:db8::10");
+            source["target_ip_mappings"] = json!([
+                {"host":"owned.test","ip":"192.0.2.10","port":443,"agents":["alice"]}, second
+            ]);
+            let config: Config = serde_json::from_value(source).unwrap();
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("conflict")
+            );
+        }
+    }
 
     #[test]
     fn parent_host_filter_defaults_validates_and_serializes() {

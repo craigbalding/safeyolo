@@ -77,6 +77,7 @@ fn config(directory: &TempDir) -> Config {
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
+        target_ip_mappings: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),
@@ -837,6 +838,33 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
             .unwrap()
             .unwrap();
         proxy.shutdown().await;
+        let rows = events(&config);
+        let links = rows
+            .iter()
+            .filter(|row| row["event"] == "traffic.connect_request")
+            .collect::<Vec<_>>();
+        assert_eq!(links.len(), 1);
+        let outer = rows
+            .iter()
+            .find(|row| {
+                row["event"] == "traffic.request_outcome" && row["details"]["status"] == 200
+            })
+            .unwrap();
+        let inner = rows
+            .iter()
+            .find(|row| {
+                row["event"] == "traffic.request_outcome" && row["details"]["status"] == 403
+            })
+            .unwrap();
+        assert_eq!(links[0]["request_id"], inner["request_id"]);
+        assert_eq!(
+            links[0]["details"]["connect_request_id"],
+            outer["request_id"]
+        );
+        assert_eq!(
+            links[0]["details"]["connection_id"],
+            outer["details"]["connection_id"]
+        );
         assert_eq!(
             events(&config)
                 .iter()

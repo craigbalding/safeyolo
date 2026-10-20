@@ -502,6 +502,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         assert!(connected.observation.tcp_setup.is_some());
         assert!(connected.observation.tls_setup.is_none());
         let tunnel = super::Tunnel {
+            connect_request_id: "req-owned-connect".into(),
             destination: destination.clone(),
             upstream: tokio::sync::Mutex::new(Some(connected)),
             sessions: super::upstream_h2::Sessions::default(),

@@ -475,6 +475,7 @@ pub(crate) struct Destination {
 /// CONNECT owns one admitted endpoint and its first destination connection.
 /// Inner requests may consume that connection only after their own checks pass.
 pub(crate) struct Tunnel {
+    connect_request_id: String,
     destination: Destination,
     upstream: tokio::sync::Mutex<Option<Connected>>,
     sessions: upstream_h2::Sessions,
@@ -2491,6 +2492,7 @@ where
                 let mut destination = destination;
                 destination.scheme = scheme.into();
                 let tunnel = Arc::new(Tunnel {
+                    connect_request_id: request_id.clone(),
                     destination,
                     sessions: upstream_h2::Sessions::default(),
                     connected_runtime: Arc::downgrade(&runtime),
@@ -3907,6 +3909,24 @@ pub(crate) fn serve_request(
         let _pending_recording = recording.pending();
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
+        // A physical connection can carry unrelated requests. Link only the
+        // requests parsed inside this particular CONNECT, including refusals.
+        let connect_link_failed = tunnel.as_ref().is_some_and(|tunnel| {
+            runtime
+                .audit
+                .emit(identity.request_event(
+                    "traffic.connect_request",
+                    crate::audit::Kind::Traffic,
+                    &request_id,
+                    "HTTP request belongs to CONNECT",
+                    json!({
+                        "host": tunnel.destination.host,
+                        "port": tunnel.destination.port,
+                        "connect_request_id": tunnel.connect_request_id,
+                    }),
+                ))
+                .is_err()
+        });
         let live = destination.as_ref().ok().and_then(|destination| {
             live_view::begin(&runtime, &identity, &request_id, &request, destination)
         });
@@ -4058,7 +4078,7 @@ pub(crate) fn serve_request(
                 evidence_failed: false,
             }
         };
-        let mut local_evidence_failed = circuit.evidence_failed();
+        let mut local_evidence_failed = connect_link_failed || circuit.evidence_failed();
         if matches!(
             circuit,
             crate::circuit_runtime::ResponseOutcome::Exception { .. }
