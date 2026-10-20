@@ -833,29 +833,33 @@ def stop_console_group(pid, fd, row):
     limit = time.monotonic() + 3
     terminal_open = True
 
-    def remaining_members():
+    def remaining_members(deadline):
         nonlocal terminal_open
-        # Read one chunk per scan so continuous output cannot delay signals or
-        # deadline checks. Darwin needs the owned PTY drained to finish exit.
-        if terminal_open and select.select([fd], [], [], 0)[0]:
+        # Drain through gaps in finite TERM responses until EOF or the signal
+        # deadline. Then refresh ownership before any further signal.
+        while terminal_open:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0 or not select.select([fd], [], [], timeout)[0]:
+                break
             terminal_open = bool(read_console(fd))
         return console_group(pid)
 
-    remaining = remaining_members()
+    # Keep the initial drain short so continuous output cannot postpone TERM.
+    remaining = remaining_members(min(limit - 1, time.monotonic() + 0.05))
     if remaining:
         row["observer_terminated_viewer"] = stamp()
         os.killpg(pid, signal.SIGTERM)
-        remaining = remaining_members()
+        remaining = remaining_members(limit - 1)
     while remaining and time.monotonic() < limit - 1:
         select.select([fd] if terminal_open else [], [], [], 0.05)
-        remaining = remaining_members()
+        remaining = remaining_members(limit - 1)
     if remaining:
         shutdown["sigkill"] = stamp()
         os.killpg(pid, signal.SIGKILL)
-        remaining = remaining_members()
+        remaining = remaining_members(limit)
         while remaining and time.monotonic() < limit:
             select.select([fd] if terminal_open else [], [], [], 0.05)
-            remaining = remaining_members()
+            remaining = remaining_members(limit)
     shutdown.update(remaining=remaining, verified=not remaining, ended=stamp())
     save()
 

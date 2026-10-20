@@ -318,6 +318,17 @@ reports remain untouched.
 
 ### Retain production packages in CI
 
+The shared `guest-test-inputs.yml` jobs check retained host and guest executable
+artifacts before compilation. Reuse requires the exact source, platform, profile,
+compiler, default features and build flags from `native-input.json`. The selected
+scheduled or manual default-branch build job must have succeeded. For retained
+production packages, the selected run and the original producer run must also
+have completed successfully. Reused bytes keep their original receipt. An absent,
+expired or incompatible input leaves the current-source build in place. Old raw
+artifacts without this receipt also require a build. Damaged downloads or invalid
+receipts fail the job. Consumer tests, terminal-input checks and complete package
+assembly still run.
+
 Use the `packages_only` input of `proxy-rust.yml` to produce complete host
 bundles without the contract matrix. It calls the existing
 `guest-test-inputs.yml` producer with production profile and package retention.

@@ -645,6 +645,7 @@ mod tests {
             let mut request = Request::builder().uri("http://owned.invalid/")
                 .body(Empty::<Bytes>::new()).unwrap();
             let destination = super::super::Destination {
+            selected_ip: None,
                 host: "owned.invalid".into(), policy_host: "owned.invalid".into(), port: 80,
                 authority: "owned.invalid:80".into(), uri_authority: "owned.invalid:80".into(),
                 scheme: "http".into(), path: "/".into(),

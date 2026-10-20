@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Freeze retained production host inputs and a completed staged guest for blackbox."""
+"""Select retained blackbox packages or reuse matching native CI inputs."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 
 REPOSITORY = "craigbalding/safeyolo"
 GUEST_REPOSITORY = "ghcr.io/craigbalding/safeyolo-guest"
@@ -21,6 +24,8 @@ GUEST_WORKFLOW = ".github/workflows/guest-oci.yml"
 STAGING_TYPE = "application/vnd.safeyolo.guest.staging.v1+json"
 PLATFORMS = ("linux-amd64", "linux-arm64", "darwin-arm64")
 ROOT = Path(__file__).resolve().parents[1]
+INPUT_WORKFLOWS = (HOST_WORKFLOW, ".github/workflows/ci.yml")
+INPUT_RECEIPT = "native-input.json"
 
 
 def capture(*arguments: str) -> bytes:
@@ -135,6 +140,13 @@ def select_host(platform: str, branch: str, run_id: int | None) -> dict:
 
 
 def download_host(artifact: dict, directory: Path, platform: str, branch: str) -> dict:
+    archive_name = f"safeyolo-{platform}-production.tar.gz"
+    download_artifact(artifact, directory, [archive_name, "SHA256SUMS", "build.json"])
+    return verify_host(artifact, directory, platform, branch)
+
+
+def download_artifact(artifact: dict, directory: Path, names: list[str], *, legacy_input: bool = False) -> bool:
+    """Download verified bytes and read only the expected fixed ZIP names."""
     archive_zip = directory / "host.zip"
     with archive_zip.open("xb") as output:
         subprocess.run(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{artifact['id']}/zip"],
@@ -142,16 +154,141 @@ def download_host(artifact: dict, directory: Path, platform: str, branch: str) -
     with archive_zip.open("rb") as stream:
         actual = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
     if actual != artifact["digest"]:
-        raise ValueError("host artifact ZIP checksum differs")
-    archive_name = f"safeyolo-{platform}-production.tar.gz"
+        raise ValueError("artifact ZIP checksum differs")
     with zipfile.ZipFile(archive_zip) as bundle:
-        if sorted(bundle.namelist()) != sorted([archive_name, "SHA256SUMS", "build.json"]):
-            raise ValueError("selected host artifact is incomplete or has unexpected files")
+        members = sorted(bundle.namelist())
+        legacy_names = sorted(set(names) - {INPUT_RECEIPT})
+        legacy_guest = "safeyolo-guest" in names and members == sorted([*legacy_names, "safeyolo-guest.d"])
+        if legacy_input and (members == legacy_names or legacy_guest):
+            # Old raw artifacts have no toolchain/flags receipt. Compile the
+            # current source rather than infer identity or alter those bytes.
+            # Old guest upload globs also included Cargo's depfile.
+            return False
+        if members != sorted(names):
+            raise ValueError("selected artifact is incomplete or has unexpected files")
         # Read only fixed names. Never extract paths supplied by the ZIP.
-        for name in (archive_name, "SHA256SUMS", "build.json"):
+        for name in names:
             with bundle.open(name) as source, (directory / name).open("xb") as output:
                 shutil.copyfileobj(source, output)
-    return verify_host(artifact, directory, platform, branch)
+    return True
+
+
+def native_input_files(kind: str) -> list[str]:
+    if kind == "host":
+        return ["safeyolo", "safeyolo-coord", "safeyolo-proxy"]
+    return [name + suffix for name in ("safeyolo-guest", "safeyolo-coord")
+            for suffix in ("", ".version", ".sha256")]
+
+
+def input_package_tools() -> ModuleType:
+    # Installed consumers also import this selector for installed_binaries.
+    # Only the CI input commands need the source checkout's build tools.
+    if __package__:
+        from . import build_host_packages
+    else:
+        import build_host_packages
+    return build_host_packages
+
+
+def native_input_identity(kind: str, platform: str, profile: str, revision: str) -> dict:
+    packages = input_package_tools()
+    if packages.commit() != revision:
+        raise ValueError("native input source differs from the checked out revision")
+    settings = packages.proxy_settings(profile)
+    # These producers use default Cargo features and the native host target.
+    # Source identity also binds manifests, Cargo configuration and build scripts.
+    settings["features"] = "default"
+    settings["guest_target"] = os.environ.get("SAFEYOLO_GUEST_TARGET", "")
+    if kind == "guest":
+        settings["guest_rustc"] = packages.output("rustc", "-vV", cwd=ROOT / "guest/command")
+        settings["guest_cargo_lock_sha256"] = packages.sha256(ROOT / "guest/command/Cargo.lock")
+    return {"source_revision": revision, "platform": platform, "profile": profile,
+            "kind": kind, "settings": settings}
+
+
+def save_native_input(directory: Path, identity: dict) -> None:
+    packages = input_package_tools()
+    receipt = {"schema": "safeyolo.native-input/v1", **identity,
+               "built_at": datetime.now(UTC).isoformat(), "producer": packages.actions_producer(),
+               "files": {name: packages.sha256(directory / name)
+                         for name in native_input_files(identity["kind"])}}
+    (directory / INPUT_RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def successful_input_producer(producer: dict, revision: str, branch: str, *, require_successful_run: bool) -> dict | None:
+    workflow = producer["workflow"]
+    if workflow not in INPUT_WORKFLOWS:
+        raise ValueError("untrusted native input workflow")
+    job = verify_producer(producer, revision, workflow, branch, require_success=False)
+    if job is None:
+        return None
+    if require_successful_run:
+        run = gh(f"actions/runs/{producer['run_id']}/attempts/{producer['run_attempt']}")
+        # Test inputs can use a successful build job. Package retention also
+        # needs a successful whole run; a later test failure cannot qualify it.
+        if run["status"] != "completed" or run["conclusion"] != "success":
+            return None
+    return job
+
+
+def verify_native_input(directory: Path, identity: dict, branch: str, *, require_successful_run: bool) -> bool:
+    packages = input_package_tools()
+    receipt = json.loads((directory / INPUT_RECEIPT).read_bytes())
+    if receipt["schema"] != "safeyolo.native-input/v1":
+        raise ValueError("native input receipt schema differs")
+    if any(receipt[key] != value for key, value in identity.items() if key != "settings"):
+        raise ValueError("native input receipt source/profile/platform/kind differs")
+    if receipt["settings"] != identity["settings"]:
+        return False
+    job = successful_input_producer(receipt["producer"], identity["source_revision"], branch,
+                                    require_successful_run=require_successful_run)
+    if job is None:
+        return False
+    if not utc(job["started_at"]) <= utc(receipt["built_at"]) <= utc(job["completed_at"]):
+        raise ValueError("native input build time is outside its producer job")
+    if receipt["files"] != {name: packages.sha256(directory / name) for name in native_input_files(identity["kind"])}:
+        raise ValueError("native input executable checksums differ")
+    return True
+
+
+def reuse_native_input(directory: Path, identity: dict, branch: str, *, require_successful_run: bool = False) -> bool:
+    """Reuse the newest exact-source scheduled input, or leave compilation necessary."""
+    platform, kind = identity["platform"], identity["kind"]
+    artifact_name = f"{platform.split('-')[0]}-{kind}-{platform.rsplit('-', 1)[1]}-{identity['profile']}"
+    artifacts = [artifact for artifact in pages(f"actions/artifacts?name={artifact_name}&per_page=100", "artifacts")
+                 if artifact["name"] == artifact_name and artifact["workflow_run"]["head_branch"] == branch
+                 and artifact["workflow_run"]["head_sha"] == identity["source_revision"]]
+    for artifact in sorted(artifacts, key=lambda item: (utc(item["created_at"]), item["id"]), reverse=True):
+        run = gh(f"actions/runs/{artifact['workflow_run']['id']}")
+        if run["path"] not in INPUT_WORKFLOWS or run["event"] not in {"schedule", "workflow_dispatch"}:
+            continue
+        if artifact["expired"] or (require_successful_run and (run["status"] != "completed" or run["conclusion"] != "success")):
+            return False
+        producer = {"repository": REPOSITORY, "workflow": run["path"], "run_id": run["id"],
+                    "run_attempt": run["run_attempt"],
+                    "job_name": f"guest-inputs ({platform.rsplit('-', 1)[1]}) / "
+                                + ("macos-host" if platform == "darwin-arm64" else "build")}
+        artifact_job = successful_input_producer(producer, identity["source_revision"], branch,
+                                                 require_successful_run=require_successful_run)
+        if artifact_job is None:
+            return False
+        if not utc(artifact_job["started_at"]) <= utc(artifact["created_at"]) <= utc(artifact_job["completed_at"]):
+            raise ValueError("native input upload is outside its producer job")
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="native-input-", dir=directory.parent) as temporary:
+            staging = Path(temporary)
+            if not download_artifact(artifact, staging, [*native_input_files(kind), INPUT_RECEIPT], legacy_input=True):
+                return False
+            if not verify_native_input(staging, identity, branch, require_successful_run=require_successful_run):
+                return False
+            directory.mkdir(parents=True, exist_ok=True)
+            for name in [*native_input_files(kind), INPUT_RECEIPT]:
+                shutil.copyfile(staging / name, directory / name)
+                if "." not in name:
+                    (directory / name).chmod(0o755)
+        print(f"Reused {artifact_name} from artifact {artifact['id']} (run {run['id']})")
+        return True
+    return False
 
 
 def verify_host(artifact: dict, directory: Path, platform: str, branch: str) -> dict:
@@ -388,12 +525,28 @@ def select(directory: Path, platform: str, host_run: int | None = None, guest_in
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=PLATFORMS, required=True)
-    parser.add_argument("--output", type=Path, required=True, help="New private directory; earlier attempts are preserved")
+    parser.add_argument("--output", type=Path, required=True, help="New blackbox selection directory, or CI executable directory")
     parser.add_argument("--host-run", type=int, help="Exact trusted default-branch producer run, instead of newest build")
     parser.add_argument("--guest-index", help="Exact staged index, instead of newest completed compatible staging")
     parser.add_argument("--download-guest-archive", action="store_true", help="Also retain the exact platform archive for offline hardware execution")
+    parser.add_argument("--native-input", choices=("host", "guest"), help="Reuse exact-source CI executables instead of selecting installed blackbox inputs")
+    parser.add_argument("--save-native-input", action="store_true", help="Record freshly built CI input bytes")
+    parser.add_argument("--revision", help="Exact source required for CI input reuse")
+    parser.add_argument("--profile", choices=("production", "debug"), default="production")
+    parser.add_argument("--branch", help="Repository default branch for CI input reuse")
+    parser.add_argument("--require-successful-run", action="store_true", help="Require whole-run success for inputs used in retained production packages")
     args = parser.parse_args()
     try:
+        if args.native_input:
+            identity = native_input_identity(args.native_input, args.platform, args.profile, args.revision)
+            if args.save_native_input:
+                save_native_input(args.output, identity)
+            else:
+                reused = reuse_native_input(args.output, identity, args.branch,
+                                             require_successful_run=args.require_successful_run)
+                with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                    output.write(f"reused={str(reused).lower()}\n")
+            return 0
         report = select(args.output.resolve(), args.platform, args.host_run, args.guest_index,
                         download_guest=args.download_guest_archive)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, zipfile.BadZipFile, tarfile.TarError) as exc:

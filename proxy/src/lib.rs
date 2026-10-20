@@ -487,7 +487,8 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
-                .with_named_controls(config.native_product),
+                .with_named_controls(config.native_product)
+                .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),
         };
         let result = (|| {

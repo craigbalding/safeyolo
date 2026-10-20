@@ -147,21 +147,27 @@ def save_production(directory: Path) -> None:
         "source_commit": revision, "profile": "production", "platform": selected_platform,
     }.items()):
         raise ValueError("archive source/profile/platform differs from this producer")
-    repository = os.environ["GITHUB_REPOSITORY"]
-    run_id = int(os.environ["GITHUB_RUN_ID"])
-    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-    workflow = os.environ["GITHUB_WORKFLOW_REF"].removeprefix(repository + "/").split("@", 1)[0]
     receipt = {
         "schema": "safeyolo.host-build/v1", "source_revision": revision,
         "platform": selected_platform, "profile": "production",
         "built_at": datetime.now(UTC).isoformat(),
-        "producer": {"repository": repository, "workflow": workflow,
-                     "run_id": run_id, "run_attempt": attempt,
-                     "job_key": os.environ["GITHUB_JOB"], "runner_name": os.environ["RUNNER_NAME"]},
+        "producer": actions_producer(),
         "archive": {"name": name, "sha256": sha256(archive), "size": archive.stat().st_size},
     }
     (directory / "SHA256SUMS").write_text(f"{receipt['archive']['sha256']}  {name}\n")
     (directory / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def actions_producer() -> dict:
+    """Identify the Actions attempt and job that produced these bytes."""
+    repository = os.environ["GITHUB_REPOSITORY"]
+    return {
+        "repository": repository,
+        "workflow": os.environ["GITHUB_WORKFLOW_REF"].removeprefix(repository + "/").split("@", 1)[0],
+        "run_id": int(os.environ["GITHUB_RUN_ID"]),
+        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "job_key": os.environ["GITHUB_JOB"], "runner_name": os.environ["RUNNER_NAME"],
+    }
 
 
 def main() -> None:

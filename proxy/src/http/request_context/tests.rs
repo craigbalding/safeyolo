@@ -66,6 +66,7 @@ impl Fixture {
 
     fn destination(&self) -> super::super::Destination {
         super::super::Destination {
+            selected_ip: None,
             host: "dial.invalid".into(),
             policy_host: "owned.invalid".into(),
             port: 8123,

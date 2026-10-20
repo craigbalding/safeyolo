@@ -9,8 +9,9 @@
 > upper instead. The macOS Virtualization framework (VZ) path still uses an
 > ext4 rootfs image. See [Architecture](ARCHITECTURE.md),
 > [the guest build guide](../guest/README.md), and the current platform source
-> for authoritative behavior. The EROFS sections below remain unchanged as a
-> historical design record.
+> for authoritative behavior. For current root, home and workspace capacity,
+> see [runtime storage](microvm-architecture.md#persistence). The EROFS sections
+> below remain unchanged as a historical design record.
 
 ## Context
 

@@ -131,6 +131,12 @@ pub(super) enum Selected {
 }
 
 impl Selected {
+    pub(super) fn observation(&self) -> &crate::traffic_view::UpstreamConnectionObservation {
+        match self {
+            Self::Http2(lease) => &lease.0.observation,
+            Self::Unshared(outbound) => &outbound.observation,
+        }
+    }
     pub(super) fn http2(&self) -> bool {
         matches!(self, Self::Http2(_))
     }

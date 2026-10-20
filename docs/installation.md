@@ -865,10 +865,15 @@ First, read Worker's pending request with the operator client:
 safeyolo approvals list --agent worker
 ```
 
-A network prompt records `request_id` and
-`details.network_action`. The action binds Worker's durable identity, the host,
-the port and the relevant network-policy revision. Historical prompts without
-that binding remain available through their existing operator actions.
+A network prompt records a host-owned `approval_id`, its traffic `request_id`
+and `details.network_action`. Equivalent retries retain the approval ID while
+each attempt has its own traffic ID. The action binds Worker's durable identity,
+the host, the port and the relevant network-policy revision. The pending record
+also binds the method and resource. Inspection leaves the record pending.
+See [pending approvals](operator-guide.md#inspect-a-pending-approval) for the
+decision, expiry and restart behavior. Historical prompts remain readable.
+Assisted decisions require a new durable request. Explicit policy controls
+remain available.
 
 Replace `REQUEST_ID` with the selected pending request and grant Helper its
 diagnostic and approval reads:
@@ -922,17 +927,18 @@ through Helper's configured proxy; operator routes use the host Admin API.
 | Operator | `POST /admin/approvals/ID/readers` with `{"helper":"helper","helper_id":"CURRENT_DURABLE_ID"}` | Idempotent selected diagnostic and approval reads; no network grant. |
 | Operator | `POST /admin/approvals/ID` with `{"decision":"approve"}` or `{"decision":"reject"}` | Canonical terminal disposition and exact action; the resolver does not accept caller-supplied scope. |
 
-CLI and Commander network decisions use this common resolver for bound prompts. Repeat or concurrent decisions return the first terminal disposition.
-A relevant policy change or recreated Worker makes a pending action stale;
-approval returns 409 and needs a new request and human decision. The operator
-can still reject that stale request without changing permissions. A changed
-action cannot be substituted during preparation. Helper cannot call the operator
-mutation or grant itself evidence reads.
+CLI and Commander use the common resolver for canonical network, credential
+and gateway approvals. Repeat or concurrent decisions return the first terminal
+result. A relevant policy or service change, or a recreated Worker, supersedes
+a pending approval. Resolution returns 409 and needs a new request and human
+decision. A changed action cannot be substituted during preparation. Helper
+cannot call the operator mutation or grant itself evidence reads.
 
 If the resolution response is lost, read `GET /admin/approvals/ID` before taking
-another action. A committed allow rule carries its request and action identity,
-so the canonical approved outcome remains readable if its audit receipt fails.
-Unavailable evidence returns 503. Direct operator policy commands remain usable.
+another action. The host saves a decision receipt with its policy or grant
+effect. The pending record and receipt let the resolver recover its result if
+the audit write fails. Missing canonical state fails closed; logs cannot replace
+it. Direct operator policy commands remain usable.
 Raw audit files and separately authorised flow reads and exports retain their
 existing access; selected Helper reads do not redact that operator evidence.
 

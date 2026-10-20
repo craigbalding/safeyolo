@@ -285,11 +285,12 @@ def registry():
         thread.join()
 
 
-def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION):
+def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION, from_layout=False):
     oras, verifier = publisher_tools
-    args = [str(ROOT / "scripts/publish_guest_oci.sh"), "--artifacts", str(artifacts),
+    args = [str(ROOT / "scripts/publish_guest_oci.sh"),
             "--layout", str(tmp_path / f"layout-{version}"), "--version", version,
             "--compatibility", compatibility, "--revision", revision, "--verifier", verifier]
+    args += ["--from-layout"] if from_layout else ["--artifacts", str(artifacts)]
     if repository:
         args += ["--publish", repository, "--plain-http"]
     return run(*args, env={**os.environ, "ORAS": oras}, timeout=30)
@@ -299,14 +300,64 @@ def test_actual_oras_local_release_and_no_registry_writes(tmp_path, artifacts, p
     result = publish(tmp_path, artifacts, publisher_tools)
     assert result.returncode == 0, result.stderr
     assert all(f"verified {platform}" in result.stdout for platform in ("darwin/arm64", "linux/amd64", "linux/arm64"))
+    fetched = run(publisher_tools[0], "manifest", "fetch", "--oci-layout",
+                  f"{tmp_path / 'layout-guest-2026-10-12.1'}:guest-2026-10-12.1")
+    assert fetched.returncode == 0, fetched.stderr
+    index = json.loads(fetched.stdout)
+    assert {(child["platform"]["os"], child["platform"]["architecture"]) for child in index["manifests"]} == {
+        ("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"),
+    }
+    assert not registry[4]
+
+
+@pytest.mark.parametrize(("defect", "error"), [
+    ("missing-platform", "missing guest platform"),
+    ("missing-consumer", "missing linux/arm64 guest"),
+    ("unsupported-platform", "unsupported guest consumer platform"),
+    ("duplicate-platform", "duplicate guest consumer platform"),
+    ("wrong-platform", "guest config must contain only the selected consumer os and architecture"),
+])
+def test_invalid_index_platforms_refused_before_upload(tmp_path, artifacts, publisher_tools, registry, defect, error):
+    prepared = publish(tmp_path, artifacts, publisher_tools)
+    assert prepared.returncode == 0, prepared.stderr
+    oras, _ = publisher_tools
+    reference = f"{tmp_path / 'layout-guest-2026-10-12.1'}:guest-2026-10-12.1"
+    fetched = run(oras, "manifest", "fetch", "--oci-layout", reference)
+    assert fetched.returncode == 0, fetched.stderr
+    index = json.loads(fetched.stdout)
+    children = index["manifests"]
+    if defect == "missing-platform":
+        del children[0]["platform"]
+    elif defect == "missing-consumer":
+        children.pop()
+    elif defect == "unsupported-platform":
+        children[0]["platform"]["architecture"] = "ppc64le"
+    elif defect == "duplicate-platform":
+        children[1]["platform"] = children[0]["platform"]
+    elif defect == "wrong-platform":
+        children[0]["platform"], children[1]["platform"] = children[1]["platform"], children[0]["platform"]
+    invalid = tmp_path / "invalid-index.json"
+    invalid.write_text(json.dumps(index))
+    # ORAS records the changed index's true digest. Refusal must come from the
+    # platform checks, rather than an unrelated stale digest or length.
+    pushed = run(oras, "manifest", "push", "--oci-layout", reference, str(invalid))
+    assert pushed.returncode == 0, pushed.stderr
+    refused = publish(tmp_path, artifacts, publisher_tools, registry[0], from_layout=True)
+    assert refused.returncode != 0 and error in refused.stderr
     assert not registry[4]
 
 
 def test_actual_oras_publication_retry_versions_and_generations(tmp_path, artifacts, publisher_tools, registry):
     repository, _, manifests, tags, events, _ = registry
-    first = publish(tmp_path, artifacts, publisher_tools, repository)
+    prepared = publish(tmp_path, artifacts, publisher_tools)
+    assert prepared.returncode == 0, prepared.stderr
+    resolved = run(publisher_tools[0], "resolve", "--oci-layout",
+                   f"{tmp_path / 'layout-guest-2026-10-12.1'}:guest-2026-10-12.1")
+    assert resolved.returncode == 0, resolved.stderr
+    first = publish(tmp_path, artifacts, publisher_tools, repository, from_layout=True)
     assert first.returncode == 0, first.stderr
     g1 = tags["guest-2026-10-12.1"]
+    assert g1 == resolved.stdout.strip()
     assert "compat-v1" not in tags
     tags["compat-v1"] = g1
     first_events = list(events)
