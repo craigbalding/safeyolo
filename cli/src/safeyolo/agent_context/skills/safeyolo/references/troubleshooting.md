@@ -6,6 +6,7 @@
 - [Custom credential authoring](#custom-credential-authoring)
 - [Proxy and TLS failures](#proxy-and-tls-failures)
 - [Logs and correlation](#logs-and-correlation)
+- [Select a target IP](#select-a-target-ip)
 - [Ask the operator](#ask-the-operator)
 - [Protect administrative credentials](#protect-administrative-credentials)
 
@@ -37,6 +38,39 @@ Important 428 distinctions:
 For a 403 network denial, call `/lookup?host=HOST` before asking for policy
 changes. For a 503 from `circuit-breaker`, honor `Retry-After` rather than
 asking for policy changes.
+
+## Select a target IP
+
+Inside the agent, keep the configured proxy and CA environment. Use a permitted
+hostname and an owned TLS endpoint with a certificate valid for that hostname.
+In the example below, replace `example.com` and the illustrative IP with those
+values. Both ports must describe the same destination port. Curl writes the
+CONNECT and HTTP response headers to `selected-ip.headers` in the current
+directory:
+
+```sh
+curl --dump-header selected-ip.headers \
+  --connect-to example.com:443:203.0.113.42:443 https://example.com/
+```
+
+For IPv6, bracket the address in curl's selection, for example
+`example.com:443:[2001:db8::42]:443`. Curl retains the URL hostname for TLS
+and HTTP. Applicable hostname, IP/port, credential and service controls still
+apply. An operator mapping for the same host, port and agent must agree with
+the client IP. An ordinary hostname request can use an operator mapping; see
+the [configuration guide](https://github.com/craigbalding/safeyolo/blob/master/docs/CONFIGURATION.md#select-a-target-ip).
+Obtain addresses separately through an approved source. Selection grants no
+additional network or credential permission.
+
+If the CONNECT succeeds but TLS fails, read its `X-SafeYolo-Request-Id` from
+the saved headers and call `/explain?request_id=ID`. The inner HTTP response
+has its own ID when reached. [Connection evidence](agent-api.md#selected-ip-connection-evidence)
+links these IDs without including sibling requests in an inner lookup.
+CONNECT 2xx alone does not prove a parent/direct connection, verified origin
+TLS or an HTTP response. When hostname-dependent routing needs later client
+information, the numeric CONNECT waits at most 30 seconds. Timeout and
+cancellation authorize no outbound attempt. Known routes support server-first
+clients; literal-IP TLS can omit DNS SNI.
 
 ## Custom credential authoring
 

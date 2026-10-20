@@ -42,6 +42,7 @@ struct Record {
     head: Option<Head>,
     error: Option<Zeroizing<String>>,
     metadata_encoding_error: bool,
+    connect_request_id: Option<String>,
 }
 
 impl Drop for Record {
@@ -227,6 +228,12 @@ impl Recording {
                 String::new()
             }
         };
+        let connection = record.metadata.remove("connection_json").or_else(|| {
+            destination.selected_ip.as_ref().map(|_| {
+                python_json::encode(&json!({"target": super::selected_ip::facts(destination)}))
+                    .into()
+            })
+        });
         record.metadata = object(json!({
             "scheme": destination.scheme, "host": host, "port": destination.port,
             "method": request.method().as_str(), "path": destination.path.split('?').next().unwrap_or(""),
@@ -234,6 +241,54 @@ impl Recording {
             "request_content_type": content_type, "is_websocket": websocket,
             "request_headers_json": headers_json(&pairs, None, redact_header),
         }));
+        if let Some(connection) = connection {
+            record.metadata.insert("connection_json".into(), connection);
+        }
+    }
+
+    pub(super) fn target(
+        &self,
+        destination: &super::Destination,
+        connect_request_id: Option<&str>,
+    ) {
+        if destination.selected_ip.is_none() {
+            return;
+        }
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record
+            .as_mut()
+        {
+            record.connect_request_id = connect_request_id.map(str::to_owned);
+            record.metadata.insert("connection_json".into(), python_json::encode(&json!({
+                "target": super::selected_ip::facts(destination), "connect_request_id": connect_request_id,
+            })).into());
+        }
+    }
+
+    pub(super) fn connection(
+        &self,
+        observation: &crate::traffic_view::UpstreamConnectionObservation,
+    ) {
+        if observation.target.is_null() {
+            return;
+        }
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record
+            .as_mut()
+        {
+            let mut connection = observation.snapshot();
+            connection["connect_request_id"] = json!(record.connect_request_id);
+            record.metadata.insert(
+                "connection_json".into(),
+                python_json::encode(&connection).into(),
+            );
+        }
     }
 
     /// Metadata precedes source snippet decoding, including a decoding error.

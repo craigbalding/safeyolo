@@ -141,8 +141,8 @@ impl CertificateAuthority {
         Ok(Arc::new(config))
     }
 
-    /// Issue a leaf for the admitted destination only. Caller-supplied SNI or an
-    /// inner HTTP authority must not expand this name after CONNECT admission.
+    /// Issue a leaf for the logical name established by CONNECT classification.
+    /// The certificate resolver and inner HTTP requests cannot replace this name.
     pub fn issue(&self, host: &str, now: OffsetDateTime) -> Result<Arc<CertifiedKey>, Error> {
         ServerName::try_from(host)?;
         if now < self.not_before || now >= self.not_after {

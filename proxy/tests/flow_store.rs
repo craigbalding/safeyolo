@@ -90,9 +90,12 @@ fn row_tags_bodies_and_fts_survive_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("flows.db");
     let store = FlowStore::open(&path, Settings::default()).unwrap();
+    let mut selected_metadata = metadata("roundtrip");
+    let connection = json!({"connect_request_id":"outer-owned", "target":{"logical_host":"owned.invalid","effective_ip":"::1","selection_source":"operator_mapping"}}).to_string();
+    selected_metadata.insert("connection_json".into(), connection.clone().into());
     let recorded = record(
         &store,
-        &metadata("roundtrip"),
+        &selected_metadata,
         b"needle request",
         b"needle response",
     )
@@ -101,6 +104,7 @@ fn row_tags_bodies_and_fts_survive_reopen() {
     assert!(!recorded.response_fts_failed && !recorded.request_fts_failed);
     let before = view(&store, &path, 1);
     assert_eq!(before["flow"]["evidence_owner"], "alice");
+    assert_eq!(before["flow"]["connection_json"], connection);
     assert_eq!(before["flow"]["tags"][0]["tag"], "a-first");
     assert_eq!(before["response"]["response_body_encoding"], "gzip");
     assert_eq!(before["response"]["response_body_size"], 15);
@@ -358,6 +362,7 @@ fn legacy_migration_preserves_evidence_and_v2_quarantine_is_not_repaired() {
     let row = store.get_flow(1).unwrap().unwrap();
     assert_eq!(row["evidence_owner"], "alice");
     assert_eq!(row["initiator"], "unknown");
+    assert_eq!(row["connection_json"], Value::Null);
     assert_eq!(
         row["attribution_provenance_json"],
         "{\"migration\":\"flow_store_v1\",\"transport_identity\":\"unknown\"}"
