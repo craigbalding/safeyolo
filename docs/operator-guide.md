@@ -193,7 +193,28 @@ SafeYolo effect: Allow reusable network access for work (ag-…) to example.com 
 Read the effect before deciding. Approval permits future requests by this
 agent to that host and port until you remove the permission. It is not limited
 to one HTTP request and does not grant credential permission. If the scope is
-what you intend, type the following input with the same full ID:
+unclear, type `explain REQUEST_ID` with the same full ID. SafeYolo shows the
+recorded facts, why the request stopped, the offered grant, important non-grants
+and unknown scope. Explanation records an audit event and leaves the approval
+unchanged. Raw paths, queries and contract values are omitted because they can
+contain secrets. Agent prose does not supply trusted facts or establish need.
+
+For numbered selection, type `review`, choose a request, then type `e` to
+explain it. You can still approve or reject that same request. For gateway
+routes, `explain remembered` selects and explains that offered option; a later
+`approve` uses the selected option. The default route option is `once`.
+Credential grants change persistent policy shared by all agents in the instance.
+Service access can require a displayed credential option.
+
+In a host shell, `safeyolo approvals explain REQUEST_ID --option OPTION_ID`
+explains a displayed option; omit `--option` for the default. Add `--json` for
+structured evidence. `safeyolo approvals show REQUEST_ID --json` provides the
+full canonical record under the same operator permissions. Existing traffic
+views and the [approval troubleshooting graph](../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/triage-approval-required.yaml)
+provide deeper diagnostics; explanation does not require traffic recording.
+
+If the scope is what you intend, type the following input at `inspect>` with
+the same full ID:
 
 ```text
 approve REQUEST_ID
