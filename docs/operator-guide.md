@@ -328,6 +328,8 @@ Audit display text does not supply permission. Historical audit-only requests
 remain inspectable; assisted approval needs a new durable request. Missing
 approval state fails closed; it is not reconstructed from traffic logs. Direct
 policy and service commands remain available for explicit operator changes.
+Requests from a listener without a durable agent ID still return 428 and retain
+direct policy controls. They cannot create a canonical approval record.
 
 In macOS Command Centre, the approval window shows the same approval ID and
 fixed effects. Select an offered option when needed. **Cancel** closes the

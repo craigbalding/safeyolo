@@ -453,14 +453,17 @@ pub(crate) async fn bind_network(
     if policy.native_controls().is_none() {
         return Ok(None);
     }
-    let guard = guard.ok_or_else(|| invalid("request binding unavailable"))?;
-    let action = event
+    let Some(action) = event
         .details
         .as_object()
         .and_then(|fields| fields.get("network_action"))
-        .ok_or_else(|| invalid("network approval identity unavailable"))?
-        .json()
-        .map_err(unavailable)?;
+    else {
+        // Name-only listeners retain their original 428 and direct policy
+        // controls. They cannot bind an assisted action to a durable agent.
+        return Ok(None);
+    };
+    let action = action.json().map_err(unavailable)?;
+    let guard = guard.ok_or_else(|| invalid("request binding unavailable"))?;
     let effect = event.summary.clone();
     let authority = Authority {
         revision: revision(policy, &action)
@@ -517,13 +520,12 @@ pub(crate) async fn bind_credentials(
     let Some(first) = requested.first() else {
         return Ok(None);
     };
-    let agent = first
-        .agent
-        .as_deref()
-        .ok_or_else(|| invalid("requester identity unavailable"))?;
-    let agent_id = policy
-        .evidence_agent_id(agent)
-        .ok_or_else(|| invalid("requester identity unavailable"))?;
+    let Some(agent) = first.agent.as_deref() else {
+        return Ok(None);
+    };
+    let Some(agent_id) = policy.evidence_agent_id(agent) else {
+        return Ok(None);
+    };
     let request_id = first
         .request_id
         .clone()

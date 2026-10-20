@@ -258,11 +258,12 @@ headers=["authorization", "x-api-key"]
 ''' + AGENTS
 
 
-def test_pending_credential_list_keeps_all_requests_in_a_retained_audit(tmp_path):
+def test_pending_credential_list_does_not_derive_authority_from_retained_audit(tmp_path):
     with origin_server() as origin, native_instance(tmp_path, source=CREDENTIAL_RETRY_POLICY) as instance:
         target = f"http://127.0.0.1:{origin.server_address[1]}/pending"
         assert request(instance.paths["alice"], target,
                        headers={"Authorization": "Bearer first-launch-key"})[0] == 428
+        original = instance.admin("GET", "/admin/approvals")["approvals"][0]
         audit = instance.root / "logs/audit.jsonl"
         seed = next(row for row in map(json.loads, audit.read_text().splitlines())
                     if row.get("event") == "security.credential_guard")
@@ -272,8 +273,8 @@ def test_pending_credential_list_keeps_all_requests_in_a_retained_audit(tmp_path
             prompts.append({**seed, "request_id": f"req-{index:032x}",
                             "approval": {**seed["approval"], "key": fingerprint},
                             "details": {**seed["details"], "fingerprint": fingerprint}})
-        # One request has two fingerprints. Both pending rows must retain its
-        # complete action when the list groups the audit by request ID.
+        # Duplicate and altered audit deliveries cannot create or replace
+        # authority in the host-owned approval record.
         prompts.append({**prompts[0],
                         "approval": {**seed["approval"], "key": "hmac:second"},
                         "details": {**seed["details"], "fingerprint": "hmac:second"}})
@@ -285,15 +286,10 @@ def test_pending_credential_list_keeps_all_requests_in_a_retained_audit(tmp_path
         listed = json.loads(listed.stdout)["approvals"]
         assert [(row["request_id"], row["action"]) for row in listed] == [
             (row["request_id"], row["action"]) for row in pending]
-        assert len(pending) == 4001
-        assert {row["request_id"] for row in pending} == {row["request_id"] for row in prompts}
-        for row in pending:
-            credentials = [row["approval"]["key"]]
-            if row["request_id"] == prompts[0]["request_id"]:
-                credentials = [prompts[0]["approval"]["key"], "hmac:second"]
-            assert row["action"] == {"kind": "credential_allow", "agent": "alice",
-                                     "agent_id": "ag-" + "a" * 32, "host": "127.0.0.1",
-                                     "credentials": sorted(credentials)}
+        assert len(pending) == 1
+        assert pending[0]["approval_id"] == original["approval_id"]
+        assert pending[0]["action"] == original["action"]
+        assert pending[0]["authority_digest"] == original["authority_digest"]
         assert instance.policy.read_bytes() == before and origin.accepts == 0
 
 
@@ -306,7 +302,8 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
         target = f"http://127.0.0.1:{origin.server_address[1]}/retry"
         headers = {"Authorization": "Bearer first-launch-key"}
         assert request(instance.paths["alice"], target, headers=headers)[0] == 428
-        original = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
+        first = instance.admin("GET", "/admin/approvals")["approvals"][0]
+        original = first["approval_id"]
         arguments = (["approvals", "review", "--agent", "alice"] if surface == "approvals"
                      else ["inspect", "--agent", "alice"])
         with terminal(instance, arguments) as (process, master, until):
@@ -318,12 +315,14 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
                 os.write(master, b"1\n")
                 output += until(b"approve / reject")
             assert request(instance.paths["alice"], target, headers=headers)[0] == 428
-            newest = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
-            assert newest != original
+            newest = instance.admin("GET", "/admin/approvals")["approvals"][0]
+            assert newest["approval_id"] == original
+            assert newest["action"] == first["action"]
             shown = instance.cli("approvals", "show", original, "--agent", "alice", "--json")
             assert shown.returncode == 0, shown.stderr
             view = json.loads(shown.stdout)
-            assert view["request_id"] == original and view["status"] == "pending"
+            assert view["approval_id"] == original and view["status"] == "pending"
+            assert view["request_id"] == first["request_id"]
             if window == "list":
                 os.write(master, b"1\n")
                 output += until(b"approve / reject")
@@ -344,14 +343,14 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
 
 
 @pytest.mark.parametrize("window", ["list", "detail"])
-@pytest.mark.parametrize("change", ["other_agent", "fingerprint", "destination", "identity", "refusal", "resolution"])
-def test_changed_credential_selection_refreshes_without_a_decision(tmp_path, window, change):
+@pytest.mark.parametrize("change", ["other_agent", "fingerprint", "destination", "identity", "policy_deny", "policy_allow"])
+def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path, window, change):
     policy = CREDENTIAL_RETRY_POLICY
     with origin_server() as origin, native_instance(tmp_path, source=policy) as instance:
         target = f"http://127.0.0.1:{origin.server_address[1]}/stale"
         headers = {"Authorization": "Bearer first-launch-key"}
         assert request(instance.paths["alice"], target, headers=headers)[0] == 428
-        identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
+        identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["approval_id"]
         view = json.loads(instance.cli("approvals", "show", identifier, "--json").stdout)
         with terminal(instance, ["approvals", "review", "--agent", "alice"]) as (process, master, until):
             until(b"Request number")
@@ -361,43 +360,54 @@ def test_changed_credential_selection_refreshes_without_a_decision(tmp_path, win
             if change == "other_agent":
                 assert request(instance.paths["bob"], target, headers=headers)[0] == 428
             elif change in ("fingerprint", "destination"):
-                # Replace trusted fixture evidence to challenge the caller's
-                # saved scope at both interaction windows. Real retries get new
-                # request IDs; the separate controls exercise that producer.
-                audit = instance.root / "logs/audit.jsonl"
-                events = [json.loads(line) for line in audit.read_text().splitlines()]
-                for event in events:
-                    if event.get("event") == "security.credential_guard" and event.get("request_id") == identifier:
-                        if change == "fingerprint":
-                            event["approval"]["key"] = "hmac:changed-fixture"
-                            event["details"]["fingerprint"] = "hmac:changed-fixture"
-                        else:
-                            event["host"] = event["approval"]["target"] = "localhost"
-                audit.write_text("".join(json.dumps(event) + "\n" for event in events))
+                changed_target = target.replace("127.0.0.1", "localhost") if change == "destination" else target
+                changed_headers = {"Authorization": "Bearer second-launch-key"} if change == "fingerprint" else headers
+                assert request(instance.paths["alice"], changed_target, headers=changed_headers)[0] == 428
             elif change == "identity":
                 instance.apply(policy.replace("ag-" + "a" * 32, "ag-" + "c" * 32))
             else:
-                route = "deny" if change == "refusal" else "approve"
+                route = "deny" if change == "policy_deny" else "approve"
                 credential = view["action"]["credentials"][0]
                 instance.admin("POST", f"/admin/policy/baseline/{route}",
                                {"destination": "127.0.0.1", "cred_id": credential})
             before = instance.policy.read_bytes()
             audit = instance.root / "logs/audit.jsonl"
             before_events = [row for row in audit.read_text().splitlines() if '"admin.approval_added"' in row or '"admin.denial"' in row]
+            if change in ("other_agent", "fingerprint", "destination"):
+                current = instance.admin("GET", f"/admin/approvals/{identifier}")
+                assert current["status"] == "pending" and current["action"] == view["action"]
+                assert current["authority_digest"] == view["authority_digest"]
+                pending = instance.admin("GET", "/admin/approvals")["approvals"]
+                assert len({row["approval_id"] for row in pending}) == 2
+                if window == "list":
+                    os.write(master, b"1\n")
+                    until(b"approve / reject")
+                os.write(master, b"approve\n")
+                until(b"No pending requests")
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+                approved = instance.admin("GET", f"/admin/approvals/{identifier}")
+                assert approved["status"] == "approved" and approved["action"] == view["action"]
+                assert origin.accepts == 0
+                assert request(instance.paths["alice"], target, headers=headers)[0] == 200
+                if change == "other_agent":
+                    assert request(instance.paths["bob"], target, headers=headers)[0] == 200
+                else:
+                    assert request(instance.paths["alice"], changed_target, headers=changed_headers)[0] == 428
+                return
             os.write(master, b"1\n" if window == "list" else b"approve\n")
-            marker = b"Request number" if change in ("fingerprint", "destination") else b"No pending requests"
-            output = until(marker)
+            output = until(b"No pending requests")
             assert b"API 404 " not in output and b"approve / reject" not in output
-            if change in ("fingerprint", "destination"):
-                os.write(master, b"\n")
             assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             assert instance.policy.read_bytes() == before and origin.accepts == 0
             after_events = [row for row in audit.read_text().splitlines() if '"admin.approval_added"' in row or '"admin.denial"' in row]
             assert after_events == before_events
-        if change not in ("fingerprint", "destination"):
-            for decision in ("approve", "reject"):
-                stale = instance.cli("approvals", decision, identifier, "--agent", "alice")
-                assert stale.returncode != 0 and "API 404 " not in stale.stderr
+        for decision in ("approve", "reject"):
+            stale = instance.cli("approvals", decision, identifier, "--agent", "alice", "--json")
+            if change == "identity":
+                assert stale.returncode != 0 and "selected current agent" in stale.stderr
+            else:
+                assert stale.returncode == 0, stale.stderr
+                assert json.loads(stale.stdout)["status"] == "superseded"
         assert instance.policy.read_bytes() == before and origin.accepts == 0
 
 
@@ -436,7 +446,7 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
         assert request(instance.paths["alice"], target, headers=headers)[0] == (200 if decision == "approve" else 428)
 
 
-def test_credential_policy_write_rechecks_the_inspected_action(tmp_path):
+def test_credential_policy_write_cannot_bypass_canonical_approval(tmp_path):
     policy = CREDENTIAL_RETRY_POLICY
     with origin_server() as origin, native_instance(tmp_path, source=policy) as instance:
         target = f"http://127.0.0.1:{origin.server_address[1]}/decision"
@@ -451,9 +461,14 @@ def test_credential_policy_write_rechecks_the_inspected_action(tmp_path):
         for field, changed in (("host", "localhost"), ("agent_id", "ag-" + "c" * 32),
                                ("credentials", ["hmac:different"])):
             instance.admin("POST", "/admin/policy/baseline/approve",
-                           {**body, "approval_action": {**action, field: changed}}, expected_status=409)
+                           {**body, "approval_action": {**action, field: changed}}, expected_status=503)
             assert instance.policy.read_bytes() == before
+        instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=503)
+        assert instance.policy.read_bytes() == before
         instance.admin("POST", "/admin/policy/baseline/deny",
                        {"destination": action["host"], "cred_id": action["credentials"][0]})
-        instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=409)
+        before = instance.policy.read_bytes()
+        instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=503)
+        instance.admin("POST", f"/admin/approvals/{view['approval_id']}",
+                       {"decision": "approve", "option": "persistent"}, expected_status=409)
         assert instance.policy.read_bytes() == before and origin.accepts == 0
