@@ -13,7 +13,9 @@ use crate::{
     policy::Policy,
 };
 
+mod explanation;
 mod gateway;
+pub(crate) use explanation::explain;
 pub(crate) use gateway::{bind_agent_request, bind_risky};
 
 #[derive(Clone)]
@@ -48,6 +50,17 @@ pub(crate) struct Authority {
 }
 
 impl Authority {
+    pub(crate) fn selected_option(&self, option: Option<&str>) -> Option<&OptionScope> {
+        match option {
+            Some(id) => self.options.iter().find(|option| option.id == id),
+            None if self.options.len() == 1 => self.options.first(),
+            None if self.action["kind"] == "gateway_route" => {
+                self.options.iter().find(|option| option.id == "once")
+            }
+            _ => None,
+        }
+    }
+
     fn material(&self) -> Value {
         let mut material = json!(self);
         if let Some(options) = material["options"].as_array_mut() {
@@ -787,12 +800,8 @@ pub(crate) fn resolve(
             changed = true;
             return Ok(());
         }
-        let selected = match option {
-            Some(id) => record.authority.options.iter().find(|option| option.id == id),
-            None if record.authority.options.len() == 1 => record.authority.options.first(),
-            None if record.authority.action["kind"] == "gateway_route" => record.authority.options.iter().find(|option| option.id == "once"),
-            _ => None,
-        }.ok_or_else(|| invalid("select one of this approval's fixed options"))?;
+        let selected = record.authority.selected_option(option)
+            .ok_or_else(|| invalid("select one of this approval's fixed options"))?;
         if selected.session_id.as_ref().is_some_and(|id| id != &writer.approvals().session_id) {
             return Err(invalid("the selected session expired; make a new request"));
         }

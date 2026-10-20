@@ -19,7 +19,7 @@ safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
 safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals show|approve|reject ID [--option ID] [--agent NAME] [--json]
+safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
@@ -32,6 +32,7 @@ Exports: raw, raw_request, raw_response, curl, httpie, har, zhar.
 Generated commands are saved or displayed as evidence, never executed.
 Sharing permits selected diagnostic/approval reads only. Helper prepares; the human decides.
 Each approval shows its fixed permission and options. Inspect leaves it pending.
+Explain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.
 Network approval is reusable for the selected agent and host/port. Credential approval changes shared persistent policy.
 Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
@@ -215,6 +216,117 @@ pub(crate) async fn approval(root: &Path, id: &str, agent: Option<&str>) -> Resu
         }
     }
     Ok(view)
+}
+
+async fn explain(
+    root: &Path,
+    id: &str,
+    agent: Option<&str>,
+    option: Option<&str>,
+) -> Result<Value, Error> {
+    // Keep the existing selected-agent check before the operator endpoint.
+    let view = approval(root, id, agent).await?;
+    let id = view
+        .get("approval_id")
+        .unwrap_or(&view["request_id"])
+        .as_str()
+        .ok_or("approval identity unavailable")?;
+    admin(
+        root,
+        &format!("/admin/approvals/{}/explain", encoded(id)),
+        Method::POST,
+        json!({"option":option}),
+    )
+    .await
+}
+
+fn show_explanation(view: &Value) -> Result<(), Error> {
+    println!(
+        "Approval: {} | Status: {}\nObserved by SafeYolo:",
+        safe(text(&view["approval_id"])),
+        safe(text(&view["status"]))
+    );
+    let facts = &view["observed"];
+    for (label, key) in [
+        ("Agent", "agent"),
+        ("Agent ID", "agent_id"),
+        ("Destination", "destination"),
+        ("Method", "request_method"),
+        ("Service", "service"),
+        ("Capability", "capability"),
+        ("Request source", "request_source"),
+    ] {
+        if let Some(value) = facts[key].as_str() {
+            println!("  {label}: {}", safe(value));
+        }
+    }
+    if let Some(port) = facts["port"].as_u64() {
+        println!("  Port: {port}");
+    }
+    if let Some(routes) = facts["configured_routes"].as_array() {
+        for route in routes.iter().take(3) {
+            println!(
+                "  Configured route: {} {}",
+                serde_json::to_string(&route["methods"])?,
+                safe(text(&route["path_pattern"]))
+            );
+        }
+        if routes.len() > 3 {
+            println!(
+                "  {} more configured routes (use --json).",
+                routes.len() - 3
+            );
+        }
+    }
+    if let Some(credentials) = facts["credential_fingerprints"].as_array() {
+        println!(
+            "  Credential fingerprints: {} (use --json for fingerprints)",
+            credentials.len()
+        );
+    }
+    println!(
+        "Why was this stopped?\n  {}\nCurrent policy:\n  {}",
+        safe(text(&view["why_stopped"])),
+        safe(text(&view["current_policy"]))
+    );
+    println!("What approval would grant:");
+    if view["selected_option"].is_object() {
+        let selected = &view["selected_option"];
+        println!(
+            "  Option {} ({}): {}",
+            safe(text(&selected["id"])),
+            safe(text(&selected["status"])),
+            safe(text(&selected["effect"]))
+        );
+        if let Some(expiry) = selected["credential_expires_at"].as_str() {
+            println!("  Selected credential expires: {}", safe(expiry));
+        }
+    } else {
+        println!("  Select one of the offered options:");
+        for option in view["options"].as_array().into_iter().flatten() {
+            println!(
+                "  {} ({}): {}",
+                safe(text(&option["id"])),
+                safe(text(&option["status"])),
+                safe(text(&option["effect"]))
+            );
+        }
+    }
+    for (label, field) in [
+        ("What approval would NOT grant", "non_grants"),
+        ("Unknown or omitted", "unknowns"),
+    ] {
+        println!("{label}:");
+        for item in view[field].as_array().into_iter().flatten() {
+            println!("  {}", safe(text(item)));
+        }
+    }
+    println!(
+        "Interpretation:\n  {}\nEvidence: {}",
+        safe(text(&view["interpretation"])),
+        safe(text(&view["evidence"]["details_command"]))
+    );
+    Ok(())
 }
 
 fn show_approval(view: &Value) -> Result<(), Error> {
@@ -459,27 +571,67 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         if view["status"] != "pending" {
             continue;
         }
-        match crate::host_launch::input("approve / reject / Enter to leave unchanged: ")?.as_deref()
-        {
-            Some(decision @ ("approve" | "reject")) => {
-                let option = if decision == "approve"
-                    && view["action"]["kind"] == "service_authorize"
-                    && view["options"]
-                        .as_array()
-                        .is_some_and(|options| options.len() > 1)
-                {
-                    crate::host_launch::input("Option ID (Enter leaves pending): ")?
-                } else {
-                    None
-                };
-                if option.as_deref() == Some("") {
+        let mut selected_option: Option<String> = None;
+        loop {
+            let Some(answer) = crate::host_launch::input(
+                "approve / reject / explain [OPTION] (e) / Enter to leave unchanged: ",
+            )?
+            else {
+                return Ok(());
+            };
+            let parts: Vec<_> = answer.split_whitespace().collect();
+            let (decision, option) = match parts.as_slice() {
+                [] => {
+                    println!("Request unchanged.");
+                    break;
+                }
+                ["reject"] => ("reject", None),
+                [decision @ ("approve" | "explain" | "e")] => (*decision, selected_option.clone()),
+                [decision @ ("approve" | "explain" | "e"), option] => {
+                    (*decision, Some((*option).into()))
+                }
+                _ => {
+                    println!(
+                        "Choose approve, reject or explain, with an offered option when needed."
+                    );
                     continue;
                 }
-                show_approval(
-                    &resolve_preview(root, &view, decision, Some(agent), option.as_deref()).await?,
-                )?;
+            };
+            if matches!(decision, "explain" | "e") {
+                match explain(root, id, Some(agent), option.as_deref()).await {
+                    Ok(explanation) => {
+                        show_explanation(&explanation)?;
+                        selected_option = explanation["selected_option"]["id"]
+                            .as_str()
+                            .map(str::to_owned);
+                        if explanation["status"] != "pending" {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Explanation unavailable: {}", safe(&error.to_string()))
+                    }
+                }
+                continue;
             }
-            _ => println!("Request unchanged."),
+            let option = if decision == "approve"
+                && option.is_none()
+                && view["action"]["kind"] == "service_authorize"
+                && view["options"]
+                    .as_array()
+                    .is_some_and(|options| options.len() > 1)
+            {
+                crate::host_launch::input("Option ID (Enter leaves pending): ")?
+            } else {
+                option
+            };
+            if option.as_deref() == Some("") {
+                continue;
+            }
+            show_approval(
+                &resolve_preview(root, &view, decision, Some(agent), option.as_deref()).await?,
+            )?;
+            break;
         }
     }
 }
@@ -801,7 +953,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             }
         }
         println!(
-            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | share ID HELPER | approve ID | reject ID | logs | diagnose | attach | back | quit"
+            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | review | share ID HELPER | approve ID | reject ID | logs | diagnose | attach | back | quit"
         );
         print!("inspect> ");
         std::io::stdout().flush()?;
@@ -863,6 +1015,16 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 }
                 "pending" => print_json(&pending(root, Some(name)).await?),
                 "approval" => show_approval(&approval(root, rest, Some(name)).await?),
+                "explain" => {
+                    let parts: Vec<_> = rest.split_whitespace().map(str::to_owned).collect();
+                    let explanation = Options::parse(&parts)?;
+                    let [id] = explanation.positional.as_slice() else {
+                        return Err("explain requires ID [--option ID]".into());
+                    };
+                    show_explanation(
+                        &explain(root, id, Some(name), explanation.option.as_deref()).await?,
+                    )
+                }
                 "review" => review_pending(root, name).await,
                 "approve" | "reject" => {
                     let view = approval(root, rest, Some(name)).await?;
@@ -935,6 +1097,15 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                 }
                 [] | ["list"] => pending(root, options.agent.as_deref()).await?,
                 ["show", id] => approval(root, id, options.agent.as_deref()).await?,
+                ["explain", id] => {
+                    explain(
+                        root,
+                        id,
+                        options.agent.as_deref(),
+                        options.option.as_deref(),
+                    )
+                    .await?
+                }
                 [decision @ ("approve" | "reject"), id] => {
                     resolve_with_option(
                         root,
@@ -962,7 +1133,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         }
         _ => return Err("usage: safeyolo inspect --help".into()),
     };
-    if args[0] == "approvals" && !options.json && value.get("action").is_some() {
+    if !options.json && value.get("why_stopped").is_some() {
+        show_explanation(&value)
+    } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)
     } else {
         print_json(&value)

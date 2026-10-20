@@ -132,6 +132,12 @@ struct SelectedReads {
     helper_id: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Explanation {
+    option: Option<String>,
+}
+
 pub(super) async fn respond<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
@@ -140,6 +146,9 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     state: Option<&crate::RuntimeState>,
     service_audit: Option<ServiceAudit<'_>>,
 ) -> Result<Outcome, Error> {
+    let (path, explain) = path
+        .strip_suffix("/explain")
+        .map_or((path, false), |path| (path, true));
     let (path, share) = path
         .strip_suffix("/readers")
         .map_or((path, false), |path| (path, true));
@@ -158,6 +167,40 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             json!({"error":"approval evidence unavailable; direct policy controls remain available"}),
         ));
     };
+    if explain {
+        if share || request.method() != Method::POST {
+            return Ok(unsupported(request.method()));
+        }
+        let input = match read_json(request).await? {
+            ParsedBody::Value(data) => serde_json::from_value::<Explanation>(data.0.clone()).ok(),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Some(Explanation { option: None }),
+        };
+        let Some(input) = input else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"supply only an offered option; explanation scope comes from the canonical approval"}),
+            ));
+        };
+        let (policy, writer, id, state) = (
+            policy.clone(),
+            writer.clone(),
+            id.to_owned(),
+            state.cloned(),
+        );
+        return tokio::task::spawn_blocking(move || {
+            let record = match pending::lookup(&writer, &id) {
+                Ok(Some(record)) => record,
+                Ok(None) => return Ok(response(StatusCode::NOT_FOUND,
+                    json!({"error":"canonical approval unavailable; original scope is unknown"}))),
+                Err(error) => return Ok(response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error.to_string()}))),
+            };
+            Ok(match pending::explain(&writer, &policy, &record, state.as_ref(), input.option.as_deref()) {
+                Ok(view) => response(StatusCode::OK, view),
+                Err(error) => response(if error.kind == crate::approvals::ErrorKind::Io { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::CONFLICT }, json!({"error":error.to_string()})),
+            })
+        }).await.map_err(|_| Error::Audit(crate::audit::ErrorKind::Io))?;
+    }
     if request.method() == Method::GET && !share {
         let (policy, writer, id, state) = (
             policy.clone(),
