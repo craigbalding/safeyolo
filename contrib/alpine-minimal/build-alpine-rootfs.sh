@@ -79,10 +79,23 @@ echo "=== Installing Alpine packages ==="
 # and pkgconf for native build discovery. Alpine's native mise package is
 # musl-linked; do not use the upstream glibc tarball on Alpine.
 _as_root cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
-_as_root chroot "$TREE" /sbin/apk add --no-cache \
+# The builder's trusted CA path is outside the fresh chroot. Give only this
+# apk invocation a temporary copy, outside ca-certificates' import directory,
+# so the build proxy CA does not enter the guest's system trust bundle.
+APK_ENV=()
+APK_BUILD_CA=""
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
+    APK_BUILD_CA="$(_as_root mktemp "$TREE/tmp/safeyolo-apk-ca.XXXXXX")"
+    _as_root install -m 0644 "$SSL_CERT_FILE" "$APK_BUILD_CA"
+    APK_ENV=(env "SSL_CERT_FILE=${APK_BUILD_CA#"$TREE"}") # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
+fi
+_as_root chroot "$TREE" "${APK_ENV[@]}" /sbin/apk add --no-cache \
     bash socat ca-certificates shadow openssh-server curl git jq sudo util-linux-misc mise \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf
+if [ -n "$APK_BUILD_CA" ]; then
+    _as_root rm -f "$APK_BUILD_CA"
+fi
 
 # --- SafeYolo guest bits. ---
 _as_root env SAFEYOLO_GUEST_SRC_DIR="$SAFEYOLO_GUEST_SRC_DIR" \

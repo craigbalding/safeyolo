@@ -17,7 +17,7 @@ BUILDERS = (
 )
 
 
-def _run_builder(tmp_path, builder, output, arch="arm64", failure=""):
+def _run_builder(tmp_path, builder, output, arch="arm64", failure="", build_ca=True):
     tools = tmp_path / "bin"
     tools.mkdir()
     driver = tools / "driver"
@@ -31,8 +31,14 @@ case "$tool" in
   id) echo 12345 ;;
   sudo) [ "${1-}" = -v ] && exit 0; exec "$@" ;;
   skopeo) exit 0 ;;
-  umoci) mkdir -p "${@: -1}/rootfs/"{etc,usr/local/bin,usr/share} ;;
-  chroot) [ "$TEST_FAILURE" != apk ] || exit 42 ;;
+  umoci) mkdir -p "${@: -1}/rootfs/"{etc,tmp,usr/local/bin,usr/share} ;;
+  chroot)
+    if [ "${2-}" = env ]; then
+      ca_path=${3#SSL_CERT_FILE=}
+      [ "$(cat "$1$ca_path")" = build-test-ca ] || exit 45
+    fi
+    [ "$TEST_FAILURE" != apk ] || exit 42
+    ;;
   chown) [ "$TEST_FAILURE" != ownership ] || exit 43 ;;
   mkfs.ext4)
     [ "$TEST_FAILURE" != pack ] || exit 44
@@ -66,6 +72,12 @@ esac
         f"SAFEYOLO_ROOTFS_OUT_{output}": str(destination),
         "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(tmp_path / "cache-paths.txt"),
     }
+    if build_ca:
+        certificate = tmp_path / "build-ca.pem"
+        certificate.write_text("build-test-ca\n")
+        env["SSL_CERT_FILE"] = str(certificate)
+    else:
+        env.pop("SSL_CERT_FILE", None)
     result = subprocess.run(
         ["bash", "-c", 'umask 077; exec "$@"', "alpine-builder", str(builder)],
         env=env, capture_output=True, text=True,
@@ -85,6 +97,9 @@ def test_alpine_builder_outputs(tmp_path, builder, output, arch):
     assert "|docker://alpine:3.22|" in pull
     assert not any(call.startswith("sudo|skopeo|") for call in calls)
     assert any(call.startswith("sudo|umoci|unpack|") for call in calls)
+    apk = next(call for call in calls if call.startswith("chroot|"))
+    assert "|env|SSL_CERT_FILE=/tmp/safeyolo-apk-ca." in apk
+    assert not list((tmp_path / "work/tree/tmp").glob("safeyolo-apk-ca.*"))
     assert (tmp_path / "cache-paths.txt").read_text() == "/var/cache/apk\n"
     if output == "TREE":
         assert (destination / "usr/local/bin/guest-installed").is_file()
@@ -99,6 +114,16 @@ def test_alpine_builder_outputs(tmp_path, builder, output, arch):
         assert destination.read_text() == "packed\n"
         assert any("|-d|" in call for call in calls if call.startswith("mkfs.ext4|"))
         assert f"chown|12345:12345|{destination}" in calls
+
+
+@pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)
+def test_alpine_builder_uses_image_trust_without_build_ca(tmp_path, builder):
+    result, calls, _ = _run_builder(tmp_path, builder, "TREE", build_ca=False)
+
+    assert result.returncode == 0, result.stderr
+    apk = next(call for call in calls if call.startswith("chroot|"))
+    assert "|/sbin/apk|add|" in apk
+    assert "|env|" not in apk
 
 
 @pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)

@@ -84,12 +84,25 @@ echo "=== Installing Alpine packages ==="
 #   chromium      -- headful browser shown through noVNC
 #   nss-tools     -- certutil, used by the staged browser launcher for CA trust
 _as_root cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
-_as_root chroot "$TREE" /sbin/apk add --no-cache \
+# The builder's trusted CA path is outside the fresh chroot. Give only this
+# apk invocation a temporary copy, outside ca-certificates' import directory,
+# so the build proxy CA does not enter the guest's system trust bundle.
+APK_ENV=()
+APK_BUILD_CA=""
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
+    APK_BUILD_CA="$(_as_root mktemp "$TREE/tmp/safeyolo-apk-ca.XXXXXX")"
+    _as_root install -m 0644 "$SSL_CERT_FILE" "$APK_BUILD_CA"
+    APK_ENV=(env "SSL_CERT_FILE=${APK_BUILD_CA#"$TREE"}") # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
+fi
+_as_root chroot "$TREE" "${APK_ENV[@]}" /sbin/apk add --no-cache \
     bash socat ca-certificates shadow openssh-server curl git jq sudo mise nodejs npm \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
     xvfb x11vnc font-noto procps-ng util-linux-misc \
     nss-tools dbus fluxbox xterm chromium
+if [ -n "$APK_BUILD_CA" ]; then
+    _as_root rm -f "$APK_BUILD_CA"
+fi
 
 NOVNC_STAGE="$SAFEYOLO_ROOTFS_WORK_DIR/novnc-stage"
 bash "$SAFEYOLO_GUEST_SRC_DIR/install-novnc-assets.sh" \
