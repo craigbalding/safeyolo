@@ -355,7 +355,6 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
             &rootfs,
             &guest_inputs,
             &workspace,
-            ip,
             &shares,
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
@@ -406,7 +405,6 @@ fn oci(
     rootfs: &Path,
     guest_inputs: &Path,
     workspace: &Path,
-    ip: &str,
     shares: &[(PathBuf, String, bool)],
 ) -> Result<Value, Error> {
     let name = directory
@@ -428,11 +426,7 @@ fn oci(
             "/usr/local/share/ca-certificates/safeyolo.crt",
             true,
         ),
-        bind(
-            &root.join("data/sockets").join(format!("{ip}_{name}")),
-            "/safeyolo/proxy",
-            true,
-        ),
+        bind(&directory.join("proxy"), "/safeyolo/proxy", true),
     ];
     // Extra sources are served by isolated Gofers after runsc start. Their
     // guest targets are prepared inside the sentry, not through host home
@@ -519,11 +513,23 @@ mod mount_tests {
             &root.join("rootfs"),
             root,
             &root.join("workspace"),
-            "10.200.0.1",
             &shares,
         )
         .unwrap();
         let mounts = spec["mounts"].as_array().unwrap();
+        let proxy = mounts
+            .iter()
+            .find(|mount| mount["destination"] == "/safeyolo/proxy")
+            .unwrap();
+        assert_eq!(proxy["source"], json!(directory.join("proxy")));
+        assert!(
+            proxy["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option == "ro")
+        );
+
         for (source, target, _) in shares {
             assert!(!mounts.iter().any(|mount| mount["source"] == json!(source) || mount["destination"] == target));
         }
@@ -549,7 +555,7 @@ mod mount_tests {
         let root = fixture.path();
         let directory = root.join("agents/alice");
         fs::create_dir_all(&directory).unwrap();
-        let spec = oci(root, &directory, root, root, root, "10.200.0.1", &[]).unwrap();
+        let spec = oci(root, &directory, root, root, root, &[]).unwrap();
         assert!(
             spec["process"]["env"]
                 .as_array()

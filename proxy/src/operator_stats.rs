@@ -24,14 +24,14 @@ fn document_with_memory(
         Err(error) => memory_failure(error.kind()),
     };
     report.insert("memory-monitor".into(), memory);
-    let discovery = match runtime
-        .agent_discovery
-        .get_stats(&runtime.audit, crate::circuit_runtime::now)
+    let agents = match runtime
+        .agent_activity
+        .report(&runtime.config.listeners, crate::circuit_runtime::now())
     {
         Ok(report) => report,
-        Err(error) => discovery_failure(error.kind(), &error.to_string()),
+        Err(error) => failure("RuntimeError", &error.to_string()),
     };
-    report.insert("service-discovery".into(), discovery);
+    report.insert("agents".into(), agents);
     report.insert(
         "policy-engine".into(),
         policy_stats(runtime.policy.as_ref(), &runtime.tasks),
@@ -134,21 +134,6 @@ fn memory_failure(kind: crate::memory_monitor::ErrorKind) -> CircuitValue {
     failure(class, "memory monitor operation failed")
 }
 
-fn discovery_failure(kind: crate::agent_discovery::ErrorKind, message: &str) -> CircuitValue {
-    use crate::agent_discovery::ErrorKind;
-    let class = match kind {
-        ErrorKind::Attribute => "AttributeError",
-        ErrorKind::Type => "TypeError",
-        ErrorKind::UnicodeDecode => "UnicodeDecodeError",
-        ErrorKind::Value => "ValueError",
-        ErrorKind::Permission => "PermissionError",
-        ErrorKind::Io => "OSError",
-        ErrorKind::Audit(crate::audit::ErrorKind::Io) => "OSError",
-        ErrorKind::Audit(_) | ErrorKind::Compatibility | ErrorKind::Poisoned => "RuntimeError",
-    };
-    failure(class, message)
-}
-
 fn policy_stats(policy: Option<&Policy>, tasks: &Registry) -> CircuitValue {
     // PolicyClientConfigurator catches its client's complete get_stats call.
     // Preserve PDPCore's hash -> registry count -> engine report ordering.
@@ -244,7 +229,7 @@ mod tests {
             [
                 "proxy",
                 "memory-monitor",
-                "service-discovery",
+                "agents",
                 "policy-engine",
                 "network-guard",
                 "credential-guard",

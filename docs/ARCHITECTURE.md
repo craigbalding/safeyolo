@@ -2,9 +2,9 @@
 
 This document describes the software architecture of SafeYolo, an egress control proxy for AI coding agents.
 
-The current agent identity/lifecycle sources of truth and the staged plan for
-durable `agent_id` plus runtime `run_id` are documented in the
-[agent identity and run-lifecycle implementation plan](agent-lifecycle-identity-plan.md).
+The [networking reference](networking-vsock-uds.md) describes current listener
+identity. The [earlier lifecycle plan](agent-lifecycle-identity-plan.md) records
+the former Python design at its named source revision.
 
 ## Overview
 
@@ -31,7 +31,7 @@ per-agent Unix domain socket (UDS) to the Rust proxy:
 Agent sandbox -> guest forwarder -> per-agent UDS -> Rust proxy -> upstream
 ```
 
-The host-controlled listener and agent map establish request identity. A
+The host-owned Unix domain socket listener establishes request identity. A
 request header cannot select another agent. The proxy applies the configured
 network, credential, and inspection controls at their respective request
 stages; streamed bodies and TLS passthrough have narrower inspection and

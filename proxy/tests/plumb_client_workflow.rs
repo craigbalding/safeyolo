@@ -44,7 +44,6 @@ fn config(root: &Path) -> Config {
                 source_id: None,
             })
             .collect(),
-        agent_map_file: String::new(),
         data_dir: Some(root.join("data")),
         policy_file: Some(root.join("policy.json")),
         gateway_builtin_services_dir: None,

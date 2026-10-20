@@ -159,7 +159,7 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
         [
             "proxy",
             "memory-monitor",
-            "service-discovery",
+            "agents",
             "policy-engine",
             "network-guard",
             "credential-guard",

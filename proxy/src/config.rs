@@ -104,9 +104,6 @@ pub struct Config {
     #[serde(default)]
     pub native_product: bool,
     pub listeners: Vec<AgentListener>,
-    /// Operator-supplied discovery metadata; listener configuration owns identity.
-    #[serde(default)]
-    pub agent_map_file: String,
     /// Per-process state directory for credential HMAC and local Agent API
     /// material. The key itself is never part of Config serialization.
     pub data_dir: Option<PathBuf>,

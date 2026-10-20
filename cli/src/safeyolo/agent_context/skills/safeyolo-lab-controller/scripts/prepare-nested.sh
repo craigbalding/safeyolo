@@ -44,7 +44,6 @@ cat > "$instance/config.toml" <<'EOF'
 admin_port = 19090
 parent_proxy = "http://127.0.0.1:8080"
 tls_ca_file = "certs/mitmproxy-ca.pem"
-agent_map_file = "data/agent_map.json"
 listeners = [{ agent_id = "lab-client", socket_path = "data/lab-client.sock", source_id = "10.80.0.10" }]
 EOF
 cp -- "$instance/policy.toml" "$instance/policy-original.toml"

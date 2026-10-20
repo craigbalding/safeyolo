@@ -29,7 +29,7 @@ fn runtime(directory: &Path) -> Runtime {
         "policy_file":policy,"data_dir":directory.join("data"),
         "audit_log_path":directory.join("audit.jsonl"),"readiness_file":directory.join("ready"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
-        "circuit_state_file":"","agent_map_file":"",
+        "circuit_state_file":"",
         "inspection":{"policy_file":scanner,"block_websocket_request":true,"block_websocket_response":true},
     }))
     .unwrap();
@@ -66,7 +66,6 @@ fn session(runtime: &Arc<Runtime>) -> Session {
             agent_id: "alice".into(),
             connection_id: ID.into(),
             source_id: None,
-            reconciled: None,
         },
         request_id: "req-owned".into(),
         host: "owned.invalid".into(),

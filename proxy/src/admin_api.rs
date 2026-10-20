@@ -1244,7 +1244,7 @@ pub(crate) struct OperatorContext<'a> {
     pub instance_id: Option<&'a str>,
     pub command_centre: Option<&'a crate::command_centre::Host>,
     pub operator_modes: Option<&'a crate::OperatorModes>,
-    pub agent_discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
+    pub agent_activity: Option<&'a std::sync::Arc<crate::agent_activity::AgentActivity>>,
     pub listeners: &'a [crate::AgentListener],
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub client_ip: Option<&'a str>,
@@ -1283,7 +1283,7 @@ where
             instance_id: None,
             command_centre: None,
             operator_modes: None,
-            agent_discovery: None,
+            agent_activity: None,
             listeners: &[],
             audit: None,
             client_ip: None,
@@ -1311,7 +1311,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         instance_id,
         command_centre,
         operator_modes,
-        agent_discovery,
+        agent_activity,
         listeners,
         audit,
         client_ip,
@@ -1677,20 +1677,20 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         }
         // Standalone native development launches retain their listener view.
         // An installed launch supplies the host inventory used by the Mac app.
-        let (Some(discovery), Some(writer)) = (agent_discovery, audit) else {
+        let Some(activity) = agent_activity else {
             return Ok(response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"error":"agent inventory unavailable"}),
             ));
         };
-        let agents = discovery
-            .get_agents(writer, crate::circuit_runtime::now)
+        let agents = activity
+            .report(listeners, crate::circuit_runtime::now())
             .map_err(|_| Error::RegistryUnavailable)?
             .render_json(false)
             .map_err(|_| Error::RegistryUnavailable)?;
         let agents: Value =
             serde_json::from_str(&agents).map_err(|_| Error::RegistryUnavailable)?;
-        let discovered = agents
+        let reported = agents
             .get("agents")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new()));
@@ -1705,7 +1705,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         Value::String(listener.socket_path.to_string_lossy().into_owned()),
                     );
                     entry.insert("status".into(), Value::String("configured".into()));
-                    if let Value::Object(discovered) = &discovered
+                    if let Value::Object(discovered) = &reported
                         && let Some(Value::Object(info)) = discovered.get(&listener.agent_id)
                     {
                         if let Some(ip) = info.get("ip") {

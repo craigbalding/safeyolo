@@ -56,8 +56,9 @@ safeyolo status
 The Admin API defaults to IPv4 loopback port 9090 and requires the selected
 `admin_api_token_file`. Port zero requests an ephemeral Admin port, reported
 in readiness. Agent listeners are Unix sockets with host-owned identity;
-request headers cannot change that identity. Agent lifecycle stages their
-listeners and the agent discovery map from the same policy/runtime state.
+request headers cannot change that identity. Agent lifecycle stages listeners
+from host-owned policy and runtime state. The proxy does not use an agent map.
+New managed sockets use `agents/<name>/proxy/proxy.sock`.
 
 To use an explicit parent or additional CA trust, set the keys:
 

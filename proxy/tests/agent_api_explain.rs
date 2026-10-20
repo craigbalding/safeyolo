@@ -74,7 +74,7 @@ async fn call(
             gateway: None,
             memory: None,
             traces: None,
-            discovery: None,
+            agents: None,
             audit: writer,
             flows: None,
             circuits: None,

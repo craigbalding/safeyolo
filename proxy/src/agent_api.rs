@@ -23,10 +23,10 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod agents;
 mod approvals;
 pub(crate) mod coord;
 mod declarations;
-mod discovery;
 mod explain;
 mod flows;
 mod gateway;
@@ -38,8 +38,8 @@ pub use memory::MemoryContext;
 
 pub(crate) use declarations::respond_with_body_and_audit_id_with_plumb;
 pub use declarations::{
-    BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
-    respond_with_body_and_audit_id,
+    AgentReportContext, BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext,
+    respond_with_body, respond_with_body_and_audit_id,
 };
 pub use explain::ExplainFailure;
 pub use flows::FlowFailure;
@@ -140,7 +140,7 @@ pub enum Failure {
     ContentDecoding(crate::http_content::ContentError),
     FlowReporting(FlowFailure),
     ExplainReporting(ExplainFailure),
-    DiscoveryReporting(crate::agent_discovery::ErrorKind),
+    AgentReporting,
     MemoryReporting(crate::memory_monitor::ErrorKind),
     TraceReporting(crate::trace::ErrorKind),
     GatewayReporting(crate::services::ServiceViewError),

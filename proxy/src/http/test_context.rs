@@ -792,7 +792,6 @@ mod tests {
                     agent_id: "alice".into(),
                     connection_id: "connection".into(),
                     source_id: None,
-                    reconciled: None,
                 },
                 "request".into(),
                 method.into(),

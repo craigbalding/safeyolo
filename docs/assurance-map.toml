@@ -107,17 +107,15 @@ handoff = "The provider stream uses async process spawn and bidirectional pipes.
 [[decisions]]
 id = "identity"
 inputs = "Operator listener configuration supplies agent_id, socket_path and source_id. Accepted HTTP bytes and declaration fields are untrusted."
-authority = "The host CLI creates and mounts the per-agent UDS path. The Rust listener fixes identity at accept; source_id and request context reconcile it."
-checks = "A conflicting identity is rejected by reconciliation, network guard and credential guard. The proxy does not use SO_PEERCRED; socket provisioning is the ingress boundary."
+authority = "The host CLI creates and mounts the per-agent UDS path. The Rust listener fixes agent identity and source_id at accept."
+checks = "Network guard, credential guard and scoped API routes consume the accepted listener owner. Request claims and retired map files cannot select it. The proxy does not use SO_PEERCRED; socket provisioning is the ingress boundary."
 effects = "UDS accept, attributed request routing and per-agent evidence ownership."
-failure = "Missing or conflicting identity is rejected locally; readiness is withheld on invalid startup configuration."
-tests = ["proxy/tests/transport.rs", "tests/proxy_contracts/test_agent_api_test_context.py", "tests/proxy_contracts/test_http_contract.py", "cli/tests/test_rust_proxy.py", "tests/blackbox/installed_ingress.py", "tests/blackbox/installed_lifecycle.py"]
+failure = "Agent-scoped routes reject missing identity. Global network policy still applies to ownerless traffic, which cannot create an agent-owned flow row. Readiness is withheld on invalid startup configuration."
+tests = ["proxy/tests/transport.rs", "proxy/src/http/agent_audit_tests.rs", "proxy/tests/agent_api_agents.rs", "proxy/tests/native_host_cli.rs", "tests/blackbox/installed_ingress.py", "tests/blackbox/installed_lifecycle.py"]
 symbols = [
-  "cli/src/safeyolo/sockets.py::directory_for",
-  "cli/src/safeyolo/rust_proxy.py::_agent_listeners",
-  "cli/src/safeyolo/rust_proxy.py::_sync_running_listeners",
+  "proxy/src/host_commands.rs::restore_attachments",
+  "proxy/src/host_lifecycle.rs::sync_agent_listeners",
   "proxy/src/lib.rs::accept_agents",
-  "proxy/src/agent_discovery.rs::reconcile",
   "proxy/src/http.rs::serve_request",
 ]
 
@@ -288,7 +286,6 @@ symbols = [
   "proxy/src/credential_hmac.rs::close",
   "proxy/src/audit/writer.rs::close",
   "proxy/src/circuits.rs::close_snapshot",
-  "proxy/src/agent_discovery.rs::read_map",
   "proxy/src/websocket.rs::StoredBytes::with_bytes",
   "proxy/src/websocket.rs::MessageContent::with_bytes",
   "proxy/src/websocket.rs::with_text",

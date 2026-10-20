@@ -110,7 +110,6 @@ fn config(
                 source_id: None,
             },
         ],
-        agent_map_file: String::new(),
         data_dir: Some(directory.path().join("data")),
         policy_file: Some(policy.to_owned()),
         gateway_builtin_services_dir: None,
@@ -1028,9 +1027,16 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
     let seen = Arc::new(Mutex::new(Vec::new()));
     let ready = Arc::new(Notify::new());
     let origin_task = tokio::spawn(origin(listener, seen.clone(), ready));
-    let proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
-        .await
-        .unwrap();
+    std::fs::write(
+        data_dir.join("agent_map.json"),
+        br#"{"bob":{"ip":"192.0.2.10"}}"#,
+    )
+    .unwrap();
+    let mut configuration = config(&directory, &policy_path, &socket, true);
+    for listener in &mut configuration.listeners {
+        listener.source_id = Some("192.0.2.10".into());
+    }
+    let proxy = Proxy::start(configuration).await.unwrap();
 
     let alice_stream = UnixStream::connect(&socket).await.unwrap();
     let (mut alice_sender, alice_connection) =

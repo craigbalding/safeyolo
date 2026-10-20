@@ -80,7 +80,7 @@ impl Fixture {
                 gateway: None,
                 memory: None,
                 traces: None,
-                discovery: None,
+                agents: None,
                 audit: None,
                 flows: available.then_some(&self.store),
                 circuits: None,

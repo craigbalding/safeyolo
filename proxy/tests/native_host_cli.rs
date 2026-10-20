@@ -1057,7 +1057,13 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         "staging fixture",
     )
     .unwrap();
-    let rootfs = root.join("share/rootfs-tree");
+    // This small input needs real subordinate ownership. The shared instance
+    // filesystem can remap chown, so keep only the empty rootfs fixture here.
+    // Binaries, logs and runtime output stay under the caller's disk TMPDIR.
+    let rootfs_input = tempfile::tempdir_in("/var/tmp").unwrap();
+    let rootfs = rootfs_input.path().join("rootfs-tree");
+    fs::create_dir_all(root.join("share")).unwrap();
+    std::os::unix::fs::symlink(&rootfs, root.join("share/rootfs-tree")).unwrap();
     for path in [
         "etc",
         "workspace",
@@ -1087,7 +1093,26 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         "preboot fixture requires guest sudo for subordinate root ownership"
     );
 
+    assert_eq!(fs::metadata(&rootfs).unwrap().uid(), uid_base);
+    assert_eq!(fs::metadata(&rootfs).unwrap().gid(), gid_base);
+
     let _peer = OwnedRun::start(&root);
+    // The retired map supplied these fields in the earlier fixture. Use the
+    // same host-owned run/boot fields as production, bound to this observed run.
+    let peer_path = root.join("agents/alice/runtime.json");
+    let mut peer: Value = serde_json::from_slice(&fs::read(&peer_path).unwrap()).unwrap();
+    peer["agent_id"] = policy["agents"]["alice"]["agent_id"]
+        .as_str()
+        .unwrap()
+        .into();
+    peer["ip"] = "10.200.0.1".into();
+    peer["state"] = "running".into();
+    fs::write(&peer_path, serde_json::to_vec(&peer).unwrap()).unwrap();
+    let context = root.join("agents/alice/config-share/host-launch-context.json");
+    let mut boot: Value = serde_json::from_slice(&fs::read(&context).unwrap()).unwrap();
+    boot["agent_id"] = peer["agent_id"].clone();
+    boot["ip"] = peer["ip"].clone();
+    fs::write(context, serde_json::to_vec(&boot).unwrap()).unwrap();
     let peer_runtime = fs::read(root.join("agents/alice/runtime.json")).unwrap();
     let peer_launch = root.join("agents/alice/current-launch.json");
     fs::write(
@@ -1096,7 +1121,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     )
     .unwrap();
     let map = root.join("data/agent_map.json");
-    fs::write(&map, b"{\"alice\":{\"ip\":\"10.200.0.1\"}}\n").unwrap();
+    fs::write(&map, b"retired-map-must-not-be-read").unwrap();
     let config_path = root.join("config.toml");
     let _stop = StopOnDrop(&config_path);
     value(
@@ -1110,16 +1135,22 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             .unwrap(),
     );
     let proxy_process = fs::read(root.join("data/proxy-process.json")).unwrap();
-    let peer_socket = root.join("data/sockets/10.200.0.1_alice/proxy.sock");
-    let peer_inode = fs::metadata(&peer_socket).unwrap();
+    let peer_socket = root.join("agents/alice/proxy/proxy.sock");
+    let peer_inode = fs::metadata(&peer_socket).unwrap_or_else(|error| {
+        panic!(
+            "peer listener missing: {error}; config={}; status={}",
+            fs::read_to_string(&config_path).unwrap(),
+            String::from_utf8_lossy(&cli(&root, &["agent", "status", "alice"]).stdout),
+        )
+    });
     let peer_launch_bytes = fs::read(&peer_launch).unwrap();
-    let marker_socket = root.join("data/sockets/10.200.0.2_marker/proxy.sock");
+    let marker_socket = root.join("agents/marker/proxy/proxy.sock");
     let marker_directory = marker_socket.parent().unwrap();
     fs::write(marker_directory, b"occupied directory").unwrap();
     let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
     assert!(!failed.status.success());
     assert!(
-        String::from_utf8_lossy(&failed.stderr).contains("File exists"),
+        String::from_utf8_lossy(&failed.stderr).contains("listener update was not acknowledged"),
         "{}",
         String::from_utf8_lossy(&failed.stderr)
     );
@@ -1129,9 +1160,9 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         "stopped"
     );
     let saved_map = fs::read(&map).unwrap();
-    let map_lock = root.join("data/agent_map.lock");
-    fs::remove_file(&map_lock).unwrap();
-    fs::create_dir(&map_lock).unwrap();
+    let listener_lock = root.join("data/native-listeners.lock");
+    fs::remove_file(&listener_lock).unwrap();
+    fs::create_dir(&listener_lock).unwrap();
     let failed = cli(&root, &["agent", "start", "marker", "--sandbox-only"]);
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("preboot rollback failed"));
@@ -1141,7 +1172,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
         "stopped"
     );
-    fs::remove_dir(&map_lock).unwrap();
+    fs::remove_dir(&listener_lock).unwrap();
     fs::remove_file(marker_directory).unwrap();
     fs::create_dir(marker_directory).unwrap();
     let foreign_listener = UnixListener::bind(&marker_socket).unwrap();
@@ -1168,9 +1199,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             .unwrap()
             .contains("configuration reload failed: listener already active")
     );
-    let retained_map: Value = serde_json::from_slice(&fs::read(&map).unwrap()).unwrap();
-    assert_eq!(retained_map.as_object().unwrap().len(), 1);
-    assert_eq!(retained_map["alice"]["ip"], "10.200.0.1");
+    assert_eq!(fs::read(&map).unwrap(), saved_map);
     assert_eq!(
         fs::read(root.join("agents/alice/runtime.json")).unwrap(),
         peer_runtime
@@ -1222,27 +1251,21 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         fs::read(root.join("agents/alice/runtime.json")).unwrap(),
         peer_runtime
     );
-    // The backend prerequisite fails after the real map/listener preparation.
-    // Faults in the isolated instance challenge rollback and its CLI/Admin
-    // diagnostics without running a workload or deleting uncertain run state.
-    for fault in ["none", "map", "listener", "both"] {
+    // The backend prerequisite fails after real listener preparation. Faults
+    // challenge rollback and CLI/Admin diagnostics without deleting uncertain
+    // run state. The retired map stays untouched.
+    for fault in ["none", "listener", "admin-listener"] {
         fs::remove_file(root.join("agents/marker/runtime.json")).unwrap();
         let mut script = String::from("#!/bin/sh\n");
-        for (kind, lock) in [
-            ("map", "agent_map.lock"),
-            ("listener", "native-listeners.lock"),
-        ] {
-            if fault == kind || fault == "both" {
-                script.push_str(&format!(
-                    "/bin/rm '{0}/data/{lock}'\n/bin/mkdir '{0}/data/{lock}'\n",
-                    root.display()
-                ));
-            }
+        if fault != "none" {
+            script.push_str(&format!(
+                "/bin/rm '{0}/data/native-listeners.lock'\n/bin/mkdir '{0}/data/native-listeners.lock'\n", root.display()
+            ));
         }
         script.push_str("exit 17\n");
         fs::write(&acl, script).unwrap();
         let mut args = vec!["--root", root.to_str().unwrap(), "agent", "start", "marker"];
-        if fault != "both" {
+        if fault != "admin-listener" {
             args.push("--sandbox-only");
         }
         let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
@@ -1260,28 +1283,24 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             "{fault}: {error}"
         );
         assert_eq!(
-            error.contains("agent-map rollback failed"),
-            matches!(fault, "map" | "both"),
-            "{fault}: {error}"
-        );
-        assert_eq!(
             error.contains("listener rollback failed"),
-            matches!(fault, "listener" | "both"),
+            fault != "none",
             "{fault}: {error}"
         );
-        if fault == "both" {
+        if fault == "admin-listener" {
             assert!(
                 error.contains("API 500 Internal Server Error: Agent operation failed:"),
                 "{error}"
             );
         }
         assert!(root.join("agents/marker/runtime.json").is_file());
-        let retained: Value = serde_json::from_slice(&fs::read(&map).unwrap()).unwrap();
         assert_eq!(
-            retained.get("marker").is_some(),
-            matches!(fault, "map" | "both")
+            std::os::unix::net::UnixStream::connect(&marker_socket).is_ok(),
+            fault != "none",
+            "{fault}"
         );
-        assert_eq!(retained["alice"]["ip"], "10.200.0.1");
+
+        assert_eq!(fs::read(&map).unwrap(), saved_map);
         assert_eq!(
             fs::read(root.join("agents/alice/runtime.json")).unwrap(),
             peer_runtime
@@ -1289,11 +1308,9 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         assert_eq!(fs::read(&peer_launch).unwrap(), peer_launch_bytes);
         assert_eq!(fs::metadata(&peer_socket).unwrap().ino(), peer_inode.ino());
         assert!(std::os::unix::net::UnixStream::connect(&peer_socket).is_ok());
-        for lock in ["agent_map.lock", "native-listeners.lock"] {
-            let path = root.join("data").join(lock);
-            if path.is_dir() {
-                fs::remove_dir(path).unwrap();
-            }
+        let lock = root.join("data/native-listeners.lock");
+        if lock.is_dir() {
+            fs::remove_dir(lock).unwrap();
         }
     }
 }

@@ -34,7 +34,7 @@ from pathlib import Path
 if __package__:
     from .guest_exec import guest_command_args
     from .installed_host_smoke import (
-        _agent_map,
+        _agent_listeners,
         _cli_identity,
         _native_config,
         _require_disposable,
@@ -48,7 +48,7 @@ if __package__:
 else:
     from guest_exec import guest_command_args
     from installed_host_smoke import (
-        _agent_map,
+        _agent_listeners,
         _cli_identity,
         _native_config,
         _require_disposable,
@@ -266,7 +266,7 @@ def run(args: argparse.Namespace) -> None:
     _require_disposable(root)
     names = (args.worker, args.helper)
     assert len(set(names)) == 2, "Worker and Helper must be distinct guests"
-    listeners = {entry["agent_id"]: entry for entry in _agent_map(root)}
+    listeners = {entry["agent_id"]: entry for entry in _agent_listeners(root)}
     assert set(listeners) == set(names), "use a fixture containing only the two owned guests"
     # The maintained lifecycle helper reads these bindings when it stops a
     # guest. Bind the exact TOML too: native transport prefers it over the root.

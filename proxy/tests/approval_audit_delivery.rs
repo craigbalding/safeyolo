@@ -62,7 +62,6 @@ fn config(root: &Path) -> Config {
             socket_path: root.join("alice.sock"),
             source_id: None,
         }],
-        agent_map_file: String::new(),
         data_dir: Some(root.join("data")),
         policy_file: Some(root.join("policy.toml")),
         gateway_builtin_services_dir: Some(root.join("builtin")),

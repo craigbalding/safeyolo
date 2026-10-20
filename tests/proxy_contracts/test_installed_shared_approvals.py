@@ -29,7 +29,7 @@ from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, native_ins
 def helper_instance(tmp_path_factory, monkeypatch):
     directory = tmp_path_factory.mktemp("u6")
     (directory / "operator-token").write_text("synthetic-helper-admin-token")
-    with native_instance(directory, agent_api=True, agent_map={"worker": "10.0.0.2", "helper": "10.0.0.3"},
+    with native_instance(directory, agent_api=True, agent_addresses={"worker": "10.0.0.2", "helper": "10.0.0.3"},
                          extra_config='readiness_file="data/selected-ready.json"\nadmin_api_token_file="../operator-token"\n') as instance:
         root = instance.root
         (root / ".safeyolo-platform-smoke").touch()
@@ -80,9 +80,9 @@ def test_helper_consumer_refuses_unowned_runtime_before_guest_effects(helper_ins
     elif control == "invalid_auth":
         (root.parent / "operator-token").write_text("synthetic-wrong-token")
     elif control == "foreign_socket":
-        mapping = json.loads((root / "data/agent_map.json").read_text())
-        mapping["worker"]["ip"] = "10.0.0.9"
-        (root / "data/agent_map.json").write_text(json.dumps(mapping))
+        settings = tomlkit.parse((root / "config.toml").read_text())
+        settings["listeners"][0]["socket_path"] = "data/foreign.sock"
+        (root / "config.toml").write_text(tomlkit.dumps(settings))
     original = instance.policy.read_bytes()
 
     def no_guest(*arguments, **kwargs):
