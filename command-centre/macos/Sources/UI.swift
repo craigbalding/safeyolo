@@ -486,6 +486,9 @@ struct ApprovalView: View {
                 if let id = currentEvent.requestID { row("Request", id) }
                 if let method = currentEvent.details?.method { row("Method", method) }
                 if let path = currentEvent.details?.path { row("Path", path) }
+                if let presentation = currentEvent.details?.presentation { row("Presentation", presentation) }
+                if let ttl = currentEvent.details?.ttlSeconds { row("Preview lifetime", "\(ttl) seconds") }
+                if let url = currentEvent.details?.browserURL { row("Guest browser URL (agent-selected data)", url) }
             }
 
             if let options = currentEvent.options, options.count > 1 {
@@ -553,7 +556,12 @@ struct ApprovalView: View {
                 }
                 close()
             case .success(.decided):
-                close()
+                if let outcome = approvalOutcome, let status = outcome.result?.status, status != "started", status != "denied" {
+                    busy = false
+                    error = outcome.display
+                } else {
+                    close()
+                }
             case .failure(let failure):
                 busy = false
                 error = failure.localizedDescription

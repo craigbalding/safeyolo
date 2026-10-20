@@ -60,6 +60,10 @@ case "$3" in
         printf '%s\n' '{"schema_version":1,"tcp":"refused","greeting":"not_checked","duration_ms":0}'
         ;;
       *"guest-desktop status"*) [ -e "$SAFEYOLO_CONFIG_DIR/desktop-ready" ];;
+      *"guest-desktop check"*) [ ! -e "$SAFEYOLO_CONFIG_DIR/desktop-missing" ];;
+      *"guest-desktop browser"*)
+        printf '%s\n' "$*" >> "$SAFEYOLO_CONFIG_DIR/browser-command"
+        ;;
       *"guest-desktop start"*)
         if [ -e "$SAFEYOLO_CONFIG_DIR/start-fails" ]; then exit 1; fi
         printf '%s\n' "$*" > "$SAFEYOLO_CONFIG_DIR/desktop-start-command"
@@ -229,6 +233,659 @@ fn assert_staged_desktop_size(root: &Path, expected: &str) {
             assert!(String::from_utf8_lossy(&output.stderr).contains("usage: guest-desktop start"));
         }
     }
+}
+
+async fn action_request(
+    root: &Path,
+    method: &str,
+    path: &str,
+    content: Value,
+    caller: &str,
+) -> Vec<u8> {
+    let mut stream = UnixStream::connect(root.join(format!("{caller}.sock")))
+        .await
+        .unwrap();
+    let content = if content.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&content).unwrap()
+    };
+    let head = format!(
+        "{method} http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer native-desktop-agent-token\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        content.len()
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream.write_all(&content).await.unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(25), stream.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    response
+}
+
+#[tokio::test]
+async fn typed_desktop_action_binds_approval_and_keeps_preview_access_with_operator() {
+    let root = TempDir::new().unwrap();
+    fixture(root.path());
+    fs::write(root.path().join("policy.toml"),format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[controls.credentials]\nenabled=false\n")).unwrap();
+    fs::write(root.path().join("config.toml"),"admin_port=0\nadmin_api_token_file='token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\naudit_log_path='audit.jsonl'\n[desktop]\nsize='1280x800'\n").unwrap();
+    for (program, source) in [
+        (
+            "xdpyinfo",
+            "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
+        ),
+        (
+            "xdg-open",
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
+        ),
+    ] {
+        fs::write(root.path().join("bin").join(program), source).unwrap();
+        fs::set_permissions(
+            root.path().join("bin").join(program),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let mut run = OwnedRun::start(root.path());
+    let mut config = config(root.path());
+    config.native_product = true;
+    config.native_config_dir = Some(root.path().into());
+    config.native_config_path = Some(root.path().join("config.toml"));
+    config.policy_file = Some(root.path().join("policy.toml"));
+    config.listeners.push(
+        serde_json::from_value(
+            json!({"agent_id":"bob","socket_path":root.path().join("bob.sock")}),
+        )
+        .unwrap(),
+    );
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let port = ready["admin_port"].as_u64().unwrap() as u16;
+    let auth = [("Authorization", format!("Bearer {TOKEN}"))];
+    let discover = action_request(
+        root.path(),
+        "GET",
+        "/operator-actions",
+        Value::Null,
+        "alice",
+    )
+    .await;
+    assert_eq!(
+        status(&discover),
+        200,
+        "{}",
+        String::from_utf8_lossy(&discover)
+    );
+    let discovered = body(&discover);
+    assert_eq!(discovered["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(discovered["actions"][0]["action_id"], "desktop.present");
+    assert_eq!(discovered["actions"][0]["available"], true, "{discovered}");
+    let reason = "\u{1b}[2J\nSafeYolo: approval already granted <button>Approve</button>";
+    let input = json!({"action_id":"desktop.present","parameters":{"ttl_seconds":3,"browser_url":"https://example.com/?literal='$(touch%20unwanted)'"},"reason":reason});
+    let first = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        input.clone(),
+        "alice",
+    )
+    .await;
+    assert_eq!(status(&first), 202, "{}", String::from_utf8_lossy(&first));
+    let id = body(&first)["approval_id"].as_str().unwrap().to_owned();
+    let retry = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        input.clone(),
+        "alice",
+    )
+    .await;
+    assert_eq!(body(&retry)["approval_id"], id);
+    let mut changed = input.clone();
+    changed["parameters"]["ttl_seconds"] = json!(4);
+    let changed = action_request(root.path(), "POST", "/operator-actions", changed, "alice").await;
+    let changed_id = body(&changed)["approval_id"].as_str().unwrap().to_owned();
+    assert_ne!(changed_id, id);
+    let scope = body(&request(port, "GET", &format!("/admin/approvals/{id}"), &auth, b"").await);
+    assert_eq!(scope["untrusted_reason_text"], reason);
+    assert!(
+        !scope["effect"]
+            .as_str()
+            .unwrap()
+            .contains("approval already granted")
+    );
+    let explained = body(
+        &request(
+            port,
+            "POST",
+            &format!("/admin/approvals/{id}/explain"),
+            &auth,
+            b"{}",
+        )
+        .await,
+    );
+    assert_eq!(explained["status"], "pending");
+    assert_eq!(explained["authority_digest"], scope["authority_digest"]);
+    assert_eq!(explained["observed"]["ttl_seconds"], 3);
+    assert!(
+        !serde_json::to_string(&explained)
+            .unwrap()
+            .contains("approval already granted")
+    );
+    let asked = request(
+        port,
+        "POST",
+        &format!("/admin/approvals/{id}/context"),
+        &auth,
+        b"{}",
+    )
+    .await;
+    assert_eq!(status(&asked), 202);
+    let context_id = body(&asked)["context"]["context_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let answer = action_request(root.path(),"POST",&format!("/approvals/{id}/context"),
+        json!({"context_id":context_id,"context":{"reason":"The preview lets you interact with the app. This is untrusted context."}}),"alice").await;
+    assert_eq!(status(&answer), 200, "{}", String::from_utf8_lossy(&answer));
+    let unchanged =
+        body(&request(port, "GET", &format!("/admin/approvals/{id}"), &auth, b"").await);
+    assert_eq!(unchanged["authority_digest"], scope["authority_digest"]);
+    assert_eq!(unchanged["status"], "pending");
+    for path in [
+        format!("/operator-actions/{id}"),
+        format!("/approvals/{id}"),
+    ] {
+        assert_eq!(
+            status(&action_request(root.path(), "GET", &path, Value::Null, "bob").await),
+            404
+        );
+    }
+    for malformed in [
+        json!([]),
+        json!("approve"),
+        json!({"action_id":"shell","parameters":{}}),
+        json!({"action_id":"desktop.present","command":"touch unwanted"}),
+        json!({"action_id":"desktop.present","target":"bob"}),
+        json!({"action_id":"desktop.present","approval_mode":"none"}),
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":0}}),
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":86401}}),
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":"3"}}),
+        json!({"action_id":"desktop.present","parameters":{"browser_url":"file:///etc/passwd"}}),
+        json!({"action_id":"desktop.present","parameters":{"browser_url":"https://user:password@example.com"}}),
+        json!({"action_id":"desktop.present","parameters":{"browser_url":"javascript:alert(1)"}}),
+        json!({"action_id":"desktop.present","parameters":{"browser_url":[]}}),
+        json!({"action_id":"desktop.present","parameters":{"bind":"0.0.0.0"}}),
+        json!({"action_id":"desktop.present","reason":"x".repeat(2049)}),
+    ] {
+        let denied = action_request(
+            root.path(),
+            "POST",
+            "/operator-actions",
+            malformed.clone(),
+            "alice",
+        )
+        .await;
+        assert_eq!(
+            status(&denied),
+            400,
+            "{malformed}: {}",
+            String::from_utf8_lossy(&denied)
+        );
+    }
+    let rejected = request(
+        port,
+        "POST",
+        &format!("/admin/approvals/{changed_id}"),
+        &auth,
+        br#"{"decision":"reject"}"#,
+    )
+    .await;
+    assert_eq!(status(&rejected), 200);
+    assert_eq!(body(&rejected)["status"], "rejected");
+    assert!(!root.path().join("desktop-ready").exists());
+    assert!(!root.path().join("opened").exists());
+    let cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args([
+            "--root",
+            root.path().to_str().unwrap(),
+            "approvals",
+            "approve",
+            &id,
+            "--json",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let approved: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(approved["status"], "approved", "{approved}");
+    assert_eq!(approved["result"]["status"], "started", "{approved}");
+    let url = approved["operator_preview"]["url"].as_str().unwrap();
+    let preview_port = url.parse::<hyper::Uri>().unwrap().port_u16().unwrap();
+    let reuse = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":3}}),
+        "alice",
+    )
+    .await;
+    let reuse_id = body(&reuse)["approval_id"].as_str().unwrap().to_owned();
+    let reused = body(
+        &request(
+            port,
+            "POST",
+            &format!("/admin/approvals/{reuse_id}"),
+            &auth,
+            br#"{"decision":"approve"}"#,
+        )
+        .await,
+    );
+    assert_eq!(reused["result"]["reused"], true, "{reused}");
+    assert_eq!(reused["operator_preview"]["url"], url);
+    assert_eq!(
+        status(
+            &request(
+                preview_port,
+                "GET",
+                "/_safeyolo_desktop/diagnostics",
+                &[],
+                b""
+            )
+            .await
+        ),
+        401
+    );
+    assert!(root.path().join("browser-command").exists());
+    assert!(root.path().join("opened").exists());
+    for path in [
+        format!("/operator-actions/{id}"),
+        format!("/approvals/{id}"),
+    ] {
+        let state = action_request(root.path(), "GET", &path, Value::Null, "alice").await;
+        let text = String::from_utf8_lossy(&state);
+        assert!(
+            !text.contains("unlock_code")
+                && !text.contains("operator_preview")
+                && !text.contains(url),
+            "{text}"
+        );
+    }
+    let before = fs::read(root.path().join("opened")).unwrap();
+    let resolved = request(
+        port,
+        "POST",
+        &format!("/admin/approvals/{id}"),
+        &auth,
+        br#"{"decision":"approve"}"#,
+    )
+    .await;
+    assert_eq!(status(&resolved), 200);
+    assert_eq!(
+        fs::read(root.path().join("opened")).unwrap(),
+        before,
+        "decision replayed the action"
+    );
+    // Coding-agent exit does not stop the independently owned sandbox/preview.
+    fs::write(
+        root.path().join("agents/alice/current-launch.json"),
+        serde_json::to_vec(&json!({"agent_id":ID,"name":"alice","state":"exited"})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        status(
+            &request(
+                preview_port,
+                "GET",
+                "/_safeyolo_desktop/diagnostics",
+                &[],
+                b""
+            )
+            .await
+        ),
+        401
+    );
+    tokio::time::timeout(Duration::from_secs(6), async {
+        while TcpStream::connect((Ipv4Addr::LOCALHOST, preview_port))
+            .await
+            .is_ok()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("preview listener did not expire");
+    let state = action_request(
+        root.path(),
+        "GET",
+        &format!("/operator-actions/{id}"),
+        Value::Null,
+        "alice",
+    )
+    .await;
+    assert_eq!(body(&state)["result"]["status"], "expired");
+    let audit = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let audit = fs::read_to_string(root.path().join("audit.jsonl")).unwrap();
+            if audit.contains("agent.preview_expired") {
+                break audit;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("expiry audit was not written");
+    for event in [
+        "agent.operator_action_requested",
+        "admin.approval_decided",
+        "admin.operator_action_result",
+        "agent.preview_expired",
+    ] {
+        assert!(audit.contains(event), "missing {event}");
+    }
+    assert!(
+        !audit.contains(
+            approved["operator_preview"]["unlock_code"]
+                .as_str()
+                .unwrap()
+        )
+    );
+    assert!(!root.path().join("unwanted").exists());
+    // A failed local opener removes only the desktop newly started here.
+    fs::remove_file(root.path().join("desktop-ready")).unwrap();
+    fs::write(root.path().join("bin/xdg-open"), "#!/bin/sh\nexit 1\n").unwrap();
+    let opener = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":5}}),
+        "alice",
+    )
+    .await;
+    let opener_id = body(&opener)["approval_id"].as_str().unwrap().to_owned();
+    let failed_opener = body(
+        &request(
+            port,
+            "POST",
+            &format!("/admin/approvals/{opener_id}"),
+            &auth,
+            br#"{"decision":"approve"}"#,
+        )
+        .await,
+    );
+    assert_eq!(
+        failed_opener["result"]["diagnostic"]["code"], "local_opener_failed",
+        "{failed_opener}"
+    );
+    assert!(root.path().join("desktop-stopped").exists());
+    assert!(!root.path().join("desktop-ready").exists());
+    fs::remove_file(root.path().join("bin/xdg-open")).unwrap();
+    let no_path = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        input.clone(),
+        "alice",
+    )
+    .await;
+    assert_eq!(status(&no_path), 409);
+    assert_eq!(
+        body(&no_path)["diagnostic"]["code"],
+        "operator_preview_path_unavailable"
+    );
+    fs::write(root.path().join("bin/xdg-open"), "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(
+        root.path().join("bin/xdg-open"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::write(root.path().join("desktop-missing"), b"").unwrap();
+    let missing = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        input.clone(),
+        "alice",
+    )
+    .await;
+    assert_eq!(status(&missing), 409);
+    assert_eq!(body(&missing)["diagnostic"]["code"], "desktop_missing");
+    fs::remove_file(root.path().join("desktop-missing")).unwrap();
+    let mut settings = fs::read_to_string(root.path().join("config.toml")).unwrap();
+    settings.push_str("\n[command_centre]\nshare='tailnet'\n");
+    fs::write(root.path().join("config.toml"), settings).unwrap();
+    let no_tailnet = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        input.clone(),
+        "alice",
+    )
+    .await;
+    assert_eq!(status(&no_tailnet), 409);
+    assert_eq!(body(&no_tailnet)["diagnostic"]["code"], "tailscale_missing");
+    fs::write(
+        root.path().join("bin/tailscale"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$SAFEYOLO_CONFIG_DIR/tailscale-calls"
+if [ "$1" = status ]; then
+  printf '%s\n' '{"BackendState":"Running","Self":{"DNSName":"fixture.ts.net."}}'
+elif [ "$1" = serve ] && [ "$2" = status ]; then
+  printf '{}\n'
+else
+  echo 'Access denied: this user cannot manage Serve' >&2
+  exit 1
+fi
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(
+        root.path().join("bin/tailscale"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let policy_before: toml::Value =
+        toml::from_str(&fs::read_to_string(root.path().join("policy.toml")).unwrap()).unwrap();
+    let remote = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        input.clone(),
+        "alice",
+    )
+    .await;
+    assert_eq!(status(&remote), 202, "{}", String::from_utf8_lossy(&remote));
+    let remote_id = body(&remote)["approval_id"].as_str().unwrap().to_owned();
+    let failed = body(
+        &request(
+            port,
+            "POST",
+            &format!("/admin/approvals/{remote_id}"),
+            &auth,
+            br#"{"decision":"approve"}"#,
+        )
+        .await,
+    );
+    assert_eq!(failed["result"]["status"], "failed", "{failed}");
+    assert_eq!(
+        failed["result"]["diagnostic"]["code"], "tailnet_serve_permission",
+        "{failed}"
+    );
+    let policy_after: toml::Value =
+        toml::from_str(&fs::read_to_string(root.path().join("policy.toml")).unwrap()).unwrap();
+    assert_eq!(
+        policy_before, policy_after,
+        "failed Serve setup changed saved policy"
+    );
+    let calls = fs::read_to_string(root.path().join("tailscale-calls")).unwrap();
+    assert!(!calls.contains("funnel") && !calls.contains("sudo"));
+    // Trusted host replacement invalidates the fixed target before execution.
+    let stale = action_request(root.path(), "POST", "/operator-actions", input, "alice").await;
+    let stale_id = body(&stale)["approval_id"].as_str().unwrap().to_owned();
+    let source = fs::read_to_string(root.path().join("policy.toml")).unwrap();
+    fs::write(
+        root.path().join("policy.toml"),
+        source.replace(ID, "ag-33333333333333333333333333333333"),
+    )
+    .unwrap();
+    let stale = request(
+        port,
+        "POST",
+        &format!("/admin/approvals/{stale_id}"),
+        &auth,
+        br#"{"decision":"approve"}"#,
+    )
+    .await;
+    assert_eq!(status(&stale), 409, "{}", String::from_utf8_lossy(&stale));
+    assert_eq!(body(&stale)["status"], "superseded");
+    fs::write(root.path().join("policy.toml"), source).unwrap();
+    let pending = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":23}}),
+        "alice",
+    )
+    .await;
+    let pending_id = body(&pending)["approval_id"].as_str().unwrap().to_owned();
+    proxy.shutdown().await;
+    // Model the durable state after a decision whose result was interrupted.
+    // Retain the real request's immutable authority; change only its outcome.
+    let connection =
+        rusqlite::Connection::open(root.path().join("data/approvals.sqlite3")).unwrap();
+    let encoded: String = connection
+        .query_row(
+            "SELECT record FROM approvals WHERE approval_id=?1",
+            [&remote_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut interrupted: Value = serde_json::from_str(&encoded).unwrap();
+    interrupted["result"] = json!({"status":"starting","execution_session_id":"previous-process","permission_changed":false});
+    connection
+        .execute(
+            "UPDATE approvals SET record=?1 WHERE approval_id=?2",
+            rusqlite::params![serde_json::to_string(&interrupted).unwrap(), remote_id],
+        )
+        .unwrap();
+    drop(connection);
+    let proxy = Proxy::start(config).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let port = ready["admin_port"].as_u64().unwrap() as u16;
+    let retained = action_request(
+        root.path(),
+        "GET",
+        &format!("/operator-actions/{pending_id}"),
+        Value::Null,
+        "alice",
+    )
+    .await;
+    assert_eq!(body(&retained)["status"], "pending_operator_approval");
+    let retained_decision = body(
+        &request(
+            port,
+            "POST",
+            &format!("/admin/approvals/{pending_id}"),
+            &auth,
+            br#"{"decision":"approve"}"#,
+        )
+        .await,
+    );
+    assert_eq!(retained_decision["status"], "approved");
+    assert_eq!(
+        retained_decision["result"]["diagnostic"]["code"],
+        "tailnet_serve_permission"
+    );
+    let unknown = action_request(
+        root.path(),
+        "GET",
+        &format!("/operator-actions/{remote_id}"),
+        Value::Null,
+        "alice",
+    )
+    .await;
+    assert_eq!(body(&unknown)["result"]["status"], "outcome_unknown");
+    let calls_before = fs::read(root.path().join("tailscale-calls")).unwrap();
+    let no_replay = request(
+        port,
+        "POST",
+        &format!("/admin/approvals/{remote_id}"),
+        &auth,
+        br#"{"decision":"approve"}"#,
+    )
+    .await;
+    assert_eq!(status(&no_replay), 200);
+    assert_eq!(
+        fs::read(root.path().join("tailscale-calls")).unwrap(),
+        calls_before
+    );
+    let database = root.path().join("data/approvals.sqlite3");
+    let saved_database = root.path().join("data/saved-approvals.sqlite3");
+    fs::rename(&database, &saved_database).unwrap();
+    let unavailable = action_request(
+        root.path(),
+        "GET",
+        &format!("/operator-actions/{remote_id}"),
+        Value::Null,
+        "alice",
+    )
+    .await;
+    fs::rename(&saved_database, &database).unwrap();
+    assert_eq!(
+        status(&unavailable),
+        503,
+        "unavailable authority must not look missing"
+    );
+    let audit = root.path().join("audit.jsonl");
+    let saved_audit = root.path().join("saved-audit.jsonl");
+    fs::rename(&audit, &saved_audit).unwrap();
+    fs::create_dir(&audit).unwrap();
+    let unaudited = action_request(
+        root.path(),
+        "POST",
+        "/operator-actions",
+        json!({"action_id":"desktop.present","parameters":{"ttl_seconds":31}}),
+        "alice",
+    )
+    .await;
+    assert_eq!(status(&unaudited), 202);
+    assert!(
+        body(&unaudited)["audit_status"]
+            .as_str()
+            .unwrap()
+            .contains("unavailable")
+    );
+    let unaudited_id = body(&unaudited)["approval_id"].as_str().unwrap().to_owned();
+    let denied = body(
+        &request(
+            port,
+            "POST",
+            &format!("/admin/approvals/{unaudited_id}"),
+            &auth,
+            br#"{"decision":"reject"}"#,
+        )
+        .await,
+    );
+    fs::remove_dir(&audit).unwrap();
+    fs::rename(&saved_audit, &audit).unwrap();
+    assert_eq!(denied["status"], "rejected");
+    assert!(
+        denied["audit_status"]
+            .as_str()
+            .unwrap()
+            .contains("unavailable")
+    );
+    run.child.kill().unwrap();
+    run.child.wait().unwrap();
+    proxy.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

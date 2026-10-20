@@ -53,6 +53,7 @@ extension ModelTests {
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
+        try await testCanonicalDesktopActionResolution()
         try await testGatewayOptionAndExpiredOutcome()
         try await testPreparedNetworkRequestsAndOpenWindows()
         try await testNetworkResolutionLostReplyAndReconnect()
@@ -212,6 +213,26 @@ extension ModelTests {
             let observed = try result!.get()
             precondition(observed == .decided("\(message). \(effect)"), "Use the canonical outcome and scope even when the other decision won")
         }
+    }
+
+    @MainActor
+    private static func testCanonicalDesktopActionResolution() async throws {
+        let data = Data(#"{"approval_id":"apr-preview","request_id":"req-preview","event":"agent.operator_action_requested","agent":"worker","summary":"Present the gated desktop for 900 seconds. Network permissions stay unchanged.","approval":{"required":true,"approval_type":"desktop_present","key":"apr-preview","target":"ag-worker"},"options":[{"id":"once","effect":"Present once","status":"available"}]}"#.utf8)
+        let event = try JSONDecoder().decode(ApprovalEvent.self, from: data)
+        let plan = try MutationPlan.forApproval(event, allow: true)
+        precondition(plan.path == "/admin/approvals/apr-preview" && !plan.expectsDesktop)
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        StubURLProtocol.responsesByPath[plan.path] = (200, Data(#"{"approval_id":"apr-preview","request_id":"req-preview","status":"approved","effect":"Present once","result":{"status":"started"},"operator_preview":{"agent_id":"ag-worker","agent":"worker","url":"https://fixture.ts.net:8443/_safeyolo_desktop/","unlock_code":"fixture-code","reused":false}}"#.utf8))
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession())
+        defer { client.stop() }
+        var result: Result<ResolutionResult, Error>?
+        client.resolve(event, allow: true) { result = $0 }
+        try await until { result != nil }
+        guard case .desktop(let preview) = try result!.get() else { preconditionFailure("Canonical approval lost the operator preview") }
+        precondition(preview.url == "https://fixture.ts.net:8443/_safeyolo_desktop/" && preview.unlockCode == "fixture-code")
+        let failed = try JSONDecoder().decode(ApprovalResolution.self, from: Data(#"{"request_id":"req-preview","status":"approved","effect":"Present once","result":{"status":"failed","diagnostic":{"message":"This host user cannot manage Tailscale Serve."}}}"#.utf8))
+        precondition(failed.display.contains("failed") && failed.display.contains("cannot manage Tailscale Serve"))
     }
 
     @MainActor

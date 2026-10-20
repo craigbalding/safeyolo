@@ -399,6 +399,7 @@ impl Record {
             Some("credential_allow") => ("security.credential_guard", "credential"),
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
+            Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
             _ => ("gateway.contract_binding_requested", "contract_binding"),
         };
         let target = self
@@ -406,6 +407,7 @@ impl Record {
             .action
             .get("host")
             .or_else(|| self.authority.action.get("service"))
+            .or_else(|| self.authority.action.get("agent_id"))
             .and_then(Value::as_str)
             .unwrap_or("");
         let mut view = json!({"approval_id":self.approval_id,"request_id":self.request_id,
@@ -431,6 +433,14 @@ impl Record {
                 view["details"]["untrusted_reason_text"] = json!(reason);
             }
         }
+        if self.authority.action["kind"] == "operator_action" {
+            view["details"]["untrusted_reason_text"] = json!(self.untrusted_reason_text);
+            view["details"]["browser_url"] =
+                self.authority.action["parameters"]["browser_url"].clone();
+            view["details"]["presentation"] = self.authority.action["presentation"].clone();
+            view["details"]["ttl_seconds"] =
+                self.authority.action["parameters"]["ttl_seconds"].clone();
+        }
         Ok(view)
     }
 
@@ -446,7 +456,12 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 }
 
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
-    if action["kind"] == "network_allow" {
+    if action["kind"] == "operator_action" {
+        Some(digest(
+            &json!({"action_id":crate::operator_actions::DESKTOP_PRESENT,
+            "agent_id":policy.evidence_agent_id(action["agent"].as_str()?)?}),
+        ))
+    } else if action["kind"] == "network_allow" {
         policy.network_action_revision(action["agent"].as_str()?)
     } else {
         policy.approval_revision(
@@ -773,8 +788,12 @@ pub(crate) fn resolve(
     decision: super::network_action::Decision,
     option: Option<&str>,
 ) -> Result<Option<(u16, Value)>> {
-    if lookup(writer, id)?.is_none() {
-        return Ok(None);
+    match lookup(writer, id)? {
+        Some(record) if record.authority.action["kind"] == "operator_action" => {
+            return crate::operator_actions::resolve(state, writer, id, decision, option).map(Some);
+        }
+        Some(_) => {}
+        None => return Ok(None),
     }
     let mut changed = false;
     let selected = writer.approvals().decide(id, |record| {

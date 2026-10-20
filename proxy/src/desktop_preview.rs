@@ -108,8 +108,9 @@ pub(crate) struct Preview {
     access: Arc<Access>,
     stop: watch::Sender<bool>,
     task: JoinHandle<()>,
-    tailnet: Option<crate::tailnet::Session>,
+    tailnet: Arc<Mutex<Option<crate::tailnet::Session>>>,
     tailnet_port: Option<u16>,
+    expiry: watch::Sender<Option<(Instant, String)>>,
     opened: bool,
 }
 
@@ -144,22 +145,31 @@ impl Preview {
             unlock: Mutex::new(Unlock::new()),
         });
         let (stop, receiver) = watch::channel(false);
+        let (expiry, deadline) = watch::channel(None);
+        let tailnet = Arc::new(Mutex::new(None::<crate::tailnet::Session>));
         let running_access = access.clone();
-        let task = tokio::spawn(async move { accept(listener, running_access, receiver).await });
+        let running_tailnet = tailnet.clone();
+        let task = tokio::spawn(async move {
+            accept(listener, running_access, receiver, deadline).await;
+            if let Some(mut session) = running_tailnet.lock().await.take() {
+                session.stop().await;
+            }
+        });
         let mut preview = Self {
             url: format!("http://127.0.0.1:{port}/_safeyolo_desktop/"),
             access,
             stop,
             task,
-            tailnet: None,
+            tailnet,
             tailnet_port,
+            expiry,
             opened: false,
         };
         if let Some(tailnet_port) = tailnet_port {
             match crate::tailnet::Session::start(port, tailnet_port).await {
                 Ok(session) => {
                     preview.url = session.url("/_safeyolo_desktop/");
-                    preview.tailnet = Some(session);
+                    *preview.tailnet.lock().await = Some(session);
                 }
                 Err(error) => {
                     preview.close().await;
@@ -182,14 +192,29 @@ impl Preview {
 
     pub(crate) fn is_running(&mut self) -> bool {
         !self.task.is_finished()
+            && self
+                .expiry
+                .borrow()
+                .as_ref()
+                .is_none_or(|(deadline, _)| Instant::now() < *deadline)
             && !self
                 .access
                 .check_target()
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-            && self
-                .tailnet
-                .as_mut()
-                .is_none_or(crate::tailnet::Session::is_running)
+            && self.tailnet.try_lock().is_ok_and(|mut session| {
+                session
+                    .as_mut()
+                    .is_none_or(crate::tailnet::Session::is_running)
+            })
+    }
+
+    pub(crate) fn is_tailnet(&self) -> bool {
+        self.tailnet_port.is_some()
+    }
+
+    pub(crate) fn expire_after(&self, ttl: Duration, approval_id: &str) {
+        self.expiry
+            .send_replace(Some((Instant::now() + ttl, approval_id.into())));
     }
 
     pub(crate) async fn issue_unlock_code(&self) -> String {
@@ -209,7 +234,7 @@ impl Preview {
     pub(crate) async fn close(&mut self) {
         let _ = self.stop.send(true);
         let _ = (&mut self.task).await;
-        if let Some(mut tailnet) = self.tailnet.take() {
+        if let Some(mut tailnet) = self.tailnet.lock().await.take() {
             tailnet.stop().await;
         }
         if self.opened {
@@ -236,13 +261,30 @@ impl Drop for Preview {
     }
 }
 
-async fn accept(listener: TcpListener, access: Arc<Access>, mut stop: watch::Receiver<bool>) {
+async fn accept(
+    listener: TcpListener,
+    access: Arc<Access>,
+    mut stop: watch::Receiver<bool>,
+    mut expiry: watch::Receiver<Option<(Instant, String)>>,
+) {
     let mut connections = JoinSet::new();
     // Bound pending HTTP clients, probes and viewer streams for this preview.
     let slots = Arc::new(tokio::sync::Semaphore::new(64));
+    let mut expired_approval = None;
     loop {
+        let expires = expiry.borrow_and_update().clone();
         tokio::select! {
             _ = stop.changed() => break,
+            _ = expiry.changed() => (),
+            _ = async {
+                match &expires {
+                    Some((deadline, _)) => tokio::time::sleep_until((*deadline).into()).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                expired_approval = expires.map(|(_, approval_id)| approval_id);
+                break;
+            },
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let Ok(slot) = slots.clone().try_acquire_owned() else { continue; };
@@ -259,6 +301,13 @@ async fn accept(listener: TcpListener, access: Arc<Access>, mut stop: watch::Rec
     }
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    if let Some(approval_id) = expired_approval {
+        crate::host_platform::in_config(access.config.clone(), async {
+            crate::host_events::write(&access.agent, "agent.preview_expired", "agent",
+                "Approved preview lifetime expired".into(), Some("agent-preview"),
+                json!({"approval_id":approval_id,"agent_id":access.agent_id,"host_port":access.host_port}));
+        }).await;
+    }
 }
 
 #[derive(Clone)]

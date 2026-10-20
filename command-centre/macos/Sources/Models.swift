@@ -284,11 +284,17 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         let reason: String?
         let networkAction: NetworkAction?
         let untrustedReasonText: String?
+        let browserURL: String?
+        let presentation: String?
+        let ttlSeconds: Int?
 
         enum CodingKeys: String, CodingKey {
             case service, method, path, reason
             case networkAction = "network_action"
             case untrustedReasonText = "untrusted_reason_text"
+            case browserURL = "browser_url"
+            case presentation
+            case ttlSeconds = "ttl_seconds"
         }
     }
 
@@ -430,22 +436,35 @@ struct MutationPlan: Equatable {
 }
 
 struct ApprovalResolution: Decodable, Equatable {
+    struct ActionResult: Decodable, Equatable {
+        struct Diagnostic: Decodable, Equatable { let message: String }
+        let status: String?
+        let diagnostic: Diagnostic?
+    }
     let approvalID: String?
     let requestID: String
     let status: String
     let effect: String
     let untrustedReasonText: String?
+    let result: ActionResult?
+    let operatorPreview: DesktopPresentation?
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
         case requestID = "request_id"
         case status, effect
         case untrustedReasonText = "untrusted_reason_text"
+        case result
+        case operatorPreview = "operator_preview"
     }
 
     var id: String { approvalID ?? requestID }
     var terminal: Bool { ["approved", "rejected", "expired", "superseded"].contains(status) }
-    var display: String { "\(status.capitalized). \(effect)" }
+    var display: String {
+        let action = result?.status.map { " Preview result: \($0)." } ?? ""
+        let diagnostic = result?.diagnostic.map { " \($0.message)" } ?? ""
+        return "\(status.capitalized). \(effect)\(action)\(diagnostic)"
+    }
     var quotedUntrustedReason: String? { untrustedReasonText.map { "\"\($0)\"" } }
 }
 

@@ -218,13 +218,13 @@ async fn actual_source_dispatch_and_body_projection() {
             | "detail_percent_digits"
             | "detail_bad_suffix"
             | "post_only_get" => {
-                // The retained Python-source receipt predates the supported
-                // shared approval routes. Keep that receipt and all other
-                // error bytes; account only for the two advertised routes.
+                // The pinned Python receipt predates shared approvals and
+                // typed operator actions. Extend its advertised routes only.
                 let expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
                     "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
+                let expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
                 assert_eq!(row["status"], 404, "{name}");
                 assert_eq!(outcome.response.status, 404, "{name}");
                 assert_eq!(
@@ -239,9 +239,22 @@ async fn actual_source_dispatch_and_body_projection() {
                     row["status"].as_u64().unwrap(),
                     "{name}"
                 );
+                // #1150 added nullable connection metadata after this pinned
+                // Python receipt. Both summary forms must retain a null value.
+                let expected = row["text"]
+                    .as_str()
+                    .unwrap()
+                    .replace(
+                        "\"reason\": null,",
+                        "\"reason\": null, \"connection_json\": null,",
+                    )
+                    .replace(
+                        "\"flow_state\": \"complete\", \"snippet\"",
+                        "\"flow_state\": \"complete\", \"connection_json\": null, \"snippet\"",
+                    );
                 assert_eq!(
                     outcome.response.body_bytes().as_ref(),
-                    row["text"].as_str().unwrap().as_bytes(),
+                    expected.as_bytes(),
                     "{name}"
                 );
             }

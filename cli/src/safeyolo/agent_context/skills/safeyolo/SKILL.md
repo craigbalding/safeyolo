@@ -68,6 +68,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or
   diagnosing Xvfb, VNC, noVNC, and browser startup.
+  Offer the normal typed `desktop.present` operator action when a preview
+  helps the task. Use `GET /operator-actions` to discover its availability.
+  Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
 - Read [Contributing to the SafeYolo repo](references/contributing-to-safeyolo.md)
   when editing files in the SafeYolo checkout itself: any pre-commit or CI
   drift check firing (`check_skill_markers`, `check_doc_cli_flags`,

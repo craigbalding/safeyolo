@@ -419,6 +419,36 @@ fn show_approval(view: &Value) -> Result<(), Error> {
     if let Some(id) = view["approval_id"].as_str() {
         println!("Approval: {}", safe(id));
     }
+    if view["action"]["kind"] == "operator_action" {
+        if let Some(audit) = view["audit_status"].as_str() {
+            println!("Audit: {}", safe(audit));
+        }
+        println!(
+            "SafeYolo operator action: Present agent desktop\nTarget: {}\nPresentation: {}\nPreview lifetime: {} seconds",
+            safe(text(&view["action"]["agent"])),
+            safe(text(&view["action"]["presentation"])),
+            view["action"]["parameters"]["ttl_seconds"]
+        );
+        if let Some(url) = view["action"]["parameters"]["browser_url"].as_str() {
+            println!(
+                "Guest browser URL (agent-selected data): {}",
+                serde_json::to_string(url)?
+            );
+        }
+        if let Some(status) = view["result"]["status"].as_str() {
+            println!("Preview result: {}", safe(status));
+        }
+        if let Some(message) = view["result"]["diagnostic"]["message"].as_str() {
+            println!("{}", safe(message));
+        }
+        if let Some(url) = view["operator_preview"]["url"].as_str() {
+            println!(
+                "Operator preview: {}\nUnlock code: {}",
+                safe(url),
+                safe(text(&view["operator_preview"]["unlock_code"]))
+            );
+        }
+    }
     if let Some(options) = view["options"].as_array() {
         for option in options {
             println!(
@@ -441,7 +471,12 @@ fn show_approval(view: &Value) -> Result<(), Error> {
         // A quoted JSON string stays visibly separate, including forged
         // Markdown/HTML headings and all terminal controls.
         println!(
-            "Helper reason (untrusted text): {}",
+            "{} (untrusted text): {}",
+            if view["action"]["kind"] == "operator_action" {
+                "Agent-provided reason"
+            } else {
+                "Helper reason"
+            },
             serde_json::to_string(reason)?
         );
     }
@@ -521,7 +556,19 @@ async fn resolve_preview(
     if let Some(option) = option {
         input["option"] = json!(option);
     }
-    match admin(root, &path, Method::POST, input).await {
+    let result = if inspected["action"]["kind"] == "operator_action" {
+        native_client::admin(
+            &host_platform::config_path(),
+            &path,
+            Method::POST,
+            input,
+            Duration::from_secs(150),
+        )
+        .await
+    } else {
+        admin(root, &path, Method::POST, input).await
+    };
+    match result {
         Ok(value) => Ok(value),
         Err(error) => {
             // One canonical read, never a replay of an uncertain mutation.

@@ -24,6 +24,15 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, non_grants, graph_node) = match kind {
+        "operator_action" => (
+            "Presenting an agent desktop requires the operator's approval for this target, route, browser URL and preview lifetime.",
+            vec![
+                "No network permission, service grant or credential access.",
+                "No public or Funnel exposure, privileged Tailscale setup or host command execution.",
+                "Preview access and unlock material stay with the operator.",
+            ],
+            "sym.desktop_remote_url_is_loopback",
+        ),
         "network_allow" => (
             "The network policy required operator approval for this agent, destination and port.",
             vec![
@@ -80,6 +89,7 @@ pub(crate) fn explain(
             | "gateway_route"
             | "service_authorize"
             | "contract_binding"
+            | "operator_action"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -102,6 +112,13 @@ pub(crate) fn explain(
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "operator_action" {
+        facts["action_id"] = action["action_id"].clone();
+        facts["presentation"] = action["presentation"].clone();
+        facts["ttl_seconds"] = action["parameters"]["ttl_seconds"].clone();
+        facts["browser_url"] = action["parameters"]["browser_url"].clone();
+        unknowns.clear();
+    }
     if kind == "credential_allow" {
         facts["credential_fingerprints"] = action["credentials"].clone();
     }
@@ -190,6 +207,12 @@ pub(crate) fn explain(
         result["current_policy"] = json!(
             "This approval is no longer pending. The effects describe its recorded options, not an available new grant. Inspect current state before deciding."
         );
+    }
+    if kind == "operator_action" {
+        result["current_policy"] = json!(
+            "This action requires an operator decision. Network policy and service grants remain authoritative for guest traffic. The host presentation path and target are checked again before execution."
+        );
+        result["evidence"]["graph"] = json!("triage-desktop-preview");
     }
     let mut event = Event::new(
         "admin.approval_explained",

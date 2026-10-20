@@ -75,10 +75,7 @@ async fn tailscale_json(args: &[&str]) -> Result<Value, Error> {
     Ok(value)
 }
 
-pub(crate) async fn preflight(port: u16) -> Result<String, Error> {
-    if port == 0 {
-        return Err("tailnet HTTPS port must be 1-65535".into());
-    }
+pub(crate) async fn available() -> Result<String, Error> {
     let status = tailscale_json(&["status", "--json"]).await?;
     if status.get("BackendState").and_then(Value::as_str) != Some("Running") {
         return Err("Tailscale is not connected".into());
@@ -92,6 +89,15 @@ pub(crate) async fn preflight(port: u16) -> Result<String, Error> {
     if name.is_empty() {
         return Err("Tailscale status did not report a MagicDNS name".into());
     }
+    tailscale_json(&["serve", "status", "--json"]).await?;
+    Ok(name.to_owned())
+}
+
+pub(crate) async fn preflight(port: u16) -> Result<String, Error> {
+    if port == 0 {
+        return Err("tailnet HTTPS port must be 1-65535".into());
+    }
+    let name = available().await?;
     let serve = tailscale_json(&["serve", "status", "--json"]).await?;
     if port_in_use(&serve, port) {
         return Err(format!(
