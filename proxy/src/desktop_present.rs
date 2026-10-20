@@ -124,9 +124,10 @@ pub(crate) async fn action_route() -> Result<Route, Diagnostic> {
 
 fn tailnet_diagnostic(error: &str) -> Diagnostic {
     let error = error.to_ascii_lowercase();
-    if error.contains("permission")
-        || error.contains("access denied")
-        || error.contains("not permitted")
+    if error.contains("tailscale serve exited")
+        && (error.contains("permission")
+            || error.contains("access denied")
+            || error.contains("not permitted"))
     {
         diagnostic(
             "tailnet_serve_permission",
@@ -134,8 +135,8 @@ fn tailnet_diagnostic(error: &str) -> Diagnostic {
         )
     } else if error.contains("no such file") {
         diagnostic(
-            "tailscale_missing",
-            "Tailscale is not installed on the SafeYolo host. Configure the existing tailnet preview route before requesting it.",
+            "tailscale_command_unavailable",
+            "The Tailscale command is not available in the SafeYolo host's PATH. Configure the existing tailnet preview route before requesting it.",
         )
     } else if error.contains("not connected") {
         diagnostic(
@@ -145,7 +146,7 @@ fn tailnet_diagnostic(error: &str) -> Diagnostic {
     } else {
         diagnostic(
             "tailnet_preview_unavailable",
-            "Tailscale Serve could not provide the preview. Check the host's Tailscale connection, HTTPS configuration, Serve permission and assigned HTTPS port.",
+            "Tailscale could not provide the preview. Check that its host command can run as this user and reach its daemon, then check HTTPS configuration, Serve permission and the assigned HTTPS port.",
         )
     }
 }

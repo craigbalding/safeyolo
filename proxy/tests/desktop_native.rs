@@ -670,7 +670,10 @@ async fn typed_desktop_action_binds_approval_and_keeps_preview_access_with_opera
     )
     .await;
     assert_eq!(status(&no_tailnet), 409);
-    assert_eq!(body(&no_tailnet)["diagnostic"]["code"], "tailscale_missing");
+    assert_eq!(
+        body(&no_tailnet)["diagnostic"]["code"],
+        "tailscale_command_unavailable"
+    );
     fs::write(
         root.path().join("bin/tailscale"),
         r#"#!/bin/sh
