@@ -1606,7 +1606,8 @@ pub(crate) async fn start(
 }
 
 // The setup lock is held, and no backend process was spawned for this record.
-// Retire it before rebuilding the map so a failed projection can be retried.
+// Retire it before synchronizing listeners so a failed update cannot keep
+// this known preboot record active.
 // A changed record or generation no longer belongs to this failed start.
 async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error> {
     let Some(saved) = crate::host_runs::read(&agent.name)? else {
@@ -2291,6 +2292,13 @@ mod tests {
             let run_id = "0123456789abcdef0123456789abcdef";
             let run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":"10.200.0.1","state":"starting"});
             let context = agent_dir(&agent.name).join("config-share/host-launch-context.json");
+            let config_path = crate::host_platform::config_path();
+            let peer = json!({"agent_id":"peer","socket_path":temp.path().join("peer.sock")});
+            std::fs::write(&config_path, toml::to_string(&json!({"listeners":[
+                crate::host_platform::agent_proxy_listener(&agent.name, "10.200.0.1"),
+                peer.clone(),
+            ]})).unwrap()).unwrap();
+            let saved_config = std::fs::read(&config_path).unwrap();
             let map = temp.path().join("data/agent_map.json");
             write_json(&map, &json!({"marker":{"ip":"10.200.0.1"},"peer":{"ip":"10.200.0.2"}})).unwrap();
             let saved_map = std::fs::read(&map).unwrap();
@@ -2319,23 +2327,31 @@ mod tests {
                 let saved = std::fs::read(crate::host_runs::path(&agent.name)).unwrap();
                 assert!(rollback_preboot_start(&agent, &run).await.is_err(), "{field}");
                 assert_eq!(std::fs::read(crate::host_runs::path(&agent.name)).unwrap(), saved, "{field}");
+                assert_eq!(std::fs::read(&config_path).unwrap(), saved_config, "{field}");
                 assert_eq!(std::fs::read(&map).unwrap(), saved_map, "{field}");
             }
             write_json(&context, &json!({"generation":run_id})).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
-            // A failed map rollback must report failure, but must not leave
+            // A failed listener update must report failure, but must not leave
             // this known preboot record holding status/retry indefinitely.
-            std::fs::remove_file(&map).unwrap();
-            std::fs::create_dir(&map).unwrap();
+            let listener_lock = temp.path().join("data/native-listeners.lock");
+            std::fs::create_dir(&listener_lock).unwrap();
             assert!(rollback_preboot_start(&agent, &run).await.is_err());
             assert!(!crate::host_runs::path(&agent.name).exists());
             assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
-            std::fs::remove_dir(&map).unwrap();
-            write_json(&map, &serde_json::from_slice::<Value>(&saved_map).unwrap()).unwrap();
+            assert_eq!(std::fs::read(&config_path).unwrap(), saved_config);
+            assert_eq!(std::fs::read(&map).unwrap(), saved_map);
+            std::fs::remove_dir(&listener_lock).unwrap();
+            // Even an unusable retired map must not prevent listener rollback.
+            std::fs::remove_file(&map).unwrap();
+            std::fs::create_dir(&map).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
             rollback_preboot_start(&agent, &run).await.unwrap();
             assert!(!crate::host_runs::path(&agent.name).exists());
-            assert_eq!(read_json(&map).unwrap().unwrap(), json!({"peer":{"ip":"10.200.0.2"}}));
+            assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
+            let listeners = crate::native_config::read(&config_path).unwrap().listeners;
+            assert_eq!(serde_json::to_value(listeners).unwrap(), json!([peer]));
+            assert!(map.is_dir());
         })
         .await;
     }

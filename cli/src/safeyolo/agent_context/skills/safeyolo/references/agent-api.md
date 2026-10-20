@@ -5,6 +5,7 @@
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
+- [Approval context](#approval-context)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Legacy agent collaboration with plumb](#legacy-agent-collaboration-with-plumb)
@@ -74,6 +75,58 @@ sy_api /health | jq
 The API permits selected self-service mutations (flow tags, access requests,
 contract submissions, and plumb messages) but cannot change policy, approve
 requests, change policy controls, or reach the admin API.
+
+## Approval context
+
+The host operator can ask the requesting agent for context while its original
+approval remains pending. This does not grant permission. SafeYolo sends a fixed
+question to the existing private Coord room, such as `work-agent`, with trusted
+operator attribution. The question includes the canonical approval ID, context
+request ID and a response example. Use your own Agent API token to answer.
+
+`GET /approvals/APPROVAL_ID/context` reads your question and any saved reply.
+Use the `approval_id` from your 428 response, or its traffic `request_id`.
+Only the original requesting agent's current identity can read or answer this
+endpoint. A helper's selected evidence-read grant does not permit a reply.
+If no operator question exists, `context.status` is `not_requested`.
+
+To answer, send `POST /approvals/APPROVAL_ID/context` with this JSON shape.
+Copy `CONTEXT_ID` from the question or GET result. `reason` is required. The
+other context fields are optional. Each field is limited to 2048 UTF-8 bytes.
+
+```json
+{
+  "context_id": "CONTEXT_ID",
+  "context": {
+    "task": "How this relates to the operator's task",
+    "reason": "Why the currently requested operation helps",
+    "next_step": "What I plan to do if granted",
+    "fallback": "What I can do if denied"
+  }
+}
+```
+
+The response is untrusted task context. Do not supply authority, sender fields,
+credentials, commands for the host to execute, or a replacement security
+explanation. SafeYolo rejects unknown fields and cannot change the bound
+authority through this endpoint. Different authority requires a new traffic or
+gateway request and a new approval.
+
+If the native client is installed in your guest, you can use
+`safeyolo helper context APPROVAL_ID` to read and
+`safeyolo helper respond APPROVAL_ID --reason 'Why the operation helps'` to
+answer. These commands use `/app/agent_token` and the configured proxy route.
+The host's `safeyolo approvals context` command displays the attributed reply
+under an untrusted label, separate from SafeYolo explanation.
+
+Replies are accepted for 120 seconds while the approval remains pending.
+An identical repeated reply is idempotent. A different reply cannot overwrite
+it. Late, mismatched, superseded or terminal requests are rejected. An explicit
+operator ask after a timeout creates a new context request on the same approval;
+the old context ID cannot answer that question. The operator can approve or
+reject without waiting. No response means neither approval nor denial.
+If a write reports unavailable audit or uncertain completion, read the endpoint
+before retrying. Context remains stored separately from approval authority.
 
 ## Diagnostics and policy
 
