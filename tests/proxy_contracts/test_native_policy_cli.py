@@ -1049,8 +1049,13 @@ def test_installed_unlisted_destination_effects(tmp_path, effect, status):
     with origin_server() as origin, native_instance(
         tmp_path, parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
     ) as instance:
-        instance.apply(f'[hosts]\n"*" = {{egress="{effect}"}}\n')
-        delivered(instance, origin, "unlisted.invalid:8123", status=status, pending=effect == "prompt")
+        source = f'[hosts]\n"*" = {{egress="{effect}"}}\n'
+        instance.apply(source)
+        delivered(instance, origin, "unlisted.invalid:8123", status=status)
+        if effect == "prompt":
+            assert instance.admin("GET", "/admin/approvals")["approvals"] == []
+            instance.apply(source + '\n[agents.alice]\nagent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n')
+            delivered(instance, origin, "unlisted.invalid:8123", status=428, pending=True)
 
 
 @pytest.mark.parametrize("global_effect,agent_effect,status", [("deny", "allow", 200), ("allow", "deny", 403)])

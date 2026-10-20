@@ -343,7 +343,7 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
 
 
 @pytest.mark.parametrize("window", ["list", "detail"])
-@pytest.mark.parametrize("change", ["other_agent", "fingerprint", "destination", "identity", "policy_deny", "policy_allow"])
+@pytest.mark.parametrize("change", ["other_agent", "fingerprint", "destination", "identity", "refusal", "policy_allow"])
 def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path, window, change):
     policy = CREDENTIAL_RETRY_POLICY
     with origin_server() as origin, native_instance(tmp_path, source=policy) as instance:
@@ -365,10 +365,11 @@ def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path
                 assert request(instance.paths["alice"], changed_target, headers=changed_headers)[0] == 428
             elif change == "identity":
                 instance.apply(policy.replace("ag-" + "a" * 32, "ag-" + "c" * 32))
+            elif change == "refusal":
+                instance.admin("POST", f"/admin/approvals/{identifier}", {"decision": "reject"})
             else:
-                route = "deny" if change == "policy_deny" else "approve"
                 credential = view["action"]["credentials"][0]
-                instance.admin("POST", f"/admin/policy/baseline/{route}",
+                instance.admin("POST", "/admin/policy/baseline/approve",
                                {"destination": "127.0.0.1", "cred_id": credential})
             before = instance.policy.read_bytes()
             audit = instance.root / "logs/audit.jsonl"
@@ -407,7 +408,7 @@ def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path
                 assert stale.returncode != 0 and "selected current agent" in stale.stderr
             else:
                 assert stale.returncode == 0, stale.stderr
-                assert json.loads(stale.stdout)["status"] == "superseded"
+                assert json.loads(stale.stdout)["status"] == ("rejected" if change == "refusal" else "superseded")
         assert instance.policy.read_bytes() == before and origin.accepts == 0
 
 
@@ -467,8 +468,12 @@ def test_credential_policy_write_cannot_bypass_canonical_approval(tmp_path):
         assert instance.policy.read_bytes() == before
         instance.admin("POST", "/admin/policy/baseline/deny",
                        {"destination": action["host"], "cred_id": action["credentials"][0]})
-        before = instance.policy.read_bytes()
+        # The old denial endpoint only logs. Audit alone cannot decide the
+        # canonical record; the shared resolver records the actual refusal.
+        assert instance.admin("GET", f"/admin/approvals/{view['approval_id']}")["status"] == "pending"
+        instance.admin("POST", f"/admin/approvals/{view['approval_id']}", {"decision": "reject"})
         instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=503)
-        instance.admin("POST", f"/admin/approvals/{view['approval_id']}",
-                       {"decision": "approve", "option": "persistent"}, expected_status=409)
+        replay = instance.admin("POST", f"/admin/approvals/{view['approval_id']}",
+                                {"decision": "approve", "option": "persistent"})
+        assert replay["status"] == "rejected"
         assert instance.policy.read_bytes() == before and origin.accepts == 0
