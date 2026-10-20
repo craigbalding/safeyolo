@@ -356,6 +356,11 @@ impl Config {
             .map(|mapping| exact_dns_host(&mapping.host, "target_ip_mappings"))
             .collect::<Result<Vec<_>, _>>()?;
         for (index, mapping) in self.target_ip_mappings.iter().enumerate() {
+            if mapping.port == Some(0) || mapping.agents.iter().any(|agent| agent.is_empty()) {
+                return Err(
+                    "target_ip_mappings requires a nonzero port and nonempty agent names".into(),
+                );
+            }
             for (previous, other) in self.target_ip_mappings[..index].iter().enumerate() {
                 if names[index] == names[previous]
                     && mapping.ip != other.ip

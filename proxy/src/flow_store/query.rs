@@ -114,13 +114,13 @@ const SUMMARY: &str = "id, request_id, ts_start, ts_end, duration_ms,
  engagement_id, agent_id, evidence_owner, trusted_transport_identity, initiator,
  attribution_status, attribution_provenance_json, source_id,
  run, test, role, test_agent, suite, subject, step, intent, expect,
- source_type, flow_state, method, host, path, query_string, full_url, status_code, reason,
+ source_type, flow_state, method, host, path, query_string, full_url, status_code, reason, connection_json,
  request_content_type, response_content_type, is_websocket, request_body_size, response_body_size,
  request_body_truncated, response_body_truncated, response_body_text_preview";
 const FTS_SUMMARY: &str = "f.id, f.request_id, f.ts_start, f.duration_ms,
  f.engagement_id, f.agent_id, f.evidence_owner, f.trusted_transport_identity, f.initiator,
  f.attribution_status, f.attribution_provenance_json, f.run, f.test, f.role, f.test_agent,
- f.suite, f.subject, f.step, f.intent, f.expect, f.method, f.host, f.path, f.status_code, f.flow_state";
+ f.suite, f.subject, f.step, f.intent, f.expect, f.method, f.host, f.path, f.status_code, f.flow_state, f.connection_json";
 
 fn invalid(message: impl Into<String>) -> QueryError {
     QueryError::Validation(message.into())

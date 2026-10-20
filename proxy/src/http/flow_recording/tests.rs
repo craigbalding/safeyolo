@@ -76,6 +76,7 @@ fn context() -> AppliedContext {
 }
 fn destination(path: &str, port: u16) -> super::super::Destination {
     super::super::Destination {
+        selected_ip: None,
         host: "127.0.0.2".into(),
         policy_host: "127.0.0.2".into(),
         port,

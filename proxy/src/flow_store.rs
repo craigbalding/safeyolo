@@ -266,6 +266,7 @@ impl FlowStore {
             "initiator",
             "attribution_status",
             "attribution_provenance_json",
+            "connection_json",
         ] {
             if !columns.iter().any(|value| value == column) {
                 connection.execute(&format!("ALTER TABLE flows ADD COLUMN {column} TEXT"), [])?;
@@ -573,6 +574,7 @@ const METADATA_COLUMNS: &[&str] = &[
     "full_url",
     "status_code",
     "reason",
+    "connection_json",
 ];
 
 fn present(value: Option<&Value>) -> Option<&Value> {

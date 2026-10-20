@@ -111,6 +111,38 @@ ambiguous — the two are complementary, not redundant. See
 [`triage-request-failing.yaml`](graph/triage-request-failing.yaml) and
 [`triage-credential-guard.yaml`](graph/triage-credential-guard.yaml).
 
+## Selected-IP connection evidence
+
+Use `/explain?request_id=ID` with either the client-facing CONNECT response's
+`X-SafeYolo-Request-Id` or an inner HTTP response ID. The CONNECT ID includes
+its linked inner requests. An inner ID includes its own CONNECT without
+including sibling HTTP requests. All returned events remain scoped to the
+authenticated agent. The CONNECT ID remains usable after a TLS failure,
+before an inner HTTP request or recorded flow exists.
+
+Canonical `traffic.connection` events retain `logical_host`, `requested_ip`,
+`requested_port`, `effective_ip`, `effective_port` and `selection_source`.
+`client_connect` means the numeric CONNECT arrived on this attributed agent
+connection. `operator_mapping` means the host configuration selected the IP.
+Neither value proves who acquired the address or how it was resolved.
+
+Read `stage` and `outcome` in order. `route_wait` reports missing client
+information and `outbound: not_attempted`, including timeout/cancellation.
+`direct_connect` records the actual `direct_peer`. `parent_tcp` and
+`parent_connect` distinguish reaching the configured parent from its CONNECT
+response. The latter retains `parent_requested_target` and
+`parent_connect_status`. Through a parent, `direct_peer` is null: SafeYolo
+does not observe the parent's origin-side socket. `origin_tls` records the
+verification name and result. `http_response` records the observed HTTP
+status. A pending stage alone does not establish completion. A failed stage
+retains its reason; inspect earlier events for the last completed operation.
+
+`status: complete` describes the retained explanation lookup. It does not
+describe network success. Missing or expired events leave a limit on the
+explanation. Eligible FlowStore rows carry `connection_json`; old rows leave
+it null. Live traffic shows the same selected target and reached upstream
+facts. Selection does not enable body capture or change evidence ownership.
+
 ## Trace wire vocabulary
 
 `/trace` identifies each step with `control` and `hook`. Branch on

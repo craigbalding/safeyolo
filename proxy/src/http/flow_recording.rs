@@ -227,13 +227,60 @@ impl Recording {
                 String::new()
             }
         };
+        let connection = record
+            .metadata
+            .remove("connection_json")
+            .unwrap_or_else(|| {
+                python_json::encode(&json!({"target": super::selected_ip::facts(destination)}))
+                    .into()
+            });
         record.metadata = object(json!({
             "scheme": destination.scheme, "host": host, "port": destination.port,
             "method": request.method().as_str(), "path": destination.path.split('?').next().unwrap_or(""),
             "query_string": query_json(&destination.path), "full_url": full_url,
             "request_content_type": content_type, "is_websocket": websocket,
             "request_headers_json": headers_json(&pairs, None, redact_header),
+            "connection_json": connection,
         }));
+    }
+
+    pub(super) fn target(
+        &self,
+        destination: &super::Destination,
+        connect_request_id: Option<&str>,
+    ) {
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record
+            .as_mut()
+        {
+            record.metadata.insert("connection_json".into(), python_json::encode(&json!({
+                "target": super::selected_ip::facts(destination), "connect_request_id": connect_request_id,
+            })).into());
+        }
+    }
+
+    pub(super) fn connection(
+        &self,
+        observation: &crate::traffic_view::UpstreamConnectionObservation,
+        connect_request_id: Option<&str>,
+    ) {
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record
+            .as_mut()
+        {
+            let mut connection = observation.snapshot();
+            connection["connect_request_id"] = json!(connect_request_id);
+            record.metadata.insert(
+                "connection_json".into(),
+                python_json::encode(&connection).into(),
+            );
+        }
     }
 
     /// Metadata precedes source snippet decoding, including a decoding error.
