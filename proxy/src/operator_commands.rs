@@ -21,22 +21,22 @@ safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
 safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals review --agent NAME
+safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
-safeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
+safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
 
 inspect keeps selection only in this session; it never changes a script's target.
 Factory roles come from the existing selected snapshot; live state supplies readiness.
 Exports: raw, raw_request, raw_response, curl, httpie, har, zhar.
 Generated commands are saved or displayed as evidence, never executed.
-Sharing permits selected diagnostic/approval reads only. Helper prepares; the human decides.
+Sharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.
 Each approval shows its fixed permission and options. Inspect leaves it pending.
 Explain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.
 Ask sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.
-Network approval is reusable for the selected agent and host/port. Credential approval changes shared persistent policy.
+Persistent network approval is reusable for the selected agent and host/port. Persistent credential approval changes shared policy. The run option instead binds supported access to the current worker run.
 Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
@@ -96,6 +96,8 @@ struct Options {
     token: Option<PathBuf>,
     reason: Option<String>,
     option: Option<String>,
+    delegation: Option<String>,
+    file: Option<PathBuf>,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -115,7 +117,7 @@ impl Options {
                 }
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
-                | "--expect" | "--option" => {
+                | "--expect" | "--option" | "--delegation" | "--file" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -130,6 +132,8 @@ impl Options {
                         "--token-file" => options.token = Some(value.into()),
                         "--reason" => options.reason = Some(value.clone()),
                         "--option" => options.option = Some(value.clone()),
+                        "--delegation" => options.delegation = Some(value.clone()),
+                        "--file" => options.file = Some(value.into()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -929,6 +933,20 @@ async fn helper(options: &Options) -> Result<Value, Error> {
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
+    let token = options
+        .token
+        .as_deref()
+        .unwrap_or(Path::new("/app/agent_token"));
+    if parts.as_slice() == ["list"] {
+        return native_client::helper(
+            options.socket.as_deref(),
+            token,
+            "/approvals",
+            Method::GET,
+            Value::Null,
+        )
+        .await;
+    }
     let [operation, id] = parts.as_slice() else {
         return Err("usage: safeyolo helper --help".into());
     };
@@ -970,6 +988,11 @@ async fn helper(options: &Options) -> Result<Value, Error> {
             json!({"context_id":current["context"]["context_id"],"context":{"reason":reason}}),
         )
         .await;
+    }
+    if matches!(*operation, "approve" | "reject" | "defer") {
+        return native_client::helper(options.socket.as_deref(),token,&format!("{approval}/resolve"),Method::POST,
+            json!({"decision":operation,"delegation":options.delegation.as_deref().ok_or("review decision requires --delegation NAME")?,
+                "option":options.option.as_deref().ok_or("review decision requires --option from the canonical choices")?})).await;
     }
     if !matches!(*operation, "show" | "diagnostic" | "prepare") {
         return Err("Helper supports show, diagnostic, prepare, context and respond".into());
@@ -1216,6 +1239,38 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                     )
                     .await;
                 }
+                ["delegations"] => {
+                    admin(
+                        root,
+                        "/admin/approval-delegations",
+                        Method::GET,
+                        Value::Null,
+                    )
+                    .await?
+                }
+                [
+                    "delegation",
+                    operation @ ("preview" | "check" | "apply" | "revoke"),
+                    name,
+                ] => {
+                    let input = options
+                        .file
+                        .as_ref()
+                        .ok_or("delegation requires --file PROPOSAL.json")?;
+                    let proposal: Value = serde_json::from_slice(&std::fs::read(input)?)?;
+                    let operation = if *operation == "check" {
+                        "preview"
+                    } else {
+                        operation
+                    };
+                    admin(
+                        root,
+                        &format!("/admin/approval-delegations/{}/{operation}", encoded(name)),
+                        Method::POST,
+                        proposal,
+                    )
+                    .await?
+                }
                 [] | ["list"] => pending(root, options.agent.as_deref()).await?,
                 ["show", id] => approval(root, id, options.agent.as_deref()).await?,
                 [command @ ("ask" | "context"), id] => {
@@ -1264,8 +1319,24 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         } else {
             show_context(&value)
         }
+    } else if args[0] == "helper" {
+        print_json(&value)
     } else if !options.json && value.get("why_stopped").is_some() {
         show_explanation(&value)
+    } else if !options.json && value.get("acknowledgment").is_some() {
+        println!(
+            "Delegation: {}\nRevision / acknowledgment: {}\n{}\nBefore: {}\nAfter: {}",
+            safe(text(&value["name"])),
+            safe(text(&value["revision"])),
+            safe(text(&value["effect"])),
+            context_json(&value["before"])?,
+            context_json(&value["after"])?
+        );
+        for warning in value["warnings"].as_array().into_iter().flatten() {
+            println!("Acknowledge: {}", safe(text(warning)));
+        }
+        println!("{}", safe(text(&value["revocation"])));
+        Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)
     } else {

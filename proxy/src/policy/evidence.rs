@@ -132,62 +132,94 @@ impl Policy {
             "task":self.task.as_ref().and_then(|task| relevant(&task.baseline)),
             "controls": if credential { json!(native.controls.credentials) } else { Value::Null }});
         if let Some(service) = service {
-            let gateway = self.gateway()?;
-            let registry = gateway.registry()?;
-            let definition = registry.services.get(service)?;
-            let mut definition = definition.raw.clone();
-            if let Some(fields) = definition.as_object_mut() {
-                fields.shift_remove("description");
-            }
-            if let Some(capabilities) = definition["capabilities"].as_object_mut() {
-                for capability in capabilities.values_mut() {
-                    if let Some(fields) = capability.as_object_mut() {
-                        fields.shift_remove("description");
-                    }
-                }
-            }
-            if let Some(routes) = definition["risky_routes"].as_array_mut() {
-                for route in routes {
-                    if let Some(fields) = route.as_object_mut() {
-                        fields.shift_remove("description");
-                    }
-                }
-            }
-            let mut tokens: Vec<_> = gateway.canonical_gateway()["token_map"]
-                .as_object()
-                .into_iter()
-                .flat_map(|tokens| tokens.iter())
-                .filter(|(_, token)| token["agent"] == agent && token["service"] == service)
-                .map(|(_, token)| token)
-                .collect();
-            tokens.sort_by_key(|token| crate::approvals::pending::digest(token));
-            value["service"] = definition;
-            value["tokens"] = json!(tokens);
-            value["authorization"] = native.authored["agents"][agent]["services"][service].clone();
-            value["contract_bindings"] = json!(
-                native.authored["agents"][agent]["contract_bindings"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|binding| binding["service"] == service)
-                    .collect::<Vec<_>>()
+            value.as_object_mut()?.extend(
+                self.gateway_approval_definition(agent, service)?
+                    .as_object()?
+                    .clone(),
             );
-            value["grant_ttl_seconds"] = native.authored["gateway"]["grant_ttl_seconds"].clone();
         }
         let digest = crate::approvals::pending::digest(&value);
         crate::credentials::wipe_json(&mut value);
         Some(digest)
     }
 
+    fn gateway_approval_definition(&self, agent: &str, service: &str) -> Option<Value> {
+        let native = self.native.as_ref()?;
+        let mut value = json!({});
+        let gateway = self.gateway()?;
+        let registry = gateway.registry()?;
+        let definition = registry.services.get(service)?;
+        let mut definition = definition.raw.clone();
+        if let Some(fields) = definition.as_object_mut() {
+            fields.shift_remove("description");
+        }
+        if let Some(capabilities) = definition["capabilities"].as_object_mut() {
+            for capability in capabilities.values_mut() {
+                if let Some(fields) = capability.as_object_mut() {
+                    fields.shift_remove("description");
+                }
+            }
+        }
+        if let Some(routes) = definition["risky_routes"].as_array_mut() {
+            for route in routes {
+                if let Some(fields) = route.as_object_mut() {
+                    fields.shift_remove("description");
+                }
+            }
+        }
+        let mut tokens: Vec<_> = gateway.canonical_gateway()["token_map"]
+            .as_object()
+            .into_iter()
+            .flat_map(|tokens| tokens.iter())
+            .filter(|(_, token)| token["agent"] == agent && token["service"] == service)
+            .map(|(_, token)| token)
+            .collect();
+        tokens.sort_by_key(|token| crate::approvals::pending::digest(token));
+        value["service"] = definition;
+        value["tokens"] = json!(tokens);
+        value["authorization"] = native.authored["agents"][agent]["services"][service].clone();
+        value["contract_bindings"] = json!(
+            native.authored["agents"][agent]["contract_bindings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|binding| binding["service"] == service)
+                .collect::<Vec<_>>()
+        );
+        value["grant_ttl_seconds"] = native.authored["gateway"]["grant_ttl_seconds"].clone();
+        Some(value)
+    }
+
+    // The operator acknowledges the service envelope, not every independent
+    // policy edit. Each request still rechecks the current policy and budgets.
+    pub(crate) fn delegated_gateway_revision(&self, agent: &str, service: &str) -> Option<String> {
+        let mut value = self.gateway_approval_definition(agent, service)?;
+        value["host_map"] = json!(
+            self.gateway()?.canonical_gateway()["host_map"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(_, target)| *target == service)
+                .collect::<std::collections::BTreeMap<_, _>>()
+        );
+        let revision = crate::approvals::pending::digest(&value);
+        crate::credentials::wipe_json(&mut value);
+        Some(revision)
+    }
+
     pub(crate) fn evidence_agent_id(&self, name: &str) -> Option<&str> {
-        self.native
-            .as_ref()?
-            .authored
-            .get("agents")?
+        let agents = self.native.as_ref()?.authored.get("agents")?.as_object()?;
+        let id = agents
             .get(name)?
             .get("agent_id")?
             .as_str()
-            .filter(|id| !id.is_empty())
+            .filter(|id| !id.is_empty())?;
+        (agents
+            .values()
+            .filter(|agent| agent["agent_id"] == id)
+            .count()
+            == 1)
+            .then_some(id)
     }
 
     pub(crate) fn evidence_reader(

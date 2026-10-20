@@ -1,0 +1,12 @@
+schema_version: 1
+name: delegated-fixture
+default_host: 127.0.0.2
+capabilities:
+  writer:
+    routes:
+      - methods: [POST]
+        path: /delegated-write/*
+risky_routes:
+  - methods: [POST]
+    path: /delegated-write/*
+    tactics: [impact]

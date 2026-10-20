@@ -11,6 +11,76 @@ pub(crate) fn path(name: &str) -> PathBuf {
 pub(crate) fn read(name: &str) -> Result<Option<Value>, Error> {
     crate::guest_commands::read_state(&path(name))
 }
+
+/// Host-owned ingress binding. A stopped or replaced generation is never a
+/// source of current-run authority, even while an old client socket is open.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRun {
+    pub agent: String,
+    pub agent_id: String,
+    pub run_id: String,
+}
+
+pub(crate) fn authority(root: &std::path::Path, name: &str, agent_id: &str) -> Option<AgentRun> {
+    let run =
+        crate::guest_commands::read_state(&root.join("agents").join(name).join("runtime.json"))
+            .ok()??;
+    let context = crate::guest_commands::read_state(
+        &root
+            .join("agents")
+            .join(name)
+            .join("config-share/host-launch-context.json"),
+    )
+    .ok()??;
+    let generation = run["run_id"].as_str()?;
+    if run["name"] != name
+        || run["agent_id"] != agent_id
+        || !matches!(run["state"].as_str(), Some("starting" | "running"))
+        || context["agent_id"] != agent_id
+        || context["generation"] != generation
+        || generation.len() != 32
+        || !generation.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let pid = run["backend_pid"].as_i64().filter(|pid| *pid > 0)?;
+    #[cfg(target_os = "linux")]
+    {
+        if crate::host_lifecycle::process_token(pid).as_deref() != run["backend_token"].as_str() {
+            return None;
+        }
+        let command = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let runsc_root = std::env::var_os("SAFEYOLO_RUNSC_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("run"));
+        if !crate::host_platform::is_runsc_boot(
+            &command,
+            &format!("safeyolo-{generation}"),
+            &runsc_root,
+        ) {
+            return None;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if crate::host_platform::vm_process_token_in(root, name, i32::try_from(pid).ok()?).as_deref()
+        != run["backend_token"].as_str()
+    {
+        return None;
+    }
+    Some(AgentRun {
+        agent: name.into(),
+        agent_id: agent_id.into(),
+        run_id: generation.into(),
+    })
+}
+
+impl AgentRun {
+    pub(crate) fn current(&self, policy: &crate::policy::Policy) -> bool {
+        policy.evidence_agent_id(&self.agent) == Some(self.agent_id.as_str())
+            && policy.agent_run(&self.agent).as_ref() == Some(self)
+    }
+}
 pub(crate) fn save(name: &str, value: &Value) -> Result<(), Error> {
     crate::guest_commands::write_json(&path(name), value)
 }

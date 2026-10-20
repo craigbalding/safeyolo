@@ -19,6 +19,7 @@ use crate::policy::{
     restore_large_toml_integers, split_destination,
 };
 
+pub(crate) mod delegations;
 pub(crate) mod network_action;
 pub(crate) mod pending;
 
@@ -51,7 +52,7 @@ impl From<std::io::Error> for ApprovalError {
     }
 }
 pub(crate) type Result<T> = std::result::Result<T, ApprovalError>;
-fn invalid(message: impl Into<String>) -> ApprovalError {
+pub(crate) fn invalid(message: impl Into<String>) -> ApprovalError {
     ApprovalError {
         kind: ErrorKind::Invalid,
         message: message.into(),

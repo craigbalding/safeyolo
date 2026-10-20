@@ -545,6 +545,7 @@ mod tests {
                 http2,
                 self.state.clone(),
                 ConnectionIdentity {
+                    run: None,
                     agent_id: "alice".into(),
                     connection_id: "owned-connection".into(),
                     source_id: None,
@@ -639,6 +640,7 @@ mod tests {
                 runtime.audit.poison_for_test();
             }
             let identity = ConnectionIdentity {
+                run: None,
                 agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
             };
             let mut request = Request::builder().uri("http://owned.invalid/")
@@ -803,6 +805,7 @@ mod tests {
             false,
             fixture.state.clone(),
             ConnectionIdentity {
+                run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,
@@ -1239,6 +1242,7 @@ mod tests {
             true,
             fixture.state.clone(),
             ConnectionIdentity {
+                run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,

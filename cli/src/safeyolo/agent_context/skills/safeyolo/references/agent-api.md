@@ -5,6 +5,7 @@
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
+- [Delegated decisions](#delegated-decisions)
 - [Approval context](#approval-context)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
@@ -73,8 +74,41 @@ sy_api /health | jq
 ```
 
 The API permits selected self-service mutations (flow tags, access requests,
-contract submissions, and plumb messages) but cannot change policy, approve
-requests, change policy controls, or reach the admin API.
+contract submissions, and plumb messages). A reviewer can also resolve a
+canonical approval inside an operator-configured deciding delegation. The API
+cannot administer policy, create delegations, change policy controls, or reach
+the Admin API.
+
+## Delegated decisions
+
+When the operator has configured deciding authority for your durable local
+identity, the normal native Coord MCP server exposes `list_approvals`,
+`read_approval` and `resolve_approval`. Attention carries only an approval
+reference. Room membership and an Agent API bearer do not grant deciding
+authority. Direct reads and decisions each recheck your current run and one
+current delegation.
+
+Read the canonical request and its `choices`. Resolve only an offered
+`delegation` and `option`, with `decision` set to `approve`, `reject` or `defer`.
+Do not replace host, identity, credential, service or policy fields. Network and
+credential run access is reusable within its declared scope. Credential
+approval does not limit an API operation or change shared baseline approval.
+A gateway route grant is not an approval of an exact payload.
+
+The equivalent Agent API routes are `GET /approvals`,
+`GET /approvals/APPROVAL_ID` and `POST /approvals/APPROVAL_ID/resolve`.
+The decision JSON contains only `decision`, `delegation` and `option`.
+Reconcile through the canonical list after reconnect. If a reply is lost, read
+the canonical outcome before another decision. Refusal installs no policy deny
+rule. Deferral leaves the request pending. The worker must retry after an
+approval; the host does not replay its request.
+
+The host operator configures and inspects delegations with
+`approvals delegation preview|check|apply|revoke` and `approvals delegations`.
+Unsupported bounds fail before mutation. Reviewers cannot approve for
+themselves, combine partial delegations, bypass current operator denials, or
+inherit authority after identity/run replacement. Ordinary operator approval
+controls remain available when reviewer access or attention is unavailable.
 
 ## Approval context
 

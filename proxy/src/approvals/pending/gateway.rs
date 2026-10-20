@@ -111,6 +111,7 @@ fn credential_bindings(
 
 pub(crate) async fn bind_risky(
     runtime: &std::sync::Arc<Runtime>,
+    run: Option<&crate::host_runs::AgentRun>,
     event: &mut Event,
     request: NetworkRequest<'_>,
     scheme: &str,
@@ -133,16 +134,19 @@ pub(crate) async fn bind_risky(
     let action = json!({"kind":"gateway_route","agent":agent,"agent_id":agent_id,
         "service":selection.service,"capability":selection.capability,"credential":selection.vault_token,
         "account":selection.account,"host":request.host,"method":request.method,"path":path,
+        "run":run,"binding_id":selection.binding_id,
         "irreversible":selection.risky_route.as_ref().is_some_and(|route| route.irreversible)});
     let ttl = runtime
         .gateway_grants
         .as_ref()
         .ok_or_else(|| invalid("gateway grant store unavailable"))?
         .approval_ttl_seconds()?;
-    let options = ["once", "session", "remembered"].into_iter().map(|id| OptionScope {
+    let mut options: Vec<_> = ["once", "session", "remembered"].into_iter().map(|id| OptionScope {
         id:id.into(), effect:format!("Allow {agent} to use {} at the exact path {} on {} with a {id} grant. The grant expires {ttl} seconds after approval. A successful response consumes once; proxy restart also ends session.", request.method, path, selection.service),
         session_id:(id == "session").then(|| runtime.audit.approvals().session_id.clone()),
         parameters:json!({"lifetime":id,"ttl_seconds":ttl,"path_match":"literal"}) }).collect();
+    options.push(super::run_option("Run-bound reusable access to the canonical service, capability, binding, method and exact path. Gateway expiry and all contract checks remain. This is not payload-bound approval."));
+    options.push(OptionScope { id: "delegated_once".into(), effect: "One reserved gateway route use for the current worker run. Existing response consumption/release semantics apply. This does not guarantee exactly-once external effects or bind the payload.".into(), session_id: None, parameters: Value::Null });
     let authority = Authority {
         revision: revision(policy, &action)
             .ok_or_else(|| invalid("gateway revision unavailable"))?,

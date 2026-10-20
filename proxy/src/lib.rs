@@ -286,6 +286,7 @@ impl CredentialActivation {
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
+    run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
 }
@@ -297,6 +298,9 @@ impl ConnectionIdentity {
     }
 
     fn request_identity(&self) -> network_guard::Identity<'_> {
+        if let Some(run) = &self.run {
+            return network_guard::Identity::Current(run);
+        }
         self.request_agent().map_or(
             network_guard::Identity::Unavailable,
             network_guard::Identity::Resolved,
@@ -491,6 +495,14 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            if let Some(policy) = policy.as_mut() {
+                policy.set_identity_root(
+                    config
+                        .native_config_dir
+                        .clone()
+                        .unwrap_or_else(host_platform::config_dir),
+                );
+            }
             if let Some(controls) = policy.as_ref().and_then(policy::Policy::native_controls) {
                 controls.configure(&mut config);
             }
@@ -1490,6 +1502,9 @@ async fn accept_agents(
                 Ok((socket, _)) => {
                     let identity = ConnectionIdentity {
                         agent_id: agent_id.clone(),
+                        run: runtime.read().ok().and_then(|runtime| {
+                            runtime.policy.as_ref()?.agent_run(&agent_id)
+                        }),
                         connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
                         source_id: source_id.clone(),
                     };

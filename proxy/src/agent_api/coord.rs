@@ -151,7 +151,7 @@ impl CoordClient {
 
     /// Only the host approval path calls this operation. Use the existing
     /// private agent room, membership checks and transport-owned attribution.
-    pub(crate) async fn ask_approval_context(
+    pub(crate) async fn send_approval_notice(
         &self,
         agent: &str,
         agent_id: &str,

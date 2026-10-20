@@ -334,6 +334,11 @@ pub(crate) fn vm_process_token(name: &str, pid: i32) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn vm_process_token_in(root: &std::path::Path, name: &str, pid: i32) -> Option<String> {
+    vm_process_token_detail_in(root, name, pid).ok()
+}
+
+#[cfg(target_os = "macos")]
 fn vz_diagnostic_path(path: &std::path::Path) -> String {
     let escaped = format!("{path:?}");
     if escaped.chars().count() <= 512 {
@@ -348,10 +353,17 @@ fn vz_diagnostic_path(path: &std::path::Path) -> String {
 
 #[cfg(target_os = "macos")]
 fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
-    let executable = config_dir().join("bin/safeyolo-vm");
-    let control = config_dir()
-        .join("data/vm-control")
-        .join(format!("{name}.sock"));
+    vm_process_token_detail_in(&config_dir(), name, pid)
+}
+
+#[cfg(target_os = "macos")]
+fn vm_process_token_detail_in(
+    root: &std::path::Path,
+    name: &str,
+    pid: i32,
+) -> Result<String, String> {
+    let executable = root.join("bin/safeyolo-vm");
+    let control = root.join("data/vm-control").join(format!("{name}.sock"));
     let expected = format!(
         "expected_executable={} expected_control_argument={}",
         vz_diagnostic_path(&executable),
@@ -363,8 +375,7 @@ fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
     // Keep the same PID/birth and private control-argument checks for that file.
     let mut arguments = macos_process_arguments_detail(pid, &executable);
     if arguments.is_err()
-        && let Ok(binaries) =
-            crate::guest_acquisition::retained_host_binaries(&config_dir(), "safeyolo-vm")
+        && let Ok(binaries) = crate::guest_acquisition::retained_host_binaries(root, "safeyolo-vm")
     {
         for binary in binaries.into_iter().skip(1) {
             if let Ok(retained) = macos_process_arguments_detail(pid, &binary) {
@@ -787,7 +798,7 @@ pub(crate) fn backend_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
+pub(crate) fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
     let fields = command.split(|b| *b == 0).collect::<Vec<_>>();
     let root = root.as_os_str().as_bytes();
     // gVisor serializes sentry argv as runsc-sandbox and --root=PATH.

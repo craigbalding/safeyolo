@@ -125,6 +125,22 @@ impl Client {
             .find(|tool| tool["name"] == name)
             .ok_or("unknown Coord tool")?;
         validate_arguments(args, &spec["inputSchema"])?;
+        if name == "list_approvals" {
+            return self.get("/approvals").await;
+        }
+        if matches!(name, "read_approval" | "resolve_approval") {
+            let id = text(args, "approval_id")?;
+            if !crate::approvals::pending::valid_id(id) {
+                return Err("invalid approval_id".into());
+            }
+            let path = format!("/approvals/{id}");
+            if name == "read_approval" {
+                return self.get(&path).await;
+            }
+            return self.request(Method::POST,&format!("{path}/resolve"),json!({
+                "decision":text(args,"decision")?,"delegation":text(args,"delegation")?,"option":text(args,"option")?
+            }),Duration::from_secs(60)).await;
+        }
         if matches!(
             name,
             "wait_for_coord" | "wait_for_attention" | "read_attention"
@@ -314,6 +330,24 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "list_approvals",
+        "List canonical pending approvals inside your current deciding delegation. Room references confer no authority.",
+        json!({}),
+        &[],
+    );
+    add(
+        "read_approval",
+        "Read trusted request facts and host-generated choices. Raw peer traffic and secrets are not returned. Authorization is checked on every read.",
+        json!({"approval_id":string}),
+        &["approval_id"],
+    );
+    add(
+        "resolve_approval",
+        "Approve, reject or defer a canonical request using one current delegation and an offered option. A lost response requires canonical readback before another decision. This does not grant policy administration.",
+        json!({"approval_id":string,"decision":{"type":"string","enum":["approve","reject","defer"]},"delegation":string,"option":string}),
+        &["approval_id", "decision", "delegation", "option"],
+    );
     add(
         "join_room",
         "Attach to an existing permitted membership. A room name is not a capability.",

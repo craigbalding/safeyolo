@@ -2091,6 +2091,12 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     };
     let current = crate::host_agents::refresh(agent)?;
     let agent = &current;
+    if let Some(mut run) = crate::host_runs::read(&agent.name)?
+        && run["agent_id"] == agent.id
+    {
+        run["state"] = "stopping".into();
+        crate::host_runs::save(&agent.name, &run)?;
+    }
     let command_warning = stop_supervisor(&agent.name)
         .await
         .err()
