@@ -432,17 +432,21 @@ async def test_typed_actions_are_structured_but_not_executed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("kwargs", "message", "reason"),
+    ("threaded", "kwargs", "message", "reason"),
     [
-        ({"user_id": "x" * 26}, "ordinary reply", "not_configured_operator"),
-        ({"channel_id": OTHER_CHANNEL_ID}, "ordinary reply", "channel_mismatch"),
-        ({"edit_at": 1}, "ordinary reply", "edited_or_deleted"),
-        ({}, "!safeyolo owner-now", "malformed_body_or_action"),
+        (True, {"user_id": "x" * 26}, "ordinary reply", "not_configured_operator"),
+        (False, {"user_id": "x" * 26}, "ordinary message", "not_configured_operator"),
+        (True, {"channel_id": OTHER_CHANNEL_ID}, "ordinary reply", "channel_mismatch"),
+        (False, {"channel_id": OTHER_CHANNEL_ID}, "ordinary message", "channel_mismatch"),
+        (True, {"edit_at": 1}, "ordinary reply", "edited_or_deleted"),
+        (False, {"edit_at": 1}, "ordinary message", "edited_or_deleted"),
+        (True, {}, "!safeyolo owner-now", "malformed_body_or_action"),
     ],
 )
 async def test_untrusted_or_ambiguous_inbound_posts_never_become_operator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    threaded: bool,
     kwargs: dict[str, Any],
     message: str,
     reason: str,
@@ -454,7 +458,7 @@ async def test_untrusted_or_ambiguous_inbound_posts_never_become_operator(
     install_coord(monkeypatch, coord)
     adapter = mattermost.MattermostAdapter(config, state, remote)
     await adapter.run_once()
-    post = remote.operator_reply(remote.posts[0]["id"], message, **kwargs)
+    post = remote.operator_reply(remote.posts[0]["id"] if threaded else "", message, **kwargs)
     if kwargs.get("channel_id") == OTHER_CHANNEL_ID:
         await adapter._process_inbound_post(config.rooms[0], post)
     else:
