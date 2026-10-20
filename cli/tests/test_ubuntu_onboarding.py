@@ -1312,8 +1312,20 @@ class ObserverChecks(unittest.TestCase):
                 "signal.pause()\n")
         stub = m.project / "shutdown.py"
         stub.write_text(code)
+        group, read = m.console_group, os.read
+
+        def slow_group(pid):
+            members = group(pid)
+            # Preserve real ownership scans, but make per-read scans too slow
+            # to drain the finite TERM response before the existing deadline.
+            time.sleep(0.05)
+            return members
+
         with patch.object(m, "LAUNCH", ["exec", sys.executable, str(stub)]), \
-             patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")):
+             patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")), \
+             patch.object(m, "console_group", autospec=True, side_effect=slow_group), \
+             patch.object(m.os, "read", autospec=True,
+                          side_effect=lambda fd, count: read(fd, min(count, 1024))):
             with self.assertRaisesRegex(ValueError, "capture failed"):
                 m.entered("warm", 2)
         row = m.x["product_commands"][-1]
