@@ -95,6 +95,9 @@ jobs:
 
   guest-inputs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      actions: read
     needs: package-inputs
     strategy:
       fail-fast: false
