@@ -679,6 +679,27 @@ fn policy_error(error: impl std::fmt::Display) -> Outcome {
     response(StatusCode::BAD_REQUEST, json!({"error":"invalid policy"}))
 }
 
+fn credential_approval_error(error: crate::Error) -> Outcome {
+    use crate::approvals::ErrorKind;
+
+    let message = match error
+        .downcast_ref::<crate::approvals::ApprovalError>()
+        .map(|error| error.kind)
+    {
+        Some(ErrorKind::Invalid | ErrorKind::Unsupported) => return policy_error(error),
+        Some(ErrorKind::Activation) => "credential approval activation failed",
+        Some(ErrorKind::Rollback) => "credential approval rollback failed",
+        _ => "credential approval could not be saved or activated",
+    };
+    // Compiler and file errors can contain authored values. Keep the failure
+    // category visible without returning policy or credential contents.
+    response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"status":"rejected", "error":message,
+            "repair":"Run policy show to inspect saved and active state, then correct the cause before deciding again."}),
+    )
+}
+
 async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
     let Some(policy) = policy else {
         return response(
@@ -2085,6 +2106,58 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             Ok(path) => path,
             Err(outcome) => return Ok(*outcome),
         };
+        let added = {
+            let destination = destination.to_owned();
+            let credential_value = credential_value.clone();
+            let tier = tier.to_owned();
+            let client_ip = client_ip.map(str::to_owned);
+            move |count| {
+                let mut outcome = response(
+                    StatusCode::OK,
+                    json!({"status":"added","destination":destination,"cred_id":credential_value,"tier":tier,"permission_count":count}),
+                );
+                outcome.audit = Some(mutation(
+                    "admin.approval_added",
+                    format!(
+                        "Baseline approval added for {}",
+                        crate::network_guard::sanitize(&destination)
+                    ),
+                    json!({"client_ip":client_ip,"destination":destination,"cred_id":credential_value,"tier":tier}),
+                ));
+                outcome
+            }
+        };
+        if policy.and_then(Policy::native_controls).is_some() {
+            let (Some(state), Some(audit)) = (task_state, service_audit) else {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"credential approval activation is unavailable"}),
+                ));
+            };
+            let state = state.clone();
+            let destination = destination.to_owned();
+            let writer = audit.writer.clone();
+            let client_ip = zeroize::Zeroizing::new(audit.client_ip.to_owned());
+            let target = zeroize::Zeroizing::new(audit.target.to_owned());
+            // Retain activation and its audit attempt if the caller disconnects,
+            // as with policy apply and service policy edits.
+            return audit
+                .mutation_owner
+                .spawn_blocking(move || {
+                    let mut outcome = match crate::edit_native_policy_document(&state, |document| {
+                        crate::approvals::insert_credentials(document, &destination, &credentials)
+                    }) {
+                        Ok(count) => added(count),
+                        Err(error) => credential_approval_error(error),
+                    }
+                    .submit_audit(&writer, &client_ip, &target)?;
+                    outcome.audit = None;
+                    Ok(outcome)
+                })
+                .await?
+                .await
+                .map_err(|_| Error::ServiceMutation)?;
+        }
         let count = match crate::approvals::allow_credentials(
             path,
             destination,
@@ -2094,19 +2167,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             Ok(count) => count,
             Err(error) => return Ok(policy_error(error)),
         };
-        let mut outcome = response(
-            StatusCode::OK,
-            json!({"status":"added","destination":destination,"cred_id":credential_value,"tier":tier,"permission_count":count}),
-        );
-        outcome.audit = Some(mutation(
-            "admin.approval_added",
-            format!(
-                "Baseline approval added for {}",
-                crate::network_guard::sanitize(destination)
-            ),
-            json!({"client_ip":client_ip,"destination":destination,"cred_id":credential_value,"tier":tier}),
-        ));
-        return Ok(outcome);
+        return Ok(added(count));
     }
     if method == Method::POST && path == "/admin/policy/baseline/deny" {
         let mut data = match read_json(request).await? {

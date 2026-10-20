@@ -231,7 +231,7 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
         };
         let state = state.clone();
         return mutation_owner.spawn_blocking(move || {
-            crate::edit_service_policy(&state, |document| {
+            crate::edit_native_policy_document(&state, |document| {
                 document["agents"][authorization.agent.as_str()]["services"][authorization.service.as_str()]["capability"] = toml_edit::value(authorization.capability.as_str());
                 if !authorization.credential.is_empty() {
                     document["agents"][authorization.agent.as_str()]["services"][authorization.service.as_str()]["token"] = toml_edit::value(authorization.credential.as_str());
@@ -301,7 +301,7 @@ pub(super) async fn revoke<B: Body<Data = Bytes>>(
     if let Some(state) = state {
         let state = state.clone();
         return mutation_owner.spawn_blocking(move || {
-            crate::edit_service_policy(&state, |document| {
+            crate::edit_native_policy_document(&state, |document| {
                 let services = document.get_mut("agents").and_then(|agents| agents.get_mut(revocation.agent.as_str()))
                     .and_then(|agent| agent.get_mut("services")).and_then(Item::as_table_like_mut).ok_or_else(mutation_error)?;
                 services.remove(revocation.service.as_str()).ok_or_else(mutation_error)?;
