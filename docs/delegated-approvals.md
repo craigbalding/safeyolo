@@ -188,7 +188,9 @@ The maintained `tests/blackbox/installed_shared_approvals.py` runner has a
 `--delegated` mode for an owned disposable Linux instance. It requires the
 selected native proxy and two real guests to be running. The reviewer must
 already have its normal Codex login, saved model configuration and current
-native Coord MCP adapter. Its coding session must be idle. No model choice or
+native Coord MCP adapter. The reviewer guest must run, but its coding session
+must be stopped, exited or failed. The runner starts its own foreground coding
+session and refuses to replace an existing live session. No model choice or
 new login is required by this feature.
 
 Before starting that disposable proxy, install
@@ -209,8 +211,8 @@ From the selected source checkout, run:
   --interfaces --real-helper --delegated
 ```
 
-This mode configures three typed delegations, starts the idle reviewer in its
-supported attention wait, and exercises network, synthetic credential and
+This mode configures three typed delegations, starts a reviewer coding session
+in its supported attention wait, and exercises network, synthetic credential and
 gateway-once decisions. It checks canonical decisions and independently
 observes origin requests. It also checks the reviewer and a second port remain
 blocked. Model events stay in private files under the instance's logs. The
