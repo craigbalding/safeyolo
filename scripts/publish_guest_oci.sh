@@ -74,10 +74,20 @@ if (( ! from_layout )); then
                 "${annotations[@]}" --annotation "dev.safeyolo.guest.build-base=$build_base" \
                 "$layout:$version-$platform" 'guest.tar.zst:application/vnd.safeyolo.guest.v1.tar+zstd' >/dev/null
         )
-        children+=("$("$oras" resolve --oci-layout "$layout:$version-$platform")")
+        child=$("$oras" resolve --oci-layout "$layout:$version-$platform")
+        children+=("$child")
+        jq --arg digest "$child" '{digest: $digest, platform: .}' \
+            "$scratch/platform.json" >> "$scratch/platforms.json"
     done
     "$oras" manifest index create --oci-layout --artifact-type "$artifact_type" \
-        "${annotations[@]}" "$layout:$version" "${children[@]}" >/dev/null
+        "${annotations[@]}" --output "$scratch/index.json" "$layout:$version" "${children[@]}"
+    # Supply descriptor platforms explicitly for our custom config media type.
+    # Bind each descriptor to the platform used for its unchanged child config.
+    jq --slurpfile platforms "$scratch/platforms.json" '
+        .manifests |= map(. as $child |
+            .platform = ($platforms[] | select(.digest == $child.digest) | .platform))
+    ' "$scratch/index.json" > "$scratch/platform-index.json"
+    "$oras" manifest push --oci-layout "$layout:$version" "$scratch/platform-index.json" >/dev/null
 fi
 index_digest=$("$oras" resolve --oci-layout "$layout:$version")
 index_file="$layout/blobs/sha256/${index_digest#sha256:}"

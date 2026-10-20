@@ -1347,7 +1347,23 @@ async fn decide(
             trace.error("GuardError");
         }
         let outcome = result?;
-        if let Some(event) = approval_event {
+        let mut pending = None;
+        if let Some(mut event) = approval_event {
+            pending = crate::approvals::pending::bind_network(
+                &runtime.audit,
+                policy,
+                &mut event,
+                &crate::policy::NetworkRequest {
+                    agent: identity.request_agent(),
+                    host: request.host,
+                    port: Some(request.port),
+                    method: request.method,
+                    path: request.path,
+                },
+                request.scheme,
+                runtime.credential_guard.as_ref(),
+            )
+            .await?;
             if let Err(error) = runtime.audit.emit_confirmed(event).await {
                 if let Some(trace) = &trace {
                     trace.error("AuditError");
@@ -1374,14 +1390,20 @@ async fn decide(
             "trace": outcome.trace,
             "trace_requested": request.trace_requested,
             "metadata": outcome.metadata,
-            "pdp": outcome.pdp
+            "pdp": outcome.pdp,
+            "approval_id": (outcome.kind == OutcomeKind::Allowed).then(||
+                policy.network_approval(identity.request_agent(), request.host, request.port)).flatten()
             }),
         ))?;
         let allow = outcome.kind != OutcomeKind::Blocked;
         let (status, headers, body) = match outcome.response {
             Some(response) => {
                 let body = String::from_utf8(response.body_bytes())?;
-                (Some(response.status), response.headers, Some(body))
+                let mut headers = response.headers;
+                if let Some(record) = &pending {
+                    headers.push(("x-safeyolo-approval-id".into(), record.approval_id.clone()));
+                }
+                (Some(response.status), headers, Some(body))
             }
             None => (None, Vec::new(), None),
         };
@@ -1464,7 +1486,8 @@ fn record_agent_api(
 // destination, and upgrade ownership explicitly, as `forward` does.
 #[allow(clippy::too_many_arguments)]
 async fn local_agent_api<B>(
-    runtime: &Runtime,
+    runtime: &Arc<Runtime>,
+    state: &RuntimeState,
     traffic: Arc<traffic::Traffic>,
     identity: &ConnectionIdentity,
     request_id: &str,
@@ -1592,6 +1615,7 @@ where
             },
             Some(request_id),
             Some(runtime.plumb.as_ref()),
+            Some(state),
         )
         .await?
     } else {
@@ -1604,15 +1628,24 @@ where
     if !outcome.audit_owned
         && let Some(audit) = &outcome.audit
     {
+        let mut event = audit.to_event();
+        let pending =
+            crate::approvals::pending::bind_agent_request(runtime, &mut event, request_id).await?;
+        if let Some(record) = &pending {
+            outcome
+                .response
+                .headers
+                .push(("x-safeyolo-approval-id".into(), record.approval_id.clone()));
+        }
         let submission = if audit.kind == agent_api::AuditKind::FlowReadAll
             || audit
                 .approval
                 .as_ref()
                 .is_some_and(|approval| approval.required)
         {
-            runtime.audit.emit_confirmed(audit.to_event()).await
+            runtime.audit.emit_confirmed(event).await
         } else {
-            runtime.audit.emit(audit.to_event()).map(|_| ())
+            runtime.audit.emit(event).map(|_| ())
         };
         if let Err(error) = submission {
             evidence_failed = true;
@@ -2193,6 +2226,7 @@ where
         {
             let reply = local_agent_api(
                 &runtime,
+                &state,
                 traffic
                     .as_ref()
                     .expect("ordinary local HTTP traffic")
@@ -2600,9 +2634,39 @@ where
         publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
         // Canonical audit is emitted exactly once per guard intent. The
         // attribution is trusted UDS identity; no credential value enters it.
-        for intent in &outcome.audit {
-            let event = intent.event(identity.audit_attribution());
-            if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+        let mut events: Vec<_> = outcome
+            .audit
+            .iter()
+            .map(|intent| intent.event(identity.audit_attribution()))
+            .collect();
+        let pending = crate::approvals::pending::bind_credentials(
+            &runtime.audit,
+            policy,
+            &mut events,
+            &crate::policy::NetworkRequest {
+                agent: identity.request_agent(),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            outcome
+                .response
+                .as_ref()
+                .is_some_and(|reply| reply.status == 428),
+            guard,
+        )
+        .await?;
+        for mut event in events {
+            crate::approvals::pending::correlate_credential(policy, &mut event);
+            if event.decision == Some(crate::audit::Decision::RequireApproval)
+                || (pending.is_some()
+                    && event
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.required))
+            {
                 runtime.audit.emit_confirmed(event).await?;
             } else {
                 runtime.audit.emit(event)?;
@@ -2633,6 +2697,11 @@ where
                 blocked
                     .headers_mut()
                     .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            if let Some(record) = &pending {
+                blocked
+                    .headers_mut()
+                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
             }
             strip_hop_headers(blocked.headers_mut());
             traffic::local_reply(
@@ -2884,13 +2953,34 @@ where
                                 "connection_id":identity.connection_id,
                             })
                             .into();
-                            if risk.effect == crate::policy::Effect::Prompt {
+                            let pending = if risk.effect == crate::policy::Effect::Prompt {
+                                let pending = crate::approvals::pending::bind_risky(
+                                    &runtime,
+                                    &mut audit,
+                                    crate::policy::NetworkRequest {
+                                        agent: Some(agent),
+                                        host: &destination.policy_host,
+                                        port: Some(destination.port),
+                                        method,
+                                        path: &destination.path,
+                                    },
+                                    &destination.scheme,
+                                    &credential,
+                                )
+                                .await?;
                                 runtime.audit.emit_confirmed(audit).await?;
+                                pending
                             } else {
                                 runtime.audit.emit(audit)?;
-                            }
-                            let reply =
+                                None
+                            };
+                            let mut reply =
                                 gateway_response(status, "GATEWAY_RISKY_ROUTE", request_id)?;
+                            if let Some(record) = pending {
+                                reply
+                                    .headers_mut()
+                                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
+                            }
                             return Ok((prior_block(reply), "deny".into()));
                         }
                     }
@@ -2901,6 +2991,7 @@ where
 "capability": credential.capability,
 "method": request.method().as_str(),
 "path": risky_path
+,"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id)
 })))?;
                 }
                 let full_url = crate::credentials::Secret::new(format!(
@@ -3108,9 +3199,39 @@ where
             }
         };
         publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
-        for intent in &outcome.audit {
-            let event = intent.event(identity.audit_attribution());
-            if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+        let mut events: Vec<_> = outcome
+            .audit
+            .iter()
+            .map(|intent| intent.event(identity.audit_attribution()))
+            .collect();
+        let pending = crate::approvals::pending::bind_credentials(
+            &runtime.audit,
+            policy,
+            &mut events,
+            &crate::policy::NetworkRequest {
+                agent: identity.request_agent(),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            outcome
+                .response
+                .as_ref()
+                .is_some_and(|reply| reply.status == 428),
+            guard,
+        )
+        .await?;
+        for mut event in events {
+            crate::approvals::pending::correlate_credential(policy, &mut event);
+            if event.decision == Some(crate::audit::Decision::RequireApproval)
+                || (pending.is_some()
+                    && event
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.required))
+            {
                 runtime.audit.emit_confirmed(event).await?;
             } else {
                 runtime.audit.emit(event)?;
@@ -3141,6 +3262,11 @@ where
                 blocked
                     .headers_mut()
                     .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            if let Some(record) = &pending {
+                blocked
+                    .headers_mut()
+                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
             }
             strip_hop_headers(blocked.headers_mut());
             traffic::local_reply(

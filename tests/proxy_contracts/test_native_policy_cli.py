@@ -458,22 +458,18 @@ def test_installed_credential_approval_keeps_destination_scope(tmp_path):
                    and row["event"] == "security.credential_guard" for row in log_view["events"])
         assert CUSTOM_TOKEN not in logs.stdout
         pending = instance.admin("GET", "/admin/approvals")
-        approval = next(row for row in pending["approvals"] if row.get("request_id") == event["request_id"])
         fingerprint = event["details"]["fingerprint"]
-        assert approval["approval"]["key"] == fingerprint
+        # This listener has no durable agent ID. Its 428 and explicit
+        # fingerprint controls remain usable without assisted authority.
+        assert pending["approvals"] == []
         assert CUSTOM_TOKEN not in json.dumps(pending)
         approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
         assert approved.returncode == 0, approved.stderr
         assert CUSTOM_TOKEN not in approved.stdout + approved.stderr
-        deadline = time.monotonic() + 4
-        while True:
-            shown = instance.show()
-            if shown["saved_matches_active"] and fingerprint in shown["effective"].get("hosts", {}).get("allowed.invalid", {}).get("allow", []):
-                break
-            assert time.monotonic() < deadline, shown
-            time.sleep(0.02)
-        assert shown["effective"]["hosts"]["allowed.invalid"]["allow"] == [fingerprint]
         custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN, rule="synthetic-fixture")
+        shown = instance.show()
+        assert shown["saved_matches_active"]
+        assert shown["effective"]["hosts"]["allowed.invalid"]["allow"] == [fingerprint]
         custom_credential_request(instance, origins, "forbidden.invalid", token=CUSTOM_TOKEN,
                                   status=428, rule="synthetic-fixture")
         another = CUSTOM_TOKEN + "-next"
@@ -644,7 +640,7 @@ rules = [{action="credential:use", resource="forbidden.invalid/*", effect="deny"
         for token in tokens:
             event = send(token, expected=428)
             pending = instance.admin("GET", "/admin/approvals")
-            assert any(row.get("request_id") == event["request_id"] for row in pending["approvals"])
+            assert pending["approvals"] == []  # No durable agent IDs in this fixture.
             assert all(secret not in json.dumps(pending) for secret in tokens)
             fingerprint = event["details"]["fingerprint"]
             fingerprints.append(fingerprint)
@@ -754,7 +750,6 @@ def test_installed_unknown_bearer_websocket_requires_exact_approval(tmp_path):
         fingerprint = upgrade(token, 428)
         approved = instance.cli("credentials", "approve", fingerprint, "--destination", "127.0.0.1")
         assert approved.returncode == 0, approved.stderr
-        instance.apply(instance.policy.read_text())
         upgrade(token, 101)
         upgrade(replacement, 428)
         denied = tomlkit.parse(instance.policy.read_text())
@@ -1054,8 +1049,13 @@ def test_installed_unlisted_destination_effects(tmp_path, effect, status):
     with origin_server() as origin, native_instance(
         tmp_path, parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
     ) as instance:
-        instance.apply(f'[hosts]\n"*" = {{egress="{effect}"}}\n')
-        delivered(instance, origin, "unlisted.invalid:8123", status=status, pending=effect == "prompt")
+        source = f'[hosts]\n"*" = {{egress="{effect}"}}\n'
+        instance.apply(source)
+        delivered(instance, origin, "unlisted.invalid:8123", status=status)
+        if effect == "prompt":
+            assert instance.admin("GET", "/admin/approvals")["approvals"] == []
+            instance.apply(source + '\n[agents.alice]\nagent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n')
+            delivered(instance, origin, "unlisted.invalid:8123", status=428, pending=True)
 
 
 @pytest.mark.parametrize("global_effect,agent_effect,status", [("deny", "allow", 200), ("allow", "deny", 403)])

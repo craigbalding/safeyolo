@@ -392,11 +392,24 @@ impl Policy {
                         if let Some(host) = host.as_object_mut() {
                             host.shift_remove("approval_request_id");
                             host.shift_remove("approval_action");
+                            host.shift_remove("approval_id");
+                            host.shift_remove("credential_approval_ids");
                         }
                     }
                 }
             }
         }
+        if let Some(hosts) = fields.get_mut("hosts").and_then(Value::as_object_mut) {
+            for host in hosts.values_mut() {
+                if let Some(host) = host.as_object_mut() {
+                    host.shift_remove("approval_id");
+                    host.shift_remove("credential_approval_ids");
+                }
+            }
+        }
+        // Approval receipts accompany committed policy effects. They are not
+        // permissions and must not enter the compiled baseline.
+        fields.shift_remove("approval_results");
         let logging: Logging =
             serde_json::from_value(fields.shift_remove("logging").unwrap_or_else(|| json!({})))
                 .map_err(|error| invalid(format!("logging: {error}")))?;

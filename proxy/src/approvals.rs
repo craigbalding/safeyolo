@@ -1,6 +1,6 @@
-//! Network approvals are durable host-policy edits, not independent grants.
-//! Prompt metadata retains the current audit schema. Gateway once/session grants
-//! are a separate capability and are not represented here.
+//! Native pending records identify fixed network, credential and gateway
+//! requests. Decisions use existing host-policy edits and the gateway grant
+//! store. Audit text cannot create pending authority.
 
 use std::{
     fmt,
@@ -20,6 +20,7 @@ use crate::policy::{
 };
 
 pub(crate) mod network_action;
+pub(crate) mod pending;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -49,7 +50,7 @@ impl From<std::io::Error> for ApprovalError {
         }
     }
 }
-type Result<T> = std::result::Result<T, ApprovalError>;
+pub(crate) type Result<T> = std::result::Result<T, ApprovalError>;
 fn invalid(message: impl Into<String>) -> ApprovalError {
     ApprovalError {
         kind: ErrorKind::Invalid,
@@ -327,44 +328,51 @@ pub fn allow_credentials(
     credentials: &[String],
     activate: impl FnMut(&str) -> std::result::Result<(), String>,
 ) -> Result<usize> {
+    update_policy(
+        path,
+        false,
+        |document, _| insert_credentials(document, destination, credentials),
+        activate,
+    )
+}
+
+/// Reuse the same host edit inside the running proxy's policy transaction.
+pub(crate) fn insert_credentials(
+    document: &mut DocumentMut,
+    destination: &str,
+    credentials: &[String],
+) -> Result<usize> {
     let scope = NetworkScope::new(destination, None, None)?;
     if credentials.is_empty() || credentials.iter().any(String::is_empty) {
         return Err(invalid("credential identifier must be non-empty"));
     }
-    update_policy(
-        path,
-        false,
-        |document, _| {
-            let hosts = hosts_table(document, &scope)?;
-            let item = hosts
-                .entry(&scope.destination())
-                .or_insert(Item::Value(Value::InlineTable(InlineTable::new())));
-            let table = item
-                .as_table_like_mut()
-                .ok_or_else(|| invalid("host entry must be a table"))?;
-            let allow = match table.get_mut("allow") {
-                Some(item) => item
-                    .as_value_mut()
-                    .and_then(Value::as_array_mut)
-                    .ok_or_else(|| invalid("host allow must be an array"))?,
-                None => {
-                    table.insert("allow", Item::Value(Value::Array(toml_edit::Array::new())));
-                    table
-                        .get_mut("allow")
-                        .and_then(Item::as_value_mut)
-                        .and_then(Value::as_array_mut)
-                        .ok_or_else(|| invalid("host allow must be an array"))?
-                }
-            };
-            for credential in credentials {
-                if !allow.iter().any(|value| value.as_str() == Some(credential)) {
-                    allow.push(credential);
-                }
-            }
-            Ok(allow.len())
-        },
-        activate,
-    )
+    let hosts = hosts_table(document, &scope)?;
+    let item = hosts
+        .entry(&scope.destination())
+        .or_insert(Item::Value(Value::InlineTable(InlineTable::new())));
+    let table = item
+        .as_table_like_mut()
+        .ok_or_else(|| invalid("host entry must be a table"))?;
+    let allow = match table.get_mut("allow") {
+        Some(item) => item
+            .as_value_mut()
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| invalid("host allow must be an array"))?,
+        None => {
+            table.insert("allow", Item::Value(Value::Array(toml_edit::Array::new())));
+            table
+                .get_mut("allow")
+                .and_then(Item::as_value_mut)
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| invalid("host allow must be an array"))?
+        }
+    };
+    for credential in credentials {
+        if !allow.iter().any(|value| value.as_str() == Some(credential)) {
+            allow.push(credential);
+        }
+    }
+    Ok(allow.len())
 }
 
 /// Update only a host's rate field, retaining all other operator policy data.

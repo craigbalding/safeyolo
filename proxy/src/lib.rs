@@ -487,7 +487,8 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
-                .with_named_controls(config.native_product),
+                .with_named_controls(config.native_product)
+                .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),
         };
         let result = (|| {
@@ -961,21 +962,21 @@ pub(crate) fn edit_native_policy<T>(
     }
 }
 
-/// Service edits publish through the same store/file/runtime transaction as
-/// policy apply, preserving grants, current counters, and exact rollback.
-pub(crate) fn edit_service_policy(
+/// Document edits use the policy apply transaction, preserving grants,
+/// current counters, and exact rollback.
+pub(crate) fn edit_native_policy_document<T>(
     state: &RuntimeState,
-    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), approvals::ApprovalError>,
-) -> Result<(), Error> {
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<T, approvals::ApprovalError>,
+) -> Result<T, Error> {
     edit_native_policy(state, false, |source| {
         let (mut document, context) =
             policy::parse_toml_for_edit(source).map_err(|error| approvals::ApprovalError {
                 kind: approvals::ErrorKind::Invalid,
                 message: error.to_string(),
             })?;
-        edit(&mut document)?;
+        let result = edit(&mut document)?;
         Ok((
-            (),
+            result,
             policy::restore_large_toml_integers(&document.to_string(), &context),
         ))
     })
