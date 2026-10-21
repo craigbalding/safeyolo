@@ -40,7 +40,7 @@ from tests.proxy_contracts.websocket_peer import read_head
 
 
 @pytest.mark.parametrize("outcome", ["native", "http403", "http428", "unrelated", "timeout", "origin", "active_grant", "wrong_approval", "http200", "native_with_http"])
-def test_stale_launch_context_refusal_requires_paired_effects_and_restores_context(tmp_path, monkeypatch, outcome):
+def test_stale_launch_context_refusal_requires_paired_effects_and_restores_context(tmp_path, monkeypatch, capsys, outcome):
     context = tmp_path / "host-launch-context.json"
     original = b'{"generation":"current-run","agent_id":"owned-worker"}\n'
     context.write_bytes(original)
@@ -95,8 +95,22 @@ def test_stale_launch_context_refusal_requires_paired_effects_and_restores_conte
         with pytest.raises(subprocess.TimeoutExpired if outcome == "timeout" else AssertionError, match=diagnosis):
             installed_shared_approvals.check_stale_launch_context(
                 context, "old-run", "current-run", "old-approval", command, hits, read_approval)
-        assert reads == (["old-approval"] if outcome in {"active_grant", "wrong_approval"} else [])
+        assert reads == (["old-approval"] if outcome in {"origin", "active_grant", "wrong_approval"} else [])
     assert context.read_bytes() == original
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["phase"] == "stale_context"
+    observation = emitted["observation"]
+    assert observation["approval_id"] == "old-approval"
+    assert observation["original_run_id"] == "old-run" and observation["current_run_id"] == "current-run"
+    assert observation["origin_count_before"] == 1
+    assert observation["origin_count_after"] == len(hits)
+    assert observation["origin_hits_after"] == [list(hit) for hit in hits]
+    if outcome in {"native", "http403", "http428"}:
+        assert observation == json.loads(json.dumps(result))
+    elif outcome == "timeout":
+        assert "outcome" not in observation and "returncode" not in observation
+    elif outcome in {"origin", "active_grant", "wrong_approval"}:
+        assert "grant" in observation
     # Ordinary guest checks must still reject this same nonzero native exit.
     monkeypatch.setattr(installed_shared_approvals.subprocess, "run", run_command)
     with pytest.raises(AssertionError, match="command failed"):

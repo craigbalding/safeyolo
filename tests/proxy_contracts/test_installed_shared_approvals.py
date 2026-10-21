@@ -353,6 +353,13 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 assert stale["grant"]["approval_id"] == stale["approval_id"]
                 assert stale["grant"]["grant_active"] is False
                 assert stale["outcome"] == ("native_refusal" if remaining else "http_refusal")
+                assert next(row["observation"] for row in output if row.get("phase") == "stale_context") == stale
+                assert next(row["observation"] for row in output if row.get("phase") == "reviewer_restart") == result["reviewer_restart"]
+                setup = [row["approval"] for row in output if row.get("phase") == "lifecycle_setup"]
+                assert len(setup) == int(remaining)
+                if remaining:
+                    assert setup[0]["approval_id"] == stale["approval_id"]
+                    assert setup[0]["grant_active"] is True
                 assert result["reviewer_restart"]["approval"]["approval_id"] == result["approval_ids"][1]
                 assert result["reviewer_restart"]["approval"]["grant_active"] is True
                 assert result["replacement_grant"]["approval_id"] == result["approval_ids"][1]

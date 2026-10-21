@@ -134,14 +134,17 @@ def check_stale_launch_context(context_path: Path, original_run: str, current_ru
             assert attempt.stderr.strip() == "safeyolo: provider sandbox or guest port is unavailable", (
                 "unexpected stale-context transport failure: " + attempt.stderr[-1000:])
             stale_context.update(outcome="native_refusal", http=None)
-        stale_context["origin_hits_after"] = list(hits)
-        stale_context["origin_count_after"] = len(hits)
-        assert stale_context["origin_hits_after"] == stale_context["origin_hits_before"], "stale context reached origin"
         stale_context["grant"] = read_approval(approval_id)
+        stale_context["origin_hits_after"] = list(hits)
+        assert stale_context["origin_hits_after"] == stale_context["origin_hits_before"], "stale context reached origin"
         assert stale_context["grant"]["approval_id"] == approval_id, "stale-context read returned a different approval"
         assert stale_context["grant"]["grant_active"] is False, "old approval grant remains active"
     finally:
         context_path.write_bytes(current_context)
+        # A later lifecycle failure must not discard this attempt's operands.
+        stale_context.setdefault("origin_hits_after", list(hits))
+        stale_context["origin_count_after"] = len(stale_context["origin_hits_after"])
+        print(json.dumps({"phase": "stale_context", "observation": stale_context}), flush=True)
     return stale_context
 
 
@@ -522,6 +525,7 @@ def run(args: argparse.Namespace) -> None:
                 # The prior crash witness is retained. One ordinary grant and
                 # worker turnover supply this invocation's inactive old grant.
                 first = approve_current()
+                print(json.dumps({"phase": "lifecycle_setup", "approval": first}), flush=True)
             else:
                 # Refuse the final canonical update after the policy transaction.
                 # A killed proxy must recover the committed receipt, rather than
@@ -583,6 +587,7 @@ def run(args: argparse.Namespace) -> None:
             assert second["result"]["issued_access"]["beneficiary"]["run_id"] == current["run_id"]
             reviewer_restart = {"old_run_id": helper_before["run_id"], "current_run_id": helper_after["run_id"],
                 "approval": second, "origin_hits": list(hits)}
+            print(json.dumps({"phase": "reviewer_restart", "observation": reviewer_restart}), flush=True)
             stop_guest(args.transport_cli, root, args.worker)
             before_replacement = tomlkit.parse((root / "policy.toml").read_text())
             old_worker = before_replacement["agents"].pop(args.worker)

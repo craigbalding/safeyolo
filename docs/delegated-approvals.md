@@ -279,6 +279,12 @@ result records the actual outcome, native exit and output, approval and run
 IDs, origin counts and grant readback. The runner restores the launch context
 in `finally`. A later canonical read, decision and origin retry check the restored
 route. Unrelated transport failures and timeouts still fail.
+The runner also flushes the stale attempt to standard output after restoring
+the context, including when the attempt fails. It emits the completed
+reviewer-restart observation before the next lifecycle operation. The remainder
+selection also emits its ordinary setup grant before worker turnover. These
+partial records preserve actual operands if a later check fails. They do not
+claim that the remaining checks or cleanup passed.
 
 If a prior run already reached the proxy crash and worker restart but stopped
 at the stale-context observer, retain that result. To run only the remaining
