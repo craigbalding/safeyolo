@@ -255,15 +255,15 @@ envelope.
 | Literal | Meaning |
 |---|---|
 | `evaluated` | Control's hook ran and reported an outcome. |
-| `bypassed` | Control's hook was reached but did not evaluate (see `reason`). |
+| `bypassed` | The control did not evaluate. Its reached call site reports disablement, or the HTTP owner records that an earlier local response prevented execution (see `reason`). |
 | `error` | Reached operation reported an error. `reason` names its diagnostic, such as `CredentialGuardError` or `AuditSinkUnavailable`. It does not imply a Python exception. |
-| `not_loaded` | Expected control has no retained step. Synthesised at read time into `not_loaded[]`. Absence alone does not prove a startup failure or that the control never executed. |
+| `not_loaded` | The native call site found its required control unavailable. The step is also listed in `not_loaded[]`. An absent retained step alone never produces this state. |
 
 ### Bypass / error reasons
 
 | Literal | Meaning |
 |---|---|
-| `prior_response` | An earlier operation already produced a response; this control deferred. |
+| `prior_response` | An earlier operation produced a local response before this control ran. `details.preempted_by`, when present, identifies that responder. |
 | `policy_disabled` | Policy bypassed this control for the host/agent scope. Inspect the matching exceptions and effective policy. |
 | `control_disabled` | The control's runtime enable setting is off. Inspect the corresponding `controls.<name>.enabled` in `policy show` and `/config`. |
 | `probe_sink_failed` | Reserved-probe request-hook failsafe caught a missing/inert sink BEFORE transport was attempted. Client received a correlated 5xx with `X-SafeYolo-Request-Id`. |
@@ -318,7 +318,10 @@ the control name alone.
 | Literal | Meaning |
 |---|---|
 | `not_a_gateway_request` | Request had no `sgw_` token — passed through. |
+| `selected` | Gateway selection found an applicable service credential. This does not prove that injection or forwarding succeeded. |
 | `injected` | Gateway credential injection succeeded. |
+| `blocked` | Gateway processing produced a local block response. |
+| `redirected` | Gateway processing produced its configured redirect. |
 | `not_a_gateway_response` | Response hook saw a flow without `gateway_grant_id`. |
 | `grant_consumed` | Once-grant fired on a 2xx response. |
 | `grant_retained` | Gateway flow but grant not consumed (non-2xx or scope != once). |
@@ -340,9 +343,11 @@ additional steps and missing-control entries.
   "agent_id": "example-agent",
   "created_at": 1791500000,
   "truncated": false,
+  "incomplete": true,
   "steps": [
     {"control": "network", "hook": "request", "state": "evaluated",
-     "outcome": "allowed", "duration_us": 340}
+     "outcome": "allowed", "duration_us": 340},
+    {"control": "credentials", "hook": "request", "state": "not_loaded"}
   ],
   "not_loaded": [
     {"control": "credentials", "state": "not_loaded"}
@@ -350,11 +355,30 @@ additional steps and missing-control entries.
 }
 ```
 
-`truncated=true` means the per-record step cap was hit. The retained steps
-are incomplete; do not use an absent step to prove that a control did not
-run. Treat truncation as `fail` for automated diagnostics. A 404 means no
+The example is incomplete because several request stages have no retained
+observation. `incomplete=true` reports missing request-stage evidence or a
+step cap. `truncated=true` specifically means the per-record step cap was hit.
+Neither flag proves that an unobserved control was absent. Treat incomplete
+or truncated traces as `fail` for automated diagnostics. A 404 means no
 accessible retained trace; a 5xx means trace evidence is unavailable. Neither
 proves the request passed or failed a control.
+
+For a clean ordinary HTTP request, the native order of first observations is
+`network`, `circuits`, `credentials`, `services`, `patterns`, `test_context`.
+A control can emit more than one step. An early test-context admission failure
+can appear before pattern inspection. The trace keeps the actual observation
+order. CONNECT records its
+separate `network` admission under `hook=http_connect`. Execution timings
+measure reached operations; a bypass has no execution timing.
+
+`safeyolo doctor` sends a traced plain-HTTP probe through each configured
+agent Unix-domain socket. The reserved destination terminates locally after
+the normal request stages. It needs no external network access. Doctor accepts
+known disablement and reports it in the steps. It reports an earlier response,
+a missing control, an execution error, bad ordering, unavailable trace data or
+incomplete evidence. A failed pipeline check makes doctor exit with status 1.
+If no agent listener is configured, doctor warns that a pipeline probe could
+not run.
 
 Agent scope: `/trace` is filtered to the caller's own trace records.
 A foreign or unknown `request_id` returns `404` with the same body as
@@ -368,18 +392,18 @@ another agent's traces.
   "request_id": "req-<32hex>",
   "status": "complete" | "pending" | "incomplete_search" | "error",
   "events": [ /* audit event objects */ ],
-  "searched_lines_per_file": 10000   // only present when status=incomplete_search
+  "searched_lines_per_file": 10000   // present when a retained-file line bound was hit
 }
 ```
 
-Status precedence:
+Status precedence, highest first:
 
 | Literal | Meaning | Retry? |
 |---|---|---|
-| `complete` | Retained set fully scanned. `events` is authoritative. | No |
+| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Investigate via `safeyolo logs` |
 | `pending` | Writer still has queued/mid-flush events after the bounded drain. | Yes, briefly |
 | `incomplete_search` | Retention bound was hit while scanning. Events outside the window may exist. | Only if you can bound the time window differently |
-| `error` | File read or parse failure. Result is unreliable. | Investigate via `safeyolo logs` |
+| `complete` | Retained set fully scanned. `events` is authoritative. | No |
 
 
 ## Flow inspection

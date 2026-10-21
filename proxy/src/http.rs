@@ -240,7 +240,8 @@ fn inspection_options(
     runtime: &Runtime,
     identity: &ConnectionIdentity,
     host: &str,
-) -> Option<crate::inspection::Options> {
+) -> Result<crate::inspection::Options, &'static str> {
+    runtime.config.inspection.as_ref().ok_or("addon_disabled")?;
     if runtime.config.native_product
         && runtime.policy.as_ref().is_some_and(|policy| {
             !policy.is_addon_enabled(
@@ -250,16 +251,14 @@ fn inspection_options(
             )
         })
     {
-        return None;
+        return Err("policy_disabled");
     }
-    runtime.config.inspection.as_ref().map(|_| {
-        let flags = runtime.operator_modes.flags();
-        crate::inspection::Options {
-            block_request: flags[0],
-            block_response: flags[1],
-            block_websocket_request: Some(flags[2]),
-            block_websocket_response: Some(flags[3]),
-        }
+    let flags = runtime.operator_modes.flags();
+    Ok(crate::inspection::Options {
+        block_request: flags[0],
+        block_response: flags[1],
+        block_websocket_request: Some(flags[2]),
+        block_websocket_response: Some(flags[3]),
     })
 }
 
@@ -335,6 +334,49 @@ fn pattern_local_response(
         blocked_by: Some(json!("pattern-scanner").into()),
         block_reason: failure.map(|failure| json!(failure).into()),
     });
+}
+
+fn enforce_request_inspection(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    destination: &Destination,
+    context: &request_context::RequestContext,
+    response_traffic: &Arc<traffic::Traffic>,
+) -> Result<Option<Response<Body>>, Error> {
+    if let Some(result) = context.inspection_result() {
+        let result = result?;
+        if !matches!(result.outcome, crate::inspection::Outcome::NoRules) {
+            record_pattern_decision(
+                runtime,
+                identity,
+                request_id,
+                destination,
+                crate::inspection::Direction::Request,
+                &result,
+            )?;
+        }
+        if matches!(
+            result.outcome,
+            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
+        ) {
+            let status = StatusCode::from_u16(result.status.unwrap_or(403))?;
+            let body = result
+                .body
+                .map(|body| body.to_string())
+                .unwrap_or_else(|| "{\"error\":\"Request blocked by pattern policy\"}".into());
+            let mut blocked = Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-blocked-by", "pattern-scanner")
+                .body(full(body))?;
+            if context.request_hooks_completed() {
+                pattern_local_response(&mut blocked, response_traffic, result.failure);
+            }
+            return Ok(Some(prior_block(blocked)));
+        }
+    }
+    Ok(None)
 }
 
 fn enforce_response_decision(
@@ -2350,7 +2392,19 @@ async fn resolve_refresh(
     pending.resume_for_gateway(outcome).map_err(Into::into)
 }
 
-fn gateway_response(status: u16, code: &str, request_id: &str) -> Result<Response<Body>, Error> {
+fn gateway_response(
+    status: u16,
+    code: &str,
+    request_id: &str,
+    trace: Option<&crate::request_trace::TraceHook>,
+) -> Result<Response<Body>, Error> {
+    if let Some(trace) = trace {
+        if status >= 500 {
+            trace.error("GatewayError");
+        } else {
+            trace.evaluated("blocked", Some(json!({"status":status,"code":code}).into()));
+        }
+    }
     let status = StatusCode::from_u16(status)?;
     let mut response = Response::builder()
         .status(status)
@@ -2617,7 +2671,12 @@ where
             // CONNECT has no authorized application route yet. Never open a
             // provider stream (or fall through to DNS) for opaque tunnel bytes.
             return Ok((
-                prior_block(gateway_response(403, "GATEWAY_AUTH_REQUIRED", request_id)?),
+                prior_block(gateway_response(
+                    403,
+                    "GATEWAY_AUTH_REQUIRED",
+                    request_id,
+                    None,
+                )?),
                 "deny".into(),
             ));
         }
@@ -2909,10 +2968,15 @@ where
     // guard sees each original field. Combining repeated values can hide a
     // credential from entropy detection or change its approval fingerprint.
     if let Some(policy) = runtime.policy.as_ref() {
-        let guard = runtime
-            .credential_guard
-            .as_ref()
-            .ok_or("credential guard is unavailable")?;
+        let guard = runtime.credential_guard.as_ref().ok_or_else(|| {
+            if let Some(hook) = trace
+                .as_ref()
+                .and_then(|trace| trace.hook("credential-guard", "request"))
+            {
+                hook.not_loaded();
+            }
+            "credential guard is unavailable"
+        })?;
         let guard_trace = trace.as_ref().and_then(|trace| {
             trace.hook(
                 "credential-guard",
@@ -3075,7 +3139,7 @@ where
         route_mode: crate::services::RouteMode::LocalFallback,
     };
     let inspection_needs_body = inspection_options(&runtime, identity, &destination.policy_host)
-        .is_some()
+        .is_ok()
         && runtime
             .scanner
             .has_scope(crate::inspection::Direction::Request, "body")?;
@@ -3100,6 +3164,9 @@ where
     let mut gateway_recording_header = None;
     let mut gateway_evidence = None;
     let mut provider_route = None;
+    let gateway_trace = trace
+        .as_ref()
+        .and_then(|trace| trace.hook("service-gateway", "request"));
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
         let provider_name = snapshot
@@ -3107,7 +3174,12 @@ where
             .map(str::to_owned);
         if provider_name.is_some() && destination.selected_ip.is_some() {
             return Ok((
-                prior_block(gateway_response(403, "GATEWAY_AUTH_REQUIRED", request_id)?),
+                prior_block(gateway_response(
+                    403,
+                    "GATEWAY_AUTH_REQUIRED",
+                    request_id,
+                    gateway_trace.as_ref(),
+                )?),
                 "deny".into(),
             ));
         }
@@ -3118,7 +3190,7 @@ where
             .count()
             > 1
         {
-            let reply = gateway_response(403, "INVALID_TOKEN", request_id)?;
+            let reply = gateway_response(403, "INVALID_TOKEN", request_id, gateway_trace.as_ref())?;
             return Ok((prior_block(reply), "deny".into()));
         }
         let gateway_decision = snapshot.map(|snapshot| {
@@ -3160,7 +3232,12 @@ where
                     .recording_pairs()
                     .any(|(_, value)| crate::services::has_gateway_token(value))
                 {
-                    let reply = gateway_response(503, "GATEWAY_CONFIGURATION_ERROR", request_id)?;
+                    let reply = gateway_response(
+                        503,
+                        "GATEWAY_CONFIGURATION_ERROR",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
                 crate::services::GatewayDecision::PassThrough
@@ -3169,26 +3246,46 @@ where
         match decision {
             crate::services::GatewayDecision::PassThrough => {
                 if provider_name.is_some() {
-                    let reply = gateway_response(403, "GATEWAY_AUTH_REQUIRED", request_id)?;
+                    let reply = gateway_response(
+                        403,
+                        "GATEWAY_AUTH_REQUIRED",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
                     return Ok((prior_block(reply), "deny".into()));
+                }
+                if let Some(hook) = &gateway_trace {
+                    hook.evaluated("not_a_gateway_request", None);
                 }
             }
             crate::services::GatewayDecision::Deny { status, code, .. } => {
-                let reply = gateway_response(status, &code, request_id)?;
+                let reply = gateway_response(status, &code, request_id, gateway_trace.as_ref())?;
                 return Ok((prior_block(reply), "deny".into()));
             }
             crate::services::GatewayDecision::Compatibility { .. } => {
-                let reply = gateway_response(503, "GATEWAY_COMPATIBILITY_ERROR", request_id)?;
+                let reply = gateway_response(
+                    503,
+                    "GATEWAY_COMPATIBILITY_ERROR",
+                    request_id,
+                    gateway_trace.as_ref(),
+                )?;
                 return Ok((prior_block(reply), "deny".into()));
             }
             crate::services::GatewayDecision::Selected { credential } => {
+                if let Some(hook) = &gateway_trace {
+                    hook.evaluated("selected", None);
+                }
                 if let Some(provider) = provider_name {
                     let caller = identity.request_agent().expect("selected gateway identity");
                     let Some(caller_id) =
                         snapshot.and_then(|snapshot| snapshot.configured_agent_id(caller))
                     else {
-                        let reply =
-                            gateway_response(503, "GATEWAY_IDENTITY_UNAVAILABLE", request_id)?;
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_IDENTITY_UNAVAILABLE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
                         return Ok((prior_block(reply), "deny".into()));
                     };
                     provider_route = Some((provider, caller_id.to_owned(), caller.to_owned()));
@@ -3197,7 +3294,12 @@ where
                     // A streamed body cannot be checked against a contract
                     // without first owning its complete parser terminal. Do
                     // not inject or dial while its constraint is unknown.
-                    let reply = gateway_response(503, "GATEWAY_BODY_UNAVAILABLE", request_id)?;
+                    let reply = gateway_response(
+                        503,
+                        "GATEWAY_BODY_UNAVAILABLE",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
                 if let Some(risky) = credential.risky_route.as_ref() {
@@ -3319,8 +3421,12 @@ where
                                 runtime.audit.emit(audit)?;
                                 None
                             };
-                            let mut reply =
-                                gateway_response(status, "GATEWAY_RISKY_ROUTE", request_id)?;
+                            let mut reply = gateway_response(
+                                status,
+                                "GATEWAY_RISKY_ROUTE",
+                                request_id,
+                                gateway_trace.as_ref(),
+                            )?;
                             if let Some(record) = pending {
                                 crate::approvals::pending::delegation::notify(&runtime, &record)
                                     .await;
@@ -3373,7 +3479,12 @@ where
                 let start = match start {
                     Ok(start) => start,
                     Err(_) => {
-                        let reply = gateway_response(503, "GATEWAY_INJECTION_ERROR", request_id)?;
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_INJECTION_ERROR",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
                         return Ok((prior_block(reply), "deny".into()));
                     }
                 };
@@ -3396,7 +3507,12 @@ where
                 let start = match start {
                     Ok(start) => start,
                     Err(_) => {
-                        let reply = gateway_response(503, "GATEWAY_INJECTION_ERROR", request_id)?;
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_INJECTION_ERROR",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
                         return Ok((prior_block(reply), "deny".into()));
                     }
                 };
@@ -3407,8 +3523,12 @@ where
                         let evidence = match replacement.apply(request.headers_mut()) {
                             Ok(evidence) => evidence,
                             Err(_) => {
-                                let reply =
-                                    gateway_response(503, "GATEWAY_INJECTION_ERROR", request_id)?;
+                                let reply = gateway_response(
+                                    503,
+                                    "GATEWAY_INJECTION_ERROR",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?;
                                 return Ok((prior_block(reply), "deny".into()));
                             }
                         };
@@ -3424,8 +3544,14 @@ where
                             gateway_injected_header = None;
                         }
                         gateway_evidence = Some(evidence);
+                        if let Some(hook) = &gateway_trace {
+                            hook.evaluated("injected", None);
+                        }
                     }
                     crate::credential_injection::Start::Blocked(blocked) => {
+                        if let Some(hook) = &gateway_trace {
+                            hook.evaluated("blocked", None);
+                        }
                         publish_gateway_evidence(
                             &runtime,
                             identity,
@@ -3445,6 +3571,9 @@ where
                         return Ok((prior_block(reply), "deny".into()));
                     }
                     crate::credential_injection::Start::Redirect(redirect) => {
+                        if let Some(hook) = &gateway_trace {
+                            hook.evaluated("redirected", None);
+                        }
                         publish_gateway_evidence(
                             &runtime,
                             identity,
@@ -3460,8 +3589,12 @@ where
                     }
                     crate::credential_injection::Start::Refresh(_)
                     | crate::credential_injection::Start::External(_) => {
-                        let reply =
-                            gateway_response(503, "GATEWAY_REFRESH_UNAVAILABLE", request_id)?;
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_REFRESH_UNAVAILABLE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
                         return Ok((prior_block(reply), "deny".into()));
                     }
                 }
@@ -3480,7 +3613,12 @@ where
             let value = match header::HeaderValue::from_str(value) {
                 Ok(value) => value,
                 Err(_) => {
-                    let reply = gateway_response(503, "GATEWAY_IDENTITY_UNAVAILABLE", request_id)?;
+                    let reply = gateway_response(
+                        503,
+                        "GATEWAY_IDENTITY_UNAVAILABLE",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
             };
@@ -3498,10 +3636,15 @@ where
     if let Some(name) = gateway_injected_header.as_ref()
         && let Some(policy) = runtime.policy.as_ref()
     {
-        let guard = runtime
-            .credential_guard
-            .as_ref()
-            .ok_or("credential guard is unavailable")?;
+        let guard = runtime.credential_guard.as_ref().ok_or_else(|| {
+            if let Some(hook) = trace
+                .as_ref()
+                .and_then(|trace| trace.hook("credential-guard", "request"))
+            {
+                hook.not_loaded();
+            }
+            "credential guard is unavailable"
+        })?;
         // The incoming request was already evaluated before gateway selection.
         // Re-evaluate only the header whose value the gateway replaced or
         // added. Replaying every incoming field here would charge budgets and
@@ -3692,16 +3835,23 @@ where
     context.attach_traffic(traffic.clone());
     let response_traffic = traffic;
     context.attach_live(live.clone());
-    if !circuit_hook_failed
-        && inspection_admitted
-        && let Some(options) = inspection_options(&runtime, identity, &destination.policy_host)
-    {
-        context.attach_inspection(
-            runtime.scanner.clone(),
-            &destination.path,
-            ordered_headers.iter(),
-            options,
-        );
+    if !circuit_hook_failed && inspection_admitted {
+        match inspection_options(&runtime, identity, &destination.policy_host) {
+            Ok(options) => context.attach_inspection(
+                runtime.scanner.clone(),
+                &destination.path,
+                ordered_headers.iter(),
+                options,
+            ),
+            Err(reason) => {
+                if let Some(hook) = trace
+                    .as_ref()
+                    .and_then(|trace| trace.hook("pattern-scanner", "request"))
+                {
+                    hook.bypassed(reason);
+                }
+            }
+        }
     }
     if let Some(provenance) = context.response_provenance() {
         recording.request(
@@ -3732,6 +3882,16 @@ where
         // failure boundary instead of publishing a successful probe receipt.
         if !context.request_hooks_completed() {
             return Err(probe::refuse_transport(&runtime, identity, destination));
+        }
+        if let Some(blocked) = enforce_request_inspection(
+            &runtime,
+            identity,
+            request_id,
+            destination,
+            &context,
+            &response_traffic,
+        )? {
+            return Ok((blocked, "deny".into()));
         }
         let mut reply = probe::response(state, &context, recording, request_id)?;
         if circuit_evidence_failed || context.try_finish().unwrap_or(false) {
@@ -3796,37 +3956,15 @@ where
         context.buffer(body, content_length).await?
     };
     let mut request = Request::from_parts(parts, body);
-    if let Some(result) = context.inspection_result() {
-        let result = result?;
-        if !matches!(result.outcome, crate::inspection::Outcome::NoRules) {
-            record_pattern_decision(
-                &runtime,
-                identity,
-                request_id,
-                destination,
-                crate::inspection::Direction::Request,
-                &result,
-            )?;
-        }
-        if matches!(
-            result.outcome,
-            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
-        ) {
-            let status = StatusCode::from_u16(result.status.unwrap_or(403))?;
-            let body = result
-                .body
-                .map(|body| body.to_string())
-                .unwrap_or_else(|| "{\"error\":\"Request blocked by pattern policy\"}".into());
-            let mut blocked = Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("x-blocked-by", "pattern-scanner")
-                .body(full(body))?;
-            if context.request_hooks_completed() {
-                pattern_local_response(&mut blocked, &response_traffic, result.failure);
-            }
-            return Ok((prior_block(blocked), "deny".into()));
-        }
+    if let Some(blocked) = enforce_request_inspection(
+        &runtime,
+        identity,
+        request_id,
+        destination,
+        &context,
+        &response_traffic,
+    )? {
+        return Ok((blocked, "deny".into()));
     }
     let allowed = AllowedRequest {
         recording: Some(recording.as_ref()),
@@ -4089,7 +4227,7 @@ where
         ));
     }
     let response_scan = match inspection_options(&runtime, identity, &destination.policy_host) {
-        Some(options)
+        Ok(options)
             if runtime
                 .scanner
                 .has_scope(crate::inspection::Direction::Response, "headers")?
@@ -4554,6 +4692,17 @@ pub(crate) fn serve_request(
         // and response metadata. Upstream HEAD completion keeps its own owner.
         if head && reply.extensions().get::<live_view::Upstream>().is_none() {
             *reply.body_mut() = full(Bytes::new());
+        }
+        if !connect
+            && reply.extensions().get::<CircuitPriorBlock>().is_some()
+            && let Some(trace) = &trace
+        {
+            trace.prior_response(
+                reply
+                    .headers()
+                    .get("x-blocked-by")
+                    .and_then(|value| value.to_str().ok()),
+            );
         }
         if destination
             .as_ref()

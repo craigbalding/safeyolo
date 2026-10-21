@@ -90,7 +90,7 @@ pub(super) fn explain(
         linked.incomplete |= scan.incomplete;
         scan = linked;
     }
-    let status = if scan.read_error {
+    let status = if scan.read_error || freshness.is_err() {
         "error"
     } else if pending {
         "pending"
