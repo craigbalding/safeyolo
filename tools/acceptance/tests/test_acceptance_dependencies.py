@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import certifi
 import jwt
 import requests
 import urllib3
@@ -65,6 +66,21 @@ def hmac_token(key):
     message = segment({"alg": "HS256"}) + b"." + segment({"sub": "forged"})
     signature = base64.urlsafe_b64encode(hmac.digest(key, message, "sha256")).rstrip(b"=")
     return (message + b"." + signature).decode()
+
+
+class BundledRootCertificates(unittest.TestCase):
+    def test_certifi_removes_compromised_emsign_root(self):
+        certificates = ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
+        common_names = {
+            value
+            for certificate in certificates
+            for name_parts in certificate["subject"]
+            for name, value in name_parts
+            if name == "commonName"
+        }
+        # PYSEC-2026-4320: compromised intermediate keys chain to this root.
+        self.assertNotIn("emSign ECC Root CA - G3", common_names)
+        self.assertIn("DigiCert Global Root G2", common_names)
 
 
 class JWTDependencies(unittest.TestCase):
