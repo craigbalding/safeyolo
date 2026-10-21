@@ -2469,9 +2469,11 @@ _FAKE_MISE = (
     "    version = argv[-1].split('@')[-1]\n"
     "    if version == 'latest': version = installed() or '9.9.9'\n"
     "    state.write_text(version)\n"
-    "    manifest = root / 'node_modules/@openai/codex/package.json'\n"
-    "    manifest.parent.mkdir(parents=True, exist_ok=True)\n"
-    "    manifest.write_text(json.dumps({'name': '@openai/codex', 'version': version}))\n"
+    "    manifest = root / os.environ.get('TEST_NODE_MODULES', 'lib/node_modules') / '@openai/codex/package.json'\n"
+    "    content = os.environ.get('TEST_CODEX_MANIFEST', json.dumps({'name': '@openai/codex', 'version': version}))\n"
+    "    if content:\n"
+    "        manifest.parent.mkdir(parents=True, exist_ok=True)\n"
+    "        manifest.write_text(content)\n"
     "    shim = Path(os.environ['TEST_CODEX_SHIM'])\n"
     "    shim.write_text(os.environ['TEST_HEALTHY_CODEX'])\n"
     "    shim.chmod(0o755)\n"
@@ -2937,7 +2939,8 @@ def test_codex_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None
     assert not any(c.startswith("use ") for c in calls), f"a healthy install was upgraded: {calls}"
 
 
-def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path) -> None:
+@pytest.mark.parametrize("node_modules", ["node_modules", "lib/node_modules"])
+def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path, node_modules: str) -> None:
     """Offline, or a registry outage, must not stop a broken agent repairing."""
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
@@ -2953,6 +2956,7 @@ def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path) -> No
 
     env = _codex_command_env(agent_home, fake_bin, tmp_path)
     env["TEST_REMOTE_VERSION"] = ""  # remote lookup fails
+    env["TEST_NODE_MODULES"] = node_modules
     Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
 
     result = subprocess.run(
@@ -2965,6 +2969,31 @@ def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path) -> No
     assert "could not resolve a remote version" in result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert any("npm:@openai/codex@latest" in c and c.startswith("use") for c in calls)
+    assert "where npm:@openai/codex@latest" in calls
+    assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_text().split("\0")
+
+
+@pytest.mark.parametrize("node_modules", ["node_modules", "lib/node_modules"])
+@pytest.mark.parametrize("manifest", [
+    "", "{", {"name": "@other/codex", "version": "0.130.0"},
+    {"name": "@openai/codex"}, {"name": "@openai/codex", "version": ""},
+    {"name": "@openai/codex", "version": 130},
+])
+def test_codex_fallback_refuses_invalid_selected_manifest(tmp_path, node_modules, manifest):
+    operator, home, tools = tmp_path / "operator", tmp_path / "agent", tmp_path / "bin"
+    operator.mkdir()
+    tools.mkdir()
+    _run_setup("codex-host-setup.sh", operator, home, tmp_path)
+    for name, source in [("codex", _BROKEN_CODEX), ("mise", _FAKE_MISE)]:
+        (tools / name).write_text(source)
+        (tools / name).chmod(0o755)
+    env = _codex_command_env(home, tools, tmp_path)
+    env.update({"TEST_REMOTE_VERSION": "", "TEST_NODE_MODULES": node_modules,
+                "TEST_CODEX_MANIFEST": manifest if isinstance(manifest, str) else json.dumps(manifest)})
+    result = subprocess.run([str(home / ".safeyolo-command"), "--probe"], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "could not read the selected installed package version" in result.stderr
+    assert not Path(env["TEST_EXEC_LOG"]).exists()
 
 
 def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
