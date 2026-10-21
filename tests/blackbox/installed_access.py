@@ -100,24 +100,31 @@ def wait_for_approval(
     service: str | None = None,
 ) -> dict:
     deadline = time.monotonic() + 7
+    observed = []
     while time.monotonic() < deadline:
+        pending = api.pending_approvals()
+        observed = [{key: row.get(key) for key in ("approval_id", "request_id", "agent", "action")}
+                    for row in pending if row.get("approval", {}).get("approval_type") == approval_type]
         matches = [
             row
-            for row in api.pending_approvals()
+            for row in pending
             if row.get("approval", {}).get("approval_type") == approval_type
             and (request_id is None or row.get("request_id") == request_id)
             and (agent is None or row.get("agent") == agent)
-            and (service is None or row.get("approval", {}).get("target") == service)
+            and (service is None or row.get("action", {}).get("service") == service)
         ]
         if len(matches) == 1:
+            print(json.dumps({"phase": "approval_pending", "approval_type": approval_type,
+                              "observed": observed}), flush=True)
             return matches[0]
         time.sleep(0.05)
-    raise AssertionError(f"operator did not see one {approval_type} request for {agent}/{service}/{request_id}")
+    raise AssertionError(f"operator did not see one {approval_type} request for {agent}/{service}/{request_id}; "
+                         f"observed={json.dumps(observed)}")
 
 
-def approve_service(api: AdminAPI, agent: str, service: str, credential: str) -> None:
-    event = wait_for_approval(api, "service", agent=agent, service=service)
-    assert event["agent"] == agent and event["approval"]["target"] == service, event
+def approve_service(api: AdminAPI, agent: str, service: str, credential: str, *, request_id: str) -> None:
+    event = wait_for_approval(api, "service", agent=agent, service=service, request_id=request_id)
+    assert event["agent"] == agent and event["action"]["service"] == service, event
     assert approve(event, api, service_credential=credential) in {"authorized", "ok"}
 
 
@@ -478,8 +485,10 @@ def main() -> None:
             else {"platform": "vz", "host_listener": str(peer_socket), "guest_forwarder": "vsock:2:1080"}
         )
         first = guest(cli, args.agent, args.platform, marker, "access")
-        approve_service(admin, args.agent, "p3_basic", fixture["credential_name"])
-        binding = wait_for_approval(admin, "contract_binding", agent=args.agent, service="p3_contract")
+        approve_service(admin, args.agent, "p3_basic", fixture["credential_name"],
+                        request_id=first["service_request_id"])
+        binding = wait_for_approval(admin, "contract_binding", agent=args.agent, service="p3_contract",
+                                    request_id=first["binding_request_id"])
         assert approve(binding, admin) in {"bound", "ok"}
         contract_request = guest(cli, args.agent, args.platform, marker, "contract-access")
         authorized = admin.authorize_service(
@@ -495,7 +504,8 @@ def main() -> None:
         stolen_token_file.unlink()
         prompt = guest(cli, args.agent, args.platform, marker, "contract-prompt")
         assert not any(row.path == "/p3/write" for row in sinkhole.get_requests())
-        risk = wait_for_approval(admin, "gateway_route", request_id=prompt["request_id"])
+        risk = wait_for_approval(admin, "gateway_risky_route", agent=args.agent, service="p3_contract",
+                                request_id=prompt["request_id"])
         grant_id = approve(risk, admin)
         assert isinstance(grant_id, str) and grant_id
         contract = guest(cli, args.agent, args.platform, marker, "contract-effect")
