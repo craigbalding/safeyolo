@@ -1,5 +1,6 @@
 """Regression tests for blackbox harness isolation and backend selection."""
 
+import base64
 import hashlib
 import http.client
 import importlib.util
@@ -38,7 +39,7 @@ from tests.blackbox.isolation import installed_lifecycle as guest_lifecycle
 from tests.blackbox.isolation import installed_workloads as guest_workloads
 from tests.blackbox.proxy_backend import SelectionError, identity
 from tests.proxy_contracts import harness as proxy_harness
-from tests.proxy_contracts.websocket_peer import read_head
+from tests.proxy_contracts.websocket_peer import Peer, read_head
 
 
 @pytest.mark.parametrize("outcome", ["native", "http403", "http428", "unrelated", "timeout", "origin", "active_grant", "wrong_approval", "http200", "native_with_http"])
@@ -2839,23 +2840,84 @@ def test_operator_traffic_distinguishes_policy_refusal_from_an_origin_response(m
     assert requests == [("GET", "http://evil.com/installed-flow/r3-owned/bbtest")]
 
 
-@pytest.mark.parametrize("failure", [None, "no-vnc", "missing-500"])
-def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_target(monkeypatch, failure):
+@pytest.mark.parametrize("failure,diagnosis", [
+    (None, None),
+    ("split-vnc", None),
+    ("wrong-target", "another target"),
+    ("nonlocal", "local presentation"),
+    ("legacy-path", "native desktop path"),
+    ("unlock-403", "unlock failed: status=403"),
+    ("no-cookie", "session cookie"),
+    ("cookie-refused", "status=401"),
+    ("page-503", "status=503"),
+    ("legacy-page", "'title': False"),
+    ("missing-title", "'title': False"),
+    ("missing-screen", "'screen': False"),
+    ("missing-script", "'script': False"),
+    ("oversized-page", "bytes_read=1000001"),
+    ("no-vnc", "no live VNC banner"),
+    ("text-vnc", "type=str"),
+    ("malformed-vnc", "no live VNC banner"),
+    ("missing-500", "missing desktop target did not report not found"),
+    ("missing-open", "missing desktop target unexpectedly opened"),
+])
+def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_target(failure, diagnosis):
     requests = []
+    page = (Path(__file__).resolve().parents[1] / "proxy/src/desktop_page.html").read_bytes()
+    if failure == "legacy-page":
+        page = b"<html>noVNC</html>"
+    elif failure in {"missing-title", "missing-screen", "missing-script"}:
+        marker = {"missing-title": b"<title>SafeYolo Desktop</title>", "missing-screen": b'id="screen"',
+                  "missing-script": b'src="/_safeyolo_desktop/page.js"'}[failure]
+        page = page.replace(marker, b"")
+    elif failure == "oversized-page":
+        page += b" " * (1_000_001 - len(page))
 
     class Page(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["Content-Length"]))
             requests.append((self.path, body))
-            self.send_response(303)
-            self.send_header("Set-Cookie", "fixture_preview=owned; Path=/; HttpOnly")
+            self.send_response(403 if failure == "unlock-403" else 303)
+            if failure != "no-cookie":
+                self.send_header("Set-Cookie", "fixture_preview=owned; Path=/; HttpOnly")
             self.end_headers()
 
         def do_GET(self):
             requests.append((self.path, self.headers.get("Cookie")))
-            self.send_response(200)
+            if self.headers.get("Cookie") != "fixture_preview=owned" or failure == "cookie-refused":
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"private response body")
+                return
+            target = urlsplit(self.path)
+            if target.path == "/_safeyolo_desktop/viewer":
+                self.connection.settimeout(5)
+                self.protocol_version = "HTTP/1.1"
+                self.send_response(101)
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                key = self.headers["Sec-WebSocket-Key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                self.send_header("Sec-WebSocket-Accept", base64.b64encode(hashlib.sha1(key.encode()).digest()).decode())
+                self.send_header("Sec-WebSocket-Protocol", "binary")
+                self.end_headers()
+                requests.append(("viewer headers", self.headers.get("Origin"), self.headers.get("Sec-WebSocket-Protocol")))
+                peer = Peer(self.connection, client=False, compressed=False)
+                banner = {"no-vnc": b"not VNC", "malformed-vnc": b"RFB invalid\n"}.get(failure, b"RFB 003.008\n")
+                if failure == "split-vnc":
+                    peer.send(2, banner[:2])
+                    peer.send(2, banner[2:])
+                else:
+                    peer.send(1 if failure == "text-vnc" else 2, banner)
+                peer.receive_control()
+                peer.close()
+                return
+            if self.path != "/_safeyolo_desktop/":
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(503 if failure == "page-503" else 200)
             self.end_headers()
-            self.wfile.write(b"<html>noVNC</html>")
+            self.wfile.write(page)
 
         def log_message(self, *_args):
             pass
@@ -2869,33 +2931,44 @@ def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_tar
     def present(agent_id):
         targets.append(agent_id)
         if agent_id != "ag-owned":
+            if failure == "missing-open":
+                return {"agent_id": agent_id}
             raise installed_access.APIError("controlled missing target", 500 if failure == "missing-500" else 404)
-        return {"agent_id": agent_id, "url": f"http://{authority}/vnc.html#autoconnect=true",
+        return {"agent_id": "ag-other" if failure == "wrong-target" else agent_id,
+                "url": "https://example.com/_safeyolo_desktop/" if failure == "nonlocal" else
+                       f"http://{authority}" + ("/vnc.html" if failure == "legacy-path" else "/_safeyolo_desktop/"),
                 "unlock_code": "synthetic-only"}
 
-    @contextmanager
-    def websocket(url, **options):
-        assert url == f"ws://{authority}/websockify"
-        assert options == {"origin": f"http://{authority}",
-                           "additional_headers": {"Cookie": "fixture_preview=owned"}, "proxy": None}
-        yield SimpleNamespace(recv=lambda **_args: b"not VNC" if failure == "no-vnc" else b"RFB 003.008\n")
-
-    monkeypatch.setattr(installed_access, "connect", websocket)
     try:
         api = SimpleNamespace(present_desktop=present)
-        if failure:
-            with pytest.raises(AssertionError):
+        if diagnosis:
+            with pytest.raises(AssertionError, match=diagnosis) as error:
                 installed_access.operator_desktop(api, "ag-owned")
+            assert all(secret not in str(error.value) for secret in (
+                "synthetic-only", "fixture_preview=owned", "private response body"))
         else:
             observed = installed_access.operator_desktop(api, "ag-owned")
             assert observed["agent_id"] == "ag-owned" and observed["missing_target_status"] == 404
+            assert observed["page_status"] == 200 and observed["page_bytes"] == len(page)
             assert observed["vnc_banner"] == "RFB 003.008\n" and "unlock_code" not in observed
-            assert observed["observation_scope"] == "unlocked noVNC page and live VNC banner; no visual interaction"
-        assert requests == [("/_safeyolo_preview/unlock", b"code=synthetic-only"),
-                            ("/vnc.html", "fixture_preview=owned")]
+            assert observed["observation_scope"] == "unlocked native desktop page and live VNC banner; no visual interaction"
+        if failure in {"wrong-target", "nonlocal", "legacy-path"}:
+            assert requests == []
+        else:
+            assert requests[0] == ("/_safeyolo_preview/unlock", b"code=synthetic-only")
+            if failure not in {"unlock-403", "no-cookie"}:
+                assert requests[1] == ("/_safeyolo_desktop/", "fixture_preview=owned")
+        if failure in {None, "split-vnc", "no-vnc", "text-vnc", "malformed-vnc", "missing-500", "missing-open"}:
+            viewer = urlsplit(requests[2][0])
+            assert viewer.path == "/_safeyolo_desktop/viewer"
+            assert len(viewer.query) == 32 and all(char in "0123456789abcdef" for char in viewer.query)
+            assert requests[2][1] == "fixture_preview=owned"
+            assert requests[3] == ("viewer headers", f"http://{authority}", "binary")
         assert targets[0] == "ag-owned"
-        if failure != "no-vnc":
+        if failure in {None, "split-vnc", "missing-500", "missing-open"}:
             assert len(targets) == 2 and targets[1] != "ag-owned"
+        else:
+            assert len(targets) == 1
     finally:
         server.shutdown()
         server.server_close()
