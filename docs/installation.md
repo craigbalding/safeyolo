@@ -524,8 +524,10 @@ Preparation installs missing host tools from the host's existing package sources
 Alpine uses `shadow-subids`, `shadow-libs` and `util-linux-misc` for the
 corresponding rootless tools and allocator. Ubuntu package names stay unchanged.
 Guest acquisition needs tar's owner, ACL and extended-attribute options and
-find's numeric owner predicates. Alpine preparation installs `tar` or `findutils`
-when the existing command lacks those options, including BusyBox variants.
+find's numeric owner predicates. Shared-directory startup needs unshare's
+child-cleanup option. Alpine preparation installs `tar`, `findutils` or
+`util-linux-misc` when the existing command lacks the required options,
+including BusyBox variants.
 It reuses suitable subordinate UID and GID ranges independently. If either
 range is missing, shadow's locked account allocator selects an unused range.
 Another account's allocation at 100000–165535 does not prevent installation.

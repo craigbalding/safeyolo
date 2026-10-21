@@ -30,7 +30,7 @@ const REQUIRED_PACKAGES: &[(&str, &[&str])] = &[
     ("tar", &["tar"]),
 ];
 
-fn guest_archive_tool_ready(name: &str) -> bool {
+fn host_tool_ready(name: &str) -> bool {
     let Some(path) = command_path(name) else {
         return false;
     };
@@ -59,6 +59,9 @@ fn guest_archive_tool_ready(name: &str) -> bool {
             "-print",
             "-quit",
         ],
+        // Shared-directory Gofers need their child to stop with the launcher.
+        // --version checks option parsing without creating a namespace.
+        "unshare" => &["--kill-child=SIGKILL", "--version"],
         _ => return false,
     };
     Command::new(path)
@@ -854,8 +857,12 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
                 other => other,
             };
         }
-        for (command, package) in [("tar", "tar"), ("find", "findutils")] {
-            if !guest_archive_tool_ready(command) && !packages.contains(&package) {
+        for (command, package) in [
+            ("tar", "tar"),
+            ("find", "findutils"),
+            ("unshare", "util-linux-misc"),
+        ] {
+            if !host_tool_ready(command) && !packages.contains(&package) {
                 packages.push(package);
             }
         }
