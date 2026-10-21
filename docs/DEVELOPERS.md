@@ -383,6 +383,13 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+Doctor also sends a traced request through every configured agent Unix-domain
+socket. The reserved probe runs the normal request controls and terminates
+locally without external network access. The `pipeline` result lists each
+agent's control states and findings. Known disablement passes with its state
+shown. Missing controls, execution errors, incomplete evidence or an unavailable
+socket fail the check and make doctor exit with status 1. With no configured
+agent listener, doctor warns that it could not test the request pipeline.
 The Admin client reads the configured private token and the live readiness
 port, including an automatically assigned port. Stale ownership or an
 unavailable endpoint fails visibly. Token-file changes require a restart.

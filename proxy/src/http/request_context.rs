@@ -584,19 +584,25 @@ impl RequestContext {
                 inspection.options,
             )
         })?;
+        let trace = self.trace.clone();
         Some(tokio::task::spawn_blocking(move || {
             let (scanner, path, headers, options) = inspection;
             let headers = headers
                 .iter()
                 .map(|(name, value)| (name.as_slice(), value.as_slice()))
                 .collect::<Vec<_>>();
-            scanner.scan_http_request_bytes_cancellable(
+            let hook = trace
+                .as_ref()
+                .and_then(|trace| trace.hook("pattern-scanner", "request"));
+            let result = scanner.scan_http_request_bytes_cancellable(
                 inspection::UrlInput::Text(&path),
                 &headers,
                 Some(content.as_slice()),
                 options,
                 cancel.as_ref(),
-            )
+            );
+            trace_inspection(hook.as_ref(), &result);
+            result
         }))
     }
 
@@ -606,6 +612,10 @@ impl RequestContext {
             .as_mut()
             .filter(|inspection| inspection.result.is_none())
         {
+            let hook = self
+                .trace
+                .as_ref()
+                .and_then(|trace| trace.hook("pattern-scanner", "request"));
             let headers = inspection
                 .headers
                 .iter()
@@ -617,7 +627,7 @@ impl RequestContext {
                 content,
                 inspection.options,
             );
-            inspection.result = Some(decision.and_then(|decision| {
+            let decision = decision.and_then(|decision| {
                 // A head-scope decision still keeps its source order. Otherwise
                 // missing streamed content cannot stand in for a clean scan of
                 // the body required by a blocking rule.
@@ -628,7 +638,9 @@ impl RequestContext {
                         .map(|unavailable| unavailable.unwrap_or(decision));
                 }
                 Ok(decision)
-            }));
+            });
+            trace_inspection(hook.as_ref(), &decision);
+            inspection.result = Some(decision);
         }
     }
 
@@ -765,6 +777,33 @@ impl RequestContext {
 
     pub(super) fn evidence_failed(&self) -> bool {
         self.terminal.unwrap_or(false)
+    }
+}
+
+fn trace_inspection(
+    hook: Option<&TraceHook>,
+    result: &Result<inspection::Decision, inspection::Error>,
+) {
+    let Some(hook) = hook else {
+        return;
+    };
+    match result {
+        Ok(decision) => {
+            use inspection::Outcome;
+            let outcome = match decision.outcome {
+                Outcome::NoRules => "no_rules",
+                Outcome::NoMessage => "no_message",
+                Outcome::NoMatch => "no_match",
+                Outcome::MatchLogged => "match_logged",
+                Outcome::MatchBlocked => "match_blocked",
+                Outcome::InspectionError => {
+                    hook.error("InspectionError");
+                    return;
+                }
+            };
+            hook.evaluated(outcome, None);
+        }
+        Err(_) => hook.error("InspectionError"),
     }
 }
 
