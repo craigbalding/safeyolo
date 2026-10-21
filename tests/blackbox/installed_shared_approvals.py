@@ -25,6 +25,8 @@ import re
 import select
 import shlex
 import shutil
+import signal
+import sqlite3
 import subprocess
 import threading
 import time
@@ -42,13 +44,15 @@ if __package__:
         _agent_listeners,
         _cli_identity,
         _native_config,
+        _pid_alive,
+        _process_start_token,
         _require_disposable,
         _runtime_observation,
         _rust_identity,
         _socket_accepting,
     )
     from .installed_ingress import runsc_identity
-    from .installed_lifecycle import stop_guest
+    from .installed_lifecycle import start_guest, stop_guest
     from .installed_sections import surviving_processes
 else:
     from guest_exec import guest_command_args
@@ -56,13 +60,15 @@ else:
         _agent_listeners,
         _cli_identity,
         _native_config,
+        _pid_alive,
+        _process_start_token,
         _require_disposable,
         _runtime_observation,
         _rust_identity,
         _socket_accepting,
     )
     from installed_ingress import runsc_identity
-    from installed_lifecycle import stop_guest
+    from installed_lifecycle import start_guest, stop_guest
     from installed_sections import surviving_processes
 
 
@@ -371,6 +377,13 @@ def run(args: argparse.Namespace) -> None:
         helper_state = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
         assert helper_state["agent_state"] in {"stopped", "exited", "failed"}, "preserve Helper's existing coding session"
     try:
+        if getattr(args, "delegated_lifecycle", False):
+            coord_command = [str(cli), "--root", str(root), "coord", "status"]
+            coord_before = json.loads(checked(coord_command))
+            assert coord_before["state"] == "running", "start this disposable instance's isolated Coord before the lifecycle probe"
+            for name in names:
+                guest_versions[name] = checked(guest_command_args(args.transport_cli, name, "/safeyolo/safeyolo-guest --version"))
+                assert expected in guest_versions[name], "guest executable is not the selected source"
         if args.interfaces:
             # Use the fixture's existing read-only config-share mount. The new
             # file belongs to this probe and cannot be changed by Helper.
@@ -421,6 +434,147 @@ def run(args: argparse.Namespace) -> None:
             thread.start()
             threads.append(thread)
         port, second_port = (origin.server_port for origin in origins[:2])
+        if getattr(args, "delegated_lifecycle", False):
+            import tomlkit
+
+            # Reuse the two real guests and the canonical API. No coding
+            # session or model credentials are needed for these transitions.
+            policy = tomlkit.parse(model_fixture_policy(root, names, port))
+            policy.setdefault("controls", {}).setdefault("credentials", {})["enabled"] = False
+            apply_fixture_policy(operator, tomlkit.dumps(policy))
+            api = "http://_safeyolo.proxy.internal"
+            url = f"http://127.0.0.2:{port}/{marker}"
+            delegation = {"expected_revision": None, "delegation": {
+                "reviewers": [{"name": args.helper, "agent_id": ids[args.helper]}],
+                "beneficiaries": [{"name": args.worker, "agent_id": ids[args.worker]}],
+                "scopes": [{"type": "network_egress", "host": "127.0.0.2", "ports": [port],
+                            "all_ports": False, "actions": ["request"]}],
+                "expires_at": None, "grant_seconds": None, "gateway_once": False,
+                "acknowledgment": None}}
+            path = "/admin/approval-delegations/sy769-lifecycle"
+            preview = operator("POST", path + "/preview", delegation)
+            assert preview["status"] == 200
+            delegation["delegation"] = preview["body"]["after"]
+            delegation["delegation"]["acknowledgment"] = preview["body"]["acknowledgment"]
+            assert operator("POST", path + "/apply", delegation)["status"] == 200
+
+            def approve_current(*, expected_status: int = 200) -> dict:
+                blocked = guest(args.worker, "GET", url)
+                assert blocked["status"] == 428
+                identifier = blocked["approval_id"]
+                read = guest(args.helper, "GET", api + "/approvals/" + identifier)
+                assert read["status"] == 200
+                decision = guest(args.helper, "POST", api + "/approvals/" + identifier + "/resolve",
+                                 {"decision": "approve", "delegation": "sy769-lifecycle", "option": "run"})
+                assert decision["status"] == expected_status
+                canonical = native("approvals", "show", identifier)
+                assert canonical["status"] == "approved" and canonical["grant_active"] is True
+                return canonical
+
+            def permitted() -> None:
+                before = len(hits)
+                reply = guest(args.worker, "GET", url)
+                assert reply["status"] == 200 and reply["body"] == marker
+                assert len(hits) == before + 1
+
+            def blocked_without_effect(statuses: tuple[int, ...] = (428,)) -> None:
+                before = len(hits)
+                assert guest(args.worker, "GET", url)["status"] in statuses
+                assert len(hits) == before
+
+            # Refuse the final canonical update after the policy transaction.
+            # A killed proxy must recover the committed receipt, rather than
+            # issuing or replaying the operation again on restart.
+            database = root / "data/approvals.sqlite3"
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TRIGGER sy769_missing_terminal BEFORE UPDATE ON approvals "
+                    "WHEN json_extract(NEW.record,'$.status')='approved' "
+                    "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END")
+            try:
+                first = approve_current(expected_status=409)
+                assert not hits, "approval replayed the held operation"
+                current_proxy = _runtime_observation(root, native_config, binary, config_path=config_path,
+                    working_directory=root, require_running=True, require_authenticated_identity=True)
+                assert current_proxy["pid"] == pid and _process_start_token(pid) == start_token
+                os.kill(pid, signal.SIGKILL)
+                deadline = time.monotonic() + 10
+                while _pid_alive(pid) and _process_start_token(pid) == start_token:
+                    assert time.monotonic() < deadline, "owned crash target did not exit"
+                    time.sleep(0.05)
+            finally:
+                with sqlite3.connect(database) as connection:
+                    connection.execute("DROP TRIGGER sy769_missing_terminal")
+            original_run = first["result"]["issued_access"]["beneficiary"]["run_id"]
+            source_before_restart = (root / "policy.toml").read_bytes()
+            checked([str(cli), "--root", str(root), "start"])
+            runtime = _runtime_observation(root, native_config, binary, config_path=config_path,
+                working_directory=root, require_running=True, require_authenticated_identity=True)
+            ready = runtime["readiness"]
+            pid, start_token = runtime["pid"], runtime["receipt"]["start_token"]
+            assert json.loads(checked(coord_command))["process"] == coord_before["process"], "proxy restart changed the existing isolated Coord"
+            assert (root / "policy.toml").read_bytes() == source_before_restart
+            recovered = native("approvals", "show", first["approval_id"])
+            assert recovered["result"] == first["result"] and recovered["grant_active"] is True
+            assert not hits, "restart replayed the held operation"
+            permitted()
+            stop_guest(args.transport_cli, root, args.worker)
+            assert native("approvals", "show", first["approval_id"])["grant_active"] is False
+            assert guest(args.helper, "GET", api + "/approvals/" + first["approval_id"])["status"] == 404
+            start_guest(args.transport_cli, root, args.worker)
+            worker_dir = root / "agents" / args.worker
+            current = json.loads((worker_dir / "runtime.json").read_text())
+            assert current["agent_id"] == ids[args.worker] and current["run_id"] != original_run
+            blocked_without_effect()
+            # An old launch artifact cannot name a new backend incarnation.
+            context_path = worker_dir / "config-share/host-launch-context.json"
+            current_context = context_path.read_bytes()
+            old_context = json.loads(current_context)
+            old_context["generation"] = original_run
+            try:
+                context_path.write_text(json.dumps(old_context))
+                blocked_without_effect((403, 428))
+                assert native("approvals", "show", first["approval_id"])["grant_active"] is False
+            finally:
+                context_path.write_bytes(current_context)
+            # A configured delegation survives a real reviewer restart.
+            helper_before = json.loads((root / "agents" / args.helper / "runtime.json").read_text())
+            stop_guest(args.transport_cli, root, args.helper)
+            start_guest(args.transport_cli, root, args.helper)
+            helper_after = json.loads((root / "agents" / args.helper / "runtime.json").read_text())
+            assert helper_after["agent_id"] == ids[args.helper] and helper_after["run_id"] != helper_before["run_id"]
+            second = approve_current()
+            permitted()
+            assert second["result"]["issued_access"]["beneficiary"]["run_id"] == current["run_id"]
+            stop_guest(args.transport_cli, root, args.worker)
+            before_replacement = tomlkit.parse((root / "policy.toml").read_text())
+            old_worker = before_replacement["agents"].pop(args.worker)
+            before_replacement.pop("approval_delegations", None)
+            apply_fixture_policy(operator, tomlkit.dumps(before_replacement))
+            created = json.loads(checked([str(cli), "--root", str(root), "agent", "create", args.worker,
+                                         "--workspace", old_worker["folder"], "--launcher", "supervisor"]))
+            replacement_id = created["configuration"]["id"]
+            assert replacement_id != ids[args.worker]
+            # Keep the same home and stale typed records, with the new host ID.
+            replacement = tomlkit.parse((root / "policy.toml").read_text())
+            old_worker["agent_id"] = replacement_id
+            replacement["agents"][args.worker] = old_worker
+            apply_fixture_policy(operator, tomlkit.dumps(replacement))
+            start_guest(args.transport_cli, root, args.worker)
+            blocked_without_effect()
+            assert native("approvals", "show", second["approval_id"])["grant_active"] is False
+            unchanged = (root / "policy.toml").read_bytes()
+            assert operator("POST", path + "/apply", delegation)["status"] == 409
+            assert (root / "policy.toml").read_bytes() == unchanged
+            result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
+                "guests": guests, "approval_ids": [first["approval_id"], second["approval_id"]],
+                "original_agent_id": ids[args.worker], "replacement_agent_id": replacement_id,
+                "original_run_id": original_run, "restarted_run_id": current["run_id"],
+                "reviewer_restarted_run_id": helper_after["run_id"], "guest_native_versions": guest_versions,
+                "coord_ports": {key: coord_before["process"][key] for key in ("client_port", "monitor_port")},
+                "origin_hits": hits, "proxy_crash_kept_exact_receipt": True,
+                "stale_context_refused": True, "same_name_replacement_refused": True,
+                "limitations": "This real guest lifecycle probe does not run a model or a Command Centre client."}
+            return
         if delegated_mode:
             # This mode reuses the same owned guests, model launcher, origins,
             # native commands and teardown. The service must be staged before
@@ -853,6 +1007,7 @@ def main() -> None:
     parser.add_argument("--interfaces", action="store_true", help="Use the native operator and Helper clients in the same owned fixture")
     parser.add_argument("--real-helper", action="store_true", help="With --interfaces, run one already authenticated Codex Helper instead of deterministic preparation")
     parser.add_argument("--delegated", action="store_true", help="With --interfaces --real-helper, exercise three delegated decisions without a human decision; requires the fixture service and Helper's existing agent room")
+    parser.add_argument("--delegated-lifecycle", action="store_true", help="Exercise delegated network authority across real guest and proxy restarts, stale launch context and same-name replacement; no model session")
     parser.add_argument("--model-unavailable", action="store_true", help="With --interfaces, launch Codex against an owned HTTP 503 model endpoint, then exercise direct operator controls")
     parser.add_argument("--wait-for-operator", action="store_true", help="Wait for a human CLI/Commander decision; always enabled by --real-helper")
     parser.add_argument("--operator-timeout", type=float, default=600, help="Seconds to wait for the human decision (default: 600)")
@@ -866,6 +1021,8 @@ def main() -> None:
         parser.error("select one model mode")
     if args.delegated and not (args.interfaces and args.real_helper):
         parser.error("--delegated requires --interfaces --real-helper")
+    if args.delegated_lifecycle and (args.delegated or args.real_helper or args.model_unavailable or args.wait_for_operator or args.shared_room):
+        parser.error("--delegated-lifecycle runs separately from model and operator observation modes")
     if (args.wait_for_operator or args.shared_room) and not args.interfaces:
         parser.error("operator/client observations require --interfaces")
     if not math.isfinite(args.operator_timeout) or args.operator_timeout <= 0:

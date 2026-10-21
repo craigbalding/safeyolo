@@ -179,8 +179,26 @@ held request or uncertain external write is replayed automatically.
 If the reviewer is missing, busy, offline, lacks model access, or cannot obtain
 evidence or attention, the worker stays blocked. The operator can still use
 `approvals list`, `approvals show`, `approvals explain`, `approvals approve` and
-`approvals reject`, including the offered run option. Watch and Command Centre
-use that same host resolver. Direct policy controls remain operator-only.
+`approvals reject`, including the offered run option. The native interactive
+view is `safeyolo --root ROOT inspect --agent WORKER`. Use `pending`,
+`approval APPROVAL_ID`, `explain APPROVAL_ID --option run`, or `review` there.
+The inspect session and Command Centre use the same host resolver. Direct
+policy controls remain operator-only.
+
+For a live client check, use the installed runner's existing
+`--interfaces --wait-for-operator --operator-timeout 600 --reconcile-seconds 180`
+mode without `--real-helper`. This mode requires both owned guests and the
+proxy to be running, with the same test preparation as the workflow below.
+Use the native inspect session and an operator-owned Command Centre connection
+to that exact instance. Disconnect and reconnect each client while the request
+is pending. Check that the same canonical approval returns. Select an offered
+option in one client. Check the terminal result from the other client and the
+worker's retry at the owned origin. The runner's later `client_reconciliation`
+message identifies the canonical outcome and keeps the instance live for the
+selected observation window. Record the actual client observations; the
+window alone does not establish a client result. Use the normal Command Centre
+connection setup in [installation](installation.md), and keep the operator
+credential on the operator's host.
 
 ## Exercise the real reviewer workflow
 
@@ -193,9 +211,14 @@ must be stopped, exited or failed. The runner starts its own foreground coding
 session and refuses to replace an existing live session. No model choice or
 new login is required by this feature.
 
-Before starting that disposable proxy, install
-`tests/blackbox/fixtures/delegated-approval-service.yaml` as
-`ROOT/services/delegated-fixture.yaml`. Use the existing Coord server and grant
+Before starting that disposable proxy, read `gateway_services_dir` from the
+selected installed `ROOT/config.toml`. Resolve a relative value against `ROOT`;
+keep an absolute value unchanged. Install
+`tests/blackbox/fixtures/delegated-approval-service.yaml` in that directory as
+`delegated-fixture.yaml`. For example, `gateway_services_dir = "data/services"`
+uses `ROOT/data/services/delegated-fixture.yaml`. Check that the authenticated
+service catalogue lists `delegated-fixture` before running the consumer.
+Use the existing Coord server and grant
 the reviewer receive access to its `helper-agent` room. Use different room and
 agent names together if the reviewer is not named `helper`. Keep the instance's
 normal model-route policy. The runner checks source/profile identity and the
@@ -219,3 +242,31 @@ blocked. Model events stay in private files under the instance's logs. The
 runner restores its saved policy and stops both owned guests, origins and
 proxy, including on failure. A failed or unavailable run is unproved. Separate
 race, lifecycle, failure-recovery and client checks are still required.
+
+To check lifecycle without a model session, use the same marked Ubuntu/systrap
+instance with both guests, the proxy and its existing isolated Coord running.
+Both guests need the existing test preparation. The worker must have a
+configured workspace. The runner uses
+the supported stop/start commands and keeps the same worker home for the
+same-name replacement. Use the prepared source checkout and its matching native
+installation:
+
+```sh
+.venv/bin/python tests/blackbox/installed_shared_approvals.py \
+  --config-dir "$ROOT" --transport-cli "$ROOT/bin/safeyolo" \
+  --native-cli "$ROOT/bin/safeyolo" --native-proxy "$ROOT/bin/safeyolo-proxy" \
+  --commit "$(git rev-parse HEAD)" --worker worker --helper helper \
+  --delegated-lifecycle
+```
+
+This mode uses real guest API calls for reviewer decisions. It prevents the
+final canonical database update after a policy commit, kills the verified owned
+proxy, then starts the proxy through the native CLI. It checks that recovery
+preserves the same permission and expiry without replaying the held request.
+It checks that worker
+stop/start, stale launch context and same-name replacement cannot inherit that
+permission. It also checks that a configured reviewer can decide after its own
+restart. It restores the original policy and stops both owned guests, proxy
+and origins. Keep the instance's isolated Coord configuration when restarting;
+do not use another instance's default ports. This mode does not establish a
+model exchange or a Command Centre reconnect result.

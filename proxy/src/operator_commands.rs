@@ -1335,6 +1335,10 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         for warning in value["warnings"].as_array().into_iter().flatten() {
             println!("Acknowledge: {}", safe(text(warning)));
         }
+        println!(
+            "Independent access that remains after revocation: {}",
+            context_json(&value["independent_access"])?
+        );
         println!("{}", safe(text(&value["revocation"])));
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {

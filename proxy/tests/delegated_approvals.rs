@@ -105,6 +105,9 @@ async fn decide(f: &Fixture, reviewer: &str, id: &str, decision: &str, option: &
     .await
 }
 async fn origin(listener: Arc<tokio::net::TcpListener>) -> Vec<u8> {
+    origin_with_status(listener, 200).await
+}
+async fn origin_with_status(listener: Arc<tokio::net::TcpListener>, status: u16) -> Vec<u8> {
     let (mut stream, _) = timeout(Duration::from_secs(5), listener.accept())
         .await
         .unwrap()
@@ -117,7 +120,12 @@ async fn origin(listener: Arc<tokio::net::TcpListener>) -> Vec<u8> {
         bytes.extend_from_slice(&buffer[..n]);
     }
     stream
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\norigin")
+        .write_all(
+            format!(
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: 6\r\nConnection: close\r\n\r\norigin"
+            )
+            .as_bytes(),
+        )
         .await
         .unwrap();
     bytes
@@ -525,6 +533,43 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
         200
     );
     input["delegation"]["scopes"][0]["method"] = json!("POST");
+    // A service name alone cannot authorize another capability or binding.
+    for (field, wrong) in [
+        ("service", "missing"),
+        ("capability", "reader"),
+        ("binding_id", "foreign-binding"),
+    ] {
+        let mut negative = input.clone();
+        negative["delegation"]["scopes"][0][field] = json!(wrong);
+        let preview = f
+            .admin(
+                "POST",
+                "/admin/approval-delegations/local/preview",
+                Some(negative.clone()),
+            )
+            .await;
+        if preview.status == 200 {
+            let (_, revision) = delegate(&f, negative).await;
+            assert_eq!(
+                decide(&f, "helper", &id, "approve", "run").await.status,
+                409,
+                "{field}"
+            );
+            assert_eq!(
+                f.admin(
+                    "POST",
+                    "/admin/approval-delegations/local/revoke",
+                    Some(json!({"expected_revision":revision}))
+                )
+                .await
+                .status,
+                200
+            );
+        } else {
+            assert_eq!(preview.status, 409);
+        }
+        no_origin(&f).await;
+    }
     let (_, revision) = delegate(&f, input).await;
     // An unrelated peer's network edit cannot require a fresh operator
     // acknowledgment of this service envelope.
@@ -563,6 +608,23 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
         .json();
     let token = current["authorized"]["fixture"]["token"].as_str().unwrap();
     let header = format!("Authorization: Bearer {token}\r\n");
+    let failed_origin = tokio::spawn(origin_with_status(f.origin.clone(), 500));
+    assert_eq!(
+        f.request("worker", f.address, "POST", "/write", &header)
+            .await
+            .status,
+        500
+    );
+    assert!(
+        String::from_utf8(failed_origin.await.unwrap())
+            .unwrap()
+            .starts_with("POST /write ")
+    );
+    no_origin(&f).await; // An uncertain upstream write is never replayed.
+    assert_eq!(
+        assert_grant_readback(&f, &id, "delegated_once", true).await["result"],
+        approved["result"]
+    );
     let (accepted, release) = tokio::sync::oneshot::channel();
     let listener = f.origin.clone();
     let (finish, finished) = tokio::sync::oneshot::channel();
@@ -638,6 +700,17 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
     );
     no_origin(&f).await;
     for disposition in ["removed", "expired"] {
+        if disposition == "expired" {
+            let row = f
+                .admin("GET", "/admin/approval-delegations", None)
+                .await
+                .json()["delegations"][0]
+                .clone();
+            let mut input =
+                json!({"expected_revision":row["revision"],"delegation":row["delegation"]});
+            input["delegation"]["grant_seconds"] = json!(2);
+            delegate(&f, input).await;
+        }
         let refreshed = f
             .agent("worker", "GET", "/gateway/services", None)
             .await
@@ -672,16 +745,21 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
                 200
             );
         } else {
-            let mut source: toml_edit::DocumentMut = f.source().parse().unwrap();
-            let grants = source["agents"]["worker"]["grants"]
-                .as_array_of_tables_mut()
-                .unwrap();
-            let grant = grants
-                .iter_mut()
-                .find(|grant| grant["grant_id"].as_str() == Some(grant_id))
-                .unwrap();
-            grant["expires"] = toml_edit::value("2000-01-01T00:00:00Z");
-            f.apply(&source.to_string()).await;
+            let deadline = std::time::Instant::now() + Duration::from_secs(4);
+            loop {
+                let view = f
+                    .admin("GET", &format!("/admin/approvals/{id}"), None)
+                    .await
+                    .json();
+                if view["grant_active"] == false {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "gateway grant_seconds was not enforced"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
         let inactive = assert_grant_readback(&f, &id, "run", false).await;
         assert_eq!(inactive["result"], approved["result"]);
@@ -986,6 +1064,30 @@ async fn native_operator_and_reviewer_clients_use_the_canonical_resolver() {
         String::from_utf8_lossy(&checked.stderr)
     );
     let preview: Value = serde_json::from_slice(&checked.stdout).unwrap();
+    let readable = native(
+        &f,
+        &[
+            "approvals",
+            "delegation",
+            "preview",
+            "local",
+            "--file",
+            proposal_file.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert!(readable.status.success());
+    let readable = String::from_utf8(readable.stdout).unwrap();
+    for text in [
+        "Before:",
+        "After:",
+        "every destination port",
+        "Independent access that remains after revocation",
+        "Cannot enumerate",
+        "opaque tunnel",
+    ] {
+        assert!(readable.contains(text), "missing {text}: {readable}");
+    }
     assert!(
         preview["warnings"]
             .as_array()
@@ -1119,6 +1221,10 @@ async fn operator_reviewer_race_and_lost_canonical_write_do_not_duplicate_grants
     let snapshot = f.source();
     db.execute_batch("DROP TRIGGER fail_canonical_result")
         .unwrap();
+    drop(db);
+    // Restart at the policy-committed/database-uncommitted boundary. The
+    // persisted receipt must recover the same grant without renewing expiry.
+    let f = f.restart().await;
     assert_eq!(
         decide(&f, "helper", &id, "approve", "run").await.status,
         200
@@ -1133,6 +1239,551 @@ async fn operator_reviewer_race_and_lost_canonical_write_do_not_duplicate_grants
             .len(),
         1
     );
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn narrowing_revokes_new_connect_admission_but_does_not_tear_down_an_opaque_tunnel() {
+    let mut f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    f.config.ignore_hosts = vec![f.address.ip().to_string()];
+    let f = f.restart().await;
+    let mut input = proposal(&f);
+    input["delegation"]["scopes"][0]["actions"] = json!(["request", "connect"]);
+    let (mut input, revision) = delegate(&f, input).await;
+    let blocked = f.request("worker", f.address, "CONNECT", "/", "").await;
+    assert_eq!(blocked.status, 428);
+    assert_eq!(
+        decide(&f, "helper", &blocked.id(), "approve", "run")
+            .await
+            .status,
+        200
+    );
+    let mut client = tokio::net::UnixStream::connect(f.root.path().join("worker.sock"))
+        .await
+        .unwrap();
+    client
+        .write_all(
+            format!(
+                "CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n",
+                f.address, f.address
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut head = vec![];
+    timeout(LIMIT, async {
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(client.read_u8().await.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"));
+    let (mut upstream, _) = timeout(LIMIT, f.origin.accept()).await.unwrap().unwrap();
+    input["expected_revision"] = json!(revision);
+    input["delegation"]["scopes"][0]["actions"] = json!(["request"]);
+    delegate(&f, input).await;
+    let retired = f
+        .admin("GET", &format!("/admin/approvals/{}", blocked.id()), None)
+        .await
+        .json();
+    assert_eq!(retired["status"], "approved");
+    assert_eq!(retired["grant_active"], false);
+    assert_eq!(
+        decide(&f, "helper", &blocked.id(), "approve", "run")
+            .await
+            .status,
+        409
+    );
+    assert_eq!(
+        f.request("worker", f.address, "CONNECT", "/", "")
+            .await
+            .status,
+        428
+    );
+    no_origin(&f).await;
+    client.write_all(b"admitted tunnel survives").await.unwrap();
+    let mut bytes = [0; 24];
+    timeout(LIMIT, upstream.read_exact(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&bytes, b"admitted tunnel survives");
+    drop(client);
+    drop(upstream);
+    // Narrowing did not disable legitimate request decisions.
+    let id = f.network("worker", f.address).await.id();
+    assert_eq!(decide(&f, "peer", &id, "approve", "run").await.status, 200);
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn failed_policy_write_and_missing_audit_keep_a_recoverable_operator_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    delegate(&f, proposal(&f)).await;
+    let id = f.network("worker", f.address).await.id();
+    let before = f.source();
+    let permissions = fs::metadata(f.root.path()).unwrap().permissions();
+    fs::set_permissions(f.root.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = decide(&f, "helper", &id, "approve", "run").await;
+    fs::set_permissions(f.root.path(), permissions).unwrap();
+    assert_eq!(failed.status, 409);
+    assert_eq!(f.source(), before);
+    assert_eq!(
+        f.admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json()["status"],
+        "pending"
+    );
+    assert_eq!(f.network("worker", f.address).await.status, 428);
+    no_origin(&f).await;
+    let audit = f.root.path().join("audit.jsonl");
+    fs::rename(&audit, f.root.path().join("held-audit.jsonl")).unwrap();
+    fs::create_dir(&audit).unwrap();
+    let approved = f
+        .admin(
+            "POST",
+            &format!("/admin/approvals/{id}"),
+            Some(json!({"decision":"approve", "option":"run"})),
+        )
+        .await;
+    assert_eq!(approved.status, 200, "{}", approved.json());
+    assert_eq!(
+        approved.json()["audit_status"],
+        "unavailable; the canonical decision is saved"
+    );
+    let snapshot = f.source();
+    assert_eq!(
+        f.admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json()["status"],
+        "approved"
+    );
+    let f = f.restart().await;
+    assert_eq!(f.resolve(&id, "approve").await.json()["status"], "approved");
+    assert_eq!(f.source(), snapshot);
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn failed_activation_restores_saved_bytes_and_the_previous_runtime() {
+    use std::os::unix::fs::MetadataExt;
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    delegate(&f, proposal(&f)).await;
+    let id = f.network("worker", f.address).await.id();
+    let valid = f.source();
+    // This structurally valid saved classifier fails runtime compilation.
+    // It is unrelated to the pending network authority's revision.
+    let invalid = format!("{valid}\n[credential.activation_failure]\nmatch=['(?a)(?u)']\n");
+    let path = f.root.path().join("policy.toml");
+    fs::write(&path, &invalid).unwrap();
+    let held_original = fs::File::open(&path).unwrap();
+    let failed = decide(&f, "helper", &id, "approve", "run").await;
+    assert_eq!(failed.status, 409, "{}", failed.json());
+    assert_eq!(f.source(), invalid);
+    // Holding the old inode prevents inode reuse. A replacement proves this
+    // reached durable publication and rollback, rather than input rejection.
+    assert_ne!(
+        held_original.metadata().unwrap().ino(),
+        fs::metadata(&path).unwrap().ino()
+    );
+    let active = f.admin("GET", "/admin/policy/baseline", None).await;
+    assert_eq!(active.status, 200, "{}", active.json());
+    let active = active.json();
+    assert!(active["effective"]["credential"]["activation_failure"].is_null());
+    assert!(active["effective"]["agents"]["worker"]["network_grants"].is_null());
+    assert_eq!(f.network("worker", f.address).await.status, 428);
+    no_origin(&f).await;
+    fs::write(&path, valid).unwrap();
+    assert_eq!(
+        decide(&f, "helper", &id, "approve", "run").await.status,
+        200
+    );
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn delegation_edits_and_decisions_keep_spent_budgets_and_explicit_denials() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    let mut source: toml_edit::DocumentMut = f.source().parse().unwrap();
+    source["budget"] = toml_edit::value(1);
+    source["agents"]["helper"]["hosts"][&f.address.to_string()]["egress"] =
+        toml_edit::value("deny");
+    f.apply(&source.to_string()).await;
+    let (mut input, revision) = delegate(&f, proposal(&f)).await;
+    let id = f.network("worker", f.address).await.id();
+    assert_eq!(
+        decide(&f, "helper", &id, "approve", "run").await.status,
+        200
+    );
+    // The existing rate-one policy permits its two-admission burst.
+    for _ in 0..2 {
+        let observer = tokio::spawn(origin(f.origin.clone()));
+        assert_eq!(f.network("worker", f.address).await.status, 200);
+        observer.await.unwrap();
+    }
+    assert_eq!(f.network("worker", f.address).await.status, 429);
+    no_origin(&f).await;
+    let spent = f.admin("GET", "/admin/budgets", None).await;
+    assert_eq!(spent.status, 200);
+    input["expected_revision"] = json!(revision);
+    input["delegation"]["grant_seconds"] = json!(60);
+    delegate(&f, input).await;
+    let id = f.network("worker", f.address).await.id();
+    assert_eq!(
+        decide(&f, "helper", &id, "approve", "run").await.status,
+        200
+    );
+    assert_eq!(
+        f.network("worker", f.address).await.status,
+        429,
+        "grant reset or bypassed the spent budget"
+    );
+    assert_eq!(
+        f.network("helper", f.address).await.status,
+        403,
+        "reviewer gained worker access or lost its explicit denial"
+    );
+    no_origin(&f).await;
+    let after = f.admin("GET", "/admin/budgets", None).await.json();
+    assert_eq!(after["tracked_keys"], spent.json()["tracked_keys"]);
+    assert_eq!(
+        after["budgets"]["network:request:__global__"]["budget_per_minute"],
+        1
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn delegation_expiry_bounds_a_credential_grant_without_policy_reload() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    f.apply(
+        &f.source()
+            .replace("egress='prompt'", "egress='allow'")
+            .replace("enabled=false", "enabled=true"),
+    )
+    .await;
+    let header = format!("Authorization: Bearer {SECRET}\r\n");
+    let blocked = f
+        .request("worker", f.address, "GET", "/credential", &header)
+        .await;
+    assert_eq!(blocked.status, 428);
+    let id = blocked.id();
+    let canonical = f
+        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .await
+        .json();
+    let mut input = proposal(&f);
+    input["delegation"]["scopes"] = json!([{"type":"credential","host":f.address.ip().to_string(),"fingerprints":canonical["action"]["credentials"]}]);
+    let expiry = (time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap()
+        + time::Duration::seconds(3))
+    .format(&time::format_description::well_known::Rfc3339)
+    .unwrap();
+    input["delegation"]["expires_at"] = json!(expiry);
+    delegate(&f, input).await;
+    assert_eq!(
+        decide(&f, "helper", &id, "approve", "run").await.status,
+        200
+    );
+    let issued = assert_grant_readback(&f, &id, "run", true).await;
+    assert_eq!(issued["result"]["issued_access"]["expires_at"], expiry);
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(
+        f.request("worker", f.address, "POST", "/other-operation", &header)
+            .await
+            .status,
+        200
+    );
+    observer.await.unwrap();
+    let source = f.source();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let view = f
+            .admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json();
+        if view["grant_active"] == false {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "delegation expiry was not enforced"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        f.request("worker", f.address, "POST", "/other-operation", &header)
+            .await
+            .status,
+        428
+    );
+    assert_eq!(
+        decide(&f, "helper", &id, "approve", "run").await.status,
+        409
+    );
+    assert_eq!(f.source(), source);
+    assert_eq!(
+        f.admin("GET", "/admin/approval-delegations", None)
+            .await
+            .json()["delegations"][0]["active"],
+        false
+    );
+    no_origin(&f).await;
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn unavailable_attention_equivalent_requests_and_old_events_preserve_canonical_authority() {
+    use std::io::Write;
+    let mut f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    // Canonical decisions must not need full FlowStore capture or Coord.
+    f.config.flow_store_enabled = false;
+    let f = f.restart().await;
+    let (input, revision) = delegate(&f, proposal(&f)).await;
+    let mut canonical = Value::Null;
+    for (method, path) in [
+        ("GET", "/first?secret=private"),
+        ("POST", "/%1b%5b31m%0a%23-approved?secret=other"),
+        ("DELETE", "/new-path"),
+    ] {
+        let blocked = f.request("worker", f.address, method, path, "").await;
+        assert_eq!(blocked.status, 428);
+        let view = f
+            .agent(
+                "helper",
+                "GET",
+                &format!("/approvals/{}", blocked.id()),
+                None,
+            )
+            .await;
+        assert_eq!(view.status, 200);
+        if canonical.is_null() {
+            canonical = view.json()["approval_id"].clone();
+        }
+        assert_eq!(view.json()["approval_id"], canonical);
+        assert!(!String::from_utf8_lossy(&view.body).contains("secret="));
+    }
+    let id = canonical.as_str().unwrap();
+    let foreign = f.network("peer", f.address).await.id();
+    let mut only_helper = input;
+    only_helper["expected_revision"] = json!(revision);
+    only_helper["delegation"]["reviewers"] = json!([{"name":"helper","agent_id":HELPER_ID}]);
+    let (_, revision) = delegate(&f, only_helper).await;
+    // A changed delegation has a new delivery key. Observe this revision
+    // before challenging equivalent traffic after its terminal refusal.
+    assert_eq!(f.network("worker", f.address).await.status, 428);
+    for path in [
+        format!("/approvals/{foreign}"),
+        format!("/approvals/{foreign}/context"),
+        format!("/approvals/{foreign}/history"),
+        format!("/approvals/{foreign}/search"),
+    ] {
+        assert_ne!(
+            f.agent("helper", "GET", &path, None).await.status,
+            200,
+            "{path}"
+        );
+    }
+    let listed = f
+        .agent(
+            "helper",
+            "GET",
+            "/approvals?search=helper&history=true",
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, 200);
+    assert_eq!(listed.json()["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(listed.json()["approvals"][0]["approval_id"], canonical);
+    let source = f.source();
+    assert_eq!(decide(&f, "helper", id, "reject", "run").await.status, 200);
+    assert_eq!(f.source(), source, "refusal installed policy");
+    let repeated = f.network("worker", f.address).await;
+    assert_eq!(repeated.status, 428);
+    let next = f
+        .admin("GET", &format!("/admin/approvals/{}", repeated.id()), None)
+        .await
+        .json();
+    assert_ne!(next["approval_id"], canonical);
+    assert!(
+        next["reviewer_delivery"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|value| value.as_str().unwrap().starts_with("coalesced"))
+    );
+    // Rotated or forged audit history describes events. It cannot reopen the
+    // terminal request, change its scope or install permission.
+    let audit = f.root.path().join("audit.jsonl");
+    fs::rename(&audit, f.root.path().join("old-audit.jsonl")).unwrap();
+    let mut output = fs::File::create(&audit).unwrap();
+    writeln!(output, "{}", json!({"event":"admin.approval_decided","approval_id":id,"status":"approved","details":{"status":"approved","approval_id":id},"approval":{"required":false}})).unwrap();
+    drop(output);
+    let f = f.restart().await;
+    assert_eq!(f.resolve(id, "approve").await.json()["status"], "rejected");
+    assert_eq!(
+        f.admin(
+            "POST",
+            &format!("/admin/approvals/{}", repeated.id()),
+            Some(json!({"decision":"approve","option":"run"}))
+        )
+        .await
+        .status,
+        200
+    );
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    assert_eq!(
+        f.admin(
+            "POST",
+            "/admin/approval-delegations/local/revoke",
+            Some(json!({"expected_revision":revision}))
+        )
+        .await
+        .status,
+        200
+    );
+    // The independent operator grant is not owned by this delegation.
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_inspect_reconnects_to_canonical_pending_and_operator_resolution() {
+    use std::{
+        io::{Read, Write},
+        os::fd::{AsRawFd, FromRawFd},
+    };
+    fn screen(terminal: &mut fs::File) -> String {
+        let mut output = Vec::new();
+        while !output.ends_with(b"inspect> ") {
+            let mut descriptor = libc::pollfd {
+                fd: terminal.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert!(
+                unsafe { libc::poll(&mut descriptor, 1, 3000) } > 0,
+                "inspect did not return: {}",
+                String::from_utf8_lossy(&output)
+            );
+            let mut buffer = [0; 4096];
+            let n = terminal.read(&mut buffer).unwrap();
+            assert!(n > 0 && output.len() + n <= 65536);
+            output.extend_from_slice(&buffer[..n]);
+        }
+        String::from_utf8(output).unwrap()
+    }
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    delegate(&f, proposal(&f)).await;
+    let blocked = f.network("worker", f.address).await;
+    let id = f
+        .admin("GET", &format!("/admin/approvals/{}", blocked.id()), None)
+        .await
+        .json()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::write(
+        f.root.path().join("data/instance_id"),
+        "sy-44444444444444444444444444444444",
+    )
+    .unwrap();
+    fs::write(f.root.path().join("config.toml"), "admin_port=0\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\naudit_log_path='audit.jsonl'\n").unwrap();
+    let (mut master, mut slave) = (-1, -1);
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    let mut terminal = unsafe { fs::File::from_raw_fd(master) };
+    let slave = unsafe { fs::File::from_raw_fd(slave) };
+    let inspector = Backend(
+        std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(f.root.path())
+            .args(["inspect", "--agent", "worker"])
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave)
+            .spawn()
+            .unwrap(),
+    );
+    assert!(screen(&mut terminal).contains("Agent: worker"));
+    terminal.write_all(b"pending\n").unwrap();
+    assert!(screen(&mut terminal).contains(&format!("\"approval_id\": \"{id}\"")));
+    let Fixture {
+        root,
+        proxy,
+        address,
+        origin: listener,
+        config,
+        ..
+    } = f;
+    proxy.shutdown().await;
+    terminal.write_all(b"pending\n").unwrap();
+    assert!(screen(&mut terminal).contains("Unavailable:"));
+    let proxy = safeyolo_proxy::Proxy::start(config.clone()).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let f = Fixture {
+        root,
+        proxy,
+        address,
+        origin: listener,
+        config,
+        admin: ready["admin_port"].as_u64().unwrap().try_into().unwrap(),
+    };
+    terminal.write_all(b"pending\n").unwrap();
+    assert!(screen(&mut terminal).contains(&format!("\"approval_id\": \"{id}\"")));
+    terminal
+        .write_all(format!("approve {id}\n").as_bytes())
+        .unwrap();
+    assert!(screen(&mut terminal).contains("Status: approved"));
+    assert_eq!(
+        f.admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json()["status"],
+        "approved"
+    );
+    terminal.write_all(b"pending\n").unwrap();
+    assert!(!screen(&mut terminal).contains(&format!("\"approval_id\": \"{id}\"")));
+    terminal.write_all(b"quit\n").unwrap();
+    drop(inspector);
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    no_origin(&f).await;
     f.stop().await;
 }
 
