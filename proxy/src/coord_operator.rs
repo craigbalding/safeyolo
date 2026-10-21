@@ -650,14 +650,7 @@ async fn run_options(
             .is_some_and(|id| message["sender_agent_id"] != id)
             && message["sender_kind"] == "agent"
         {
-            // A peer's JSON body is room text, not this worker's telemetry.
-            options.display.observation(&format!(
-                "room message from {}: {}",
-                message["sender_agent_name"]
-                    .as_str()
-                    .unwrap_or("unknown agent"),
-                message["body"].as_str().unwrap_or_default()
-            ))
+            options.display.peer_message(message)
         } else {
             options.display.message(message)
         }

@@ -509,24 +509,32 @@ fn redact_text(text: &str) -> String {
         r"(?i)\bBearer\s+[^\s,;]+", r"\b(?:sgw_|sk-|gh[pousr]_)[A-Za-z0-9._-]{8,}",
         r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b",
         r"(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|cookie|private[_-]?key)\s*([:=])\s*([^\s,;]+)",
-        r#"https?://[^\s\]\[\"'<>]+"#,
+        r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+"#,
     ].iter().map(|p| Regex::new(p).expect("fixed watcher redaction expression")).collect()
     });
-    let mut text = text.to_owned();
-    for pattern in &PATTERNS[..3] {
-        text = pattern.replace_all(&text, "<redacted>").into_owned();
-    }
-    text = PATTERNS[3]
-        .replace_all(&text, "${1}${2}<redacted>")
-        .into_owned();
-    PATTERNS[4]
-        .replace_all(&text, |c: &regex::Captures<'_>| {
-            let url = &c[0];
+    // Remove URL credentials before matching key=value secrets, so usernames
+    // such as "password" cannot cause the useful host and path to be hidden.
+    let mut text = PATTERNS[4]
+        .replace_all(text, |c: &regex::Captures<'_>| {
+            let mut url = c[0].to_owned();
+            let start = url.find("://").expect("matched URL authority") + 3;
+            let end = url[start..]
+                .find(['/', '\\', '?', '#'])
+                .map_or(url.len(), |index| start + index);
+            if let Some(index) = url[start..end].rfind('@') {
+                url.replace_range(start..=start + index, "");
+            }
             url.find(['?', '#'])
                 .filter(|index| index + 1 < url.len())
                 .map(|index| format!("{}?<omitted>", &url[..index]))
-                .unwrap_or_else(|| url.to_owned())
+                .unwrap_or(url)
         })
+        .into_owned();
+    for pattern in &PATTERNS[..3] {
+        text = pattern.replace_all(&text, "<redacted>").into_owned();
+    }
+    PATTERNS[3]
+        .replace_all(&text, "${1}${2}<redacted>")
         .into_owned()
 }
 fn redact_value(value: &Value) -> Value {
@@ -565,6 +573,24 @@ impl Display {
         rows.into_iter()
             .map(|(prefix, body)| format!("{prefix}{body}\n"))
             .collect()
+    }
+
+    pub(crate) fn peer_message(&self, message: &Value) -> String {
+        let body = message["body"].as_str().unwrap_or_default();
+        // Reuse the safe event summary. A peer's tool arguments and results
+        // must not become plain room text or the selected worker's telemetry.
+        let text = match serde_json::from_str::<Value>(body) {
+            Ok(value) => event(&value, false)
+                .map(|(label, text)| format!("{label} {text}"))
+                .unwrap_or_else(|| "structured message (details omitted)".into()),
+            Err(_) => body.into(),
+        };
+        self.observation(&format!(
+            "room message from {}: {text}",
+            message["sender_agent_name"]
+                .as_str()
+                .unwrap_or("unknown agent")
+        ))
     }
 
     pub(crate) fn message(&self, message: &Value) -> String {
@@ -842,5 +868,33 @@ mod tests {
         .message(&secret);
         assert!(!redacted.contains("fixture-secret"));
         assert!(redacted.contains("token=<redacted>"));
+    }
+
+    #[test]
+    fn redacted_urls_keep_host_and_path_without_credentials() {
+        for (input, expected) in [
+            (
+                "https://alice:private@example.test/item?query#fragment",
+                "https://example.test/item?<omitted>",
+            ),
+            (
+                "HTTPS://user%40name:pass%3Aword@[::1]:8443/item@route#fragment",
+                "HTTPS://[::1]:8443/item@route?<omitted>",
+            ),
+            (
+                "https://password:private@example.test/item",
+                "https://example.test/item",
+            ),
+            (
+                "ssh://user:private@example.test/item",
+                "ssh://example.test/item",
+            ),
+            (
+                "https://example.test/item@route",
+                "https://example.test/item@route",
+            ),
+        ] {
+            assert_eq!(redact_text(input), expected);
+        }
     }
 }

@@ -531,6 +531,74 @@ def watch_once(instance, *arguments):
                           env=instance.environment, capture_output=True, text=True, timeout=15)
 
 
+def test_agent_watch_peer_tool_summaries_omit_private_payloads(supervised):
+    instance, _, _, _ = supervised
+    bodies, secrets = [], []
+    for index, key in enumerate(("token", "password", "delegation", "authorization", "secret", "environment")):
+        secret = f"peer-private-{index}"
+        secrets.append(secret)
+        for phase in ("started", "completed"):
+            body = json.dumps({"type": f"item.{phase}", "item": {
+                "type": "mcp_tool_call", "server": "safeyolo-coord", "tool": "read_approval",
+                "status": phase, "arguments": {"approval_id": "apr-" + "1" * 32, key: secret},
+                "result": {"structured_content": {"status": "pending", "body": secret}}}},
+                separators=(",", ":") if index % 2 else (", ", ": "))
+            agent_send(instance, body, sender="bob")
+            bodies.append(body)
+    unknown = json.dumps({"type": "unrecognized-event", "arguments": {"token": "unknown-private"}})
+    agent_send(instance, unknown, sender="bob")
+    bodies.append(unknown)
+    before = history(instance)
+    assert [message["body"] for message in before] == bodies
+    assert all(message["sender_agent_name"] == "bob" for message in before)
+    result = watch_once(instance)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("room message from bob:") == len(bodies)
+    assert not any(secret in result.stdout for secret in [*secrets, "unknown-private"])
+    assert "safeyolo-coord.read_approval" in result.stdout and "approval_status=pending" in result.stdout
+    assert history(instance) == before
+
+
+def test_agent_watch_checkpoint_and_tool_targets_omit_url_credentials(supervised):
+    instance, _, state, _ = supervised
+    for target, shown in (
+        ("https://url-user-canary:url-pass-canary@example.test/item?url-query-canary#url-fragment-canary",
+         "https://example.test/item?<omitted>"),
+        ("http://url-user-canary@example.test:8080/item", "http://example.test:8080/item"),
+        ("https://url%40user:url%3Apass@[::1]:8443/item@route?url-query-canary",
+         "https://[::1]:8443/item@route?<omitted>"),
+        ("https://password:url-pass-canary@example.test/item", "https://example.test/item"),
+        ("ssh://url-user-canary:url-pass-canary@example.test/item", "ssh://example.test/item"),
+    ):
+        attention_id = "attn-" + "2" * 32
+        state.write_text(json.dumps({
+            "schema": "safeyolo.coord-supervisor/v1", "harness": "codex", "thread_id": None,
+            "safe_cursor": 0, "recent_attention_ids": [], "consecutive_failures": 0,
+            "owned_process": None, "repair_selection": None, "phase": "accepted", "briefs": {},
+            "in_flight": [{"attention_id": attention_id, "room_name": ROOM,
+                           "sender_agent_id": "ag-" + "b" * 32, "sender_agent_name": "bob",
+                           "sequence": 1, "body": f"TASK target={target} assignee=alice",
+                           "requires_terminal": True}],
+            "awaiting_handoffs": [{"room_name": ROOM, "request": "REVIEW_READY", "recipient_agent": "bob",
+                                   "body": f"REVIEW_READY target={target}", "correlation": {"target": target},
+                                   "parent_attention_id": attention_id}],
+        }))
+        body = json.dumps({"type": "item.completed", "item": {
+            "type": "mcp_tool_call", "server": "safeyolo-coord", "tool": "send", "status": "completed",
+            "arguments": {"body": f"DONE target={target} attention_id={attention_id}"}}})
+        agent_send(instance, body)
+        before = history(instance)
+        checkpoint = state.read_bytes()
+        result = watch_once(instance, "--since", str(before[-1]["sequence"] - 1))
+        assert result.returncode == 0, result.stderr
+        for prefix in ("pending TASK target=", "waiting for REVIEW_READY reply from bob target=", "message=DONE target="):
+            assert prefix + shown in result.stdout
+        assert not any(secret in result.stdout for secret in (
+            "url-user-canary", "url-pass-canary", "url%40user", "url%3Apass", "url-query-canary", "url-fragment-canary"))
+        assert state.read_bytes() == checkpoint and history(instance) == before
+        assert not state.with_name(state.name + ".lock").exists()
+
+
 def test_agent_watch_failures_redaction_and_read_only(supervised):
     instance, config, state, environment = supervised
     result = watch_once(instance)
