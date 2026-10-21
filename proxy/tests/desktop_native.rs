@@ -4,9 +4,12 @@
 use std::{
     fs,
     net::Ipv4Addr,
-    os::unix::fs::{PermissionsExt, symlink},
+    os::unix::{
+        fs::{PermissionsExt, symlink},
+        process::{CommandExt, ExitStatusExt},
+    },
     path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command, Stdio},
     sync::Mutex,
     time::Duration,
 };
@@ -267,6 +270,256 @@ async fn action_request(
         .unwrap()
         .unwrap();
     response
+}
+
+struct DesktopProxyProcess(Option<Child>);
+
+impl DesktopProxyProcess {
+    async fn start(root: &Path, config: &Config) -> Self {
+        let ready = root.join("ready.json");
+        if ready.exists() {
+            fs::remove_file(&ready).unwrap();
+        }
+        let source = root.join("proxy-config.json");
+        fs::write(&source, serde_json::to_vec(config).unwrap()).unwrap();
+        let log = fs::File::create(root.join("proxy-process.log")).unwrap();
+        let mut proxy = Self(Some(
+            Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+                .arg("--config")
+                .arg(source)
+                .process_group(0)
+                .stdout(Stdio::from(log.try_clone().unwrap()))
+                .stderr(Stdio::from(log))
+                .spawn()
+                .unwrap(),
+        ));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !ready.exists() {
+                assert!(
+                    proxy.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+                    "{}",
+                    fs::read_to_string(root.join("proxy-process.log")).unwrap()
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("owned proxy did not become ready");
+        proxy
+    }
+
+    fn interrupt(mut self) {
+        let mut child = self.0.take().unwrap();
+        assert_eq!(
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) },
+            0
+        );
+        assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGKILL));
+    }
+}
+
+impl Drop for DesktopProxyProcess {
+    fn drop(&mut self) {
+        // The unreaped child owns this process group, including a held opener.
+        // Kill only this fixture's group, then reap the child.
+        if let Some(child) = &mut self.0 {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
+#[test]
+fn interrupted_desktop_action_reports_unknown_without_replaying() {
+    let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check_interrupted_desktop_action());
+}
+
+async fn check_interrupted_desktop_action() {
+    let root = TempDir::new().unwrap();
+    fixture(root.path());
+    fs::write(root.path().join("config.toml"), "admin_port=0\nadmin_api_token_file='token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\n").unwrap();
+    for (program, source) in [
+        (
+            "xdpyinfo",
+            "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
+        ),
+        (
+            "xdg-open",
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\nexec /bin/sleep 120\n",
+        ),
+        (
+            "tailscale",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SAFEYOLO_CONFIG_DIR/tailscale-calls\"\nexit 1\n",
+        ),
+    ] {
+        let path = root.path().join("bin").join(program);
+        fs::write(&path, source).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _run = OwnedRun::start(root.path());
+    let mut config = config(root.path());
+    config.native_product = true;
+    config.policy_file = Some(root.path().join("policy.toml"));
+    let proxy = DesktopProxyProcess::start(root.path(), &config).await;
+    let port = || {
+        let ready: Value =
+            serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+        ready["admin_port"].as_u64().unwrap() as u16
+    };
+    let auth = [("Authorization", format!("Bearer {TOKEN}"))];
+    let requested = action_request(root.path(), "POST", "/operator-actions",
+        json!({"action_id":"desktop.present","parameters":{"browser_url":"https://example.com/interrupt","ttl_seconds":60}}), "alice").await;
+    assert_eq!(
+        status(&requested),
+        202,
+        "{}",
+        String::from_utf8_lossy(&requested)
+    );
+    let id = body(&requested)["approval_id"].as_str().unwrap().to_owned();
+    let approval_path = format!("/admin/approvals/{id}");
+    let approval = tokio::spawn({
+        let path = approval_path.clone();
+        let auth = auth.clone();
+        let port = port();
+        async move {
+            request(
+                port,
+                "POST",
+                &path,
+                &auth,
+                br#"{"decision":"approve","option":"once"}"#,
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !root.path().join("opened").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the actual opener was not called");
+    let saved_record = || -> String {
+        rusqlite::Connection::open_with_flags(
+            root.path().join("data/approvals.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap()
+        .query_row(
+            "SELECT record FROM approvals WHERE approval_id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let saved = saved_record();
+    let record: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(record["status"], "approved");
+    assert_eq!(record["result"]["status"], "starting");
+    assert!(
+        record["result"]["execution_session_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    let opened = fs::read(root.path().join("opened")).unwrap();
+    let browser = fs::read(root.path().join("browser-command")).unwrap();
+    assert!(String::from_utf8_lossy(&browser).contains("https://example.com/interrupt"));
+    assert!(!root.path().join("tailscale-calls").exists());
+    let requester_paths = [
+        format!("/operator-actions/{id}"),
+        format!("/approvals/{id}"),
+    ];
+    for path in &requester_paths {
+        let view = action_request(root.path(), "GET", path, Value::Null, "alice").await;
+        assert_eq!(body(&view)["result"]["status"], "starting");
+    }
+    let current = request(port(), "GET", &approval_path, &auth, b"").await;
+    assert_eq!(body(&current)["result"]["status"], "starting");
+    assert!(body(&current)["result"]["diagnostic"].is_null());
+    // Kill after the saved decision and the real controlled opener call. Never
+    // edit the saved result to manufacture an interrupted execution.
+    proxy.interrupt();
+    let _ = approval.await.unwrap();
+    let proxy = DesktopProxyProcess::start(root.path(), &config).await;
+    assert_eq!(saved_record(), saved);
+    for path in &requester_paths {
+        let view = action_request(root.path(), "GET", path, Value::Null, "alice").await;
+        assert_eq!(status(&view), 200);
+        let text = String::from_utf8_lossy(&view);
+        assert!(!text.contains("unlock_code") && !text.contains("operator_preview"));
+        let view = body(&view);
+        assert_eq!(view["status"], "approved");
+        assert_eq!(
+            view["result"]["status"], "outcome_unknown",
+            "{path}: {view}"
+        );
+        assert_eq!(
+            view["result"]["diagnostic"]["code"],
+            "preview_execution_interrupted"
+        );
+    }
+    for method in ["GET", "POST", "POST", "POST"] {
+        let view = request(
+            port(),
+            method,
+            &approval_path,
+            &auth,
+            if method == "POST" {
+                br#"{"decision":"approve"}"#
+            } else {
+                b""
+            },
+        )
+        .await;
+        assert_eq!(status(&view), 200);
+        let view = body(&view);
+        assert_eq!(view["status"], "approved");
+        assert_eq!(view["result"]["status"], "outcome_unknown", "{view}");
+        assert!(
+            view["result"]["diagnostic"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("inspect the preview")
+        );
+    }
+    for operation in ["show", "approve"] {
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(root.path())
+            .args(["approvals", operation, &id])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.contains("outcome_unknown") && text.contains("inspect the preview"),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        saved_record(),
+        saved,
+        "reads or retries changed the saved decision/result"
+    );
+    assert_eq!(fs::read(root.path().join("opened")).unwrap(), opened);
+    assert_eq!(
+        fs::read(root.path().join("browser-command")).unwrap(),
+        browser
+    );
+    assert!(!root.path().join("tailscale-calls").exists());
+    drop(proxy);
 }
 
 #[test]
@@ -773,26 +1026,6 @@ fi
     .await;
     let pending_id = body(&pending)["approval_id"].as_str().unwrap().to_owned();
     proxy.shutdown().await;
-    // Model the durable state after a decision whose result was interrupted.
-    // Retain the real request's immutable authority; change only its outcome.
-    let connection =
-        rusqlite::Connection::open(root.path().join("data/approvals.sqlite3")).unwrap();
-    let encoded: String = connection
-        .query_row(
-            "SELECT record FROM approvals WHERE approval_id=?1",
-            [&remote_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let mut interrupted: Value = serde_json::from_str(&encoded).unwrap();
-    interrupted["result"] = json!({"status":"starting","execution_session_id":"previous-process","permission_changed":false});
-    connection
-        .execute(
-            "UPDATE approvals SET record=?1 WHERE approval_id=?2",
-            rusqlite::params![serde_json::to_string(&interrupted).unwrap(), remote_id],
-        )
-        .unwrap();
-    drop(connection);
     let proxy = Proxy::start(config).await.unwrap();
     let ready: Value =
         serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
@@ -821,15 +1054,6 @@ fi
         retained_decision["result"]["diagnostic"]["code"],
         "tailnet_serve_permission"
     );
-    let unknown = action_request(
-        root.path(),
-        "GET",
-        &format!("/operator-actions/{remote_id}"),
-        Value::Null,
-        "alice",
-    )
-    .await;
-    assert_eq!(body(&unknown)["result"]["status"], "outcome_unknown");
     let calls_before = fs::read(root.path().join("tailscale-calls")).unwrap();
     let no_replay = request(
         port,
@@ -863,8 +1087,14 @@ fi
     );
     let audit = root.path().join("audit.jsonl");
     let saved_audit = root.path().join("saved-audit.jsonl");
-    fs::rename(&audit, &saved_audit).unwrap();
-    fs::create_dir(&audit).unwrap();
+    fs::copy(&audit, &saved_audit).unwrap();
+    let blocked_audit = root.path().join("blocked-audit");
+    fs::create_dir(&blocked_audit).unwrap();
+    let replacement = root.path().join("audit-replacement");
+    symlink(&blocked_audit, &replacement).unwrap();
+    // Replace the sink atomically: an in-flight writer must not recreate the
+    // file between removing it and installing the failure fixture.
+    fs::rename(&replacement, &audit).unwrap();
     let unaudited = action_request(
         root.path(),
         "POST",
@@ -891,7 +1121,6 @@ fi
         )
         .await,
     );
-    fs::remove_dir(&audit).unwrap();
     fs::rename(&saved_audit, &audit).unwrap();
     assert_eq!(denied["status"], "rejected");
     assert!(

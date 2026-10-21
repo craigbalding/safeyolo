@@ -707,6 +707,13 @@ pub(crate) fn current_view(
         };
     }
     view["approval"]["required"] = json!(view["status"] == "pending");
+    if record.authority.action["kind"] == "operator_action"
+        && view["result"]["status"] == "starting"
+        && view["result"]["execution_session_id"].as_str() != Some(&writer.approvals().session_id)
+    {
+        view["result"] = json!({"status":"outcome_unknown","diagnostic":{
+            "code":"preview_execution_interrupted","message":"The preview execution was interrupted. The operator must inspect the preview before a new request; SafeYolo did not replay it.","graph":"triage-desktop-preview"}});
+    }
     Ok(view)
 }
 

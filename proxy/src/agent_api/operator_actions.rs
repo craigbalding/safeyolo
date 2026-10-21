@@ -60,10 +60,10 @@ where
                     Ok(record) => record,
                     Err(_) => return response(503, json!({"error":"action state unavailable"})),
                 }
-                    .filter(|record| {
-                        record.authority.action["kind"] == "operator_action"
-                            && crate::approvals::pending::context::owner(&policy, record, &caller)
-                    });
+                .filter(|record| {
+                    record.authority.action["kind"] == "operator_action"
+                        && crate::approvals::pending::context::owner(&policy, record, &caller)
+                });
                 match record {
                     Some(mut record) => {
                         let view = crate::approvals::pending::current_view(
@@ -76,10 +76,7 @@ where
                             Ok(view) => {
                                 record.status =
                                     view["status"].as_str().unwrap_or("unavailable").into();
-                                if record.result["status"] == "starting" && record.result["execution_session_id"].as_str() != Some(&writer.approvals().session_id) {
-                                    record.result = json!({"status":"outcome_unknown","diagnostic":{
-                                        "code":"preview_execution_interrupted","message":"The preview execution was interrupted. The operator must inspect the preview before a new request; SafeYolo did not replay it.","graph":"triage-desktop-preview"}});
-                                }
+                                record.result = view["result"].clone();
                                 response(200, operator_actions::agent_view(&record))
                             }
                             Err(_) => response(503, json!({"error":"action state unavailable"})),
