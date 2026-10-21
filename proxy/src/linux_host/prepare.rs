@@ -30,6 +30,43 @@ const REQUIRED_PACKAGES: &[(&str, &[&str])] = &[
     ("tar", &["tar"]),
 ];
 
+fn guest_archive_tool_ready(name: &str) -> bool {
+    let Some(path) = command_path(name) else {
+        return false;
+    };
+    let arguments: &[&str] = match name {
+        // Guest extraction preserves owners, ACLs and extended attributes.
+        "tar" => &[
+            "--numeric-owner",
+            "--same-owner",
+            "--acls",
+            "--xattrs",
+            "--xattrs-include=*",
+            "--version",
+        ],
+        // Inspect one device's metadata without walking a host directory.
+        // These are the ownership predicates used by guest acquisition.
+        "find" => &[
+            "/dev/null",
+            "-xdev",
+            "(",
+            "-uid",
+            "0",
+            "-o",
+            "-gid",
+            "0",
+            ")",
+            "-print",
+            "-quit",
+        ],
+        _ => return false,
+    };
+    Command::new(path)
+        .args(arguments)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 pub(super) fn check_prerequisites(
     settings: Option<&Settings>,
     mapping: Mapping,
@@ -802,30 +839,36 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     }
     // Already prepared contributor hosts need no package changes and retain
     // their runtime paths. Install only the missing tools on supported hosts.
-    let alpine = if packages.is_empty() {
-        false
-    } else {
-        let release = fs::read_to_string("/etc/os-release")?;
-        let alpine = release
+    let release = fs::read_to_string("/etc/os-release");
+    let alpine = release.as_ref().is_ok_and(|release| {
+        release
             .lines()
-            .any(|line| matches!(line, "ID=alpine" | "ID=\"alpine\""));
-        if alpine {
-            for package in &mut packages {
-                *package = match *package {
-                    "uidmap" => "shadow-subids",
-                    "util-linux" => "util-linux-misc",
-                    "libsubid4" => "shadow-libs",
-                    other => other,
-                };
+            .any(|line| matches!(line, "ID=alpine" | "ID=\"alpine\""))
+    });
+    if alpine {
+        for package in &mut packages {
+            *package = match *package {
+                "uidmap" => "shadow-subids",
+                "util-linux" => "util-linux-misc",
+                "libsubid4" => "shadow-libs",
+                other => other,
+            };
+        }
+        for (command, package) in [("tar", "tar"), ("find", "findutils")] {
+            if !guest_archive_tool_ready(command) && !packages.contains(&package) {
+                packages.push(package);
             }
-        } else if !release
+        }
+    } else if !packages.is_empty() {
+        // A prepared contributor host needs no distro metadata. Propagate a
+        // read error only when automatic package setup actually needs it.
+        if !release?
             .lines()
             .any(|line| matches!(line, "ID=ubuntu" | "ID=\"ubuntu\""))
         {
             return Err(format!("automatic host package setup supports Ubuntu and Alpine; missing packages: {}. Prepare these tools with your host package manager, then retry",packages.join(", ")).into());
         }
-        alpine
-    };
+    }
     let mut changes = Vec::new();
     if !packages.is_empty() {
         changes.push(format!(
