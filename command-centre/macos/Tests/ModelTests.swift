@@ -603,10 +603,18 @@ struct ModelTests: App {
                        ["id":"remembered", "effect":"Allow with the existing TTL", "status":"available"]]
         let credentials = [["id":"credential:one", "effect":"Use credential reference one", "status":"available"],
                            ["id":"credential:two", "effect":"Use credential reference two", "status":"available"]]
+        let runBound = persistent + [["id":"run", "effect":"Only the current worker run", "status":"available"]]
+        let delegatedGateway = gateway + [
+            ["id":"run", "effect":"Reuse this route in the current worker run", "status":"available"],
+            ["id":"delegated_once", "effect":"One route grant in the current worker run", "status":"available"]]
         for (kind, options, chosen) in [
             ("credential", persistent, "persistent"),
+            ("network_egress", runBound, "run"),
+            ("credential", runBound, "run"),
             ("contract_binding", persistent, "persistent"),
             ("gateway_risky_route", gateway, "remembered"),
+            ("gateway_risky_route", delegatedGateway, "delegated_once"),
+            ("gateway_risky_route", delegatedGateway, "run"),
             ("service", credentials, "credential:two")
         ] {
             let bytes = try JSONSerialization.data(withJSONObject: [
@@ -627,10 +635,10 @@ struct ModelTests: App {
                     preconditionFailure("Only fixed available choices can be selected")
                 } catch ClientError.invalidApproval(_) {}
             }
-            if kind == "service" {
+            if options.count > 1 && !options.contains(where: { $0["id"] == "once" && $0["status"] == "available" }) {
                 do {
                     _ = try MutationPlan.forApproval(event, allow: true)
-                    preconditionFailure("The operator must select a credential reference")
+                    preconditionFailure("The operator must select an available fixed option")
                 } catch ClientError.invalidApproval(_) {}
             }
         }

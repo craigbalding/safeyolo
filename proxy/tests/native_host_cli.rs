@@ -150,7 +150,7 @@ fn holder_stop_pins_the_original_birth_and_run_before_delete() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("instance");
         initialize(&root);
-        value(cli(
+        let configured = value(cli(
             &root,
             &[
                 "agent",
@@ -162,7 +162,10 @@ fn holder_stop_pins_the_original_birth_and_run_before_delete() {
         ));
         let mut run = OwnedRun::start(&root);
         let path = root.join("agents/alice/runtime.json");
-        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["agent_id"] = configured["configuration"]["id"].clone();
+        saved["state"] = "running".into();
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let foreign_root = temp.path().join("foreign");
         fs::create_dir_all(foreign_root.join("bin")).unwrap();
         let mut foreign = OwnedRun::start(&foreign_root);
@@ -185,6 +188,7 @@ fn holder_stop_pins_the_original_birth_and_run_before_delete() {
 case "$3" in
   state) printf '{{"id":"%s","status":"stopped"}}\n' "$4";;
   delete)
+    /bin/cp '{root}/agents/alice/runtime.json' '{root}/stopping.json'
     /bin/cp '{root}/changed.json' '{root}/agents/alice/runtime.json'
     if [ '{change}' = incarnation ]; then
       /bin/cp '{foreign}/agents/alice/userns.pid' '{root}/agents/alice/userns.pid'
@@ -210,6 +214,13 @@ esac
         run.assert_exited();
         let _ = foreign.child.kill();
         foreign.assert_exited();
+        let stopping: Value =
+            serde_json::from_slice(&fs::read(root.join("stopping.json")).unwrap()).unwrap();
+        assert_eq!(
+            stopping["state"], "stopping",
+            "authority stayed active at destructive stop"
+        );
+        assert_eq!(stopping["agent_id"], saved["agent_id"]);
         assert!(foreign_survived, "foreign incarnation was signalled");
         if change == "none" {
             assert!(
@@ -1727,7 +1738,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     // paths within SUN_LEN while still passing the ordinary alias to the CLI.
     let root = temp.path().join("i");
     initialize(&root);
-    value(cli(
+    let configured = value(cli(
         &root,
         &[
             "agent",
@@ -1767,6 +1778,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     );
     let record = directory.join("runtime.json");
     let mut run = serde_json::json!({
+        "agent_id":configured["configuration"]["id"], "state":"running",
         "run_id":"0123456789abcdef0123456789abcdef",
         "backend_pid":child.id(), "backend_token":backend_token
     });
@@ -1774,6 +1786,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     let live = value(cli(&root, &["agent", "status", "marker"]));
     let stop = cli(&root, &["agent", "stop", "marker"]);
     let survived = child.try_wait().unwrap().is_none();
+    let record_preserved = fs::read(&record).unwrap() == serde_json::to_vec(&run).unwrap();
     let socket_preserved = socket.exists();
     fs::remove_file(&socket).unwrap();
     let without_control = cli(&root, &["agent", "status", "marker"]);
@@ -1782,6 +1795,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     child.wait().unwrap();
     assert_eq!(live["runtime_state"], "unknown");
     assert!(!stop.status.success());
+    assert!(record_preserved, "refused stop changed the current run");
     assert!(survived, "an unrelated live PID was signalled");
     assert!(socket_preserved);
     let without_control = value(without_control);
@@ -2341,7 +2355,7 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");
     initialize(&root);
-    value(cli(
+    let configured = value(cli(
         &root,
         &[
             "agent",
@@ -2383,7 +2397,7 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
         b"unreconciled backend state",
     )
     .unwrap();
-    let saved = serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token});
+    let saved = serde_json::json!({"agent_id":configured["configuration"]["id"],"run_id":run_id,"state":"running","backend_pid":pid,"backend_token":token});
     let mut results = Vec::new();
     for (field, replacement, generation, expected_state) in [
         (

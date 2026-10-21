@@ -57,6 +57,7 @@ impl Fixture {
 
     fn identity(&self) -> ConnectionIdentity {
         ConnectionIdentity {
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: Some("owned-slot".into()),

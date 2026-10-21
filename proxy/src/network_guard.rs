@@ -34,14 +34,24 @@ type Result<T> = std::result::Result<T, GuardError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Identity<'a> {
     Resolved(&'a str),
+    Current(&'a crate::host_runs::AgentRun),
     Unavailable,
     Conflict,
 }
 impl<'a> Identity<'a> {
-    fn agent(self) -> Option<&'a str> {
+    pub(crate) fn agent(self) -> Option<&'a str> {
         match self {
             Self::Resolved(agent) => Some(agent),
+            Self::Current(run) => Some(&run.agent),
             _ => None,
+        }
+    }
+
+    pub(crate) fn run(self) -> Option<&'a crate::host_runs::AgentRun> {
+        if let Self::Current(run) = self {
+            Some(run)
+        } else {
+            None
         }
     }
 }
@@ -659,7 +669,12 @@ fn evaluate_policy(policy: &Policy, request: Request<'_>, now_ms: f64) -> PdpDec
             budget_remaining: None,
         };
     }
-    let decision = match policy.evaluate(request.policy_request(), now_ms, true) {
+    let decision = match policy.evaluate_for_run(
+        request.policy_request(),
+        now_ms,
+        true,
+        request.identity.run(),
+    ) {
         Ok(decision) => decision,
         // Do not put parser/request text into a failure diagnostic. Native
         // PolicyError has no equivalent Python exception class.

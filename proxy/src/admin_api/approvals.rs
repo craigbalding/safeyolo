@@ -377,7 +377,7 @@ async fn context<B: Body<Data = Bytes>>(
                 pending::context::question(&record, exchange.as_ref().expect("new exchange"));
             match tokio::time::timeout(
                 std::time::Duration::from_secs(3),
-                coord.ask_approval_context(
+                coord.send_approval_notice(
                     record.authority.action["agent"].as_str().unwrap_or(""),
                     record.authority.action["agent_id"].as_str().unwrap_or(""),
                     &question,
@@ -441,4 +441,98 @@ fn context_error(error: crate::approvals::ApprovalError) -> Outcome {
         },
         json!({"error":error.to_string()}),
     )
+}
+
+pub(super) async fn delegations<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    path: &str,
+    policy: Option<&Policy>,
+    state: Option<&crate::RuntimeState>,
+    owner: Option<ServiceAudit<'_>>,
+) -> Result<Outcome, Error> {
+    let (Some(policy), Some(state)) = (policy, state) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"native policy unavailable"}),
+        ));
+    };
+    if request.method() == Method::GET && path == "/admin/approval-delegations" {
+        let issued = policy.delegation_grants();
+        let gateway = state
+            .read()
+            .ok()
+            .and_then(|r| r.gateway_grants.clone())
+            .and_then(|s| s.list_grants(time::OffsetDateTime::now_utc()).ok());
+        return Ok(response(
+            StatusCode::OK,
+            json!({"delegations":policy.delegations().iter().map(|(name,d)| json!({"name":name,"revision":d.revision(),"active":d.current() && d.dependencies_current(policy),"delegation":d})).collect::<Vec<_>>(),"issued_access":issued,"gateway_grants":gateway}),
+        ));
+    }
+    let Some((name, operation)) = path
+        .strip_prefix("/admin/approval-delegations/")
+        .and_then(|p| p.split_once('/'))
+    else {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"delegation operation unavailable"}),
+        ));
+    };
+    if !crate::host_platform::valid_agent_name(name)
+        || !matches!(operation, "preview" | "apply" | "revoke")
+        || request.method() != Method::POST
+    {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"use a named delegation and preview, apply or revoke"}),
+        ));
+    }
+    let data = match read_json(request).await? {
+        ParsedBody::Value(value) => value,
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        ParsedBody::Absent => {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"proposal is required"}),
+            ));
+        }
+    };
+    let (name, operation, state, policy) = (
+        name.to_owned(),
+        operation.to_owned(),
+        state.clone(),
+        policy.clone(),
+    );
+    let Some(owner) = owner else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"mutation owner unavailable"}),
+        ));
+    };
+    let writer = owner.writer.clone();
+    owner.mutation_owner.spawn_blocking(move || {
+        let before_revision = data.0["expected_revision"].clone();
+        let result=if operation=="revoke" {
+            #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)] struct Revoke { expected_revision:String }
+            match serde_json::from_value::<Revoke>(data.0.clone()) {
+                Ok(input)=>crate::approvals::delegations::revoke(&state,&name,&input.expected_revision),
+                Err(_)=>Err(crate::approvals::invalid("supply only expected_revision")),
+            }
+        } else {
+            match serde_json::from_value::<crate::approvals::delegations::Proposal>(data.0.clone()) {
+                Ok(input) if operation=="apply"=>crate::approvals::delegations::apply(&state,&name,input),
+                Ok(input)=>crate::approvals::delegations::preview(&policy,&name,&input),
+                Err(_)=>Err(crate::approvals::invalid("invalid delegation proposal; unknown fields and unsupported bounds are rejected")),
+            }
+        };
+        Ok(match result { Ok(mut value)=>{
+            if operation != "preview" {
+                let mut event=crate::audit::Event::new("admin.approval_delegation_changed",crate::audit::Kind::Admin,crate::audit::Severity::High,format!("Approval delegation {name} {operation}"));
+                event.details=json!({"delegation":name,"operation":operation,"before_revision":before_revision,"revision":value["revision"]}).into();
+                if tokio::runtime::Handle::current().block_on(writer.emit_confirmed(event)).is_err() {
+                    value["audit_status"]=json!("unavailable; the delegation change is saved. Inspect current state before retrying.");
+                }
+            }
+            response(StatusCode::OK,value)
+        },Err(e)=>response(StatusCode::CONFLICT,json!({"error":e.to_string()})) })
+    }).await?.await.map_err(|_| Error::ServiceMutation)?
 }

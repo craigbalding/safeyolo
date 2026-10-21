@@ -789,6 +789,7 @@ mod tests {
             Arc::new(Provenance::new(
                 self.state.read().unwrap().clone(),
                 ConnectionIdentity {
+                    run: None,
                     agent_id: "alice".into(),
                     connection_id: "connection".into(),
                     source_id: None,

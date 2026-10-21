@@ -62,6 +62,8 @@ const ENDPOINTS: &[&str] = &[
     "/config",
     "/explain",
     "/approvals/{request_id}",
+    "/approvals",
+    "/approvals/{approval_id}/resolve (POST)",
     "/approvals/{request_id}/prepare (POST)",
     "/trace",
     "/memory",
@@ -459,6 +461,7 @@ impl Outcome<'_> {
 fn agent(identity: Identity<'_>) -> Option<&str> {
     match identity {
         Identity::Resolved(value) => Some(value),
+        Identity::Current(run) => Some(&run.agent),
         _ => None,
     }
 }

@@ -174,7 +174,7 @@ where
         }
         return Ok(explain::respond(request, controls.audit).await);
     }
-    if route(request).starts_with("/approvals/") {
+    if route(request) == "/approvals" || route(request).starts_with("/approvals/") {
         let PolicyState::Ready(policy) = &policy else {
             return Ok(response(503, json!({"error":"policy unavailable"})));
         };

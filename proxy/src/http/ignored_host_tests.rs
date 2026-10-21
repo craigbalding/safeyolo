@@ -443,6 +443,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
         let identity = ConnectionIdentity {
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-lifecycle-seam".into(),
             source_id: Some(SOURCE.into()),
@@ -626,6 +627,7 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
         audit::Settings::default(),
     ));
     let identity = ConnectionIdentity {
+        run: None,
         agent_id: "alice".into(),
         connection_id: "owned-pending-seam".into(),
         source_id: Some(SOURCE.into()),

@@ -105,7 +105,7 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None, agent_addresses=None):
+                    capture=False, extra_config="", platform_assets=None, agent_addresses=None, service_sources=None):
     artifacts, guest_artifacts, profile = native_inputs()
     root = directory / "installed"
     try:
@@ -149,6 +149,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                 (root / "builtin-services").mkdir(exist_ok=True)
                 (root / "services").mkdir(exist_ok=True)
                 configuration += 'gateway_builtin_services_dir = "builtin-services"\ngateway_services_dir = "services"\n'
+            for name, content in (service_sources or {}).items():
+                (root / "services" / name).write_text(content)
             if services or agent_api:
                 agent_token = root / "data/agent_token"
                 agent_token.touch(mode=0o600)

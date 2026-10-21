@@ -1411,6 +1411,7 @@ pub struct GatewayRequest<'a> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CredentialSelection {
+    pub binding_id: Option<String>,
     pub agent: String,
     pub service: String,
     pub capability: String,
@@ -1731,6 +1732,14 @@ fn select_binding(
     };
     GatewayDecision::Selected {
         credential: Box::new(CredentialSelection {
+            binding_id: bindings
+                .iter()
+                .find(|state| {
+                    state.agent == agent
+                        && state.service == service.name
+                        && state.capability == capability.name
+                })
+                .map(|state| state.binding_id.clone()),
             agent: agent.into(),
             service: service.name.clone(),
             capability: capability.name.clone(),

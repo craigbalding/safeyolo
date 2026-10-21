@@ -334,6 +334,11 @@ pub(crate) fn vm_process_token(name: &str, pid: i32) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn vm_process_token_in(root: &std::path::Path, name: &str, pid: i32) -> Option<String> {
+    vm_process_token_detail_in(root, name, pid).ok()
+}
+
+#[cfg(target_os = "macos")]
 fn vz_diagnostic_path(path: &std::path::Path) -> String {
     let escaped = format!("{path:?}");
     if escaped.chars().count() <= 512 {
@@ -348,10 +353,17 @@ fn vz_diagnostic_path(path: &std::path::Path) -> String {
 
 #[cfg(target_os = "macos")]
 fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
-    let executable = config_dir().join("bin/safeyolo-vm");
-    let control = config_dir()
-        .join("data/vm-control")
-        .join(format!("{name}.sock"));
+    vm_process_token_detail_in(&config_dir(), name, pid)
+}
+
+#[cfg(target_os = "macos")]
+fn vm_process_token_detail_in(
+    root: &std::path::Path,
+    name: &str,
+    pid: i32,
+) -> Result<String, String> {
+    let executable = root.join("bin/safeyolo-vm");
+    let control = root.join("data/vm-control").join(format!("{name}.sock"));
     let expected = format!(
         "expected_executable={} expected_control_argument={}",
         vz_diagnostic_path(&executable),
@@ -363,8 +375,7 @@ fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
     // Keep the same PID/birth and private control-argument checks for that file.
     let mut arguments = macos_process_arguments_detail(pid, &executable);
     if arguments.is_err()
-        && let Ok(binaries) =
-            crate::guest_acquisition::retained_host_binaries(&config_dir(), "safeyolo-vm")
+        && let Ok(binaries) = crate::guest_acquisition::retained_host_binaries(root, "safeyolo-vm")
     {
         for binary in binaries.into_iter().skip(1) {
             if let Ok(retained) = macos_process_arguments_detail(pid, &binary) {
@@ -787,7 +798,7 @@ pub(crate) fn backend_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
+pub(crate) fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
     let fields = command.split(|b| *b == 0).collect::<Vec<_>>();
     let root = root.as_os_str().as_bytes();
     // gVisor serializes sentry argv as runsc-sandbox and --root=PATH.
@@ -1472,6 +1483,36 @@ pub(crate) async fn spawn_guest_command_with_output(
     .spawn()
 }
 
+pub(crate) async fn check_stop_sandbox(name: &str) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if userns_pid(name).is_none() {
+            crate::host_runs::verified_stop_backend(name).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = vz_stop_pid(name).await?;
+        match vm_process_token_detail(name, pid) {
+            Ok(_) => Ok(()),
+            Err(_) if crate::host_runs::process_is_absent(pid) => Ok(()),
+            Err(detail) => Err(io::Error::other(format!(
+                "VM PID does not identify this agent's helper; {detail}; {}",
+                vz_process_absence_detail(pid)
+            ))),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Err(unavailable())
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -1782,6 +1823,32 @@ async fn spawn_macos_guest_command(
 }
 
 #[cfg(target_os = "macos")]
+async fn vz_stop_pid(name: &str) -> io::Result<i32> {
+    // The private socket independently identifies this agent's helper when
+    // the saved PID projection is missing or stale.
+    let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
+        .await
+        .ok();
+    let controlled = control
+        .as_ref()
+        .filter(|value| value["agent"] == name)
+        .and_then(|value| value["pid"].as_i64())
+        .and_then(|pid| i32::try_from(pid).ok());
+    let saved = std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.pid"))
+        .ok()
+        .and_then(|value| value.trim().parse::<i32>().ok());
+    let saved = saved.filter(|pid| {
+        vm_process_token(name, *pid).is_some_and(|token| {
+            std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
+                .is_ok_and(|saved| saved.trim() == token)
+        })
+    });
+    controlled.or(saved).ok_or(io::Error::other(
+        "VZ helper identity is missing; inspect agent diagnostics",
+    ))
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
@@ -1796,28 +1863,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     let mut first_wait_mismatch = None;
     let result = async {
         let path = config_dir().join("agents").join(name).join("vm.pid");
-        // The private socket independently identifies this agent's helper when
-        // the saved PID projection is missing or stale.
-        let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
-            .await
-            .ok();
-        let controlled = control
-            .as_ref()
-            .filter(|value| value["agent"] == name)
-            .and_then(|value| value["pid"].as_i64())
-            .and_then(|pid| i32::try_from(pid).ok());
-        let saved = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|value| value.trim().parse::<i32>().ok());
-        let saved = saved.filter(|pid| {
-            vm_process_token(name, *pid).is_some_and(|token| {
-                std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
-                    .is_ok_and(|saved| saved.trim() == token)
-            })
-        });
-        let pid = controlled.or(saved).ok_or(io::Error::other(
-            "VZ helper identity is missing; inspect agent diagnostics",
-        ))?;
+        let pid = vz_stop_pid(name).await?;
         helper_pid = Some(pid);
         let token = vm_process_token_detail(name, pid);
         let token = match token {
@@ -2720,6 +2766,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         in_config(temp.path().join("config.toml"), async {
             let mut child = spawn_vz_stop_test_helper(temp.path(), None).await;
+            check_stop_sandbox("alice").await.unwrap();
             let (stopped, exited) = tokio::join!(stop_sandbox("alice"), child.wait());
             stopped.unwrap();
             assert!(exited.unwrap().success());

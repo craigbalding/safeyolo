@@ -1507,6 +1507,23 @@ async fn decide(
             |intent| {
                 let mut event = intent.event(identity.audit_attribution());
                 crate::approvals::network_action::bind(&mut event, policy);
+                if let crate::circuits::CircuitValue::Object(fields) = &mut event.details
+                    && let Some(action) = fields
+                        .get("network_action")
+                        .and_then(|value| value.json().ok())
+                {
+                    let mut action = action;
+                    if let Some(run) = &identity.run {
+                        action["run"] = json!(run);
+                    }
+                    action["network_action"] =
+                        json!(if request.method.eq_ignore_ascii_case("CONNECT") {
+                            "connect"
+                        } else {
+                            "request"
+                        });
+                    fields.insert("network_action".into(), action.into());
+                }
                 if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
                     // The synchronous guard callback cannot await the writer.
                     // Hold only approval evidence until the guard has returned.
@@ -1559,6 +1576,9 @@ async fn decide(
                     trace.error("AuditError");
                 }
                 return Err(error.into());
+            }
+            if let Some(record) = pending.as_ref() {
+                crate::approvals::pending::delegation::notify(runtime, record).await;
             }
             if let Some(intent) = approval_trace.as_ref() {
                 network_trace::observe(trace.as_ref(), intent);
@@ -2365,6 +2385,17 @@ where
     B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
+    if identity.run.as_ref().is_some_and(|run| {
+        runtime
+            .policy
+            .as_ref()
+            .is_none_or(|policy| !run.current(policy))
+    }) {
+        return Ok((
+            prior_block(response(StatusCode::FORBIDDEN, "Current agent run changed")),
+            "stale_agent_run".into(),
+        ));
+    }
     let pipeline_probe = probe::is_host(&destination.host);
     let client_version = request.version();
     // CONNECT has no ordinary traffic request hook. Observe its accepted
@@ -2929,6 +2960,7 @@ where
             .map(|intent| intent.event(identity.audit_attribution()))
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
+            identity.run.as_ref(),
             &runtime.audit,
             policy,
             &mut events,
@@ -2960,6 +2992,9 @@ where
             } else {
                 runtime.audit.emit(event)?;
             }
+        }
+        if let Some(record) = pending.as_ref() {
+            crate::approvals::pending::delegation::notify(&runtime, record).await;
         }
         runtime.audit.emit(identity.request_event(
             "security.credential_guard.evaluated",
@@ -3021,6 +3056,9 @@ where
         identity: match identity.request_identity() {
             crate::network_guard::Identity::Resolved(agent) => {
                 crate::services::TrustedIdentity::Agent(agent)
+            }
+            crate::network_guard::Identity::Current(run) => {
+                crate::services::TrustedIdentity::Agent(&run.agent)
             }
             crate::network_guard::Identity::Conflict => crate::services::TrustedIdentity::Conflict,
             crate::network_guard::Identity::Unavailable => {
@@ -3088,6 +3126,9 @@ where
                 identity: match identity.request_identity() {
                     crate::network_guard::Identity::Resolved(agent) => {
                         crate::services::TrustedIdentity::Agent(agent)
+                    }
+                    crate::network_guard::Identity::Current(run) => {
+                        crate::services::TrustedIdentity::Agent(&run.agent)
                     }
                     crate::network_guard::Identity::Conflict => {
                         crate::services::TrustedIdentity::Conflict
@@ -3164,7 +3205,7 @@ where
                     let mut granted = None;
                     if let Some(store) = runtime.gateway_grants.as_ref() {
                         granted = store
-                            .check_grant(
+                            .check_grant_authority(
                                 crate::grants::RequestScope {
                                     agent: identity
                                         .request_agent()
@@ -3174,6 +3215,14 @@ where
                                     path: risky_path,
                                 },
                                 time::OffsetDateTime::now_utc(),
+                                identity.run.as_ref().map(|run| {
+                                    (
+                                        policy,
+                                        run,
+                                        credential.capability.as_str(),
+                                        credential.binding_id.as_deref(),
+                                    )
+                                }),
                                 |_| Ok(()),
                             )
                             .map_err(|error| -> Error { Box::new(error) })?;
@@ -3251,6 +3300,7 @@ where
                             let pending = if risk.effect == crate::policy::Effect::Prompt {
                                 let pending = crate::approvals::pending::bind_risky(
                                     &runtime,
+                                    identity.run.as_ref(),
                                     &mut audit,
                                     crate::policy::NetworkRequest {
                                         agent: Some(agent),
@@ -3272,6 +3322,8 @@ where
                             let mut reply =
                                 gateway_response(status, "GATEWAY_RISKY_ROUTE", request_id)?;
                             if let Some(record) = pending {
+                                crate::approvals::pending::delegation::notify(&runtime, &record)
+                                    .await;
                                 reply
                                     .headers_mut()
                                     .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
@@ -3500,6 +3552,7 @@ where
             .map(|intent| intent.event(identity.audit_attribution()))
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
+            identity.run.as_ref(),
             &runtime.audit,
             policy,
             &mut events,
@@ -3531,6 +3584,9 @@ where
             } else {
                 runtime.audit.emit(event)?;
             }
+        }
+        if let Some(record) = pending.as_ref() {
+            crate::approvals::pending::delegation::notify(&runtime, record).await;
         }
         runtime.audit.emit(identity.request_event(
             "security.credential_guard.evaluated",
