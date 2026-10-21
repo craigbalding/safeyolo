@@ -284,7 +284,10 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     } else {
         Ok(Err(std::io::Error::other("runtime unavailable")))
     };
-    let preview = Preview::start(&name, &id, host_port, tailnet.map(|(port, _)| port))
+    let shared = presentations
+        .values()
+        .find_map(|presentation| presentation.preview.shared_listener(host_port));
+    let preview = Preview::start(&name, &id, host_port, tailnet.map(|(port, _)| port), shared)
         .await
         .map_err(|_| Error::Failed);
     let preview = match preview {
