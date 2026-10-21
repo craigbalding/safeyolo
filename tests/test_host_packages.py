@@ -591,7 +591,7 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
-def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_inputs, musl_runtime, tmp_path):
+def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_inputs, musl_runtime, tmp_path, monkeypatch):
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
     assert result.returncode == 0, result.stderr
@@ -605,6 +605,16 @@ def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_i
     assert fields["platform"] == ("linux-amd64" if os.uname().machine == "x86_64" else "linux-arm64")
     assert fields["guest_discovery_tag"] == "compat-v1"
     assert fields["source_commit"] == package_inputs[5]
+    # The shell producer checked this committed fixture. Bind its archive to
+    # the Python receipt writer without compiling or consulting live Actions.
+    monkeypatch.setattr(builder, "ROOT", package_inputs[0])
+    monkeypatch.setattr(builder, "commit", lambda: package_inputs[5])
+    monkeypatch.setattr(builder, "actions_producer", lambda: {"run_id": 1})
+    builder.save_production(output)
+    receipt = json.loads((output / "build.json").read_text())
+    assert receipt["archive"]["name"] == archive.name
+    assert receipt["archive"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert receipt["source_revision"] == fields["source_commit"]
 
 
 @pytest.mark.parametrize("libc,minimum,diagnosis", [
