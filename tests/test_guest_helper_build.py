@@ -9,8 +9,27 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_focused_guest_tests_finish_before_helper_staging():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/proxy-rust.yml").read_text())
+    steps = workflow["jobs"]["focused-pr"]["steps"]
+    staging = next(i for i, step in enumerate(steps) if step.get("id") == "linux_guest_inputs")
+    guest_checks = [(i, step) for i, step in enumerate(steps)
+                    if "--manifest-path guest/command/Cargo.toml" in step.get("run", "")]
+    assert len(guest_checks) == 1
+    index, check = guest_checks[0]
+    # GNU integration tests rebuild the ordinary release binary without
+    # updating the musl producer's sidecars. The last writer must be staging.
+    assert index < staging
+    assert check["if"] == "steps.changes.outputs.guest == 'true'"
+    assert check["run"].splitlines() == [
+        "scripts/cargo_with_space.sh test --release --manifest-path guest/command/Cargo.toml --locked",
+        "scripts/cargo_with_space.sh clippy --release --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings",
+    ]
 
 
 @pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])

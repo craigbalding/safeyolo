@@ -295,9 +295,11 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         share.join("network.env"),
         format!("GUEST_IP=127.0.0.1\nGATEWAY_IP=127.0.0.1\nAGENT_IP={ip}\nNETMASK=255.255.255.0\n"),
     )?;
+    // Both shells and sudo read this file after guest-init copies it to
+    // /etc/environment. Sudo does not expand shell variable references.
     fs::write(
         share.join("proxy.env"),
-        "export HTTP_PROXY=http://127.0.0.1:8080\nexport HTTPS_PROXY=$HTTP_PROXY\nexport http_proxy=$HTTP_PROXY\nexport https_proxy=$HTTP_PROXY\nexport NO_PROXY=localhost,127.0.0.1\nexport no_proxy=$NO_PROXY\nexport SSL_CERT_FILE=/usr/local/share/ca-certificates/safeyolo.crt\nexport REQUESTS_CA_BUNDLE=$SSL_CERT_FILE\nexport NODE_EXTRA_CA_CERTS=$SSL_CERT_FILE\nexport HOME=/home/agent\n",
+        "export HTTP_PROXY=http://127.0.0.1:8080\nexport HTTPS_PROXY=http://127.0.0.1:8080\nexport http_proxy=http://127.0.0.1:8080\nexport https_proxy=http://127.0.0.1:8080\nexport NO_PROXY=localhost,127.0.0.1\nexport no_proxy=localhost,127.0.0.1\nexport SSL_CERT_FILE=/usr/local/share/ca-certificates/safeyolo.crt\nexport REQUESTS_CA_BUNDLE=/usr/local/share/ca-certificates/safeyolo.crt\nexport NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/safeyolo.crt\nexport HOME=/home/agent\n",
     )?;
     fs::write(
         share.join("host-mounts"),
