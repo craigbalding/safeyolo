@@ -285,6 +285,9 @@ reviewer-restart observation before the next lifecycle operation. The remainder
 selection also emits its ordinary setup grant before worker turnover. These
 partial records preserve actual operands if a later check fails. They do not
 claim that the remaining checks or cleanup passed.
+Each phase records whether its own checks passed. After all lifecycle checks
+pass, the runner emits their result before cleanup. Only the final result after
+successful cleanup contains `owned_guests_proxy_and_origins_stopped=true`.
 
 If a prior run already reached the proxy crash and worker restart but stopped
 at the stale-context observer, retain that result. To run only the remaining

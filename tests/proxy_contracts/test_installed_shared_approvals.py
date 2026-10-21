@@ -355,6 +355,9 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 assert stale["outcome"] == ("native_refusal" if remaining else "http_refusal")
                 assert next(row["observation"] for row in output if row.get("phase") == "stale_context") == stale
                 assert next(row["observation"] for row in output if row.get("phase") == "reviewer_restart") == result["reviewer_restart"]
+                checks = next(row for row in output if row.get("phase") == "lifecycle_checks")
+                assert checks["observation"] == {key: value for key, value in result.items() if key != "owned_guests_proxy_and_origins_stopped"}
+                assert all(row["phase_passed"] is True for row in output if "phase" in row)
                 setup = [row["approval"] for row in output if row.get("phase") == "lifecycle_setup"]
                 assert len(setup) == int(remaining)
                 if remaining:

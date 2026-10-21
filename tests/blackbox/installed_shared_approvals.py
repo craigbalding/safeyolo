@@ -119,6 +119,7 @@ def check_stale_launch_context(context_path: Path, original_run: str, current_ru
     stale_context = {"approval_id": approval_id,
         "original_run_id": original_run, "current_run_id": current_run,
         "origin_count_before": len(hits), "origin_hits_before": list(hits)}
+    passed = False
     try:
         context_path.write_text(json.dumps(old_context))
         attempt = subprocess.run(command, capture_output=True, text=True, timeout=60)
@@ -139,12 +140,13 @@ def check_stale_launch_context(context_path: Path, original_run: str, current_ru
         assert stale_context["origin_hits_after"] == stale_context["origin_hits_before"], "stale context reached origin"
         assert stale_context["grant"]["approval_id"] == approval_id, "stale-context read returned a different approval"
         assert stale_context["grant"]["grant_active"] is False, "old approval grant remains active"
+        passed = True
     finally:
         context_path.write_bytes(current_context)
         # A later lifecycle failure must not discard this attempt's operands.
         stale_context.setdefault("origin_hits_after", list(hits))
         stale_context["origin_count_after"] = len(stale_context["origin_hits_after"])
-        print(json.dumps({"phase": "stale_context", "observation": stale_context}), flush=True)
+        print(json.dumps({"phase": "stale_context", "phase_passed": passed, "observation": stale_context}), flush=True)
     return stale_context
 
 
@@ -525,7 +527,7 @@ def run(args: argparse.Namespace) -> None:
                 # The prior crash witness is retained. One ordinary grant and
                 # worker turnover supply this invocation's inactive old grant.
                 first = approve_current()
-                print(json.dumps({"phase": "lifecycle_setup", "approval": first}), flush=True)
+                print(json.dumps({"phase": "lifecycle_setup", "phase_passed": True, "approval": first}), flush=True)
             else:
                 # Refuse the final canonical update after the policy transaction.
                 # A killed proxy must recover the committed receipt, rather than
@@ -587,7 +589,7 @@ def run(args: argparse.Namespace) -> None:
             assert second["result"]["issued_access"]["beneficiary"]["run_id"] == current["run_id"]
             reviewer_restart = {"old_run_id": helper_before["run_id"], "current_run_id": helper_after["run_id"],
                 "approval": second, "origin_hits": list(hits)}
-            print(json.dumps({"phase": "reviewer_restart", "observation": reviewer_restart}), flush=True)
+            print(json.dumps({"phase": "reviewer_restart", "phase_passed": True, "observation": reviewer_restart}), flush=True)
             stop_guest(args.transport_cli, root, args.worker)
             before_replacement = tomlkit.parse((root / "policy.toml").read_text())
             old_worker = before_replacement["agents"].pop(args.worker)
@@ -622,6 +624,8 @@ def run(args: argparse.Namespace) -> None:
                 "limitations": "This real guest lifecycle probe does not run a model or a Command Centre client."}
             if not remaining:
                 result["proxy_crash_kept_exact_receipt"] = True
+            # Preserve completed checks before owned cleanup can fail.
+            print(json.dumps({"phase": "lifecycle_checks", "phase_passed": True, "observation": result}), flush=True)
             return
         if delegated_mode:
             # This mode reuses the same owned guests, model launcher, origins,
