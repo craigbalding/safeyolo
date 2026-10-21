@@ -96,6 +96,11 @@ def access() -> dict:
         },
     )
     assert basic[0] == 202 and basic[1].get("x-safeyolo-request-id", "").startswith("req-"), basic
+    return {"service_request_id": basic[1]["x-safeyolo-request-id"]}
+
+
+def request_binding() -> dict:
+    """Submit the binding after the operator publishes service authorization."""
     challenge = api(
         "POST",
         "/gateway/request-access",
@@ -118,7 +123,6 @@ def access() -> dict:
     )
     assert binding[0] == 202 and binding[1].get("x-safeyolo-request-id", "").startswith("req-"), binding
     return {
-        "service_request_id": basic[1]["x-safeyolo-request-id"],
         "binding_request_id": binding[1]["x-safeyolo-request-id"],
         "contract_challenge": challenge[2]["decision"],
     }
@@ -363,6 +367,8 @@ def main() -> None:
     match args.phase:
         case "access":
             result = access()
+        case "binding":
+            result = request_binding()
         case "contract-access":
             result = contract_access()
         case "basic":
