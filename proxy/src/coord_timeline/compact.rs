@@ -142,7 +142,7 @@ fn oversize_event(display: &Display, e: &Value) -> Option<(&'static str, String)
             .filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
             .unwrap_or("?")
     );
-    let (label, text) = event(&bounded, true)?;
+    let (label, text) = event(&bounded, display.show_unknown)?;
     let (detail, marker) = text.rsplit_once(" [middle snipped;")?;
     let marker = format!(" [middle snipped;{marker}");
     let limit = display

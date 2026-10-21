@@ -920,6 +920,18 @@ mod tests {
             let (_, explicit) = event(&payload, true).unwrap();
             assert!(explicit.contains("private-oversize-argument"));
             assert!(explicit.contains("private-oversize-result"));
+            let message = json!({"sent_at":0,"sender_kind":"agent","body":payload.to_string()});
+            for show_unknown in [false, true] {
+                let output = Display {
+                    compact: true,
+                    show_unknown,
+                    ..Default::default()
+                }
+                .message(&message);
+                assert!(output.contains("[middle snipped;"));
+                assert_eq!(output.contains("private-oversize-argument"), show_unknown);
+                assert_eq!(output.contains("private-oversize-result"), show_unknown);
+            }
         }
     }
 }

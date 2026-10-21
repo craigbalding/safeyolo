@@ -531,7 +531,7 @@ def watch_once(instance, *arguments):
                           env=instance.environment, capture_output=True, text=True, timeout=15)
 
 
-def test_agent_watch_peer_tool_summaries_omit_private_payloads(supervised):
+def test_agent_watch_tool_summaries_omit_private_payloads(supervised):
     instance, _, state, _ = supervised
     bodies, secrets = [], []
     for index, key in enumerate(("token", "password", "delegation", "authorization", "secret", "environment")):
@@ -579,6 +579,17 @@ def test_agent_watch_peer_tool_summaries_omit_private_payloads(supervised):
         if choice == "--json":
             assert [json.loads(line)["body"] for line in explicit.stdout.splitlines()] == bodies
     assert history(instance) == before
+    for body in bodies:
+        agent_send(instance, body)
+    selected_history = history(instance)
+    assert [(message["sender_agent_name"], message["body"]) for message in selected_history[len(before):]] == [
+        ("alice", body) for body in bodies]
+    selected = watch_once(instance, "--since", str(before[-1]["sequence"]))
+    assert selected.returncode == 0, selected.stderr
+    assert not any(secret in selected.stdout for secret in [*secrets, "unknown-private"])
+    assert "room message from bob:" not in selected.stdout
+    assert selected.stdout.count("original_bytes=65536 omitted_bytes=64000") == 6
+    assert history(instance) == selected_history
     assert not state.exists() and not state.with_name(state.name + ".lock").exists()
 
 
