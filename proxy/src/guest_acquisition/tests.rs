@@ -12,6 +12,11 @@ fn package_guest_uses_the_existing_strict_fields() {
     );
     fs::write(&path, &original).unwrap();
     assert!(PackageGuest::read(&path).is_ok());
+    for libc in ["glibc", "musl"] {
+        fs::write(&path, format!("{original}libc={libc}\n")).unwrap();
+        let expected = libc != "musl" || os == "linux";
+        assert_eq!(PackageGuest::read(&path).is_ok(), expected);
+    }
     for bad in [
         original.replace("compat-v1", "compat-v2"),
         original.replace(guest_oci::REPOSITORY, "example.test/guest"),
@@ -19,6 +24,8 @@ fn package_guest_uses_the_existing_strict_fields() {
         format!("{original}guest_compatibility=v1\n"),
         format!("{original}unknown=field\n"),
         original.replace("guest_discovery_tag=compat-v1\n", ""),
+        format!("{original}libc=unknown\n"),
+        format!("{original}libc=musl\nlibc=glibc\n"),
     ] {
         fs::write(&path, bad).unwrap();
         assert!(PackageGuest::read(&path).is_err());
