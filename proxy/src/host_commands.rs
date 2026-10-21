@@ -440,10 +440,22 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional host-state copying require host consent. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional host-state copying require host consent. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
         ),
         [kind, operation, rest @ ..] if kind == "agent" && operation == "launch" => {
             return crate::host_launch::run(rest).await;
+        }
+        [kind, operation, rest @ ..] if kind == "agent" && operation == "watch" => {
+            if rest.is_empty() || rest == ["--help"] {
+                println!("{}", crate::agent_watch::HELP);
+            } else {
+                crate::coord_operator::watch_agent(
+                    &host_platform::config_path(),
+                    agent(&rest[0])?,
+                    &rest[1..],
+                )
+                .await?;
+            }
         }
         [kind, operation, name, operand]
             if kind == "agent" && matches!(operation.as_str(), "mount" | "unmount") =>

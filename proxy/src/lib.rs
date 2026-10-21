@@ -7,6 +7,7 @@ mod admin_listener;
 pub mod admin_shield;
 pub mod agent_activity;
 pub mod agent_api;
+mod agent_watch;
 pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
