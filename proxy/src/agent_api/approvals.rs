@@ -90,6 +90,26 @@ pub(super) async fn respond<B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
+    let path = super::route(request);
+    let reviewing = request.identity.run().is_some_and(|run| {
+        policy.delegations().values().any(|d| {
+            d.reviewers
+                .iter()
+                .any(|reviewer| reviewer.name == run.agent && reviewer.agent_id == run.agent_id)
+        })
+    });
+    if path == "/approvals"
+        || path.ends_with("/resolve")
+        || (reviewing && request.method == "GET" && !path.ends_with("/context"))
+    {
+        let (Some(writer), Some(state)) = (writer, state) else {
+            return Ok(response(
+                503,
+                json!({"error":"approval state unavailable; operator controls remain available"}),
+            ));
+        };
+        return delegated(request, writer, state, policy, body).await;
+    }
     if let Some(id) = super::route(request)
         .strip_prefix("/approvals/")
         .and_then(|path| path.strip_suffix("/context"))
@@ -321,4 +341,150 @@ where
         )));
     }
     Ok(Ok(decoded.content))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewDecision {
+    decision: String,
+    delegation: String,
+    option: String,
+}
+
+async fn delegated<B: Body<Data = Bytes> + Unpin>(
+    request: Request<'_>,
+    writer: &Arc<Writer>,
+    state: &crate::RuntimeState,
+    policy: &Policy,
+    body: RequestBody<'_, B>,
+) -> Result<Outcome<'static>, B::Error> {
+    use crate::approvals::pending::{self, delegation};
+    let Some(reviewer) = request.identity.run().filter(|run| run.current(policy)) else {
+        return Ok(response(
+            403,
+            json!({"error":"trusted current-run reviewer identity required"}),
+        ));
+    };
+    let path = super::route(request);
+    if path == "/approvals" && request.method == "GET" {
+        let (writer, policy, state, reviewer) = (
+            writer.clone(),
+            policy.clone(),
+            state.clone(),
+            reviewer.clone(),
+        );
+        return Ok(
+            match tokio::task::spawn_blocking(move || -> crate::approvals::Result<_> {
+                let mut views = vec![];
+                for record in writer.approvals().list()? {
+                    if !delegation::eligible(&policy, &record, &reviewer).is_empty()
+                        && pending::current_view(&writer, &policy, &record, Some(&state))?["status"]
+                            == "pending"
+                    {
+                        views.push(delegation::view(
+                            &writer, &policy, &record, &state, &reviewer,
+                        )?);
+                    }
+                }
+                Ok(json!({"approvals":views}))
+            })
+            .await
+            {
+                Ok(Ok(value)) => response(200, value),
+                _ => response(
+                    503,
+                    json!({"error":"approval state unavailable; operator controls remain available"}),
+                ),
+            },
+        );
+    }
+    let suffix = path.strip_prefix("/approvals/").unwrap_or("");
+    let (id, resolve) = suffix
+        .strip_suffix("/resolve")
+        .map_or((suffix, false), |id| (id, true));
+    if id.contains('/') || !pending::valid_id(id) {
+        return Ok(response(404, json!({"error":"approval unavailable"})));
+    }
+    if !resolve && request.method == "GET" {
+        let (writer, policy, state, reviewer, id) = (
+            writer.clone(),
+            policy.clone(),
+            state.clone(),
+            reviewer.clone(),
+            id.to_owned(),
+        );
+        return Ok(
+            match tokio::task::spawn_blocking(move || -> crate::approvals::Result<_> {
+                let record = pending::lookup(&writer, &id)?
+                    .ok_or_else(|| crate::approvals::invalid("approval unavailable"))?;
+                delegation::view(&writer, &policy, &record, &state, &reviewer)
+            })
+            .await
+            {
+                Ok(Ok(value)) => response(200, value),
+                Ok(Err(e)) if e.kind == crate::approvals::ErrorKind::Invalid => {
+                    response(404, json!({"error":"approval unavailable"}))
+                }
+                _ => response(503, json!({"error":"approval state unavailable"})),
+            },
+        );
+    }
+    if !resolve || request.method != "POST" {
+        return Ok(response(405, json!({"error":"Method Not Allowed"})));
+    }
+    let content = match super::declarations::read_content(body).await? {
+        Ok(value) => value,
+        Err(error) => return Ok(super::declarations::content_error(error)),
+    };
+    let Ok(input) = serde_json::from_slice::<ReviewDecision>(&content) else {
+        return Ok(response(
+            400,
+            json!({"error":"supply only decision, delegation and a host-generated option"}),
+        ));
+    };
+    if !matches!(input.decision.as_str(), "approve" | "reject" | "defer") {
+        return Ok(response(
+            400,
+            json!({"error":"decision must be approve, reject or defer"}),
+        ));
+    }
+    let owner = match state.read() {
+        Ok(runtime) => runtime.service_mutations.clone(),
+        _ => return Ok(response(503, json!({"error":"mutation owner unavailable"}))),
+    };
+    let (writer, state, reviewer, id) = (
+        writer.clone(),
+        state.clone(),
+        reviewer.clone(),
+        id.to_owned(),
+    );
+    let result=owner.spawn_blocking(move || {
+        let execute=|| -> crate::approvals::Result<(u16,serde_json::Value)> {
+            if input.decision=="defer" {
+                let policy=state.read().map_err(|_| crate::approvals::invalid("runtime unavailable"))?.policy.clone().ok_or_else(||crate::approvals::invalid("policy unavailable"))?;
+                let record=pending::lookup(&writer,&id)?.ok_or_else(||crate::approvals::invalid("approval unavailable"))?;
+                delegation::authorize(&policy,&record,&reviewer,&input.delegation,&input.option)?;
+                return Ok((200,json!({"approval_id":record.approval_id,"status":record.current_status(&policy)?,"permission_changed":false})));
+            }
+            let decision=if input.decision=="approve" {crate::approvals::network_action::Decision::Approve} else {crate::approvals::network_action::Decision::Reject};
+            let (status,value)=pending::resolve_as(&state,&writer,&id,decision,Some(&input.option),Some((&reviewer,&input.delegation)))?.ok_or_else(||crate::approvals::invalid("approval unavailable"))?;
+            // Never return the operator projection, which can contain secret
+            // URL path values. Read the authorized trusted projection anew.
+            Ok((status,json!({"approval_id":value["approval_id"],"status":value["status"],"option":value["option"],"authority_digest":value["authority_digest"],"audit_status":value["audit_status"],"activation_status":value["activation_status"],"grant_active":value["grant_active"]})))
+        };
+        Ok(match execute() { Ok(value)=>value,Err(_)=>(409,json!({"error":"decision unavailable or authority changed; read the canonical approval before retrying"})) })
+    }).await;
+    Ok(match result {
+        Ok(receiver) => match receiver.await {
+            Ok(Ok((status, value))) => response(status, value),
+            _ => response(
+                503,
+                json!({"error":"decision outcome unknown; inspect canonical state before retrying"}),
+            ),
+        },
+        Err(_) => response(
+            503,
+            json!({"error":"decision owner unavailable; operator controls remain available"}),
+        ),
+    })
 }

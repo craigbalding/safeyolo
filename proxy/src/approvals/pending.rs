@@ -14,6 +14,7 @@ use crate::{
 };
 
 pub(crate) mod context;
+pub(crate) mod delegation;
 mod explanation;
 mod gateway;
 pub(crate) use explanation::explain;
@@ -58,12 +59,37 @@ impl Authority {
             None if self.action["kind"] == "gateway_route" => {
                 self.options.iter().find(|option| option.id == "once")
             }
-            _ => None,
+            None => self.options.iter().find(|option| option.id == "persistent"),
         }
     }
 
     fn material(&self) -> Value {
         let mut material = json!(self);
+        // Coalesce the permission effect. Incidental paths, query strings or
+        // methods must not produce repeated attention for the same reusable
+        // network/credential permission. Keep the first observation in the
+        // immutable record. Gateway method/path remain in its typed action;
+        // a route grant does not bind query/body payloads.
+        // Older canonical records predate current-run authority. Keep their
+        // original digest and operator recovery semantics unchanged.
+        if !self.action["run"].is_null() {
+            match self.action["kind"].as_str() {
+                Some("network_allow") => {
+                    material["method"] = self.action["network_action"].clone();
+                    material["resource_digest"] = Value::Null;
+                    material["scheme"] = Value::Null;
+                }
+                Some("credential_allow" | "gateway_route") => {
+                    material["resource_digest"] = Value::Null;
+                    material["scheme"] = Value::Null;
+                    material["port"] = Value::Null;
+                    if self.action["kind"] == "credential_allow" {
+                        material["method"] = Value::Null;
+                    }
+                }
+                _ => {}
+            }
+        }
         if let Some(options) = material["options"].as_array_mut() {
             for option in options.iter_mut() {
                 if let Some(fields) = option.as_object_mut() {
@@ -73,6 +99,15 @@ impl Authority {
             options.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         }
         material
+    }
+}
+
+pub(super) fn run_option(effect: &str) -> OptionScope {
+    OptionScope {
+        id: "run".into(),
+        effect: effect.into(),
+        session_id: None,
+        parameters: Value::Null,
     }
 }
 
@@ -88,6 +123,8 @@ pub(crate) struct Record {
     pub(crate) option: Option<String>,
     pub(crate) result: Value,
     pub(crate) untrusted_reason_text: Option<String>,
+    #[serde(default)]
+    pub(crate) reviewer_delivery: std::collections::BTreeMap<String, String>,
 }
 
 /// Sort object keys recursively. Presentation order cannot change equivalence.
@@ -243,6 +280,7 @@ impl Store {
             option: None,
             result: Value::Null,
             untrusted_reason_text: None,
+            reviewer_delivery: Default::default(),
         });
         save(&transaction, &record)?;
         transaction
@@ -257,6 +295,47 @@ impl Store {
 
     pub(crate) fn get(&self, id: &str) -> Result<Option<Record>> {
         read(&self.connect()?, id)
+    }
+
+    /// Attention is deduplicated by complete authority, including after a
+    /// refusal. A fresh traffic request can stay pending without repeatedly
+    /// waking a reviewer for the same run and permission. Canonical list and
+    /// ordinary operator decisions remain available.
+    pub(crate) fn claim_reviewer_delivery(&self, id: &str, reviewer: &str) -> Result<bool> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let Some(mut record) = read(&transaction, id)? else {
+            return Ok(false);
+        };
+        if record.status != "pending" || record.reviewer_delivery.contains_key(reviewer) {
+            return Ok(false);
+        }
+        let mut statement = transaction
+            .prepare("SELECT record FROM approvals WHERE authority_digest=?1")
+            .map_err(unavailable)?;
+        let records = statement
+            .query_map([&record.authority_digest], |row| row.get::<_, String>(0))
+            .map_err(unavailable)?;
+        let mut duplicate = false;
+        for prior in records {
+            let prior = decode_record(&prior.map_err(unavailable)?)?;
+            duplicate |= prior.reviewer_delivery.contains_key(reviewer);
+        }
+        drop(statement);
+        record.reviewer_delivery.insert(
+            reviewer.into(),
+            if duplicate {
+                "coalesced with prior equivalent authority; reconcile the canonical list"
+            } else {
+                "attempted; publication may be unknown"
+            }
+            .into(),
+        );
+        save(&transaction, &record)?;
+        transaction.commit().map_err(unavailable)?;
+        Ok(!duplicate)
     }
 
     pub(crate) fn list(&self) -> Result<Vec<Record>> {
@@ -357,6 +436,13 @@ impl Record {
         {
             return Ok("superseded".into());
         }
+        if !action["run"].is_null() {
+            let run: crate::host_runs::AgentRun =
+                serde_json::from_value(action["run"].clone()).map_err(unavailable)?;
+            if !run.current(policy) {
+                return Ok("superseded".into());
+            }
+        }
         Ok("pending".into())
     }
 
@@ -422,6 +508,7 @@ impl Record {
             "effect":effect,
             "option":receipt.as_ref().map(|value| &value["option"]).unwrap_or(&json!(self.option)),
             "result":receipt.as_ref().map(|value| &value["result"]).unwrap_or(&self.result)});
+        view["reviewer_delivery"] = json!(self.reviewer_delivery);
         if let Some(reason) = &self.untrusted_reason_text {
             view["untrusted_reason_text"] = json!(reason);
         }
@@ -489,12 +576,17 @@ pub(crate) async fn bind_network(
         scheme: scheme.into(),
         port: request.port,
         resource_digest: guard.approval_resource(request.path),
-        options: vec![OptionScope {
-            id: "persistent".into(),
-            effect,
-            session_id: None,
-            parameters: Value::Null,
-        }],
+        options: vec![
+            OptionScope {
+                id: "persistent".into(),
+                effect,
+                session_id: None,
+                parameters: Value::Null,
+            },
+            run_option(
+                "Run-bound reusable network access to this destination, port and request/CONNECT action. Existing budgets and all other controls remain. An already-admitted opaque tunnel may continue after revocation.",
+            ),
+        ],
         expires_at: None,
         credential_bindings: Default::default(),
     };
@@ -512,7 +604,10 @@ pub(crate) async fn bind_network(
     Ok(Some(record))
 }
 
+// Keep trusted ingress identity separate from the observed request and policy.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn bind_credentials(
+    run: Option<&crate::host_runs::AgentRun>,
     writer: &Writer,
     policy: &Policy,
     events: &mut [Event],
@@ -559,7 +654,7 @@ pub(crate) async fn bind_credentials(
         return Err(invalid("credential fingerprint unavailable"));
     }
     let action = json!({"kind":"credential_allow","agent":agent,"agent_id":agent_id,
-        "host":request.host,"credentials":credentials});
+        "run":run,"host":request.host,"credentials":credentials});
     let effect = format!(
         "Allow these credential fingerprints to {} for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed. Existing network rules still apply.",
         crate::network_guard::sanitize(request.host)
@@ -572,12 +667,17 @@ pub(crate) async fn bind_credentials(
         scheme: scheme.into(),
         port: request.port,
         resource_digest: guard.approval_resource(request.path),
-        options: vec![OptionScope {
-            id: "persistent".into(),
-            effect,
-            session_id: None,
-            parameters: Value::Null,
-        }],
+        options: vec![
+            OptionScope {
+                id: "persistent".into(),
+                effect,
+                session_id: None,
+                parameters: Value::Null,
+            },
+            run_option(
+                "Allow only the worker's current run to send these exact fingerprints to this destination. All ports, methods and paths at this host are included. Network and service controls remain. This does not change shared baseline credential approval.",
+            ),
+        ],
         expires_at: None,
         credential_bindings: Default::default(),
     };
@@ -671,6 +771,11 @@ pub(crate) fn current_view(
         .zip(view["options"].as_array_mut().into_iter().flatten())
         .filter(|_| record.status == "pending")
     {
+        let missing_run = matches!(saved.id.as_str(), "run" | "delegated_once")
+            && !serde_json::from_value::<crate::host_runs::AgentRun>(
+                record.authority.action["run"].clone(),
+            )
+            .is_ok_and(|run| run.current(policy));
         let expired = saved
             .session_id
             .as_ref()
@@ -679,7 +784,9 @@ pub(crate) fn current_view(
                 saved.parameters["expires_at"].as_str(),
                 time::OffsetDateTime::now_utc(),
             );
-        option["status"] = if expired {
+        option["status"] = if missing_run {
+            json!("superseded")
+        } else if expired {
             json!("expired")
         } else if let Some(runtime) = runtime.as_deref() {
             if gateway::option_current(runtime, saved)? {
@@ -692,6 +799,50 @@ pub(crate) fn current_view(
         };
     }
     view["approval"]["required"] = json!(view["status"] == "pending");
+    // Policy publication locks the grant store before the runtime. Release
+    // this runtime read before inspecting that store in the same order.
+    let gateway_grants = runtime
+        .as_deref()
+        .and_then(|runtime| runtime.gateway_grants.clone());
+    drop(runtime);
+    if view["status"] == "approved" && view["result"].get("issued_access").is_some() {
+        let issued: crate::policy::delegation::IssuedAccess =
+            serde_json::from_value(view["result"]["issued_access"].clone()).map_err(unavailable)?;
+        let stored = if issued.action["kind"] == "gateway_route" {
+            match gateway_grants {
+                Some(store) => store
+                    .list_grants_for_agent(
+                        &issued.beneficiary.agent,
+                        time::OffsetDateTime::now_utc(),
+                    )?
+                    .iter()
+                    .any(|grant| {
+                        !grant.expired
+                            && view["result"]["grant_id"] == grant.grant.grant_id
+                            && grant.grant.delegated.as_deref().is_some_and(|value| {
+                                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
+                                    value,
+                                )
+                                .is_ok_and(|saved| saved == issued)
+                            })
+                    }),
+                None => false,
+            }
+        } else {
+            true
+        };
+        view["grant_active"] = json!(stored && issued.active(policy));
+        if policy
+            .approval_result(&record.approval_id)
+            .map_err(invalid)?
+            .is_none()
+        {
+            view["status"] = json!("activation_unconfirmed");
+            view["activation_status"] = json!(
+                "The saved decision is recoverable, but active permission cannot be confirmed. Inspect policy show and the canonical grant before policy repair or another decision. No external request is replayed."
+            );
+        }
+    }
     Ok(view)
 }
 
@@ -761,6 +912,13 @@ pub(crate) fn check_saved(
     let saved = policy
         .reload_native_source(source, path)
         .map_err(|_| invalid("saved policy unavailable"))?;
+    if let Some(issued) = record.result.get("issued_access") {
+        let issued: crate::policy::delegation::IssuedAccess =
+            serde_json::from_value(issued.clone()).map_err(unavailable)?;
+        if !issued.active_snapshot(&saved) {
+            return Ok(false);
+        }
+    }
     Ok(record.current_status(policy)? == "pending"
         && record.current_status(&saved)? == "pending"
         && gateway::credentials_current(&runtime, record)?)
@@ -773,12 +931,24 @@ pub(crate) fn resolve(
     decision: super::network_action::Decision,
     option: Option<&str>,
 ) -> Result<Option<(u16, Value)>> {
+    resolve_as(state, writer, id, decision, option, None)
+}
+
+pub(crate) fn resolve_as(
+    state: &crate::RuntimeState,
+    writer: &Writer,
+    id: &str,
+    decision: super::network_action::Decision,
+    option: Option<&str>,
+    reviewer: Option<(&crate::host_runs::AgentRun, &str)>,
+) -> Result<Option<(u16, Value)>> {
     if lookup(writer, id)?.is_none() {
         return Ok(None);
     }
     let mut changed = false;
     let selected = writer.approvals().decide(id, |record| {
         let policy = active_policy(state)?;
+        let delegated = reviewer.map(|(reviewer, name)| delegation::authorize(&policy, record, reviewer, name, option.unwrap_or("run"))).transpose()?;
         if record.status != "pending" { return Ok(()); }
         let saved = saved_policy(state, &policy)?;
         if let Some(receipt) = record.committed(&policy)?.or(record.committed(&saved)?) {
@@ -809,6 +979,26 @@ pub(crate) fn resolve(
             return Err(invalid("the selected session expired; make a new request"));
         }
         record.option = Some(selected.id.clone());
+        if matches!(selected.id.as_str(), "run" | "delegated_once") {
+            let issued = match delegated {
+                Some(issued) => issued,
+                None => delegation::issue(&policy, record, "", None, &selected.id)?,
+            };
+            record.result = json!({"permission_changed":true,"issued_access":issued,"lifetime":"worker_run"});
+            if record.authority.action["kind"] != "gateway_route" {
+                let action = record.authority.action.clone();
+                crate::edit_native_policy(state, true, |source| {
+                    if !check_saved(state, source, record)? { return Err(invalid("approval or delegation changed before commit")); }
+                    let (mut document, context) = crate::policy::parse_toml_for_edit(source).map_err(unavailable)?;
+                    let kind = if action["kind"] == "network_allow" { "network_grants" } else if action["kind"] == "credential_allow" { "credential_grants" } else { return Err(invalid("unsupported run permission")); };
+                    document["agents"][action["agent"].as_str().ok_or_else(|| invalid("agent unavailable"))?][kind][&record.approval_id] = toml_edit::value(serde_json::to_string(&issued).map_err(unavailable)?);
+                    save_receipt(&mut document, record)?;
+                    Ok(((), crate::policy::restore_large_toml_integers(&document.to_string(), &context)))
+                }).map_err(|_| invalid("run permission could not be confirmed; inspect the canonical decision before retrying"))?;
+                record.status = "approved".into(); changed = true;
+                return Ok(());
+            }
+        }
         let parameters = selected.parameters.clone();
         let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
         let option_current = gateway::option_current(&runtime, selected)?;
@@ -842,7 +1032,11 @@ pub(crate) fn resolve(
         if action["kind"] == "gateway_route" {
             let store = state.read().map_err(|_| invalid("runtime unavailable"))?.gateway_grants.clone()
                 .ok_or_else(|| invalid("gateway grant store unavailable"))?;
-            let scope = crate::grants::GrantScope::from_admin_lifetime(&json!(record.option))?;
+            let scope = match record.option.as_deref() {
+                Some("delegated_once") => crate::grants::GrantScope::Once,
+                Some("run") => crate::grants::GrantScope::Remembered,
+                _ => crate::grants::GrantScope::from_admin_lifetime(&json!(record.option))?,
+            };
             let request = crate::grants::GrantRequest { agent:action["agent"].as_str().unwrap_or("").into(),
                 service:action["service"].as_str().unwrap_or("").into(),
                 method:action["method"].as_str().unwrap_or("").into(), path:action["path"].as_str().unwrap_or("").into(), scope };
@@ -932,7 +1126,9 @@ pub(crate) fn resolve(
             view["audit_status"] = json!("unavailable; the canonical decision is saved");
         }
     }
-    let status = if matches!(selected.status.as_str(), "expired" | "superseded") {
+    let status = if view["status"] == "activation_unconfirmed" {
+        503
+    } else if matches!(selected.status.as_str(), "expired" | "superseded") {
         409
     } else {
         200

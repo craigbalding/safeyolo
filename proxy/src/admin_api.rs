@@ -67,10 +67,10 @@ struct ServiceMutationState {
 impl ServiceMutationOwner {
     /// Admit one blocking service mutation into the process owner. A caller
     /// may drop the receiver, but the owner retains and joins the work.
-    pub(crate) async fn spawn_blocking(
+    pub(crate) async fn spawn_blocking<T: Send + 'static>(
         &self,
-        work: impl FnOnce() -> Result<Outcome, Error> + Send + 'static,
-    ) -> Result<oneshot::Receiver<Result<Outcome, Error>>, Error> {
+        work: impl FnOnce() -> Result<T, Error> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T, Error>>, Error> {
         let (sender, receiver) = oneshot::channel();
         let mut state = self.state.lock().await;
         while state.tasks.try_join_next().is_some() {}
@@ -1484,6 +1484,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 }
             }),
         ));
+    }
+    if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {
+        return approvals::delegations(request, &path, policy, task_state, service_audit).await;
     }
     if method == Method::GET && path == "/admin/approvals" {
         if let (Some(writer), Some(policy)) = (audit, policy)

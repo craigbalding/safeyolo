@@ -54,6 +54,7 @@ extension ModelTests {
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
         try await testGatewayOptionAndExpiredOutcome()
+        try await testSelectedApprovalEffect()
         try await testPreparedNetworkRequestsAndOpenWindows()
         try await testNetworkResolutionLostReplyAndReconnect()
         try await testDisabledEventsAndRecovery()
@@ -250,6 +251,114 @@ extension ModelTests {
             let observed = try result!.get()
             precondition(observed == .decided("\(status.capitalized). Fixed gateway route"))
             precondition(client.approvalOutcomes["apr-gateway"]?.status == status && posts == 1)
+        }
+    }
+
+    @MainActor
+    private static func testSelectedApprovalEffect() async throws {
+        let cases: [(String, String, [(String, String)])] = [
+            ("network_egress", "Allow reusable network access for worker to owned.example port 443 until explicitly removed.", [
+                ("run", "Run-bound reusable network access to this destination, port and request/CONNECT action. Existing budgets and all other controls remain."),
+            ]),
+            ("credential", "Allow these credential fingerprints to owned.example for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed.", [
+                ("run", "Allow only the worker's current run to send these exact fingerprints to this destination. All ports, methods and paths at this host are included. This does not change shared baseline credential approval."),
+            ]),
+            ("gateway_risky_route", "Allow worker to use POST at the exact path /write on fixture with a once grant.", [
+                ("delegated_once", "One reserved gateway route use for the current worker run. Existing response consumption/release semantics apply. This does not bind the payload."),
+                ("run", "Run-bound reusable access to the canonical service, capability, binding, method and exact path. Gateway expiry and all contract checks remain. This is not payload-bound approval."),
+            ]),
+        ]
+        for (kind, summary, choices) in cases {
+            snapshot()
+            let id = "apr-effect-\(kind)"
+            let path = "/admin/approvals/\(id)"
+            let defaultID = kind == "gateway_risky_route" ? "once" : "persistent"
+            var options = [(defaultID, summary)] + choices
+            var unavailable = false
+            func prompt() -> [String: Any] {
+                ["event": "security.\(kind)", "approval_id": id, "request_id": "req-effect-\(kind)",
+                 "agent": "worker", "summary": summary,
+                 "approval": ["required": true, "approval_type": kind, "key": id, "target": "owned.example"],
+                 "options": options.map { option in
+                     ["id": option.0, "effect": option.1,
+                      "status": unavailable && option.0 == "run" ? "unavailable" : "available"]
+                 }]
+            }
+            func publish(status: String = "pending", effect: String) throws {
+                StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": status == "pending" ? [prompt()] : []]))
+                StubURLProtocol.responsesByPath[path] = (200, try JSONSerialization.data(withJSONObject: [
+                    "approval_id": id, "request_id": "req-effect-\(kind)", "status": status, "effect": effect,
+                ]))
+            }
+            try publish(effect: summary)
+            let socket = StubEventSocket()
+            let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+                eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+                expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+            let presenter = ApprovalWindowPresenter()
+            client.onNewApproval = { presenter.show($0, client: client) }
+            defer { presenter.close(id); client.stop(); StubURLProtocol.responsesByPath = [:] }
+            client.start()
+            try await until { socket.receiving && client.approvalOutcomes[id] != nil }
+            let window = NSApp.windows.first { $0.identifier?.rawValue == id }!
+            func headline(_ expected: String) async throws {
+                try await until {
+                    window.contentView!.layoutSubtreeIfNeeded()
+                    return approvalViews(window)
+                        .compactMap { $0 as? NSTextField }.contains { $0.stringValue == expected }
+                }
+            }
+            try await headline(summary)
+            try await until { approvalViews(window).contains { $0 is NSPopUpButton } }
+            let picker = approvalViews(window).compactMap { $0 as? NSPopUpButton }.first!
+            func choose(_ option: String, effect: String) async throws {
+                let index = picker.indexOfItem(withTitle: option)
+                precondition(index >= 0, "The real approval picker must offer \(option)")
+                picker.selectItem(at: index)
+                picker.menu!.performActionForItem(at: index)
+                print("approval-effect: \(kind) picker=\(picker.titleOfSelectedItem ?? "none")")
+                try await headline(effect)
+                print("approval-effect: \(kind) selected \(option); rendered headline matches host option")
+            }
+            if defaultID == "once" { precondition(picker.titleOfSelectedItem == "once") }
+            for (option, effect) in choices { try await choose(option, effect: effect) }
+            try await choose(defaultID, effect: summary)
+            try await choose("run", effect: choices.last!.1)
+
+            // Refresh the same open card, including a selected option that is no longer available.
+            let refreshed = "Updated host effect for the current worker run."
+            options = [(defaultID, summary), ("run", refreshed)]
+            try publish(effect: summary)
+            let refresh = Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Refresh approvals"}"#.utf8)
+            try await client.ingestOperatorEventData(refresh)
+            try await headline(refreshed)
+            unavailable = true
+            try publish(effect: "Canonical pending fallback")
+            try await client.ingestOperatorEventData(refresh)
+            try await headline("Canonical pending fallback")
+            options = [(defaultID, summary)]
+            try publish(effect: "Canonical pending fallback")
+            try await client.ingestOperatorEventData(refresh)
+            try await headline("Canonical pending fallback")
+
+            options.append(("run", refreshed))
+            unavailable = false
+            try publish(effect: summary)
+            try await client.ingestOperatorEventData(refresh)
+            try await headline(refreshed)
+            for status in ["approved", "rejected", "expired", "superseded"] {
+                try publish(status: status, effect: "Canonical \(status) effect")
+                try await client.ingestOperatorEventData(refresh)
+                try await headline("Canonical \(status) effect")
+            }
+            let fallbackClient = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+                eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+                expectedInstanceID: "sy-connection-test", session: stubSession())
+            var fallbackPrompt = prompt()
+            fallbackPrompt.removeValue(forKey: "options")
+            let fallbackEvent = try JSONDecoder().decode(ApprovalEvent.self, from: JSONSerialization.data(withJSONObject: fallbackPrompt))
+            precondition(ApprovalView(event: fallbackEvent, client: fallbackClient, close: {}).displayedEffect == summary)
+            print("approval-effect: \(kind) refresh, unavailable/missing selection, canonical outcomes and summary fallback passed")
         }
     }
 

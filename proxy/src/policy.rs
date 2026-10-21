@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 mod baseline;
 mod budgets;
 pub(crate) mod circuit_settings;
+pub(crate) mod delegation;
 pub(crate) mod evidence;
 pub(crate) mod expiry;
 mod model_json;
@@ -1463,6 +1464,16 @@ impl Policy {
         now_ms: f64,
         consume: bool,
     ) -> Result<Decision> {
+        self.evaluate_for_run(request, now_ms, consume, None)
+    }
+
+    pub(crate) fn evaluate_for_run(
+        &self,
+        request: NetworkRequest<'_>,
+        now_ms: f64,
+        consume: bool,
+        run: Option<&crate::host_runs::AgentRun>,
+    ) -> Result<Decision> {
         if request.port == Some(0) {
             return Err(invalid("port must be from 1 to 65535"));
         }
@@ -1487,12 +1498,18 @@ impl Policy {
                 budget_remaining: None,
             });
         };
+        let delegated = matches!(rule.effect, RuleEffect::Prompt)
+            && run.is_some_and(|run| self.delegated_network(run, request));
         let decision = Decision {
-            effect: effect_of(rule.effect),
+            effect: if delegated {
+                Effect::Allow
+            } else {
+                effect_of(rule.effect)
+            },
             matched_resource: Some(rule.resource.clone()),
             budget_remaining: None,
         };
-        if !matches!(rule.effect, RuleEffect::Allow | RuleEffect::Budget(_)) {
+        if !delegated && !matches!(rule.effect, RuleEffect::Allow | RuleEffect::Budget(_)) {
             return Ok(decision);
         }
         let action = if request.method.eq_ignore_ascii_case("CONNECT") {
@@ -1575,17 +1592,17 @@ impl Policy {
         request: CredentialRequest<'_>,
         now_ms: f64,
     ) -> Result<Decision> {
-        self.evaluate_credential_inner(request, now_ms, false)
+        self.evaluate_credential_inner(request, now_ms, false, None)
     }
 
-    /// Only the guard's observed, origin- and scope-bound token match may use
-    /// this default. It does not override an applicable authored permission.
-    pub(crate) fn evaluate_observed_ghcr_pull(
+    pub(crate) fn evaluate_credential_for_run(
         &self,
         request: CredentialRequest<'_>,
         now_ms: f64,
+        observed_ghcr_pull: bool,
+        run: Option<&crate::host_runs::AgentRun>,
     ) -> Result<Decision> {
-        self.evaluate_credential_inner(request, now_ms, true)
+        self.evaluate_credential_inner(request, now_ms, observed_ghcr_pull, run)
     }
 
     fn evaluate_credential_inner(
@@ -1593,6 +1610,7 @@ impl Policy {
         request: CredentialRequest<'_>,
         now_ms: f64,
         observed_ghcr_pull: bool,
+        run: Option<&crate::host_runs::AgentRun>,
     ) -> Result<Decision> {
         self.evaluations.fetch_add(1, Ordering::Relaxed);
         if !now_ms.is_finite() {
@@ -1620,6 +1638,11 @@ impl Policy {
                 Effect::Prompt
             },
         );
+        if decision.effect == Effect::Prompt
+            && run.is_some_and(|run| self.delegated_credential(run, request))
+        {
+            decision.effect = Effect::Allow;
+        }
         if let Some(Rule {
             effect: RuleEffect::Budget(rate),
             ..

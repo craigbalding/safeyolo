@@ -23,9 +23,9 @@ pub(crate) fn explain(
         _ => "[custom method omitted]",
     };
     let kind = action["kind"].as_str().unwrap_or("");
-    let (stopped, non_grants, graph_node) = match kind {
+    let (stopped, mut non_grants, graph_node) = match kind {
         "network_allow" => (
-            "The network policy required operator approval for this agent, destination and port.",
+            "The network policy required approval for this agent, destination and port.",
             vec![
                 "No network permission for other agents, destinations or ports.",
                 "No credential destination permission or service capability. Other enforcement still applies.",
@@ -85,6 +85,9 @@ pub(crate) fn explain(
         return Err(invalid("select one of this approval's fixed options"));
     }
     let selected = record.authority.selected_option(option);
+    if kind == "credential_allow" && selected.is_some_and(|option| option.id == "run") {
+        non_grants[1] = "No permission for other workers, reviewers, credential fingerprints or destinations. This leaves shared baseline credential approval unchanged.";
+    }
     let mut unknowns = vec![
         "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets.",
     ];
@@ -98,6 +101,7 @@ pub(crate) fn explain(
     // Only fixed metadata enters this projection. Never copy raw audit events,
     // agent reasons, contract values, request headers, bodies or queries.
     let mut facts = json!({"agent":action["agent"],"agent_id":action["agent_id"],
+        "run_id":action["run"]["run_id"],"binding_id":action["binding_id"],
         "destination":action["host"],"port":record.authority.port,
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],

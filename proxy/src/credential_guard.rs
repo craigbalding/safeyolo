@@ -421,6 +421,7 @@ impl CredentialGuard {
                     Some(host),
                     match identity {
                         Identity::Resolved(agent) => Some(agent),
+                        Identity::Current(run) => Some(run.agent.as_str()),
                         _ => None,
                     },
                 )
@@ -668,6 +669,7 @@ impl CredentialGuard {
         }
         let agent = match request.identity {
             Identity::Resolved(agent) => Some(agent),
+            Identity::Current(run) => Some(run.agent.as_str()),
             _ => None,
         };
         let project = agent.unwrap_or("default");
@@ -1225,18 +1227,23 @@ fn evaluate(
         path,
         credential_hmac: Some(&finding.fingerprint),
     };
-    let Ok(credential) = (if observed_ghcr_pull {
-        policy.evaluate_observed_ghcr_pull(credential, now_ms)
-    } else {
-        policy.evaluate_credential(credential, now_ms)
-    }) else {
+    let Ok(credential) = policy.evaluate_credential_for_run(
+        credential,
+        now_ms,
+        observed_ghcr_pull,
+        request.identity.run(),
+    ) else {
         return failed();
     };
     let network = credential.effect == Effect::Allow;
     let decision = if network {
-        match policy.evaluate(
+        // Current native ingress carries the worker's effective network
+        // policy, including its run permission. A credential grant must not
+        // fall back to an unrelated name-less network decision.
+        let run = request.identity.run();
+        match policy.evaluate_for_run(
             NetworkRequest {
-                agent: None,
+                agent: run.map(|run| run.agent.as_str()),
                 host: request.host,
                 port: Some(request.port),
                 method: request.method,
@@ -1244,6 +1251,7 @@ fn evaluate(
             },
             now_ms,
             true,
+            run,
         ) {
             Ok(decision) => decision,
             Err(_) => return failed(),

@@ -415,7 +415,13 @@ struct ApprovalView: View {
         return client.approvalOutcomes[id]
     }
 
-    var displayedEffect: String { approvalOutcome?.effect ?? currentEvent.summary }
+    var displayedEffect: String {
+        if let outcome = approvalOutcome, outcome.terminal { return outcome.effect }
+        if let option = currentEvent.options?.first(where: { $0.id == selectedOption && $0.available }) {
+            return option.effect
+        }
+        return approvalOutcome?.effect ?? currentEvent.summary
+    }
     var quotedUntrustedReason: String? { approvalOutcome?.quotedUntrustedReason ?? currentEvent.quotedUntrustedReason }
 
     private var evidenceUnavailable: Bool {
