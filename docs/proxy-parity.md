@@ -2490,18 +2490,20 @@ step. A response that completes before request application can record
 
 Completed local denial/API replies carrying the existing traffic marker reach TestContext's
 `not_applicable` response observation after circuit response succeeds and before
-local recording and logging. Early local request returns still omit the native
-request hooks they skip; they do not reproduce the source's later
-`prior_response` request steps. Opt-in activation uses the existing local
+local recording and logging. For early local responses, native tracing records
+unreached request controls as `bypassed/prior_response`. The HTTP owner uses
+per-request call-site reachability, independently of retained trace steps. Opt-in activation uses the existing local
 header-hygiene boundary. The trace join adds no request drain or completion
 observer. Typed source-compatible errors retain their class names; native-only
 runtime, audit, allocation and poisoned-state errors remain native categories.
 Trace-store failures cannot change hook continuation or evidence-error flags.
 
 The source `not_loaded` field lists expected addon names absent from all retained
-steps; it is not a runtime installation inventory. HTTP service gateway,
-credential and pattern stages remain inactive. A stored CONNECT hook narrows
-the source expected set to NetworkGuard. Outer CONNECT and enclosed HTTP retain
+steps; it is not a runtime installation inventory. Native tracing instead
+requires explicit call-site evidence for `not_loaded` and marks missing request
+observations as incomplete. HTTP service, credential and pattern stages report
+their actual request outcomes. A stored CONNECT hook narrows the expected set
+to network admission. Outer CONNECT and enclosed HTTP retain
 separate request IDs and share the transport connection ID. Reserved local
 replies and the temporary Python policy adapter do not fabricate native guard
 traces. The diagnostic probe uses the real native producers described below.
@@ -2524,8 +2526,8 @@ ID, then records `probe-sink / evaluated / probe_terminated`. No inactive
 producer is reported as evaluated or disabled. A prior local reply whose empty
 request and logger/metrics hooks completed retains its status and records
 `probe_preempted`. Body-bearing early replies without that completion marker
-still return before the sink. Neither path fabricates the later source security
-request-hook observations skipped by native early returns.
+still return before the sink. The native HTTP owner records later controls as
+`bypassed/prior_response`; it does not claim that those controls executed.
 
 The generated response uses the same memory, circuit, TestContext, recorder and
 logger operations as a completed HTTP response. Applied context produces a real
@@ -2553,19 +2555,25 @@ The native [probe tests](../proxy/src/http/probe/tests.rs) compare source sink
 bytes and steps and exercise owned HTTP/1 requests, context response evidence,
 memory accounting and flow exclusion. [Upload controls](../proxy/src/http/probe/tests/body.rs)
 cover held chunked input, threshold crossing, truncated requests and request-hook
-errors. The opt-in [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
-uses synthetic tokens and owned UDS listeners, fetches the actual native trace,
-rejects a foreign agent's read, and feeds the fetched response to the source
-doctor classifier. It requires the retained Python source environment; ordinary
-probe tests use the pinned corpus without running Python.
+errors. The active [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
+uses synthetic tokens and owned Unix-domain socket (UDS) listeners. It runs
+native doctor, checks the actual trace and injects missing-control and trace-store
+failures. It needs no retained Python doctor. The native command tests in
+[test_native_skill_trace.py](../tests/proxy_contracts/test_native_skill_trace.py)
+run the executable with native binaries on its PATH. They cover all configured
+agent listeners, known disablement, incomplete traces, unavailable sockets and
+a pattern block before the probe sink. The probe uses the same request-inspection
+enforcement helper as ordinary requests.
 
-The production six-name doctor manifest
-remains unchanged. A native 200 with network, circuit and context receipts still
-fails doctor while service-gateway, credential-guard and pattern-scanner are
-missing. The source classifier inspects only the first request step for each
-expected producer; a later error from the same producer can remain hidden from
-its verdict. This consumer limitation is preserved in the oracle and does not
-justify fabricating a passing pipeline.
+Native doctor checks the first request observation of each expected control in
+the current native order: network, circuits, credentials, services, patterns,
+test context. It also checks every error observation, including later errors
+from a control already seen. A clean probe needs a local sink 200, complete
+evidence and every expected control accounted for. The historical source
+classifier cases remain in the corpus; they no longer define the native
+command's verdict. The store reports `not_loaded` only for explicit call-site
+observations of unavailable controls. Missing retained observations instead
+make the trace incomplete.
 
 The [source corpus](../proxy/tests/trace_source.py) exercises actual trace
 storage and Agent API dispatch. [Native API tests](../proxy/tests/agent_api_trace.rs)

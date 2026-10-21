@@ -155,8 +155,21 @@ fn ordinary_step(report: &Value, outcome: &str, host: &str) {
         expected.extend([
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
         ]);
+    } else {
+        expected.extend(
+            crate::trace::REQUEST_CONTROLS[1..]
+                .iter()
+                .map(|control| json!([control, "request", "bypassed", "prior_response"])),
+        );
     }
     expected.extend([
         json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
@@ -169,19 +182,8 @@ fn ordinary_step(report: &Value, outcome: &str, host: &str) {
     assert_eq!(step["outcome"], outcome);
     assert_eq!(step["host"], host);
     assert!(step["duration_us"].as_u64().is_some());
-    let expected_not_loaded = if outcome == "blocked" {
-        json!([
-            {"addon":"service-gateway", "state":"not_loaded"},
-            {"addon":"credential-guard", "state":"not_loaded"},
-            {"addon":"pattern-scanner", "state":"not_loaded"}
-        ])
-    } else {
-        json!([
-            {"addon":"service-gateway", "state":"not_loaded"},
-            {"addon":"pattern-scanner", "state":"not_loaded"}
-        ])
-    };
-    assert_eq!(report["not_loaded"], expected_not_loaded);
+    assert_eq!(report["not_loaded"], json!([]));
+    assert_eq!(report["incomplete"], false);
     for absent in ["trace-secret-query", "forged", "owned-body", TOKEN] {
         assert!(!report.to_string().contains(absent));
     }
@@ -607,16 +609,23 @@ async fn owned_workflow(directory: &Path) {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "response_recorded"]),
         ]
     );
     assert_eq!(
-        applied["steps"][3]["details"],
+        applied["steps"][5]["details"],
         json!({"context_source":"header"})
     );
-    assert_eq!(applied["steps"][5]["details"], json!({"status_code":200}));
+    assert_eq!(applied["steps"][7]["details"], json!({"status_code":200}));
     let denied = fetch(directory, applied_origin, true).await;
     assert!(denied.starts_with(b"HTTP/1.1 428"));
     let denied = trace(directory, "alice", &request_id(&denied)).await.1;
@@ -626,12 +635,19 @@ async fn owned_workflow(directory: &Path) {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
             json!(["test-context", "request", "evaluated", "blocked"]),
+            json!(["pattern-scanner", "request", "bypassed", "prior_response"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]
     );
-    assert_eq!(denied["steps"][3]["details"], json!({"status":428}));
+    assert_eq!(denied["steps"][4]["details"], json!({"status":428}));
 
     let local = exchange(directory, "alice", &format!(
         "GET http://_safeyolo.proxy.internal/health HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {TOKEN}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n"
@@ -641,6 +657,12 @@ async fn owned_workflow(directory: &Path) {
     assert_eq!(
         steps(&local),
         vec![
+            json!(["network-guard", "request", "bypassed", "prior_response"]),
+            json!(["circuit-breaker", "request", "bypassed", "prior_response"]),
+            json!(["credential-guard", "request", "bypassed", "prior_response"]),
+            json!(["service-gateway", "request", "bypassed", "prior_response"]),
+            json!(["pattern-scanner", "request", "bypassed", "prior_response"]),
+            json!(["test-context", "request", "bypassed", "prior_response"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]

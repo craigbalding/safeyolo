@@ -428,15 +428,18 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
         }
         [command] if command == "status" || command == "doctor" => {
             let agents = host_lifecycle::operate("list", None).await?;
-            let report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root});
-            #[cfg(target_os = "linux")]
-            let report = {
-                let mut report = report;
-                if command == "doctor" {
+            let mut report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root});
+            if command == "doctor" {
+                #[cfg(target_os = "linux")]
+                {
                     report["linux"] = crate::linux_host::runsc_report();
                 }
-                report
-            };
+                report["pipeline"] =
+                    crate::host_doctor::pipeline(&host_platform::config_path()).await;
+                let failed = report["pipeline"]["verdict"] == "fail";
+                print(&report)?;
+                return Ok(i32::from(failed));
+            }
             print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(

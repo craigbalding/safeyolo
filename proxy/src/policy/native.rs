@@ -42,6 +42,13 @@ pub(crate) fn name_control_fields(value: &mut Value) {
         if fields.get("reason").and_then(Value::as_str) == Some("addon_disabled") {
             fields.insert("reason".into(), json!("control_disabled"));
         }
+        if let Some(responder) = fields
+            .get_mut("details")
+            .and_then(|details| details.get_mut("preempted_by"))
+            && let Some(name) = responder.as_str()
+        {
+            *responder = json!(control_label(name));
+        }
         if let Some(audit) = fields.get_mut("audit") {
             name_control_fields(audit);
         }
