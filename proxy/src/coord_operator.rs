@@ -558,7 +558,38 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         return Ok(());
     }
     let command = &arguments[0];
-    let mut options = parse(command, &arguments[1..])?;
+    let options = parse(command, &arguments[1..])?;
+    run_options(config, command, options, None).await
+}
+
+pub(crate) async fn watch_agent(
+    config: &Path,
+    agent: crate::host_agents::Agent,
+    arguments: &[String],
+) -> Result<(), Error> {
+    if arguments == ["--help"] {
+        println!("{}", crate::agent_watch::HELP);
+        return Ok(());
+    }
+    let activity = crate::agent_watch::Activity::open(agent)?;
+    let mut args = vec![activity.room().to_owned()];
+    args.extend_from_slice(arguments);
+    let mut options = parse("watch", &args)?;
+    if options.display.raw || options.display.json || options.jsonl.is_some() {
+        return Err("agent watch uses the bounded rendered view; use coord watch for raw, JSON or local-file output".into());
+    }
+    options.display.compact = true;
+    options.display.redact = true;
+    options.display.max_text.get_or_insert(600);
+    run_options(config, "watch", options, Some(activity)).await
+}
+
+async fn run_options(
+    config: &Path,
+    command: &str,
+    mut options: Options,
+    mut activity: Option<crate::agent_watch::Activity>,
+) -> Result<(), Error> {
     if let Some(path) = &options.jsonl {
         let input: Box<dyn BufRead> = if path == "-" {
             Box::new(std::io::stdin().lock())
@@ -607,16 +638,38 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     }
     let (cancel, cancellation) = tokio::sync::watch::channel(false);
     let (_render, ready) = tokio::sync::watch::channel(true);
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let selected_agent = activity.as_ref().map(|a| a.agent_id().to_owned());
     let display = |message: &Value| {
         if command == "chat" {
             coord_timeline::chat_message(message)
         } else if command == "history" {
             format!("{message}\n")
+        } else if selected_agent
+            .as_deref()
+            .is_some_and(|id| message["sender_agent_id"] != id)
+            && message["sender_kind"] == "agent"
+        {
+            // A peer's JSON body is room text, not this worker's telemetry.
+            options.display.observation(&format!(
+                "room message from {}: {}",
+                message["sender_agent_name"]
+                    .as_str()
+                    .unwrap_or("unknown agent"),
+                message["body"].as_str().unwrap_or_default()
+            ))
         } else {
             options.display.message(message)
         }
     };
     let result = async {
+        if let Some(activity) = &mut activity {
+            print!("{}", options.display.observation(&activity.label()));
+            for line in activity.observe() {
+                print!("{}", options.display.observation(&line));
+            }
+            std::io::stdout().flush()?;
+        }
         let mut cursor = options.since;
         let mut failures = 0u32;
         let mut history = VecDeque::new();
@@ -635,7 +688,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
                     eprintln!("CONN lost cursor={cursor}; retrying in {delay}s: {error}");
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(delay)) => continue,
-                        _ = tokio::signal::ctrl_c() => return Ok(()),
+                        _ = interrupt.recv() => return Ok(()),
                     }
                 }
                 Err(error) => return Err(error.into()),
@@ -669,11 +722,29 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             result = receive(&client, &room, cursor, cancellation.clone(), ready,
                 |message| { print!("{}", display(message)); std::io::stdout().flush()?; Ok(()) },
                 |state| { eprintln!("CONN {state}"); Ok(()) }) => result,
-            _ = tokio::signal::ctrl_c() => { cancel.send_replace(true); Ok(()) },
+            _ = interrupt.recv() => { cancel.send_replace(true); Ok(()) },
+            result = observe(activity, &options.display) => result,
         }
     }
     .await;
     cancel.send_replace(true);
     client.shutdown().await;
     result
+}
+
+async fn observe(
+    activity: Option<crate::agent_watch::Activity>,
+    display: &coord_timeline::Display,
+) -> Result<(), Error> {
+    let Some(mut activity) = activity else {
+        return std::future::pending().await;
+    };
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        for line in activity.observe() {
+            print!("{}", display.observation(&line));
+        }
+        std::io::stdout().flush()?;
+    }
 }

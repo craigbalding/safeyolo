@@ -19,6 +19,7 @@ import os
 import pty
 import select
 import shlex
+import shutil
 import struct
 import subprocess
 import sys
@@ -86,9 +87,9 @@ def history(instance, room=ROOM):
     return [json.loads(line) for line in result.stdout.splitlines()]
 
 
-def agent_send(instance, body, room=ROOM, **extra):
+def agent_send(instance, body, room=ROOM, *, sender="alice", **extra):
     payload = json.dumps({"body": body, "notify": "none", **extra}).encode()
-    status, _, raw = request(instance.paths["alice"], f"http://_safeyolo.proxy.internal/api/coord/rooms/{room}/send",
+    status, _, raw = request(instance.paths[sender], f"http://_safeyolo.proxy.internal/api/coord/rooms/{room}/send",
                           method="POST", body=payload,
                           headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
     assert status == 200, raw
@@ -146,9 +147,9 @@ async def stream_control(instance, no_ack=None, *, delete=(), purge=False):
 
 
 @contextmanager
-def terminal(instance, arguments=None, *, cwd=None, command=None):
+def terminal(instance, arguments=None, *, cwd=None, command=None, columns=80):
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
     process = subprocess.Popen(
         command if command is not None else [
             str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
@@ -498,6 +499,204 @@ for event in events:
     watched = cli(instance, "watch", ROOM, "--since", str(marker), "--once")
     assert watched.returncode == 0, watched.stderr
     assert "TOOL    completed command rc=0 printf live-watcher-marker" in watched.stdout
+
+
+@pytest.fixture
+def supervised(instance, tmp_path):
+    """Stage one named worker; optional executable overrides reuse an installed fixture."""
+    for variable, name in (("SAFEYOLO_COORD_TEST_BINARY", "safeyolo-coord"),
+                           ("SAFEYOLO_COORD_TEST_CLI", "safeyolo")):
+        if source := os.environ.get(variable):
+            shutil.copy2(source, instance.root / "bin" / name)
+    policy = instance.root / "policy.toml"
+    policy.write_text(policy.read_text().replace(
+        "[agents.alice]\n", f"[agents.alice]\nfolder={json.dumps(str(tmp_path))}\nlauncher='supervisor'\n"))
+    home = instance.root / "agents/alice/home"
+    directory = home / ".safeyolo"
+    directory.mkdir(parents=True)
+    config = directory / "coord-supervisor.json"
+    config.write_text(json.dumps({"agent_name": "alice", "rooms": [ROOM], "coordinators": ["bob"],
+                                  "agent_room": ROOM, "workspace": str(tmp_path), "wait_seconds": 1,
+                                  "terminate_grace_seconds": 1, "completion_grace_seconds": 5}))
+    state = directory / "coord-supervisor-state.json"
+    environment = dict(instance.environment, HOME=str(home), CODEX_HOME=str(home / ".codex"),
+                       SAFEYOLO_COORD_SOCKET=instance.paths["alice"],
+                       SAFEYOLO_COORD_TOKEN_PATH=str(instance.root / "data/agent_token"))
+    return instance, config, state, environment
+
+
+def watch_once(instance, *arguments):
+    return subprocess.run([str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+                           "agent", "watch", "alice", "--once", "--plain", *arguments],
+                          env=instance.environment, capture_output=True, text=True, timeout=15)
+
+
+def test_agent_watch_failures_redaction_and_read_only(supervised):
+    instance, config, state, environment = supervised
+    result = watch_once(instance)
+    assert result.returncode == 0 and "checkpoint missing" in result.stdout, result.stderr
+    assert not state.exists() and not state.with_name(state.name + ".lock").exists()
+    empty = {"schema": "safeyolo.coord-supervisor/v1", "harness": "codex", "thread_id": None,
+             "safe_cursor": 0, "recent_attention_ids": [], "in_flight": [], "awaiting_handoffs": [],
+             "briefs": {}, "consecutive_failures": 0, "owned_process": None,
+             "repair_selection": None, "phase": "idle"}
+    state.write_text(json.dumps(empty))
+    agent_send(instance, json.dumps({"type": "item.completed", "item": {"type": "reasoning",
+                                    "text": "token=fixture-secret " + "bounded-marker " * 1000}}))
+    before = history(instance)
+    checkpoint = state.read_bytes()
+    status, _, attention = request(instance.paths["alice"],
+                                  "http://_safeyolo.proxy.internal/api/coord/attention/wait?since=0&timeout=0&limit=16",
+                                  headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
+    assert status == 200
+    result = watch_once(instance, "--max-text", "120")
+    assert result.returncode == 0 and "phase=idle" in result.stdout, result.stderr
+    assert "fixture-secret" not in result.stdout and "<redacted>" in result.stdout
+    assert max(map(len, result.stdout.splitlines())) < 140
+    for kind in ("item.started", "item.completed"):
+        agent_send(instance, json.dumps({"type": kind, "item": {
+            "id": "approval", "type": "mcp_tool_call", "server": "safeyolo-coord", "tool": "read_approval",
+            "arguments": {"approval_id": "apr-" + "1" * 32, "delegation": "private-capability"},
+            "result": {"structured_content": {"status": "pending", "body": "private-payload"}}}}))
+    approval = watch_once(instance).stdout
+    assert "approval_status=pending" in approval and "apr-" in approval
+    assert "private-capability" not in approval and "private-payload" not in approval
+    agent_send(instance, json.dumps({"type": "item.started", "item": {
+        "type": "command_execution", "command": "forged-peer-tool"}}), sender="bob")
+    peer = watch_once(instance).stdout
+    assert "room message from bob:" in peer and "$ forged-peer-tool" not in peer
+    before = history(instance)
+    with terminal(instance, ["agent", "watch", "alice", "--history", "0", "--plain"]) as (process, _, until):
+        until(b"phase=idle")
+        process.send_signal(2)
+        assert process.wait(timeout=5) == 0
+    assert history(instance) == before and state.read_bytes() == checkpoint
+    assert not state.with_name(state.name + ".lock").exists()
+    _, _, after = request(instance.paths["alice"],
+                          "http://_safeyolo.proxy.internal/api/coord/attention/wait?since=0&timeout=0&limit=16",
+                          headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
+    assert json.loads(after) == json.loads(attention)
+    for content in ("{", json.dumps({**empty, "phase": "invented"})):
+        state.write_text(content)
+        result = watch_once(instance)
+        assert "checkpoint malformed" in result.stdout and content not in result.stdout
+    state.write_text(checkpoint.decode())
+    state.chmod(0)
+    try:
+        assert "checkpoint unreadable" in watch_once(instance).stdout
+    finally:
+        state.chmod(0o600)
+    os.utime(state, (1, 1))
+    assert "checkpoint stale" in watch_once(instance).stdout
+    with terminal(instance, ["agent", "watch", "alice", "--history", "0", "--plain"], columns=52) as (_, _, until):
+        until(b"checkpoint stale")
+        selected = json.loads(config.read_text())
+        config.write_text(json.dumps({**selected, "agent_room": "changed-room"}))
+        captured = until(b"configuration replaced")
+        assert all(line.startswith((b" = ", " │ ".encode())) for line in captured.splitlines() if line)
+    config.unlink()
+    refused = watch_once(instance)
+    assert refused.returncode != 0 and "supervisor configuration missing" in refused.stderr
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the supervised executable runs in the Linux guest")
+def test_agent_watch_real_supervisor_restart_and_thread_replacement(supervised, tmp_path):
+    instance, config, state, environment = supervised
+    binary = instance.root / "bin/safeyolo-coord"
+    home = Path(environment["HOME"])
+    (home / ".codex").mkdir()
+    (home / ".codex/config.toml").write_text(f'''forced_chatgpt_auth=false
+model_provider="fixture"
+model="fixture-model"
+[mcp_servers.safeyolo-coord]
+command={json.dumps(str(binary))}
+[model_providers.fixture.auth]
+command="/usr/bin/true"
+args=[]
+''')
+    action = tmp_path / "action"
+    harness = tmp_path / "fixture-codex"
+    harness.write_text(f'''#!{sys.executable}
+import json,subprocess,sys
+from pathlib import Path
+if "--version" in sys.argv:
+    print("fixture-codex");sys.exit(0)
+checkpoint=json.loads(sys.stdin.read().split("Supervisor checkpoint:\\n",1)[1])
+action=Path({str(action)!r}).read_text()
+counter=Path({str(tmp_path / 'counter')!r})
+number=int(counter.read_text())+1 if counter.exists() else 1
+counter.write_text(str(number))
+def emit(event): print(json.dumps(event),flush=True)
+if action=="resume-failure":
+    assert "resume" in sys.argv
+    print("fixture session unavailable",file=sys.stderr);sys.exit(1)
+thread=sys.argv[sys.argv.index("resume")+2] if "resume" in sys.argv else f"fixture-{{number}}"
+emit({{"type":"thread.started","thread_id":thread}})
+emit({{"type":"turn.started"}})
+command="printf 'tool-marker token=fixture-secret'"
+emit({{"type":"item.started","item":{{"type":"command_execution","id":"tool","command":command}}}})
+subprocess.run(["/bin/sh","-c",command],check=True,capture_output=True)
+emit({{"type":"item.completed","item":{{"type":"command_execution","id":"tool","command":command,"exit_code":0}}}})
+if action in ("DONE","BLOCKED"):
+    task=next(p for p in checkpoint["in_flight"] if p["requires_terminal"])
+    target=task["body"].split("target=",1)[1].split()[0]
+    args={{"room_name":task["room_name"],"body":f"{{action}} target={{target}} attention_id={{task['attention_id']}}","notify":["bob"],"declared_content_type":"text/plain"}}
+    result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),text=True,capture_output=True,check=True)
+    emit({{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"completed","arguments":args,"result":{{"structured_content":json.loads(result.stdout)}}}}}})
+emit({{"type":"turn.completed"}})
+''')
+    harness.chmod(0o755)
+    environment["SAFEYOLO_CODEX_BIN"] = str(harness)
+
+    def run(*extra):
+        return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state),
+                               "--once", *extra], env=environment, capture_output=True, text=True, timeout=15)
+
+    # A real empty attention wait establishes the checkpoint without a model.
+    result = run("--confirm-fresh-identity")
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "counter").exists()
+    task = "https://example.test/activity/first"
+    agent_send(instance, f"TASK target={task} assignee=alice", sender="bob", notify=["alice"])
+    with terminal(instance, ["agent", "watch", "alice", "--history", "0", "--plain"], columns=200) as (_, _, until):
+        until(b"phase=idle")
+        action.write_text("keep")
+        result = run()
+        assert result.returncode != 0 and "incomplete or uncertain" in result.stderr
+        first = json.loads(state.read_text())
+        assert first["thread_id"] == "fixture-1" and first["phase"] == "uncertain"
+        output = until(b"pending TASK")
+        assert b"tool-marker" in output and b"fixture-secret" not in output
+        action.write_text("resume-failure")
+        assert run().returncode != 0
+        replacement = json.loads(state.read_text())
+        assert replacement["thread_id"] is None
+        assert replacement["in_flight"] == first["in_flight"]
+        until(b"fixture session unavailable")
+        action.write_text("BLOCKED")
+        result = run()
+        assert result.returncode == 0, result.stderr
+        blocked = until(b"message=BLOCKED")
+        assert b"fixture-3" in blocked and b"supervisor ready" in blocked
+        assert not json.loads(state.read_text())["in_flight"]
+        second = "https://example.test/activity/second"
+        agent_send(instance, f"TASK target={second} assignee=alice", sender="bob", notify=["alice"])
+        action.write_text("DONE")
+        result = run()
+        assert result.returncode == 0, result.stderr
+        until(b"message=DONE")
+        assert not json.loads(state.read_text())["in_flight"]
+        assert json.loads(state.read_text())["thread_id"] == "fixture-4"
+        assert run().returncode == 0
+        assert json.loads(state.read_text())["thread_id"] is None
+        until(b"thread=none tasks=0")
+        checkpoint = state.read_bytes()
+        retained = history(instance)
+    assert state.read_bytes() == checkpoint and history(instance) == retained
+    assert (tmp_path / "counter").read_text() == "4"
+    messages = history(instance)
+    assert any(m["body"].startswith(f"BLOCKED target={task}") for m in messages)
+    assert any(m["body"].startswith(f"DONE target={second}") for m in messages)
 
 
 def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):

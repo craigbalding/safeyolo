@@ -179,6 +179,22 @@ fn mcp(item: &Value, phase: &str) -> String {
         get(item, "tool", "tool"),
         get(item, "status", "?")
     );
+    if item["server"] == "safeyolo-coord"
+        && item["tool"] == "send"
+        && let Some(body) = item["arguments"]["body"].as_str()
+        && let Some((kind, fields)) = crate::coord_supervisor::header(body)
+        && matches!(
+            kind.as_str(),
+            "TASK" | "DONE" | "BLOCKED" | "FAILED" | "REVIEW_READY" | "READY" | "CHANGES_REQUIRED"
+        )
+    {
+        detail.push_str(&format!(" message={kind}"));
+        for key in ["target", "attention_id"] {
+            if let Some(value) = fields.get(key) {
+                detail.push_str(&format!(" {key}={value}"));
+            }
+        }
+    }
     // As in the existing watcher, show routing fields without dumping tool
     // bodies/results, authentication parameters or arbitrary arguments.
     for (keys, shown) in [
@@ -201,12 +217,27 @@ fn mcp(item: &Value, phase: &str) -> String {
         (&["since_sequence"][..], "cursor"),
         (&["timeout_seconds"][..], "timeout"),
         (&["limit"][..], "limit"),
+        (&["approval_id"][..], "approval"),
+        (&["decision"][..], "decision"),
     ] {
         if let Some(v) = keys.iter().find_map(|key| {
             let v = &item["arguments"][*key];
             (v.is_string() || v.is_number()).then_some(v)
         }) {
             detail.push_str(&format!(" {shown}={}", string(v)));
+        }
+    }
+    if item["server"] == "safeyolo-coord"
+        && matches!(
+            item["tool"].as_str(),
+            Some("read_approval" | "resolve_approval")
+        )
+    {
+        let result = item["result"]
+            .get("structured_content")
+            .or_else(|| item["result"].get("structuredContent"));
+        if let Some(status) = result.and_then(|r| r["status"].as_str()) {
+            detail.push_str(&format!(" approval_status={status}"));
         }
     }
     if let Some(start) = item["arguments"]["start_line"].as_u64() {
@@ -302,6 +333,7 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
             let action = get(event, "event", "event");
             let mut detail = action.clone();
             for key in [
+                "detail",
                 "pid",
                 "signal",
                 "exit_code",
@@ -523,6 +555,18 @@ pub(crate) struct Display {
     pub max_text: Option<usize>,
 }
 impl Display {
+    pub(crate) fn observation(&self, text: &str) -> String {
+        let text = compact::clean(self, &format!("observation: {text}"), true);
+        let rows = if std::io::stdout().is_terminal() {
+            compact::wrapped_rows("", "=", &text, width() + 2)
+        } else {
+            vec![("= ".into(), text)]
+        };
+        rows.into_iter()
+            .map(|(prefix, body)| format!("{prefix}{body}\n"))
+            .collect()
+    }
+
     pub(crate) fn message(&self, message: &Value) -> String {
         if self.json {
             return format!(
