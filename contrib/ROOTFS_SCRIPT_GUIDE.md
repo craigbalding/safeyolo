@@ -245,6 +245,12 @@ requested format. The Kali pentest example
 (`contrib/kali-pentest/build-kali-rootfs.sh`) follows the same shape with
 more packages.
 
+Both Alpine examples accept an `ALPINE_IMAGE` override. On the Linux builder,
+set it to `oci:/absolute/path/to/layout:tag` to reuse an acquired Alpine 3.22
+image for the selected architecture. Skopeo copies that input instead of
+pulling the default registry tag. Package installation still uses the image's
+Alpine repositories.
+
 ## Building on macOS (Lima)
 
 macOS needs a Linux builder for `umoci unpack`, chrooted apt/apk, and

@@ -100,25 +100,50 @@ def wait_for_approval(
     service: str | None = None,
 ) -> dict:
     deadline = time.monotonic() + 7
+    observed = []
     while time.monotonic() < deadline:
+        pending = api.pending_approvals()
+        observed = [{key: row.get(key) for key in ("approval_id", "request_id", "agent", "action")}
+                    for row in pending if row.get("approval", {}).get("approval_type") == approval_type]
         matches = [
             row
-            for row in api.pending_approvals()
+            for row in pending
             if row.get("approval", {}).get("approval_type") == approval_type
             and (request_id is None or row.get("request_id") == request_id)
             and (agent is None or row.get("agent") == agent)
-            and (service is None or row.get("approval", {}).get("target") == service)
+            and (service is None or row.get("action", {}).get("service") == service)
         ]
         if len(matches) == 1:
+            print(json.dumps({"phase": "approval_pending", "approval_type": approval_type,
+                              "observed": observed}), flush=True)
             return matches[0]
         time.sleep(0.05)
-    raise AssertionError(f"operator did not see one {approval_type} request for {agent}/{service}/{request_id}")
+    raise AssertionError(f"operator did not see one {approval_type} request for {agent}/{service}/{request_id}; "
+                         f"observed={json.dumps(observed)}")
 
 
-def approve_service(api: AdminAPI, agent: str, service: str, credential: str) -> None:
-    event = wait_for_approval(api, "service", agent=agent, service=service)
-    assert event["agent"] == agent and event["approval"]["target"] == service, event
+def approve_service(api: AdminAPI, agent: str, service: str, credential: str, *, request_id: str) -> None:
+    event = wait_for_approval(api, "service", agent=agent, service=service, request_id=request_id)
+    assert event["agent"] == agent and event["action"]["service"] == service, event
     assert approve(event, api, service_credential=credential) in {"authorized", "ok"}
+
+
+def authorize_access(api: AdminAPI, cli: str, agent: str, platform: str, marker: str, credential: str) -> dict:
+    """Request each approval after the preceding policy decision is published."""
+    first = guest(cli, agent, platform, marker, "access")
+    approve_service(api, agent, "p3_basic", credential, request_id=first["service_request_id"])
+    # Service authorization adds gateway permissions. The revision guard can
+    # supersede a binding submitted before that policy change.
+    requested = guest(cli, agent, platform, marker, "binding")
+    binding = wait_for_approval(api, "contract_binding", agent=agent, service="p3_contract",
+                                request_id=requested["binding_request_id"])
+    assert approve(binding, api) in {"bound", "ok"}
+    contract = guest(cli, agent, platform, marker, "contract-access")
+    authorized = api.authorize_service(agent=agent, service="p3_contract", capability="writer", credential=credential)
+    assert authorized["status"] == "authorized", authorized
+    return {"service_request_id": first["service_request_id"],
+            "binding_request_id": requested["binding_request_id"],
+            "challenge_after_binding": contract["contract_challenge"]}
 
 
 def setup_coord(cli: str, root: Path, primary: str, peer: str) -> dict:
@@ -477,15 +502,7 @@ def main() -> None:
             if args.platform != "vz"
             else {"platform": "vz", "host_listener": str(peer_socket), "guest_forwarder": "vsock:2:1080"}
         )
-        first = guest(cli, args.agent, args.platform, marker, "access")
-        approve_service(admin, args.agent, "p3_basic", fixture["credential_name"])
-        binding = wait_for_approval(admin, "contract_binding", agent=args.agent, service="p3_contract")
-        assert approve(binding, admin) in {"bound", "ok"}
-        contract_request = guest(cli, args.agent, args.platform, marker, "contract-access")
-        authorized = admin.authorize_service(
-            agent=args.agent, service="p3_contract", capability="writer", credential=fixture["credential_name"]
-        )
-        assert authorized["status"] == "authorized", authorized
+        access = authorize_access(admin, cli, args.agent, args.platform, marker, fixture["credential_name"])
         basic = guest(cli, args.agent, args.platform, marker, "basic")
         token = basic.pop("token")  # Transient synthetic token is absent from the report.
         descriptor = os.open(stolen_token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
@@ -495,7 +512,8 @@ def main() -> None:
         stolen_token_file.unlink()
         prompt = guest(cli, args.agent, args.platform, marker, "contract-prompt")
         assert not any(row.path == "/p3/write" for row in sinkhole.get_requests())
-        risk = wait_for_approval(admin, "gateway_route", request_id=prompt["request_id"])
+        risk = wait_for_approval(admin, "gateway_risky_route", agent=args.agent, service="p3_contract",
+                                request_id=prompt["request_id"])
         grant_id = approve(risk, admin)
         assert isinstance(grant_id, str) and grant_id
         contract = guest(cli, args.agent, args.platform, marker, "contract-effect")
@@ -538,13 +556,13 @@ def main() -> None:
             "peer_bridge": peer_bridge,
             "runtime_config": {"parent_proxy": native["parent_proxy"], "upstream_ca_file": native["upstream_ca_file"]},
             "service": {
-                "requested": first["service_request_id"],
+                "requested": access["service_request_id"],
                 "authorized_origin": basic,
                 "unauthorized_peer": peer_denial,
             },
             "contract": {
-                "binding_request": first["binding_request_id"],
-                "challenge_after_binding": contract_request["contract_challenge"],
+                "binding_request": access["binding_request_id"],
+                "challenge_after_binding": access["challenge_after_binding"],
                 "risk_request": prompt["request_id"],
                 "effect": contract,
             },

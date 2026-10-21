@@ -76,8 +76,24 @@ def test_discovery_and_rpc_errors(adapter):
     ])
     assert results[1]["result"]["protocolVersion"] == "2025-03-26"
     tools = results[2]["result"]["tools"]
-    assert len(tools) == 11
-    assert {tool["name"] for tool in tools} >= {"send", "send_task", "read_room", "read_brief", "wait_for_coord"}
+    by_name = {tool["name"]: tool for tool in tools}
+    assert len(tools) == len(by_name) == 14
+    assert set(by_name) == {
+        "join_room", "read_brief", "get_room_state", "declare_capabilities",
+        "send", "send_task", "read_room", "wait_for_coord", "wait_for_attention",
+        "read_attention", "wait_for_message",
+        "list_approvals", "read_approval", "resolve_approval",
+    }
+    for name, required in {
+        "list_approvals": [],
+        "read_approval": ["approval_id"],
+        "resolve_approval": ["approval_id", "decision", "delegation", "option"],
+    }.items():
+        schema = by_name[name]["inputSchema"]
+        assert schema["type"] == "object" and schema["additionalProperties"] is False
+        assert schema["required"] == required
+        assert set(schema["properties"]) == set(required)
+    assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
     assert results[None]["error"]["code"] == -32600
     assert results[3]["error"]["code"] == -32601
     assert calls == []

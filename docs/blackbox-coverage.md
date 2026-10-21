@@ -153,6 +153,9 @@ full admin access leaks to anyone with shell on the host.
 
 #### TestAgentListener — Host-owned Unix domain sockets supply each agent's request identity.
 
+**Threat:** A missing or shared listener can break guest egress or attribute
+requests to the wrong agent. Policy and evidence need the correct identity.
+
 - **`test_agent_listener_has_entry`** — The running agent has a configured listener.
   - *Probe:* Read the host's native listener configuration and find the agent.
   - *Consequence if unasserted:* Listener ownership determines policy and evidence attribution.

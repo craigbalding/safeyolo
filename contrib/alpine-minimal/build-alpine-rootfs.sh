@@ -20,7 +20,7 @@ set -euo pipefail
 
 # --- Pins. Bump the tag; re-pull for a fresh digest. ---
 ALPINE_TAG="3.22"
-ALPINE_IMAGE="docker://alpine:${ALPINE_TAG}"
+ALPINE_IMAGE="${ALPINE_IMAGE:-docker://alpine:${ALPINE_TAG}}" # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
 
 case "$SAFEYOLO_TARGET_ARCH" in
     arm64|amd64) ;;

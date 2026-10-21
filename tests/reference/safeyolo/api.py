@@ -493,10 +493,19 @@ class AdminAPI:
         """Clear all temp allowlist entries."""
         return self._request("DELETE", "/plugins/credential-guard/allowlist")
 
-    def resolve_network_approval(self, request_id: str, decision: str) -> dict[str, Any]:
-        """Resolve a canonical native network action without resupplying scope."""
+    def approval(self, request_id: str) -> dict[str, Any]:
+        """Read the canonical native approval and its offered options."""
+        return self._request("GET", f"/admin/approvals/{quote(request_id, safe='')}")
+
+    def resolve_approval(
+        self, request_id: str, decision: str, *, option: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a canonical native action without resupplying its scope."""
+        payload = {"decision": decision}
+        if option is not None:
+            payload["option"] = option
         return self._request(
-            "POST", f"/admin/approvals/{quote(request_id, safe='')}", json={"decision": decision}
+            "POST", f"/admin/approvals/{quote(request_id, safe='')}", json=payload
         )
 
     def log_denial(

@@ -24,6 +24,7 @@ PROXY_VARIABLES = (
 
 def _run_builder(
     tmp_path, builder, output, arch="arm64", failure="", build_ca=True, proxies=None,
+    image=None,
 ):
     tools = tmp_path / "bin"
     tools.mkdir()
@@ -41,7 +42,7 @@ case "$tool" in
     exec env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \\
       -u NO_PROXY -u no_proxy -u SSL_CERT_FILE "$@"
     ;;
-  skopeo) exit 0 ;;
+  skopeo) [ "$TEST_FAILURE" != image ] || exit 41 ;;
   umoci) mkdir -p "${@: -1}/rootfs/"{etc,tmp,usr/local/bin,usr/share} ;;
   chroot)
     tree=$1
@@ -96,6 +97,9 @@ esac
     }
     for name in PROXY_VARIABLES:
         env.pop(name, None)
+    env.pop("ALPINE_IMAGE", None)
+    if image is not None:
+        env["ALPINE_IMAGE"] = image
     env.update(proxies or {})
     if build_ca:
         certificate = tmp_path / "build-ca.pem"
@@ -143,6 +147,17 @@ def test_alpine_builder_outputs(tmp_path, builder, output, arch):
 
 
 @pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)
+def test_alpine_builder_copies_acquired_oci_input(tmp_path, builder):
+    image = f"oci:{tmp_path / 'base image'}:alpine322"
+    result, calls, _ = _run_builder(tmp_path, builder, "TREE", image=image)
+
+    assert result.returncode == 0, result.stderr
+    pull = next(call for call in calls if call.startswith("skopeo|"))
+    assert f"|copy|{image}|oci:" in pull
+    assert "docker://" not in pull
+
+
+@pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)
 def test_alpine_builder_uses_image_trust_without_build_ca(tmp_path, builder):
     result, calls, _ = _run_builder(tmp_path, builder, "TREE", build_ca=False)
 
@@ -175,7 +190,8 @@ def test_alpine_builder_preserves_configured_proxies(tmp_path, builder, build_ca
 @pytest.mark.parametrize("builder", BUILDERS, ids=lambda path: path.parent.name)
 @pytest.mark.parametrize(
     ("failure", "output", "status"),
-    (("apk", "TREE", 42), ("ownership", "TREE", 43), ("pack", "EXT4", 44)),
+    (("image", "TREE", 41), ("apk", "TREE", 42), ("ownership", "TREE", 43),
+     ("pack", "EXT4", 44)),
 )
 def test_alpine_builder_does_not_report_failed_output_as_success(
     tmp_path, builder, failure, output, status,

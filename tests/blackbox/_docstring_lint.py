@@ -92,7 +92,7 @@ def _validate_via_ast() -> list[str]:
     violations: list[str] = []
 
     for suite in suites:
-        for path in sorted(suite.glob("test_*.py")):
+        for path in sorted(suite.rglob("test_*.py")):
             tree = ast.parse(path.read_text())
             rel = path.relative_to(root.parent.parent)
             for node in tree.body:
