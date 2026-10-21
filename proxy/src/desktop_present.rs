@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, io::Write, os::unix::fs::PermissionsExt, sync::LazyLock};
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -13,6 +14,165 @@ pub(crate) enum Error {
     Unavailable,
     NotFound,
     Failed,
+    Preview(crate::Error),
+}
+
+/// Only guest browser navigation and preview lifetime are agent-selectable.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Parameters {
+    pub(crate) browser_url: Option<String>,
+    pub(crate) ttl_seconds: u32,
+}
+
+impl Default for Parameters {
+    fn default() -> Self {
+        Self {
+            browser_url: None,
+            ttl_seconds: 900,
+        }
+    }
+}
+
+impl Parameters {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if !(1..=86400).contains(&self.ttl_seconds) {
+            return Err("ttl_seconds must be an integer from 1 to 86400");
+        }
+        if let Some(url) = &self.browser_url {
+            if url == "about:blank" {
+                return Ok(());
+            }
+            let parsed = url.parse::<hyper::Uri>();
+            if url.len() > 8192
+                || url.chars().any(|c| c.is_control() || c.is_whitespace())
+                || url.contains('\\')
+                || parsed.as_ref().is_err()
+                || parsed.as_ref().is_ok_and(|uri| {
+                    !matches!(uri.scheme_str(), Some("http" | "https"))
+                        || uri.host().is_none_or(str::is_empty)
+                        || uri.authority().is_some_and(|a| a.as_str().contains('@'))
+                })
+            {
+                return Err(
+                    "browser_url must be an absolute HTTP or HTTPS URL without credentials, or about:blank",
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Route {
+    Local,
+    Tailnet,
+}
+
+#[derive(Debug)]
+pub(crate) struct Diagnostic {
+    pub(crate) code: &'static str,
+    pub(crate) message: &'static str,
+}
+
+impl Diagnostic {
+    pub(crate) fn json(&self) -> Value {
+        json!({"code":self.code,"message":self.message,"graph":"triage-desktop-preview"})
+    }
+}
+
+fn diagnostic(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic { code, message }
+}
+
+fn executable(program: &str) -> bool {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).any(|path| {
+        std::fs::metadata(path.join(program))
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+}
+
+pub(crate) async fn action_route() -> Result<Route, Diagnostic> {
+    let settings = crate::native_config::host_settings().map_err(|_| {
+        diagnostic(
+            "host_settings_unavailable",
+            "The host desktop settings are unavailable.",
+        )
+    })?;
+    if settings.command_centre.share == "tailnet" {
+        crate::tailnet::available()
+            .await
+            .map_err(|error| tailnet_diagnostic(&error.to_string()))?;
+        return Ok(Route::Tailnet);
+    }
+    #[cfg(target_os = "linux")]
+    let local = executable("xdg-open") && display_size().await.is_some();
+    #[cfg(target_os = "macos")]
+    let local = executable("open") && main_display_size().is_some();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let local = false;
+    if local {
+        Ok(Route::Local)
+    } else {
+        Err(diagnostic(
+            "operator_preview_path_unavailable",
+            "No usable local display/opener or configured tailnet preview path is available. The operator must configure a presentation path on the SafeYolo host.",
+        ))
+    }
+}
+
+fn tailnet_diagnostic(error: &str) -> Diagnostic {
+    let error = error.to_ascii_lowercase();
+    if error.contains("tailscale serve exited")
+        && (error.contains("permission")
+            || error.contains("access denied")
+            || error.contains("not permitted"))
+    {
+        diagnostic(
+            "tailnet_serve_permission",
+            "This host user cannot manage Tailscale Serve. The operator must configure Serve permission; SafeYolo did not run privileged setup.",
+        )
+    } else if error.contains("no such file") {
+        diagnostic(
+            "tailscale_command_unavailable",
+            "The Tailscale command is not available in the SafeYolo host's PATH. Configure the existing tailnet preview route before requesting it.",
+        )
+    } else if error.contains("not connected") {
+        diagnostic(
+            "tailscale_disconnected",
+            "Tailscale is not connected on the SafeYolo host.",
+        )
+    } else {
+        diagnostic(
+            "tailnet_preview_unavailable",
+            "Tailscale could not provide the preview. Check that its host command can run as this user and reach its daemon, then check HTTPS configuration, Serve permission and the assigned HTTPS port.",
+        )
+    }
+}
+
+pub(crate) async fn action_prerequisites(name: &str) -> Result<Route, Diagnostic> {
+    let route = action_route().await?;
+    if !host_platform::guest_exec_available(name).await {
+        return Err(diagnostic(
+            "sandbox_unavailable",
+            "The requesting agent's sandbox is not ready. Inspect its desktop/runtime diagnostics.",
+        ));
+    }
+    if !matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            desktop_command_status(name, "/safeyolo/guest-desktop check >/dev/null 2>&1")
+        )
+        .await,
+        Ok(Ok(0))
+    ) {
+        return Err(diagnostic(
+            "desktop_missing",
+            "The guest desktop capability is missing or not ready. Run /safeyolo/guest-desktop check in this agent and use the desktop preview graph.",
+        ));
+    }
+    Ok(route)
 }
 
 struct Presentation {
@@ -206,6 +366,18 @@ async fn desktop_command_status(name: &str, command: &str) -> std::io::Result<i3
 }
 
 pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Result<Value, Error> {
+    let mut presentations = PRESENTATIONS.lock().await;
+    present_locked(agent_id, allow_listener_name, &mut presentations, None)
+        .await
+        .map(|(result, _)| result)
+}
+
+async fn present_locked(
+    agent_id: String,
+    allow_listener_name: bool,
+    presentations: &mut BTreeMap<String, Presentation>,
+    route: Option<Route>,
+) -> Result<(Value, bool), Error> {
     if !valid_agent_id(&agent_id) {
         return Err(Error::Failed);
     }
@@ -225,12 +397,18 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     host_agents::by_id(&agents, &agent.id).map_err(|_| Error::Failed)?;
     let id = agent.id;
     let name = agent.name;
-    let mut presentations = PRESENTATIONS.lock().await;
     if let Some(presentation) = presentations.get_mut(&id)
         && presentation.preview.is_running()
     {
+        if route.is_some_and(|route| (route == Route::Tailnet) != presentation.preview.is_tailnet())
+        {
+            return Err(Error::Failed);
+        }
         let code = presentation.preview.issue_unlock_code().await;
-        return Ok(response(&id, &name, &presentation.preview, code, true));
+        return Ok((
+            response(&id, &name, &presentation.preview, code, true),
+            false,
+        ));
     }
     if let Some(mut presentation) = presentations.remove(&id) {
         presentation.preview.close().await;
@@ -239,12 +417,17 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     let (preferred_size, host_port) = settings()?;
     let geometry = geometry(&preferred_size).await?;
     stage_guest_desktop(&name, &geometry)?;
-    let tailnet = if crate::native_config::host_settings()
-        .map_err(|_| Error::Failed)?
-        .command_centre
-        .share
-        == "tailnet"
-    {
+    let share_tailnet = match route {
+        Some(route) => route == Route::Tailnet,
+        None => {
+            crate::native_config::host_settings()
+                .map_err(|_| Error::Failed)?
+                .command_centre
+                .share
+                == "tailnet"
+        }
+    };
+    let tailnet = if share_tailnet {
         let name = name.clone();
         let config = host_platform::config_path();
         Some(
@@ -286,7 +469,7 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     };
     let preview = Preview::start(&name, &id, host_port, tailnet.map(|(port, _)| port))
         .await
-        .map_err(|_| Error::Failed);
+        .map_err(Error::Preview);
     let preview = match preview {
         Ok(preview) => preview,
         Err(error) => {
@@ -317,6 +500,104 @@ pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Resu
     let code = preview.unlock_code().await;
     let result = response(&id, &name, &preview, code, false);
     presentations.insert(id, Presentation { preview });
+    Ok((result, !already_ready && matches!(started, Ok(Ok(0)))))
+}
+
+/// The approved action uses the same preview, guest launcher and access gate.
+pub(crate) async fn present_action(
+    agent_id: &str,
+    parameters: &Parameters,
+    route: Route,
+    approval_id: &str,
+) -> Result<Value, Diagnostic> {
+    parameters
+        .validate()
+        .map_err(|message| diagnostic("invalid_parameters", message))?;
+    if action_route().await? != route {
+        return Err(diagnostic(
+            "presentation_changed",
+            "The host presentation path changed. Request a new preview approval.",
+        ));
+    }
+    let agents = host_agents::list().map_err(|_| {
+        diagnostic(
+            "agent_unavailable",
+            "The host agent registry is unavailable.",
+        )
+    })?;
+    let agent = host_agents::by_id(&agents, agent_id)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            diagnostic(
+                "agent_unavailable",
+                "The requesting agent was removed or replaced.",
+            )
+        })?;
+    action_prerequisites(&agent.name).await?;
+    let mut presentations = PRESENTATIONS.lock().await;
+    let (result, guest_started) = present_locked(agent_id.to_owned(), false, &mut presentations, Some(route)).await.map_err(|error| match error {
+        Error::Preview(error) if route == Route::Tailnet => tailnet_diagnostic(&error.to_string()),
+        _ => diagnostic("desktop_presentation_failed", "The managed desktop preview could not start. Inspect this agent's desktop diagnostics."),
+    })?;
+    let name = &agent.name;
+    let operation = async {
+        if !matches!(tokio::time::timeout(std::time::Duration::from_secs(8), desktop_command_status(name, "/safeyolo/guest-desktop status >/dev/null 2>&1")).await, Ok(Ok(0))) {
+            return Err(diagnostic("desktop_not_ready", "The guest desktop did not become ready. Run /safeyolo/guest-desktop status and use the desktop preview graph."));
+        }
+        if let Some(url) = &parameters.browser_url {
+            let command = format!("/safeyolo/guest-desktop browser '{}'", url.replace('\'', "'\\''"));
+            if !matches!(tokio::time::timeout(std::time::Duration::from_secs(8), desktop_command_status(name, &command)).await, Ok(Ok(0))) {
+                return Err(diagnostic("browser_unavailable", "The guest browser could not start. Check the browser capability and /tmp/chrome.log in this agent."));
+            }
+        }
+        if route == Route::Local {
+            #[cfg(target_os = "macos")]
+            let program = "open";
+            #[cfg(not(target_os = "macos"))]
+            let program = "xdg-open";
+            let opened = tokio::time::timeout(std::time::Duration::from_secs(8),
+                tokio::process::Command::new(program).arg(result["url"].as_str().unwrap_or_default())
+                    .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                    .kill_on_drop(true).status()).await;
+            if !matches!(opened, Ok(Ok(status)) if status.success()) {
+                return Err(diagnostic("local_opener_failed", "The local browser opener failed. Check the SafeYolo host's desktop and default browser."));
+            }
+        }
+        Ok(())
+    }.await;
+    if let Err(error) = operation {
+        if result["reused"] == false
+            && let Some(mut presentation) = presentations.remove(agent_id)
+        {
+            presentation.preview.close().await;
+        }
+        if guest_started {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                desktop_command_status(name, "/safeyolo/guest-desktop stop >/dev/null 2>&1"),
+            )
+            .await;
+        }
+        return Err(error);
+    }
+    let presentation = presentations.get_mut(agent_id).ok_or_else(|| {
+        diagnostic(
+            "preview_closed",
+            "The preview closed before the action completed.",
+        )
+    })?;
+    presentation.preview.expire_after(
+        std::time::Duration::from_secs(parameters.ttl_seconds.into()),
+        approval_id,
+    );
+    let expires_at = (time::OffsetDateTime::now_utc()
+        + time::Duration::seconds(parameters.ttl_seconds.into()))
+    .format(&time::format_description::well_known::Rfc3339)
+    .expect("valid preview expiry");
+    let mut result = result;
+    result["expires_at"] = json!(expires_at);
+    result["presentation"] = json!(route);
     Ok(result)
 }
 

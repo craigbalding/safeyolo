@@ -180,6 +180,12 @@ where
         };
         return approvals::respond(request, controls.audit, policy, state, body).await;
     }
+    if route(request).starts_with("/operator-actions") {
+        let PolicyState::Ready(policy) = &policy else {
+            return Ok(response(503, json!({"error":"policy unavailable"})));
+        };
+        return operator_actions::respond(request, policy, state, controls.audit, body).await;
+    }
     if route(request) == "/trace" {
         return Ok(trace::respond(request, controls.traces));
     }

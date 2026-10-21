@@ -6,9 +6,24 @@
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
 - [Approval context](#approval-context)
+- [Operator actions](#operator-actions)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Legacy agent collaboration with plumb](#legacy-agent-collaboration-with-plumb)
+
+## Operator actions
+
+`GET /operator-actions` discovers the bounded SafeYolo action vocabulary for
+the requesting agent. `POST /operator-actions` accepts `action_id`, typed
+`parameters` and optional untrusted `reason`. The first action is
+`desktop.present`. See [Desktop and operator preview](desktop.md) for the
+request and its local or configured tailnet prerequisites.
+
+`GET /operator-actions/ACTION_REQUEST_ID` reads the requesting agent's result.
+Use the stable ID returned by the request. The operator decides through the
+existing approval interface. The request cannot choose another agent, change
+approval requirements or supply host commands. Network and service policy
+remain authoritative. Preview access material is returned only to the operator.
 
 ## Model
 

@@ -178,12 +178,18 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                     row["status"].as_u64().unwrap(),
                     "{name}"
                 );
-                // The pinned Python oracle predates native shared approvals.
-                // Adjust only that historical 404 inventory for the current
-                // Agent API; retain every other body, type and ordering check.
+                // The pinned Python receipt predates native shared approvals
+                // and typed operator actions. Extend its route inventory.
                 let expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
                     "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                );
+                let expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
+                // #1150 added a nullable connection record after the pinned
+                // Python receipt. Its absent input must still produce null.
+                let expected = expected.replace(
+                    "\"reason\": null,",
+                    "\"reason\": null, \"connection_json\": null,",
                 );
                 assert_eq!(actual.render_json(false).unwrap(), expected, "{name}");
             }
