@@ -12,7 +12,9 @@ use tokio::{
 use super::{PolicyRequest, decide, publish_credential_trace};
 use crate::{
     Config, ConnectionIdentity, Proxy, Runtime,
-    credential_guard::{CredentialGuard, Options as CredentialOptions, Pdp as CredentialPdp},
+    credential_guard::{
+        CredentialGuard, Options as CredentialOptions, Outcome, OutcomeKind, Pdp as CredentialPdp,
+    },
     network_guard::Identity,
     policy::{Format, Policy},
     trace::{Settings, TraceStore},
@@ -230,7 +232,7 @@ fn append_guard_trace(
     identity: Identity<'_>,
     prior_response: bool,
     block: bool,
-) -> Value {
+) -> (Outcome, Option<Value>) {
     let agent_id = match identity {
         Identity::Resolved(agent) => agent.to_owned(),
         _ => "unknown".to_owned(),
@@ -273,10 +275,10 @@ fn append_guard_trace(
         )
         .unwrap();
     publish_credential_trace(hook.as_ref(), &outcome.trace);
-    store
+    let report = store
         .get(request_id, Some(&identity_for_trace.agent_id), 1000.)
-        .unwrap()
-        .unwrap()
+        .unwrap();
+    (outcome, report)
 }
 
 #[test]
@@ -292,12 +294,18 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         false,
         true,
-    );
+    )
+    .1
+    .unwrap();
+    assert_eq!(allowed["agent_id"], "alice");
     assert_eq!(allowed["steps"].as_array().unwrap().len(), 1);
     assert_eq!(allowed["steps"][0]["state"], "evaluated");
     assert_eq!(allowed["steps"][0]["outcome"], "detected");
     assert_eq!(allowed["steps"][0]["details"]["detection_count"], 1);
     assert!(allowed["steps"][0]["duration_us"].as_u64().is_some());
+    for reader in [None, Some("bob"), Some("unknown")] {
+        assert!(store.get("trace-allowed", reader, 1000.).unwrap().is_none());
+    }
 
     let warned = append_guard_trace(
         &store,
@@ -307,7 +315,9 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         false,
         false,
-    );
+    )
+    .1
+    .unwrap();
     assert_eq!(
         warned["steps"]
             .as_array()
@@ -329,7 +339,9 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         false,
         true,
-    );
+    )
+    .1
+    .unwrap();
     assert_eq!(bypassed["steps"][0]["state"], "bypassed");
     assert_eq!(bypassed["steps"][0]["reason"], "policy_disabled");
     assert!(bypassed["steps"][0].get("duration_us").is_none());
@@ -342,12 +354,14 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         true,
         true,
-    );
+    )
+    .1
+    .unwrap();
     assert_eq!(prior["steps"][0]["state"], "bypassed");
     assert_eq!(prior["steps"][0]["reason"], "prior_response");
     assert!(prior["steps"][0].get("duration_us").is_none());
 
-    let conflict = append_guard_trace(
+    let (conflict, report) = append_guard_trace(
         &store,
         &guard,
         &trace_guard_policy("allow", true),
@@ -356,10 +370,22 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         false,
         true,
     );
-    assert_eq!(conflict["steps"][0]["state"], "evaluated");
-    assert_eq!(conflict["steps"][0]["outcome"], "blocked");
-    assert_eq!(conflict["steps"][0]["details"]["status"], 403);
-    assert!(conflict["steps"][0]["duration_us"].as_u64().is_some());
+    assert_eq!(conflict.kind, OutcomeKind::Blocked);
+    assert_eq!(conflict.response.as_ref().unwrap().status, 403);
+    assert_eq!(conflict.metadata["block_reason"], "agent_identity_conflict");
+    assert_eq!(conflict.trace.len(), 1);
+    assert_eq!(conflict.trace[0].state, "evaluated");
+    assert_eq!(conflict.trace[0].outcome, Some("blocked"));
+    assert_eq!(conflict.trace[0].status, Some(403));
+    assert!(report.is_none());
+    for reader in [None, Some("alice"), Some("unknown")] {
+        assert!(
+            store
+                .get("trace-conflict", reader, 1000.)
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[test]
