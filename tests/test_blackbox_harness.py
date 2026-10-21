@@ -39,6 +39,70 @@ from tests.proxy_contracts import harness as proxy_harness
 from tests.proxy_contracts.websocket_peer import read_head
 
 
+@pytest.mark.parametrize("outcome", ["native", "http403", "http428", "unrelated", "timeout", "origin", "active_grant", "wrong_approval", "http200", "native_with_http"])
+def test_stale_launch_context_refusal_requires_paired_effects_and_restores_context(tmp_path, monkeypatch, outcome):
+    context = tmp_path / "host-launch-context.json"
+    original = b'{"generation":"current-run","agent_id":"owned-worker"}\n'
+    context.write_bytes(original)
+    hits = [(49123, "/earlier-request")]
+    reads = []
+    command = [sys.executable, "-c", "import sys; sys.stderr.write('safeyolo: provider sandbox or guest port is unavailable\\n'); sys.exit(1)"]
+    run_command = subprocess.run
+
+    def attempt(arguments, **kwargs):
+        assert arguments == command
+        assert json.loads(context.read_text())["generation"] == "old-run"
+        assert kwargs == {"capture_output": True, "text": True, "timeout": 60}
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(arguments, 60)
+        if outcome.startswith("http"):
+            return subprocess.CompletedProcess(arguments, 0, json.dumps({"status": int(outcome[4:])}), "")
+        if outcome == "unrelated":
+            return subprocess.CompletedProcess(arguments, 1, "", "unrelated transport failure")
+        if outcome == "origin":
+            hits.append((49123, "/forbidden-request"))
+        result = run_command(arguments, **kwargs)
+        if outcome == "native_with_http":
+            result.stdout = json.dumps({"status": 428})
+        return result
+
+    def read_approval(identifier):
+        reads.append(identifier)
+        return {"approval_id": "other-approval" if outcome == "wrong_approval" else identifier,
+                "grant_active": outcome == "active_grant"}
+
+    monkeypatch.setattr(installed_shared_approvals.subprocess, "run", attempt)
+    if outcome in {"native", "http403", "http428"}:
+        result = installed_shared_approvals.check_stale_launch_context(
+            context, "old-run", "current-run", "old-approval", command, hits, read_approval)
+        assert result["outcome"] == ("native_refusal" if outcome == "native" else "http_refusal")
+        assert result["returncode"] == (1 if outcome == "native" else 0)
+        assert result["http"] == (None if outcome == "native" else {"status": int(outcome[4:])})
+        assert result["stdout"] == ("" if outcome == "native" else json.dumps(result["http"]))
+        assert result["stderr"] == ("safeyolo: provider sandbox or guest port is unavailable\n" if outcome == "native" else "")
+        assert result["approval_id"] == result["grant"]["approval_id"] == "old-approval"
+        assert result["grant"]["grant_active"] is False
+        assert result["original_run_id"] == "old-run" and result["current_run_id"] == "current-run"
+        assert result["origin_hits_before"] == result["origin_hits_after"] == [(49123, "/earlier-request")]
+        assert result["origin_count_before"] == result["origin_count_after"] == 1
+        assert reads == ["old-approval"]
+    else:
+        diagnosis = {"unrelated": "unexpected stale-context transport failure", "timeout": "timed out",
+                     "origin": "stale context reached origin", "http200": "stale context did not refuse HTTP",
+                     "native_with_http": "native refusal returned an HTTP result",
+                     "active_grant": "old approval grant remains active",
+                     "wrong_approval": "stale-context read returned a different approval"}[outcome]
+        with pytest.raises(subprocess.TimeoutExpired if outcome == "timeout" else AssertionError, match=diagnosis):
+            installed_shared_approvals.check_stale_launch_context(
+                context, "old-run", "current-run", "old-approval", command, hits, read_approval)
+        assert reads == (["old-approval"] if outcome in {"active_grant", "wrong_approval"} else [])
+    assert context.read_bytes() == original
+    # Ordinary guest checks must still reject this same nonzero native exit.
+    monkeypatch.setattr(installed_shared_approvals.subprocess, "run", run_command)
+    with pytest.raises(AssertionError, match="command failed"):
+        installed_shared_approvals.checked(command)
+
+
 @pytest.fixture
 def native_binary(tmp_path):
     binary = tmp_path / "safeyolo-proxy"

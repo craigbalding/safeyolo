@@ -110,6 +110,41 @@ def checked(command: list[str], *, timeout: int = 60) -> str:
     return result.stdout.strip()
 
 
+def check_stale_launch_context(context_path: Path, original_run: str, current_run: str, approval_id: str,
+                               command: list[str], hits: list, read_approval: Callable[[str], dict]) -> dict:
+    """Observe the stale native attempt and paired effects, then restore context."""
+    current_context = context_path.read_bytes()
+    old_context = json.loads(current_context)
+    old_context["generation"] = original_run
+    stale_context = {"approval_id": approval_id,
+        "original_run_id": original_run, "current_run_id": current_run,
+        "origin_count_before": len(hits), "origin_hits_before": list(hits)}
+    try:
+        context_path.write_text(json.dumps(old_context))
+        attempt = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        stale_context.update(returncode=attempt.returncode, stdout=attempt.stdout, stderr=attempt.stderr)
+        if attempt.returncode == 0:
+            reply = json.loads(attempt.stdout)
+            assert reply["status"] in (403, 428), "stale context did not refuse HTTP"
+            stale_context.update(outcome="http_refusal", http=reply)
+        else:
+            # A new native shell cannot select the current sandbox
+            # with an old generation. No guest HTTP result exists.
+            assert not attempt.stdout.strip(), "native refusal returned an HTTP result"
+            assert attempt.stderr.strip() == "safeyolo: provider sandbox or guest port is unavailable", (
+                "unexpected stale-context transport failure: " + attempt.stderr[-1000:])
+            stale_context.update(outcome="native_refusal", http=None)
+        stale_context["origin_hits_after"] = list(hits)
+        stale_context["origin_count_after"] = len(hits)
+        assert stale_context["origin_hits_after"] == stale_context["origin_hits_before"], "stale context reached origin"
+        stale_context["grant"] = read_approval(approval_id)
+        assert stale_context["grant"]["approval_id"] == approval_id, "stale-context read returned a different approval"
+        assert stale_context["grant"]["grant_active"] is False, "old approval grant remains active"
+    finally:
+        context_path.write_bytes(current_context)
+    return stale_context
+
+
 def guest_coord(transport_cli: Path, name: str, operation: str, arguments: dict) -> dict:
     """Call the native Coord executable supplied by ordinary guest staging."""
     command = "printf %s " + shlex.quote(json.dumps(arguments)) + " | " + shlex.join(
@@ -482,41 +517,47 @@ def run(args: argparse.Namespace) -> None:
                 assert guest(args.worker, "GET", url)["status"] in statuses
                 assert len(hits) == before
 
-            # Refuse the final canonical update after the policy transaction.
-            # A killed proxy must recover the committed receipt, rather than
-            # issuing or replaying the operation again on restart.
-            database = root / "data/approvals.sqlite3"
-            with sqlite3.connect(database) as connection:
-                connection.execute("CREATE TRIGGER sy769_missing_terminal BEFORE UPDATE ON approvals "
-                    "WHEN json_extract(NEW.record,'$.status')='approved' "
-                    "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END")
-            try:
-                first = approve_current(expected_status=409)
-                assert not hits, "approval replayed the held operation"
-                current_proxy = _runtime_observation(root, native_config, binary, config_path=config_path,
-                    working_directory=root, require_running=True, require_authenticated_identity=True)
-                assert current_proxy["pid"] == pid and _process_start_token(pid) == start_token
-                os.kill(pid, signal.SIGKILL)
-                deadline = time.monotonic() + 10
-                while _pid_alive(pid) and _process_start_token(pid) == start_token:
-                    assert time.monotonic() < deadline, "owned crash target did not exit"
-                    time.sleep(0.05)
-            finally:
+            remaining = getattr(args, "delegated_lifecycle_remainder", False)
+            if remaining:
+                # The prior crash witness is retained. One ordinary grant and
+                # worker turnover supply this invocation's inactive old grant.
+                first = approve_current()
+            else:
+                # Refuse the final canonical update after the policy transaction.
+                # A killed proxy must recover the committed receipt, rather than
+                # issuing or replaying the operation again on restart.
+                database = root / "data/approvals.sqlite3"
                 with sqlite3.connect(database) as connection:
-                    connection.execute("DROP TRIGGER sy769_missing_terminal")
+                    connection.execute("CREATE TRIGGER sy769_missing_terminal BEFORE UPDATE ON approvals "
+                        "WHEN json_extract(NEW.record,'$.status')='approved' "
+                        "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END")
+                try:
+                    first = approve_current(expected_status=409)
+                    assert not hits, "approval replayed the held operation"
+                    current_proxy = _runtime_observation(root, native_config, binary, config_path=config_path,
+                        working_directory=root, require_running=True, require_authenticated_identity=True)
+                    assert current_proxy["pid"] == pid and _process_start_token(pid) == start_token
+                    os.kill(pid, signal.SIGKILL)
+                    deadline = time.monotonic() + 10
+                    while _pid_alive(pid) and _process_start_token(pid) == start_token:
+                        assert time.monotonic() < deadline, "owned crash target did not exit"
+                        time.sleep(0.05)
+                finally:
+                    with sqlite3.connect(database) as connection:
+                        connection.execute("DROP TRIGGER sy769_missing_terminal")
+                source_before_restart = (root / "policy.toml").read_bytes()
+                checked([str(cli), "--root", str(root), "start"])
+                runtime = _runtime_observation(root, native_config, binary, config_path=config_path,
+                    working_directory=root, require_running=True, require_authenticated_identity=True)
+                ready = runtime["readiness"]
+                pid, start_token = runtime["pid"], runtime["receipt"]["start_token"]
+                assert json.loads(checked(coord_command))["process"] == coord_before["process"], "proxy restart changed the existing isolated Coord"
+                assert (root / "policy.toml").read_bytes() == source_before_restart
+                recovered = native("approvals", "show", first["approval_id"])
+                assert recovered["result"] == first["result"] and recovered["grant_active"] is True
+                assert not hits, "restart replayed the held operation"
+                permitted()
             original_run = first["result"]["issued_access"]["beneficiary"]["run_id"]
-            source_before_restart = (root / "policy.toml").read_bytes()
-            checked([str(cli), "--root", str(root), "start"])
-            runtime = _runtime_observation(root, native_config, binary, config_path=config_path,
-                working_directory=root, require_running=True, require_authenticated_identity=True)
-            ready = runtime["readiness"]
-            pid, start_token = runtime["pid"], runtime["receipt"]["start_token"]
-            assert json.loads(checked(coord_command))["process"] == coord_before["process"], "proxy restart changed the existing isolated Coord"
-            assert (root / "policy.toml").read_bytes() == source_before_restart
-            recovered = native("approvals", "show", first["approval_id"])
-            assert recovered["result"] == first["result"] and recovered["grant_active"] is True
-            assert not hits, "restart replayed the held operation"
-            permitted()
             stop_guest(args.transport_cli, root, args.worker)
             assert native("approvals", "show", first["approval_id"])["grant_active"] is False
             assert guest(args.helper, "GET", api + "/approvals/" + first["approval_id"])["status"] == 404
@@ -527,15 +568,10 @@ def run(args: argparse.Namespace) -> None:
             blocked_without_effect()
             # An old launch artifact cannot name a new backend incarnation.
             context_path = worker_dir / "config-share/host-launch-context.json"
-            current_context = context_path.read_bytes()
-            old_context = json.loads(current_context)
-            old_context["generation"] = original_run
-            try:
-                context_path.write_text(json.dumps(old_context))
-                blocked_without_effect((403, 428))
-                assert native("approvals", "show", first["approval_id"])["grant_active"] is False
-            finally:
-                context_path.write_bytes(current_context)
+            command = shlex.join(["python3", "-c", GUEST_REQUEST, json.dumps(["GET", url, None])])
+            stale_context = check_stale_launch_context(context_path, original_run, current["run_id"], first["approval_id"],
+                guest_command_args(args.transport_cli, args.worker, command), hits,
+                lambda identifier: native("approvals", "show", identifier))
             # A configured delegation survives a real reviewer restart.
             helper_before = json.loads((root / "agents" / args.helper / "runtime.json").read_text())
             stop_guest(args.transport_cli, root, args.helper)
@@ -545,6 +581,8 @@ def run(args: argparse.Namespace) -> None:
             second = approve_current()
             permitted()
             assert second["result"]["issued_access"]["beneficiary"]["run_id"] == current["run_id"]
+            reviewer_restart = {"old_run_id": helper_before["run_id"], "current_run_id": helper_after["run_id"],
+                "approval": second, "origin_hits": list(hits)}
             stop_guest(args.transport_cli, root, args.worker)
             before_replacement = tomlkit.parse((root / "policy.toml").read_text())
             old_worker = before_replacement["agents"].pop(args.worker)
@@ -561,7 +599,8 @@ def run(args: argparse.Namespace) -> None:
             apply_fixture_policy(operator, tomlkit.dumps(replacement))
             start_guest(args.transport_cli, root, args.worker)
             blocked_without_effect()
-            assert native("approvals", "show", second["approval_id"])["grant_active"] is False
+            replacement_grant = native("approvals", "show", second["approval_id"])
+            assert replacement_grant["grant_active"] is False
             unchanged = (root / "policy.toml").read_bytes()
             assert operator("POST", path + "/apply", delegation)["status"] == 409
             assert (root / "policy.toml").read_bytes() == unchanged
@@ -571,9 +610,13 @@ def run(args: argparse.Namespace) -> None:
                 "original_run_id": original_run, "restarted_run_id": current["run_id"],
                 "reviewer_restarted_run_id": helper_after["run_id"], "guest_native_versions": guest_versions,
                 "coord_ports": {key: coord_before["process"][key] for key in ("client_port", "monitor_port")},
-                "origin_hits": hits, "proxy_crash_kept_exact_receipt": True,
+                "origin_hits": hits, "lifecycle_selection": "remainder" if remaining else "full",
+                "stale_context": stale_context, "reviewer_restart": reviewer_restart,
+                "replacement_grant": replacement_grant,
                 "stale_context_refused": True, "same_name_replacement_refused": True,
                 "limitations": "This real guest lifecycle probe does not run a model or a Command Centre client."}
+            if not remaining:
+                result["proxy_crash_kept_exact_receipt"] = True
             return
         if delegated_mode:
             # This mode reuses the same owned guests, model launcher, origins,
@@ -1008,6 +1051,7 @@ def main() -> None:
     parser.add_argument("--real-helper", action="store_true", help="With --interfaces, run one already authenticated Codex Helper instead of deterministic preparation")
     parser.add_argument("--delegated", action="store_true", help="With --interfaces --real-helper, exercise three delegated decisions without a human decision; requires the fixture service and Helper's existing agent room")
     parser.add_argument("--delegated-lifecycle", action="store_true", help="Exercise delegated network authority across real guest and proxy restarts, stale launch context and same-name replacement; no model session")
+    parser.add_argument("--delegated-lifecycle-remainder", action="store_true", help="With --delegated-lifecycle, use one ordinary grant and worker turnover, then check only stale context, reviewer restart and same-name replacement; skip the proxy crash")
     parser.add_argument("--model-unavailable", action="store_true", help="With --interfaces, launch Codex against an owned HTTP 503 model endpoint, then exercise direct operator controls")
     parser.add_argument("--wait-for-operator", action="store_true", help="Wait for a human CLI/Commander decision; always enabled by --real-helper")
     parser.add_argument("--operator-timeout", type=float, default=600, help="Seconds to wait for the human decision (default: 600)")
@@ -1021,6 +1065,8 @@ def main() -> None:
         parser.error("select one model mode")
     if args.delegated and not (args.interfaces and args.real_helper):
         parser.error("--delegated requires --interfaces --real-helper")
+    if args.delegated_lifecycle_remainder and not args.delegated_lifecycle:
+        parser.error("--delegated-lifecycle-remainder requires --delegated-lifecycle")
     if args.delegated_lifecycle and (args.delegated or args.real_helper or args.model_unavailable or args.wait_for_operator or args.shared_room):
         parser.error("--delegated-lifecycle runs separately from model and operator observation modes")
     if (args.wait_for_operator or args.shared_room) and not args.interfaces:

@@ -271,7 +271,28 @@ preserves the same permission and expiry without replaying the held request.
 It checks that worker
 stop/start, stale launch context and same-name replacement cannot inherit that
 permission. It also checks that a configured reviewer can decide after its own
-restart. It restores the original policy and stops both owned guests, proxy
+restart. At the stale-context step, a new native shell may refuse to select the
+current sandbox before HTTP runs. The runner accepts only the specific
+unavailable-sandbox diagnosis or an HTTP 403/428. In either case, the origin must
+remain unchanged and the same old approval must show an inactive grant. The
+result records the actual outcome, native exit and output, approval and run
+IDs, origin counts and grant readback. The runner restores the launch context
+in `finally`. A later canonical read, decision and origin retry check the restored
+route. Unrelated transport failures and timeouts still fail.
+
+If a prior run already reached the proxy crash and worker restart but stopped
+at the stale-context observer, retain that result. To run only the remaining
+checks, use the same prerequisites and command with
+`--delegated-lifecycle --delegated-lifecycle-remainder`. The remaining checks
+create one ordinary grant and turn over the worker to establish an inactive old
+grant, then check stale context, reviewer restart and same-name replacement.
+They do not repeat the proxy crash or run a model. The result identifies this
+selection and makes no crash-recovery claim for that invocation. Keep the driver
+source commit separate from `--commit`, which checks the native binary commit.
+Retained results keep their actual source and platform attribution; this
+continuation does not supply missing operands from an earlier run.
+
+Both selections restore the original policy and stop both owned guests, proxy
 and origins. Keep the instance's isolated Coord configuration when restarting;
 do not use another instance's default ports. This mode does not establish a
 model exchange or a Command Centre reconnect result.
