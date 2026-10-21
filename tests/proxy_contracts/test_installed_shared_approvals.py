@@ -103,7 +103,7 @@ def test_helper_consumer_refuses_unowned_runtime_before_guest_effects(helper_ins
 
 
 @pytest.mark.parametrize("control", ["clean", "different_launch", "wrong_guest_profile", "guest_cleanup_failure", "delegated", "delegated_lifecycle",
-    "lifecycle_remainder"])
+    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"])
 def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(helper_instance, monkeypatch, capsys, control, request):
     instance, args = helper_instance
     root = instance.root
@@ -121,14 +121,19 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
              "runtime_state": "running", "agent_state": "stopped", "exec": True}
     backend = None
     backends = []
-    lifecycle = control in {"delegated_lifecycle", "lifecycle_remainder"}
+    lifecycle = control in {"delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only"}
     remaining = control == "lifecycle_remainder"
-    if control == "delegated" or lifecycle:
+    crash_only = control == "lifecycle_crash_only"
+    crashing = lifecycle and not remaining
+    clients = control == "delegated_clients"
+    if control == "delegated" or lifecycle or clients:
         if sys.platform != "linux":
             pytest.skip("controlled run backend uses the Linux birth/argv boundary")
         args.delegated = control == "delegated"
         args.delegated_lifecycle = lifecycle
         args.delegated_lifecycle_remainder = remaining
+        args.delegated_lifecycle_crash_only = crash_only
+        args.delegated_clients = clients
         args.real_helper, args.model_unavailable = args.delegated, False
         generation = "0123456789abcdef0123456789abcdef"
         backend = subprocess.Popen(["runsc-sandbox", "-c", "import time; time.sleep(300)", "boot",
@@ -154,7 +159,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
         started = instance.cli("coord", "start", *(["--binary", nats] if nats else []))
         assert started.returncode == 0, started.stderr
-        if control == "delegated":
+        if control == "delegated" or clients:
             for operands in (("coord", "room", "create", "helper-agent"),
                              ("coord", "grant", "helper-agent", args.helper)):
                 assert instance.cli(*operands).returncode == 0
@@ -202,7 +207,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                            else [str(staged), *operands[1:]])
         if arguments[3:] == ["agent", "status", args.helper]:
             return json.dumps(state)
-        if control == "delegated_lifecycle" and arguments[3:] == ["start"]:
+        if crashing and arguments[3:] == ["start"]:
             # Pytest owns and reaps the crashed child; the installed host's
             # daemon is reaped by its ordinary parent.
             assert instance.process.wait(timeout=5) == -9
@@ -210,10 +215,10 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         if arguments[3:] == ["stop"]:
             # Pytest owns the child and must reap it before the consumer
             # checks for a surviving proxy.
-            assert instance.process.wait(timeout=5) == (-9 if control == "delegated_lifecycle" else 0)
+            assert instance.process.wait(timeout=5) == (-9 if crashing else 0)
             # A stopped native receipt and a bound socket without a listener
             # are retained inert files, not surviving owned processes.
-            if control != "delegated_lifecycle":
+            if not crashing:
                 inert.bind(instance.paths[args.worker])
         return result
 
@@ -320,9 +325,18 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
     monkeypatch.setattr(approvals, "runsc_identity", lambda _root, name, listener, **kwargs: {"controlled_guest": name})
     monkeypatch.setattr(approvals, "stop_guest", stop_guest)
     monkeypatch.setattr(approvals, "start_guest", start_guest)
+    if clients:
+        def operator_choice(read, action, _timeout):
+            pending = read()
+            assert pending["status"] == "pending" and pending["action"] == action
+            option = "delegated_once" if action["kind"] == "gateway_route" else "run"
+            instance.admin("POST", "/admin/approvals/" + pending["approval_id"],
+                           {"decision": "approve", "option": option})
+            return read()
+        monkeypatch.setattr(approvals, "wait_for_operator", operator_choice)
     original = instance.policy.read_bytes()
     try:
-        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder"}
+        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"}
         if successful:
             approvals.run(args)
         else:
@@ -335,9 +349,24 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         assert bool(final) == successful
         if final:
             result = final[0]
-            if control == "delegated":
+            if control == "delegated" or clients:
                 assert [exchange["type"] for exchange in result["exchanges"]] == ["network", "credential", "gateway"]
-                assert result["reviewer_launch_id"] == "controlled-reviewer"
+                if clients:
+                    assert [exchange["decision"]["option"] for exchange in result["exchanges"]] == ["run", "run", "delegated_once"]
+                    assert result["coord_unavailable"]["state"] == "stopped"
+                    assert result["exchanges"][-1]["consumed_once_retry"]["status"] == 428
+                else:
+                    assert result["reviewer_launch_id"] == "controlled-reviewer"
+            elif crash_only:
+                assert result["lifecycle_selection"] == "crash_only"
+                recovery = result["crash_recovery"]
+                before, after = recovery["before_crash"], recovery["after_restart"]
+                assert before["approval"]["approval_id"] == after["approval"]["approval_id"]
+                assert before["policy_receipt"] == after["policy_receipt"]
+                assert before["network_grant"] == after["network_grant"]
+                assert before["origin_hits"] == after["origin_hits"] == []
+                assert len(recovery["explicit_retry"]["origin_hits"]) == 1
+                assert "replacement_agent_id" not in result and "stale_context" not in result
             elif lifecycle:
                 assert result["original_agent_id"] != result["replacement_agent_id"]
                 assert result["original_run_id"] != result["restarted_run_id"]
@@ -357,7 +386,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 assert next(row["observation"] for row in output if row.get("phase") == "reviewer_restart") == result["reviewer_restart"]
                 checks = next(row for row in output if row.get("phase") == "lifecycle_checks")
                 assert checks["observation"] == {key: value for key, value in result.items() if key != "owned_guests_proxy_and_origins_stopped"}
-                assert all(row["phase_passed"] is True for row in output if "phase" in row)
+                assert all(row["phase_passed"] is True for row in output if "phase_passed" in row)
                 setup = [row["approval"] for row in output if row.get("phase") == "lifecycle_setup"]
                 assert len(setup) == int(remaining)
                 if remaining:
@@ -381,12 +410,12 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 assert len(result["origin_hits"]) == 2 and result["origin_hits"][0] == result["origin_hits"][1]
                 assert result["scope_controls"] == "Helper and second port refused"
         assert stopped == ([args.worker, args.helper, args.worker, args.worker, args.helper]
-                           if lifecycle else [args.worker, args.helper])
-        assert instance.process.wait(timeout=5) == (-9 if control == "delegated_lifecycle" else 0)
+                           if lifecycle and not crash_only else [args.worker, args.helper])
+        assert instance.process.wait(timeout=5) == (-9 if crashing else 0)
         assert (root / "data/proxy-process.json").is_file()
         assert not (root / "data/selected-ready.json").exists()
         assert not smoke._socket_accepting(Path(instance.paths[args.worker]))
-        if control != "delegated_lifecycle":
+        if not crashing:
             assert Path(instance.paths[args.worker]).is_socket()
         assert not list(share.glob("native-operator-821-*"))
         assert instance.policy.read_bytes() == original

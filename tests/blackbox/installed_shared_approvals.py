@@ -318,7 +318,8 @@ def model_failure_diagnosis(output: str, marker: str) -> tuple[str, str]:
 def run(args: argparse.Namespace) -> None:
     root = args.config_dir.resolve(strict=True)
     _require_disposable(root)
-    delegated_mode = getattr(args, "delegated", False)
+    delegated_clients = getattr(args, "delegated_clients", False)
+    delegated_mode = getattr(args, "delegated", False) or delegated_clients
     names = (args.worker, args.helper)
     assert len(set(names)) == 2, "Worker and Helper must be distinct guests"
     listeners = {entry["agent_id"]: entry for entry in _agent_listeners(root)}
@@ -417,14 +418,14 @@ def run(args: argparse.Namespace) -> None:
         helper_state = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
         assert helper_state["agent_state"] in {"stopped", "exited", "failed"}, "preserve Helper's existing coding session"
     try:
-        if getattr(args, "delegated_lifecycle", False):
+        if getattr(args, "delegated_lifecycle", False) or delegated_clients:
             coord_command = [str(cli), "--root", str(root), "coord", "status"]
             coord_before = json.loads(checked(coord_command))
             assert coord_before["state"] == "running", "start this disposable instance's isolated Coord before the lifecycle probe"
             for name in names:
                 guest_versions[name] = checked(guest_command_args(args.transport_cli, name, "/safeyolo/safeyolo-guest --version"))
                 assert expected in guest_versions[name], "guest executable is not the selected source"
-        if args.interfaces:
+        if args.interfaces and not delegated_clients:
             # Use the fixture's existing read-only config-share mount. The new
             # file belongs to this probe and cannot be changed by Helper.
             share = root / "agents" / args.helper / "config-share"
@@ -523,6 +524,12 @@ def run(args: argparse.Namespace) -> None:
                 assert len(hits) == before
 
             remaining = getattr(args, "delegated_lifecycle_remainder", False)
+            crash_only = getattr(args, "delegated_lifecycle_crash_only", False)
+            lifecycle_result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
+                "guests": guests, "guest_native_versions": guest_versions,
+                "coord_ports": {key: coord_before["process"][key] for key in ("client_port", "monitor_port")},
+                "limitations": "This real guest lifecycle probe does not run a model or a Command Centre client."}
+            crash_recovery = None
             if remaining:
                 # The prior crash witness is retained. One ordinary grant and
                 # worker turnover supply this invocation's inactive old grant.
@@ -539,6 +546,22 @@ def run(args: argparse.Namespace) -> None:
                         "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END")
                 try:
                     first = approve_current(expected_status=409)
+
+                    def crash_snapshot(canonical: dict) -> dict:
+                        saved = tomllib.loads((root / "policy.toml").read_text())
+                        identifier = first["approval_id"]
+                        receipt = saved.get("approval_results", {}).get(identifier)
+                        grant = saved["agents"][args.worker].get("network_grants", {}).get(identifier)
+                        return {"approval": canonical,
+                            "policy_receipt": json.loads(receipt) if isinstance(receipt, str) else receipt,
+                            "network_grant": json.loads(grant) if isinstance(grant, str) else grant,
+                            "origin_hits": list(hits), "origin_requests": list(received)}
+
+                    crash_recovery = {"before_crash": crash_snapshot(first),
+                        "proxy_before": {"pid": pid, "start_token": start_token}}
+                    print(json.dumps({"phase": "proxy_crash_before", "observation": crash_recovery}), flush=True)
+                    assert crash_recovery["before_crash"]["policy_receipt"]["result"] == first["result"]
+                    assert crash_recovery["before_crash"]["network_grant"] == first["result"]["issued_access"]
                     assert not hits, "approval replayed the held operation"
                     current_proxy = _runtime_observation(root, native_config, binary, config_path=config_path,
                         working_directory=root, require_running=True, require_authenticated_identity=True)
@@ -558,11 +581,27 @@ def run(args: argparse.Namespace) -> None:
                 ready = runtime["readiness"]
                 pid, start_token = runtime["pid"], runtime["receipt"]["start_token"]
                 assert json.loads(checked(coord_command))["process"] == coord_before["process"], "proxy restart changed the existing isolated Coord"
-                assert (root / "policy.toml").read_bytes() == source_before_restart
                 recovered = native("approvals", "show", first["approval_id"])
+                crash_recovery["after_restart"] = crash_snapshot(recovered)
+                crash_recovery["proxy_after"] = {"pid": pid, "start_token": start_token}
+                print(json.dumps({"phase": "proxy_crash_recovered", "observation": crash_recovery}), flush=True)
+                assert (root / "policy.toml").read_bytes() == source_before_restart
+                assert recovered["approval_id"] == first["approval_id"]
                 assert recovered["result"] == first["result"] and recovered["grant_active"] is True
+                for field in ("policy_receipt", "network_grant", "origin_hits", "origin_requests"):
+                    assert crash_recovery["after_restart"][field] == crash_recovery["before_crash"][field], field
                 assert not hits, "restart replayed the held operation"
-                permitted()
+                retry = guest(args.worker, "GET", url)
+                crash_recovery["explicit_retry"] = {"method": "GET", "url": url, "response": retry,
+                    "origin_hits": list(hits), "origin_requests": list(received)}
+                print(json.dumps({"phase": "proxy_crash_retry", "observation": crash_recovery}), flush=True)
+                assert retry["status"] == 200 and retry["body"] == marker
+                assert hits == [(port, "/" + marker)] and received[0]["method"] == "GET"
+                if crash_only:
+                    result = {**lifecycle_result, "lifecycle_selection": "crash_only",
+                        "crash_recovery": crash_recovery, "origin_hits": list(hits)}
+                    print(json.dumps({"phase": "lifecycle_checks", "phase_passed": True, "observation": result}), flush=True)
+                    return
             original_run = first["result"]["issued_access"]["beneficiary"]["run_id"]
             stop_guest(args.transport_cli, root, args.worker)
             assert native("approvals", "show", first["approval_id"])["grant_active"] is False
@@ -611,18 +650,16 @@ def run(args: argparse.Namespace) -> None:
             unchanged = (root / "policy.toml").read_bytes()
             assert operator("POST", path + "/apply", delegation)["status"] == 409
             assert (root / "policy.toml").read_bytes() == unchanged
-            result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
-                "guests": guests, "approval_ids": [first["approval_id"], second["approval_id"]],
+            result = {**lifecycle_result, "approval_ids": [first["approval_id"], second["approval_id"]],
                 "original_agent_id": ids[args.worker], "replacement_agent_id": replacement_id,
                 "original_run_id": original_run, "restarted_run_id": current["run_id"],
-                "reviewer_restarted_run_id": helper_after["run_id"], "guest_native_versions": guest_versions,
-                "coord_ports": {key: coord_before["process"][key] for key in ("client_port", "monitor_port")},
+                "reviewer_restarted_run_id": helper_after["run_id"],
                 "origin_hits": hits, "lifecycle_selection": "remainder" if remaining else "full",
                 "stale_context": stale_context, "reviewer_restart": reviewer_restart,
                 "replacement_grant": replacement_grant,
-                "stale_context_refused": True, "same_name_replacement_refused": True,
-                "limitations": "This real guest lifecycle probe does not run a model or a Command Centre client."}
+                "stale_context_refused": True, "same_name_replacement_refused": True}
             if not remaining:
+                result["crash_recovery"] = crash_recovery
                 result["proxy_crash_kept_exact_receipt"] = True
             # Preserve completed checks before owned cleanup can fail.
             print(json.dumps({"phase": "lifecycle_checks", "phase_passed": True, "observation": result}), flush=True)
@@ -658,8 +695,16 @@ def run(args: argparse.Namespace) -> None:
             apply_fixture_policy(operator, tomlkit.dumps(policy))
             api = "http://_safeyolo.proxy.internal"
             guest_coord(args.transport_cli, args.helper, "join_room", {"room_name": args.helper + "-agent"})
-            cursor = guest_coord(args.transport_cli, args.helper, "wait_for_attention",
-                {"since_sequence": 0, "timeout_seconds": 0})["next_cursor"]
+            if delegated_clients:
+                # Stop only this marked instance's owned Coord. Canonical
+                # reads and operator decisions must survive failed delivery.
+                checked([str(cli), "--root", str(root), "coord", "stop"])
+                coord_unavailable = json.loads(checked(coord_command))
+                assert coord_unavailable["state"] == "stopped"
+                cursor = None
+            else:
+                cursor = guest_coord(args.transport_cli, args.helper, "wait_for_attention",
+                    {"since_sequence": 0, "timeout_seconds": 0})["next_cursor"]
             proposals = []
 
             def configure_delegation(name: str, scope: dict) -> None:
@@ -703,21 +748,23 @@ def run(args: argparse.Namespace) -> None:
             secret = "sy769_" + uuid.uuid4().hex
             header = {"Authorization": "Bearer " + secret}
             with ThreadPoolExecutor(max_workers=1) as pool:
-                running = pool.submit(run_helper, command, events_path)
-                deadline = time.monotonic() + 60
-                while True:
-                    events = events_path.read_text() if events_path.exists() else ""
-                    assert len(events) <= 4 * 1024 * 1024, "reviewer output exceeds this focused probe"
-                    decoded = [json.loads(line) for line in events.splitlines(keepends=True) if line.endswith("\n")]
-                    if any(event.get("type") == "item.started"
-                           and event.get("item", {}).get("type") == "mcp_tool_call"
-                           and event["item"].get("tool") in {"wait_for_coord", "wait_for_attention"} for event in decoded):
-                        break
-                    if running.done():
-                        running.result()
-                        raise AssertionError("reviewer exited before waiting for attention")
-                    assert time.monotonic() < deadline, "reviewer did not enter the supported attention wait"
-                    time.sleep(0.05)
+                running = None
+                if not delegated_clients:
+                    running = pool.submit(run_helper, command, events_path)
+                    deadline = time.monotonic() + 60
+                    while True:
+                        events = events_path.read_text() if events_path.exists() else ""
+                        assert len(events) <= 4 * 1024 * 1024, "reviewer output exceeds this focused probe"
+                        decoded = [json.loads(line) for line in events.splitlines(keepends=True) if line.endswith("\n")]
+                        if any(event.get("type") == "item.started"
+                               and event.get("item", {}).get("type") == "mcp_tool_call"
+                               and event["item"].get("tool") in {"wait_for_coord", "wait_for_attention"} for event in decoded):
+                            break
+                        if running.done():
+                            running.result()
+                            raise AssertionError("reviewer exited before waiting for attention")
+                        assert time.monotonic() < deadline, "reviewer did not enter the supported attention wait"
+                        time.sleep(0.05)
 
                 for kind in ("network", "credential", "gateway"):
                     route = f"/delegated-write/{marker}" if kind == "gateway" else f"/{marker}?data=untrusted"
@@ -743,22 +790,49 @@ def run(args: argparse.Namespace) -> None:
                         # Retry while blocked to deliver the new delegation's
                         # reference; this attempt still cannot reach the origin.
                         assert guest(args.worker, method, url, headers=selected_headers)["status"] == 428
+                    client_observation = None
+                    if delegated_clients:
+                        canonical = native("approvals", "show", identifier, "--agent", args.worker)
+                        helper_read = guest(args.helper, "GET", api + "/approvals/" + identifier)
+                        helper_list = guest(args.helper, "GET", api + "/approvals")
+                        option = "delegated_once" if kind == "gateway" else "run"
+                        client_observation = {"type": kind, "expected_option": option,
+                            "pending": canonical, "helper_read": helper_read, "helper_list": helper_list,
+                            "coord": coord_unavailable, "origin_hits_before": list(hits)}
+                        print(json.dumps({"phase": "client_pending", "observation": client_observation}), flush=True)
+                        assert canonical["status"] == "pending" and len(hits) == before
+                        assert any(value == "unavailable or unknown; canonical list and operator controls remain available"
+                                   for value in canonical["reviewer_delivery"].values()), "delegated attention did not fail"
+                        assert helper_read["status"] == helper_list["status"] == 200
+                        assert json.loads(helper_read["body"])["approval_id"] == identifier
+                        assert any(row["approval_id"] == identifier for row in json.loads(helper_list["body"])["approvals"])
+                        baseline = tomllib.loads((root / "policy.toml").read_text()).get("credential")
+                        canonical = wait_for_operator(lambda: native("approvals", "show", identifier, "--agent", args.worker),
+                            canonical["action"], args.operator_timeout)
+                        client_observation["decision"] = canonical
+                        print(json.dumps({"phase": "client_decision", "observation": client_observation}), flush=True)
+                        assert canonical["option"] == option, "operator selected a different lifetime"
+                        assert canonical["result"]["issued_access"]["beneficiary"]["agent_id"] == ids[args.worker]
+                        assert tomllib.loads((root / "policy.toml").read_text()).get("credential") == baseline, (
+                            "run decision changed shared baseline credentials")
                     deadline = time.monotonic() + 120
                     while True:
                         canonical = native("approvals", "show", identifier, "--agent", args.worker)
                         if canonical["status"] not in {"pending", "activation_unconfirmed"}:
                             break
-                        if running.done() and canonical["status"] == "pending":
+                        if running is not None and running.done() and canonical["status"] == "pending":
                             running.result()
                             raise AssertionError("reviewer ended with a pending approval")
                         assert time.monotonic() < deadline, f"{kind}: canonical decision was not observed"
                         time.sleep(0.05)
                     assert canonical["status"] == "approved", f"{kind}: reviewer did not approve"
-                    assert canonical["result"]["issued_access"]["reviewer"]["agent_id"] == ids[args.helper]
+                    if not delegated_clients:
+                        assert canonical["result"]["issued_access"]["reviewer"]["agent_id"] == ids[args.helper]
                     issued = canonical["result"]["issued_access"]
-                    assert guest(args.worker, "POST", api + f"/approvals/{identifier}/resolve", {
+                    self_decision = guest(args.worker, "POST", api + f"/approvals/{identifier}/resolve", {
                         "decision": "approve", "delegation": issued["delegation"], "option": issued["option"]},
-                        headers={"X-SafeYolo-Agent": args.helper})["status"] in {403, 409}
+                        headers={"X-SafeYolo-Agent": args.helper})
+                    assert self_decision["status"] in {403, 409}
                     if kind == "gateway":
                         # Existing policy publication rotates gateway tokens.
                         authorized = guest(args.worker, "GET", api + "/gateway/services")
@@ -770,14 +844,32 @@ def run(args: argparse.Namespace) -> None:
                     assert received[-1]["path"] == route
                     if kind == "credential":
                         assert received[-1]["authorization_sha256"] == hashlib.sha256(("Bearer " + secret).encode()).hexdigest()
-                    if kind == "gateway":
-                        assert guest(args.worker, method, url, headers=selected_headers)["status"] == 428
+                    once_retry = guest(args.worker, method, url, headers=selected_headers) if kind == "gateway" else None
                     forged = {**(selected_headers or {}), "X-SafeYolo-Agent": args.worker,
                               "X-SafeYolo-Agent-ID": ids[args.worker]}
-                    assert guest(args.helper, method, url, headers=forged)["status"] in {403, 428}
-                    assert guest(args.worker, "GET", f"http://127.0.0.2:{second_port}/{marker}")["status"] == 403
+                    helper_refusal = guest(args.helper, method, url, headers=forged)
+                    port_refusal = guest(args.worker, "GET", f"http://127.0.0.2:{second_port}/{marker}")
+                    exchange = {"type": kind, "approval_id": identifier, "origin": received[-1]}
+                    if delegated_clients:
+                        exchange.update(client_observation, retry=permitted, origin_hits_after=list(hits),
+                            self_decision=self_decision, consumed_once_retry=once_retry,
+                            helper_refusal=helper_refusal, port_refusal=port_refusal)
+                        print(json.dumps({"phase": "client_retry", "observation": exchange}), flush=True)
+                    if kind == "gateway":
+                        assert once_retry["status"] == 428
+                    assert helper_refusal["status"] in {403, 428}
+                    assert port_refusal["status"] == 403
                     assert len(hits) == before + 1, "foreign caller/port or consumed once grant reached origin"
-                    exchanges.append({"type": kind, "approval_id": identifier, "origin": received[-1]})
+                    exchanges.append(exchange)
+                if delegated_clients:
+                    result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
+                        "guests": guests, "guest_native_versions": guest_versions, "exchanges": exchanges,
+                        "coord_before": coord_before, "coord_unavailable": coord_unavailable,
+                        "limitations": "Canonical operator decisions are observed. Actual GUI selection and rendering require separate client observations; no model session ran."}
+                    print(json.dumps({"phase": "client_checks", "phase_passed": True, "observation": result}), flush=True)
+                    if args.reconcile_seconds:
+                        time.sleep(args.reconcile_seconds)
+                    return
                 output = running.result(timeout=120)
             assert secret not in output, "reviewer received a credential value"
             model_events = [json.loads(line) for line in output.splitlines()]
@@ -1061,6 +1153,8 @@ def main() -> None:
     parser.add_argument("--delegated", action="store_true", help="With --interfaces --real-helper, exercise three delegated decisions without a human decision; requires the fixture service and Helper's existing agent room")
     parser.add_argument("--delegated-lifecycle", action="store_true", help="Exercise delegated network authority across real guest and proxy restarts, stale launch context and same-name replacement; no model session")
     parser.add_argument("--delegated-lifecycle-remainder", action="store_true", help="With --delegated-lifecycle, use one ordinary grant and worker turnover, then check only stale context, reviewer restart and same-name replacement; skip the proxy crash")
+    parser.add_argument("--delegated-lifecycle-crash-only", action="store_true", help="With --delegated-lifecycle, record only the same approval, receipt, grant and origin effects across an owned proxy crash and one explicit retry; skip guest turnover and model exchanges")
+    parser.add_argument("--delegated-clients", action="store_true", help="Wait for operator run/run/delegated_once choices for network, credential and gateway requests with failed reviewer attention; no model session")
     parser.add_argument("--model-unavailable", action="store_true", help="With --interfaces, launch Codex against an owned HTTP 503 model endpoint, then exercise direct operator controls")
     parser.add_argument("--wait-for-operator", action="store_true", help="Wait for a human CLI/Commander decision; always enabled by --real-helper")
     parser.add_argument("--operator-timeout", type=float, default=600, help="Seconds to wait for the human decision (default: 600)")
@@ -1076,6 +1170,12 @@ def main() -> None:
         parser.error("--delegated requires --interfaces --real-helper")
     if args.delegated_lifecycle_remainder and not args.delegated_lifecycle:
         parser.error("--delegated-lifecycle-remainder requires --delegated-lifecycle")
+    if args.delegated_lifecycle_crash_only and not args.delegated_lifecycle:
+        parser.error("--delegated-lifecycle-crash-only requires --delegated-lifecycle")
+    if args.delegated_lifecycle_crash_only and args.delegated_lifecycle_remainder:
+        parser.error("select either the crash or the remaining guest lifecycle checks")
+    if args.delegated_clients and (args.delegated_lifecycle or args.delegated or args.real_helper or args.model_unavailable or args.shared_room):
+        parser.error("--delegated-clients runs separately from lifecycle, model and shared-room modes")
     if args.delegated_lifecycle and (args.delegated or args.real_helper or args.model_unavailable or args.wait_for_operator or args.shared_room):
         parser.error("--delegated-lifecycle runs separately from model and operator observation modes")
     if (args.wait_for_operator or args.shared_room) and not args.interfaces:

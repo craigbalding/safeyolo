@@ -205,6 +205,65 @@ window alone does not establish a client result. Use the normal Command Centre
 connection setup in [installation](installation.md), and keep the operator
 credential on the operator's host.
 
+To exercise the remaining delegated client choices without a model, use
+`--delegated-clients`. Use the same marked Ubuntu/systrap instance, with its
+proxy, both guests and isolated Coord already running. Both guests need the
+existing Python request preparation. The host needs the existing `tomlkit`
+dependency. Stage the `delegated-fixture` service before proxy start as described
+below. The reviewer must have receive access to `helper-agent`. Connect Command
+Centre to that exact instance through its supported authenticated connection.
+Keep its operator credential outside the guests.
+Use a Command Centre build that includes the canonical option picker in
+`command-centre/macos/Sources/UI.swift` and the selected-option request in
+`Models.swift`. The retained Commander at `cb587fcc` has neither feature.
+Its network default-approval result remains valid, but that executable cannot
+perform these lifetime and gateway choices. Build the current client through
+`command-centre/macos/build-app.sh` on the supported Mac build route. Do not
+replace a requested run option with that older client's persistent default.
+
+From the prepared driver checkout, set `ROOT` to that disposable installation
+and `NATIVE_COMMIT` to its verified full native source commit. The driver source
+and native source can differ only when that reuse has been assessed. Run:
+
+```sh
+timeout 720s python3 tests/blackbox/installed_shared_approvals.py \
+  --config-dir "$ROOT" --transport-cli "$ROOT/bin/safeyolo" \
+  --native-cli "$ROOT/bin/safeyolo" --native-proxy "$ROOT/bin/safeyolo-proxy" \
+  --commit "$NATIVE_COMMIT" --worker worker --helper helper \
+  --delegated-clients --operator-timeout 180 --reconcile-seconds 30
+```
+
+The driver stops only this disposable instance's Coord before making requests.
+It records failed delegated delivery, the still-pending canonical approval,
+authorized reviewer lookup/list results and unchanged origin hits. It does not
+start a model. When each `client_pending` record appears, check its exact
+approval ID and effect in Command Centre. Select these offered options, then
+select Allow. Leave other cards and the later consumed-once request pending:
+
+| Request | Option | Effect to check |
+|---|---|---|
+| Network | `run` | Only this worker run, destination, selected port and request action. |
+| Credential | `run` | Only this worker run and the exact fingerprint at the destination; all ports, methods and paths at that host. Shared baseline credential approval stays unchanged. |
+| Gateway | `delegated_once` | One route grant for the exact method/path and current worker run, with the existing service and contract checks. The grant does not bind a payload. |
+
+These are explicit operator decisions on requests that have eligible delegated
+reviewers. The operator uses its own authority; these decisions are not
+attributed to the unavailable reviewer. Record the actual app connection,
+displayed ID/effect, selected option and action separately. A driver result
+alone cannot establish that a GUI action occurred.
+
+The driver emits `client_decision` with the canonical result, then
+`client_retry` with the selected origin effect and the raw self-decision,
+reviewer, wrong-port and gateway-consumption refusals. The first request and
+failed attention do not reach the origin. Each explicit retry adds one selected
+origin hit. A wrong lifetime or missing failed-delivery result fails the run.
+The final 30-second window permits client readback before cleanup. This check
+does not replace the retained network reconnect or real model results.
+The driver restores the original policy and stops both guests, proxy and
+origins. After an outer timeout, the operator must separately stop both owned
+guests and the proxy, verify stopped state and absent readiness/listeners, and
+restore the saved policy through the existing fixture cleanup procedure.
+
 ## Exercise the real reviewer workflow
 
 The maintained `tests/blackbox/installed_shared_approvals.py` runner has a
@@ -285,8 +344,9 @@ reviewer-restart observation before the next lifecycle operation. The remainder
 selection also emits its ordinary setup grant before worker turnover. These
 partial records preserve actual operands if a later check fails. They do not
 claim that the remaining checks or cleanup passed.
-Each phase records whether its own checks passed. After all lifecycle checks
-pass, the runner emits their result before cleanup. Only the final result after
+Snapshot phases record operands before their assertions and make no passing
+claim. Completed lifecycle checks set `phase_passed=true`. The runner emits
+their result before cleanup. Only the final result after
 successful cleanup contains `owned_guests_proxy_and_origins_stopped=true`.
 
 If a prior run already reached the proxy crash and worker restart but stopped
@@ -301,7 +361,32 @@ source commit separate from `--commit`, which checks the native binary commit.
 Retained results keep their actual source and platform attribution; this
 continuation does not supply missing operands from an earlier run.
 
-Both selections restore the original policy and stop both owned guests, proxy
+If only the crash/recovery relationship is missing, select
+`--delegated-lifecycle --delegated-lifecycle-crash-only`. Use the same lifecycle
+prerequisites. From the prepared driver checkout, set `ROOT` and
+`NATIVE_COMMIT` to the verified native installation, then run:
+
+```sh
+timeout 600s python3 tests/blackbox/installed_shared_approvals.py \
+  --config-dir "$ROOT" --transport-cli "$ROOT/bin/safeyolo" \
+  --native-cli "$ROOT/bin/safeyolo" --native-proxy "$ROOT/bin/safeyolo-proxy" \
+  --commit "$NATIVE_COMMIT" --worker worker --helper helper \
+  --delegated-lifecycle --delegated-lifecycle-crash-only
+```
+
+This selection uses the existing canonical-write failure and owned proxy crash.
+It emits `proxy_crash_before` with the approval, saved policy receipt, typed
+network grant and origin snapshots. After restart, `proxy_crash_recovered`
+records the same operands and the new proxy process identity before comparison.
+The approval ID, issued result, effective receipt and grant must stay the same.
+No origin request may occur before the explicit retry. `proxy_crash_retry`
+records that retry's response and the one selected origin request. These raw
+records are flushed before later assertions or cleanup. The final result has
+`lifecycle_selection=crash_only`. It does not perform worker/reviewer turnover,
+same-name replacement or a model exchange. Retain the independently observed
+remainder instead of repeating it to obtain a full-run summary.
+
+All lifecycle selections restore the original policy and stop both owned guests, proxy
 and origins. Keep the instance's isolated Coord configuration when restarting;
 do not use another instance's default ports. This mode does not establish a
 model exchange or a Command Centre reconnect result.

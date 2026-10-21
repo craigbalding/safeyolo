@@ -7,7 +7,9 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import socket
+import sqlite3
 import ssl
 import stat
 import subprocess
@@ -118,7 +120,8 @@ def test_stale_launch_context_refusal_requires_paired_effects_and_restores_conte
         installed_shared_approvals.checked(command)
 
 
-@pytest.mark.parametrize("failure", ["reviewer_start", "replacement_stop", "cleanup"])
+@pytest.mark.parametrize("failure", ["reviewer_start", "replacement_stop", "cleanup", "crash_only", "crash_restart",
+    "crash_inactive", "crash_replay", "crash_retry", "crash_cleanup"])
 def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_path, monkeypatch, capsys, failure):
     """Controlled inputs reach the real driver's late failures and teardown."""
     root = tmp_path
@@ -130,6 +133,12 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
     cli.touch()
     proxy.touch()
     commit = "a" * 40
+    crash_mode = failure.startswith("crash")
+    proxy_run = {"pid": 123, "start_token": "controlled"}
+    if crash_mode:
+        (root / "data").mkdir()
+        with sqlite3.connect(root / "data/approvals.sqlite3") as connection:
+            connection.execute("CREATE TABLE approvals (record TEXT)")
     version = f"commit={commit} profile=production"
     listeners = [{"agent_id": name, "path": str(root / (name + ".sock"))} for name in ("worker", "helper")]
     for name in ("worker", "helper"):
@@ -145,7 +154,8 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
         "raw": {"admin_api_token_file": str(root / "operator-token")},
         "policy_file": str(root / "policy.toml"), "readiness_file": str(root / "ready.json")})
     monkeypatch.setattr(installed_shared_approvals, "_runtime_observation", lambda *_args, **_kwargs: {
-        "readiness": {"admin_port": 1}, "pid": 123, "receipt": {"start_token": "controlled"}, "listeners": listeners})
+        "readiness": {"admin_port": 1}, "pid": proxy_run["pid"],
+        "receipt": {"start_token": proxy_run["start_token"]}, "listeners": listeners})
     monkeypatch.setattr(installed_shared_approvals, "runsc_identity", lambda *_args, **_kwargs: {"controlled": True})
     monkeypatch.setattr(installed_shared_approvals, "surviving_processes", lambda _processes: [])
     monkeypatch.setattr(installed_shared_approvals, "_socket_accepting", lambda _path: False)
@@ -183,6 +193,7 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
     approvals = {}
     stopped = []
     emitted_before_failure = []
+    origin_url = None
     # Retain an independent real HTTP path for the guest's permitted request.
     def request_origin(url):
         destination = urlsplit(url)
@@ -194,14 +205,19 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
         finally:
             connection.close()
     def checked(command, **_kwargs):
+        nonlocal origin_url
         if command[0] == "controlled-guest":
             text = command[2]
             if text.endswith("safeyolo-guest --version"):
                 return version
             method, url, _body = json.loads(shlex.split(text)[-1])
             if "_safeyolo.proxy.internal" not in url:
+                origin_url = url
                 if approvals and list(approvals.values())[-1]["grant_active"]:
-                    return json.dumps(request_origin(url))
+                    reply = request_origin(url)
+                    if failure == "crash_retry":
+                        request_origin(url)
+                    return json.dumps(reply)
                 identifier = "approval-" + ("1" if not approvals else "2")
                 approvals.setdefault(identifier, {"approval_id": identifier, "status": "pending", "grant_active": False,
                     "result": {"issued_access": {"beneficiary": {"run_id": json.loads((root / "agents/worker/runtime.json").read_text())["run_id"]}}}})
@@ -209,6 +225,14 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
             identifier = url.split("/approvals/", 1)[1].split("/")[0]
             if method == "POST":
                 approvals[identifier].update(status="approved", grant_active=True)
+                if crash_mode:
+                    import tomlkit
+
+                    document = tomlkit.parse((root / "policy.toml").read_text())
+                    document["approval_results"] = {identifier: json.dumps({"option": "run", "result": approvals[identifier]["result"]})}
+                    document["agents"]["worker"]["network_grants"] = {identifier: json.dumps(approvals[identifier]["result"]["issued_access"])}
+                    (root / "policy.toml").write_text(tomlkit.dumps(document))
+                    return json.dumps({"status": 409})
             return json.dumps({"status": 200 if approvals[identifier]["grant_active"] or approvals[identifier]["status"] == "pending" else 404})
         operands = command[3:]
         if operands == ["coord", "status"]:
@@ -218,11 +242,24 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
         if operands[:2] == ["agent", "create"]:
             (root / "policy.toml").write_text((root / "policy.toml").read_text() + '\n[agents.worker]\nagent_id="replacement-id"\n')
             return json.dumps({"configuration": {"id": "replacement-id"}})
+        if operands == ["start"]:
+            if failure == "crash_restart":
+                raise AssertionError("controlled restart failure")
+            with sqlite3.connect(root / "data/approvals.sqlite3") as connection:
+                assert connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall() == []
+            proxy_run.update(pid=124, start_token="restarted")
+            if failure == "crash_inactive":
+                approvals["approval-1"]["grant_active"] = False
+            if failure == "crash_replay":
+                request_origin(origin_url)
+            return ""
         assert operands == ["stop"]
         stopped.append("proxy")
         return ""
     def stop_guest(_cli, _root, name):
         stopped.append(name)
+        if failure == "crash_cleanup" and name == "worker":
+            raise AssertionError("controlled cleanup failure")
         if failure == "replacement_stop" and name == "worker" and stopped.count(name) == 2:
             emitted_before_failure.extend(json.loads(line) for line in capsys.readouterr().out.splitlines())
             raise AssertionError("controlled replacement stop failure")
@@ -245,9 +282,54 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
         command, 1, "", "safeyolo: provider sandbox or guest port is unavailable\n"))
     monkeypatch.setattr(installed_shared_approvals, "stop_guest", stop_guest)
     monkeypatch.setattr(installed_shared_approvals, "start_guest", start_guest)
+    if crash_mode:
+        def kill(pid, selected_signal):
+            assert pid == 123 and selected_signal == signal.SIGKILL
+            emitted_before_failure.extend(json.loads(line) for line in capsys.readouterr().out.splitlines())
+            assert [row["phase"] for row in emitted_before_failure] == ["proxy_crash_before"]
+        monkeypatch.setattr(installed_shared_approvals.os, "kill", kill)
+        monkeypatch.setattr(installed_shared_approvals, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(installed_shared_approvals, "_process_start_token", lambda _pid: "controlled")
     args = SimpleNamespace(config_dir=root, native_cli=cli, native_proxy=proxy, transport_cli=str(cli),
         worker="worker", helper="helper", commit=commit, interfaces=False, real_helper=False, model_unavailable=False,
-        shared_room=None, delegated_lifecycle=True, delegated_lifecycle_remainder=True)
+        shared_room=None, delegated_lifecycle=True, delegated_lifecycle_remainder=not crash_mode,
+        delegated_lifecycle_crash_only=crash_mode)
+    if crash_mode:
+        if failure == "crash_only":
+            installed_shared_approvals.run(args)
+        else:
+            with pytest.raises(AssertionError):
+                installed_shared_approvals.run(args)
+        emitted_before_failure.extend(json.loads(line) for line in capsys.readouterr().out.splitlines())
+        phases = {row["phase"]: row["observation"] for row in emitted_before_failure if "phase" in row}
+        before = phases["proxy_crash_before"]["before_crash"]
+        assert before["approval"]["approval_id"] == "approval-1" and before["approval"]["grant_active"] is True
+        assert before["policy_receipt"]["result"] == before["approval"]["result"]
+        assert before["network_grant"] == before["approval"]["result"]["issued_access"]
+        assert before["origin_hits"] == before["origin_requests"] == []
+        if failure != "crash_restart":
+            after = phases["proxy_crash_recovered"]["after_restart"]
+            assert after["approval"]["approval_id"] == before["approval"]["approval_id"]
+            assert after["policy_receipt"] == before["policy_receipt"]
+            assert after["network_grant"] == before["network_grant"]
+            assert after["approval"]["grant_active"] is (failure != "crash_inactive")
+            assert len(after["origin_hits"]) == int(failure == "crash_replay")
+        if failure in {"crash_only", "crash_retry", "crash_cleanup"}:
+            retry = phases["proxy_crash_retry"]["explicit_retry"]
+            assert retry["response"]["status"] == 200
+            assert len(retry["origin_hits"]) == (2 if failure == "crash_retry" else 1)
+        else:
+            assert "proxy_crash_retry" not in phases
+        assert ("lifecycle_checks" in phases) is (failure in {"crash_only", "crash_cleanup"})
+        final = [row for row in emitted_before_failure if row.get("owned_guests_proxy_and_origins_stopped")]
+        assert bool(final) is (failure == "crash_only")
+        if final:
+            assert final[0]["lifecycle_selection"] == "crash_only"
+            assert final[0]["crash_recovery"] == phases["proxy_crash_retry"]
+        assert stopped == ["worker", "helper", "proxy"], "crash-only selection ran guest turnover"
+        assert len(servers) == 2 and all(server.fileno() == -1 for server in servers)
+        assert (root / "policy.toml").read_text() == original_policy
+        return
     with pytest.raises(AssertionError, match="controlled (reviewer start|replacement stop|cleanup) failure"):
         installed_shared_approvals.run(args)
     assert capsys.readouterr().out == ""
@@ -279,6 +361,156 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
     assert len(servers) == 2 and all(server.fileno() == -1 for server in servers)
     assert (root / "policy.toml").read_text() == original_policy
     assert json.loads((root / "agents/worker/config-share/host-launch-context.json").read_text()) == {"generation": "worker-new"}
+
+
+@pytest.mark.parametrize("control", ["clean", "wrong_option", "delivery_published"])
+def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attention(tmp_path, monkeypatch, capsys, control):
+    """Controlled clients exercise the maintained driver and real owned origins."""
+    root = tmp_path
+    original = '[agents.worker]\nagent_id="worker-id"\n[agents.helper]\nagent_id="helper-id"\n'
+    (root / "policy.toml").write_text(original)
+    (root / "config.toml").touch()
+    (root / "data").mkdir()
+    (root / "operator-token").write_text("synthetic-operator-token")
+    cli, proxy = root / "safeyolo", root / "safeyolo-proxy"
+    cli.touch()
+    proxy.touch()
+    commit = "a" * 40
+    version = f"commit={commit} profile=production"
+    listeners = [{"agent_id": name, "path": str(root / (name + ".sock"))} for name in ("worker", "helper")]
+    monkeypatch.setattr(installed_shared_approvals, "_require_disposable", lambda _root: None)
+    monkeypatch.setattr(installed_shared_approvals, "_agent_listeners", lambda _root: listeners)
+    monkeypatch.setattr(installed_shared_approvals, "_cli_identity", lambda _cli: {"version": version, "profile": "production"})
+    monkeypatch.setattr(installed_shared_approvals, "_rust_identity", lambda _proxy: (None, {"version": version}))
+    monkeypatch.setattr(installed_shared_approvals, "_native_config", lambda *_args: {
+        "raw": {"admin_api_token_file": str(root / "operator-token")},
+        "policy_file": str(root / "policy.toml"), "readiness_file": str(root / "ready.json")})
+    monkeypatch.setattr(installed_shared_approvals, "_runtime_observation", lambda *_args, **_kwargs: {
+        "readiness": {"admin_port": 1}, "pid": 123, "receipt": {"start_token": "controlled"}, "listeners": listeners})
+    monkeypatch.setattr(installed_shared_approvals, "runsc_identity", lambda *_args, **_kwargs: {"controlled": True})
+    monkeypatch.setattr(installed_shared_approvals, "surviving_processes", lambda _processes: [])
+    monkeypatch.setattr(installed_shared_approvals, "_socket_accepting", lambda _path: False)
+    monkeypatch.setattr(installed_shared_approvals, "apply_fixture_policy",
+                        lambda _operator, policy: (root / "policy.toml").write_text(policy))
+    monkeypatch.setattr(installed_shared_approvals, "guest_command_args",
+                        lambda _cli, name, command: ["controlled-guest", name, command])
+    monkeypatch.setattr(installed_shared_approvals, "guest_coord", lambda *_args: {"joined": True})
+    monkeypatch.setattr(installed_shared_approvals, "run_helper", lambda *_args: pytest.fail("client selection launched a model"))
+    for key in ("SAFEYOLO_CONFIG_DIR", "SAFEYOLO_NATIVE_CONFIG_PATH", "SAFEYOLO_LOGS_DIR"):
+        monkeypatch.setenv(key, str(root))
+    real_connection = http.client.HTTPConnection
+    class OperatorReply:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def request(self, method, path, _body, _headers):
+            assert method == "GET" and path == "/admin/services"
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda _limit: b'{"services":[{"definition":{"name":"delegated-fixture"}}]}')
+        def close(self):
+            pass
+    monkeypatch.setattr(installed_shared_approvals.http.client, "HTTPConnection", OperatorReply)
+    servers, stopped, choices = [], [], []
+    records = {}
+    coord = {"state": "running", "process": {"client_port": 19422, "monitor_port": 19822}}
+    def origin_server(*args):
+        server = HTTPServer(*args)
+        servers.append(server)
+        return server
+    monkeypatch.setattr(installed_shared_approvals, "HTTPServer", origin_server)
+    monkeypatch.setattr(installed_shared_approvals, "stop_guest", lambda _cli, _root, name: stopped.append(name))
+    def checked(command, **_kwargs):
+        if command[0] != "controlled-guest":
+            arguments = command[3:]
+            if arguments == ["coord", "status"]:
+                return json.dumps(coord)
+            if arguments == ["coord", "stop"]:
+                coord["state"] = "stopped"
+                return ""
+            if arguments == ["stop"]:
+                stopped.append("proxy")
+                return ""
+            if arguments[:2] == ["approvals", "show"]:
+                return json.dumps(records[arguments[2]])
+            assert arguments[:2] == ["approvals", "delegation"]
+            proposal = json.loads(Path(arguments[-2]).read_text())
+            return json.dumps({"after": proposal["delegation"], "acknowledgment": "controlled", "revision": "controlled"})
+        name, text = command[1:]
+        if text.endswith("safeyolo-guest --version"):
+            return version
+        method, url, _body, *extra = json.loads(shlex.split(text)[-1])
+        headers = extra[0] if extra else {}
+        if "_safeyolo.proxy.internal" in url:
+            if url.endswith("/gateway/services"):
+                body = {"authorized": {"delegated-fixture": {"token": "synthetic-gateway-token"}}}
+            elif method == "POST":
+                return json.dumps({"status": 403, "body": "self-decision refused"})
+            elif url.endswith("/approvals"):
+                body = {"approvals": [row for row in records.values() if row["status"] == "pending"]}
+            else:
+                body = records[url.rsplit("/", 1)[1]]
+            return json.dumps({"status": 200, "body": json.dumps(body)})
+        destination = urlsplit(url)
+        if destination.port == servers[1].server_port:
+            return json.dumps({"status": 403, "body": "wrong port"})
+        if name == "helper":
+            return json.dumps({"status": 428, "body": "reviewer has no worker grant"})
+        kind = "gateway" if method == "POST" else "credential" if headers else "network"
+        identifier = "apr-" + str(["network", "credential", "gateway"].index(kind) + 1) * 32
+        record = records.setdefault(identifier, {"approval_id": identifier, "status": "pending",
+            "action": {"kind": kind, "credentials": ["hmac:synthetic"]},
+            "reviewer_delivery": {"helper-id:revision": "published" if control == "delivery_published" else
+                "unavailable or unknown; canonical list and operator controls remain available"}})
+        if record["status"] != "approved" or kind == "gateway" and record.get("consumed"):
+            return json.dumps({"status": 428, "approval_id": identifier})
+        connection = real_connection(destination.hostname, destination.port, timeout=2)
+        try:
+            connection.request(method, destination.path + ("?" + destination.query if destination.query else ""), headers=headers)
+            reply = connection.getresponse()
+            body = reply.read().decode()
+            record["consumed"] = True
+            return json.dumps({"status": reply.status, "body": body})
+        finally:
+            connection.close()
+    def choose(read, action, timeout):
+        canonical = read()
+        assert coord["state"] == "stopped" and canonical["action"] == action and timeout == 1
+        assert canonical["status"] == "pending"
+        option = "delegated_once" if action["kind"] == "gateway" else "run"
+        choices.append(option)
+        record = records[canonical["approval_id"]]
+        record.update(status="approved", option="persistent" if control == "wrong_option" else option,
+            result={"issued_access": {"beneficiary": {"agent_id": "worker-id"}, "delegation": "", "option": option}})
+        return read()
+    monkeypatch.setattr(installed_shared_approvals, "checked", checked)
+    monkeypatch.setattr(installed_shared_approvals, "wait_for_operator", choose)
+    args = SimpleNamespace(config_dir=root, native_cli=cli, native_proxy=proxy, transport_cli=str(cli),
+        worker="worker", helper="helper", commit=commit, interfaces=False, real_helper=False, model_unavailable=False,
+        shared_room=None, delegated_clients=True, helper_events=None, operator_timeout=1, reconcile_seconds=0)
+    if control == "clean":
+        installed_shared_approvals.run(args)
+    else:
+        with pytest.raises(AssertionError, match="different lifetime" if control == "wrong_option" else "attention did not fail"):
+            installed_shared_approvals.run(args)
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    pending = [row["observation"] for row in output if row.get("phase") == "client_pending"]
+    assert [row["type"] for row in pending] == (["network", "credential", "gateway"] if control == "clean" else ["network"])
+    assert pending[0]["origin_hits_before"] == []
+    final = [row for row in output if row.get("owned_guests_proxy_and_origins_stopped")]
+    assert bool(final) is (control == "clean")
+    if final:
+        assert choices == ["run", "run", "delegated_once"]
+        assert [len(row["origin_hits_after"]) for row in final[0]["exchanges"]] == [1, 2, 3]
+        for exchange in final[0]["exchanges"]:
+            assert exchange["retry"]["status"] == 200
+            assert exchange["helper_refusal"]["status"] == 428
+            assert exchange["port_refusal"]["status"] == 403
+            assert exchange["decision"]["option"] == exchange["expected_option"]
+        assert final[0]["exchanges"][-1]["consumed_once_retry"]["status"] == 428
+    else:
+        assert not any(row.get("phase") == "client_retry" for row in output)
+    assert stopped == ["worker", "helper", "proxy"]
+    assert all(server.fileno() == -1 for server in servers)
+    assert (root / "policy.toml").read_text() == original
 
 
 @pytest.fixture
