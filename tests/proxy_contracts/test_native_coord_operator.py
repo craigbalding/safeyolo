@@ -578,7 +578,7 @@ def test_agent_watch_failures_redaction_and_read_only(supervised):
     assert json.loads(after) == json.loads(attention)
     for content in ("{", json.dumps({**empty, "phase": "invented"})):
         state.write_text(content)
-        result = watch_once(instance)
+        result = watch_once(instance, "--history", "0")
         assert "checkpoint malformed" in result.stdout and content not in result.stdout
     state.write_text(checkpoint.decode())
     state.chmod(0)
