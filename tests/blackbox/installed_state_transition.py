@@ -225,6 +225,18 @@ def json_request(socket_path: Path, method: str, target: str, token: str,
     return status, json.loads(raw) if raw else None
 
 
+def check_unapproved_port(socket_path: Path, host: str, origin: Origin, tls_origin: Origin) -> int:
+    """Probe a port outside both approved origin authorities without a listener."""
+    port = origin.server_port % 65535 + 1
+    while port in (origin.server_port, tls_origin.server_port):
+        port = port % 65535 + 1
+    before = (len(origin.seen), len(tls_origin.seen))
+    status, _ = request(socket_path, "GET", f"http://{host}:{port}/wrong-port")
+    check(status == 403 and (len(origin.seen), len(tls_origin.seen)) == before,
+          "scoped approval leaked to another port")
+    return status
+
+
 def run(command: list[str], env: dict, *, timeout: float = 25) -> str:
     result = subprocess.run(command, env=env, capture_output=True, text=True,
                             timeout=timeout, check=False)
@@ -821,10 +833,7 @@ print(json.dumps(asyncio.run(exercise())))
         bob_status, _ = request(bob, "GET", f"http://{args.origin_host}:{origin.server_port}/bob")
         check(bob_status == 403 and len(origin.seen) == before,
               "Alice's scoped approval leaked to Bob")
-        wrong_port_status, _ = request(alice, "GET",
-                                       f"http://{args.origin_host}:{origin.server_port + 1}/wrong-port")
-        check(wrong_port_status == 403 and len(origin.seen) == before,
-              "scoped approval leaked to another port")
+        wrong_port_status = check_unapproved_port(alice, args.origin_host, origin, tls_origin)
         task_target = f"http://{args.origin_host}:{origin.server_port}/task-lifetime"
         task_headers = {"X-SafeYolo-Test-Context": "run=owned;agent=alice;test=R638"}
         policy_before_task = sha(root / "policy.toml")
