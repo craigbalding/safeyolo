@@ -392,18 +392,18 @@ another agent's traces.
   "request_id": "req-<32hex>",
   "status": "complete" | "pending" | "incomplete_search" | "error",
   "events": [ /* audit event objects */ ],
-  "searched_lines_per_file": 10000   // only present when status=incomplete_search
+  "searched_lines_per_file": 10000   // present when a retained-file line bound was hit
 }
 ```
 
-Status precedence:
+Status precedence, highest first:
 
 | Literal | Meaning | Retry? |
 |---|---|---|
-| `complete` | Retained set fully scanned. `events` is authoritative. | No |
+| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Investigate via `safeyolo logs` |
 | `pending` | Writer still has queued/mid-flush events after the bounded drain. | Yes, briefly |
 | `incomplete_search` | Retention bound was hit while scanning. Events outside the window may exist. | Only if you can bound the time window differently |
-| `error` | File read or parse failure. Result is unreliable. | Investigate via `safeyolo logs` |
+| `complete` | Retained set fully scanned. `events` is authoritative. | No |
 
 
 ## Flow inspection
