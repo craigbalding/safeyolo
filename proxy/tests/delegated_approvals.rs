@@ -306,6 +306,224 @@ async fn invalid_bounds_self_benefit_and_deferral_preserve_operator_fallback() {
 }
 
 #[tokio::test]
+async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    let forward = proposal(&f);
+    let preview = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(forward.clone()),
+        )
+        .await
+        .json();
+    assert!(!preview["warnings"].to_string().contains("reciprocal"));
+    let mut stale = forward.clone();
+    stale["delegation"] = preview["after"].clone();
+    stale["delegation"]["acknowledgment"] = preview["revision"].clone();
+
+    let mut reverse = proposal(&f);
+    reverse["delegation"]["reviewers"] = forward["delegation"]["beneficiaries"].clone();
+    reverse["delegation"]["beneficiaries"] = forward["delegation"]["reviewers"].clone();
+    let checked = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/reverse/preview",
+            Some(reverse.clone()),
+        )
+        .await;
+    assert_eq!(checked.status, 200, "{}", checked.json());
+    let checked = checked.json();
+    assert!(!checked["warnings"].to_string().contains("reciprocal"));
+    reverse["delegation"] = checked["after"].clone();
+    reverse["delegation"]["acknowledgment"] = checked["revision"].clone();
+    assert_eq!(
+        f.admin(
+            "POST",
+            "/admin/approval-delegations/reverse/apply",
+            Some(reverse.clone())
+        )
+        .await
+        .status,
+        200
+    );
+    let saved = f.source();
+    let refused = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/apply",
+            Some(stale),
+        )
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.json());
+    assert_eq!(f.source(), saved);
+    let blocked = f.network("worker", f.address).await;
+    assert_eq!(blocked.status, 428);
+    let id = blocked.id();
+    assert_eq!(
+        f.agent("helper", "GET", &format!("/approvals/{id}"), None)
+            .await
+            .status,
+        404
+    );
+    no_origin(&f).await;
+
+    let fresh = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(forward.clone()),
+        )
+        .await
+        .json();
+    assert!(fresh["warnings"].to_string().contains("reciprocal"));
+    assert_ne!(fresh["revision"], preview["revision"]);
+    let (mut forward, revision) = delegate(&f, forward).await;
+
+    // Acknowledge the reverse relationship too. Updating one acknowledgment
+    // must not create a dependency cycle between the two delegations.
+    reverse["expected_revision"] = checked["revision"].clone();
+    reverse["delegation"]["definition_revisions"] = json!({});
+    reverse["delegation"]["acknowledgment"] = Value::Null;
+    let checked = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/reverse/preview",
+            Some(reverse.clone()),
+        )
+        .await;
+    assert_eq!(checked.status, 200, "{}", checked.json());
+    reverse["delegation"] = checked.json()["after"].clone();
+    reverse["delegation"]["acknowledgment"] = checked.json()["revision"].clone();
+    assert_eq!(
+        f.admin(
+            "POST",
+            "/admin/approval-delegations/reverse/apply",
+            Some(reverse)
+        )
+        .await
+        .status,
+        200
+    );
+    f.apply(&format!(
+        "{}\n[hosts.'unrelated.invalid']\negress='deny'\n",
+        f.source()
+    ))
+    .await;
+    forward["expected_revision"] = json!(revision);
+    let unchanged = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(forward),
+        )
+        .await;
+    assert_eq!(unchanged.status, 200, "{}", unchanged.json());
+    assert_eq!(unchanged.json()["revision"], revision);
+
+    assert_eq!(
+        decide(&f, "helper", &id, "approve", "run").await.status,
+        200
+    );
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    let blocked = f.network("helper", f.address).await;
+    assert_eq!(blocked.status, 428);
+    let resolved = f
+        .agent(
+            "worker",
+            "POST",
+            &format!("/approvals/{}/resolve", blocked.id()),
+            Some(json!({"delegation":"reverse","decision":"approve","option":"run"})),
+        )
+        .await;
+    assert_eq!(resolved.status, 200, "{}", resolved.json());
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("helper", f.address).await.status, 200);
+    observer.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn unrepresentable_grant_lifetimes_are_rejected_before_mutation() {
+    let mut f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    let mut input = proposal(&f);
+    // Long representable choices and the usual short expiry both support a
+    // canonical reviewer read, decision and the intended origin request.
+    for seconds in [60, 1_000_000_000_u64] {
+        input["delegation"]["grant_seconds"] = json!(seconds);
+        input["delegation"]["acknowledgment"] = Value::Null;
+        let (applied, revision) = delegate(&f, input).await;
+        input = applied;
+        input["expected_revision"] = json!(revision);
+        let blocked = f.network("worker", f.address).await;
+        assert_eq!(blocked.status, 428);
+        let id = blocked.id();
+        no_origin(&f).await;
+        let read = f
+            .agent("helper", "GET", &format!("/approvals/{id}"), None)
+            .await;
+        assert_eq!(read.status, 200, "{}", read.json());
+        let approved = decide(&f, "helper", &id, "approve", "run").await;
+        assert_eq!(approved.status, 200, "{}", approved.json());
+        let issued = assert_grant_readback(&f, &id, "run", true).await;
+        assert!(issued["result"]["issued_access"]["expires_at"].is_string());
+        let observer = tokio::spawn(origin(f.origin.clone()));
+        assert_eq!(f.network("worker", f.address).await.status, 200);
+        let bytes = observer.await.unwrap();
+        assert!(String::from_utf8(bytes).unwrap().contains("GET /marker "));
+    }
+
+    let saved = f.source();
+    for seconds in [0, 1_000_000_000_000, i64::MAX as u64, u64::MAX] {
+        let mut invalid = input.clone();
+        invalid["delegation"]["grant_seconds"] = json!(seconds);
+        for operation in ["preview", "apply"] {
+            let refused = f
+                .admin(
+                    "POST",
+                    &format!("/admin/approval-delegations/local/{operation}"),
+                    Some(invalid.clone()),
+                )
+                .await;
+            assert_eq!(refused.status, 409, "{seconds}: {}", refused.json());
+            assert!(refused.json().to_string().contains("grant_seconds"));
+            assert_eq!(f.source(), saved);
+        }
+    }
+
+    // Direct policy edits and file reloads use the same semantic check. An
+    // invalid lifetime must be diagnosed before an old acknowledgment.
+    let mut document: toml_edit::DocumentMut = saved.parse().unwrap();
+    let mut invalid = input["delegation"].clone();
+    invalid["grant_seconds"] = json!(1_000_000_000_000_u64);
+    document["approval_delegations"]["local"] = toml_edit::value(invalid.to_string());
+    let source = document.to_string();
+    let refused = f
+        .admin(
+            "PUT",
+            "/admin/policy/baseline",
+            Some(json!({"source":source})),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.json());
+    assert!(refused.json().to_string().contains("grant_seconds"));
+    assert_eq!(f.source(), saved);
+    let path = f.root.path().join("policy.toml");
+    fs::write(&path, source).unwrap();
+    let refused = f.proxy.reload(f.config.clone()).await;
+    fs::write(&path, &saved).unwrap();
+    assert!(refused.unwrap_err().to_string().contains("grant_seconds"));
+    let observer = tokio::spawn(origin(f.origin.clone()));
+    assert_eq!(f.network("worker", f.address).await.status, 200);
+    observer.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn delegated_credentials_are_run_scoped_and_never_change_the_shared_baseline() {
     let f = Fixture::new().await;
     let backend = runs(&f);

@@ -7,7 +7,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,13 +105,18 @@ impl Delegation {
                 "a reviewer cannot approve for itself or directly benefit from its delegation",
             ));
         }
-        if self.grant_seconds == Some(0)
-            || self
-                .grant_seconds
-                .is_some_and(|n| i64::try_from(n).is_err())
-        {
+        if self.grant_seconds.is_some_and(|seconds| {
+            seconds == 0
+                || i64::try_from(seconds)
+                    .ok()
+                    .and_then(|seconds| {
+                        time::OffsetDateTime::now_utc()
+                            .checked_add(time::Duration::seconds(seconds))
+                    })
+                    .is_none()
+        }) {
             return Err(invalid(
-                "grant_seconds must be positive or null for the current worker run",
+                "grant_seconds must be positive with a representable expiry, or null for the current worker run",
             ));
         }
         if self
@@ -593,6 +598,26 @@ pub(crate) fn validate_grants(document: &Value) -> Result<()> {
 }
 
 impl Delegation {
+    pub(crate) fn reciprocal_agent_pairs(&self, policy: &Policy) -> BTreeSet<(String, String)> {
+        let mut pairs = BTreeSet::new();
+        for other in policy.delegations().values() {
+            for reviewer in self
+                .reviewers
+                .iter()
+                .filter(|r| other.beneficiaries.contains(r))
+            {
+                for beneficiary in self
+                    .beneficiaries
+                    .iter()
+                    .filter(|b| other.reviewers.contains(b))
+                {
+                    pairs.insert((reviewer.agent_id.clone(), beneficiary.agent_id.clone()));
+                }
+            }
+        }
+        pairs
+    }
+
     pub(crate) fn dependencies(&self, policy: &Policy) -> Result<BTreeMap<String, String>> {
         let mut result = BTreeMap::new();
         for scope in &self.scopes {
@@ -611,6 +636,12 @@ impl Delegation {
             "reviewer_startup".into(),
             digest(&json!(policy.reviewer_write_warnings(self))),
         );
+        // Bind the reciprocal identities rather than delegation revisions.
+        // Acknowledging one direction must not invalidate the other direction.
+        let reciprocal = self.reciprocal_agent_pairs(policy);
+        if !reciprocal.is_empty() {
+            result.insert("reciprocal_reviewers".into(), digest(&json!(reciprocal)));
+        }
         Ok(result)
     }
     pub(crate) fn dependencies_current(&self, policy: &Policy) -> bool {

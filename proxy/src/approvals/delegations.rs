@@ -63,18 +63,8 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
     }
     let mut warnings = proposal.delegation.warnings();
     warnings.extend(policy.reviewer_write_warnings(&proposal.delegation));
-    for other in policy.delegations().values() {
-        if other
-            .reviewers
-            .iter()
-            .any(|r| proposal.delegation.beneficiaries.contains(r))
-            && other
-                .beneficiaries
-                .iter()
-                .any(|b| proposal.delegation.reviewers.contains(b))
-        {
-            warnings.push("These reviewers and beneficiaries have reciprocal deciding authority through another delegation. This does not prevent indirect cooperation.".into());
-        }
+    if !candidate.reciprocal_agent_pairs(policy).is_empty() {
+        warnings.push("These reviewers and beneficiaries have reciprocal deciding authority through another delegation. This does not prevent indirect cooperation.".into());
     }
     let revision = candidate.revision();
     let independent = policy.independent_delegation_access(&candidate);

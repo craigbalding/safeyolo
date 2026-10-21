@@ -46,6 +46,8 @@ change or revocation. `grant_seconds` optionally bounds each issued permission,
 starting at its decision. A null value permits the worker's current run.
 Stopping or replacing that run ends its access. Gateway grants also retain the
 existing gateway expiry. Pending-request expiry is separate from both limits.
+Checks reject a `grant_seconds` value whose expiry cannot fit the supported
+timestamp range. Supported long lifetimes remain available.
 
 Preview the exact proposal before applying it:
 
@@ -145,6 +147,9 @@ repeated notifications. A terminal ID cannot issue another permission.
 Inspect `approvals delegations --json` for revisions and issued access. For a
 change, use the current revision as `expected_revision`, edit the proposal,
 clear its acknowledgment and old `definition_revisions`, then preview again.
+If a reciprocal delegation changes the relationship between reviewers and
+beneficiaries, the old acknowledgment is stale. Preview and acknowledge the
+updated proposal before applying it.
 Changing a delegation conservatively removes its issued permissions.
 
 For revocation, save `{"expected_revision":"CURRENT_REVISION"}` in
