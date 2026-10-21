@@ -1095,8 +1095,9 @@ non-blocking. The command supplements the configured lint and static checks;
 it does not replace independent acceptance of the behaviour being changed.
 
 For a Python dependency repair, run the focused dependency controls from a
-Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish to
-exercise its activation control; the test reports a skip when fish is absent.
+Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish and
+zsh to exercise their activation controls; the tests report skips when a shell
+is absent.
 Use the configured proxy and certificate authority for package downloads.
 These commands create the two frozen environments and run the controls:
 
@@ -1110,11 +1111,18 @@ uv run --frozen --no-sync python -m unittest discover -s tools/acceptance/tests 
 Expected result: both test runs pass. The controls exercise JSON Web Token
 (JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
 HTTPS proxy certificate policy, chunked response parsing, virtualenv
-configuration and shell activation. HTTP fixtures listen on disposable
-loopback ports and close after each test. The seed-wheel test downloads the
-pip version in the acceptance lockfile from the default index, verifies its
+configuration, repeated activation-template substitution, fish quoting, zsh
+prompt substitution and Bash prompt decoding and expansion. HTTP fixtures
+listen on disposable loopback ports and close after each test. The seed-wheel
+test downloads the pip version in the acceptance lockfile from the default index, verifies its
 published PyPI digest, and checks rejection after altering the downloaded
 file. The tests remove their temporary files.
+
+A lockfile update changes the tool selected by the next frozen sync. It does
+not replace activation scripts in existing environments. After the development
+sync, run `uv run --frozen --no-sync pre-commit clean`, then the normal hook
+command to recreate cached hook environments. Recreate other environments made
+by virtualenv with the updated tool and their normal creation command.
 
 These Linux controls do not execute Windows batch activation. Upstream
 virtualenv skips downloaded-wheel digest verification for custom indexes or
