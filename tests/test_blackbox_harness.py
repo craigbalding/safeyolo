@@ -184,9 +184,12 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
             pass
     monkeypatch.setattr(installed_shared_approvals.http.client, "HTTPConnection", OperatorReply)
     servers = []
-    def origin_server(*args):
-        server = HTTPServer(*args)
+    origin_addresses = {}
+    def origin_server(address, handler):
+        # Keep logical policy destinations separate from portable local listeners.
+        server = HTTPServer(("127.0.0.1", address[1]), handler)
         servers.append(server)
+        origin_addresses[(address[0], server.server_port)] = server.server_address
         return server
     monkeypatch.setattr(installed_shared_approvals, "HTTPServer", origin_server)
     (root / "operator-token").write_text("synthetic-operator-token")
@@ -197,7 +200,7 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
     # Retain an independent real HTTP path for the guest's permitted request.
     def request_origin(url):
         destination = urlsplit(url)
-        connection = real_connection(destination.hostname, destination.port, timeout=2)
+        connection = real_connection(*origin_addresses[(destination.hostname, destination.port)], timeout=2)
         try:
             connection.request("GET", destination.path)
             response = connection.getresponse()
@@ -410,11 +413,14 @@ def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attent
             pass
     monkeypatch.setattr(installed_shared_approvals.http.client, "HTTPConnection", OperatorReply)
     servers, stopped, choices = [], [], []
+    origin_addresses = {}
     records = {}
     coord = {"state": "running", "process": {"client_port": 19422, "monitor_port": 19822}}
-    def origin_server(*args):
-        server = HTTPServer(*args)
+    def origin_server(address, handler):
+        # Each logical origin retains its own allocated local address and port.
+        server = HTTPServer(("127.0.0.1", address[1]), handler)
         servers.append(server)
+        origin_addresses[(address[0], server.server_port)] = server.server_address
         return server
     monkeypatch.setattr(installed_shared_approvals, "HTTPServer", origin_server)
     monkeypatch.setattr(installed_shared_approvals, "stop_guest", lambda _cli, _root, name: stopped.append(name))
@@ -462,7 +468,7 @@ def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attent
                 "unavailable or unknown; canonical list and operator controls remain available"}})
         if record["status"] != "approved" or kind == "gateway" and record.get("consumed"):
             return json.dumps({"status": 428, "approval_id": identifier})
-        connection = real_connection(destination.hostname, destination.port, timeout=2)
+        connection = real_connection(*origin_addresses[(destination.hostname, destination.port)], timeout=2)
         try:
             connection.request(method, destination.path + ("?" + destination.query if destination.query else ""), headers=headers)
             reply = connection.getresponse()
