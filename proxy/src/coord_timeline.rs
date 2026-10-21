@@ -316,7 +316,7 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
             ) {
                 ("EVENT", original)
             } else {
-                self::event(&reconstructed, true).unwrap_or(("EVENT", original))
+                self::event(&reconstructed, show_unknown).unwrap_or(("EVENT", original))
             };
             (
                 label,
@@ -895,6 +895,31 @@ mod tests {
             ),
         ] {
             assert_eq!(redact_text(input), expected);
+        }
+    }
+
+    #[test]
+    fn oversize_summaries_preserve_the_unknown_output_choice() {
+        for harness in ["codex", "pi"] {
+            let payload = json!({
+                "type": format!("safeyolo.{harness}.oversize"),
+                "original_type": "item.completed",
+                "summary": {
+                    "type": "unknown_tool_call",
+                    "arguments": {"token": "private-oversize-argument"},
+                    "result": {"body": "private-oversize-result"}
+                },
+                "original_bytes": 65536,
+                "omitted_middle_bytes": 64000,
+                "sha256": "a".repeat(64)
+            });
+            let (label, text) = event(&payload, false).unwrap();
+            assert_eq!(label, "EVENT");
+            assert!(text.starts_with("item.completed [middle snipped;"));
+            assert!(!text.contains("private-oversize"));
+            let (_, explicit) = event(&payload, true).unwrap();
+            assert!(explicit.contains("private-oversize-argument"));
+            assert!(explicit.contains("private-oversize-result"));
         }
     }
 }

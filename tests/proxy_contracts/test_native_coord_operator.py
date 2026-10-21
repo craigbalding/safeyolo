@@ -532,7 +532,7 @@ def watch_once(instance, *arguments):
 
 
 def test_agent_watch_peer_tool_summaries_omit_private_payloads(supervised):
-    instance, _, _, _ = supervised
+    instance, _, state, _ = supervised
     bodies, secrets = [], []
     for index, key in enumerate(("token", "password", "delegation", "authorization", "secret", "environment")):
         secret = f"peer-private-{index}"
@@ -548,6 +548,20 @@ def test_agent_watch_peer_tool_summaries_omit_private_payloads(supervised):
     unknown = json.dumps({"type": "unrecognized-event", "arguments": {"token": "unknown-private"}})
     agent_send(instance, unknown, sender="bob")
     bodies.append(unknown)
+    for harness in ("codex", "pi"):
+        for kind in ("unknown_tool_call", "unrecognized-event", "mcp_tool_call"):
+            secret = f"{harness}-oversize-private-{kind}"
+            secrets.append(secret)
+            summary = {"type": kind, "arguments": {"token": secret}, "result": {"body": secret}}
+            if kind == "mcp_tool_call":
+                summary.update(server="safeyolo-coord", tool="read_approval", status="completed",
+                               result={"structured_content": {"status": "pending", "body": secret}})
+            body = json.dumps({"type": f"safeyolo.{harness}.oversize",
+                               "original_type": "unrecognized-event" if kind == "unrecognized-event" else "item.completed",
+                               "summary": summary, "original_bytes": 65536, "omitted_middle_bytes": 64000,
+                               "sha256": "a" * 64})
+            agent_send(instance, body, sender="bob")
+            bodies.append(body)
     before = history(instance)
     assert [message["body"] for message in before] == bodies
     assert all(message["sender_agent_name"] == "bob" for message in before)
@@ -556,7 +570,16 @@ def test_agent_watch_peer_tool_summaries_omit_private_payloads(supervised):
     assert result.stdout.count("room message from bob:") == len(bodies)
     assert not any(secret in result.stdout for secret in [*secrets, "unknown-private"])
     assert "safeyolo-coord.read_approval" in result.stdout and "approval_status=pending" in result.stdout
+    assert result.stdout.count("original_bytes=65536 omitted_bytes=64000") == 6
+    for choice in ("--raw", "--json", "--show-unknown"):
+        explicit = cli(instance, "watch", ROOM, "--once", choice)
+        assert explicit.returncode == 0, explicit.stderr
+        for harness in ("codex", "pi"):
+            assert f"{harness}-oversize-private-unknown_tool_call" in explicit.stdout
+        if choice == "--json":
+            assert [json.loads(line)["body"] for line in explicit.stdout.splitlines()] == bodies
     assert history(instance) == before
+    assert not state.exists() and not state.with_name(state.name + ".lock").exists()
 
 
 def test_agent_watch_checkpoint_and_tool_targets_omit_url_credentials(supervised):
