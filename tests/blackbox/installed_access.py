@@ -16,6 +16,7 @@ import http.client
 import json
 import os
 import pty
+import re
 import select
 import shlex
 import signal
@@ -360,41 +361,63 @@ def operator_terminal(cli: str, root: Path, agent: str, marker: str) -> dict:
 
 
 def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
-    """Open the native Admin presentation, unlock noVNC and reach live VNC."""
+    """Unlock the native desktop page and reach VNC through its viewer route."""
     presentation = api.present_desktop(agent_id)
     assert presentation["agent_id"] == agent_id, "desktop returned another target"
     url = urlsplit(presentation["url"])
     assert url.scheme == "http" and url.hostname == "127.0.0.1" and url.port, "fixture requires local presentation"
+    assert url.path == "/_safeyolo_desktop/", "presentation did not return the native desktop path"
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
     try:
         connection.request("POST", "/_safeyolo_preview/unlock",
                            body=urlencode({"code": presentation["unlock_code"]}),
                            headers={"Content-Type": "application/x-www-form-urlencoded"})
         response = connection.getresponse()
-        response.read()
-        assert response.status == 303, "desktop unlock failed"
+        response.read(1_000_001)
+        assert response.status == 303, f"desktop unlock failed: status={response.status}"
         cookie = response.getheader("Set-Cookie")
         assert cookie, "desktop unlock did not return its session cookie"
         connection.request("GET", url.path, headers={"Cookie": cookie.split(";", 1)[0]})
         response = connection.getresponse()
         page = response.read(1_000_001)
-        assert response.status == 200 and len(page) <= 1_000_000 and b"novnc" in page.lower(), "desktop page unavailable"
-        with connect(f"ws://{url.netloc}/websockify", origin=f"http://{url.netloc}",
-                     additional_headers={"Cookie": cookie.split(";", 1)[0]}, proxy=None) as websocket:
-            banner = websocket.recv(timeout=10)
-            assert isinstance(banner, bytes) and banner.startswith(b"RFB "), "desktop returned no live VNC banner"
+        page_markers = {
+            "title": b"<title>SafeYolo Desktop</title>" in page,
+            "screen": b'id="screen"' in page,
+            "script": b'src="/_safeyolo_desktop/page.js"' in page,
+        }
+        # Report only bounded status, size and marker operands. Response bodies
+        # and authentication headers can contain secrets.
+        assert response.status == 200 and len(page) <= 1_000_000 and all(page_markers.values()), (
+            f"desktop page unavailable: status={response.status} bytes_read={len(page)} markers={page_markers}"
+        )
+        viewer_path = "/_safeyolo_desktop/viewer?" + uuid.uuid4().hex
+        with connect(f"ws://{url.netloc}{viewer_path}", origin=f"http://{url.netloc}",
+                     additional_headers={"Cookie": cookie.split(";", 1)[0]},
+                     subprotocols=["binary"], proxy=None) as websocket:
+            deadline = time.monotonic() + 10
+            banner = b""
+            # The guest bridge sends TCP reads as separate WebSocket messages.
+            while len(banner) < 12:
+                chunk = websocket.recv(timeout=max(0, deadline - time.monotonic()))
+                assert isinstance(chunk, bytes) and b"RFB ".startswith((banner + chunk)[:4]), (
+                    f"desktop returned no live VNC banner: type={type(chunk).__name__} bytes_read={len(banner) + len(chunk)}"
+                )
+                banner += chunk
+            assert re.fullmatch(rb"RFB [0-9]{3}\.[0-9]{3}\n", banner), (
+                f"desktop returned no live VNC banner: bytes_read={len(banner)}"
+            )
     finally:
         connection.close()
     missing = "ag-" + uuid.uuid4().hex
     try:
         api.present_desktop(missing)
     except APIError as error:
-        assert error.status_code == 404, "missing desktop target did not report not found"
+        assert error.status_code == 404, f"missing desktop target did not report not found: status={error.status_code}"
     else:
         raise AssertionError("missing desktop target unexpectedly opened")
     return {"agent_id": agent_id, "url": presentation["url"], "page_status": 200,
-            "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
-            "observation_scope": "unlocked noVNC page and live VNC banner; no visual interaction"}
+            "page_bytes": len(page), "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
+            "observation_scope": "unlocked native desktop page and live VNC banner; no visual interaction"}
 
 
 def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: dict,
