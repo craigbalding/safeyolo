@@ -194,21 +194,18 @@ fi
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
-# Skip the rebuild on every boot -- the CA cert is the same across runs.
-# Trigger update-ca-certificates only if either:
-#   - the source cert differs from what's installed
-#   - the bundle file is missing (recovery from a corrupt/missing state)
-# Drop --fresh: incremental update is enough since we're adding, not pruning.
+# The host can bind the instance certificate directly at the destination.
+# Matching certificate bytes do not prove that the system bundle contains it.
+# Refresh the bundle on boot, without rewriting an unchanged mounted file.
 # --------------------------------------------------------------------------
 SY_CERT_SRC=/safeyolo/mitmproxy-ca-cert.pem
 SY_CERT_DST=/usr/local/share/ca-certificates/safeyolo.crt
-SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 if [ -f "$SY_CERT_SRC" ]; then
-    if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
+    if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST"; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
-        if ! update-ca-certificates >/dev/null 2>&1; then
-            echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
-        fi
+    fi
+    if ! update-ca-certificates >/dev/null 2>&1; then
+        echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
     fi
 fi
 

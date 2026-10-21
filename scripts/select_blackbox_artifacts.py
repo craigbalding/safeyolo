@@ -195,11 +195,22 @@ def native_input_identity(kind: str, platform: str, profile: str, revision: str)
     if packages.commit() != revision:
         raise ValueError("native input source differs from the checked out revision")
     settings = packages.proxy_settings(profile)
-    # These producers use default Cargo features and the native host target.
-    # Source identity also binds manifests, Cargo configuration and build scripts.
+    # Source identity binds manifests, Cargo configuration and build scripts.
     settings["features"] = "default"
     settings["guest_target"] = os.environ.get("SAFEYOLO_GUEST_TARGET", "")
     if kind == "guest":
+        if not settings["guest_target"]:
+            settings["guest_target"] = {
+                "linux-amd64": "x86_64-unknown-linux-musl",
+                "linux-arm64": "aarch64-unknown-linux-musl",
+            }[platform]
+        # cc-rs accepts target-specific C compiler, archiver and flag overrides.
+        # They affect the guest bytes independently of the host build settings.
+        settings["environment"].update({
+            key: value for key, value in os.environ.items()
+            if key.startswith(("CC_", "CFLAGS_", "AR_"))
+            or key in {"TARGET_CC", "TARGET_CFLAGS", "TARGET_AR"}
+        })
         settings["guest_rustc"] = packages.output("rustc", "-vV", cwd=ROOT / "guest/command")
         settings["guest_cargo_lock_sha256"] = packages.sha256(ROOT / "guest/command/Cargo.lock")
     return {"source_revision": revision, "platform": platform, "profile": profile,
