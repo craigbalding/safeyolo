@@ -124,6 +124,7 @@ def test_alpine_builder_outputs(tmp_path, builder, output, arch):
     assert any(call.startswith("sudo|umoci|unpack|") for call in calls)
     apk = next(call for call in calls if call.startswith("chroot|"))
     assert "|env|SSL_CERT_FILE=/tmp/safeyolo-apk-ca." in apk
+    assert "|setpriv|" in apk
     assert not list((tmp_path / "work/tree/tmp").glob("safeyolo-apk-ca.*"))
     assert (tmp_path / "cache-paths.txt").read_text() == "/var/cache/apk\n"
     if output == "TREE":

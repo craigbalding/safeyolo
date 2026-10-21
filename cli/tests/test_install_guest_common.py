@@ -1,6 +1,7 @@
 """Tests for the shared custom-rootfs guest installer."""
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -9,6 +10,55 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUEST_DIR = REPO_ROOT / "guest"
 GLOBAL_ONLY_CONFIG = "/etc/safeyolo/mise-project-config-disabled.toml"
+
+
+@pytest.mark.parametrize("location", ("usr/bin", "bin", None))
+@pytest.mark.parametrize("can_change_uid", (True, False))
+def test_sudo_shim_selects_helper_and_preserves_arguments(
+    tmp_path, location, can_change_uid,
+):
+    real_sudo = tmp_path / "sudo"
+    real_sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    real_sudo.chmod(0o755)
+    if location:
+        helper = tmp_path / location / "setpriv"
+        helper.parent.mkdir(parents=True)
+        helper.write_text(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$TEST_SETPRIV_CALLS"\n'
+            '[ "$1" = --reuid=0 ] && [ "$2" = --regid=0 ] && '
+            '[ "$3" = --clear-groups ] || exit 92\n'
+            '[ "$TEST_CAN_CHANGE_UID" = 1 ] || exit 1\n'
+            'shift 3\nexec "$@"\n'
+        )
+        helper.chmod(0o755)
+    source = (GUEST_DIR / "rootfs/safeyolo-sudo").read_text()
+    for name, path in (
+        ("REAL_SUDO=/usr/bin/sudo", real_sudo),
+        ("SETPRIV=/usr/bin/setpriv", tmp_path / "usr/bin/setpriv"),
+        ("SETPRIV=/bin/setpriv", tmp_path / "bin/setpriv"),
+    ):
+        source = source.replace(name, name.split("=")[0] + "=" + shlex.quote(str(path)))
+    shim = tmp_path / "shim"
+    shim.write_text(source)
+    calls = tmp_path / "calls"
+    result = subprocess.run(
+        ["sh", str(shim), "-n", "-u", "agent", "printf", "%s", "a b"],
+        env=os.environ | {
+            "TEST_SETPRIV_CALLS": str(calls),
+            "TEST_CAN_CHANGE_UID": str(int(can_change_uid)),
+        },
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["-n", "-u", "agent", "printf", "%s", "a b"]
+    if location:
+        observed = calls.read_text().splitlines()
+        assert observed[0] == "--reuid=0 --regid=0 --clear-groups /bin/true"
+        assert len(observed) == (2 if can_change_uid else 1)
+    else:
+        assert not calls.exists()
 
 
 def test_installer_rejects_rootfs_without_prlimit(tmp_path: Path) -> None:

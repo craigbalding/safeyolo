@@ -166,6 +166,10 @@ must meet these requirements:
      the agent's existing namespace capabilities on rootless Linux gVisor;
      PID 1 uses `prlimit` to set the open-file limit on its numeric process)
 
+   Alpine 3.22 splits these tools into separate packages. Install `setpriv`
+   for `/bin/setpriv` and `util-linux-misc` for `prlimit`. BusyBox's
+   `setpriv` lacks the UID and GID options that the sudo shim needs.
+
    Additional project tools can be installed in the guest. Boot,
    control, terminal, Coord and diagnostics do not require a Python package.
    Use `safeyolo agent diagnostics NAME` on the host for the owned hops.

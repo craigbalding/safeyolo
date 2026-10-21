@@ -79,6 +79,7 @@ echo "=== Installing Alpine packages ==="
 #   font-noto      -- without fonts the browser renders blank/tofu text
 #   procps-ng      -- the core desktop launcher uses pkill (not in busybox)
 #   util-linux-misc -- provides setsid and the PID 1 prlimit operation
+#   setpriv       -- util-linux helper used by the guest sudo shim (not BusyBox)
 #   mise          -- Alpine's native musl-linked package
 #   nodejs/npm    -- native musl-linked Node toolchain for Codex/web tooling
 #   chromium      -- headful browser shown through noVNC
@@ -103,7 +104,7 @@ if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
     APK_ENV+=("SSL_CERT_FILE=${APK_BUILD_CA#"$TREE"}") # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
 fi
 _as_root chroot "$TREE" "${APK_ENV[@]}" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo mise nodejs npm \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo setpriv mise nodejs npm \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
     xvfb x11vnc font-noto procps-ng util-linux-misc \

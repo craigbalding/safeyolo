@@ -74,6 +74,7 @@ echo "=== Installing Alpine packages ==="
 #   shadow   -- useradd + usermod used by install_safeyolo_guest_common
 #   openssh-server -- `safeyolo agent shell` SSH target
 #   ca-certificates -- HTTPS trust store (SafeYolo CA appended at boot)
+#   setpriv -- util-linux helper used by the guest sudo shim (not BusyBox)
 # Plus the small, universal developer toolkit we expect coding agents to use:
 # curl, git, jq, ripgrep, fd, file, unzip/zip, tmux, lsof, strace, Python venv,
 # and pkgconf for native build discovery. Alpine's native mise package is
@@ -98,7 +99,7 @@ if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
     APK_ENV+=("SSL_CERT_FILE=${APK_BUILD_CA#"$TREE"}") # DOC: contrib/ROOTFS_SCRIPT_GUIDE.md
 fi
 _as_root chroot "$TREE" "${APK_ENV[@]}" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo util-linux-misc mise \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo setpriv util-linux-misc mise \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf
 if [ -n "$APK_BUILD_CA" ]; then
