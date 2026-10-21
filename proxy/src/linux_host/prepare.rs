@@ -1,4 +1,4 @@
-//! Prepare only missing Ubuntu host prerequisites, with explained consent.
+//! Prepare only missing Linux host prerequisites, with explained consent.
 
 use crate::{
     Error,
@@ -116,7 +116,13 @@ fn privilege(program: &str) -> Command {
 }
 
 fn allocation_limits(kind: &str) -> Result<(u32, u32), Error> {
-    let text = fs::read_to_string("/etc/login.defs")?;
+    let text = match fs::read_to_string("/etc/login.defs") {
+        Ok(text) => text,
+        // Minimal Alpine hosts can install shadow's allocator without its
+        // account tools. Shadow uses these same defaults without login.defs.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
     let mut minimum = 100000;
     let mut maximum = 600100000;
     for line in text.lines() {
@@ -149,8 +155,19 @@ struct ShadowRange {
 type Grant = unsafe extern "C" fn(*mut ShadowRange, bool) -> bool;
 type Ungrant = unsafe extern "C" fn(*mut ShadowRange) -> bool;
 
-/// Use Ubuntu's public libsubid ABI. Its grant operation finds a free range
+fn open_subid_library() -> Option<*mut libc::c_void> {
+    for name in [c"libsubid.so.4", c"libsubid.so.5"] {
+        let library = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if !library.is_null() {
+            return Some(library);
+        }
+    }
+    None
+}
+
+/// Use shadow's public libsubid ABI. Its grant operation finds a free range
 /// while holding the same shadow lock used by useradd and usermod.
+/// Versions 4 (Ubuntu) and 5 (Alpine) share these range and grant signatures.
 fn allocate_ids(uid: u32) -> Result<(), Error> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(
@@ -159,13 +176,9 @@ fn allocate_ids(uid: u32) -> Result<(), Error> {
     }
     let owner = linux_host::login(uid)?;
     let owner_c = CString::new(owner.as_bytes())?;
-    let library =
-        unsafe { libc::dlopen(c"libsubid.so.4".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-    if library.is_null() {
-        return Err(
-            "Ubuntu libsubid.so.4 is missing; install libsubid4 and retry host preparation".into(),
-        );
-    }
+    let library = open_subid_library().ok_or(
+        "shadow's libsubid.so.4 or libsubid.so.5 cannot load; run safeyolo host prepare to install the host's allocator, then retry",
+    )?;
     let result = (|| -> Result<(), Error> {
         for (file, kind, database, grant_name, ungrant_name) in [
             (
@@ -194,10 +207,10 @@ fn allocate_ids(uid: u32) -> Result<(), Error> {
             let ungrant = unsafe { libc::dlsym(library, ungrant_name.as_ptr()) };
             if grant.is_null() || ungrant.is_null() {
                 return Err(
-                    "host libsubid does not provide Ubuntu's supported allocation API".into(),
+                    "host libsubid does not provide shadow's supported allocation API".into(),
                 );
             }
-            // dlsym is bound to the public signatures in shadow 4.13 subid.h.
+            // dlsym is bound to the public signatures in shadow 4.13/4.17 subid.h.
             let grant: Grant = unsafe { std::mem::transmute(grant) };
             let ungrant: Ungrant = unsafe { std::mem::transmute(ungrant) };
             let mut range = ShadowRange {
@@ -775,12 +788,10 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         }
     }
     if need_ranges {
-        let library =
-            unsafe { libc::dlopen(c"libsubid.so.4".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        if library.is_null() {
-            packages.push("libsubid4");
-        } else {
+        if let Some(library) = open_subid_library() {
             unsafe { libc::dlclose(library) };
+        } else {
+            packages.push("libsubid4");
         }
     }
     if apparmor && command_path("aa-exec").is_none() {
@@ -789,15 +800,32 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     if apparmor && command_path("apparmor_parser").is_none() {
         packages.push("apparmor");
     }
-    // Setup is supported on Ubuntu; already prepared contributor hosts need
-    // no package changes and can retain their existing runtime paths.
-    if !packages.is_empty()
-        && !fs::read_to_string("/etc/os-release")?
+    // Already prepared contributor hosts need no package changes and retain
+    // their runtime paths. Install only the missing tools on supported hosts.
+    let alpine = if packages.is_empty() {
+        false
+    } else {
+        let release = fs::read_to_string("/etc/os-release")?;
+        let alpine = release
             .lines()
-            .any(|line| line == "ID=ubuntu" || line == "ID=\"ubuntu\"")
-    {
-        return Err(format!("automatic host package setup supports Ubuntu; missing packages: {}. Prepare these tools with your host package manager, then retry",packages.join(", ")).into());
-    }
+            .any(|line| matches!(line, "ID=alpine" | "ID=\"alpine\""));
+        if alpine {
+            for package in &mut packages {
+                *package = match *package {
+                    "uidmap" => "shadow-subids",
+                    "util-linux" => "util-linux-misc",
+                    "libsubid4" => "shadow-libs",
+                    other => other,
+                };
+            }
+        } else if !release
+            .lines()
+            .any(|line| matches!(line, "ID=ubuntu" | "ID=\"ubuntu\""))
+        {
+            return Err(format!("automatic host package setup supports Ubuntu and Alpine; missing packages: {}. Prepare these tools with your host package manager, then retry",packages.join(", ")).into());
+        }
+        alpine
+    };
     let mut changes = Vec::new();
     if !packages.is_empty() {
         changes.push(format!(
@@ -868,18 +896,26 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         }
     }
     if !packages.is_empty() {
-        execute(
-            privilege("apt-get").args(["update", "-qq"]),
-            "refresh Ubuntu package indexes",
-            applied,
-        )?;
-        execute(
-            privilege("apt-get")
-                .args(["install", "-y", "--no-install-recommends"])
-                .args(packages),
-            "install required Ubuntu host packages (a failed apt operation may have installed some packages)",
-            applied,
-        )?;
+        if alpine {
+            execute(
+                privilege("apk").args(["add", "--no-cache"]).args(packages),
+                "install required Alpine host packages (a failed APK operation may have installed some packages)",
+                applied,
+            )?;
+        } else {
+            execute(
+                privilege("apt-get").args(["update", "-qq"]),
+                "refresh Ubuntu package indexes",
+                applied,
+            )?;
+            execute(
+                privilege("apt-get")
+                    .args(["install", "-y", "--no-install-recommends"])
+                    .args(packages),
+                "install required Ubuntu host packages (a failed apt operation may have installed some packages)",
+                applied,
+            )?;
+        }
     }
     if need_ranges {
         let executable = std::env::current_exe()?;

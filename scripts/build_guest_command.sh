@@ -20,11 +20,13 @@ if [[ -z $build_target ]]; then
       echo 'A Linux guest artifact is required; build it on Linux or set SAFEYOLO_GUEST_TARGET to a configured Linux cross-build target' >&2
       exit 1 ;;
   esac
-  # Guest helpers must also load on musl guests. Keep the host executables on
-  # their existing target; musl-tools is needed only on the Linux build host.
+  # GNU build hosts need the musl wrapper. On a native musl host, cc already
+  # targets musl. Host and guest builds keep their separate link settings.
+  compiler=musl-gcc
+  if [[ $("${RUSTC:-rustc}" -vV | sed -n 's/^host: //p') == "$build_target" ]]; then compiler=cc; fi
   cc_variable=CC_${build_target//-/_}
   linker_variable=CARGO_TARGET_$(printf '%s' "$build_target" | tr '[:lower:]-' '[:upper:]_')_LINKER
-  compiler_env=("$cc_variable=${!cc_variable:-musl-gcc}" "$linker_variable=${!linker_variable:-musl-gcc}")
+  compiler_env=("$cc_variable=${!cc_variable:-$compiler}" "$linker_variable=${!linker_variable:-$compiler}")
 fi
 options+=(--target "$build_target")
 revision=${SAFEYOLO_BUILD_REVISION:-}

@@ -69,6 +69,7 @@ impl PackageGuest {
                     | "profile"
                     | "platform"
                     | "minimum_runtime"
+                    | "libc"
                     | "guest_compatibility"
                     | "guest_repository"
                     | "guest_discovery_tag"
@@ -98,6 +99,12 @@ impl PackageGuest {
             return Err("invalid source/profile metadata".into());
         }
         let minimum = field("minimum_runtime")?;
+        if fields
+            .get("libc")
+            .is_some_and(|value| !matches!(*value, "glibc" | "musl"))
+        {
+            return Err("invalid package libc".into());
+        }
         let parts: Vec<_> = minimum.split('.').collect();
         if !(2..=3).contains(&parts.len())
             || parts
@@ -112,6 +119,9 @@ impl PackageGuest {
             "linux-arm64" => ConsumerPlatform::LinuxArm64,
             _ => return Err("unsupported guest consumer platform".into()),
         };
+        if fields.get("libc") == Some(&"musl") && platform == ConsumerPlatform::DarwinArm64 {
+            return Err("musl requires a Linux package platform".into());
+        }
         if ["runsc_version", "runsc_source", "runsc_origin"]
             .iter()
             .any(|key| fields.contains_key(key))

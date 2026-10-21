@@ -459,6 +459,31 @@ Use `--no-guest-download` for a contributor or proxy-only installation that
 will receive guest assets separately. That option preserves already prepared
 inputs. It does not build a guest or fall back after a failed pull.
 
+## Alpine host packages
+
+Alpine host qualification and package publication are tracked in
+[#370](https://github.com/craigbalding/safeyolo/issues/370).
+The older Linux release archives linked above require glibc and do not run on
+Alpine. Use a qualified prebuilt musl package from your bundle supplier.
+The AMD64 package is named `safeyolo-linux-amd64-musl-production.tar.gz`.
+Its `package-info` keeps `platform=linux-amd64` for guest selection and records
+`libc=musl` and the required musl version. The installer checks the libc family
+and version before it creates an instance.
+
+On Alpine, use an ordinary account with sudo. Before running the public
+bootstrap or unpacked installer, install Bash, curl, tar and the GCC runtime
+library. These are runtime prerequisites; installation uses prebuilt product
+executables and needs no compiler or Rust toolchain.
+
+```sh
+sudo apk add bash curl tar libgcc
+```
+
+Use the supplied package's ordinary `install.sh`. Host preparation installs
+missing rootless tools with APK and uses shadow's locked allocator for missing
+subordinate IDs. The guest remains the package's compatible OCI selection.
+Alpine host qualification is separate from the accepted Alpine guest images.
+
 ## Linux host preparation in new source bundles
 
 The tested newer Linux release and current source bundles include the complete
@@ -472,12 +497,12 @@ The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
 Run the bundle's ordinary `install.sh` as your host account. Before changing
-Ubuntu, it lists missing packages, subordinate account ranges, file permissions
+Ubuntu or Alpine, it lists missing packages, subordinate account ranges, file permissions
 and the AppArmor profile, then asks for consent. `--yes` accepts those listed changes
 for an unattended installation. The proxy and agents run without host root
 privilege. Guest root maps to subordinate host user and group IDs, not host root.
 
-Host preparation uses sudo to run `apt-get` for missing packages, allocate
+Host preparation uses sudo to run `apt-get` on Ubuntu or `apk` on Alpine for missing packages, allocate
 missing unused user ID (UID) and group ID (GID) ranges, and install or load the
 required AppArmor profile. Runtime access uses `setfacl` to grant the selected
 sandbox IDs traversal through private parent directories and read/execute
@@ -495,7 +520,9 @@ stage because of its mapped owners, cleanup uses `sudo -n` for that newly
 created stage only. Completed host preparation remains if guest acquisition
 fails; retry reuses valid inputs.
 
-Preparation installs missing host tools from Ubuntu's existing package sources.
+Preparation installs missing host tools from the host's existing package sources.
+Alpine uses `shadow-subids`, `shadow-libs` and `util-linux-misc` for the
+corresponding rootless tools and allocator. Ubuntu package names stay unchanged.
 It reuses suitable subordinate UID and GID ranges independently. If either
 range is missing, shadow's locked account allocator selects an unused range.
 Another account's allocation at 100000–165535 does not prevent installation.
@@ -989,14 +1016,18 @@ approval operations retain their separate owners.
 
 From a clean committed checkout on the target host, use Bash and the Rust
 toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
-ldd, curl, musl-tools and a tar with zstd support for the pinned gVisor payload. The
+ldd, curl and a tar with zstd support for the pinned gVisor payload. GNU Linux
+build hosts need musl-tools; Alpine build hosts need build-base and musl-dev. The
 assembler verifies the downloaded archive and reuses its checked cache.
 On the Linux build host, install the Rust musl target for its architecture:
 `x86_64-unknown-linux-musl` on AMD64 or `aarch64-unknown-linux-musl` on ARM64,
 using `rustup target add TARGET`. The default builder links the two guest
 helpers statically with musl so Alpine guests need no glibc compatibility
-package. Host executables keep their existing GNU target. The guest compiler
-is `musl-gcc`; target-specific Cargo linker and C compiler overrides remain
+package. GNU host executables keep their existing target. On native musl build
+hosts, the assembler links host executables dynamically so host preparation can
+load shadow's allocator. Those host executables require Alpine's `libgcc` runtime.
+Guest helpers remain static. The guest compiler is `musl-gcc` on GNU hosts and
+`cc` on native musl hosts; target-specific Cargo linker and C compiler overrides remain
 available. An explicit `SAFEYOLO_GUEST_TARGET` keeps the configured cross-build
 target and its target-specific artifact directory.
 macOS needs Command Line Tools and a signed VM helper build. Prepared

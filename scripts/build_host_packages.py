@@ -136,7 +136,8 @@ def save_production(directory: Path) -> None:
     """Bind the finished archive to this Actions producer, without publishing it."""
     revision = commit()
     selected_platform = host_platform()
-    name = f"safeyolo-{selected_platform}-production.tar.gz"
+    name = output("bash", "-c", 'source "$1"; host_package_name "$2" production',
+                  "bash", str(ROOT / "scripts/native_package.sh"), selected_platform) + ".tar.gz"
     archive = directory / name
     with tarfile.open(archive, "r:gz") as package:
         stream = package.extractfile(name.removesuffix(".tar.gz") + "/package-info")

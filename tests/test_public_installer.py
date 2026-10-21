@@ -19,6 +19,7 @@ from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.test_guest_acquisition import compressed_archive, digest, release
 from tests.test_guest_acquisition import guest_store as _guest_store
 from tests.test_guest_acquisition import registry as _registry
+from tests.test_host_packages import musl_runtime as _musl_runtime
 from tests.test_host_packages import package_inputs as _package_inputs
 from tests.test_host_packages import run
 
@@ -26,6 +27,7 @@ from tests.test_host_packages import run
 guest_store = _guest_store
 registry = _registry
 package_inputs = _package_inputs
+musl_runtime = _musl_runtime
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASES = "/craigbalding/safeyolo/releases"
@@ -35,6 +37,7 @@ RELEASES = "/craigbalding/safeyolo/releases"
 def public_release(package_inputs, registry, tmp_path, request):
     contents, requests, faults, environment = registry
     output = tmp_path / "release"
+    runtime_tools = request.getfixturevalue("musl_runtime") if getattr(request, "param", None) == "musl" else None
     if getattr(request, "param", None) == "native":
         bundle = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
         if not bundle:
@@ -71,7 +74,8 @@ def public_release(package_inputs, registry, tmp_path, request):
     home = tmp_path / "operator"
     commands = home / ".local/bin"
     commands.mkdir(parents=True)
-    environment = {**environment, "HOME": str(home), "PATH": f"{commands}:/usr/local/bin:/usr/bin:/bin",
+    runtime_path = f"{runtime_tools}:" if runtime_tools else ""
+    environment = {**environment, "HOME": str(home), "PATH": f"{commands}:{runtime_path}/usr/local/bin:/usr/bin:/bin",
                    "CURL_CA_BUNDLE": environment["SSL_CERT_FILE"]}
     for key in ("SAFEYOLO_CONFIG_DIR", "SAFEYOLO_HOME", "SAFEYOLO_NATIVE_CONFIG_PATH", "BASH_ENV"):
         environment.pop(key, None)
@@ -86,6 +90,7 @@ def public_release(package_inputs, registry, tmp_path, request):
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["glibc", "musl"], indirect=True)
 def test_downloaded_bootstrap_installs_without_checkout_and_exposes_same_terminal_command(public_release):
     _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
     environment = {**environment, "BOOTSTRAP": str(bootstrap)}
@@ -99,6 +104,8 @@ def test_downloaded_bootstrap_installs_without_checkout_and_exposes_same_termina
     assert (root / "share/guest-selection.json").exists()
     assert (root / "install_native.sh").is_file()
     assert f"{base}/{archive.name}" in requests
+    if "-musl-" in archive.name:
+        assert "libc=musl\n" in (root / "package-info").read_text()
     assert f"{RELEASES}/latest" not in requests
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
 

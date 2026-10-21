@@ -35,7 +35,8 @@ def test_focused_guest_tests_finish_before_helper_staging():
 @pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
 @pytest.mark.parametrize("profile", ["production", "debug"])
 @pytest.mark.parametrize("explicit_target", [False, True])
-def test_guest_build_stages_matching_helpers(tmp_path, architecture, profile, explicit_target):
+@pytest.mark.parametrize("host_libc", ["gnu", "musl"])
+def test_guest_build_stages_matching_helpers(tmp_path, architecture, profile, explicit_target, host_libc):
     source = tmp_path / "source"
     scripts = source / "scripts"
     scripts.mkdir(parents=True)
@@ -60,9 +61,12 @@ def test_guest_build_stages_matching_helpers(tmp_path, architecture, profile, ex
     tools.mkdir()
     (tools / "uname").write_text(f"#!/bin/sh\ncase $1 in -s) echo Linux;; -m) echo {architecture};; esac\n")
     (tools / "uname").chmod(0o755)
+    (tools / "rustc").write_text(f"#!/bin/sh\nprintf 'host: {architecture}-unknown-linux-{host_libc}\\n'\n")
+    (tools / "rustc").chmod(0o755)
     target = f"{architecture}-unknown-linux-" + ("gnu" if explicit_target else "musl")
     environment = os.environ | {
         "PATH": f"{tools}:{os.environ['PATH']}",
+        "RUSTC": str(tools / "rustc"),
         "SAFEYOLO_BUILD_PROFILE": profile,
         "SAFEYOLO_BUILD_REVISION": "a" * 40,
         "SAFEYOLO_GUEST_TARGET_DIR": str(tmp_path / "guest-target"),
@@ -80,8 +84,9 @@ def test_guest_build_stages_matching_helpers(tmp_path, architecture, profile, ex
     for call in calls:
         assert call["args"][call["args"].index("--target") + 1] == target
         if not explicit_target:
-            assert call["environment"]["CC_" + target.replace("-", "_")] == "musl-gcc"
-            assert call["environment"]["CARGO_TARGET_" + target.upper().replace("-", "_") + "_LINKER"] == "musl-gcc"
+            compiler = "cc" if host_libc == "musl" else "musl-gcc"
+            assert call["environment"]["CC_" + target.replace("-", "_")] == compiler
+            assert call["environment"]["CARGO_TARGET_" + target.upper().replace("-", "_") + "_LINKER"] == compiler
     directory = "release" if profile == "production" else "debug"
     output = tmp_path / "guest-target"
     if explicit_target:
