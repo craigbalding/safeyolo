@@ -13,8 +13,8 @@ Example integrations. Copy and adapt for your own use.
 | `../cli/src/safeyolo/agent_context/skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/` | Codex skill and helper scripts for persistent, operator-visible tmux labs |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-factory/` | Codex operator skill for designing, cross-reviewing, proving, and troubleshooting supervised factories |
-| `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and writes an install-on-first-run foreground command |
-| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links `$safeyolo`, `$safeyolo-lab-controller`, and `$safeyolo-factory`, installs the `safeyolo-lab` guest command, and writes an install-on-first-run foreground command |
+| `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and installs the native release on first run |
+| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages agent-local settings and the default coord MCP server, injects the baseline, links `$safeyolo`, `$safeyolo-lab-controller`, and `$safeyolo-factory`, installs the `safeyolo-lab` guest command, and installs the complete native Codex release on first run |
 | `pi-host-setup.sh` | Host setup for Pi coding agent -- installs `@earendil-works/pi-coding-agent@0.85.0` with a fixed integrity and Node boundary, stages the baseline/shared skill and `repo-map`, and writes an install-on-first-run foreground command |
 | `pi-coord-host-setup.sh` | `@pi-coord` factory setup; stages Pi's Coord `send` tool and runs bounded JSON turns under the common supervisor |
 | `pi-coord-extension.ts` | Minimal native Pi adapter for canonical Coord sends using the agent's transport identity |

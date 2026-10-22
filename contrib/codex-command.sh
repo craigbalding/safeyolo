@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-export CODEX_HOME=/home/agent/.codex
-: "${SAFEYOLO_CODEX_NODE_SPEC:=node@22}"
-# Either override supplies the default for the other platform. If both are
-# supplied, retain the operator's separate non-Alpine and Alpine selections.
-: "${SAFEYOLO_CODEX_NPM_SPEC:=npm:${SAFEYOLO_CODEX_NPM_PACKAGE:-@openai/codex@latest}}"
-: "${SAFEYOLO_CODEX_NPM_PACKAGE:=${SAFEYOLO_CODEX_NPM_SPEC#npm:}}"
+export CODEX_HOME="$HOME/.codex"
 # Do not rely on a login shell or BASH_ENV here. Linux launches this file
 # through runsc exec, and /etc/environment may have reset PATH before this
 # child shell starts. Keep mise's persistent per-agent layout explicit so a
@@ -18,6 +13,66 @@ export MISE_OVERRIDE_CONFIG_FILENAMES="/etc/safeyolo/mise-project-config-disable
 export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES="none"
 export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
+if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
+    : "${SAFEYOLO_CODEX_NATIVE_SPEC:=aqua:openai/codex@latest}"
+    : "${SAFEYOLO_MIN_RELEASE_AGE:=24h}"
+    if MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE" \
+         mise settings get minimum_release_age >/dev/null 2>&1; then
+        export MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE"
+    else
+        echo "codex-host-setup: mise cannot apply minimum_release_age=$SAFEYOLO_MIN_RELEASE_AGE; no delayed-deployment protection on this build" >&2
+    fi
+    sy_spec="$SAFEYOLO_CODEX_NATIVE_SPEC"
+    sy_tool="${sy_spec%@*}"
+    sy_target=""
+    sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+    sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+    sy_native_ready() {
+        [ -n "$sy_root" ] && [ -n "$sy_expected" ] &&
+        [ -x "$sy_root/bin/codex-code-mode-host" ] &&
+        "$sy_root/codex-path/rg" --version >/dev/null 2>&1 &&
+        sy_native_version="$("$sy_root/bin/codex" --version 2>/dev/null)" &&
+        [ "${sy_native_version##* }" = "$sy_expected" ]
+    }
+    if ! sy_native_ready; then
+        echo "SafeYolo: downloading or repairing native Codex and its companion tools." >&2
+        sy_target="$(mise latest "$sy_spec" 2>/dev/null | tail -1)"
+        if [ -n "$sy_target" ]; then
+            sy_spec="${sy_tool}@${sy_target}"
+        else
+            echo "codex-host-setup: could not resolve a remote version for $sy_spec; falling back to $sy_spec" >&2
+        fi
+        # The complete upstream package carries bin/, codex-path/ and
+        # codex-resources/. Aqua verifies its GitHub release asset digest.
+        mise use -g --force "$sy_spec" >&2
+        sy_root="$(mise where "$sy_spec")"
+        sy_expected="$sy_target"
+        if [ -z "$sy_expected" ]; then
+            sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+        fi
+        if ! sy_native_ready; then
+            echo "codex-host-setup: native Codex package, version or companion tools are incomplete (expected $sy_expected)" >&2
+            exit 1
+        fi
+    fi
+    # Keep the complete package in place for executable-relative resources.
+    # Supervised turns inherit this PATH and run the same selected Codex.
+    export PATH="$sy_root/bin:$sy_root/codex-path:$PATH"
+    sy_running="$(codex --version)"
+    sy_running="${sy_running##* }"
+    echo "codex-host-setup: codex $sy_running" >&2
+    sy_available="$sy_target"
+    if [ -z "$sy_available" ]; then
+        sy_available="$(mise latest "$sy_tool" 2>/dev/null | tail -1)"
+    fi
+    if [ -n "$sy_available" ] && [ "$sy_available" != "$sy_running" ]; then
+        echo "codex-host-setup: codex $sy_available is available; not upgrading automatically (run: mise use -g ${sy_tool}@${sy_available})" >&2
+    fi
+else
+# Either legacy npm override supplies the default for the other platform.
+: "${SAFEYOLO_CODEX_NODE_SPEC:=node@22}"
+: "${SAFEYOLO_CODEX_NPM_SPEC:=npm:${SAFEYOLO_CODEX_NPM_PACKAGE:-@openai/codex@latest}}"
+: "${SAFEYOLO_CODEX_NPM_PACKAGE:=${SAFEYOLO_CODEX_NPM_SPEC#npm:}}"
 # --- version policy ---------------------------------------------------------
 # Delayed deployment: do not pick up a release published minutes ago. Newer
 # mise applies minimum_release_age to transitive npm dependencies too.
@@ -136,6 +191,7 @@ if [ -n "$sy_running" ]; then
         echo "codex-host-setup: codex $sy_available is available; not upgrading" \
              "automatically (run: ${sy_update}@${sy_available})" >&2
     fi
+fi
 fi
 
 # Codex has no dedicated append-system-prompt flag, but its generic config

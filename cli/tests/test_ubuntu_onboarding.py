@@ -1,4 +1,8 @@
-"""Focused observer checks; no SafeYolo product, external network, VM or provider is run."""
+"""Focused observer checks; no SafeYolo product, external network, VM or provider is run.
+
+Cold-setup checks retain the exact 621b launcher fixture used by that published
+diagnostic. New default launchers do not change its source pin or past evidence.
+"""
 
 import errno
 import http.server
@@ -46,7 +50,7 @@ class ObserverChecks(unittest.TestCase):
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
 
     def test_cold_setup_wrappers_preserve_real_command_success_repair_and_failure(self):
-        source = Path(__file__).resolve().parents[2] / "contrib/claude-host-setup.sh"
+        source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
         command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
         tools = m.private / "tools"
         tools.mkdir()
@@ -96,7 +100,7 @@ esac
                 self.assertEqual(observed[1][0], 31 if case == "fail" else 0)
 
     def test_cold_setup_wrappers_preserve_overlap_wait_status_and_repair(self):
-        source = Path(__file__).resolve().parents[2] / "contrib/claude-host-setup.sh"
+        source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
         self.assertEqual(m.digest(source), m.COLD_SETUP_SCRIPT_SHA256)
         command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
         tools = m.private / "tools"
@@ -214,7 +218,7 @@ esac
         run.assert_called_once()
 
     def test_cold_setup_rejects_unobserved_wait_route_without_rewriting_command(self):
-        source = Path(__file__).resolve().parents[2] / "contrib/claude-host-setup.sh"
+        source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
         command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
         script = m.private / "command"
         changed = command.replace('wait "$sy_node_pid"', "wait")
