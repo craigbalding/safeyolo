@@ -12,6 +12,31 @@ host_platform() {
   esac
 }
 
+linux_runtime() {
+  local value version
+  if value=$(getconf GNU_LIBC_VERSION 2>/dev/null) && [[ $value == 'glibc '* ]]; then
+    printf '%s\n' "$value"
+    return
+  fi
+  value=$(ldd --version 2>&1) || true
+  if [[ $value == *'musl libc'* ]]; then
+    version=$(printf '%s\n' "$value" | awk '$1 == "Version" {print $2; exit}')
+    [[ $version =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { package_error 'cannot determine the musl version'; return 1; }
+    printf 'musl %s\n' "$version"
+  else
+    package_error 'cannot identify the Linux host libc; requires glibc or musl'
+  fi
+}
+
+host_package_name() {
+  local platform=$1 profile=$2 runtime suffix=
+  if [[ $platform == linux-* ]]; then
+    runtime=$(linux_runtime) || return
+    [[ $runtime != musl\ * ]] || suffix=-musl
+  fi
+  printf 'safeyolo-%s%s-%s\n' "$platform" "$suffix" "$profile"
+}
+
 file_sha256() {
   local digest
   if command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$1") || return;
@@ -87,7 +112,7 @@ verify_native_artifacts() {
 }
 
 verify_native_package() {
-  local package=$1 key value source= profile= platform= minimum= identity binary
+  local package=$1 key value source= profile= platform= minimum= identity binary libc=glibc runtime
   local compatibility= repository= discovery= seen=$'\n' runsc_version= runsc_source= runsc_origin=
   local legacy_installed=false file line checksums checksum_errors=
   if [[ ${2:-} == --installed ]]; then
@@ -104,6 +129,7 @@ verify_native_package() {
     seen+="$key"$'\n'
     case "$key" in
       source_commit) source=$value;; profile) profile=$value;; platform) platform=$value;; minimum_runtime) minimum=$value;;
+      libc) libc=$value;;
       guest_compatibility) compatibility=$value;; guest_repository) repository=$value;; guest_discovery_tag) discovery=$value;;
       runsc_version) runsc_version=$value;; runsc_source) runsc_source=$value;; runsc_origin) runsc_origin=$value;;
       *) package_error "unknown package field: $key"; return 1;;
@@ -111,6 +137,7 @@ verify_native_package() {
   done < "$package/package-info"
   [[ $source =~ ^[0-9a-f]{40}$ && $profile =~ ^(production|debug)$ ]] || { package_error 'invalid source/profile metadata'; return 1; }
   [[ $platform == "$(host_platform)" ]] || { package_error "package platform $platform differs from this host"; return 1; }
+  [[ $libc == glibc || ( $libc == musl && $platform == linux-* ) ]] || { package_error 'invalid package libc'; return 1; }
   [[ $minimum =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { package_error 'invalid minimum runtime'; return 1; }
   [[ $compatibility =~ ^[A-Za-z0-9_.-]{1,121}$ && $discovery == "compat-$compatibility" ]] || {
     package_error 'invalid guest compatibility/discovery metadata'; return 1;
@@ -125,8 +152,9 @@ verify_native_package() {
   if [[ $platform == darwin-arm64 ]]; then
     version_at_least "$(sw_vers -productVersion)" "$minimum" || { package_error "requires macOS $minimum"; return 1; }
   else
-    value=$(getconf GNU_LIBC_VERSION)
-    version_at_least "${value#glibc }" "$minimum" || { package_error "requires glibc $minimum"; return 1; }
+    runtime=$(linux_runtime) || return
+    [[ $runtime == "$libc "* ]] || { package_error "package requires $libc; this host uses ${runtime%% *}"; return 1; }
+    version_at_least "${runtime#* }" "$minimum" || { package_error "requires $libc $minimum"; return 1; }
   fi
   for binary in safeyolo safeyolo-proxy safeyolo-coord; do
     native_executable "$package/bin/$binary" "$platform" || return

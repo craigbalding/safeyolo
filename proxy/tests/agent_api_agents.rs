@@ -1,4 +1,4 @@
-//! Discovery reads retain global reporting and leave request bodies untouched.
+//! Listener reads retain global reporting and leave request bodies untouched.
 
 use std::{
     pin::Pin,
@@ -9,8 +9,10 @@ use std::{
 use bytes::Bytes;
 use hyper::body::{Body, Frame};
 use safeyolo_proxy::{
-    agent_api::{self, BodyObservation, Controls, PolicyState, Request, RequestBody},
-    agent_discovery::AgentDiscovery,
+    agent_activity::AgentActivity,
+    agent_api::{
+        self, AgentReportContext, BodyObservation, Controls, PolicyState, Request, RequestBody,
+    },
     audit::{Settings, Writer},
     network_guard::Identity,
     tasks::Registry,
@@ -30,7 +32,7 @@ impl Body for Unread {
 }
 
 #[tokio::test]
-async fn discovery_auth_precedes_global_reporting_without_body_reads() {
+async fn listener_auth_precedes_global_reporting_without_body_reads() {
     let directory = tempfile::tempdir().unwrap();
     let token = directory.path().join("agent_token");
     std::fs::write(&token, b"synthetic-discovery-api").unwrap();
@@ -38,14 +40,16 @@ async fn discovery_auth_precedes_global_reporting_without_body_reads() {
         directory.path().join("audit.jsonl"),
         Settings::default(),
     ));
-    let discovery = Arc::new(AgentDiscovery::new());
-    let map = directory.path().join("map.json");
-    std::fs::write(
-        &map,
-        br#"{"alice":{"ip":"192.0.2.10"},"bob":{"ip":"192.0.2.11"}}"#,
-    )
-    .unwrap();
-    discovery.configure(map.to_str().unwrap(), &writer).unwrap();
+    let activity = AgentActivity::default();
+    let listeners = ["alice", "bob", "opaque"]
+        .into_iter()
+        .zip(["192.0.2.10", "192.0.2.11", "/private/declaration-slot"])
+        .map(|(agent, ip)| safeyolo_proxy::AgentListener {
+            agent_id: agent.into(),
+            socket_path: directory.path().join(format!("{agent}.sock")),
+            source_id: Some(ip.into()),
+        })
+        .collect::<Vec<_>>();
     for (method, authorization, identity, installed, status, error) in [
         (
             "POST",
@@ -77,7 +81,7 @@ async fn discovery_auth_precedes_global_reporting_without_body_reads() {
             Identity::Resolved("alice"),
             false,
             503,
-            Some("service-discovery addon not loaded"),
+            Some("agent listener report unavailable"),
         ),
         (
             "GET",
@@ -123,7 +127,10 @@ async fn discovery_auth_precedes_global_reporting_without_body_reads() {
                 gateway: None,
                 memory: None,
                 traces: None,
-                discovery: installed.then_some(&discovery),
+                agents: installed.then_some(AgentReportContext {
+                    activity: &activity,
+                    listeners: &listeners,
+                }),
                 audit: Some(&writer),
                 flows: None,
                 circuits: None,
@@ -142,13 +149,15 @@ async fn discovery_auth_precedes_global_reporting_without_body_reads() {
         assert_eq!(result.response.status, status);
         assert_eq!(result.policy_evaluations, 0);
         assert!(observation.decoded_size.is_none() && observation.encoded_size.is_none());
-        let value: Value = serde_json::from_slice(&result.response.body_bytes()).unwrap();
+        let encoded = result.response.body_bytes();
+        assert!(!String::from_utf8_lossy(&encoded).contains("/private/declaration-slot"));
+        let value: Value = serde_json::from_slice(&encoded).unwrap();
         if let Some(error) = error {
             assert_eq!(value["error"], error);
         } else {
             assert_eq!(
                 value,
-                json!({"agents":{"alice":{"ip":"192.0.2.10"},"bob":{"ip":"192.0.2.11"}},"count":2})
+                json!({"agents":{"alice":{"ip":"192.0.2.10"},"bob":{"ip":"192.0.2.11"},"opaque":{"ip":null}},"count":3})
             );
         }
     }

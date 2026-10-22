@@ -149,6 +149,48 @@ impl CoordClient {
         self.owner.clone()
     }
 
+    /// Only the host approval path calls this operation. Use the existing
+    /// private agent room, membership checks and transport-owned attribution.
+    pub(crate) async fn send_approval_notice(
+        &self,
+        agent: &str,
+        agent_id: &str,
+        body: &str,
+    ) -> Result<Value, OperatorCoordError> {
+        if self.principal_id(agent).await.ok().as_deref() != Some(agent_id) {
+            return Err(OperatorCoordError::display_error(
+                "requesting agent identity changed".into(),
+            ));
+        }
+        let payload =
+            json!({"body":body,"notify":[agent],"declared_content_type":"text/plain"}).to_string();
+        let room = format!("{agent}-agent");
+        let value =
+            operator_result(prepare_send(self, &room, Sender::Operator, payload.as_bytes()).await)?;
+        let prepared: PreparedMessage =
+            serde_json::from_value(value["prepared"].clone()).map_err(|_| {
+                OperatorCoordError::display_error("context delivery preparation failed".into())
+            })?;
+        let recipients = prepared.attention_manifest["recipients"].as_array();
+        if recipients
+            .is_none_or(|recipients| recipients.len() != 1 || recipients[0]["agent_id"] != agent_id)
+        {
+            return Err(OperatorCoordError::display_error(
+                "requesting agent identity changed".into(),
+            ));
+        }
+        operator_result(
+            publish_prepared(
+                self,
+                local_operator_request(),
+                &room,
+                Sender::Operator,
+                &prepared,
+            )
+            .await,
+        )
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.owner.cleanup.drain().await;
     }

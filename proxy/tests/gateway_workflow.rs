@@ -23,7 +23,32 @@ mod test_owned_endpoint;
 
 const PASS: &str = "synthetic-vault-passphrase";
 static ACTIVITY_EVIDENCE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-fn initial_policy(origin_port: u16) -> String {
+fn initial_policy(origin_port: u16, native_product: bool) -> String {
+    let credential_controls = if native_product {
+        r#"
+[controls.credentials]
+enabled = true
+detection_level = "none"
+use_default_credential_rules = false
+standard_auth_headers = []
+
+[controls.credentials.entropy]
+min_length = 1000
+"#
+    } else {
+        r#"
+[addons.credential_guard]
+enabled = true
+detection_level = "none"
+
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+standard_auth_headers = []
+
+[addons.credential_guard.settings.entropy]
+min_length = 1000
+"#
+    };
     format!(
         r#"
 [hosts."127.0.0.1"]
@@ -36,26 +61,22 @@ egress = "allow"
 egress = "deny"
 
 [agents.alice]
+agent_id = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [agents.bob]
+agent_id = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-[addons.credential_guard]
-enabled = true
-detection_level = "none"
-
-[addons.credential_guard.settings]
-use_default_credential_rules = false
-standard_auth_headers = []
-
-[addons.credential_guard.settings.entropy]
-min_length = 1000
+{credential_controls}
 "#
     )
 }
 
-fn deny_refreshed_credential_policy(origin_port: u16) -> String {
-    initial_policy(origin_port)
-        .replace("detection_level = \"none\"", "detection_level = \"standard\"")
+fn refreshed_credential_policy(origin_port: u16, credential_type: &str) -> String {
+    let mut source = initial_policy(origin_port, true)
+        .replace(
+            "detection_level = \"none\"",
+            "detection_level = \"standard\"",
+        )
         .replace(
             "standard_auth_headers = []",
             "standard_auth_headers = [\"authorization\", \"x-api-key\"]",
@@ -63,38 +84,44 @@ fn deny_refreshed_credential_policy(origin_port: u16) -> String {
         .replace(
             "use_default_credential_rules = false",
             "use_default_credential_rules = true",
-        )
-        .replace(
-            "[hosts.\"127.0.0.1\"]\nservice = \"simple\"",
-            "[hosts.\"127.0.0.1\"]\nservice = \"simple\"\nrules = [{ action = \"credential:use\", resource = \"127.0.0.1/*\", effect = \"deny\", condition = { credential = \"github-refresh:*\" } }]",
-        )
-}
-
-fn budgeted_credential_policy(origin_port: u16) -> String {
-    let mut source = deny_refreshed_credential_policy(origin_port);
-    source.push_str(
+        );
+    source.push_str(&format!(
         r#"
-[credentials.unrelated]
-patterns = ["unrelated-[a-z]+"]
-headers = ["x-api-key"]
+[[hosts."127.0.0.1".rules]]
+action = "credential:use"
+resource = "127.0.0.1/*"
+effect = "deny"
+condition = {{ credential = "{credential_type}:*" }}
 
-[[permissions]]
+[[hosts."127.0.0.1".rules]]
+action = "credential:use"
+resource = "127.0.0.1/*"
+effect = "allow"
+condition = {{ credential = "fixture-gateway:*" }}
+
+[[hosts."127.0.0.1".rules]]
 action = "credential:use"
 resource = "127.0.0.1/*"
 effect = "budget"
 budget = 1
-condition = { credential = "unrelated:*" }
-"#,
-    );
-    source = source.replace(
-        "[hosts.\"127.0.0.1\"]\nservice = \"simple\"",
-        "[hosts.\"127.0.0.1\"]\nservice = \"simple\"\ncredentials = [\"unrelated:*\"]",
-    );
+condition = {{ credential = "unrelated:*" }}
+
+[credential.unrelated]
+match = ["unrelated-[a-z]+"]
+headers = ["x-api-key"]
+allowed_hosts = ["127.0.0.1"]
+
+[credential.fixture-gateway]
+match = ['\Asgw_[0-9a-f]{{64}}\Z']
+headers = ["authorization"]
+allowed_hosts = ["127.0.0.1"]
+"#
+    ));
     source
 }
 
 fn bound_gateway_policy(origin_port: u16) -> String {
-    let mut source = initial_policy(origin_port);
+    let mut source = initial_policy(origin_port, false);
     source.push_str(
         r#"
 [agents.alice.services.simple]
@@ -168,7 +195,6 @@ fn config(root: &Path) -> Config {
                 source_id: None,
             },
         ],
-        agent_map_file: String::new(),
         data_dir: Some(root.join("data")),
         policy_file: Some(root.join("policy.toml")),
         gateway_builtin_services_dir: Some(root.join("builtin")),
@@ -195,10 +221,11 @@ fn config(root: &Path) -> Config {
         readiness_file: root.join("ready.json"),
         reload_id: None,
         audit_log_path: Some(root.join("audit.jsonl")),
-        event_log: root.join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
+        target_ip_mappings: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),
@@ -372,69 +399,70 @@ async fn wait_for_audit_count(path: &Path, name: &str, request_id: &str, count: 
     .unwrap_or_else(|_| panic!("timed out waiting for {count} {name} audit events"));
 }
 
-fn approve_service_with_existing_consumer(
+async fn approve_service_with_existing_consumer(
     root: &Path,
-    event: &Value,
+    pending: &[u8],
     credential: &str,
 ) -> std::process::Output {
-    let event_path = root.join("approval-event.json");
-    let request_path = root.join("approval-request.json");
-    std::fs::write(&event_path, serde_json::to_vec(event).unwrap()).unwrap();
+    let request_id = response_header(pending, "x-safeyolo-request-id").unwrap();
+    let root = root.to_path_buf();
+    let credential = credential.to_owned();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let script = r#"
 import json
 import os
 import sys
+from pathlib import Path
+from safeyolo.api import AdminAPI
 from safeyolo.operator_approvals import approve
 
-class NativeAdminAPI:
-    """Capture the existing approval consumer's typed request for native API."""
-    def __init__(self, request_path):
-        self.request_path = request_path
-
-    def authorize_service(self, *, agent, service, capability, credential):
-        with open(self.request_path, "w", encoding="utf-8") as stream:
-            json.dump({
-                "agent": agent,
-                "service": service,
-                "capability": capability,
-                "credential": credential,
-            }, stream)
-        return {"status": "authorized"}
-
-with open(sys.argv[1], encoding="utf-8") as stream:
-    event = json.load(stream)
-api = NativeAdminAPI(sys.argv[2])
+root = Path(sys.argv[1])
+ready = json.loads((root / "ready.json").read_text())
+api = AdminAPI(base_url=f"http://127.0.0.1:{ready['admin_port']}",
+               token=(root / "admin-token").read_text().strip(), timeout=3)
+# Repeated traffic can refer to one canonical pending request. Resolve the
+# response's request ID before selecting that same record from discovery.
+selected = api.approval(sys.argv[2])
+events = [event for event in api.pending_approvals()
+          if all(event.get(key) == selected.get(key)
+                 for key in ("approval_id", "request_id", "agent", "action"))]
+assert len(events) == 1, events
+event = events[0]
+assert event["approval"]["approval_type"] == "service", event
+assert all(event["action"][key] == value for key, value in {
+    "kind": "service_authorize", "agent": "alice",
+    "agent_id": "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "service": "simple", "capability": "reader",
+}.items()), event
 result = approve(event, api, service_credential=os.environ["TEST_SERVICE_CREDENTIAL"])
 assert result == "authorized", result
 "#;
-    Command::new("python3")
-        .current_dir(repository)
-        .env("PYTHONPATH", repository.join("tests/reference"))
-        .env("TEST_SERVICE_CREDENTIAL", credential)
-        .args([
-            "-c",
-            script,
-            event_path.to_str().unwrap(),
-            request_path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap()
+    // The real operator client makes synchronous HTTP calls. Keep the native
+    // proxy and concurrent fixtures running on this test's Tokio runtime.
+    tokio::task::spawn_blocking(move || {
+        let python = std::env::var_os("SAFEYOLO_PYTHON")
+            .unwrap_or_else(|| repository.join(".venv/bin/python").into_os_string());
+        Command::new(python)
+            .current_dir(repository)
+            .env("PYTHONPATH", repository.join("tests/reference"))
+            .env("TEST_SERVICE_CREDENTIAL", credential)
+            .args(["-c", script, root.to_str().unwrap(), &request_id])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap()
 }
 
-fn admin_request(root: &Path) -> Vec<u8> {
-    let request: Value =
-        serde_json::from_slice(&std::fs::read(root.join("approval-request.json")).unwrap())
-            .unwrap();
+fn replace_service_request(credential: &str) -> Vec<u8> {
     let body = serde_json::to_vec(&serde_json::json!({
-        "service":request["service"],
-        "capability":request["capability"],
-        "credential":request["credential"],
+        "service":"simple",
+        "capability":"reader",
+        "credential":credential,
     }))
     .unwrap();
     format!(
-        "POST /admin/agents/{}/services HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        request["agent"].as_str().unwrap(),
+        "POST /admin/agents/alice/services HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         String::from_utf8_lossy(&body)
     )
@@ -514,7 +542,8 @@ async fn wait_for_gateway_outcome(path: &Path, outcome: &str) -> Value {
         if let Ok(content) = std::fs::read_to_string(path)
             && let Some(event) = content.lines().find_map(|line| {
                 let value = serde_json::from_str::<Value>(line).ok()?;
-                (value["event"] == "proxy.gateway" && value["outcome"] == outcome).then_some(value)
+                (value["event"] == "gateway.evaluated" && value["details"]["outcome"] == outcome)
+                    .then_some(value)
             })
         {
             return event;
@@ -871,7 +900,7 @@ async fn run_live_refresh_response_case(
             .expect("proxy shutdown hung during activation failure")
             .unwrap();
         wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
-        let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+        let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
         let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
         assert!(audit.contains(expected_reason));
         assert!(!events.contains("synthetic-activation-failed"));
@@ -927,7 +956,7 @@ async fn run_live_refresh_response_case(
     assert!(origin_seen.lock().unwrap().is_empty());
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert!(audit.contains("gateway.refresh_failed"));
     assert!(audit.contains(expected_reason));
@@ -1315,7 +1344,7 @@ async fn run_live_superseded_case(mutation: LiveVaultMutation, response_timeout:
             }
         }
     }
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert!(events.contains("REFRESH_SUPERSEDED"));
     wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
@@ -1453,7 +1482,7 @@ async fn run_live_cancellation_case(shutdown: bool) {
         });
         tokio::time::timeout(
             Duration::from_secs(3),
-            wait_for_gateway_outcome(&root_path.join("events.jsonl"), "refresh_follower"),
+            wait_for_gateway_outcome(&root_path.join("audit.jsonl"), "refresh_follower"),
         )
         .await
         .expect("follower did not join the held refresh");
@@ -2165,9 +2194,17 @@ min_length = 1000
             .expose_secret(),
         "synthetic-two-old"
     );
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
-    assert_eq!(audit.matches("REFRESH_ACTIVATION").count(), 2);
+    assert_eq!(
+        audit
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["event"] == "gateway.refresh_failed"
+                && row["details"]["reason_code"] == "REFRESH_ACTIVATION")
+            .count(),
+        2
+    );
     assert!(!events.contains("synthetic-shutdown-failed"));
     assert!(!audit.contains("synthetic-shutdown-failed"));
     origin_one_task.abort();
@@ -2359,7 +2396,7 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     let wrong_seen = Arc::new(Mutex::new(Vec::new()));
     let origin_task = tokio::spawn(origin(origin_listener, seen.clone(), origin_port));
     let wrong_origin_task = tokio::spawn(origin(wrong_listener, wrong_seen.clone(), origin_port));
-    let mut policy = initial_policy(origin_port);
+    let mut policy = initial_policy(origin_port, true);
     policy.push_str(
         r#"
 
@@ -2370,7 +2407,9 @@ token = "other-secret"
     );
     std::fs::write(root_path.join("policy.toml"), policy).unwrap();
 
-    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
+    let mut runtime_config = config(root_path);
+    runtime_config.native_product = true;
+    let mut proxy = Proxy::start(runtime_config).await.unwrap();
     let ready: Value =
         serde_json::from_slice(&std::fs::read(root_path.join("ready.json")).unwrap()).unwrap();
     let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
@@ -2430,17 +2469,13 @@ token = "other-secret"
     );
     assert!(seen.lock().unwrap().is_empty());
 
-    let request_event =
-        wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.request_access").await;
     let approval =
-        approve_service_with_existing_consumer(root_path, &request_event, "simple-secret");
+        approve_service_with_existing_consumer(root_path, &pending, "simple-secret").await;
     assert!(
         approval.status.success(),
         "operator approval failed: {}",
         String::from_utf8_lossy(&approval.stderr)
     );
-    let authorized = admin_http(admin_port, &admin_request(root_path)).await;
-    status(&authorized, "200");
 
     // Drive the same process-owned service/policy watcher as main.rs. The
     // test does not call a loader or publish a hand-built snapshot.
@@ -2518,16 +2553,10 @@ token = "other-secret"
             .any(|window| window == b"/v1/value?sig=%252F&body=%252F")
     );
 
-    // Re-approving the same durable binding publishes a replacement token;
-    // the old token is rejected while the current token remains usable.
-    let replacement_approval =
-        approve_service_with_existing_consumer(root_path, &request_event, "simple-secret");
-    assert!(
-        replacement_approval.status.success(),
-        "replacement approval failed: {}",
-        String::from_utf8_lossy(&replacement_approval.stderr)
-    );
-    let replacement_response = admin_http(admin_port, &admin_request(root_path)).await;
+    // A deliberate operator edit replaces the durable binding and its token.
+    // A resolved canonical approval cannot be replayed to perform that edit.
+    let replacement_response =
+        admin_http(admin_port, &replace_service_request("simple-secret")).await;
     status(&replacement_response, "200");
     let replacement_view =
         wait_for_alice_token_change(&root_path.join("alice.sock"), &gateway_token).await;
@@ -2586,14 +2615,7 @@ token = "other-secret"
     // A credential value containing CRLF is rejected at the native header
     // boundary. The response is generic and the controlled origin receives
     // neither the malformed value nor a partially injected request.
-    let crlf_approval =
-        approve_service_with_existing_consumer(root_path, &request_event, "crlf-secret");
-    assert!(
-        crlf_approval.status.success(),
-        "CRLF approval failed: {}",
-        String::from_utf8_lossy(&crlf_approval.stderr)
-    );
-    let crlf_response = admin_http(admin_port, &admin_request(root_path)).await;
+    let crlf_response = admin_http(admin_port, &replace_service_request("crlf-secret")).await;
     status(&crlf_response, "200");
     let crlf_view =
         wait_for_alice_token_change(&root_path.join("alice.sock"), &replacement_token).await;
@@ -2613,16 +2635,9 @@ token = "other-secret"
     let crlf_body = String::from_utf8_lossy(body(&crlf_delivery));
     assert!(!crlf_body.contains("bad") && !crlf_body.contains("Injected"));
 
-    // Restore the usable vault reference through the same approval consumer
-    // and watcher before exercising transport policy controls.
-    let restored_approval =
-        approve_service_with_existing_consumer(root_path, &request_event, "simple-secret");
-    assert!(
-        restored_approval.status.success(),
-        "restore approval failed: {}",
-        String::from_utf8_lossy(&restored_approval.stderr)
-    );
-    let restored_response = admin_http(admin_port, &admin_request(root_path)).await;
+    // Restore the usable vault reference through the same operator edit and
+    // watcher before exercising transport policy controls.
+    let restored_response = admin_http(admin_port, &replace_service_request("simple-secret")).await;
     status(&restored_response, "200");
     let restored_view =
         wait_for_alice_token_change(&root_path.join("alice.sock"), &crlf_token).await;
@@ -2762,7 +2777,7 @@ token = "other-secret"
     assert_eq!(revoke_body["status"], "revoked");
     assert_eq!(revoke_body["agent"], "alice");
     assert_eq!(revoke_body["service"], "simple");
-    assert_eq!(revoke_body["credential"], "simple-secret");
+    assert!(vault.get("simple-secret").unwrap().is_some());
     let revoke_event = wait_for_audit_event(
         &root_path.join("audit.jsonl"),
         "admin.agent_service_revoked",
@@ -2805,19 +2820,19 @@ token = "other-secret"
     let _ = stop_tx.send(());
     watcher.await.unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
-    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let event_rows: Vec<Value> = events
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(event_rows.iter().any(|row| {
-        row["event"] == "proxy.network_guard"
+        row["event"] == "security.network_guard.evaluated"
             && row["request_id"] == wrong_port_request_id
-            && row["port"] == wrong_port
-            && row["outcome"] == "blocked"
+            && row["details"]["port"] == wrong_port
+            && row["details"]["outcome"] == "blocked"
     }));
     assert!(!event_rows.iter().any(|row| {
-        row["event"] == "proxy.gateway" && row["request_id"] == wrong_port_request_id
+        row["event"] == "gateway.evaluated" && row["request_id"] == wrong_port_request_id
     }));
     assert!(audit.contains("gateway.request_access"));
     assert!(audit.contains("gateway.allow"));
@@ -2937,7 +2952,11 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
         }
     });
 
-    std::fs::write(root_path.join("policy.toml"), initial_policy(origin_port)).unwrap();
+    std::fs::write(
+        root_path.join("policy.toml"),
+        initial_policy(origin_port, true),
+    )
+    .unwrap();
     std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
     let vault_path = root_path.join("data/credentials.enc");
     let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
@@ -2954,39 +2973,28 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     vault.store(oauth.clone()).unwrap();
 
     let socket = root_path.join("alice.sock");
-    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
+    let mut runtime_config = config(root_path);
+    runtime_config.native_product = true;
+    let mut proxy = Proxy::start(runtime_config.clone()).await.unwrap();
     let ready: Value =
         serde_json::from_slice(&std::fs::read(root_path.join("ready.json")).unwrap()).unwrap();
     let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
     let pending = raw_http(&socket, &request_access()).await;
     status(&pending, "202");
-    let event =
-        wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.request_access").await;
     let approval_started = Instant::now();
-    // The installed approval consumer is a synchronous Python subprocess.
-    // Keep it off this test's current-thread runtime so concurrent native
-    // requests can continue while other fixtures approve their services.
-    let approval_root = root_path.to_path_buf();
-    let approval = tokio::task::spawn_blocking(move || {
-        approve_service_with_existing_consumer(&approval_root, &event, "simple-secret")
-    })
-    .await
-    .unwrap();
+    let approval =
+        approve_service_with_existing_consumer(root_path, &pending, "simple-secret").await;
     let approval_elapsed = approval_started.elapsed();
     assert!(
         approval.status.success(),
         "{}",
         String::from_utf8_lossy(&approval.stderr)
     );
-    let authorization_started = Instant::now();
-    let authorized = admin_http(admin_port, &admin_request(root_path)).await;
-    let authorization_elapsed = authorization_started.elapsed();
-    status(&authorized, "200");
 
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
     let (reload_tx, mut reload_rx) =
         mpsc::unbounded_channel::<oneshot::Sender<Result<(), String>>>();
-    let reload_config = config(root_path);
+    let reload_config = runtime_config.clone();
     let watcher = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -3038,7 +3046,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     {
         eprintln!(
             "token request timed out; events: {}",
-            std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
+            std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default()
         );
         eprintln!("token rows: {:?}", token_seen.lock().unwrap());
         panic!("token endpoint was not reached");
@@ -3105,7 +3113,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     });
     let follower_observed = tokio::time::timeout(
         Duration::from_secs(3),
-        wait_for_gateway_outcome(&root_path.join("events.jsonl"), "refresh_follower"),
+        wait_for_gateway_outcome(&root_path.join("audit.jsonl"), "refresh_follower"),
     )
     .await;
     assert!(
@@ -3124,7 +3132,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     assert!(
         follower_observed.is_ok(),
         "follower did not join shared flight; events: {}",
-        std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
+        std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default()
     );
     let responses = tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(&mut first, &mut second)
@@ -3193,7 +3201,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
 
     let _ = stop_tx.send(());
     watcher.await.unwrap();
-    proxy = Proxy::start(config(root_path)).await.unwrap();
+    proxy = Proxy::start(runtime_config).await.unwrap();
     let restarted_view = wait_for_alice(&socket).await;
     let restarted_token = restarted_view["authorized"]["simple"]["token"]
         .as_str()
@@ -3213,19 +3221,24 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     proxy.shutdown().await;
     let audit_text = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default();
-    let event_text = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default();
+    let audit_rows: Vec<Value> = audit_text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let event_count = |name: &str| audit_rows.iter().filter(|row| row["event"] == name).count();
     let evidence = json!({
         "workload": "service-access-oauth-refresh-approval-under-native-traffic",
         "backend": ready["backend"],
         "instance_id": ready["instance_id"],
-        "service_request_access_event_count": audit_text.matches("gateway.request_access").count(),
-        "service_authorized_event_count": audit_text.matches("admin.agent_service_authorized").count(),
-        "approval_event_count": audit_text.matches("gateway.allow").count(),
-        "refresh_follower_event_count": event_text.matches("refresh_follower").count(),
+        "service_request_access_event_count": event_count("gateway.request_access"),
+        "service_authorized_event_count": event_count("admin.agent_service_authorized"),
+        "approval_event_count": event_count("gateway.allow"),
+        "refresh_follower_event_count": audit_rows.iter().filter(|row|
+            row["event"] == "gateway.evaluated" && row["details"]["outcome"] == "refresh_follower"
+        ).count(),
         "oauth_token_requests": token_seen.lock().unwrap().len(),
         "oauth_refresh_held_during_controls": true,
-        "service_approval_elapsed_ms": approval_elapsed.as_secs_f64() * 1000.0,
-        "service_authorization_elapsed_ms": authorization_elapsed.as_secs_f64() * 1000.0,
+        "service_approval_and_authorization_elapsed_ms": approval_elapsed.as_secs_f64() * 1000.0,
         "ordinary_health_requests": 8,
         "ordinary_health_completed": health_completed,
         "ordinary_health_failed": 8 - health_completed,
@@ -3435,19 +3448,7 @@ async fn check_refreshed_credential_deny(replacement: &str, credential_type: &st
 
     std::fs::write(
         root_path.join("policy.toml"),
-        budgeted_credential_policy(origin_port)
-            .replace("github-refresh:*", &format!("{credential_type}:*"))
-            // This fixture permits its minted gateway bearer separately, so
-            // the final guard evaluates the refreshed upstream credential.
-            .replace(
-                "credentials = [\"unrelated:*\"]",
-                "credentials = [\"unrelated:*\", \"fixture-gateway:*\"]",
-            )
-            + r#"
-[credentials.fixture-gateway]
-patterns = ['\Asgw_[0-9a-f]{64}\Z']
-headers = ["authorization"]
-"#,
+        refreshed_credential_policy(origin_port, credential_type),
     )
     .unwrap();
     std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
@@ -3462,26 +3463,24 @@ headers = ["authorization"]
     oauth.token_url = Some(format!("http://127.0.0.1:{token_port}/oauth/token"));
     oauth.client_id = Some("synthetic-client".into());
     oauth.client_secret = Some(Secret::new("synthetic-client-secret"));
-    oauth.expires_at = Some("2020-01-01T00:00:00+00:00".into());
-    vault.store(oauth).unwrap();
+    // Approve the current credential first, then expire it at the request
+    // boundary. Canonical decisions refuse an already expired option.
+    oauth.expires_at = Some("2099-01-01T00:00:00+00:00".into());
+    vault.store(oauth.clone()).unwrap();
 
     let socket = root_path.join("alice.sock");
-    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
-    let ready: Value =
-        serde_json::from_slice(&std::fs::read(root_path.join("ready.json")).unwrap()).unwrap();
-    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let mut runtime_config = config(root_path);
+    runtime_config.native_product = true;
+    let mut proxy = Proxy::start(runtime_config).await.unwrap();
     let pending = raw_http(&socket, &request_access()).await;
     status(&pending, "202");
-    let event =
-        wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.request_access").await;
-    let approval = approve_service_with_existing_consumer(root_path, &event, "simple-secret");
+    let approval =
+        approve_service_with_existing_consumer(root_path, &pending, "simple-secret").await;
     assert!(
         approval.status.success(),
         "approval failed: {}",
         String::from_utf8_lossy(&approval.stderr)
     );
-    let authorized = admin_http(admin_port, &admin_request(root_path)).await;
-    status(&authorized, "200");
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
     let watcher = tokio::spawn(async move {
         loop {
@@ -3498,6 +3497,8 @@ headers = ["authorization"]
         .unwrap()
         .to_owned();
 
+    oauth.expires_at = Some("2020-01-01T00:00:00+00:00".into());
+    vault.store(oauth).unwrap();
     let denied =
         send_agent_with_unrelated_credential(&socket, origin_port, &gateway_token, "127.0.0.1")
             .await;
@@ -3506,31 +3507,52 @@ headers = ["authorization"]
     assert!(origin_seen.lock().unwrap().is_empty());
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     let request_id = response_header(&denied, "x-safeyolo-request-id").unwrap();
-    let event_rows: Vec<Value> = std::fs::read_to_string(root_path.join("events.jsonl"))
+    wait_for_audit_count(
+        &root_path.join("audit.jsonl"),
+        "security.credential_guard.evaluated",
+        &request_id,
+        2,
+    )
+    .await;
+    let event_rows: Vec<Value> = std::fs::read_to_string(root_path.join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(event_rows.iter().any(|row| {
-        row["event"] == "proxy.credential_guard"
+        row["event"] == "security.credential_guard.evaluated"
             && row["request_id"] == request_id
-            && row["outcome"] == "blocked"
+            && row["details"]["outcome"] == "blocked"
     }));
     let guard_rows: Vec<_> = event_rows
         .iter()
-        .filter(|row| row["event"] == "proxy.credential_guard" && row["request_id"] == request_id)
+        .filter(|row| {
+            row["event"] == "security.credential_guard.evaluated" && row["request_id"] == request_id
+        })
         .collect();
     assert_eq!(
         guard_rows.len(),
         2,
         "each final credential gets one guard evaluation"
     );
-    assert_eq!(guard_rows[0]["evaluations"].as_array().unwrap().len(), 2);
-    assert_eq!(guard_rows[1]["evaluations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        guard_rows[0]["details"]["evaluations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        guard_rows[1]["details"]["evaluations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
         !event_rows
             .iter()
-            .any(|row| { row["event"] == "proxy.gateway" && row["request_id"] == request_id })
+            .any(|row| { row["event"] == "gateway.evaluated" && row["request_id"] == request_id })
     );
     wait_for_audit_count(
         &root_path.join("audit.jsonl"),
@@ -3543,13 +3565,15 @@ headers = ["authorization"]
     assert_eq!(
         audit
             .lines()
-            .filter(|line| line.contains("security.credential_guard") && line.contains(&request_id))
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["event"] == "security.credential_guard"
+                && row["request_id"] == request_id)
             .count(),
         3,
         "unrelated credentials are audited once despite final gateway checking"
     );
     assert!(!audit.contains(replacement));
-    let finding = &guard_rows[1]["evaluations"][0]["finding"];
+    let finding = &guard_rows[1]["details"]["evaluations"][0]["finding"];
     assert_eq!(finding["credential_type"], credential_type);
     let _ = stop_tx.send(());
     watcher.await.unwrap();
@@ -3744,16 +3768,16 @@ target_hosts = ["localhost"]
     origin_task.abort();
 
     let canaries = [gateway_token.as_str(), DISCLOSURE_CREDENTIAL_CANARY];
-    let event_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("events.jsonl"), &canaries);
+    let event_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("audit.jsonl"), &canaries);
     let gateway_event = event_rows
         .iter()
-        .find(|row| row["event"] == "proxy.gateway" && row["request_id"] == request_id)
+        .find(|row| row["event"] == "gateway.evaluated" && row["request_id"] == request_id)
         .unwrap();
     assert_eq!(
-        gateway_event["metadata"]["gateway_injected_header"],
+        gateway_event["details"]["metadata"]["gateway_injected_header"],
         serde_json::Value::Null
     );
-    assert_eq!(gateway_event["stats"]["injected"], 0);
+    assert_eq!(gateway_event["details"]["stats"]["injected"], 0);
 
     let audit_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("audit.jsonl"), &canaries);
     let gateway_audit = audit_rows

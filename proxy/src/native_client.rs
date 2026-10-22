@@ -13,6 +13,55 @@ use crate::{Error, native_config};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(crate) struct ProbeReply {
+    pub status: u16,
+    pub request_id: Option<String>,
+    pub body_complete: bool,
+}
+
+/// Exercise the ordinary request path on a configured agent listener. The
+/// reserved host has its own transport backstop and never needs external DNS.
+pub(crate) async fn pipeline_probe(socket: &Path) -> Result<ProbeReply, Error> {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let (response, _driver) = tokio::time::timeout_at(deadline, async {
+        let socket = tokio::net::UnixStream::connect(socket).await?;
+        let (mut client, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
+        let driver = Connection(tokio::spawn(connection));
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("http://{}/__pipeline_probe", crate::PROBE_HOST))
+            .header("host", crate::PROBE_HOST)
+            .header("x-safeyolo-trace", "1")
+            .header(
+                crate::test_context::HEADER,
+                "run=doctor;agent=doctor;test=pipeline-probe",
+            )
+            .header("connection", "close")
+            .body(Full::new(Bytes::new()))?;
+        let response = client.send_request(request).await?;
+        Ok::<_, Error>((response, driver))
+    })
+    .await??;
+    let status = response.status().as_u16();
+    let request_id = response
+        .headers()
+        .get("x-safeyolo-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| crate::agent_api::valid_request_id(value))
+        .map(str::to_owned);
+    // Keep correlation even when a local block or a broken body prevented a
+    // clean sink response. Doctor still retrieves and classifies that trace.
+    let body_complete = tokio::time::timeout_at(deadline, response.into_body().collect())
+        .await
+        .is_ok_and(|body| body.is_ok());
+    Ok(ProbeReply {
+        status,
+        request_id,
+        body_complete,
+    })
+}
+
 struct Connection(tokio::task::JoinHandle<Result<(), hyper::Error>>);
 impl Drop for Connection {
     fn drop(&mut self) {

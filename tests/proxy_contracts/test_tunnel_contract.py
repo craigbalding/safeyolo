@@ -317,7 +317,7 @@ def test_parent_connect_failure_never_falls_back_to_direct_origin(
                                 for item in observations
                             ],
                             "direct_origin_accepts": 0,
-                            "proxy_egress_events": proxy.events("proxy.egress"),
+                            "proxy_egress_events": proxy.events("traffic.egress"),
                             "native_policy_provenance": (
                                 provenance if proxy_backend == "rust" else None
                             ),
@@ -420,7 +420,7 @@ def test_parent_connect_failure_does_not_retry_same_request(
                                 for item in observations
                             ],
                             "direct_origin_accepts": 0,
-                            "proxy_egress_events": proxy.events("proxy.egress"),
+                            "proxy_egress_events": proxy.events("traffic.egress"),
                             "native_policy_provenance": (
                                 provenance if proxy_backend == "rust" else None
                             ),
@@ -545,7 +545,7 @@ def test_parent_connect_failure_recovers_on_later_parent_request(
                                 for item in observations
                             ],
                             "direct_origin_accepts": 0,
-                            "proxy_egress_events": proxy.events("proxy.egress"),
+                            "proxy_egress_events": proxy.events("traffic.egress"),
                             "native_policy_provenance": (
                                 provenance if proxy_backend == "rust" else None
                             ),
@@ -840,21 +840,21 @@ def test_configured_tls_passthrough_scope_and_interception_failure(proxy_backend
             ]
             assert all(row["details"]["port"] == origins["opaque"].server_address[1]
                        for row in lifecycle)
-            requests = proxy.events("proxy.request")
+            requests = proxy.events("traffic.request_outcome")
             successful = {
                 (origins["same_host"].server_address[1], 200),
                 (origins["other_host"].server_address[1], 200),
             }
             if proxy_backend == "rust":
-                admitted_connects = [row for row in requests if row["coverage"] ==
+                admitted_connects = [row for row in requests if row["details"]["coverage"] ==
                                      "native_network_guard_only"]
-                assert {row["port"] for row in admitted_connects} == {
+                assert {row["details"]["port"] for row in admitted_connects} == {
                     origin.server_address[1] for origin in origins.values()
                 }
-                requests = [row for row in requests if row["coverage"] !=
+                requests = [row for row in requests if row["details"]["coverage"] !=
                             "native_network_guard_only"]
             failed_tls = (origins["untrusted"].server_address[1], 502)
-            inner = {(row["port"], row["status"]) for row in requests}
+            inner = {(row["details"]["port"], row["details"]["status"]) for row in requests}
             assert successful <= inner <= successful | {failed_tls}
             if proxy_backend == "rust":
                 assert failed_tls in inner
@@ -875,10 +875,10 @@ def test_configured_tls_passthrough_scope_and_interception_failure(proxy_backend
             assert any(row["event"] == "traffic.request" and
                        row["details"].get("path") == "/untrusted" for row in http_audit)
             if proxy_backend == "rust":
-                tunnels = proxy.events("proxy.tunnel")
+                tunnels = proxy.events("traffic.tunnel")
                 assert len(tunnels) == 1
-                assert tunnels[0]["coverage"] == "configured_passthrough"
-                assert tunnels[0]["port"] == origins["opaque"].server_address[1]
+                assert tunnels[0]["details"]["coverage"] == "configured_passthrough"
+                assert tunnels[0]["details"]["port"] == origins["opaque"].server_address[1]
 
 
 @pytest.mark.parametrize("method, separator, leading", [
@@ -1047,7 +1047,7 @@ def test_connect_server_first_then_client_half_close_keeps_final_response(proxy_
                     "payload": payload,
                     "server_eof": True,
                 }
-                events = proxy.events("proxy.tunnel")
+                events = proxy.events("traffic.tunnel")
                 if proxy_backend == "rust":
                     assert json.loads((tmp_path / proxy_backend / "native-policy-provenance.json").read_text()) == {
                         "backend": "rust",
@@ -1067,15 +1067,15 @@ def test_connect_server_first_then_client_half_close_keeps_final_response(proxy_
                             )[-4000:] or "<empty>")
                         )
                         time.sleep(0.01)
-                        events = proxy.events("proxy.tunnel")
+                        events = proxy.events("traffic.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
                     assert events[0]["host"] == "127.0.0.1"
-                    assert events[0]["port"] == listener.getsockname()[1]
-                    assert events[0]["coverage"] == "opaque"
-                    assert events[0]["uploaded_bytes"] == len(payload)
-                    assert events[0]["downloaded_bytes"] == len(greeting) + len(final_response)
-                    assert events[0]["outcome"] == "completed"
+                    assert events[0]["details"]["port"] == listener.getsockname()[1]
+                    assert events[0]["details"]["coverage"] == "opaque"
+                    assert events[0]["details"]["uploaded_bytes"] == len(payload)
+                    assert events[0]["details"]["downloaded_bytes"] == len(greeting) + len(final_response)
+                    assert events[0]["details"]["outcome"] == "completed"
                 (tmp_path / proxy_backend / "lifecycle-observation.json").write_text(json.dumps({
                     "backend": proxy_backend,
                     "authority": authority,
@@ -1214,7 +1214,7 @@ def test_repeated_raw_connect_cancellation_reclaims_origin_and_process_resources
                 assert all(item["client_eof"] for item in observations)
                 assert [item["payload"] for item in observations] == payloads
                 batch_after = _process_resources(proxy.process.pid)
-                events = proxy.events("proxy.tunnel")
+                events = proxy.events("traffic.tunnel")
                 if proxy_backend == "rust":
                     provenance = json.loads(
                         (directory / "native-policy-provenance.json").read_text()
@@ -1232,12 +1232,12 @@ def test_repeated_raw_connect_cancellation_reclaims_origin_and_process_resources
                             "Rust CONNECT cancellation events did not settle"
                         )
                         time.sleep(0.01)
-                        events = proxy.events("proxy.tunnel")
+                        events = proxy.events("traffic.tunnel")
                     assert len(events) == sessions
                     assert all(event["agent"] == "alice" for event in events)
-                    assert all(event["coverage"] == "opaque" for event in events)
+                    assert all(event["details"]["coverage"] == "opaque" for event in events)
                     assert [
-                        (event["uploaded_bytes"], event["downloaded_bytes"])
+                        (event["details"]["uploaded_bytes"], event["details"]["downloaded_bytes"])
                         for event in events
                     ] == [(len(payload), len(greeting)) for payload in payloads]
                 (directory / "connect-cancellation-resources.json").write_text(
@@ -1426,7 +1426,7 @@ def test_configured_passthrough_denied_agent_has_no_origin_contact(proxy_backend
             with pytest.raises(socket.timeout):
                 listener.accept()
             assert passthrough_audit(directory) == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
             provenance = json.loads((directory / "native-policy-provenance.json").read_text())
             assert provenance["policy_mode"] == "native"
             (directory / "passthrough-denial.json").write_text(json.dumps({
@@ -1669,13 +1669,13 @@ def test_denied_connect_does_not_contact_raw_origin(proxy_backend, tmp_path):
             assert response.startswith(b"HTTP/1.1 403"), response
             with pytest.raises(socket.timeout):
                 listener.accept()
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
             (tmp_path / proxy_backend / "denied-observation.json").write_text(json.dumps({
                 "backend": proxy_backend,
                 "authority": authority,
                 "response_head_hex": response.hex(),
                 "origin_accepts": 0,
-                "proxy_egress_events": proxy.events("proxy.egress"),
+                "proxy_egress_events": proxy.events("traffic.egress"),
                 "canary_header": "X-Denied-Canary: must-not-egress",
             }, indent=2) + "\n")
             if proxy_backend == "rust":
@@ -1761,7 +1761,7 @@ def test_incomplete_connect_client_half_close_does_not_dial_origin(
                 assert not origin_error, origin_error
                 assert len(observations) == 1
                 assert observations[0]["payload"] == payload
-                events = proxy.events("proxy.tunnel")
+                events = proxy.events("traffic.tunnel")
                 if proxy_backend == "rust":
                     provenance = json.loads(
                         (tmp_path / proxy_backend / "native-policy-provenance.json").read_text()
@@ -1784,13 +1784,13 @@ def test_incomplete_connect_client_half_close_does_not_dial_origin(
                             )[-4000:] or "<empty>")
                         )
                         time.sleep(0.01)
-                        events = proxy.events("proxy.tunnel")
+                        events = proxy.events("traffic.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
-                    assert events[0]["coverage"] == "opaque"
-                    assert events[0]["uploaded_bytes"] == len(payload)
-                    assert events[0]["downloaded_bytes"] == len(greeting) + len(final_response)
-                    assert events[0]["outcome"] == "completed"
+                    assert events[0]["details"]["coverage"] == "opaque"
+                    assert events[0]["details"]["uploaded_bytes"] == len(payload)
+                    assert events[0]["details"]["downloaded_bytes"] == len(greeting) + len(final_response)
+                    assert events[0]["details"]["outcome"] == "completed"
                 (tmp_path / proxy_backend / "incomplete-connect-half-close.json").write_text(
                     json.dumps(
                         {
@@ -1948,7 +1948,7 @@ def test_repeated_incomplete_connect_cancellation_reclaims_origin_and_process_re
 
                 assert proxy.process.poll() is None
                 batch_after = _process_resources(proxy.process.pid)
-                events = proxy.events("proxy.tunnel")
+                events = proxy.events("traffic.tunnel")
                 provenance = None
                 if proxy_backend == "rust":
                     provenance = json.loads(
@@ -1967,12 +1967,12 @@ def test_repeated_incomplete_connect_cancellation_reclaims_origin_and_process_re
                             "Rust positive CONNECT event did not settle"
                         )
                         time.sleep(0.01)
-                        events = proxy.events("proxy.tunnel")
+                        events = proxy.events("traffic.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
-                    assert events[0]["coverage"] == "opaque"
-                    assert events[0]["uploaded_bytes"] == 0
-                    assert events[0]["downloaded_bytes"] == len(greeting)
+                    assert events[0]["details"]["coverage"] == "opaque"
+                    assert events[0]["details"]["uploaded_bytes"] == 0
+                    assert events[0]["details"]["downloaded_bytes"] == len(greeting)
                 (directory / "repeated-incomplete-connect-resources.json").write_text(
                     json.dumps(
                         {
@@ -2158,7 +2158,7 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                 assert_no_origin_accepts("closed incomplete CONNECT batch")
                 assert proxy.process.poll() is None
 
-                events = proxy.events("proxy.tunnel")
+                events = proxy.events("traffic.tunnel")
                 provenance = None
                 if proxy_backend == "rust":
                     provenance = json.loads(
@@ -2177,12 +2177,12 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                             "Rust positive CONNECT event did not settle"
                         )
                         time.sleep(0.01)
-                        events = proxy.events("proxy.tunnel")
+                        events = proxy.events("traffic.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
-                    assert events[0]["coverage"] == "opaque"
-                    assert events[0]["uploaded_bytes"] == 0
-                    assert events[0]["downloaded_bytes"] == len(greeting)
+                    assert events[0]["details"]["coverage"] == "opaque"
+                    assert events[0]["details"]["uploaded_bytes"] == 0
+                    assert events[0]["details"]["downloaded_bytes"] == len(greeting)
 
                 samples = [before, during, after]
                 hwm_samples = [sample["hwm_kib"] for sample in samples if sample["hwm_kib"] is not None]

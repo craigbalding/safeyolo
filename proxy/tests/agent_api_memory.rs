@@ -87,7 +87,7 @@ impl Fixture {
                 gateway: None,
                 memory,
                 traces: None,
-                discovery: None,
+                agents: None,
                 audit: None,
                 flows: None,
                 circuits: None,

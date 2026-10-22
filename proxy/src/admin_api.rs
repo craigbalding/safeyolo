@@ -67,10 +67,10 @@ struct ServiceMutationState {
 impl ServiceMutationOwner {
     /// Admit one blocking service mutation into the process owner. A caller
     /// may drop the receiver, but the owner retains and joins the work.
-    pub(crate) async fn spawn_blocking(
+    pub(crate) async fn spawn_blocking<T: Send + 'static>(
         &self,
-        work: impl FnOnce() -> Result<Outcome, Error> + Send + 'static,
-    ) -> Result<oneshot::Receiver<Result<Outcome, Error>>, Error> {
+        work: impl FnOnce() -> Result<T, Error> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T, Error>>, Error> {
         let (sender, receiver) = oneshot::channel();
         let mut state = self.state.lock().await;
         while state.tasks.try_join_next().is_some() {}
@@ -264,38 +264,6 @@ impl CircuitResetAudit {
             _ => unreachable!("only truthy hashable host keys commit"),
         });
         crate::network_guard::sanitize(&text)
-    }
-
-    pub fn events(&self, client_ip: &str) -> [Value; 2] {
-        let safe_host = self.safe_host();
-        // AuditEvent.host rejects non-string scalars. Source write_event then
-        // preserves only its minimal fallback envelope for the reset event.
-        let mut reset = json!({
-            "event":"proxy.circuit", "audit_intent":"ops.circuit_breaker.reset",
-            "kind":"ops", "severity":"medium", "summary":format!("Circuit reset for {safe_host}"),
-        });
-        if self.host.is_string() {
-            reset["addon"] = json!("circuit-breaker");
-            reset["host"] = self.host.clone();
-            reset["details"] = json!({});
-        }
-        // The separate admin event accepts an Any host; Pydantic's JSON output
-        // converts nonfinite numbers to null in this audit field only.
-        let encoded = Zeroizing::new(crate::python_json::encode(&self.host));
-        let audit_host = if matches!(encoded.as_str(), "NaN" | "Infinity" | "-Infinity") {
-            Value::Null
-        } else {
-            self.host.clone()
-        };
-        [
-            reset,
-            json!({
-                "event":"proxy.admin_api", "audit_intent":"admin.circuit_breaker_reset",
-                "kind":"admin", "severity":"medium", "addon":"admin-api",
-                "summary":format!("Circuit breaker reset: {safe_host}"),
-                "details":{"client_ip":client_ip,"host":audit_host},
-            }),
-        ]
     }
 }
 
@@ -709,6 +677,27 @@ fn policy_error(error: impl std::fmt::Display) -> Outcome {
     // stable operator-facing category; the canonical audit retains no input.
     let _ = error;
     response(StatusCode::BAD_REQUEST, json!({"error":"invalid policy"}))
+}
+
+fn credential_approval_error(error: crate::Error) -> Outcome {
+    use crate::approvals::ErrorKind;
+
+    let message = match error
+        .downcast_ref::<crate::approvals::ApprovalError>()
+        .map(|error| error.kind)
+    {
+        Some(ErrorKind::Invalid | ErrorKind::Unsupported) => return policy_error(error),
+        Some(ErrorKind::Activation) => "credential approval activation failed",
+        Some(ErrorKind::Rollback) => "credential approval rollback failed",
+        _ => "credential approval could not be saved or activated",
+    };
+    // Compiler and file errors can contain authored values. Keep the failure
+    // category visible without returning policy or credential contents.
+    response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"status":"rejected", "error":message,
+            "repair":"Run policy show to inspect saved and active state, then correct the cause before deciding again."}),
+    )
 }
 
 async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
@@ -1255,7 +1244,7 @@ pub(crate) struct OperatorContext<'a> {
     pub instance_id: Option<&'a str>,
     pub command_centre: Option<&'a crate::command_centre::Host>,
     pub operator_modes: Option<&'a crate::OperatorModes>,
-    pub agent_discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
+    pub agent_activity: Option<&'a std::sync::Arc<crate::agent_activity::AgentActivity>>,
     pub listeners: &'a [crate::AgentListener],
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub client_ip: Option<&'a str>,
@@ -1294,7 +1283,7 @@ where
             instance_id: None,
             command_centre: None,
             operator_modes: None,
-            agent_discovery: None,
+            agent_activity: None,
             listeners: &[],
             audit: None,
             client_ip: None,
@@ -1322,7 +1311,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         instance_id,
         command_centre,
         operator_modes,
-        agent_discovery,
+        agent_activity,
         listeners,
         audit,
         client_ip,
@@ -1496,7 +1485,64 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             }),
         ));
     }
+    if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {
+        return approvals::delegations(request, &path, policy, task_state, service_audit).await;
+    }
     if method == Method::GET && path == "/admin/approvals" {
+        if let (Some(writer), Some(policy)) = (audit, policy)
+            && writer.approvals_enabled()
+        {
+            let (writer, policy, state) = (writer.clone(), policy.clone(), task_state.cloned());
+            return tokio::task::spawn_blocking(move || {
+                let records = match writer.approvals().list() {
+                    Ok(records) => records,
+                    Err(error) => {
+                        return Ok(response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error":error.to_string()}),
+                        ));
+                    }
+                };
+                let mut views = Vec::new();
+                for record in records {
+                    match crate::approvals::pending::current_view(
+                        &writer,
+                        &policy,
+                        &record,
+                        state.as_ref(),
+                    ) {
+                        Ok(view) if view["status"] == "pending" => views.push(view),
+                        Ok(_) => {}
+                        Err(error) => {
+                            return Ok(response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                json!({"error":error.to_string()}),
+                            ));
+                        }
+                    }
+                }
+                // Plumb and desktop keep their existing owners. Historical
+                // prompts stay readable, but canonical requests appear once.
+                if let Some(events) = pending_approvals(writer.path()).as_array() {
+                    views.extend(
+                        events
+                            .iter()
+                            .filter(|event| {
+                                event["details"]["approval_id"].is_null()
+                                    && (policy.native_controls().is_none()
+                                        || matches!(
+                                            event["approval"]["approval_type"].as_str(),
+                                            Some("plumb" | "desktop_present")
+                                        ))
+                            })
+                            .cloned(),
+                    );
+                }
+                Ok(response(StatusCode::OK, json!({"approvals":views})))
+            })
+            .await
+            .map_err(|_| Error::ServiceMutation)?;
+        }
         return Ok(response(
             StatusCode::OK,
             json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),
@@ -1634,20 +1680,20 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         }
         // Standalone native development launches retain their listener view.
         // An installed launch supplies the host inventory used by the Mac app.
-        let (Some(discovery), Some(writer)) = (agent_discovery, audit) else {
+        let Some(activity) = agent_activity else {
             return Ok(response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"error":"agent inventory unavailable"}),
             ));
         };
-        let agents = discovery
-            .get_agents(writer, crate::circuit_runtime::now)
+        let agents = activity
+            .report(listeners, crate::circuit_runtime::now())
             .map_err(|_| Error::RegistryUnavailable)?
             .render_json(false)
             .map_err(|_| Error::RegistryUnavailable)?;
         let agents: Value =
             serde_json::from_str(&agents).map_err(|_| Error::RegistryUnavailable)?;
-        let discovered = agents
+        let reported = agents
             .get("agents")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new()));
@@ -1662,7 +1708,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         Value::String(listener.socket_path.to_string_lossy().into_owned()),
                     );
                     entry.insert("status".into(), Value::String("configured".into()));
-                    if let Value::Object(discovered) = &discovered
+                    if let Value::Object(discovered) = &reported
                         && let Some(Value::Object(info)) = discovered.get(&listener.agent_id)
                     {
                         if let Some(ip) = info.get("ip") {
@@ -2117,6 +2163,58 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             Ok(path) => path,
             Err(outcome) => return Ok(*outcome),
         };
+        let added = {
+            let destination = destination.to_owned();
+            let credential_value = credential_value.clone();
+            let tier = tier.to_owned();
+            let client_ip = client_ip.map(str::to_owned);
+            move |count| {
+                let mut outcome = response(
+                    StatusCode::OK,
+                    json!({"status":"added","destination":destination,"cred_id":credential_value,"tier":tier,"permission_count":count}),
+                );
+                outcome.audit = Some(mutation(
+                    "admin.approval_added",
+                    format!(
+                        "Baseline approval added for {}",
+                        crate::network_guard::sanitize(&destination)
+                    ),
+                    json!({"client_ip":client_ip,"destination":destination,"cred_id":credential_value,"tier":tier}),
+                ));
+                outcome
+            }
+        };
+        if policy.and_then(Policy::native_controls).is_some() {
+            let (Some(state), Some(audit)) = (task_state, service_audit) else {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"credential approval activation is unavailable"}),
+                ));
+            };
+            let state = state.clone();
+            let destination = destination.to_owned();
+            let writer = audit.writer.clone();
+            let client_ip = zeroize::Zeroizing::new(audit.client_ip.to_owned());
+            let target = zeroize::Zeroizing::new(audit.target.to_owned());
+            // Retain activation and its audit attempt if the caller disconnects,
+            // as with policy apply and service policy edits.
+            return audit
+                .mutation_owner
+                .spawn_blocking(move || {
+                    let mut outcome = match crate::edit_native_policy_document(&state, |document| {
+                        crate::approvals::insert_credentials(document, &destination, &credentials)
+                    }) {
+                        Ok(count) => added(count),
+                        Err(error) => credential_approval_error(error),
+                    }
+                    .submit_audit(&writer, &client_ip, &target)?;
+                    outcome.audit = None;
+                    Ok(outcome)
+                })
+                .await?
+                .await
+                .map_err(|_| Error::ServiceMutation)?;
+        }
         let count = match crate::approvals::allow_credentials(
             path,
             destination,
@@ -2126,19 +2224,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             Ok(count) => count,
             Err(error) => return Ok(policy_error(error)),
         };
-        let mut outcome = response(
-            StatusCode::OK,
-            json!({"status":"added","destination":destination,"cred_id":credential_value,"tier":tier,"permission_count":count}),
-        );
-        outcome.audit = Some(mutation(
-            "admin.approval_added",
-            format!(
-                "Baseline approval added for {}",
-                crate::network_guard::sanitize(destination)
-            ),
-            json!({"client_ip":client_ip,"destination":destination,"cred_id":credential_value,"tier":tier}),
-        ));
-        return Ok(outcome);
+        return Ok(added(count));
     }
     if method == Method::POST && path == "/admin/policy/baseline/deny" {
         let mut data = match read_json(request).await? {

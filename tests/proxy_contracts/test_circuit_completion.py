@@ -146,8 +146,8 @@ def test_only_complete_upstream_responses_change_live_failure_state(proxy_backen
                 after = wait_failure_count(proxy, expected)
                 assert after["checks_total"] == 2
                 assert after["opens_total"] == 0
-                assert len(proxy.events("proxy.egress")) == peer.accepts == 2
-                assert all((row["host"], row["port"]) == peer.address for row in proxy.events("proxy.egress"))
+                assert len(proxy.events("traffic.egress")) == peer.accepts == 2
+                assert all((row["host"], row["details"]["port"]) == peer.address for row in proxy.events("traffic.egress"))
                 (directory / "completion-wire.json").write_text(
                     json.dumps(
                         {
@@ -196,6 +196,6 @@ jitter_factor = 0
             first = circuits(proxy)
             assert first["failure_threshold"] == threshold
             assert first["checks_total"] == 0 and first["domains"] == {}
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
             with pytest.raises(socket.timeout):
                 origin.accept()

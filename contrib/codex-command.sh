@@ -95,6 +95,9 @@ if ! command -v codex >/dev/null 2>&1 || ! codex --version >/dev/null 2>&1; then
         # fallback check to the selected package, including dynamic selections.
         sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
         sy_manifest="$sy_root/node_modules/$sy_name/package.json"
+        if [ ! -f "$sy_manifest" ]; then
+            sy_manifest="$sy_root/lib/node_modules/$sy_name/package.json"
+        fi
         sy_target="$(node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));

@@ -74,7 +74,7 @@ async fn installed_native_response_header_opens_retained_owned_flow() {
         json!({
             "listeners":[{"agent_id":"alice","socket_path":socket,"source_id":"192.0.2.20"}],
             "policy_file":policy,"data_dir":data,"readiness_file":ready,
-            "audit_log_path":root.join("audit.jsonl"),"event_log":root.join("events.jsonl"),
+            "audit_log_path":root.join("audit.jsonl"),
             "flow_store_enabled":true,"flow_store_db_path":db,
             "test_context_block":true,"circuit_breaker_enabled":false
         })

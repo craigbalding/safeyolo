@@ -37,7 +37,6 @@ fn config(directory: &TempDir) -> Config {
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
-        agent_map_file: String::new(),
         data_dir: Some(directory.path().join("data")),
         listeners: ["alice", "bob"]
             .iter()
@@ -73,10 +72,11 @@ fn config(directory: &TempDir) -> Config {
         readiness_file: directory.path().join("ready.json"),
         reload_id: None,
         audit_log_path: Some(directory.path().join("audit.jsonl")),
-        event_log: directory.path().join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
+        target_ip_mappings: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),
@@ -181,7 +181,7 @@ async fn opaque_connect_preserves_each_tcp_half_close() {
             loop {
                 if events(&config)
                     .iter()
-                    .any(|event| event["event"] == "proxy.tunnel")
+                    .any(|event| event["event"] == "traffic.tunnel")
                 {
                     break;
                 }
@@ -192,12 +192,12 @@ async fn opaque_connect_preserves_each_tcp_half_close() {
         .unwrap();
         let event = events(&config)
             .into_iter()
-            .find(|event| event["event"] == "proxy.tunnel")
+            .find(|event| event["event"] == "traffic.tunnel")
             .unwrap();
-        assert_eq!(event["uploaded_bytes"], payload.len());
-        assert_eq!(event["downloaded_bytes"], received.len());
-        assert_eq!(event["coverage"], "opaque");
-        assert_eq!(event["outcome"], "completed");
+        assert_eq!(event["details"]["uploaded_bytes"], payload.len());
+        assert_eq!(event["details"]["downloaded_bytes"], received.len());
+        assert_eq!(event["details"]["coverage"], "opaque");
+        assert_eq!(event["details"]["outcome"], "completed");
         assert_eq!(event["agent"], "alice");
         proxy.shutdown().await;
     }
@@ -237,7 +237,7 @@ async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
     assert!(
         events(&config)
             .iter()
-            .all(|event| event["event"] != "proxy.egress")
+            .all(|event| event["event"] != "traffic.egress")
     );
     let mut client = connect_raw(
         &config.listeners[0].socket_path,
@@ -345,7 +345,7 @@ async fn configured_passthrough_entry_does_not_bypass_parent_route() {
         loop {
             let rows = events(&config)
                 .into_iter()
-                .filter(|event| event["event"] == "proxy.egress")
+                .filter(|event| event["event"] == "traffic.egress")
                 .collect::<Vec<_>>();
             if !rows.is_empty() {
                 break rows;
@@ -358,8 +358,8 @@ async fn configured_passthrough_entry_does_not_bypass_parent_route() {
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["agent"], "alice");
     assert_eq!(egress[0]["host"], "127.0.0.1");
-    assert_eq!(egress[0]["port"], origin_port);
-    assert_eq!(egress[0]["route"], "parent");
+    assert_eq!(egress[0]["details"]["port"], origin_port);
+    assert_eq!(egress[0]["details"]["route"], "parent");
     let lifecycle = wait_passthrough_events(&config, 2).await;
     assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
     assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
@@ -370,10 +370,10 @@ async fn configured_passthrough_entry_does_not_bypass_parent_route() {
     }));
     let tunnels = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.tunnel")
+        .filter(|event| event["event"] == "traffic.tunnel")
         .collect::<Vec<_>>();
     assert_eq!(tunnels.len(), 1);
-    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
+    assert_eq!(tunnels[0]["details"]["coverage"], "configured_passthrough");
 
     if let Ok(path) = std::env::var("SAFEYOLO_PARENT_PARITY_EVIDENCE") {
         let witness = json!({
@@ -446,12 +446,12 @@ async fn configured_parent_passthrough_refusal_records_one_error_without_direct_
 
     let egress = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect::<Vec<_>>();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["host"], "127.0.0.1");
-    assert_eq!(egress[0]["port"], origin_port);
-    assert_eq!(egress[0]["route"], "parent");
+    assert_eq!(egress[0]["details"]["port"], origin_port);
+    assert_eq!(egress[0]["details"]["route"], "parent");
     let lifecycle = wait_passthrough_events(&config, 1).await;
     assert_eq!(lifecycle[0]["event"], "traffic.passthrough_error");
     assert_eq!(lifecycle[0]["host"], "127.0.0.1");
@@ -466,7 +466,7 @@ async fn configured_parent_passthrough_refusal_records_one_error_without_direct_
     assert!(
         events(&config)
             .iter()
-            .all(|event| event["event"] != "proxy.tunnel")
+            .all(|event| event["event"] != "traffic.tunnel")
     );
     proxy.shutdown().await;
 }
@@ -562,12 +562,12 @@ async fn configured_passthrough_entry_uses_verified_tls_parent() {
 
     let egress = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect::<Vec<_>>();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["host"], "127.0.0.1");
-    assert_eq!(egress[0]["port"], origin_port);
-    assert_eq!(egress[0]["route"], "parent");
+    assert_eq!(egress[0]["details"]["port"], origin_port);
+    assert_eq!(egress[0]["details"]["route"], "parent");
     let lifecycle = wait_passthrough_events(&config, 2).await;
     assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
     assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
@@ -578,10 +578,10 @@ async fn configured_passthrough_entry_uses_verified_tls_parent() {
     }));
     let tunnels = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.tunnel")
+        .filter(|event| event["event"] == "traffic.tunnel")
         .collect::<Vec<_>>();
     assert_eq!(tunnels.len(), 1);
-    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
+    assert_eq!(tunnels[0]["details"]["coverage"], "configured_passthrough");
 
     if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
         let path = Path::new(&path);
@@ -730,23 +730,26 @@ async fn configured_parent_passthrough_respects_same_host_different_port() {
     }));
     let egress = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect::<Vec<_>>();
     assert_eq!(egress.len(), 2);
-    assert!(egress.iter().all(|event| event["route"] == "parent"));
+    assert!(
+        egress
+            .iter()
+            .all(|event| event["details"]["route"] == "parent")
+    );
     let tunnels = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.tunnel")
+        .filter(|event| event["event"] == "traffic.tunnel")
         .collect::<Vec<_>>();
     assert_eq!(tunnels.len(), 1);
     assert_eq!(tunnels[0]["host"], "localhost");
-    assert_eq!(tunnels[0]["port"], configured_port);
-    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
-    assert!(
-        events(&config).iter().any(|event| {
-            event["event"] == "proxy.network_guard" && event["outcome"] == "blocked"
-        })
-    );
+    assert_eq!(tunnels[0]["details"]["port"], configured_port);
+    assert_eq!(tunnels[0]["details"]["coverage"], "configured_passthrough");
+    assert!(events(&config).iter().any(|event| {
+        event["event"] == "security.network_guard.evaluated"
+            && event["details"]["outcome"] == "blocked"
+    }));
     proxy.shutdown().await;
 }
 
@@ -829,27 +832,55 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
             "{}",
             String::from_utf8_lossy(&reply)
         );
-        assert_eq!(
-            events(&config)
-                .iter()
-                .filter(|event| {
-                    event["event"] == "proxy.network_guard" && event["method"] == method
-                })
-                .count(),
-            1
-        );
         tokio::time::timeout(Duration::from_secs(2), origin)
             .await
             .unwrap()
             .unwrap();
+        proxy.shutdown().await;
+        let rows = events(&config);
+        let links = rows
+            .iter()
+            .filter(|row| row["event"] == "traffic.connect_request")
+            .collect::<Vec<_>>();
+        assert_eq!(links.len(), 1);
+        let outer = rows
+            .iter()
+            .find(|row| {
+                row["event"] == "traffic.request_outcome" && row["details"]["status"] == 200
+            })
+            .unwrap();
+        let inner = rows
+            .iter()
+            .find(|row| {
+                row["event"] == "traffic.request_outcome" && row["details"]["status"] == 403
+            })
+            .unwrap();
+        assert_eq!(links[0]["request_id"], inner["request_id"]);
+        assert_eq!(
+            links[0]["details"]["connect_request_id"],
+            outer["request_id"]
+        );
+        assert_eq!(
+            links[0]["details"]["connection_id"],
+            outer["details"]["connection_id"]
+        );
         assert_eq!(
             events(&config)
                 .iter()
-                .filter(|event| event["event"] == "proxy.egress")
+                .filter(|event| {
+                    event["event"] == "security.network_guard.evaluated"
+                        && event["details"]["method"] == method
+                })
                 .count(),
             1
         );
-        proxy.shutdown().await;
+        assert_eq!(
+            events(&config)
+                .iter()
+                .filter(|event| event["event"] == "traffic.egress")
+                .count(),
+            1
+        );
     }
 }
 
@@ -951,8 +982,8 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
     assert!(
         events(&config)
             .iter()
-            .filter(|event| { event["event"] == "proxy.network_guard" })
-            .all(|event| event["method"] == "CONNECT")
+            .filter(|event| { event["event"] == "security.network_guard.evaluated" })
+            .all(|event| event["details"]["method"] == "CONNECT")
     );
     let mut adjacent = connect_tls(
         &config.listeners[0].socket_path,
@@ -1245,32 +1276,43 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
     }));
     let egress = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect::<Vec<_>>();
     assert_eq!(egress.len(), 4, "each CONNECT must retain its own dial");
-    assert!(egress.iter().all(|event| event["route"] == "direct"));
+    assert!(
+        egress
+            .iter()
+            .all(|event| event["details"]["route"] == "direct")
+    );
     assert_eq!(
         egress
             .iter()
-            .filter(|event| event["host"] == "localhost" && event["port"] == configured_port)
+            .filter(
+                |event| event["host"] == "localhost" && event["details"]["port"] == configured_port
+            )
             .count(),
         1
     );
     assert_eq!(
         egress
             .iter()
-            .filter(|event| { event["host"] == "localhost" && event["port"] == intercepted_port })
+            .filter(|event| {
+                event["host"] == "localhost" && event["details"]["port"] == intercepted_port
+            })
             .count(),
         3
     );
     let tunnel_events = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.tunnel")
+        .filter(|event| event["event"] == "traffic.tunnel")
         .collect::<Vec<_>>();
     assert_eq!(tunnel_events.len(), 1);
-    assert_eq!(tunnel_events[0]["coverage"], "configured_passthrough");
+    assert_eq!(
+        tunnel_events[0]["details"]["coverage"],
+        "configured_passthrough"
+    );
     assert_eq!(tunnel_events[0]["host"], "localhost");
-    assert_eq!(tunnel_events[0]["port"], configured_port);
+    assert_eq!(tunnel_events[0]["details"]["port"], configured_port);
 
     if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
         let path = Path::new(&path);
@@ -1484,11 +1526,10 @@ async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighb
     assert!(passthrough_events(&config).iter().all(|event| {
         event["host"] == "sni.alias.invalid" && event["addon"] == "ignored-host-logger"
     }));
-    assert!(
-        events(&config).iter().any(|event| {
-            event["event"] == "proxy.network_guard" && event["method"] == "CONNECT"
-        })
-    );
+    assert!(events(&config).iter().any(|event| {
+        event["event"] == "security.network_guard.evaluated"
+            && event["details"]["method"] == "CONNECT"
+    }));
 
     if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
         let path = Path::new(&path);
@@ -1511,7 +1552,7 @@ async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighb
                     "origin_bytes": 0,
                 },
                 "passthrough_events": passthrough_events(&config),
-                "native_policy_decisions": events(&config).into_iter().filter(|event| event["event"] == "proxy.network_guard").collect::<Vec<_>>(),
+                "native_policy_decisions": events(&config).into_iter().filter(|event| event["event"] == "security.network_guard.evaluated").collect::<Vec<_>>(),
                 "limits": [
                     "One direct native TLS connection matched by configured SNI alias and one neighboring intercepted connection.",
                     "The protected-admin and parent-route controls remain inherited from accepted #631 evidence; this slice does not broaden either scope.",
@@ -1712,23 +1753,24 @@ async fn configured_sni_alias_passthrough_through_parent_keeps_origin_tls_and_in
     }));
     let egress = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect::<Vec<_>>();
     assert_eq!(egress.len(), 2);
     assert!(egress.iter().all(|event| {
-        event["host"] == "localhost" && event["port"] == port && event["route"] == "parent"
+        event["host"] == "localhost"
+            && event["details"]["port"] == port
+            && event["details"]["route"] == "parent"
     }));
     let tunnels = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.tunnel")
+        .filter(|event| event["event"] == "traffic.tunnel")
         .collect::<Vec<_>>();
     assert_eq!(tunnels.len(), 1);
-    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
-    assert!(
-        events(&config).iter().any(|event| {
-            event["event"] == "proxy.network_guard" && event["outcome"] == "blocked"
-        })
-    );
+    assert_eq!(tunnels[0]["details"]["coverage"], "configured_passthrough");
+    assert!(events(&config).iter().any(|event| {
+        event["event"] == "security.network_guard.evaluated"
+            && event["details"]["outcome"] == "blocked"
+    }));
 
     if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
         let path = Path::new(&path);
@@ -2141,11 +2183,10 @@ async fn admin_ignore_hosts_replaces_live_match_and_keeps_admitted_session() {
             .unwrap()
             .contains("admin.proxy_ignore_hosts_update")
     );
-    assert!(
-        events(&config).iter().any(|event| {
-            event["event"] == "proxy.network_guard" && event["outcome"] == "blocked"
-        })
-    );
+    assert!(events(&config).iter().any(|event| {
+        event["event"] == "security.network_guard.evaluated"
+            && event["details"]["outcome"] == "blocked"
+    }));
     proxy.shutdown().await;
 }
 
@@ -2227,7 +2268,7 @@ async fn wait_passthrough_events(config: &Config, count: usize) -> Vec<Value> {
 }
 
 fn events(config: &Config) -> Vec<Value> {
-    std::fs::read_to_string(&config.event_log)
+    std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -2268,7 +2309,19 @@ async fn origin() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
 #[tokio::test]
 async fn two_agents_cannot_spoof_identity_and_denied_requests_never_reach_egress() {
     let directory = tempfile::tempdir().unwrap();
-    let config = config(&directory);
+    let mut config = config(&directory);
+    for listener in &mut config.listeners {
+        listener.source_id = Some("192.0.2.10".into());
+    }
+    std::fs::create_dir_all(directory.path().join("data")).unwrap();
+    std::fs::write(
+        directory.path().join("data/agent_map.json"),
+        br#"{"bob":{"ip":"192.0.2.10"}}"#,
+    )
+    .unwrap();
+    // A stale inode supplies no owner. Binding the configured listener must
+    // recover this path before any real HTTP request is admitted.
+    drop(std::os::unix::net::UnixListener::bind(&config.listeners[0].socket_path).unwrap());
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let (authority, contacts, origin) = origin().await;
     let target = format!("http://{authority}/signed?a=1&a=2&value=%2F");
@@ -2290,20 +2343,27 @@ async fn two_agents_cannot_spoof_identity_and_denied_requests_never_reach_egress
     )
     .await;
     assert!(denied.starts_with("HTTP/1.1 403"));
+    let connect = raw(&config.listeners[1].socket_path,
+        "CONNECT must-not-resolve.invalid:443 HTTP/1.1\r\nHost: must-not-resolve.invalid:443\r\nX-SafeYolo-Agent: alice\r\nX-Forwarded-For: 192.0.2.10\r\nConnection: close\r\n\r\n").await;
+    assert!(connect.starts_with("HTTP/1.1 403"), "{connect}");
+    assert_eq!(contacts.load(Ordering::SeqCst), 1);
     let recorded = events(&config);
     let egress: Vec<_> = recorded
         .iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["agent"], "alice");
     let decisions: Vec<_> = recorded
         .iter()
-        .filter(|event| event["event"] == "proxy.network_guard")
+        .filter(|event| event["event"] == "security.network_guard.evaluated")
         .collect();
     assert_eq!(decisions[0]["agent"], "alice");
     assert_eq!(decisions[1]["agent"], "bob");
-    assert_ne!(decisions[0]["connection_id"], decisions[1]["connection_id"]);
+    assert_ne!(
+        decisions[0]["details"]["connection_id"],
+        decisions[1]["details"]["connection_id"]
+    );
     assert!(
         decisions[0]["request_id"]
             .as_str()
@@ -2353,10 +2413,10 @@ async fn reserved_and_invalid_requests_stay_local_even_without_the_adapter() {
     assert!(
         events(&config)
             .iter()
-            .all(|event| event["event"] != "proxy.egress")
+            .all(|event| event["event"] != "traffic.egress")
     );
     assert!(
-        !std::fs::read_to_string(&config.event_log)
+        !std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
             .unwrap()
             .contains("synthetic")
     );
@@ -2408,7 +2468,7 @@ async fn configured_parent_receives_absolute_target_without_origin_dns() {
     assert_eq!(
         events(&config)
             .iter()
-            .filter(|event| event["event"] == "proxy.egress")
+            .filter(|event| event["event"] == "traffic.egress")
             .count(),
         1
     );
@@ -2449,10 +2509,10 @@ async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
     assert!(
         events(&config)
             .iter()
-            .all(|event| event["event"] != "proxy.egress")
+            .all(|event| event["event"] != "traffic.egress")
     );
     assert!(
-        !std::fs::read_to_string(&config.event_log)
+        !std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
             .unwrap()
             .contains("synthetic-local-secret")
     );
@@ -2478,12 +2538,12 @@ async fn duplicate_host_headers_are_rejected_before_policy_or_parent_contact() {
     assert!(
         events(&config)
             .iter()
-            .all(|event| event["event"] != "proxy.network_guard")
+            .all(|event| event["event"] != "security.network_guard.evaluated")
     );
     assert!(
         events(&config)
             .iter()
-            .all(|event| event["event"] != "proxy.egress")
+            .all(|event| event["event"] != "traffic.egress")
     );
     proxy.shutdown().await;
     parent_task.abort();
@@ -2540,6 +2600,9 @@ async fn reload_adds_removes_and_reassigns_listeners_without_changing_inflight_i
             source_id: None,
         },
     ];
+    // A pathname loss during an admitted request must rebind for new accepts
+    // without changing that existing request's owner.
+    std::fs::remove_file(&alice_path).unwrap();
     proxy.reload(config.clone()).await.unwrap();
     release.send(()).unwrap();
     assert!(pending.await.unwrap().starts_with("HTTP/1.1 200"));
@@ -2558,11 +2621,9 @@ async fn reload_adds_removes_and_reassigns_listeners_without_changing_inflight_i
             .is_err()
     );
     origin.await.unwrap();
-    assert!(
-        events(&config)
-            .iter()
-            .any(|event| { event["event"] == "proxy.network_guard" && event["agent"] == "alice" })
-    );
+    assert!(events(&config).iter().any(|event| {
+        event["event"] == "security.network_guard.evaluated" && event["agent"] == "alice"
+    }));
     proxy.shutdown().await;
 }
 
@@ -2695,10 +2756,10 @@ async fn https_parent_case(certificate_host: &str, trust_certificate: bool, expe
     let recorded = events(&config);
     let egress: Vec<_> = recorded
         .iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 1, "TLS failure must not retry directly");
-    assert_eq!(egress[0]["route"], "parent");
+    assert_eq!(egress[0]["details"]["route"], "parent");
     proxy.shutdown().await;
 }
 
@@ -3256,7 +3317,7 @@ async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
     let recorded = events(&config);
     let request_events: Vec<_> = recorded
         .iter()
-        .filter(|event| event["event"] == "proxy.request")
+        .filter(|event| event["event"] == "traffic.request_outcome")
         .cloned()
         .collect();
     let terminal_requests: Vec<_> = request_events
@@ -3265,14 +3326,18 @@ async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
         .cloned()
         .collect();
     assert_eq!(terminal_requests.len(), 1);
-    assert_eq!(terminal_requests[0]["status"], 503);
+    assert_eq!(terminal_requests[0]["details"]["status"], 503);
     assert_eq!(
-        terminal_requests[0]["coverage"],
+        terminal_requests[0]["details"]["coverage"],
         "native_network_guard_circuits_and_test_context"
     );
     let circuit_events: Vec<_> = recorded
         .iter()
-        .filter(|event| event["event"] == "proxy.circuit")
+        .filter(|event| {
+            event["event"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("ops.circuit_breaker."))
+        })
         .cloned()
         .collect();
     if partial_reset {
@@ -3452,37 +3517,37 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_deliver
         .await
         .is_err()
     );
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+    proxy.shutdown().await;
     let egress = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect::<Vec<_>>();
     assert_eq!(egress.len(), 7);
     assert!(
         egress
             .iter()
-            .all(|event| event["host"] == "localhost" && event["port"] == port)
+            .all(|event| event["host"] == "localhost" && event["details"]["port"] == port)
     );
-    tokio::time::timeout(Duration::from_secs(2), origin)
-        .await
-        .unwrap()
-        .unwrap();
     let decisions: Vec<_> = events(&config)
         .into_iter()
-        .filter(|event| event["event"] == "proxy.network_guard")
+        .filter(|event| event["event"] == "security.network_guard.evaluated")
         .collect();
     assert_eq!(
         decisions
             .iter()
-            .filter(|row| row["method"] == "GET")
+            .filter(|row| row["details"]["method"] == "GET")
             .count(),
         1
     );
     assert!(
         decisions
             .iter()
-            .any(|row| row["method"] == "GET" && row["scheme"] == "https")
+            .any(|row| row["details"]["method"] == "GET" && row["details"]["scheme"] == "https")
     );
-    proxy.shutdown().await;
 }
 
 async fn intercepted_https_origin_case(
@@ -3578,7 +3643,7 @@ async fn intercepted_https_origin_case(
     assert_eq!(
         events(&config)
             .iter()
-            .filter(|row| row["event"] == "proxy.egress")
+            .filter(|row| row["event"] == "traffic.egress")
             .count(),
         1
     );

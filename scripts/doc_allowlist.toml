@@ -41,6 +41,7 @@ user_facing_docs = [
     "docs/installation.md",
     "docs/guest-oci.md",
     "docs/credentials.md",
+    "docs/delegated-approvals.md",
     "docs/settings.md",
     "docs/operator-guide.md",
     "docs/DEVELOPERS.md",

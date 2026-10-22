@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from guest_exec import guest_command_args
-from installed_host_smoke import _agent_map, _native_config, _runtime_observation
+from installed_host_smoke import _agent_listeners, _native_config, _runtime_observation
 from installed_lifecycle import running_guest
 
 
@@ -110,7 +110,7 @@ class TestLiveAgentLifecycle:
             save()
 
     def _restart(self, config_dir: Path, agent_name: str, report: dict, save) -> None:
-        listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == agent_name)
+        listener = next(row for row in _agent_listeners(config_dir) if row["agent_id"] == agent_name)
         socket_path = Path(listener["path"])
         socket_directory_inode = socket_path.parent.stat().st_ino
         config_path = config_dir / "config.toml"

@@ -199,7 +199,7 @@ def network_probe(phase, kind, code, deadline):
     """Export selected operands; curl output and new proxy log bytes stay private."""
     label = phase + "-" + kind
     logs = {}
-    for name in ["events.jsonl", "proxy.log"]:
+    for name in ["audit.jsonl", "proxy.log"]:
         path = root / "logs" / name
         try:
             info = path.stat()
@@ -268,16 +268,19 @@ def network_probe(phase, kind, code, deadline):
                 if not isinstance(event, dict):
                     log["invalid_event_shape"] = True
                     continue
-                if (event.get("event") != "proxy.request" or event.get("host") != "httpbin.org"
+                if (event.get("event") != "traffic.request_outcome" or event.get("host") != "httpbin.org"
                         or not re.fullmatch(r"req-[0-9a-f]{32}", str(event.get("request_id")))
                         or (request_id and event["request_id"] != request_id)):
                     continue
                 selected = {"request_id": event["request_id"],
                             "correlation": "request-id" if request_id else "host-and-time-window-only"}
-                if type(event.get("status")) is int and 100 <= event["status"] <= 599:
-                    selected["status"] = event["status"]
-                if event.get("decision") in ["allow", "deny", "error", "invalid", "admin_port_access"]:
-                    selected["decision"] = event["decision"]
+                details = event.get("details")
+                status = details.get("status") if isinstance(details, dict) else None
+                if type(status) is int and 100 <= status <= 599:
+                    selected["status"] = status
+                decision = details.get("decision") if isinstance(details, dict) else None
+                if decision in ["allow", "deny", "error", "invalid", "admin_port_access"]:
+                    selected["decision"] = decision
                 log["matches"].append(selected)
             log["matches_truncated"] = len(log["matches"]) > 16
             log["matches"] = log["matches"][:16]
@@ -830,29 +833,33 @@ def stop_console_group(pid, fd, row):
     limit = time.monotonic() + 3
     terminal_open = True
 
-    def remaining_members():
+    def remaining_members(deadline):
         nonlocal terminal_open
-        # Read one chunk per scan so continuous output cannot delay signals or
-        # deadline checks. Darwin needs the owned PTY drained to finish exit.
-        if terminal_open and select.select([fd], [], [], 0)[0]:
+        # Drain through gaps in finite TERM responses until EOF or the signal
+        # deadline. Then refresh ownership before any further signal.
+        while terminal_open:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0 or not select.select([fd], [], [], timeout)[0]:
+                break
             terminal_open = bool(read_console(fd))
         return console_group(pid)
 
-    remaining = remaining_members()
+    # Keep the initial drain short so continuous output cannot postpone TERM.
+    remaining = remaining_members(min(limit - 1, time.monotonic() + 0.05))
     if remaining:
         row["observer_terminated_viewer"] = stamp()
         os.killpg(pid, signal.SIGTERM)
-        remaining = remaining_members()
+        remaining = remaining_members(limit - 1)
     while remaining and time.monotonic() < limit - 1:
         select.select([fd] if terminal_open else [], [], [], 0.05)
-        remaining = remaining_members()
+        remaining = remaining_members(limit - 1)
     if remaining:
         shutdown["sigkill"] = stamp()
         os.killpg(pid, signal.SIGKILL)
-        remaining = remaining_members()
+        remaining = remaining_members(limit)
         while remaining and time.monotonic() < limit:
             select.select([fd] if terminal_open else [], [], [], 0.05)
-            remaining = remaining_members()
+            remaining = remaining_members(limit)
     shutdown.update(remaining=remaining, verified=not remaining, ended=stamp())
     save()
 
@@ -1269,7 +1276,7 @@ def connected_accounting():
 def provider_intervals():
     requests = {}
     intervals = []
-    path = root / "logs/events.jsonl"
+    path = root / "logs/audit.jsonl"
     if not path.is_file():
         return {"unavailable": "No reached product event log"}
     for line in path.read_bytes().splitlines(keepends=True):

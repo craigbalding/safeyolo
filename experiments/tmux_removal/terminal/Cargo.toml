@@ -1,0 +1,11 @@
+[package]
+name = "tmux-removal-poc"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pty-process = { version = "=0.5.3", features = ["async"] }
+vt100 = "=0.18.1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+serde_json = "1"

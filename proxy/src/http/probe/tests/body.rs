@@ -39,10 +39,10 @@ fn context_counts(fixture: &Fixture) -> (u64, u64) {
     (stats.checks_total, stats.allowed_total)
 }
 fn trace_from_owned_diagnostic(fixture: &Fixture) -> Value {
-    let rows = records(fixture.directory.path(), "events.jsonl");
+    let rows = records(fixture.directory.path(), "audit.jsonl");
     let request = rows
         .iter()
-        .find(|row| row["event"] == "proxy.network_guard")
+        .find(|row| row["event"] == "security.network_guard.evaluated")
         .expect("request reached actual head admission");
     fixture
         .runtime
@@ -117,13 +117,15 @@ async fn chunked_small_body_applies_once_only_after_terminal() {
             ("network-guard", "request"),
             ("circuit-breaker", "request"),
             ("credential-guard", "request"),
+            ("service-gateway", "request"),
+            ("pattern-scanner", "request"),
             ("test-context", "request"),
             ("probe-sink", "request"),
             ("circuit-breaker", "response"),
             ("test-context", "response"),
         ]
     );
-    assert_eq!(steps[4]["outcome"], "probe_terminated");
+    assert_eq!(steps[6]["outcome"], "probe_terminated");
     let audit = fixture.stop().await;
     let contexts: Vec<_> = audit
         .iter()

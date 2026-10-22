@@ -57,6 +57,12 @@ pub(super) fn begin<B>(
         &format!("{:?}", request.version()),
         &request.uri().to_string(),
     );
+    if destination.selected_ip.is_some() {
+        exchange.metadata(&serde_json::Map::from_iter([(
+            "target".into(),
+            super::selected_ip::facts(destination),
+        )]));
+    }
     Some(exchange)
 }
 

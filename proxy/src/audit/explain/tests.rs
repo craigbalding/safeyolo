@@ -61,6 +61,105 @@ fn json_report(writer: &Writer) -> Value {
 }
 
 #[test]
+fn connect_lookup_links_only_the_actual_outer_and_inner_requests_for_the_agent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("audit.jsonl");
+    let writer = writer(&path, 2);
+    let inner = "req-11111111111111111111111111111111";
+    let sibling = "req-22222222222222222222222222222222";
+    let unrelated = "req-33333333333333333333333333333333";
+    let rows = [
+        (
+            ID,
+            "alice",
+            "traffic.request_outcome",
+            json!({"connection_id":"shared","status":200}),
+        ),
+        (
+            inner,
+            "alice",
+            "traffic.connect_request",
+            json!({"connection_id":"shared","connect_request_id":ID}),
+        ),
+        (
+            inner,
+            "alice",
+            "traffic.request_outcome",
+            json!({"connection_id":"shared","status":403}),
+        ),
+        (
+            sibling,
+            "alice",
+            "traffic.connect_request",
+            json!({"connection_id":"shared","connect_request_id":ID}),
+        ),
+        (
+            sibling,
+            "alice",
+            "traffic.request_outcome",
+            json!({"connection_id":"shared","status":200}),
+        ),
+        (
+            unrelated,
+            "alice",
+            "traffic.request_outcome",
+            json!({"connection_id":"shared","connect_request_id":ID}),
+        ),
+        (
+            inner,
+            "bob",
+            "traffic.request_outcome",
+            json!({"connection_id":"shared","private":"bob"}),
+        ),
+    ];
+    for (id, agent, name, details) in rows {
+        let mut event = Event::new(name, Kind::Traffic, Severity::Low, "observed");
+        event.request_id = Some(id.into());
+        event.agent = Some(agent.into());
+        event.details = details.into();
+        writer.emit(event).unwrap();
+    }
+    let report = |id, agent| {
+        let mut result = writer.explain(id, agent).unwrap();
+        let json: Value = serde_json::from_str(&result.render_json(false).unwrap()).unwrap();
+        wipe(&mut result);
+        json
+    };
+    let outer = report(ID, "alice");
+    assert_eq!(outer["status"], "complete");
+    assert_eq!(outer["events"].as_array().unwrap().len(), 5);
+    assert!(
+        outer["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["agent"] == "alice" && row["request_id"] != unrelated)
+    );
+    let child = report(inner, "alice");
+    assert_eq!(child["events"].as_array().unwrap().len(), 3);
+    assert!(
+        child["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["request_id"] == ID || row["request_id"] == inner)
+    );
+    assert_eq!(report(ID, "bob")["events"], json!([]));
+    assert_eq!(
+        report(unrelated, "alice")["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Approval readers keep their exact request lookup; CONNECT links belong
+    // only to the agent's explanation of network evidence.
+    let mut approvals = approval(&writer, &path, &2.into(), ID).unwrap();
+    assert_eq!(approvals.as_array().unwrap().len(), 1);
+    wipe(&mut approvals);
+}
+
+#[test]
 fn strict_owner_filter_file_order_suffix_and_gaps() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("audit.log");

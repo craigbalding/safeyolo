@@ -12,7 +12,6 @@ proxy_client works from the host because credential_guard evaluates
 based on request content (headers, host), not source IP.
 """
 
-import json
 import os
 import sys
 import time
@@ -72,29 +71,11 @@ if not ADMIN_TOKEN and _ADMIN_TOKEN_PATH.exists():
 _CA_CERT = _CONFIG_DIR / "certs" / "mitmproxy-ca-cert.pem"
 
 
-def _agent_map_mode_specs() -> list[str]:
-    """Return UDS mode specs for agents already registered in agent_map.json."""
-    map_path = _CONFIG_DIR / "data" / "agent_map.json"
-    if not map_path.exists():
-        return []
-    try:
-        data = json.loads(map_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
+def _agent_listener_mode_specs() -> list[str]:
+    """Return the current native listener paths for the isolated test instance."""
+    from installed_host_smoke import _agent_listeners
 
-    specs: list[str] = []
-    sockets_dir = _CONFIG_DIR / "data" / "sockets"
-    for name, entry in data.items():
-        if not isinstance(entry, dict):
-            continue
-        sock = entry.get("socket")
-        if not sock:
-            ip = entry.get("ip")
-            if not ip:
-                continue
-            sock = str(sockets_dir / f"{ip}_{name}" / "proxy.sock")
-        specs.append(f"unix:{sock}")
-    return specs
+    return [f"unix:{entry['path']}" for entry in _agent_listeners(_CONFIG_DIR)]
 
 # ---------------------------------------------------------------------------
 # Test credentials — MUST match production detection patterns
@@ -178,7 +159,7 @@ def proxy_uds_path(admin_client, wait_for_safeyolo):
     # while adding the host-side test listener, otherwise teardown would drop
     # the real agent socket and every in-VM proxy request would fail with
     # curl status 000.
-    original_specs = _agent_map_mode_specs()
+    original_specs = _agent_listener_mode_specs()
     modes = list(dict.fromkeys([*original_specs, spec]))
 
     resp = admin_client.put("/admin/proxy/mode", json={"modes": modes})

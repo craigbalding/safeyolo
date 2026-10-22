@@ -20,7 +20,7 @@ mod runsc;
 #[path = "linux_host/shares.rs"]
 pub(crate) mod shares;
 
-pub const HELP: &str = "safeyolo [--root ROOT] host prepare [--system-runsc PATH] [--yes]\nCheck and prepare the Ubuntu host for rootless agents.\nReuse valid subordinate UID/GID ranges. Allocate missing ranges through shadow's locked allocator.\nInstall only missing host tools. Load a separate AppArmor profile for this installation when required.\nExplain host changes before asking for consent and sudo. --yes accepts the explained changes.\nThe agent and proxy continue to run as your host account. Repeat preserves existing instances.\n--system-runsc selects a complete tested system payload; the bundled runtime remains unchanged.";
+pub const HELP: &str = "safeyolo [--root ROOT] host prepare [--system-runsc PATH] [--yes]\nCheck and prepare the Ubuntu or Alpine host for rootless agents.\nReuse valid subordinate UID/GID ranges. Allocate missing ranges through shadow's locked allocator.\nInstall only missing host tools. Load a separate AppArmor profile for this installation when required.\nExplain host changes before asking for consent and sudo. --yes accepts the explained changes.\nThe agent and proxy continue to run as your host account. Repeat preserves existing instances.\n--system-runsc selects a complete tested system payload; the bundled runtime remains unchanged.";
 
 pub const ID_COUNT: u32 = 65536;
 pub const ARCHIVE_BASE: u32 = 100000;
@@ -426,7 +426,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), Error> {
 }
 #[cfg(not(target_os = "linux"))]
 pub fn run(_root: &Path, _args: &[String]) -> Result<(), Error> {
-    Err("host preparation is for supported Ubuntu Linux hosts".into())
+    Err("host preparation is for supported Ubuntu and Alpine Linux hosts".into())
 }
 
 #[cfg(test)]

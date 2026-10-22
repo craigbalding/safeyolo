@@ -24,14 +24,14 @@ fn document_with_memory(
         Err(error) => memory_failure(error.kind()),
     };
     report.insert("memory-monitor".into(), memory);
-    let discovery = match runtime
-        .agent_discovery
-        .get_stats(&runtime.audit, crate::circuit_runtime::now)
+    let agents = match runtime
+        .agent_activity
+        .report(&runtime.config.listeners, crate::circuit_runtime::now())
     {
         Ok(report) => report,
-        Err(error) => discovery_failure(error.kind(), &error.to_string()),
+        Err(error) => failure("RuntimeError", &error.to_string()),
     };
-    report.insert("service-discovery".into(), discovery);
+    report.insert("agents".into(), agents);
     report.insert(
         "policy-engine".into(),
         policy_stats(runtime.policy.as_ref(), &runtime.tasks),
@@ -66,16 +66,8 @@ fn document_with_memory(
             &mut rand::random::<f64>,
             &audit,
         ) {
-            Ok(outcome) => {
-                crate::circuit_runtime::record_transitions(runtime, &outcome.events, None);
-                outcome.value
-            }
-            Err(error) => {
-                // Earlier successful submissions remain committed. These are
-                // development diagnostics, not a second canonical submission.
-                crate::circuit_runtime::record_transitions(runtime, error.events(), None);
-                circuit_failure(&error)
-            }
+            Ok(outcome) => outcome.value,
+            Err(error) => circuit_failure(&error),
         };
         report.insert("circuit-breaker".into(), circuits);
         let context = match runtime.test_context.stats(crate::http::declaration_time()) {
@@ -140,21 +132,6 @@ fn memory_failure(kind: crate::memory_monitor::ErrorKind) -> CircuitValue {
     // The component retains a category, not arbitrary Python exception prose.
     // In particular Overflow cannot identify which report conversion failed.
     failure(class, "memory monitor operation failed")
-}
-
-fn discovery_failure(kind: crate::agent_discovery::ErrorKind, message: &str) -> CircuitValue {
-    use crate::agent_discovery::ErrorKind;
-    let class = match kind {
-        ErrorKind::Attribute => "AttributeError",
-        ErrorKind::Type => "TypeError",
-        ErrorKind::UnicodeDecode => "UnicodeDecodeError",
-        ErrorKind::Value => "ValueError",
-        ErrorKind::Permission => "PermissionError",
-        ErrorKind::Io => "OSError",
-        ErrorKind::Audit(crate::audit::ErrorKind::Io) => "OSError",
-        ErrorKind::Audit(_) | ErrorKind::Compatibility | ErrorKind::Poisoned => "RuntimeError",
-    };
-    failure(class, message)
 }
 
 fn policy_stats(policy: Option<&Policy>, tasks: &Registry) -> CircuitValue {
@@ -236,7 +213,6 @@ mod tests {
             "data_dir":directory.path().join("data"),
             "readiness_file":directory.path().join("ready"),
             "audit_log_path":directory.path().join("audit.jsonl"),
-            "event_log":directory.path().join("events.jsonl"),
             "flow_store_enabled":false,
             "flow_store_db_path":directory.path().join("unused.sqlite3"),
             "circuit_state_file":""
@@ -253,7 +229,7 @@ mod tests {
             [
                 "proxy",
                 "memory-monitor",
-                "service-discovery",
+                "agents",
                 "policy-engine",
                 "network-guard",
                 "credential-guard",

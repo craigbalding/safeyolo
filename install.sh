@@ -48,6 +48,16 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) platform=darwin-arm64;;
   *) echo 'Unsupported host. Use Ubuntu AMD64/ARM64 or Apple Silicon macOS.' >&2; exit 1;;
 esac
+libc_suffix=
+if [[ $platform == linux-* ]]; then
+  if ! getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+    runtime=$(ldd --version 2>&1) || true
+    [[ $runtime == *'musl libc'* ]] || {
+      echo 'Cannot identify the Linux host libc. Use a glibc or musl host.' >&2; exit 1
+    }
+    libc_suffix=-musl
+  fi
+fi
 if [[ -n $release && ! $release =~ ^host-[0-9a-f]{40}$ ]]; then
   echo '--release must name an official host release: host- followed by its full commit.' >&2; exit 2
 fi
@@ -115,7 +125,7 @@ if [[ -z $release ]]; then
   release=${resolved#https://github.com/craigbalding/safeyolo/releases/tag/}
   [[ $release =~ ^host-[0-9a-f]{40}$ ]] || { echo 'Latest is not a supported host release. Select an official --release host-COMMIT.' >&2; exit 1; }
 fi
-name=safeyolo-$platform-production
+name=safeyolo-$platform$libc_suffix-production
 cache=${XDG_CACHE_HOME:-$HOME/.cache}/safeyolo/host-packages/$release
 mkdir -p "$cache"
 stage=$(mktemp -d "$cache/acquire.XXXXXX")

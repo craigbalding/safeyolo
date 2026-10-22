@@ -288,8 +288,6 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     build = next(step for step in steps if step.get("id") == "linux_host_inputs")
     tests = next(step for step in steps if step.get("name") == "Test installed native policy commands")
     assert steps.index(build) < steps.index(tests)
-    guest_tests = next(step for step in steps if step.get("name") == "Check native guest command operations")
-    assert steps.index(build) < steps.index(guest_tests)
     assert not tests.get("continue-on-error")
     commands = tmp_path / "commands"
     commands.mkdir()

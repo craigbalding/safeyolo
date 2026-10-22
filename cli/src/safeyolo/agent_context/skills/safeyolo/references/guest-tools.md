@@ -118,8 +118,8 @@ log is `/var/log/safeyolo-scheduling.log`.
 installs therefore persist. OS-package persistence is platform-dependent:
 
 - Hardware microVMs normally retain package changes in their per-agent overlay.
-- Default Linux gVisor directory overlays retain package changes. Ephemeral
-  rootfs mode discards them on stop; per-agent package-download caches persist.
+- Linux gVisor discards rootfs package changes on stop in both overlay modes.
+  Per-agent package-download caches persist, so repeated installs reuse downloads.
 - Ephemeral or snapshot modes may intentionally discard later changes.
 
 Do not rely on a native package being present in a future run unless the task

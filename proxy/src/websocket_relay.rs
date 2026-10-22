@@ -239,14 +239,24 @@ async fn read_messages<R: AsyncRead + Unpin>(
                     if lifetime.cancelled.load(Ordering::Acquire) {
                         return Ok((message, true));
                     }
-                    runtime.record(json!({
-                        "event": "proxy.websocket.message", "agent": state.identity.request_agent(),
-                        "connection_id": state.identity.connection_id, "request_id": state.request_id,
-                        "host": state.host, "port": state.port, "from_client": from_client,
-                        "message_type": kind, "message_bytes": message.len(),
-                        "fragments": message.fragment_count(), "spilled": message.spilled(),
-                        "dropped": drop_message, "inspection": decision, "failure": failure,
-                    }))?;
+                    runtime.audit.emit(state.identity.request_event(
+                        "traffic.websocket.message",
+                        crate::audit::Kind::Traffic,
+                        &state.request_id,
+                        "WebSocket message inspected",
+                        json!({
+                        "host": state.host,
+                        "port": state.port,
+                        "from_client": from_client,
+                        "message_type": kind,
+                        "message_bytes": message.len(),
+                        "fragments": message.fragment_count(),
+                        "spilled": message.spilled(),
+                        "dropped": drop_message,
+                        "inspection": decision,
+                        "failure": failure
+                        }),
+                    ))?;
                     Ok((message, drop_message))
                 });
                 let result = tokio::select! {
@@ -517,13 +527,22 @@ pub(crate) async fn relay(
         .read()
         .map_err(|_| "runtime state unavailable")?
         .clone();
-    runtime.record(json!({
-        "event": "proxy.websocket.end", "agent": session.identity.request_agent(),
-        "connection_id": session.identity.connection_id, "request_id": session.request_id,
-        "host": session.host, "port": session.port, "close_code": end.code,
-        "closed_by_client": end.from_client, "outcome": end.outcome,
-        "drained": drained, "duration_ms": started.elapsed().as_millis(),
-    }))
+    runtime.audit.emit(session.identity.request_event(
+        "traffic.websocket.end",
+        crate::audit::Kind::Traffic,
+        &session.request_id,
+        "WebSocket relay ended",
+        json!({
+        "host": session.host,
+        "port": session.port,
+        "close_code": end.code,
+        "closed_by_client": end.from_client,
+        "outcome": end.outcome,
+        "drained": drained,
+        "duration_ms": started.elapsed().as_millis()
+        }),
+    ))?;
+    Ok(())
 }
 
 #[cfg(test)]

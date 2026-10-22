@@ -41,13 +41,21 @@ atd next processes its queue; backward correction can delay them. See
 Check actual missed/repeated runs after clock correction or sleep/resume.
 There is no exactly-once delivery guarantee.
 
-Crontabs and at jobs use native files under `/var/spool/cron`. The default
-per-agent Linux directory overlay and VZ disk overlay retain them across
-normal stop/start. Another agent has a separate overlay. Ephemeral rootfs
-mode discards the spool on stop. Resetting or removing an agent's rootfs
-overlay also removes its jobs. Scripts and logs in `/home/agent` persist
-independently until that home is removed. Deleting a script does not cancel
-its queued entries.
+Crontabs and at jobs use native files under `/var/spool/cron`. On Linux,
+the host binds that directory from `agents/<name>/overlay/var/spool/cron`.
+The bind retains the queues across normal stop/start. Each agent has its own
+spool. The VZ guest keeps its spool in the per-agent disk overlay.
+Ephemeral rootfs mode uses a fresh spool and discards it on stop. On Linux,
+memory mode does not expose or change a saved default-mode queue. Selecting
+default mode again exposes that saved queue. Resetting or removing an agent's
+rootfs overlay also removes its saved jobs. Scripts and logs in `/home/agent`
+persist independently until that home is removed. Deleting a script does not
+cancel its queued entries.
+
+Linux's `runsc --overlay2=root:dir=...` alone does not preserve rootfs files
+after stop. It uses a temporary file-backed tmpfs. Scheduler persistence needs
+the spool bind described above. Other rootfs files still disappear on stop
+unless they are in a persistent mount.
 Cron starts `@reboot` entries on a new sandbox boot.
 
 Reusable captures precede scheduler startup. An arbitrary used-snapshot
@@ -179,9 +187,14 @@ then stop/start affected agents. Regenerate reusable captures from those
 matching inputs: an old capture contains its old startup script. A host-only
 update cannot install missing rootfs packages. Custom images that omit this
 integration do not acquire a scheduler automatically.
+Linux also needs the host update that binds the native spool. An older host
+can start the daemons but lose both queues on stop. The update cannot recover
+queues already lost by an earlier stop. Before upgrading a running older
+guest, save `crontab -l` and inspect `atq`; recreate needed entries after the
+update. Do not copy at job files between agents.
 If an agent previously installed cron itself, inspect its `/etc/crontab` and
-`/etc/cron.d` before first startup. Its retained overlay can still contain
-package-maintenance entries. The upgrade preserves those existing files.
+`/etc/cron.d` before first startup. A retained VZ disk overlay can still contain
+package-maintenance entries. The upgrade preserves those existing VZ files.
 
 For a trigger that must arrive while the target sandbox is stopped, use the
 separate [trusted host recipe](https://github.com/craigbalding/safeyolo/blob/master/docs/coord-operations.md#schedule-an-operator-message).

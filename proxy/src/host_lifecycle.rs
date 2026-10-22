@@ -1511,8 +1511,7 @@ pub(crate) async fn start(
         }
         let prepared: Result<(), Error> = async {
             crate::host_runs::save(&agent.name, &run)?;
-            crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;
-            sync_agent_listeners().await
+            sync_agent_listeners(Some((&agent.name, Some(&ip)))).await
         }
         .await;
         if let Err(error) = prepared {
@@ -1550,10 +1549,7 @@ pub(crate) async fn start(
         .await;
         if let Err(error) = boot {
             let mut failures = Vec::new();
-            if let Err(rollback) = crate::host_platform::update_agent_map(&agent.name, None) {
-                failures.push(format!("agent-map rollback failed: {rollback}"));
-            }
-            if let Err(rollback) = sync_agent_listeners().await {
+            if let Err(rollback) = sync_agent_listeners(Some((&agent.name, None))).await {
                 failures.push(format!("listener rollback failed: {rollback}"));
             }
             if !failures.is_empty() {
@@ -1610,7 +1606,8 @@ pub(crate) async fn start(
 }
 
 // The setup lock is held, and no backend process was spawned for this record.
-// Retire it before rebuilding the map so a failed projection can be retried.
+// Retire it before synchronizing listeners so a failed update cannot keep
+// this known preboot record active.
 // A changed record or generation no longer belongs to this failed start.
 async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error> {
     let Some(saved) = crate::host_runs::read(&agent.name)? else {
@@ -1627,8 +1624,7 @@ async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error>
         return Err("preboot runtime identity changed; saved state was preserved".into());
     }
     std::fs::remove_file(crate::host_runs::path(&agent.name))?;
-    crate::host_platform::update_agent_map(&agent.name, None)?;
-    sync_agent_listeners().await
+    sync_agent_listeners(Some((&agent.name, None))).await
 }
 
 /// Reuse a live launch without selecting another launcher.
@@ -1711,7 +1707,9 @@ fn tmux_session() -> Result<String, Error> {
     Ok(format!("{session}-{}", instance.trim()))
 }
 
-pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
+pub(crate) async fn sync_agent_listeners(
+    change: Option<(&str, Option<&str>)>,
+) -> Result<(), Error> {
     let path = crate::host_platform::config_path();
     if !path.is_file() {
         return Ok(());
@@ -1725,7 +1723,6 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
             .await??;
     let cwd = crate::host_platform::config_dir();
-    let sockets = crate::host_platform::config_dir().join("data/sockets");
     let source = std::fs::read(&path)?;
     let native = path
         .extension()
@@ -1751,44 +1748,48 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         } else {
             cwd.join(path)
         };
-        let managed = path.file_name().is_some_and(|name| name == "proxy.sock")
-            && path.parent().and_then(std::path::Path::parent) == Some(sockets.as_path())
-            && path
-                .parent()
-                .and_then(std::path::Path::file_name)
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.split_once('_'))
-                .is_some_and(|(ip, name)| {
-                    ip.parse::<std::net::Ipv4Addr>().is_ok()
-                        && crate::host_platform::valid_agent_name(name)
-                });
+        let managed = crate::host_platform::is_managed_agent_listener(&crate::AgentListener {
+            agent_id: entry
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or("agent listeners need agent_id strings")?
+                .into(),
+            socket_path: path,
+            source_id: None,
+        });
         if !managed {
             retained.push(entry.clone());
         }
     }
-    let map_path = crate::host_platform::agent_map_path()?;
-    let map: serde_json::Map<String, Value> = match std::fs::read(map_path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .or_else(|_| crate::host_platform::agent_map_from_runs())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            crate::host_platform::agent_map_from_runs()?
-        }
-        Err(error) => return Err(error.into()),
+    // Reuse startup's backend/generation reconciliation. A prepared start
+    // supplies its listener before the backend exists, so the guest can reach
+    // the proxy from its first instruction. A failed boot removes its listener
+    // without discarding an uncertain backend record. No separate map is written.
+    let mut current = if native {
+        crate::native_config::read(&path)?
+    } else {
+        serde_json::from_value(config.clone())?
     };
-    for (name, entry) in map {
-        let Some(ip) = entry.get("ip").and_then(Value::as_str) else {
-            continue;
-        };
-        if !crate::host_platform::valid_agent_name(&name)
-            || ip.parse::<std::net::Ipv4Addr>().is_err()
-        {
-            return Err("invalid agent listener identity".into());
+    crate::host_commands::restore_attachments(&mut current).await?;
+    if let Some((name, ip)) = change {
+        current.listeners.retain(|entry| {
+            entry.agent_id != name || !crate::host_platform::is_managed_agent_listener(entry)
+        });
+        if let Some(ip) = ip {
+            current
+                .listeners
+                .push(crate::host_platform::agent_proxy_listener(name, ip));
         }
-        let path = sockets.join(format!("{ip}_{name}")).join("proxy.sock");
-        if path.as_os_str().as_bytes().len() > if cfg!(target_os = "macos") { 104 } else { 108 } {
-            return Err("agent socket path exceeds platform limit".into());
+    }
+    for entry in current.listeners {
+        if crate::host_platform::is_managed_agent_listener(&entry) {
+            if entry.socket_path.as_os_str().as_bytes().len()
+                > if cfg!(target_os = "macos") { 104 } else { 108 }
+            {
+                return Err("agent socket path exceeds platform limit".into());
+            }
+            retained.push(serde_json::to_value(entry)?);
         }
-        retained.push(json!({"agent_id":name,"socket_path":path,"source_id":ip}));
     }
     let requested = uuid::Uuid::new_v4().simple().to_string();
     config["listeners"] = Value::Array(retained);
@@ -2090,6 +2091,17 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     };
     let current = crate::host_agents::refresh(agent)?;
     let agent = &current;
+    let observed = crate::host_runs::observe(&agent.name).await;
+    if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
+        crate::host_platform::check_stop_sandbox(&agent.name).await?;
+    }
+    if let Some(mut run) = crate::host_runs::read(&agent.name)?
+        && run["agent_id"] == agent.id
+        && matches!(run["state"].as_str(), Some("starting" | "running"))
+    {
+        run["state"] = "stopping".into();
+        crate::host_runs::save(&agent.name, &run)?;
+    }
     let command_warning = stop_supervisor(&agent.name)
         .await
         .err()
@@ -2101,12 +2113,11 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     }
     #[cfg(target_os = "linux")]
     crate::linux_host::shares::cleanup_stopped(&agent.name).await?;
-    crate::host_platform::update_agent_map(&agent.name, None)?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)? {
         run["state"] = "stopped".into();
         crate::host_runs::save(&agent.name, &run)?;
     }
-    sync_agent_listeners().await?;
+    sync_agent_listeners(Some((&agent.name, None))).await?;
     crate::host_events::write(
         &agent.name,
         "agent.stopped",
@@ -2292,6 +2303,13 @@ mod tests {
             let run_id = "0123456789abcdef0123456789abcdef";
             let run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":"10.200.0.1","state":"starting"});
             let context = agent_dir(&agent.name).join("config-share/host-launch-context.json");
+            let config_path = crate::host_platform::config_path();
+            let peer = json!({"agent_id":"peer","socket_path":temp.path().join("peer.sock")});
+            std::fs::write(&config_path, toml::to_string(&json!({"listeners":[
+                crate::host_platform::agent_proxy_listener(&agent.name, "10.200.0.1"),
+                peer.clone(),
+            ]})).unwrap()).unwrap();
+            let saved_config = std::fs::read(&config_path).unwrap();
             let map = temp.path().join("data/agent_map.json");
             write_json(&map, &json!({"marker":{"ip":"10.200.0.1"},"peer":{"ip":"10.200.0.2"}})).unwrap();
             let saved_map = std::fs::read(&map).unwrap();
@@ -2320,23 +2338,31 @@ mod tests {
                 let saved = std::fs::read(crate::host_runs::path(&agent.name)).unwrap();
                 assert!(rollback_preboot_start(&agent, &run).await.is_err(), "{field}");
                 assert_eq!(std::fs::read(crate::host_runs::path(&agent.name)).unwrap(), saved, "{field}");
+                assert_eq!(std::fs::read(&config_path).unwrap(), saved_config, "{field}");
                 assert_eq!(std::fs::read(&map).unwrap(), saved_map, "{field}");
             }
             write_json(&context, &json!({"generation":run_id})).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
-            // A failed map rollback must report failure, but must not leave
+            // A failed listener update must report failure, but must not leave
             // this known preboot record holding status/retry indefinitely.
-            std::fs::remove_file(&map).unwrap();
-            std::fs::create_dir(&map).unwrap();
+            let listener_lock = temp.path().join("data/native-listeners.lock");
+            std::fs::create_dir(&listener_lock).unwrap();
             assert!(rollback_preboot_start(&agent, &run).await.is_err());
             assert!(!crate::host_runs::path(&agent.name).exists());
             assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
-            std::fs::remove_dir(&map).unwrap();
-            write_json(&map, &serde_json::from_slice::<Value>(&saved_map).unwrap()).unwrap();
+            assert_eq!(std::fs::read(&config_path).unwrap(), saved_config);
+            assert_eq!(std::fs::read(&map).unwrap(), saved_map);
+            std::fs::remove_dir(&listener_lock).unwrap();
+            // Even an unusable retired map must not prevent listener rollback.
+            std::fs::remove_file(&map).unwrap();
+            std::fs::create_dir(&map).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
             rollback_preboot_start(&agent, &run).await.unwrap();
             assert!(!crate::host_runs::path(&agent.name).exists());
-            assert_eq!(read_json(&map).unwrap().unwrap(), json!({"peer":{"ip":"10.200.0.2"}}));
+            assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
+            let listeners = crate::native_config::read(&config_path).unwrap().listeners;
+            assert_eq!(serde_json::to_value(listeners).unwrap(), json!([peer]));
+            assert!(map.is_dir());
         })
         .await;
     }

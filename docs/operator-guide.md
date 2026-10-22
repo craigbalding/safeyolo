@@ -203,7 +203,28 @@ SafeYolo effect: Allow reusable network access for work (ag-…) to example.com 
 Read the effect before deciding. Approval permits future requests by this
 agent to that host and port until you remove the permission. It is not limited
 to one HTTP request and does not grant credential permission. If the scope is
-what you intend, type the following input with the same full ID:
+unclear, type `explain REQUEST_ID` with the same full ID. SafeYolo shows the
+recorded facts, why the request stopped, the offered grant, important non-grants
+and unknown scope. Explanation records an audit event and leaves the approval
+unchanged. Raw paths, queries and contract values are omitted because they can
+contain secrets. Agent prose does not supply trusted facts or establish need.
+
+For numbered selection, type `review`, choose a request, then type `e` to
+explain it. You can still approve or reject that same request. For gateway
+routes, `explain remembered` selects and explains that offered option; a later
+`approve` uses the selected option. The default route option is `once`.
+Credential grants change persistent policy shared by all agents in the instance.
+Service access can require a displayed credential option.
+
+In a host shell, `safeyolo approvals explain REQUEST_ID --option OPTION_ID`
+explains a displayed option; omit `--option` for the default. Add `--json` for
+structured evidence. `safeyolo approvals show REQUEST_ID --json` provides the
+full canonical record under the same operator permissions. Existing traffic
+views and the [approval troubleshooting graph](../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/triage-approval-required.yaml)
+provide deeper diagnostics; explanation does not require traffic recording.
+
+If the scope is what you intend, type the following input at `inspect>` with
+the same full ID:
 
 ```text
 approve REQUEST_ID
@@ -279,6 +300,117 @@ a running, attachable command. A missing terminal produces an error and keeps
 your selection; attach does not launch another command. Returning from the
 terminal or using `back` also keeps the selected agent.
 
+## Inspect a pending approval
+
+When a request needs approval, SafeYolo gives it an `approval_id` that starts
+with `apr-`. Each traffic attempt also has its own `request_id`. Equivalent
+retries share the pending approval. A changed method, destination, resource,
+credential binding or offered scope gets a new approval.
+
+On the host, use your configured agent name in place of `work`. Copy
+`APPROVAL_ID` from the pending list. These commands leave the approval pending:
+
+```sh
+safeyolo approvals list --agent work --json
+safeyolo approvals show APPROVAL_ID --agent work --json
+```
+
+You can inspect traffic, logs and the approval again before deciding. The
+approval retains its original authority and options. Expect `status: pending`
+after inspection. Agent prose and Helper reasons cannot change that authority.
+
+To ask the requesting agent why the operation helps its task, keep the same
+approval ID and run these commands on the host:
+
+```sh
+safeyolo approvals ask APPROVAL_ID --agent work
+safeyolo approvals context APPROVAL_ID --agent work
+```
+
+`ask` stores a fixed question and sends it to the existing `work-agent` Coord
+room. The agent must receive that room's attention to answer automatically.
+Factory preparation already supplies the private agent room and membership.
+For an individual agent, start Coord with `safeyolo coord start`. If its room
+does not exist, create it with `safeyolo coord room create work-agent`, then
+grant receipt with `safeyolo coord grant work-agent work receive`. These are
+host commands. They do not grant network, credential or service access.
+
+In `inspect`, use `ask APPROVAL_ID` and `context APPROVAL_ID`. In the numbered
+`review` interface, use `a` to ask and `c` to read the reply. You can still use
+`e` for the separate SafeYolo explanation, then approve or reject the same
+request. Context does not select or change an approval option.
+
+Every reply appears under **Agent-provided context — UNTRUSTED**, with the
+requesting agent's name and durable ID. Its task, reason, next step and fallback
+are agent claims. SafeYolo does not verify those claims or use them to change
+the fixed authority. Each field is limited to 2048 UTF-8 bytes. Plain terminal
+output quotes and escapes the text and shows at most 512 characters per field.
+Use `--json` to read the complete bounded response; Unicode and terminal controls
+remain escaped. The question does not ask the agent to supply security wording.
+
+The reply deadline is 120 seconds. `waiting`, `timed_out`, unavailable delivery,
+or an agent that is busy or offline does not approve, reject or expire the
+approval. Approve/reject remains available. Repeating `ask` while a question is
+open reads that exchange without resending it. After a timeout, an explicit
+`ask` sends a new question for the same approval. An old or duplicate response
+cannot replace a recorded reply. An uncertain delivery is shown as `unknown`;
+SafeYolo does not automatically resend it. The agent can also read its question
+through the [approval-context Agent API](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approval-context).
+
+Context has its own stored record and audit events,
+`admin.approval_context_requested` and `agent.approval_context_responded`.
+SafeYolo explanation and operator-decision events remain separate. If context
+storage or audit fails, the command reports the failure. Read `context` before
+retrying an uncertain write. Ordinary approval controls remain available.
+
+Read the stated effect before deciding. Network approval changes the existing
+agent-specific host/port policy until removed. Credential approval changes the
+existing shared fingerprint/destination policy for all current and future
+agents in the instance. Rejection changes neither policy. Gateway route
+approval uses the exact method and path, including case and literal wildcard
+characters. Approval defaults to the existing `once` grant. Use
+`--option session` or `--option remembered` only when the approval offers that
+option. Service access can require an offered `credential:NAME` option. Contract binding saves the
+fixed contract values and does not authorize service access by itself.
+
+To decide the selected approval, run one of these host commands:
+
+```sh
+safeyolo approvals approve APPROVAL_ID --agent work --json
+safeyolo approvals reject APPROVAL_ID --agent work --json
+```
+
+The command returns the recorded `approved` or `rejected` result. After approval,
+repeat the original request from the agent to use the existing permission.
+
+An approval can have a `pending`, `approved`, `rejected`, `expired` or
+`superseded` state. Inspection does not change that state. Expiry or a material
+policy, service or identity change prevents approval of old authority. An old
+session option expires when the proxy restarts. Other pending authority can
+survive restart while its bound inputs remain valid. Known credential expiry
+also expires a request bound to that credential. Ordinary network and inline
+credential approvals have no added pending timeout.
+
+Terminal decisions remain inspectable. Repeating a decision returns its saved
+result; it cannot create another grant or change the chosen lifetime. A
+successful response still consumes a `once` grant under the existing gateway
+rules. The approval record does not restore that consumed grant. If a new request
+still needs approval after a terminal decision, it gets a new approval ID.
+
+SafeYolo keeps pending authority in the instance's host-owned data directory.
+Audit events correlate traffic IDs, approval IDs, inspection and decisions.
+Audit display text does not supply permission. Historical audit-only requests
+remain inspectable; assisted approval needs a new durable request. Missing
+approval state fails closed; it is not reconstructed from traffic logs. Direct
+policy and service commands remain available for explicit operator changes.
+Requests from a listener without a durable agent ID still return 428 and retain
+direct policy controls. They cannot create a canonical approval record.
+
+In macOS Command Centre, the approval window shows the same approval ID and
+fixed effects. Select an offered option when needed. **Cancel** closes the
+window and leaves the request pending. **Deny** records a refusal without adding
+a policy deny rule. Reconnect reads the recorded outcome before another decision.
+
 ## Recover from a failed operation
 
 If `inspect` reports `inspect requires a terminal`, open it in an interactive
@@ -296,9 +428,9 @@ safeyolo approvals show REQUEST_ID --agent work
 
 `approved` or `rejected` is the recorded outcome. If the item is still pending,
 restore the connection and read its current scope before deciding. A relevant
-policy change or recreated agent can make the action stale; approval returns
-409. Obtain a new request from the agent and review that new ID. You can still
-reject the stale item without changing network permission.
+policy change or recreated agent can supersede the action; approval returns
+409. Expired and superseded IDs remain inspectable. Obtain a new request from
+the agent and review its new approval ID.
 
 The Admin API is the host's administrative application programming interface.
 If inspect cannot reach it, leave with `quit` and run these commands in the same host terminal. Logs and diagnose use the configured local

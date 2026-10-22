@@ -24,8 +24,7 @@ fn config(directory: &Path) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")},
                      {"agent_id":"bob","socket_path":directory.join("bob.sock")}],
-        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "event_log":directory.join("diagnostic.jsonl"),"audit_log_path":directory.join("audit.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":true,"circuit_state_file":"",
     })).unwrap()
@@ -79,6 +78,17 @@ fn records(directory: &Path) -> Vec<Value> {
                     row["event"].as_str(),
                     Some("ops.startup" | "ops.memory.conn_closed")
                 ))
+        })
+        .filter(|row| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                )
+            )
         })
         .collect()
 }
@@ -246,20 +256,21 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
             "attribution_status":"resolved", "attribution_provenance":{"transport_source":"uds","uds_agent":"bob"},
         })
     );
-    let diagnostics: Vec<Value> =
-        std::fs::read_to_string(directory.path().join("diagnostic.jsonl"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+    let diagnostics: Vec<Value> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     let request = diagnostics
         .iter()
-        .find(|row| row["event"] == "proxy.request" && row["request_id"] == security["request_id"])
+        .find(|row| {
+            row["event"] == "traffic.request_outcome" && row["request_id"] == security["request_id"]
+        })
         .unwrap();
     assert!(security["details"]["connection_id"].is_string());
     assert_eq!(
         security["details"]["connection_id"],
-        request["connection_id"]
+        request["details"]["connection_id"]
     );
     assert!(!serde_json::to_string(&rows).unwrap().contains("forged"));
 }

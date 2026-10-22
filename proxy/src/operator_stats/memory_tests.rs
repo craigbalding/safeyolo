@@ -18,7 +18,6 @@ fn runtime(directory: &std::path::Path) -> Runtime {
         "data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "flow_store_enabled":false,
         "flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_state_file":""
@@ -75,7 +74,7 @@ fn memory_is_first_in_the_native_lane_and_reports_the_shared_owner() {
             [
                 "proxy",
                 "memory-monitor",
-                "service-discovery",
+                "agents",
                 "policy-engine",
                 "network-guard",
                 "credential-guard",
@@ -114,10 +113,10 @@ fn failed_memory_report_is_contained_and_later_owner_reports_remain() {
         r#"{"error": "IndexError: memory monitor operation failed"}"#
     );
     assert_eq!(
-        fields["service-discovery"].render_json(false).unwrap(),
+        fields["agents"].render_json(false).unwrap(),
         runtime
-            .agent_discovery
-            .get_stats(&runtime.audit, crate::circuit_runtime::now)
+            .agent_activity
+            .report(&runtime.config.listeners, crate::circuit_runtime::now())
             .unwrap()
             .render_json(false)
             .unwrap()

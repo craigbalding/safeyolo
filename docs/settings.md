@@ -19,6 +19,11 @@ implementation history and revision-specific proof. In those sections,
 “native” names that implementation distinction. For current configuration
 keys, go to [runtime settings](#runtime-settings).
 
+The retired `agent_map_file` key is ignored when reading an existing
+`config.toml`. New configurations omit it. The proxy does not read that file
+or use its entries to identify an agent. Listener configuration supplies the
+owner and source IP.
+
 ## Operator entry responsibilities
 
 [Native operator commands](operator-guide.md) use one selected instance and
@@ -36,7 +41,7 @@ coverage. Each accepted result below retains its actual tested revision.
 | `inspect` | The same native dispatch reads configured identities and existing approved Factory role mappings. State/evidence/decisions use the current Admin owners. Selection belongs only to this terminal session. #820 owns provisioning and workflow launch. |
 | Inspect `attach` | Fixed delegation to the same installed native CLI's `agent attach`, with the selected configuration/name. #817 owns that command, terminal transport and actual effects. This entry reuses that operation and adds no lifecycle implementation. |
 | `helper show`, `diagnostic`, `prepare` | Native Agent API client, using Helper's existing proxy/token or its granted Unix socket. Shared identity, evidence and approval owners enforce selected reads and typed preparation. No operator credential enters Helper. |
-| Commander decision/reconnect | Swift `MutationPlan`, `SafeYoloClient` and the common native resolver. The client's session projection rereads known request IDs after reconnect. An unavailable read stays unavailable; a lost mutation response is not reposted. |
+| Commander decision/reconnect | Swift `MutationPlan`, `SafeYoloClient` and the common native resolver. The client reads known approval IDs again after reconnect. An unavailable read stays unavailable; a lost mutation response is not reposted. |
 | HTTP/WebSocket body and exports | Existing process-owned traffic view/exporter; retained `raw`, `raw_request`, `raw_response`, `curl`, `httpie`, `har`, `zhar`. Native selection/body/transcript/file consumers replace the Python presentation. One HTTP exchange and one WebSocket transcript supply the finite consumer checks. |
 | Retired presentation | `commands/traffic.py`, `traffic_inspector.py`, the hidden `tmux traffic` / `return-to-agent` adapters and their UI-only tests are removed. Native tmux launchers retain the command session; operator evidence and decisions use the native inspect/approvals paths. Pane navigation, tail/pins, formatting and marked batch exports belonged to that UI. The chosen native path retains selected evidence and all seven exports. Python API/blackbox transport remains test tooling at this boundary. |
 
@@ -211,13 +216,12 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | New config.toml key | Type and default | Starting input and consumer |
 | --- | --- | --- |
 | `listeners` | Array of tables; `[]` | Generated listeners; UDS listener preparation. Each table has string `agent_id`, `socket_path`, and optional `source_id`. The listener supplies identity; `source_id` supplies the declaration slot. |
-| `agent_map_file` | Path; empty | Generated discovery map path; agent discovery. Empty uses listener identity alone. |
 | `data_dir` | Path; `data` | Generated runtime directory; HMAC, Agent API and durable instance identity. |
 | `policy_file` | Path; `policy.toml` | Policy path; shared policy compiler and watcher. |
 | `admin_port` | Integer; `9090` | `proxy.admin_port`; loopback Admin listener. |
 | `admin_api_token_file` | Path; `data/admin_token` | Generated operator token path; Admin authentication and CLI. |
 | `readiness_file` | Path; `data/ready.json` | Generated readiness path; accepted process/listener marker. |
-| `audit_log_path`, `event_log` | Paths; `logs/audit.jsonl`, `logs/events.jsonl` | Generated log paths; canonical audit writer and separate runtime diagnostics. |
+| `audit_log_path` | Path; `logs/audit.jsonl` | One event log for operational, security and diagnostic events, through the canonical audit writer. |
 | `circuit_state_file` | Path; `data/circuits.json` | Generated circuit snapshot path; existing circuit state owner. Empty disables snapshots. |
 | `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; `builtin-services`, `services` | Standalone init creates these directories; the installer selects `assets/services` and `data/services`. Operator definitions override builtins by name. CLI and delivery read the same accepted catalogue. Set both together. |
 | `onepassword_executable` | Absolute host executable path; absent | Optional 1Password resolver, after service/policy/approval checks. Authentication stays in the host environment. Restart after changing it; local credentials do not need it. |
@@ -225,6 +229,7 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | `parent_proxy`, `upstream_ca_file` | URL/path; absent | `proxy.upstream_proxy`, `proxy.upstream_ca_cert`; upstream transport and trust loader. |
 | `parent_proxy_agents` | String array; `[]` | Applies an optional trusted-agent filter to the shared parent. Omitted/empty applies no agent filter. If `parent_proxy_hosts` is also populated, both filters must match. Without `parent_proxy`, the list has no effect. See the [configuration example](CONFIGURATION.md#runtime-settings). |
 | `parent_proxy_hosts` | Domain Name System (DNS) hostname array; `[]` | Applies an optional exact destination filter to the shared parent. Omitted/empty applies no host filter. Matching ignores ASCII case and one final root dot; entries use the existing hostname/IDNA validation. Invalid entries are rejected. IP, wildcard, suffix, URL and port filters are not supported. Without `parent_proxy`, the list has no effect. |
+| `target_ip_mappings` | Array of tables; `[]` | Selects an IPv4/IPv6 `ip` for an exact DNS `host`. Optional `port` and `agents` restrict the scope. The requested port is preserved. Conflicting operator scopes or client/operator endpoints are rejected. Direct connections and parent CONNECT use the selected IP; TLS and policy retain the logical hostname. Restart after edits. See [selection and conflict rules](CONFIGURATION.md#select-a-target-ip). |
 | `tls_ca_file` | Path; absent | Generated signing CA path; TLS interception. |
 | `ignore_hosts` | String array; `[]` | `proxy.ignore_hosts`; existing exact TLS bypass entries. |
 | `via_token` | String; absent | `proxy.via_token`; existing Via-loop detection. Explicit values retain RFC-token validation. |
@@ -243,7 +248,7 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | `agent_launcher.default`, `agent_launcher.tmux_session` | Optional string/string; absent, `safeyolo` | Former config.yaml readers; host lifecycle now reads the same TOML loader. An explicit agent launcher wins, then the host default, then the existing built-in selection. #817 owns installed host launch preparation and root/asset binding. |
 | `command_centre.enabled`, `command_centre.events_port` | Boolean/integer; `false`, `9091` | Former Command Centre inputs/environment; Admin preparation and authenticated event listener. Fresh init creates `data/instance_id`. |
 | `command_centre.share`, `command_centre.tailnet_admin_port`, `command_centre.tailnet_events_port` | String/integers; `local`, `9443`, `9444` | Former Command Centre inputs; existing Tailnet publication. Share is `local` or `tailnet`; the Tailnet ports must be nonzero and distinct. #817 owns the complete operator sharing workflow. |
-| `desktop.size`, `desktop.present_host_port` | String/integer; `auto`, `0` | host lifecycle and desktop presentation consume the retained geometry/port settings. `agent present NAME` and Commander use the same presentation owner. #817's physical installed result retains its recorded revision; final package applicability remains with #822. The Python presentation is removed. |
+| `desktop.size`, `desktop.present_host_port` | String/integer; `auto`, `0` | Host lifecycle and desktop presentation consume the geometry and port settings. Port `0` selects a separate available port per presentation. A nonzero port shares a loopback listener and routes explicitly opened local presentations by `<agent>.localhost`. See [SSH preview setup](CONFIGURATION.md#preview-through-one-ssh-forward). `agent present NAME` and Commander use the same presentation owner. Tailscale sharing keeps its per-agent transport. #817's physical installed result retains its recorded revision; final package applicability remains with #822. The Python presentation is removed. |
 | `web.host`, `web.port`, `web.tailnet_enabled`, `web.tailnet_port` | String/integer/Boolean/integer; `127.0.0.1`, `8081`, `false`, `443` | Former `proxy.web_*` inputs. The new loader preserves their values; #817 owns web/share startup and helpers. |
 
 `reload_id` is a string used by the existing host listener writer to correlate

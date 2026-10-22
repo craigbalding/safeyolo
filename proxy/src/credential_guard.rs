@@ -421,6 +421,7 @@ impl CredentialGuard {
                     Some(host),
                     match identity {
                         Identity::Resolved(agent) => Some(agent),
+                        Identity::Current(run) => Some(run.agent.as_str()),
                         _ => None,
                     },
                 )
@@ -471,6 +472,68 @@ impl CredentialGuard {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+    /// Bind a vaulted reference to its current contents without serializing a
+    /// secret-bearing record or retaining plaintext in approval state.
+    pub(crate) fn approval_binding(&self, credential: &crate::credentials::Credential) -> String {
+        let reference = zeroize::Zeroizing::new(
+            serde_json::to_string(&credential.reference).expect("credential reference"),
+        );
+        let expires_at = credential
+            .expires_at
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(crate::approvals::pending::normalized_expiry);
+        let fields = [
+            Some(credential.name.as_str()),
+            Some(credential.credential_type.as_str()),
+            Some(credential.value.expose_secret()),
+            Some(reference.as_str()),
+            credential
+                .refresh_token
+                .as_ref()
+                .map(crate::credentials::Secret::expose_secret),
+            credential.token_url.as_deref(),
+            credential.client_id.as_deref(),
+            credential
+                .client_secret
+                .as_ref()
+                .map(crate::credentials::Secret::expose_secret),
+            expires_at.as_deref(),
+        ];
+        let mut binding = hmac::Context::with_key(&self.key);
+        binding.update(b"safeyolo.pending-credential.v1");
+        for field in fields {
+            binding.update(&[u8::from(field.is_some())]);
+            if let Some(field) = field {
+                binding.update(&(field.len() as u64).to_be_bytes());
+                binding.update(field.as_bytes());
+            }
+        }
+        format!(
+            "hmac256:{}",
+            binding
+                .sign()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
+
+    pub(crate) fn approval_resource(&self, target: &str) -> String {
+        let mut binding = hmac::Context::with_key(&self.key);
+        binding.update(b"safeyolo.pending-resource.v1");
+        binding.update(target.as_bytes());
+        format!(
+            "hmac256:{}",
+            binding
+                .sign()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
     }
     fn detect(&self, snapshot: &Snapshot, headers: &[Header<'_>]) -> Result<Vec<Detection>> {
         let mut detections = Vec::<Detection>::new();
@@ -606,6 +669,7 @@ impl CredentialGuard {
         }
         let agent = match request.identity {
             Identity::Resolved(agent) => Some(agent),
+            Identity::Current(run) => Some(run.agent.as_str()),
             _ => None,
         };
         let project = agent.unwrap_or("default");
@@ -1163,18 +1227,23 @@ fn evaluate(
         path,
         credential_hmac: Some(&finding.fingerprint),
     };
-    let Ok(credential) = (if observed_ghcr_pull {
-        policy.evaluate_observed_ghcr_pull(credential, now_ms)
-    } else {
-        policy.evaluate_credential(credential, now_ms)
-    }) else {
+    let Ok(credential) = policy.evaluate_credential_for_run(
+        credential,
+        now_ms,
+        observed_ghcr_pull,
+        request.identity.run(),
+    ) else {
         return failed();
     };
     let network = credential.effect == Effect::Allow;
     let decision = if network {
-        match policy.evaluate(
+        // Current native ingress carries the worker's effective network
+        // policy, including its run permission. A credential grant must not
+        // fall back to an unrelated name-less network decision.
+        let run = request.identity.run();
+        match policy.evaluate_for_run(
             NetworkRequest {
-                agent: None,
+                agent: run.map(|run| run.agent.as_str()),
                 host: request.host,
                 port: Some(request.port),
                 method: request.method,
@@ -1182,6 +1251,7 @@ fn evaluate(
             },
             now_ms,
             true,
+            run,
         ) {
             Ok(decision) => decision,
             Err(_) => return failed(),

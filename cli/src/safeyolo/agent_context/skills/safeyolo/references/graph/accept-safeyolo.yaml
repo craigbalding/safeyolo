@@ -183,7 +183,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: f4c0be291e267776953f385884e3803d75526ee2db6c59d506c2ae76b3cf91bb
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -213,13 +213,13 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: a008b83f118b9d9a947e4dcc5852f7112d50dd8008ddc62185f6bf573056c6a0
+          sha256: 6d4aa925c8395b49f85b15ae69182ff754332fc2de5026c39c40dcd6bfc93461
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: e514aa190788d5a694a5453d73f9fdbafed405bfa9b7ef7bbee02da2e2dc3301
+          sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: f4c0be291e267776953f385884e3803d75526ee2db6c59d506c2ae76b3cf91bb
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
@@ -246,13 +246,13 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: e514aa190788d5a694a5453d73f9fdbafed405bfa9b7ef7bbee02da2e2dc3301
+          sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
         - path: proxy/src/host_platform.rs
-          sha256: 9aa07e3b12225eb0b10071569a78d5c9582afbfbe4ed58c31a208c02735d6eac
+          sha256: 08b7f72684ecd1ad06ff9b1bf6ce28438b31898b7a6452d1dd051507e35f1200
         - path: proxy/src/host_boot.rs
-          sha256: 7d7b1d9cfdedb1713bfe0426552b5fba834cbe2198287332fd1ee42912cd8525
+          sha256: 464f3ea0c35efe8f969c0b22d161068a64246ff0bfa2efb793d793d77d79492a
         - path: guest/build-rootfs.sh
-          sha256: ff4ab568a23fabc32a8cff38ca0977564a4b1b35e77dec2268feb345c9ead613
+          sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
@@ -415,9 +415,9 @@ nodes:
         - path: guest/build-all.sh
           sha256: 63b9ec48a6fbd6a4ea010a0ccc1a320376a5d0875a5268dec9f7b5652829fc4e
         - path: guest/build-rootfs.sh
-          sha256: ff4ab568a23fabc32a8cff38ca0977564a4b1b35e77dec2268feb345c9ead613
+          sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
         - path: guest/rootfs-customize-hook.sh
-          sha256: 2cadb63cfd04b26d1841c2551796edcc06e4465d89b5d3bd95976bdf8aceb1c3
+          sha256: 84333056f8957049ae511cc3e9565342ddf8fd4cbf265e2e8dcfffd36736da15
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."
       verify: "sha256sum guest/build-all.sh guest/build-rootfs.sh guest/rootfs-customize-hook.sh && skopeo --version && umoci --version && mkfs.ext4 -V"
       run:
@@ -441,11 +441,11 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: e514aa190788d5a694a5453d73f9fdbafed405bfa9b7ef7bbee02da2e2dc3301
+          sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: 11854c1c5a903700d59e9d334a52567ce16ac4386aaae44e03dd809a9d7b3c52
+          sha256: 23cf1c64b11a8893cdf0bf2234b4bed5515d3e358a6860db1c420d4de78facc5
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:
@@ -470,7 +470,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 91ada1101761243365bb0ae0ce5ebf99d8e97d51c59c71a56aad31013af9a5f1
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: f4c0be291e267776953f385884e3803d75526ee2db6c59d506c2ae76b3cf91bb
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -495,7 +495,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 3ce4108e24c746370c03464d344874be9a98e818ff31efa599f73d4554c85ca2
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync mypy --version"
       run:
@@ -524,7 +524,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: f4c0be291e267776953f385884e3803d75526ee2db6c59d506c2ae76b3cf91bb
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -550,7 +550,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 3ce4108e24c746370c03464d344874be9a98e818ff31efa599f73d4554c85ca2
         - path: tools/acceptance/semgrep-rules.yml
           sha256: 36c03e46e234a6a4d1d72233c72096099d1bb1e798216d9413ddb817eb944555
         - path: tools/acceptance/semgrep-rules.py
@@ -580,11 +580,11 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: f4c0be291e267776953f385884e3803d75526ee2db6c59d506c2ae76b3cf91bb
         - path: tools/acceptance/pyproject.toml
           sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 3ce4108e24c746370c03464d344874be9a98e818ff31efa599f73d4554c85ca2
       setup: "uv sync --project tools/acceptance --frozen --only-group static; retain /home/agent/.cache/pip-audit across tasks"
       verify: "sha256sum pyproject.toml uv.lock tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync pip-audit --version"
       run:
@@ -608,7 +608,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 3ce4108e24c746370c03464d344874be9a98e818ff31efa599f73d4554c85ca2
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync radon --version"
       run:

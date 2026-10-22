@@ -1,6 +1,6 @@
 # Debian cron/at lifecycle, sourced by guest-init-per-run after its gate,
-# clock, environment and credential setup. Job state stays in the existing
-# per-agent rootfs overlay, in the packages' native spool directories.
+# clock, environment and credential setup. Linux binds the native spool from
+# per-agent storage; VZ keeps it in the disk overlay. Memory mode retains neither.
 SCHEDULER_LOG=/var/log/safeyolo-scheduling.log
 CRON_PID=
 ATD_PID=
@@ -21,6 +21,7 @@ start_guest_schedulers() {
 
     # The Linux image's uid remap makes all shipped files guest-root-owned.
     # Restore package spool owners without changing existing job-file owners.
+    install -d -o root -g root -m 0755 /var/spool/cron
     install -d -o root -g crontab -m 1730 /var/spool/cron/crontabs
     install -d -o daemon -g daemon -m 1770 /var/spool/cron/atjobs /var/spool/cron/atspool
     if [ ! -e /var/spool/cron/atjobs/.SEQ ]; then
@@ -32,8 +33,8 @@ start_guest_schedulers() {
         chown root:daemon /etc/at.deny
     fi
 
-    # VZ has a fresh /run tmpfs. Linux's persistent root overlay can retain
-    # cron's boot marker; a new sandbox boot must still run @reboot entries.
+    # A new sandbox boot must run @reboot entries even if a restored rootfs
+    # contains cron's boot marker. This does not change rollback semantics.
     rm -f /run/crond.reboot
 
     # Cron emits runtime errors through syslog. BusyBox is already in the base.

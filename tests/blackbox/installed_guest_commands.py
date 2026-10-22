@@ -19,12 +19,12 @@ from pathlib import Path
 
 if __package__:
     from .guest_exec import guest_command_args
-    from .installed_host_smoke import _agent_map, _sha256
+    from .installed_host_smoke import _agent_listeners, _sha256
     from .installed_ingress import runsc_identity
     from .installed_lifecycle import stop_guest
 else:
     from guest_exec import guest_command_args
-    from installed_host_smoke import _agent_map, _sha256
+    from installed_host_smoke import _agent_listeners, _sha256
     from installed_ingress import runsc_identity
     from installed_lifecycle import stop_guest
 
@@ -42,7 +42,7 @@ def run(args):
     os.environ["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     home, share = root / "agents" / args.agent / "home", root / "agents" / args.agent / "config-share"
     state_path, stop = home / ".safeyolo-command-supervisor.json", home / ".safeyolo-command-supervisor.stop"
-    listener = next(item for item in _agent_map(root) if item["agent_id"] == args.agent)
+    listener = next(item for item in _agent_listeners(root) if item["agent_id"] == args.agent)
     runtime = runsc_identity(root, args.agent, Path(listener["path"]), platform="systrap")
     context = json.loads((share / "host-launch-context.json").read_text())
     assert context["generation"], "current-run generation is missing"

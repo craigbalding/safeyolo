@@ -20,8 +20,8 @@
 # EROFS output was dropped in the unification — gVisor's EROFS-sourced
 # rootfs silently ignores dir= overlay (PR #12337: "EROFS mounts skip
 # gofer-specific processing"), which blocked disk-backed write
-# persistence on Linux. A directory-tree root.path doesn't have that
-# constraint, so Linux now gets the same persistence model as macOS.
+# backing on Linux. A directory-tree root.path allows disk-backed tmpfs, but
+# that temporary upper still disappears on stop. Persistent files need binds.
 #
 # Dependencies (install via the host's package manager):
 #   skopeo umoci e2fsprogs curl jq rsync
@@ -310,8 +310,8 @@ echo "=== Installing base packages ==="
 # namespace-root without host sudo. The SafeYolo sudo shim uses the sandbox's
 # CAP_SETUID/CAP_SETGID path; /etc/apt/apt.conf.d/99safeyolo-proxy plus the
 # /var/cache/apt + /var/lib/apt/lists cache binds keep traffic mediated and
-# downloads warm. Default Linux directory overlays retain installed files;
-# --ephemeral guests must unpack packages again after a stop.
+# downloads warm. Linux rootfs overlays discard installed files on stop;
+# persistent package caches make repeated unpacking cheaper.
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends "${APT_TLS_OPTIONS[@]}" \
     ca-certificates curl git openssh-client openssh-server \

@@ -218,9 +218,9 @@ find "$ROOTFS/usr/share/locale" -maxdepth 1 ! -name "en*" -type d -exec rm -rf {
 # `safeyolo agent shell NAME --root` remains an operator recovery path, not
 # a requirement for routine package installation.
 #
-# Default Linux guests use a persistent directory overlay. An --ephemeral
-# guest discards installed OS package files on stop; its package cache remains
-# available, but unpacking must run again. Mise tools live under the persistent
+# Linux guests discard installed OS package files on stop in both overlay
+# modes. Their package cache remains available, but unpacking must run again.
+# Mise tools live under the persistent
 # agent home. Custom rootfs images can include development packages when
 # repeated unpacking would be costly.
 #

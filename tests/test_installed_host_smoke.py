@@ -64,7 +64,6 @@ def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
                 "listeners": [{"agent_id": "alice", "socket_path": str(socket_path)}],
                 "policy_file": str(path.parent / "policy.toml"),
                 "readiness_file": str(readiness),
-                "event_log": str(path.parent / "events.jsonl"),
             }
         )
     )
@@ -224,33 +223,34 @@ def test_readiness_marker_is_bound_to_process_and_listener_count(marker, smoke_m
         smoke_module._validate_marker(marker, 7, 1)
 
 
-def test_agent_map_uses_derived_socket_and_rejects_forged_path(tmp_path: Path, smoke_module) -> None:
+def test_agent_listeners_use_native_config_and_ignore_forged_map(tmp_path: Path, smoke_module) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    (data / "agent_map.json").write_text(
-        json.dumps(
-            {
-                "alice": {
-                    "ip": "10.0.0.2",
-                    "socket": str(data / "sockets" / "10.0.0.2_alice" / "proxy.sock"),
-                }
-            }
-        )
-    )
-    listeners = smoke_module._agent_map(tmp_path)
-    assert listeners == [
-        {
-            "agent_id": "alice",
-            "ip": "10.0.0.2",
-            "path": str(data / "sockets" / "10.0.0.2_alice" / "proxy.sock"),
-        }
-    ]
+    socket_path = tmp_path / "agents/alice/proxy/proxy.sock"
+    config = tmp_path / "config.toml"
+    config.write_text('[[listeners]]\nagent_id="alice"\nsource_id="10.0.0.2"\nsocket_path=' + json.dumps(str(socket_path)) + '\n')
+    (data / "agent_map.json").write_text(json.dumps({"mallory": {"ip": "10.0.0.2", "socket": "/tmp/other.sock"}}))
+    expected = [{"agent_id": "alice", "ip": "10.0.0.2", "path": str(socket_path)}]
+    assert smoke_module._agent_listeners(tmp_path) == expected
+    (data / "agent_map.json").write_text("corrupt")
+    assert smoke_module._agent_listeners(tmp_path) == expected
+    config.write_text('listeners="invalid"\n')
+    with pytest.raises(smoke_module.SmokeError, match="listeners must be an array"):
+        smoke_module._agent_listeners(tmp_path)
 
-    (data / "agent_map.json").write_text(
-        json.dumps({"alice": {"ip": "10.0.0.2", "socket": "/tmp/other.sock"}})
-    )
-    with pytest.raises(smoke_module.SmokeError, match="disagrees with derived identity"):
-        smoke_module._agent_map(tmp_path)
+
+@pytest.mark.parametrize("relative,source,expected", [
+    ("agents/alice/proxy/proxy.sock", None, None),
+    ("data/sockets/192.0.2.10_alice/proxy.sock", None, "192.0.2.10"),
+    ("data/sockets/192.0.2.10_alice/not-proxy.sock", None, None),
+    ("custom.sock", "custom-source-slot", None),
+])
+def test_agent_listener_source_matches_native_path_fallback(tmp_path, smoke_module, relative, source, expected):
+    path = tmp_path / relative
+    native = {"listeners": [{"agent_id": "alice", "socket_path": str(path), "source_id": source}]}
+    assert smoke_module._agent_listeners(tmp_path, native=native) == [
+        {"agent_id": "alice", "ip": expected, "path": str(path)},
+    ]
 
 
 def test_smoke_requires_an_owned_disposable_marker(tmp_path: Path, smoke_module) -> None:
@@ -326,7 +326,7 @@ def test_native_toml_inspection_uses_instance_relative_paths_and_runtime_default
     observed = smoke_module._native_config(config, tmp_path)["raw"]
     assert observed["readiness_file"] == str(root / "data/selected-ready.json")
     assert observed["audit_log_path"] == str(root / "logs/audit.jsonl")
-    assert observed["event_log"] == str(root / "logs/events.jsonl")
+    assert "event_log" not in observed
     if ca_path is None:
         assert "tls_ca_file" not in observed
     else:
@@ -408,9 +408,8 @@ def attached_instance(smoke_module, request):
     candidate = _executable(root / "bin/safeyolo-proxy", "safeyolo-proxy 0.1.0", run=True)
     (data / "admin_token").write_text("synthetic-admin-token")
     (data / "agent_token").write_text("synthetic-agent-token")
-    (data / "agent_map.json").write_text(json.dumps({"alice": {"ip": "10.0.0.2"}}))
     config = root / "config.toml"
-    config.write_text('[[listeners]]\nagent_id="alice"\nsocket_path=' + json.dumps(str(uds)) + '\n')
+    config.write_text('[[listeners]]\nagent_id="alice"\nsource_id="10.0.0.2"\nsocket_path=' + json.dumps(str(uds)) + '\n')
     requests = []
 
     class Health(BaseHTTPRequestHandler):

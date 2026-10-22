@@ -459,6 +459,31 @@ Use `--no-guest-download` for a contributor or proxy-only installation that
 will receive guest assets separately. That option preserves already prepared
 inputs. It does not build a guest or fall back after a failed pull.
 
+## Alpine host packages
+
+Alpine host qualification and package publication are tracked in
+[#370](https://github.com/craigbalding/safeyolo/issues/370).
+The older Linux release archives linked above require glibc and do not run on
+Alpine. Use a qualified prebuilt musl package from your bundle supplier.
+The AMD64 package is named `safeyolo-linux-amd64-musl-production.tar.gz`.
+Its `package-info` keeps `platform=linux-amd64` for guest selection and records
+`libc=musl` and the required musl version. The installer checks the libc family
+and version before it creates an instance.
+
+On Alpine, use an ordinary account with sudo. Before running the public
+bootstrap or unpacked installer, install Bash, curl, tar and the GCC runtime
+library. These are runtime prerequisites; installation uses prebuilt product
+executables and needs no compiler or Rust toolchain.
+
+```sh
+sudo apk add bash curl tar libgcc
+```
+
+Use the supplied package's ordinary `install.sh`. Host preparation installs
+missing rootless tools with APK and uses shadow's locked allocator for missing
+subordinate IDs. The guest remains the package's compatible OCI selection.
+Alpine host qualification is separate from the accepted Alpine guest images.
+
 ## Linux host preparation in new source bundles
 
 The tested newer Linux release and current source bundles include the complete
@@ -472,12 +497,12 @@ The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
 Run the bundle's ordinary `install.sh` as your host account. Before changing
-Ubuntu, it lists missing packages, subordinate account ranges, file permissions
+Ubuntu or Alpine, it lists missing packages, subordinate account ranges, file permissions
 and the AppArmor profile, then asks for consent. `--yes` accepts those listed changes
 for an unattended installation. The proxy and agents run without host root
 privilege. Guest root maps to subordinate host user and group IDs, not host root.
 
-Host preparation uses sudo to run `apt-get` for missing packages, allocate
+Host preparation uses sudo to run `apt-get` on Ubuntu or `apk` on Alpine for missing packages, allocate
 missing unused user ID (UID) and group ID (GID) ranges, and install or load the
 required AppArmor profile. Runtime access uses `setfacl` to grant the selected
 sandbox IDs traversal through private parent directories and read/execute
@@ -495,7 +520,14 @@ stage because of its mapped owners, cleanup uses `sudo -n` for that newly
 created stage only. Completed host preparation remains if guest acquisition
 fails; retry reuses valid inputs.
 
-Preparation installs missing host tools from Ubuntu's existing package sources.
+Preparation installs missing host tools from the host's existing package sources.
+Alpine uses `shadow-subids`, `shadow-libs` and `util-linux-misc` for the
+corresponding rootless tools and allocator. Ubuntu package names stay unchanged.
+Guest acquisition needs tar's owner, ACL and extended-attribute options and
+find's numeric owner predicates. Shared-directory startup needs unshare's
+child-cleanup option. Alpine preparation installs `tar`, `findutils` or
+`util-linux-misc` when the existing command lacks the required options,
+including BusyBox variants.
 It reuses suitable subordinate UID and GID ranges independently. If either
 range is missing, shadow's locked account allocator selects an unused range.
 Another account's allocation at 100000–165535 does not prevent installation.
@@ -865,10 +897,15 @@ First, read Worker's pending request with the operator client:
 safeyolo approvals list --agent worker
 ```
 
-A network prompt records `request_id` and
-`details.network_action`. The action binds Worker's durable identity, the host,
-the port and the relevant network-policy revision. Historical prompts without
-that binding remain available through their existing operator actions.
+A network prompt records a host-owned `approval_id`, its traffic `request_id`
+and `details.network_action`. Equivalent retries retain the approval ID while
+each attempt has its own traffic ID. The action binds Worker's durable identity,
+the host, the port and the relevant network-policy revision. The pending record
+also binds the method and resource. Inspection leaves the record pending.
+See [pending approvals](operator-guide.md#inspect-a-pending-approval) for the
+decision, expiry and restart behavior. Historical prompts remain readable.
+Assisted decisions require a new durable request. Explicit policy controls
+remain available.
 
 Replace `REQUEST_ID` with the selected pending request and grant Helper its
 diagnostic and approval reads:
@@ -922,17 +959,18 @@ through Helper's configured proxy; operator routes use the host Admin API.
 | Operator | `POST /admin/approvals/ID/readers` with `{"helper":"helper","helper_id":"CURRENT_DURABLE_ID"}` | Idempotent selected diagnostic and approval reads; no network grant. |
 | Operator | `POST /admin/approvals/ID` with `{"decision":"approve"}` or `{"decision":"reject"}` | Canonical terminal disposition and exact action; the resolver does not accept caller-supplied scope. |
 
-CLI and Commander network decisions use this common resolver for bound prompts. Repeat or concurrent decisions return the first terminal disposition.
-A relevant policy change or recreated Worker makes a pending action stale;
-approval returns 409 and needs a new request and human decision. The operator
-can still reject that stale request without changing permissions. A changed
-action cannot be substituted during preparation. Helper cannot call the operator
-mutation or grant itself evidence reads.
+CLI and Commander use the common resolver for canonical network, credential
+and gateway approvals. Repeat or concurrent decisions return the first terminal
+result. A relevant policy or service change, or a recreated Worker, supersedes
+a pending approval. Resolution returns 409 and needs a new request and human
+decision. A changed action cannot be substituted during preparation. Helper
+cannot call the operator mutation or grant itself evidence reads.
 
 If the resolution response is lost, read `GET /admin/approvals/ID` before taking
-another action. A committed allow rule carries its request and action identity,
-so the canonical approved outcome remains readable if its audit receipt fails.
-Unavailable evidence returns 503. Direct operator policy commands remain usable.
+another action. The host saves a decision receipt with its policy or grant
+effect. The pending record and receipt let the resolver recover its result if
+the audit write fails. Missing canonical state fails closed; logs cannot replace
+it. Direct operator policy commands remain usable.
 Raw audit files and separately authorised flow reads and exports retain their
 existing access; selected Helper reads do not redact that operator evidence.
 
@@ -983,8 +1021,20 @@ approval operations retain their separate owners.
 
 From a clean committed checkout on the target host, use Bash and the Rust
 toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
-ldd, curl and a tar with zstd support for the pinned gVisor payload. The
+ldd, curl and a tar with zstd support for the pinned gVisor payload. GNU Linux
+build hosts need musl-tools; Alpine build hosts need build-base and musl-dev. The
 assembler verifies the downloaded archive and reuses its checked cache.
+On the Linux build host, install the Rust musl target for its architecture:
+`x86_64-unknown-linux-musl` on AMD64 or `aarch64-unknown-linux-musl` on ARM64,
+using `rustup target add TARGET`. The default builder links the two guest
+helpers statically with musl so Alpine guests need no glibc compatibility
+package. GNU host executables keep their existing target. On native musl build
+hosts, the assembler links host executables dynamically so host preparation can
+load shadow's allocator. Those host executables require Alpine's `libgcc` runtime.
+Guest helpers remain static. The guest compiler is `musl-gcc` on GNU hosts and
+`cc` on native musl hosts; target-specific Cargo linker and C compiler overrides remain
+available. An explicit `SAFEYOLO_GUEST_TARGET` keeps the configured cross-build
+target and its target-specific artifact directory.
 macOS needs Command Line Tools and a signed VM helper build. Prepared
 runtime inputs contain the `tmux` executable for this host. The assembler
 copies its resolved non-system libraries. This Ubuntu example selects

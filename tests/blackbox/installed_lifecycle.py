@@ -27,7 +27,7 @@ if __package__:
     from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import (
-        _agent_map,
+        _agent_listeners,
         _native_config,
         _pid_alive,
         _probe_agent_health,
@@ -40,7 +40,7 @@ else:
     from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import (
-        _agent_map,
+        _agent_listeners,
         _native_config,
         _pid_alive,
         _probe_agent_health,
@@ -215,7 +215,7 @@ def stop_guest(cli: str, config_dir: Path, agent: str) -> None:
 def start_guest(cli: str, config_dir: Path, agent: str) -> Path:
     checked([cli, "agent", "start", agent, "--sandbox-only"], timeout=120)
     prepare_guest_tests(cli, agent)
-    listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == agent)
+    listener = next(row for row in _agent_listeners(config_dir) if row["agent_id"] == agent)
     path = Path(listener["path"])
     assert path.is_socket(), f"restarted guest has no native listener: {path}"
     return path
@@ -292,7 +292,7 @@ def prepare_owner(
     assert owner_native["upstream_ca_file"] == native["upstream_ca_file"]
     report["config_sha256"] = _sha256(config_path)
     report["policy_sha256"] = _sha256(config_dir / "policy.toml")
-    listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == "bbowner")
+    listener = next(row for row in _agent_listeners(config_dir) if row["agent_id"] == "bbowner")
     assert _probe_agent_health(listener, config_dir)["status"] == 200
     return report, env, Path(listener["path"])
 
@@ -368,15 +368,14 @@ def wait_passthrough_audit(path: Path, agent: str) -> list[dict]:
 
 def assert_shutdown_ownership(config_dir: Path, agent: str, marker: str) -> dict:
     native = _native_config(config_dir / "config.toml", config_dir)["raw"]
-    events = event_rows(Path(native["event_log"]))
     audit = event_rows(Path(native["audit_log_path"]))
     p2_marker = "p2-" + marker[3:]
     ended = [
         row
-        for row in events
-        if row.get("event") == "proxy.websocket.end" and row.get("agent") == agent and row.get("outcome") == "shutdown"
+        for row in audit
+        if row.get("event") == "traffic.websocket.end" and row.get("agent") == agent and row.get("details", {}).get("outcome") == "shutdown"
     ]
-    assert len(ended) == 1 and ended[0].get("drained") is True, ended
+    assert len(ended) == 1 and ended[0].get("details", {}).get("drained") is True, ended
     closed = [
         row
         for row in audit
@@ -450,7 +449,7 @@ def main() -> None:
         peer_added = True
         checked([cli, "agent", "start", PEER, "--sandbox-only"], timeout=120)
         prepare_guest_tests(cli, PEER)
-        peer_listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == PEER)
+        peer_listener = next(row for row in _agent_listeners(config_dir) if row["agent_id"] == PEER)
         peer_socket = Path(peer_listener["path"])
         assert peer_socket.is_socket() and peer_socket != Path(first_listener["path"])
         peer_bridge = (

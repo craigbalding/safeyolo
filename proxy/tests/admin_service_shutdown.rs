@@ -373,7 +373,6 @@ struct Paths {
     token: PathBuf,
     readiness: PathBuf,
     audit: PathBuf,
-    events: PathBuf,
 }
 
 impl Paths {
@@ -388,7 +387,6 @@ impl Paths {
             token: root.join("admin-token"),
             readiness: root.join("ready.json"),
             audit: root.join("audit.jsonl"),
-            events: root.join("events.jsonl"),
             root,
         }
     }
@@ -416,7 +414,7 @@ impl Paths {
             "flow_store_enabled": false,
             "circuit_breaker_enabled": false,
             "audit_log_path": self.audit,
-            "event_log": self.events,
+
         });
         fs::write(&self.config, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     }
