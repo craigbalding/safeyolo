@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,8 +25,12 @@ EXAMPLES = REPO / "cli/src/safeyolo/agent_context/skills/safeyolo/scripts"
 ROOTFS = os.environ.get("SAFEYOLO_SCHEDULING_ROOTFS")
 
 
-def run(*args, **kwargs):
-    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=15, **kwargs)
+def run(*args, check=True, **kwargs):
+    try:
+        return subprocess.run(args, check=check, capture_output=True, text=True, timeout=15, **kwargs)
+    except subprocess.CalledProcessError as error:
+        error.add_note(f"stdout: {error.stdout}\nstderr: {error.stderr}")
+        raise
 
 
 def eventually(check, seconds=10):
@@ -41,35 +46,61 @@ def test_tmux_example_checks_exact_pane_and_sends_literal_text(tmp_path):
     """A missing window must fail even when tmux display falls back to active."""
     if not shutil.which("tmux"):
         pytest.skip("tmux is needed for the real pane probe")
-    server = tmp_path / "tmux.sock"
-    other_server = tmp_path / "other.sock"
+    # The default macOS temporary parent can exceed the 104-byte socket limit.
+    with tempfile.TemporaryDirectory(prefix="sy-tmux-", dir="/tmp") as directory:
+        server = Path(directory).resolve() / "tmux.sock"
+        other_server = server.with_name("other.sock")
+        assert all(len(os.fsencode(path)) < 104 for path in (server, other_server))
 
-    def tmux(*args):
-        return run("tmux", "-S", str(server), *args).stdout
+        def tmux(*args):
+            return run("tmux", "-S", str(server), *args).stdout
 
-    script = tmp_path / "send.sh"
-    script.write_text((EXAMPLES / "scheduled-tmux.sh").read_text().replace(
-        "/home/agent/.local/state/tmux/scheduled.sock", str(server)))
-    tmux("new-session", "-d", "-s", "scheduled", "-n", "input", "cat")
-    run("tmux", "-S", str(other_server), "new-session", "-d", "-s", "scheduled", "-n", "input", "cat")
-    try:
-        tmux("new-window", "-t", "scheduled:1", "-n", "input-other", "cat")
-        tmux("select-window", "-t", "scheduled:input-other")
-        other_pid = run("tmux", "-S", str(other_server), "display-message", "-p", "#{pid}").stdout.strip()
-        run("sh", str(script), env={**os.environ, "TMUX": f"{other_server},{other_pid},0"})
-        literal = "Please inspect $HOME; [literal text]."
-        eventually(lambda: literal in tmux("capture-pane", "-p", "-t", "scheduled:input.0"))
-        assert literal not in tmux("capture-pane", "-p", "-t", "scheduled:input-other.0")
-        assert literal not in run("tmux", "-S", str(other_server), "capture-pane", "-p",
-                                  "-t", "scheduled:input.0").stdout
-        tmux("kill-window", "-t", "scheduled:input")
-        absent = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=5)
-        assert absent.returncode != 0
-        assert "tmux target" in absent.stderr
-        assert literal not in tmux("capture-pane", "-p", "-t", "scheduled:input-other.0")
-    finally:
-        tmux("kill-server")
-        run("tmux", "-S", str(other_server), "kill-server")
+        script = tmp_path / "send.sh"
+        script.write_text((EXAMPLES / "scheduled-tmux.sh").read_text().replace(
+            "/home/agent/.local/state/tmux/scheduled.sock", str(server)))
+        try:
+            tmux("new-session", "-d", "-s", "scheduled", "-n", "input", "cat")
+            run("tmux", "-S", str(other_server), "new-session", "-d", "-s", "scheduled", "-n", "input", "cat")
+            tmux("new-window", "-t", "scheduled:1", "-n", "input-other", "cat")
+            tmux("select-window", "-t", "scheduled:input-other")
+            other_pid = run("tmux", "-S", str(other_server), "display-message", "-p", "#{pid}").stdout.strip()
+            run("sh", str(script), env={**os.environ, "TMUX": f"{other_server},{other_pid},0"})
+            literal = "Please inspect $HOME; [literal text]."
+            eventually(lambda: literal in tmux("capture-pane", "-p", "-t", "scheduled:input.0"))
+            assert literal not in tmux("capture-pane", "-p", "-t", "scheduled:input-other.0")
+            assert literal not in run("tmux", "-S", str(other_server), "capture-pane", "-p",
+                                      "-t", "scheduled:input.0").stdout
+            tmux("kill-window", "-t", "scheduled:input")
+            absent = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=5)
+            assert absent.returncode != 0
+            assert "tmux target" in absent.stderr
+            assert literal not in tmux("capture-pane", "-p", "-t", "scheduled:input-other.0")
+        finally:
+            for path in (server, other_server):
+                # A server can be absent after partial startup or a test failure.
+                run("tmux", "-S", str(path), "kill-server", check=False)
+
+
+def test_tmux_example_cleans_up_after_partial_startup(tmp_path, monkeypatch):
+    """Stop the first owned server if the second server cannot start."""
+    original_run = run
+    starts, stops = [], []
+
+    def fail_second_start(*args, **kwargs):
+        if args[3] == "new-session":
+            starts.append(args[2])
+            if len(starts) == 2:
+                raise subprocess.CalledProcessError(1, args, stderr="controlled startup failure")
+        result = original_run(*args, **kwargs)
+        if args[3] == "kill-server":
+            stops.append((args[2], result.returncode))
+        return result
+
+    monkeypatch.setattr(f"{__name__}.run", fail_second_start)
+    with pytest.raises(subprocess.CalledProcessError):
+        test_tmux_example_checks_exact_pane_and_sends_literal_text(tmp_path)
+    assert len(starts) == 2
+    assert stops == [(starts[0], 0), (starts[1], 1)]
 
 
 @pytest.fixture
