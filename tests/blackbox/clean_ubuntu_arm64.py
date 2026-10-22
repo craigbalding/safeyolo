@@ -49,7 +49,7 @@ def verify_image(path):
 
 def verify_diagnostic_guest():
     """Stop before acquisition if the prior diagnostic's published guest changed."""
-    # The c9 public bootstrap uses compat-v1 and has no guest-index option.
+    # The pinned public bootstrap uses compat-v1 and has no guest-index option.
     # Check its public metadata without staging a guest, token or product input.
     repository = "craigbalding/safeyolo-guest"
     with urllib.request.urlopen(f"https://ghcr.io/token?service=ghcr.io&scope=repository:{repository}:pull", timeout=30) as reply:

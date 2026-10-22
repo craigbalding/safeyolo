@@ -42,18 +42,19 @@ from harness.process_identity import child_exited, process_start_token
 SOURCE = "c9ecb66b462c2ba0c499f2322f6cfc5c142012da"
 BOOTSTRAP = "45d8853a202c04c9f5f8ca772df410ae8ced1844"
 PACKAGES = {
-    "linux-amd64": {"machine": "x86_64", "bytes": 190882862,
+    "linux-amd64": {"source": SOURCE, "machine": "x86_64", "bytes": 190882862,
                     "sha256": "c91e61117e416a8245476e100d20155b7512ac429976457c87a0b2c3e6bec6da"},
-    "linux-arm64": {"machine": "aarch64", "bytes": 176869006,
-                    "sha256": "eab9b709b3e4c6b536614eeb6b422d12c2b55826149085f78c326b31637922af"},
+    "linux-arm64": {"source": "c94e991682e021b1f6bddc01a83722bcf36b36db",
+                    "machine": "aarch64", "bytes": 177934638,
+                    "sha256": "97e565ab9a6ab194fb2ac512296f834204a81166fefd125d64f0a658d6875eba"},
 }
 RELEASE = "host-" + SOURCE
 CONNECTED_SOURCE = "c5ce76019b6c997e282ab05cea0212b492e945d2"
-CONNECTED_PACKAGE = {"machine": "x86_64", "bytes": 191260514,
+CONNECTED_PACKAGE = {"source": CONNECTED_SOURCE, "machine": "x86_64", "bytes": 191260514,
                      "sha256": "811a20c1fa75d081504b9bfa3a7766bb3c2df6e55f4740742243ad24bc217538"}
 TASK = ('Create /workspace/index.html as a complete HTML page with the heading '
         '"Hello from SafeYolo". Use no external dependencies.')
-CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 AMD64 with curl and bash. "
+CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 with curl and bash. "
     "Use an ordinary account. Review the requested host changes and workspace access before consenting. "
     "If you already use Claude, you can consent to copy its selected host authentication. "
     "Ctrl-b then d opens SafeYolo's host controls. Use a to inspect pending requests and their scope before approving. "
@@ -887,8 +888,17 @@ def record_launch_result(row, output):
                 (b"coding-agent observation timed out", "coding-agent-observation-timeout"),
                 (b"coding-agent observation failed", "coding-agent-observation-failed"),
                 (b"coding-agent observation is unverified", "coding-agent-observation-unverified"),
+                (b"guest did not reach per-run startup", "guest-startup-unready"),
+                (b"runsc did not identify its backend", "runsc-backend-unidentified"),
             ]:
-                if matches[-1][1].startswith(message + b". saved agent state is retained."):
+                if (matches[-1][1].startswith(message + b". saved agent state is retained.")
+                        or matches[-1][1].startswith(message + b"; sandbox cleanup failed: ")):
+                    result["error_category"] = error_category
+            # Native create/start errors contain runsc stderr. Export only the
+            # fixed operation, never its private paths, output or cleanup error.
+            for prefix, error_category in [(b"runsc create failed: ", "runsc-create-failed"),
+                                           (b"runsc start failed: ", "runsc-start-failed")]:
+                if matches[-1][1].startswith(prefix):
                     result["error_category"] = error_category
     try:
         launch = launch_record()
@@ -1337,7 +1347,7 @@ def connected_run(args, package):
             and not warm.get("observer_terminated_viewer") and x["same_runtime_record"] and x["same_launch"]
             and x["same_conversation"] and x["host_file_unchanged"] and x["live_births_match"]
             and x.get("host_archive", {}).get("matches_assigned_bytes")
-            and isinstance(x["package_info"], str) and f"source_commit={CONNECTED_SOURCE}" in x["package_info"]
+            and isinstance(x["package_info"], str) and f"source_commit={package['source']}" in x["package_info"]
             and "profile=production" in x["package_info"] and f"platform={args.platform}" in x["package_info"]
             and all(before.get(path) and after.get(path) for path in PUBLIC_STATE + PRIVATE_STATE
                     + ["agents/first/home/.claude/.credentials.json"])
@@ -1357,7 +1367,7 @@ def main():
     parser.add_argument("--observation-dir", type=Path, help="fresh private observer directory outside the checkout")
     parser.add_argument("--observer-source", default="unknown", help="workflow checkout commit; separate from product identities")
     parser.add_argument("--cleanup-only", action="store_true", help="stop and inspect this observer's recorded attempt")
-    parser.add_argument("--connected", action="store_true", help="foreground AMD64 first task and live return using existing consented host authentication")
+    parser.add_argument("--connected", action="store_true", help="foreground Ubuntu first task and live return using existing consented host authentication")
     parser.add_argument("--preparation", type=Path, help="nonsecret actual preparation commands/times/reading; required with --connected")
     args = parser.parse_args()
     if os.uname().nodename != args.host or args.host == "sy-1050-c9-cold-428968871" or os.geteuid() == 0:
@@ -1366,10 +1376,8 @@ def main():
     private = args.observation_dir or Path.home() / "239-onboarding-observation"
     project = Path.home() / "239-onboarding-project"
     cli = root / "bin/safeyolo"
-    if args.connected and args.platform != "linux-amd64":
-        raise SystemExit("The connected operator witness is bound to Ubuntu AMD64; signed-out platform use is unchanged.")
-    package = CONNECTED_PACKAGE if args.connected else PACKAGES[args.platform]
-    source = CONNECTED_SOURCE if args.connected else SOURCE
+    package = CONNECTED_PACKAGE if args.connected and args.platform == "linux-amd64" else PACKAGES[args.platform]
+    source = package["source"]
     LAUNCH = ["bash", "install-safeyolo.sh", "--release", "host-" + source, "--launch", ".",
               "--name", "first", "--harness", "claude", "--launcher", "tmux-window"]
     archive = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "safeyolo/host-packages" / ("host-" + source) / f"safeyolo-{args.platform}-production.tar.gz"
@@ -1407,7 +1415,7 @@ def main():
     if args.connected:
         x["purpose"] = "Connected public first task and normal live return"
         x["observer_parent"] = "TASK7946/operator7950"
-        x["limits"] = ["One authorized existing-host-authentication Ubuntu AMD64 witness; no new sign-in or other platform claim.",
+        x["limits"] = [f"One authorized existing-host-authentication Ubuntu witness on {args.platform}; no new sign-in or other platform claim.",
             "Only selected policy, CA/token, guest, authentication, configuration and task state comparisons; no whole-home/cache equality.",
             "Only captured process births/listeners are covered by owned cleanup; historical missing captures stay unknown.",
             "Terminal screens, canonical history contents and state hashes stay private.",
@@ -1507,7 +1515,7 @@ def main():
             complete = (cold.get("signed_out_label") and warm.get("signed_out_label")
                 and x.get("host_archive", {}).get("matches_assigned_bytes")
                 and isinstance(x.get("package_info"), str)
-                and f"source_commit={SOURCE}" in x["package_info"] and "profile=production" in x["package_info"]
+                and f"source_commit={source}" in x["package_info"] and "profile=production" in x["package_info"]
                 and f"platform={args.platform}" in x["package_info"]
                 and x["warm_returned_normally"] and x["same_runtime_record"] and x["same_marker"]
                 and x["marker_heartbeat_changed"] and x["live_births_match"]
