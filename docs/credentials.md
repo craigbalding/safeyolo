@@ -110,6 +110,73 @@ session, then repeat its anonymous token exchange through the proxy to restore
 automatic recognition. Registry login credentials and personal access tokens
 retain their existing approval requirements.
 
+## Use Codex with a ChatGPT subscription
+
+Codex supports [ChatGPT subscription authentication and OpenAI API key
+authentication](https://learn.chatgpt.com/docs/auth). These are different
+credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
+`sk-svcacct-` API keys. A grant for `openai:*` does not identify or approve a
+ChatGPT subscription OAuth access token.
+
+The credential guard has no built-in detector or issuance binding for Codex
+subscription OAuth tokens. With the [default bearer controls](#unknown-bearer-credentials),
+an unrecognised `Authorization: Bearer` value uses `unknown_secret`, regardless
+of entropy. No entropy adjustment or custom detection rule is needed.
+Detection does not verify a JSON Web Token (JWT) signature, issuer or audience.
+A claimed issuer, matching regular expression, destination or provisioned
+Codex login does not establish trusted issuance for each token. SafeYolo has
+no Codex-specific automatic-approval setting.
+
+When trustworthy issuance evidence is unavailable, use the manual approval
+fallback. Keep `unknown_creds = "prompt"` for the intended destination.
+For example, if your authorised Codex traffic uses `chatgpt.com`, merge this
+field into that host's existing table in a copy of your host `policy.toml`:
+
+```toml
+[hosts."chatgpt.com"]
+unknown_creds = "prompt"
+```
+
+Use the destination recorded for your client; this example does not authorise
+another OpenAI service or a client-selected URL. The fragment grants no network
+access. Preserve existing network permissions, credential denials and other
+host fields. [Check and apply the candidate](installation.md#check-show-and-apply),
+then retry the client's request. With network access permitted and blocking
+credential controls active, an unapproved bearer returns HTTP 428 with a
+credential fingerprint. An explicit denial returns HTTP 403.
+
+On the host, inspect the reported agent, destination and fingerprint in the
+pending credential approval or the `security.credential_guard` audit event.
+Use `services approvals` to read pending records. `logs --agent WORKER --lines
+50 --json` returns complete selected audit events; replace `WORKER` with your
+agent's name. Match the event's `request_id`, `agent` and `host` to the client's
+request, then read its `details.fingerprint`.
+Do not extract or share a token or Codex authentication file to obtain the
+fingerprint.
+
+For the installed instance at `$HOME/.safeyolo`, replace `FINGERPRINT` with the
+reported `hmac:` fingerprint and `HOST` with the intended destination. Approve
+only the token and destination you intend to permit:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials approve FINGERPRINT --destination HOST
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy show
+```
+
+Wait for `saved_matches_active` to be true, then let the client retry.
+The exact-fingerprint grant covers that token at the chosen host. It is a
+host-policy grant, not an agent-specific grant or proof of issuer or account.
+It does not constrain the method or path. Existing network permissions,
+explicit credential denials and inspection of other secrets still apply.
+
+Let Codex manage login and refresh. A replacement access token needs its own
+approval; approval of the preceding token does not cover it. This fallback
+does not provide approval-free rotation or prove that the upstream service will
+accept a token. Keep approvals when per-token provenance cannot be established.
+Setting `unknown_creds = "allow"`, excluding `Authorization` from inspection,
+or granting a custom token family would permit values without proving their
+issuer or intended use.
+
 ## Use a 1Password reference
 
 On the host, follow [1Password's installation and authentication instructions](https://developer.1password.com/docs/cli/get-started/)
