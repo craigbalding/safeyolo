@@ -117,7 +117,11 @@ def main():
     parser.add_argument("--work-dir", type=Path, required=True, help="new private directory on disk-backed storage")
     parser.add_argument("--observer-source", required=True, help="exact source commit, separate from packaged product")
     parser.add_argument("--ssh-port", type=int, default=2222, help="unused outer localhost TCP port")
+    parser.add_argument("--cold-seconds", type=int, default=900,
+                        help="cold public observation allowance in seconds (default: 900)")
     args = parser.parse_args()
+    if args.cold_seconds <= 0:
+        parser.error("--cold-seconds must be a positive whole number")
     if os.uname().machine != "aarch64":
         parser.error("Use the approved native ARM64 hosted runner.")
     if not port_closed(args.ssh_port):
@@ -126,7 +130,14 @@ def main():
     work.mkdir(mode=0o700)
     reports = work / "reports"
     reports.mkdir()
+    # Warm entry (180s), both captures (90s each), return controls,
+    # version/network diagnostics and cleanup (120s) follow the cold clock.
+    observer_seconds = args.cold_seconds + 900
+    # Cover the remote INT-to-KILL grace (120s), then allow SSH to return.
+    ssh_seconds = observer_seconds + 180
     report = {"started": stamp(), "observer_source": args.observer_source,
+              "cold_allowance_seconds": args.cold_seconds, "execution_mode": "qemu-tcg",
+              "observer_timeout_seconds": observer_seconds, "ssh_timeout_seconds": ssh_seconds,
               "image": {"url": IMAGE_URL, "archive_url": IMAGE_ARCHIVE_URL,
                         "sha256": IMAGE_SHA256, "bytes": IMAGE_BYTES},
               "outer": {"uname": list(os.uname()), "uid": os.getuid(),
@@ -242,14 +253,15 @@ def main():
         run(scp + [here / "harness/process_identity.py", "ubuntu@127.0.0.1:observer/harness/"], 30)
         # The remote deadline ends the observer before SSH recovery starts.
         # Killing only the outer SSH client could leave the observer writing.
-        observer = ["timeout", "--signal=INT", "--kill-after=120s", "23m",
+        observer = ["timeout", "--signal=INT", "--kill-after=120s", str(observer_seconds),
                     "python3", "-I", "-B", "observer/ubuntu_onboarding.py", "--host", HOSTNAME,
                     "--platform", "linux-arm64", "--observer-source", args.observer_source,
+                    "--cold-seconds", str(args.cold_seconds), "--execution-mode", "qemu-tcg",
                     "--observation-dir", "/home/ubuntu/onboarding-observation"]
         report["vm"]["observer_started"] = stamp()
         print("Starting the public bootstrap observer inside Ubuntu.", flush=True)
         with (work / "observer.stdout").open("wb") as log:
-            result = run(ssh + [shlex.join(observer)], 1500, stdout=log, check=False, role="observer")
+            result = run(ssh + [shlex.join(observer)], ssh_seconds, stdout=log, check=False, role="observer")
         report["observer_exit"] = result.returncode
         print(f"Public observer returned {result.returncode}; collecting its owned cleanup result.", flush=True)
     except (OSError, ValueError, subprocess.SubprocessError, TimeoutError, RuntimeError) as error:
@@ -262,7 +274,7 @@ def main():
                 recovery = ["python3", "-I", "-B", "observer/ubuntu_onboarding.py", "--host", HOSTNAME,
                             "--platform", "linux-arm64", "--cleanup-only",
                             "--observation-dir", "/home/ubuntu/onboarding-observation"]
-                run(ssh + [shlex.join(recovery)], 100, check=False, role="observer")
+                run(ssh + [shlex.join(recovery)], 180, check=False, role="observer")
                 result = run(ssh + ["cat onboarding-observation/result.json"], 15, check=False, role="observer")
                 if result.returncode == 0:
                     observed = json.loads(result.stdout)

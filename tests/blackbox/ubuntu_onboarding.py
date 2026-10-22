@@ -1320,7 +1320,7 @@ def connected_run(args, package):
     if first.get("exit") != 0:
         return
     x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
-    cold, before = entered("cold", 900, connected=True)
+    cold, before = entered("cold", args.cold_seconds, connected=True)
     capture(x, "after_q_runtime", live_record)
     if archive.is_file():
         x["host_archive"] = {"bytes": archive.stat().st_size, "sha256": digest(archive)}
@@ -1366,10 +1366,16 @@ def main():
     parser.add_argument("--platform", required=True, choices=PACKAGES)
     parser.add_argument("--observation-dir", type=Path, help="fresh private observer directory outside the checkout")
     parser.add_argument("--observer-source", default="unknown", help="workflow checkout commit; separate from product identities")
+    parser.add_argument("--cold-seconds", type=int, default=900,
+                        help="cold observation allowance in seconds; signed-out mode includes bootstrap (default: 900)")
+    parser.add_argument("--execution-mode", choices=["unknown", "native", "qemu-tcg"], default="unknown",
+                        help="execution mode declared by the fixture; architecture alone does not establish native execution")
     parser.add_argument("--cleanup-only", action="store_true", help="stop and inspect this observer's recorded attempt")
     parser.add_argument("--connected", action="store_true", help="foreground Ubuntu first task and live return using existing consented host authentication")
     parser.add_argument("--preparation", type=Path, help="nonsecret actual preparation commands/times/reading; required with --connected")
     args = parser.parse_args()
+    if args.cold_seconds <= 0:
+        parser.error("--cold-seconds must be a positive whole number")
     if os.uname().nodename != args.host or args.host == "sy-1050-c9-cold-428968871" or os.geteuid() == 0:
         raise SystemExit("Use only the named fresh host as its ordinary user; the retained fixture is excluded.")
     root = Path.home() / ".safeyolo"
@@ -1403,6 +1409,7 @@ def main():
          "platform": args.platform, "expected_host_package": package,
          "native_source": source, "bootstrap_source": BOOTSTRAP, "observer_parent": "operator6542/6732",
          "observer_source": args.observer_source,
+         "cold_allowance_seconds": args.cold_seconds, "execution_mode": args.execution_mode,
          "ownership": {"runner": "borrowed; no host shutdown or tool/cache removal",
                        "product_root": str(root), "agent": "first", "project": str(project), "private_observer": str(private)},
          "product_commands": [], "interactions": [], "observations": [], "phase_observations": [],
@@ -1475,7 +1482,7 @@ def main():
         if first.get("exit") != 0:
             return 1
         x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
-        cold, state_before = entered("cold", max(1, 900 - (time.monotonic() - started)))
+        cold, state_before = entered("cold", max(1, args.cold_seconds - (time.monotonic() - started)))
         x["timings"] = {"bootstrap_seconds": first["ended"]["monotonic"] - first["monotonic"],
                         "cold_readiness_seconds": (cold["signed_out_label"]["monotonic"] - first["monotonic"])
                         if cold.get("signed_out_label") else None}

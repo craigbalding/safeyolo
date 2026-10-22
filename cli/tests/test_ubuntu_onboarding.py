@@ -292,9 +292,11 @@ class ObserverChecks(unittest.TestCase):
                         "task": {"conversations": [{"file": "same-session.jsonl"}]}}
                     return {"connected_ready": m.stamp(), "ordinary_q": m.stamp(), "exit_code": 0,
                             "discovery_exit": 0, "version_exit": 0}, before if phase == "cold" else after
-                with patch.object(m, "entered", autospec=True, side_effect=enter), \
+                with patch.object(m, "entered", autospec=True, side_effect=enter) as entered, \
                      patch.object(m, "observe", autospec=True, return_value={"exit": 0}):
-                    m.connected_run(m.argparse.Namespace(platform="linux-arm64"), package)
+                    m.connected_run(m.argparse.Namespace(platform="linux-arm64", cold_seconds=1800), package)
+                self.assertEqual(entered.call_args_list[0].args, ("cold", 1800))
+                self.assertEqual(entered.call_args_list[1].args, ("warm", 180))
                 self.assertEqual(m.x["observation_outcome"] != "partial", expected)
                 self.assertFalse(m.x["selected_state_equality"]["agents/first/home/.claude.json"]["equal"])
 
@@ -830,6 +832,63 @@ class ObserverChecks(unittest.TestCase):
             "--platform", "linux-arm64", "--observation-dir", str(home / "observation"), *args],
             cwd=home, env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, timeout=10)
 
+    def test_cold_allowance_keeps_elapsed_bootstrap_warm_clock_and_saved_partial_result(self):
+        for selected, allowance in [(None, 900), (1800, 1800), (5, 5)]:
+            with self.subTest(selected=selected):
+                home = Path(self.scratch.name) / f"allowance-{selected}"
+                home.mkdir()
+                clock = [100.0]
+
+                def observe(label, command, *args, **kwargs):
+                    row = {"exit": 0, "monotonic": clock[0]}
+                    if label == "bootstrap-download":
+                        (m.project / "install-safeyolo.sh").write_text("controlled download")
+                        clock[0] += 12
+                    row["ended"] = {"monotonic": clock[0]}
+                    return row
+
+                def entered(phase, seconds):
+                    m.x["before-return" if phase == "cold" else "after-reentry"] = {}
+                    return {"monotonic": clock[0], "ended": {"monotonic": clock[0]},
+                            "ordinary_q": True, "exit_code": 0}, {}
+
+                argv = [m.__file__, "--host", os.uname().nodename, "--platform", "linux-arm64",
+                        "--observation-dir", str(home / "observation"), "--execution-mode", "qemu-tcg"]
+                if selected is not None:
+                    argv += ["--cold-seconds", str(selected)]
+                environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
+                               and key not in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]}
+                uname = os.uname_result((*os.uname()[:4], "aarch64"))
+                with patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
+                     patch.object(m.os, "uname", autospec=True, return_value=uname), \
+                     patch.dict(os.environ, environment, clear=True), patch.object(m.time, "monotonic", autospec=True, side_effect=lambda: clock[0]), \
+                     patch.object(m, "observe", autospec=True, side_effect=observe), \
+                     patch.object(m, "entered", autospec=True, side_effect=entered) as enter, \
+                     patch.object(m, "guest", autospec=True, return_value={}), \
+                     patch.object(m, "live_record", autospec=True, return_value={}), \
+                     patch.object(m, "processes", autospec=True, return_value=[]), \
+                     patch.object(m, "cleanup", autospec=True) as cleanup:
+                    self.assertEqual(m.main(), 1)
+                self.assertEqual(enter.call_args_list[0].args, ("cold", max(1, allowance - 12)))
+                self.assertEqual(enter.call_args_list[1].args, ("warm", 180))
+                cleanup.assert_called_once()
+                result = json.loads((home / "observation/result.json").read_text())
+                self.assertEqual(result["cold_allowance_seconds"], allowance)
+                self.assertEqual(result["execution_mode"], "qemu-tcg")
+                self.assertEqual(result["timings"]["bootstrap_seconds"], 12)
+                self.assertIsNone(result["timings"]["cold_readiness_seconds"])
+                self.assertEqual(result["observation_outcome"], "partial")
+                self.assertIn("ended", result)
+
+    def test_invalid_cold_allowance_stops_before_observer_or_product_mutation(self):
+        home = Path(self.scratch.name)
+        for value in ["0", "-1", "1.5"]:
+            with self.subTest(value=value):
+                result = self.observer_cli(home, "--cold-seconds", value)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("--cold-seconds", result.stderr)
+                self.assertFalse((home / "observation").exists())
+
     def test_arm_binding_and_existing_installation_refusal_precede_product_commands(self):
         home = Path(self.scratch.name) / "home"
         root = home / ".safeyolo"
@@ -842,6 +901,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(record["expected_host_package"]["machine"], "aarch64")
         self.assertEqual(record["expected_host_package"], m.PACKAGES["linux-arm64"])
         self.assertEqual(record["native_source"], m.PACKAGES["linux-arm64"]["source"])
+        self.assertEqual(record["cold_allowance_seconds"], 900)
+        self.assertEqual(record["execution_mode"], "unknown")
         self.assertEqual(record["product_commands"], [])
         self.assertEqual(sentinel.read_text(), "existing policy")
         cleanup = self.observer_cli(home, "--cleanup-only")
@@ -876,6 +937,7 @@ class ObserverChecks(unittest.TestCase):
         private = home / "observation"
         (home / "239-onboarding-project").mkdir()
         record = {"owns_product_attempt": True, "platform": "linux-arm64", "observations": [],
+                  "cold_allowance_seconds": 1800, "execution_mode": "qemu-tcg",
                   "baseline": {"hostname": os.uname().nodename, "uid": os.getuid()},
                   "fixture_preparation": {"project": str(home / "239-onboarding-project")}}
         (private / "result.json").write_text(json.dumps(record))
@@ -886,6 +948,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertIn(cleanup.returncode, (0, 1), cleanup.stderr)
         self.assertEqual(len(calls.read_text().splitlines()), 6)
         self.assertIn("cleanup_rechecked", observed)
+        self.assertEqual(observed["cold_allowance_seconds"], 1800)
+        self.assertEqual(observed["execution_mode"], "qemu-tcg")
         if not observed["cleanup_verified"]:
             self.assertEqual(cleanup.returncode, 1)
         else:
