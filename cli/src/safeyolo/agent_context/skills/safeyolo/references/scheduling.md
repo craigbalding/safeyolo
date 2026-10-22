@@ -52,6 +52,12 @@ rootfs overlay also removes its saved jobs. Scripts and logs in `/home/agent`
 persist independently until that home is removed. Deleting a script does not
 cancel its queued entries.
 
+On Linux, guest init assigns spool directories to subordinate host IDs.
+Stop the agent before a host-side reset or removal. Removing the spool needs
+access through those mapped IDs or host administration; ordinary host `rm -rf` can fail with
+`Permission denied`. Demo removes its disposable guest's spool through the
+operator's subordinate IDs before deleting the guest configuration.
+
 Linux's `runsc --overlay2=root:dir=...` alone does not preserve rootfs files
 after stop. It uses a temporary file-backed tmpfs. Scheduler persistence needs
 the spool bind described above. Other rootfs files still disappear on stop

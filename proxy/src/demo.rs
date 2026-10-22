@@ -522,16 +522,23 @@ impl Demo {
             );
         }
         host_lifecycle::stop(&self.agent, Some(lock)).await?;
+        let lock_directory = directory.clone();
         let lock = tokio::task::spawn_blocking(move || {
-            host_lifecycle::SetupLock::acquire_in(&directory, None)
+            host_lifecycle::SetupLock::acquire_in(&lock_directory, None)
         })
         .await??;
+        host_agents::refresh(&self.agent)?;
         if crate::host_runs::observe(&self.agent.name).await["runtime_state"] != "stopped" {
             return Err("Demo guest stop is unverified; files were preserved".into());
         }
         let metadata = fs::symlink_metadata(&self.workspace)?;
         if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != self.workspace_identity {
             return Err("Demo workspace was replaced; its files were preserved".into());
+        }
+        #[cfg(target_os = "linux")]
+        if !self.keep && self.original.is_none() {
+            // DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md
+            crate::linux_host::remove_scheduler_spool(&directory).await?;
         }
         edit_policy(|document| {
             let agents = document["agents"]

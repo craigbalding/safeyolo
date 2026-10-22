@@ -172,6 +172,72 @@ pub(crate) fn selected_mapping() -> Result<Mapping, Error> {
     Ok(mapping)
 }
 
+/// The caller holds the agent setup lock and has verified that its backend stopped.
+#[cfg(target_os = "linux")]
+pub(crate) async fn remove_scheduler_spool(directory: &Path) -> Result<(), Error> {
+    let spool = directory.join("overlay/var/spool/cron");
+    match fs::remove_dir_all(&spool) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mapping = selected_mapping()?;
+    let settings = crate::native_config::host_settings()?;
+    let mut command =
+        if fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|value| value.trim() == "1")
+        {
+            let mut command = tokio::process::Command::new("aa-exec");
+            command.args([
+                "-p",
+                settings
+                    .linux
+                    .as_ref()
+                    .and_then(|linux| linux.apparmor_profile.as_deref())
+                    .unwrap_or("safeyolo-runsc"),
+                "--",
+                "unshare",
+            ]);
+            command
+        } else {
+            tokio::process::Command::new("unshare")
+        };
+    // Namespace root is the operator. Map its allocated subordinate IDs too,
+    // so DAC and sticky-directory checks can remove root/daemon-owned queues.
+    // The comma syntax also works with the older supported util-linux tools.
+    command.args([
+        "--map-root-user".to_owned(),
+        format!("--map-users={},1,{ID_COUNT}", mapping.uid_base),
+        format!("--map-groups={},1,{ID_COUNT}", mapping.gid_base),
+        "--".to_owned(),
+    ]);
+    remove_scheduler_spool_in(&spool, command).await
+}
+
+#[cfg(target_os = "linux")]
+async fn remove_scheduler_spool_in(
+    spool: &Path,
+    mut command: tokio::process::Command,
+) -> Result<(), Error> {
+    // rm does not follow job-directory symlinks. Never elevate deletion of the
+    // agent home, workspace, overlay parent, or another agent's files.
+    let output = command
+        .args(["rm", "-rf", "--"])
+        .arg(spool)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot remove stopped guest scheduler spool {}: {}",
+            spool.display(),
+            String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(2048)])
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Debug)]
 struct Allocation {
@@ -432,6 +498,95 @@ pub fn run(_root: &Path, _args: &[String]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn scheduler_spool_cleanup_handles_distinct_owners_and_preserves_peer_files() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        assert_ne!(unsafe { libc::geteuid() }, 0, "run as the operator account");
+        let fixture = tempfile::tempdir().unwrap();
+        let alice = fixture.path().join("alice");
+        let spool = alice.join("overlay/var/spool/cron");
+        let peer = fixture.path().join("bob");
+        fs::create_dir_all(&peer).unwrap();
+        let marker = peer.join("job");
+        fs::write(&marker, "peer queue").unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = marker.metadata().unwrap();
+        for (name, owner, mode) in [
+            ("crontabs", "0:0", "1730"),
+            ("atjobs", "1:1", "1770"),
+            ("atspool", "1:1", "1770"),
+        ] {
+            let directory = spool.join(name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("job"), "owned queue").unwrap();
+            fs::set_permissions(directory.join("job"), fs::Permissions::from_mode(0o600)).unwrap();
+            symlink(&peer, directory.join("peer-link")).unwrap();
+            for args in [["chown", owner], ["chmod", mode]] {
+                assert!(
+                    std::process::Command::new("sudo")
+                        .arg("-n")
+                        .args(args)
+                        .arg(&directory)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+        }
+        fs::set_permissions(&spool, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            std::process::Command::new("sudo")
+                .args(["-n", "chown", "0:0"])
+                .arg(&spool)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // Real root/daemon IDs stand in for subordinate owners here. Guest
+        // sudo supplies file capabilities for this filesystem probe; the
+        // installed consumer exercises the rootless namespace separately.
+        assert_eq!(
+            fs::remove_dir_all(alice.join("overlay"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let owners = ["crontabs", "atjobs", "atspool"].map(|name| {
+            let metadata = spool.join(name).metadata().unwrap();
+            (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777)
+        });
+        assert_eq!(owners, [(0, 0, 0o1730), (1, 1, 0o1770), (1, 1, 0o1770)]);
+        assert!(
+            remove_scheduler_spool_in(&spool, tokio::process::Command::new("false"))
+                .await
+                .is_err()
+        );
+        for (name, expected) in ["crontabs", "atjobs", "atspool"].into_iter().zip(owners) {
+            let metadata = spool.join(name).metadata().unwrap();
+            assert_eq!(
+                (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777),
+                expected
+            );
+        }
+        let mut command = tokio::process::Command::new("sudo");
+        command.arg("-n");
+        remove_scheduler_spool_in(&spool, command).await.unwrap();
+        assert!(!spool.exists());
+        fs::remove_dir_all(alice.join("overlay")).unwrap();
+        let after = marker.metadata().unwrap();
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "peer queue");
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode(), before.ino()),
+            (after.uid(), after.gid(), after.mode(), after.ino())
+        );
+        // The next boot can create an empty spool at the reset location.
+        fs::create_dir_all(&spool).unwrap();
+        assert_eq!(fs::read_dir(&spool).unwrap().count(), 0);
+    }
+
     #[test]
     fn allocation_selection_keeps_distinct_bases_and_skips_the_occupied_fixed_range() {
         let u = allocations("other:100000:65536\nalice:300000:65536\n", "subuid").unwrap();
