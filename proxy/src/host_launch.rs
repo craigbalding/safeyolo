@@ -12,10 +12,11 @@ use serde_json::Value;
 
 use crate::{Error, host_agents, host_boot, host_commands, host_lifecycle, host_platform};
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER] [--dangerously-allow-unowned]
-WORKSPACE defaults to the current directory. This launch command currently supports Claude.
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--dangerously-allow-unowned]
+WORKSPACE defaults to the current directory. The harness defaults to Claude.
 Launch starts the installed services, asks before host setup and optional host-state copying,
-and opens the agent terminal. In tmux, press Ctrl-b then d to return here for approvals.
+and opens the agent terminal. Codex uses its agent-local authentication and settings.
+In tmux, press Ctrl-b then d to return here for approvals.
 Numbered requests use the existing inspect/approve/reject operations. Network approval is
 agent-specific and reusable; credential approval changes persistent instance-shared policy.
 Repeat launch keeps the same agent, home and workspace. Quit preserves the current sandbox state.
@@ -208,11 +209,12 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     }
     let options = Options::parse(args)?;
     let harness = options.harness.as_deref().unwrap_or("claude");
-    let script_name = match harness {
-        "claude" => "claude-host-setup.sh",
+    let (script_name, client) = match harness {
+        "claude" => ("claude-host-setup.sh", "Claude"),
+        "codex" => ("codex-host-setup.sh", "Codex"),
         _ => {
             return Err(format!(
-                "no shipped first-launch setup for harness {harness}; available: claude"
+                "no shipped first-launch setup for harness {harness}; available: claude, codex"
             )
             .into());
         }
@@ -262,16 +264,25 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             );
         }
         println!(
-            "Setup runs the shipped {harness} host script as your host account. The script writes this agent's persistent home, SafeYolo context and MCP settings. The guest can read and write {displayed_workspace} at /workspace. Claude may run tools without per-tool prompts inside this sandbox; SafeYolo network and credential policy still applies.",
+            "Setup runs the shipped {harness} host script as your host account. The script writes this agent's persistent home, SafeYolo context and MCP settings. The guest can read and write {displayed_workspace} at /workspace. {client} may run tools without per-tool prompts inside this sandbox; SafeYolo network and credential policy still applies.",
         );
         if !consent("Run this setup and share this workspace? [y/N] ")? {
             println!("Setup declined; saved agents and services are unchanged.");
             return Ok(0);
         }
-        println!(
-            "Optional host state: copy selected identity fields from ~/.claude.json, ~/.claude/.credentials.json, settings.json, plugins, commands, agents and skills (except SafeYolo's reserved skill) into this agent home. Claude and guest commands can read the copied authentication. Sessions and history are excluded. Declining leaves host authentication untouched; use Claude's login in the guest."
-        );
-        let copy = consent("Copy this selected host authentication and settings? [y/N] ")?;
+        let copy = if harness == "claude" {
+            println!(
+                "Optional host state: copy selected identity fields from ~/.claude.json, ~/.claude/.credentials.json, settings.json, plugins, commands, agents and skills (except SafeYolo's reserved skill) into this agent home. Claude and guest commands can read the copied authentication. Sessions and history are excluded. Declining leaves host authentication untouched; use Claude's login in the guest."
+            );
+            Some(consent(
+                "Copy this selected host authentication and settings? [y/N] ",
+            )?)
+        } else {
+            println!(
+                "Codex uses authentication and settings in this agent's ~/.codex. Setup preserves that state and does not import host credentials. Sign in inside the guest if needed; follow codex-state adopt or reset instructions if setup requests recovery."
+            );
+            None
+        };
         let mut settings = vec![
             ("folder".into(), workspace.to_string_lossy().into_owned()),
             ("host_script".into(), script.to_string_lossy().into_owned()),
@@ -283,7 +294,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             settings.push(("dangerously_allow_unowned".into(), "true".into()));
         }
         println!("Preparing the shipped harness setup…");
-        host_agents::configure_with_host_state(&name, &settings, create, None, Some(copy))
+        host_agents::configure_with_host_state(&name, &settings, create, None, copy)
             .await
             .map_err(|error| phase("host setup", error))?
     };
@@ -311,7 +322,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
         ));
     }
     println!(
-        "Starting or resuming {harness}. First use may download tools; sign in if Claude asks. In tmux, Ctrl-b then d returns to trusted SafeYolo approvals in this terminal."
+        "Starting or resuming {harness}. First use may download tools; sign in if {client} asks. In tmux, Ctrl-b then d returns to trusted SafeYolo approvals in this terminal."
     );
     start(&agent)
         .await
