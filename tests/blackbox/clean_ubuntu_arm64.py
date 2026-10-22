@@ -130,11 +130,15 @@ def main():
     work.mkdir(mode=0o700)
     reports = work / "reports"
     reports.mkdir()
-    # Warm entry (180s), both captures (90s each), return controls,
-    # version/network diagnostics and cleanup (120s) follow the cold clock.
-    observer_seconds = args.cold_seconds + 900
-    # Cover the remote INT-to-KILL grace (120s), then allow SSH to return.
-    ssh_seconds = observer_seconds + 180
+    # Preserve the ordinary hosted fixture's existing deadlines.
+    observer_seconds, ssh_seconds, recovery_seconds = 1380, 1500, 100
+    if args.cold_seconds != 900:
+        # Warm entry (180s), both captures (90s each), return controls,
+        # version/network diagnostics and cleanup (120s) follow the cold clock.
+        observer_seconds = args.cold_seconds + 900
+        # Cover the remote INT-to-KILL grace (120s), then allow SSH to return.
+        ssh_seconds = observer_seconds + 180
+        recovery_seconds = 180
     report = {"started": stamp(), "observer_source": args.observer_source,
               "cold_allowance_seconds": args.cold_seconds, "execution_mode": "qemu-tcg",
               "observer_timeout_seconds": observer_seconds, "ssh_timeout_seconds": ssh_seconds,
@@ -274,7 +278,7 @@ def main():
                 recovery = ["python3", "-I", "-B", "observer/ubuntu_onboarding.py", "--host", HOSTNAME,
                             "--platform", "linux-arm64", "--cleanup-only",
                             "--observation-dir", "/home/ubuntu/onboarding-observation"]
-                run(ssh + [shlex.join(recovery)], 180, check=False, role="observer")
+                run(ssh + [shlex.join(recovery)], recovery_seconds, check=False, role="observer")
                 result = run(ssh + ["cat onboarding-observation/result.json"], 15, check=False, role="observer")
                 if result.returncode == 0:
                     observed = json.loads(result.stdout)

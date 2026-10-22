@@ -36,10 +36,6 @@ on:
         options:
           - default
           - lifecycle
-      cold_seconds:
-        description: Cold public observation allowance in seconds (1800 for the owned emulated experiment)
-        type: number
-        default: 900
 
 permissions:
   contents: read
@@ -57,9 +53,7 @@ jobs:
   clean-public-install:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'clean-public-install'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 95
-    env:
-      COLD_SECONDS: ${{ inputs.cold_seconds }}
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -78,13 +72,9 @@ jobs:
         shell: bash
         run: |
           umask 077
-          [[ $COLD_SECONDS =~ ^[1-9][0-9]*$ ]] || { printf 'cold_seconds must be a positive whole number\n' >&2; exit 2; }
-          # Cover VM acquisition/boot, the inner cold+900s observer, SSH grace,
-          # result recovery and VM teardown before the outer INT/KILL grace.
-          env -u GH_TOKEN -u GITHUB_TOKEN timeout --signal=INT --kill-after=180s "$((COLD_SECONDS + 2700))" \
+          env -u GH_TOKEN -u GITHUB_TOKEN timeout --signal=INT --kill-after=180s 41m \
             python3 -I -B tests/blackbox/clean_ubuntu_arm64.py \
-            --work-dir "$CLEAN_UBUNTU_WORK" --observer-source "$GITHUB_SHA" \
-            --cold-seconds "$COLD_SECONDS"
+            --work-dir "$CLEAN_UBUNTU_WORK" --observer-source "$GITHUB_SHA"
       - name: Retain reached clean-OS observations, including failures
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -497,9 +487,7 @@ jobs:
   public-install:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'public-install'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    env:
-      COLD_SECONDS: ${{ inputs.cold_seconds }}
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -526,20 +514,15 @@ jobs:
         run: |
           umask 077
           cd "$PUBLIC_INSTALL_WORK"
-          [[ $COLD_SECONDS =~ ^[1-9][0-9]*$ ]] || { printf 'cold_seconds must be a positive whole number\n' >&2; exit 2; }
-          # Reserve 900s for warm work, captures, diagnostics and owned cleanup.
-          observer_seconds=$((COLD_SECONDS + 900))
           set +e
-          env -u GH_TOKEN -u GITHUB_TOKEN timeout --signal=INT --kill-after=150s "$observer_seconds" \
+          env -u GH_TOKEN -u GITHUB_TOKEN timeout --signal=INT --kill-after=150s 23m \
             python3 -I -B "$PUBLIC_INSTALL_WORK/observer/ubuntu_onboarding.py" \
             --host "$(hostname)" --platform linux-arm64 --observer-source "$GITHUB_SHA" \
-            --cold-seconds "$COLD_SECONDS" --execution-mode native \
             --observation-dir "$PUBLIC_INSTALL_WORK/private" \
             > "$PUBLIC_INSTALL_WORK/observer.stdout" 2> "$PUBLIC_INSTALL_WORK/observer.stderr"
           status=$?
           # Observation completeness and wrapper deadlines are separate from product exits.
-          printf 'observer_exit=%s\ncold_allowance_seconds=%s\nobserver_timeout_seconds=%s\nexecution_mode=native\n' \
-            "$status" "$COLD_SECONDS" "$observer_seconds" > "$PUBLIC_INSTALL_REPORTS/execution.txt"
+          printf 'observer_exit=%s\n' "$status" > "$PUBLIC_INSTALL_REPORTS/execution.txt"
           exit "$status"
       - name: Finish only this observer's owned cleanup after failure
         if: always()

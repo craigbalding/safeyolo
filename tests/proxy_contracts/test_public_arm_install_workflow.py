@@ -55,9 +55,7 @@ def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
     assert PUBLIC['runs-on'] == 'ubuntu-24.04-arm'
     assert PUBLIC['permissions'] == {'contents': 'read'}
     assert 'needs' not in PUBLIC and 'strategy' not in PUBLIC
-    assert int(PUBLIC['timeout-minutes']) == 60
-    cold = WORKFLOW['on']['workflow_dispatch']['inputs']['cold_seconds']
-    assert cold['type'] == 'number' and cold['default'] == '900'
+    assert int(PUBLIC['timeout-minutes']) == 30
     assert PUBLIC['steps'][-1]['if'] == 'always()'
     for step in PUBLIC['steps']:
         assert '${{ secrets.' not in json.dumps(step)
@@ -85,7 +83,6 @@ def public_shell(tmp_path):
            'RUNNER_TEMP': str(tmp_path), 'GITHUB_ENV': str(tmp_path / 'github-env'),
            'GITHUB_WORKSPACE': str(workspace), 'GITHUB_SHA': 'a' * 40,
            'PATH': str(tools) + os.pathsep + os.environ['PATH']}
-    env['COLD_SECONDS'] = '900'
     env.pop('BASH_ENV', None)
     result = run_script(step_script('Select fresh observer and report directories'), env)
     assert result.returncode == 0, result.stderr
@@ -267,8 +264,7 @@ def test_current_download_and_installer_refusal_keep_source_binding_and_reached_
 
 @pytest.mark.parametrize('exit_status', [0, 37])
 @pytest.mark.parametrize('cleanup', [False, True])
-@pytest.mark.parametrize('cold_seconds', [900, 1800])
-def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_logs(public_shell, exit_status, cleanup, cold_seconds):
+def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_logs(public_shell, exit_status, cleanup):
     work, reports, env = public_shell
     # Control the observer and check timeout's arguments without waiting for a
     # deadline. Execute the real env, Bash redirections, result copy and exits.
@@ -286,14 +282,14 @@ def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_l
     python.chmod(0o755)
     timeout = python.with_name('timeout')
     expected = ['--signal=INT', '--kill-after=10s', '3m'] if cleanup else [
-        '--signal=INT', '--kill-after=150s', str(cold_seconds + 900)]
+        '--signal=INT', '--kill-after=150s', '23m']
     timeout.write_text(f'#!{os.sys.executable}\n'
         'import os, sys\n'
         f'if sys.argv[1:4] != {expected!r}:\n'
         '    sys.exit("unexpected timeout arguments")\n'
         'os.execvp(sys.argv[4], sys.argv[4:])\n')
     timeout.chmod(0o755)
-    env.update(GH_TOKEN='synthetic-must-not-pass', GITHUB_TOKEN='synthetic-must-not-pass', COLD_SECONDS=str(cold_seconds))
+    env.update(GH_TOKEN='synthetic-must-not-pass', GITHUB_TOKEN='synthetic-must-not-pass')
     name = ("Finish only this observer's owned cleanup after failure" if cleanup
             else 'Observe one public bootstrap, first launch and normal repeat')
     result = run_script(step_script(name), env)
@@ -301,8 +297,7 @@ def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_l
     called = json.loads((work / 'called.json').read_text())
     assert called['args'] == ['-I', '-B', str(work / 'observer/ubuntu_onboarding.py'),
         '--host', os.uname().nodename, '--platform', 'linux-arm64',
-        *(['--cleanup-only'] if cleanup else ['--observer-source', env['GITHUB_SHA'],
-            '--cold-seconds', str(cold_seconds), '--execution-mode', 'native']),
+        *(['--cleanup-only'] if cleanup else ['--observer-source', env['GITHUB_SHA']]),
         '--observation-dir', str(work / 'private')]
     assert called['cwd'] == str(work) and called['tokens'] == []
     assert called['path'] == env['PATH'] and called['ca'] == env.get('SSL_CERT_FILE')
@@ -311,9 +306,7 @@ def test_workflow_callers_remove_tokens_and_preserve_observer_exit_and_private_l
         assert stat.S_IMODE((work / f'{prefix}.{stream}').stat().st_mode) == 0o600
     assert result.stdout == result.stderr == ''
     if not cleanup:
-        assert (reports / 'execution.txt').read_text() == (
-            f'observer_exit={exit_status}\ncold_allowance_seconds={cold_seconds}\n'
-            f'observer_timeout_seconds={cold_seconds + 900}\nexecution_mode=native\n')
+        assert (reports / 'execution.txt').read_text() == f'observer_exit={exit_status}\n'
     result = run_script(step_script('Retain reached nonsecret operands, including partial observations'), env)
     assert result.returncode == 0, result.stderr
     assert json.loads((reports / 'observation.json').read_text()) == {'observation_outcome': 'partial'}
@@ -325,34 +318,6 @@ def test_report_step_preserves_missing_result_as_unobserved(public_shell):
     result = run_script(step_script('Retain reached nonsecret operands, including partial observations'), env)
     assert result.returncode == 0, result.stderr
     assert not list(reports.iterdir())
-
-
-@pytest.mark.parametrize('cold_seconds', [900, 1800])
-def test_clean_workflow_passes_the_allowance_and_leaves_time_for_fixture_teardown(public_shell, cold_seconds):
-    work, _reports, env = public_shell
-    tools = Path(env['PATH'].split(os.pathsep)[0])
-    python = tools / 'python3'
-    python.write_text(f'#!{sys.executable}\n'
-        'import json, os, pathlib, sys\n'
-        'pathlib.Path(os.environ["PUBLIC_INSTALL_WORK"], "fixture-args.json").write_text(json.dumps(sys.argv[1:]))\n')
-    python.chmod(0o755)
-    timeout = tools / 'timeout'
-    timeout.write_text(f'#!{sys.executable}\n'
-        'import os, sys\n'
-        f'assert sys.argv[1:4] == ["--signal=INT", "--kill-after=180s", "{cold_seconds + 2700}"]\n'
-        'os.execvp(sys.argv[4], sys.argv[4:])\n')
-    timeout.chmod(0o755)
-    clean = WORKFLOW['jobs']['clean-public-install']
-    script = next(step['run'] for step in clean['steps']
-                  if step.get('name') == 'Observe public installation in a stock Ubuntu ARM64 VM')
-    env.update(COLD_SECONDS=str(cold_seconds), CLEAN_UBUNTU_WORK=str(work / 'vm'))
-    result = run_script(script, env)
-    assert result.returncode == 0, result.stderr
-    assert json.loads((work / 'fixture-args.json').read_text()) == [
-        '-I', '-B', 'tests/blackbox/clean_ubuntu_arm64.py', '--work-dir', str(work / 'vm'),
-        '--observer-source', env['GITHUB_SHA'], '--cold-seconds', str(cold_seconds),
-    ]
-    assert int(clean['timeout-minutes']) * 60 > cold_seconds + 2700 + 180
 
 
 @pytest.fixture

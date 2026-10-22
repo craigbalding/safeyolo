@@ -133,6 +133,9 @@ def test_existing_work_directory_is_preserved_before_acquisition(tmp_path):
 def test_main_propagates_cold_allowance_and_recovers_reached_result_after_ssh_timeout(tmp_path, cold_seconds, ssh_timeout):
     work = tmp_path / "vm"
     allowance = 900 if cold_seconds is None else cold_seconds
+    observer_seconds = 1380 if cold_seconds is None else allowance + 900
+    ssh_seconds = 1500 if cold_seconds is None else allowance + 1080
+    recovery_seconds = 100 if cold_seconds is None else 180
     observed = {"cold_allowance_seconds": allowance, "execution_mode": "qemu-tcg", "observation_outcome": "partial"}
 
     def run(command, **kwargs):
@@ -170,17 +173,17 @@ def test_main_propagates_cold_allowance_and_recovers_reached_result_after_ssh_ti
                 and "timeout --signal=INT" in call.args[0][-1]]
     assert len(observer) == 1
     remote = shlex.split(observer[0].args[0][-1])
-    assert remote[:4] == ["timeout", "--signal=INT", "--kill-after=120s", str(allowance + 900)]
+    assert remote[:4] == ["timeout", "--signal=INT", "--kill-after=120s", str(observer_seconds)]
     assert remote[remote.index("--cold-seconds") + 1] == str(allowance)
     assert remote[remote.index("--execution-mode") + 1] == "qemu-tcg"
-    assert observer[0].kwargs["timeout"] == allowance + 1080
+    assert observer[0].kwargs["timeout"] == ssh_seconds
     recovery = [call for call in commands.call_args_list if "--cleanup-only" in call.args[0][-1]]
-    assert len(recovery) == 1 and recovery[0].kwargs["timeout"] == 180
+    assert len(recovery) == 1 and recovery[0].kwargs["timeout"] == recovery_seconds
     report = json.loads((work / "reports/fixture.json").read_text())
     assert report["cold_allowance_seconds"] == allowance
     assert report["execution_mode"] == "qemu-tcg"
-    assert report["observer_timeout_seconds"] == allowance + 900
-    assert report["ssh_timeout_seconds"] == allowance + 1080
+    assert report["observer_timeout_seconds"] == observer_seconds
+    assert report["ssh_timeout_seconds"] == ssh_seconds
     assert ("error" in report) == ssh_timeout
     assert report.get("observer_exit") == (None if ssh_timeout else 37)
     assert report["vm_cleanup"]["reaped"] and report["ssh_port_closed"]
