@@ -10,7 +10,7 @@ import time
 import pytest
 import tomlkit
 
-from tests.proxy_contracts.harness import read_events, request
+from tests.proxy_contracts.harness import request
 from tests.proxy_contracts.test_authority_consistency import _connect, _peers
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
@@ -70,7 +70,10 @@ unknown_creds = "prompt"
                               if name.lower() == "x-safeyolo-request-id")
             deadline = time.monotonic() + 4
             while True:
-                events = read_events(instance.root / "logs/audit.jsonl")
+                logs = instance.cli("logs", "--agent", "alice", "--lines", "50", "--json")
+                assert logs.returncode == 0, logs.stderr
+                assert all(value not in logs.stdout + logs.stderr for value in secrets)
+                events = json.loads(logs.stdout)["events"]
                 rows = [row for row in events if row["event"] == "security.credential_guard"
                         and row.get("request_id") == request_id]
                 if rows:
@@ -87,6 +90,7 @@ unknown_creds = "prompt"
         fingerprints = []
         for token in tokens:
             fingerprint = send(token, 428)
+            assert fingerprint.startswith("hmac:")
             fingerprints.append(fingerprint)
             approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
             assert approved.returncode == 0, approved.stderr
@@ -98,7 +102,7 @@ unknown_creds = "prompt"
                     break
                 assert time.monotonic() < deadline
                 time.sleep(0.02)
-            send(token, 200)
+            assert send(token, 200) == fingerprint
             send(token, 428, destination="forbidden.invalid")
         assert fingerprints[0] != fingerprints[1]
         instance.apply(instance.policy.read_text())
@@ -115,12 +119,5 @@ unknown_creds = "prompt"
             "action": "credential:use", "resource": "allowed.invalid/*", "effect": "deny",
         }]
         instance.apply(tomlkit.dumps(denied))
-        send(tokens[1], 403)
-        logs = instance.cli("logs", "--agent", "alice", "--lines", "50", "--json")
-        assert logs.returncode == 0, logs.stderr
-        log_view = json.loads(logs.stdout)
-        assert log_view["file"] == str(instance.root / "logs/audit.jsonl")
-        assert any(row["event"] == "security.credential_guard" and row["decision"] == "deny"
-                   for row in log_view["events"])
-        assert all(value not in logs.stdout + logs.stderr for value in secrets)
+        assert send(tokens[1], 403) == fingerprints[1]
         assert instance.process.pid == pid and instance.process.poll() is None

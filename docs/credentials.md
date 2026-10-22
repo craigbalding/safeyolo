@@ -148,10 +148,11 @@ credential fingerprint. An explicit denial returns HTTP 403.
 On the host, inspect the reported agent, destination and fingerprint in the
 pending credential approval or the `security.credential_guard` audit event.
 Use `services approvals` to read pending records. `logs --agent WORKER --lines
-50 --json` returns a summary and the audit file's path; replace `WORKER` with
-your agent's name. Read the matching credential event in that host file for
-its fingerprint. Do not extract or share a token or Codex authentication file
-to obtain the fingerprint.
+50 --json` returns complete selected audit events; replace `WORKER` with your
+agent's name. Match the event's `request_id`, `agent` and `host` to the client's
+request, then read its `details.fingerprint`.
+Do not extract or share a token or Codex authentication file to obtain the
+fingerprint.
 
 For the installed instance at `$HOME/.safeyolo`, replace `FINGERPRINT` with the
 reported `hmac:` fingerprint and `HOST` with the intended destination. Approve
