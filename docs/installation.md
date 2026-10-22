@@ -158,6 +158,17 @@ still require their own host choices. The command entry works in the same
 terminal after installation. A failed download must stop the procedure: do
 not run a previous file left at the download name.
 
+In a release that includes Codex launch support, use `safeyolo agent launch .
+--harness codex` to select the shipped Codex setup and native package. The
+default harness remains Claude. Codex uses authentication and settings in the
+agent's persistent home; setup does not copy the host's `~/.codex`. For login
+and explicit adoption of selected authentication, see
+[First Codex login](../contrib/HOST_SCRIPT_GUIDE.md#first-codex-login).
+Repeating the command reuses the matching agent, home, workspace and launcher.
+The same tmux detach and host approval controls apply to both harnesses.
+Earlier packages that report “available: claude” need an explicit update to a
+release with this support. A source change alone does not update an installation.
+
 Trust comes from HTTPS delivery by the official
 `github.com/craigbalding/safeyolo` publisher. A checksum from the same release
 checks integrity; it does not independently authenticate that publisher.

@@ -1,7 +1,7 @@
 """First-launch host consent and the shared numbered operator interaction.
 
 The proxy and policy effects are real. These controls do not claim a booted
-guest or Claude-provider result; those require the authorized installed witness.
+guest or provider result; those require the authorized installed witness.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import tomlkit
 
 from tests.proxy_contracts.harness import request
 from tests.proxy_contracts.scenarios import origin_server
@@ -103,7 +104,8 @@ headers=["authorization"]
 
 
 @pytest.mark.parametrize("choice", ["decline", "interrupt"])
-def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice):
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice, harness):
     artifacts, _, _ = native_inputs()
     binary = artifacts / "safeyolo"
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
@@ -115,10 +117,12 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice):
     (root / "bin/safeyolo").symlink_to(binary.resolve())
     scripts = root / "assets/contrib"
     scripts.mkdir(parents=True)
-    shutil.copy2(REPO / "contrib/claude-host-setup.sh", scripts)
+    shutil.copy2(REPO / f"contrib/{harness}-host-setup.sh", scripts)
     instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color"})
     policy = (root / "policy.toml").read_bytes()
-    with terminal(instance, ["agent", "launch"], cwd=workspace) as (process, master, until):
+    # Keep the default Claude caller as well as explicit Codex selection.
+    arguments = ["agent", "launch"] + (["--harness", harness] if harness == "codex" else [])
+    with terminal(instance, arguments, cwd=workspace) as (process, master, until):
         output = until(b"Run this setup and share this workspace?")
         assert b"guest can read and write" in output
         assert str(workspace).encode() in output
@@ -139,7 +143,8 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice):
     ["rootfs-base.ext4", "Image", "initramfs.cpio.gz", "helper"]
     if os.uname().sysname == "Darwin" else ["rootfs-tree"]
 ))
-def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(missing_input):
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(missing_input, harness):
     policy = 'budget=12000\n[hosts]\n"*"={egress="allow",unknown_creds="allow"}\n'
     # Agent listeners use the installed root, not the fixture's separate proxy
     # socket directory. A normal Darwin pytest path can fail before boot entry.
@@ -173,30 +178,36 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
         started = instance.cli(*arguments)
         assert started.returncode == 0, started.stderr
         nats = json.loads(started.stdout)
+        harness_args = ["--harness", harness] if harness == "codex" else []
         try:
             receipt = instance.root / "assets/guest/safeyolo-coord.sha256"
             missing = receipt.with_name("coord-checksum.fixture-missing")
             policy_before_setup = instance.policy.read_bytes()
             receipt.rename(missing)
             try:
-                with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", "--harness", "claude"]) as (process, master, until):
+                with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", "--harness", harness]) as (process, master, until):
                     until(b"Run this setup and share this workspace?")
                     os.write(master, b"y\n")
-                    until(b"Copy this selected host authentication and settings?")
-                    os.write(master, b"n\n")
+                    if harness == "claude":
+                        until(b"Copy this selected host authentication and settings?")
+                        os.write(master, b"n\n")
                     until(b"First-agent host setup failed", timeout=30)
                     assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
                 assert instance.policy.read_bytes() == policy_before_setup
                 assert instance.process.poll() is None
             finally:
                 missing.rename(receipt)
-            with terminal(instance, ["agent", "launch", str(workspace), "--name", "first"]) as (process, master, until):
+            with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", *harness_args]) as (process, master, until):
                 until(b"Run this setup and share this workspace?")
                 os.write(master, b"y\n")
-                until(b"Copy this selected host authentication and settings?")
-                os.write(master, b"n\n")
+                if harness == "claude":
+                    until(b"Copy this selected host authentication and settings?")
+                    os.write(master, b"n\n")
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Preparing the shipped harness setup" in output
+                if harness == "codex":
+                    assert b"Codex uses authentication and settings" in output
+                    assert b"Copy this selected host authentication" not in output
                 assert diagnostic in output, output
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
             runtime = instance.root / "agents/first/runtime.json"
@@ -206,9 +217,26 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             command = instance.root / "agents/first/home/.safeyolo-command"
             previous = command.stat()
             command_bytes = command.read_bytes()
+            home = command.parent
+            if harness == "codex":
+                # Boot staging wraps the generated command with the existing
+                # guest observer; Codex remains the unchanged payload.
+                payload = home / ".safeyolo-command.payload"
+                assert payload.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
+                config = home / ".codex/config.toml"
+                document = tomlkit.parse(config.read_text())
+                document["model"] = "operator-selected-model"
+                config.write_text(tomlkit.dumps(document))
+                auth = home / ".codex/auth.json"
+                auth.write_text('{"synthetic": "selected-agent-login"}\n')
+                auth.chmod(0o600)
+                adopted = subprocess.run([str(instance.root / "bin/safeyolo-coord"), "codex-state", "--home", str(home), "adopt"],
+                                         env=instance.environment, capture_output=True, text=True, timeout=15)
+                assert adopted.returncode == 0, adopted.stderr
+                selected_state = {path: path.read_bytes() for path in (config, auth, home / ".codex/.safeyolo-provenance.json")}
             # The actual default selection finds the intended named agent.
             # It neither reapplies setup nor creates a second identity.
-            with terminal(instance, ["agent", "launch", str(workspace), "--launcher", "tmux-window"]) as (process, master, until):
+            with terminal(instance, ["agent", "launch", str(workspace), "--launcher", "tmux-window", *harness_args]) as (process, master, until):
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Reusing agent first" in output
                 assert b"Preparing the shipped harness setup" not in output
@@ -218,17 +246,21 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             assert instance.policy.read_bytes() == policy_bytes
             assert command.stat().st_ino == previous.st_ino and command.read_bytes() == command_bytes
             command.unlink()
-            with terminal(instance, ["agent", "launch", str(workspace)]) as (process, master, until):
+            with terminal(instance, ["agent", "launch", str(workspace), *harness_args]) as (process, master, until):
                 output = until(b"Run this setup and share this workspace?")
                 assert b"harness command is missing" in output
                 os.write(master, b"y\n")
-                until(b"Copy this selected host authentication and settings?")
-                os.write(master, b"n\n")
+                if harness == "claude":
+                    until(b"Copy this selected host authentication and settings?")
+                    os.write(master, b"n\n")
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert diagnostic in output, output
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
             assert not runtime.exists()
             assert command.read_bytes() == command_bytes
+            if harness == "codex":
+                assert {path: path.read_bytes() for path in selected_state} == selected_state
+                assert payload.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
             # Explicit repair uses the existing TOML writer. Whitespace can
             # change, while every saved policy choice and agent field stays.
             assert tomllib.loads(instance.policy.read_text()) == tomllib.loads(policy_bytes.decode())
@@ -236,17 +268,82 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             assert instance.process.poll() is None
             target = f"http://127.0.0.1:{origin.server_address[1]}/unrelated-agent"
             assert request(instance.paths["alice"], target)[0] == 200
-            launcher_conflict = instance.cli("agent", "launch", str(workspace), "--name", "first", "--launcher", "tmux-pane")
+            launcher_conflict = instance.cli("agent", "launch", str(workspace), "--name", "first", "--launcher", "tmux-pane", *harness_args)
             assert launcher_conflict.returncode != 0 and "different workspace, harness or launcher" in launcher_conflict.stderr
             other = tmp_path / "other-workspace"
             other.mkdir()
-            conflict = instance.cli("agent", "launch", str(other), "--name", "first")
+            conflict = instance.cli("agent", "launch", str(other), "--name", "first", *harness_args)
             assert conflict.returncode != 0 and "different workspace" in conflict.stderr
+            other_harness = "claude" if harness == "codex" else "codex"
+            conflict = instance.cli("agent", "launch", str(workspace), "--name", "first", "--harness", other_harness)
+            assert conflict.returncode != 0 and "different workspace, harness or launcher" in conflict.stderr
             assert tomllib.loads(instance.policy.read_text()) == tomllib.loads(policy_bytes.decode())
         finally:
             stopped = instance.cli("coord", "stop")
             assert stopped.returncode == 0, stopped.stderr
             assert json.loads(instance.cli("coord", "status").stdout)["state"] == "stopped"
+
+
+def test_unsupported_launch_harness_is_rejected_before_instance_mutation(tmp_path):
+    artifacts, _, _ = native_inputs()
+    root = tmp_path / "installed"
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+                                 capture_output=True, text=True, timeout=15)
+    assert initialized.returncode == 0, initialized.stderr
+    saved = {name: (root / name).read_bytes() for name in ("policy.toml", "config.toml")}
+    result = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "agent", "launch", "--harness", "unknown"],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode != 0
+    assert "available: claude, codex" in result.stderr
+    assert {name: (root / name).read_bytes() for name in saved} == saved
+    assert not (root / "agents").exists()
+    assert not (root / "data/proxy-process.json").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
+
+
+@pytest.mark.parametrize("auth_state", ["unadopted", "symlink"])
+def test_codex_launch_keeps_selected_authentication_on_setup_refusal(tmp_path, auth_state):
+    with native_instance(tmp_path) as instance:
+        instance.environment.update(PATH=f"{instance.root / 'bin'}:/usr/bin:/bin", TERM="xterm-256color")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        home = instance.root / "agents/first/home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True, mode=0o700)
+        config = codex / "config.toml"
+        config.write_text('model = "operator-selected-model"\n')
+        config.chmod(0o600)
+        original_config = config.read_bytes()
+        auth = codex / "auth.json"
+        if auth_state == "symlink":
+            target = tmp_path / "unrelated-auth"
+            target.write_text("synthetic-unrelated-login\n")
+            target.chmod(0o600)
+            auth.symlink_to(target)
+            diagnostic = b"unsafe agent-local path"
+        else:
+            auth.write_text("synthetic-unadopted-login\n")
+            auth.chmod(0o600)
+            diagnostic = b"codex-state adopt"
+        original_auth = auth.read_bytes()
+        policy = instance.policy.read_bytes()
+        with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]) as (process, master, until):
+            until(b"Run this setup and share this workspace?")
+            os.write(master, b"y\n")
+            output = until(b"First-agent host setup failed", timeout=30)
+            assert diagnostic in output
+            assert original_auth not in output
+            assert b"Copy this selected host authentication" not in output
+            assert b"Starting or reusing the installed services" not in output
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+        assert instance.policy.read_bytes() == policy
+        assert config.read_bytes() == original_config
+        assert auth.read_bytes() == original_auth
+        assert auth.is_symlink() == (auth_state == "symlink")
+        if auth_state == "unadopted":
+            assert json.loads((codex / ".safeyolo-provenance.json").read_text())["state"] == "legacy-unknown"
+        assert not (instance.root / "data/coord/nats/process.json").exists()
+        assert instance.process.poll() is None
 
 
 CREDENTIAL_RETRY_POLICY = '''budget=12000
