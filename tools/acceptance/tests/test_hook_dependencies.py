@@ -1,7 +1,11 @@
 """Run with the frozen root development Python; the wheel test reads PyPI."""
 
+import base64
+import csv
+import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -27,6 +31,101 @@ class HookDependencies(unittest.TestCase):
             timeout=10,
             check=False,
         )
+
+    def test_seeded_launchers_execute_destination_paths_literally(self):
+        # GHSA-c978-59m8-c77v: execute the sh/Python wrapper, not just activation.
+        names = (
+            "space $(touch injected-dollar)`touch injected-backtick`",
+            "x" * 140 + "$(touch${IFS}injected-dollar)`touch${IFS}injected-backtick`",
+            "space 'quoted\" back\\slash",
+        )
+        for seeder in ("app-data", "pip"):
+            for name in names:
+                with self.subTest(seeder=seeder, name=name), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    folder = root / name
+                    session = virtualenv.cli_run([
+                        "--no-download", "--no-periodic-update", "--seeder", seeder,
+                        "--app-data", str(root / "app-data"), str(folder),
+                    ])
+                    markers = [root / "injected-dollar", root / "injected-backtick"]
+                    self.assertFalse(any(marker.exists() for marker in markers))
+                    launcher = folder / "bin/pip"
+                    self.assertTrue(launcher.read_bytes().startswith(b"#!/bin/sh\n"))
+                    result = subprocess.run(
+                        [str(launcher), "--version"], cwd=root, capture_output=True,
+                        text=True, timeout=20, check=False,
+                    )
+                    self.assertFalse(any(marker.exists() for marker in markers))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"from {folder}/", result.stdout)
+                    if seeder == "pip":
+                        # Rewriting a pip-seeded launcher must update its RECORD.
+                        record = next(session.creator.purelib.glob("pip-*.dist-info/RECORD"))
+                        with record.open(newline="") as stream:
+                            row = next(row for row in csv.reader(stream) if row[0] == "../../../bin/pip")
+                        content = launcher.read_bytes()
+                        digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+                        self.assertEqual(row[1:], [f"sha256={digest}", str(len(content))])
+
+    @unittest.skipIf(os.getuid() == 0, "failed deletion must run as an ordinary user")
+    def test_failed_symlink_deletion_preserves_external_target(self):
+        # GHSA-43mp-35q3-x3fq: a read-only parent causes a real unlink failure.
+        for clear in (False, True):
+            for mode in (0o700, 0o500):
+                with self.subTest(clear=clear, mode=oct(mode)), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    target = root / "private-key"
+                    target.write_bytes(b"private fixture")
+                    target.chmod(0o400)
+                    folder = root / "venv"
+                    blocked = folder / "bin/python"
+                    blocked.mkdir(parents=True)
+                    (blocked / "entry").symlink_to(target)
+                    blocked.chmod(mode)
+                    args = ["--no-seed", "--no-periodic-update", str(folder)]
+                    if clear:
+                        args.insert(0, "--clear")
+                    try:
+                        if mode == 0o500:
+                            with self.assertRaises(PermissionError):
+                                virtualenv.cli_run(args)
+                            self.assertTrue((blocked / "entry").is_symlink())
+                        else:
+                            virtualenv.cli_run(args)
+                    finally:
+                        if blocked.is_dir():
+                            blocked.chmod(0o700)  # Restore only the owned fixture for cleanup.
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o400)
+                    self.assertEqual(target.read_bytes(), b"private fixture")
+
+    def test_prepared_directory_links_do_not_redirect_creation(self):
+        # GHSA-cw65-gx24-rc82: include both executable and library parents.
+        library = f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+        for seeder in ("app-data", "pip"):
+            for directory in ("bin", "lib", library):
+                with self.subTest(seeder=seeder, directory=directory), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    outside = root / "outside"
+                    outside.mkdir(mode=0o750)
+                    target = outside / ("activate" if directory == "bin" else "_virtualenv.py")
+                    target.write_bytes(b"external fixture")
+                    target.chmod(0o640)
+                    folder = root / "venv"
+                    link = folder / directory
+                    link.parent.mkdir(parents=True)
+                    link.symlink_to(outside, target_is_directory=True)
+                    directory_mode = stat.S_IMODE(outside.stat().st_mode)
+                    virtualenv.cli_run([
+                        "--no-download", "--no-periodic-update", "--seeder", seeder,
+                        "--app-data", str(root / "app-data"), str(folder),
+                    ])
+                    self.assertFalse(link.is_symlink())
+                    self.assertTrue(link.resolve().is_relative_to(folder))
+                    self.assertEqual(list(outside.iterdir()), [target])
+                    self.assertEqual(target.read_bytes(), b"external fixture")
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+                    self.assertEqual(stat.S_IMODE(outside.stat().st_mode), directory_mode)
 
     def test_placeholder_in_path_is_not_substituted_again(self):
         # GHSA-8rjx-v5ww-45pp: a later replacement must not rewrite quoted input.
