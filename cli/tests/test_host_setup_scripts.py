@@ -3109,18 +3109,19 @@ def _stage_claude(tmp_path: Path, wrapper: str):
     return agent_home, fake_bin
 
 
-def test_claude_repair_installs_an_explicitly_resolved_remote_version(
-    tmp_path: Path,
+@pytest.mark.parametrize("broken_install", [False, True])
+@pytest.mark.parametrize("remote_version", ["9.9.9", ""])
+def test_claude_install_or_repair_reuses_its_remote_version_lookup(
+    tmp_path: Path, broken_install: bool, remote_version: str,
 ) -> None:
-    """Parity with the Codex path, and the reason it needed its own test.
-
-    The pre-existing Claude fixture's mise stub predated `latest`, so the
-    script fell through to the `@latest` fallback and the test passed without
-    ever exercising remote resolution.
-    """
+    """Resolve once for install and notice; retain fallback after a failed lookup."""
     agent_home, fake_bin = _stage_claude(tmp_path, _BROKEN_CLAUDE)
     env = _claude_command_env(agent_home, fake_bin, tmp_path)
-    Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")  # stale build
+    env["TEST_REMOTE_VERSION"] = remote_version
+    if broken_install:
+        Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")  # stale build
+    else:
+        (fake_bin / "claude").unlink()
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
@@ -3131,15 +3132,15 @@ def test_claude_repair_installs_an_explicitly_resolved_remote_version(
     assert result.returncode == 0, result.stderr
 
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert any(c.startswith("latest npm:@anthropic-ai/claude-code") and "--installed" not in c for c in calls), (
-        f"never resolved a remote version: {calls}"
-    )
-    assert any("use -g --force npm:@anthropic-ai/claude-code@9.9.9" in c for c in calls), (
-        f"did not install the resolved version by exact value: {calls}"
-    )
-    assert not any(c.startswith("use") and c.endswith("claude-code@latest") for c in calls), (
-        f"fell back to @latest: {calls}"
-    )
+    remote_calls = [c for c in calls if c.startswith("latest npm:@anthropic-ai/claude-code")]
+    if remote_version:
+        assert len(remote_calls) == 1, calls
+        assert "use -g --force npm:@anthropic-ai/claude-code@9.9.9" in calls
+        assert not any(c.startswith("use") and c.endswith("claude-code@latest") for c in calls)
+    else:
+        assert len(remote_calls) == 2, calls
+        assert "use -g npm:@anthropic-ai/claude-code@latest" in calls
+        assert "could not resolve a remote version" in result.stderr
     assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
 
 
@@ -3159,6 +3160,7 @@ def test_claude_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> Non
     assert "9.9.9 is available" in result.stderr, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert not any(c.startswith("use ") for c in calls), f"a healthy install was upgraded: {calls}"
+    assert calls.count("latest npm:@anthropic-ai/claude-code") == 1
 
 
 @pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh", "claude-host-setup.sh"])
