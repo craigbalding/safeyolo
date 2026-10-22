@@ -29,7 +29,10 @@ def test_sudo_shim_selects_helper_and_preserves_arguments(
             '[ "$1" = --reuid=0 ] && [ "$2" = --regid=0 ] && '
             '[ "$3" = --clear-groups ] || exit 92\n'
             '[ "$TEST_CAN_CHANGE_UID" = 1 ] || exit 1\n'
-            'shift 3\nexec "$@"\n'
+            'shift 3\n'
+            # The probe names a Linux guest executable, absent on macOS.
+            'if [ "$#" = 1 ] && [ "$1" = /bin/true ]; then exit 0; fi\n'
+            'exec "$@"\n'
         )
         helper.chmod(0o755)
     source = (GUEST_DIR / "rootfs/safeyolo-sudo").read_text()
