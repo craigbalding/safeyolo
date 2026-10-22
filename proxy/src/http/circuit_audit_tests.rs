@@ -185,6 +185,13 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
             json!([
                 "circuit-breaker",
@@ -200,6 +207,10 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "blocked"]),
+            json!(["credential-guard", "request", "bypassed", "prior_response"]),
+            json!(["service-gateway", "request", "bypassed", "prior_response"]),
+            json!(["pattern-scanner", "request", "bypassed", "prior_response"]),
+            json!(["test-context", "request", "bypassed", "prior_response"]),
             json!(["circuit-breaker", "response", "evaluated", "prior_block"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]
@@ -323,6 +334,13 @@ async fn early_response_open_omits_unreached_source_correlation() {
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
+            json!([
                 "circuit-breaker",
                 "response",
                 "evaluated",
@@ -391,6 +409,13 @@ async fn synchronous_response_audit_error_preserves_partial_state_and_skips_chil
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
             json!(["circuit-breaker", "response", "error", "AuditError"]),
         ]
