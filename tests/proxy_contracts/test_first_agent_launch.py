@@ -282,12 +282,19 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
 
 def test_unsupported_launch_harness_is_rejected_before_instance_mutation(tmp_path):
     artifacts, _, _ = native_inputs()
-    root = tmp_path / "absent-instance"
+    root = tmp_path / "installed"
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+                                 capture_output=True, text=True, timeout=15)
+    assert initialized.returncode == 0, initialized.stderr
+    saved = {name: (root / name).read_bytes() for name in ("policy.toml", "config.toml")}
     result = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "agent", "launch", "--harness", "unknown"],
                             capture_output=True, text=True, timeout=15)
     assert result.returncode != 0
     assert "available: claude, codex" in result.stderr
-    assert not root.exists()
+    assert {name: (root / name).read_bytes() for name in saved} == saved
+    assert not (root / "agents").exists()
+    assert not (root / "data/proxy-process.json").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
 
 
 @pytest.mark.parametrize("auth_state", ["unadopted", "symlink"])
