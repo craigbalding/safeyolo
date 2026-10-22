@@ -332,8 +332,14 @@ async fn acquire(
         )
         .await?;
     let child = index.validate_child(package.platform, &bytes)?;
-    let config = blob(client, &pinned, &child.config, store).await?;
-    child.validate_config(&fs::read(config)?)?;
+    // Match publish_guest_oci.sh's exact bytes, not a canonical JSON encoding.
+    // Only a full descriptor/platform match avoids the serial config request.
+    let (os, architecture) = child.platform.os_architecture();
+    let published_config = format!(r#"{{"os":"{os}","architecture":"{architecture}"}}"#);
+    if child.validate_config(published_config.as_bytes()).is_err() {
+        let config = blob(client, &pinned, &child.config, store).await?;
+        child.validate_config(&fs::read(config)?)?;
+    }
     let trees = store.join("trees/sha256");
     fs::create_dir_all(&trees)?;
     let retained = retained.filter(|selected| selected.archive.digest == child.archive.digest);

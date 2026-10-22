@@ -307,6 +307,15 @@ def test_actual_oras_local_release_and_no_registry_writes(tmp_path, artifacts, p
     assert {(child["platform"]["os"], child["platform"]["architecture"]) for child in index["manifests"]} == {
         ("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"),
     }
+    blobs = tmp_path / "layout-guest-2026-10-12.1/blobs/sha256"
+    for descriptor in index["manifests"]:
+        child = json.loads((blobs / descriptor["digest"].removeprefix("sha256:")).read_bytes())
+        config = (blobs / child["config"]["digest"].removeprefix("sha256:")).read_bytes()
+        platform = descriptor["platform"]
+        assert config == json.dumps({"os": platform["os"], "architecture": platform["architecture"]},
+                                    separators=(",", ":")).encode()
+        assert child["config"]["size"] == len(config)
+        assert child["config"]["digest"] == "sha256:" + hashlib.sha256(config).hexdigest()
     assert not registry[4]
 
 
