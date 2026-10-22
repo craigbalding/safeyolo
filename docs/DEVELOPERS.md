@@ -1112,7 +1112,9 @@ Expected result: both test runs pass. The controls exercise JSON Web Token
 (JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
 HTTPS proxy certificate policy, chunked response parsing, virtualenv
 configuration, repeated activation-template substitution, fish quoting, zsh
-prompt substitution and Bash prompt decoding and expansion. HTTP fixtures
+prompt substitution and Bash prompt decoding and expansion. They also exercise
+OpenTelemetry propagation limits, whitespace parsing and Semgrep trace/log
+export with requests and threading instrumentation. HTTP fixtures
 listen on disposable loopback ports and close after each test. The seed-wheel
 test downloads the pip version in the acceptance lockfile from the default index, verifies its
 published PyPI digest, and checks rejection after altering the downloaded

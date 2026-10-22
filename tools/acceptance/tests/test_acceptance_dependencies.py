@@ -6,6 +6,8 @@ import hmac
 import ipaddress
 import json
 import ssl
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -40,6 +42,10 @@ def http_responses(responses, tls_context=None):
                 self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.do_GET()
 
         def log_message(self, *_args):
             pass  # Fixture traffic is checked by the caller, not written to stderr.
@@ -193,6 +199,90 @@ class JWTDependencies(unittest.TestCase):
             subject="client",
         )
         self.assertIn("jti", claims)
+
+
+class OpenTelemetryDependencies(unittest.TestCase):
+    def test_propagation_preserves_valid_context_and_bounds_combined_headers(self):
+        from opentelemetry import propagate, trace
+
+        parent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+        def extract(state):
+            return trace.get_current_span(propagate.extract({"traceparent": parent, "tracestate": state})).get_span_context()
+
+        valid = extract(["vendor=value, other=second"])
+        self.assertTrue(valid.is_remote)
+        self.assertEqual(valid.trace_id, int(parent.split("-")[1], 16))
+        self.assertEqual(valid.span_id, int(parent.split("-")[2], 16))
+        self.assertEqual(dict(valid.trace_state), {"vendor": "value", "other": "second"})
+        for state in (["vendor=first", "vendor=second"], ["bad key=value"]):
+            with self.subTest(state=state):
+                self.assertEqual(len(extract(state).trace_state), 0)
+
+        # The upstream fix counts comma separators between header fields.
+        headers = [f"k{index}=" + "v" * 250 for index in range(32)]
+        headers[-1] += " " * (8192 - sum(map(len, headers)) - len(headers) + 1)
+        self.assertEqual(len(extract(headers).trace_state), 32)
+        headers[-1] += " "
+        self.assertEqual(len(extract(headers).trace_state), 0)
+
+    def test_whitespace_attack_finishes_without_quadratic_parsing(self):
+        # A subprocess deadline also bounds a regression to the vulnerable parser.
+        probe = """
+import logging
+from opentelemetry import propagate, trace
+from opentelemetry.trace import TraceState
+
+logging.disable(logging.CRITICAL)
+parent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+for whitespace in (" ", "\\t"):
+    state = "vendor=value" + whitespace * 200_000 + "x"
+    assert len(TraceState.from_header([state])) == 0
+    context = propagate.extract({"traceparent": parent, "tracestate": state})
+    span = trace.get_current_span(context).get_span_context()
+    assert span.is_valid and len(span.trace_state) == 0
+"""
+        run = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=5)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_semgrep_tracing_exports_and_preserves_parent_across_threads(self):
+        # Semgrep configures global providers and instrumentation. Isolate them.
+        probe = """
+import logging
+import os
+import sys
+import threading
+import requests
+from opentelemetry import trace
+from opentelemetry._logs import get_logger_provider
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.threading import ThreadingInstrumentor
+from semgrep.telemetry import Telemetry, TRACER
+
+parent = "0af7651916cd43dd8448eb211c80319c"
+os.environ["SEMGREP_TRACE_PARENT_TRACE_ID"] = parent
+os.environ["SEMGREP_TRACE_PARENT_SPAN_ID"] = "b7ad6b7169203331"
+Telemetry().configure(True, sys.argv[1])
+assert RequestsInstrumentor().is_instrumented_by_opentelemetry
+assert ThreadingInstrumentor().is_instrumented_by_opentelemetry
+observed = []
+with TRACER.start_as_current_span("dependency-control"):
+    thread = threading.Thread(target=lambda: observed.append(trace.get_current_span().get_span_context().trace_id))
+    thread.start()
+    thread.join(timeout=2)
+    assert observed == [int(parent, 16)]
+    response = requests.get(sys.argv[1] + "/input", timeout=2)
+    assert response.status_code == 200
+    logging.getLogger("semgrep.telemetry").warning("dependency-control")
+assert trace.get_tracer_provider().force_flush(timeout_millis=2000)
+assert get_logger_provider().force_flush(timeout_millis=2000)
+trace.get_tracer_provider().shutdown()
+get_logger_provider().shutdown()
+"""
+        with http_responses({"/": (200, {}, b"")}) as (url, paths):
+            run = subprocess.run([sys.executable, "-I", "-c", probe, url], capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue({"/input", "/v1/traces", "/v1/logs"} <= set(paths), paths)
 
 
 class NetworkDependencies(unittest.TestCase):
