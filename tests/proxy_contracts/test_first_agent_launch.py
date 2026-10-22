@@ -219,7 +219,10 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             command_bytes = command.read_bytes()
             home = command.parent
             if harness == "codex":
-                assert command_bytes == (REPO / "contrib/codex-command.sh").read_bytes()
+                # Boot staging wraps the generated command with the existing
+                # guest observer; Codex remains the unchanged payload.
+                payload = home / ".safeyolo-command.payload"
+                assert payload.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
                 config = home / ".codex/config.toml"
                 document = tomlkit.parse(config.read_text())
                 document["model"] = "operator-selected-model"
@@ -257,6 +260,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             assert command.read_bytes() == command_bytes
             if harness == "codex":
                 assert {path: path.read_bytes() for path in selected_state} == selected_state
+                assert payload.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
             # Explicit repair uses the existing TOML writer. Whitespace can
             # change, while every saved policy choice and agent field stays.
             assert tomllib.loads(instance.policy.read_text()) == tomllib.loads(policy_bytes.decode())
@@ -300,6 +304,7 @@ def test_unsupported_launch_harness_is_rejected_before_instance_mutation(tmp_pat
 @pytest.mark.parametrize("auth_state", ["unadopted", "symlink"])
 def test_codex_launch_keeps_selected_authentication_on_setup_refusal(tmp_path, auth_state):
     with native_instance(tmp_path) as instance:
+        instance.environment.update(PATH=f"{instance.root / 'bin'}:/usr/bin:/bin", TERM="xterm-256color")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         home = instance.root / "agents/first/home"
@@ -327,6 +332,7 @@ def test_codex_launch_keeps_selected_authentication_on_setup_refusal(tmp_path, a
             os.write(master, b"y\n")
             output = until(b"First-agent host setup failed", timeout=30)
             assert diagnostic in output
+            assert original_auth not in output
             assert b"Copy this selected host authentication" not in output
             assert b"Starting or reusing the installed services" not in output
             assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
@@ -334,6 +340,8 @@ def test_codex_launch_keeps_selected_authentication_on_setup_refusal(tmp_path, a
         assert config.read_bytes() == original_config
         assert auth.read_bytes() == original_auth
         assert auth.is_symlink() == (auth_state == "symlink")
+        if auth_state == "unadopted":
+            assert json.loads((codex / ".safeyolo-provenance.json").read_text())["state"] == "legacy-unknown"
         assert not (instance.root / "data/coord/nats/process.json").exists()
         assert instance.process.poll() is None
 
