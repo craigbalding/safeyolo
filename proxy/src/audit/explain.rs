@@ -2,7 +2,7 @@
 //! File order, per-file tail and read/freshness failures follow AgentAPI.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt,
     fs::{self, File},
     io::{Read, Write},
@@ -12,7 +12,7 @@ use std::{
 
 use num_bigint::BigInt;
 use serde_json::{Value, json};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{Writer, wipe, writer};
 use crate::{circuits::CircuitValue, policy::python_whitespace};
@@ -81,7 +81,16 @@ pub(super) fn explain(
     });
     let files = retained(current, backups)?;
     let mut scan = scan_scoped(&files, request_id, Some(agent))?;
-    let status = if scan.read_error {
+    if !scan.related_ids.is_empty() {
+        let ids = std::iter::once(request_id)
+            .chain(scan.related_ids.iter().map(|id| id.as_str()))
+            .collect::<HashSet<_>>();
+        let mut linked = scan_requests(&files, &ids, Some(agent), None)?;
+        linked.read_error |= scan.read_error;
+        linked.incomplete |= scan.incomplete;
+        scan = linked;
+    }
+    let status = if scan.read_error || freshness.is_err() {
         "error"
     } else if pending {
         "pending"
@@ -161,18 +170,37 @@ struct Scan {
     events: CircuitValue,
     incomplete: bool,
     read_error: bool,
+    related_ids: HashSet<String>,
 }
 impl Drop for Scan {
     fn drop(&mut self) {
         wipe(&mut self.events);
+        for mut id in self.related_ids.drain() {
+            id.zeroize();
+        }
     }
 }
 
 fn scan_scoped(files: &[PathBuf], request_id: &str, agent: Option<&str>) -> Result<Scan> {
+    scan_requests(
+        files,
+        &HashSet::from([request_id]),
+        agent,
+        agent.map(|_| request_id),
+    )
+}
+
+fn scan_requests(
+    files: &[PathBuf],
+    request_ids: &HashSet<&str>,
+    agent: Option<&str>,
+    find_connect_links: Option<&str>,
+) -> Result<Scan> {
     let mut result = Scan {
         events: CircuitValue::Array(Vec::new()),
         incomplete: false,
         read_error: false,
+        related_ids: HashSet::new(),
     };
     for path in files {
         let (lines, incomplete) = match tail_file(path) {
@@ -211,9 +239,30 @@ fn scan_scoped(files: &[PathBuf], request_id: &str, agent: Option<&str>) -> Resu
                 return Err(ExplainError(ExplainErrorKind::Attribute));
             };
             let matches = |key, expected: &str| matches!(object.get(key), Some(CircuitValue::Other(Value::String(value))) if value == expected);
-            if matches("request_id", request_id)
-                && agent.is_none_or(|agent| matches("agent", agent))
+            let owned = agent.is_none_or(|agent| matches("agent", agent));
+            if owned
+                && let Some(query) = find_connect_links
+                && matches("event", "traffic.connect_request")
+                && let Some(details) = object.get("details").and_then(CircuitValue::as_object)
+                && let Some(CircuitValue::Other(Value::String(parent))) =
+                    details.get("connect_request_id")
+                && let Some(CircuitValue::Other(Value::String(child))) = object.get("request_id")
             {
+                let related = if child == query {
+                    Some(parent)
+                } else if parent == query {
+                    Some(child)
+                } else {
+                    None
+                };
+                if let Some(related) = related {
+                    result.related_ids.insert(related.clone());
+                }
+            }
+            let selected = object.get("request_id").is_some_and(|id| {
+                matches!(id, CircuitValue::Other(Value::String(id)) if request_ids.contains(id.as_str()))
+            });
+            if owned && selected {
                 let CircuitValue::Array(events) = &mut result.events else {
                     unreachable!()
                 };

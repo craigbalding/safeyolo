@@ -567,7 +567,7 @@ class TestGuestPrivilegeBoundary:
         """Agent process runs as uid 1000.
 
         What: os.getuid() == 1000.
-        Why: The attribution chain (service_discovery, bind-mount
+        Why: The attribution chain (listener ownership, bind-mount
         ownership, userns mapping) all assume uid 1000 inside the
         sandbox. A different uid means ownership mismatches and
         identity confusion.

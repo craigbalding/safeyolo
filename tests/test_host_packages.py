@@ -28,6 +28,24 @@ def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
 
+@pytest.fixture
+def musl_runtime(tmp_path, monkeypatch):
+    """Control libc detection; compiled fixtures still use the test host's libc."""
+    tools = tmp_path / "musl-runtime-tools"
+    tools.mkdir()
+    (tools / "getconf").write_text("#!/bin/sh\nexit 1\n")
+    ldd = shutil.which("ldd")
+    (tools / "ldd").write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then\n'
+        "printf 'musl libc (test architecture)\\nVersion 1.2.5\\n' >&2\nexit 1\nfi\n"
+        f"exec {shlex.quote(ldd)} \"$@\"\n",
+    )
+    for path in tools.iterdir():
+        path.chmod(0o755)
+    monkeypatch.setenv("PATH", f'{tools}:{os.environ["PATH"]}')
+    return tools
+
+
 @pytest.fixture(params=["gnu", "mac-short-options", "shasum"])
 def checksum_bundle(tmp_path, monkeypatch, request):
     """Run real checksum tools and installers without compiling test binaries."""
@@ -570,6 +588,61 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"
     assert fields["guest_discovery_tag"] == "compat-v1"
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_inputs, musl_runtime, tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    result = run(*package_inputs[4], "--output", str(output))
+    assert result.returncode == 0, result.stderr
+    archive, = output.glob("*.tar.gz")
+    assert archive.name.endswith("-musl-production.tar.gz")
+    with tarfile.open(archive) as stream:
+        metadata = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/package-info").read().decode()
+        fields = dict(line.split("=", 1) for line in metadata.splitlines())
+    assert fields["libc"] == "musl"
+    assert fields["minimum_runtime"] == "1.2.5"
+    assert fields["platform"] == ("linux-amd64" if os.uname().machine == "x86_64" else "linux-arm64")
+    assert fields["guest_discovery_tag"] == "compat-v1"
+    assert fields["source_commit"] == package_inputs[5]
+    # The shell producer checked this committed fixture. Bind its archive to
+    # the Python receipt writer without compiling or consulting live Actions.
+    monkeypatch.setattr(builder, "ROOT", package_inputs[0])
+    monkeypatch.setattr(builder, "commit", lambda: package_inputs[5])
+    monkeypatch.setattr(builder, "actions_producer", lambda: {"run_id": 1})
+    builder.save_production(output)
+    receipt = json.loads((output / "build.json").read_text())
+    assert receipt["archive"]["name"] == archive.name
+    assert receipt["archive"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert receipt["source_revision"] == fields["source_commit"]
+
+
+@pytest.mark.parametrize("libc,minimum,diagnosis", [
+    ("glibc", "2.31", "package requires glibc; this host uses musl"),
+    ("musl", "9.0", "requires musl 9.0"),
+    ("unknown", "1.2.5", "invalid package libc"),
+])
+def test_libc_refusal_precedes_installation(package_inputs, tmp_path, request, libc, minimum, diagnosis):
+    bundle = build_bundle(package_inputs, tmp_path)
+    metadata = bundle / "package-info"
+    fields = dict(line.split("=", 1) for line in metadata.read_text().splitlines())
+    fields.update(libc=libc, minimum_runtime=minimum)
+    metadata.write_text("".join(f"{key}={value}\n" for key, value in fields.items()))
+    request.getfixturevalue("musl_runtime")
+    root = tmp_path / "refused"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    assert result.returncode != 0 and diagnosis in result.stderr
+    assert not root.exists()
+
+
+def test_musl_package_is_refused_on_glibc_before_installation(package_inputs, tmp_path):
+    bundle = build_bundle(package_inputs, tmp_path)
+    metadata = bundle / "package-info"
+    metadata.write_text(metadata.read_text() + "libc=musl\n")
+    root = tmp_path / "refused"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    assert result.returncode != 0 and "package requires musl; this host uses glibc" in result.stderr
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "architecture", "unlisted", "empty-metadata", "missing-metadata"])

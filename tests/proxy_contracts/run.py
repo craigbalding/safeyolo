@@ -87,7 +87,7 @@ def runtime_resources(proxy):
 
 def proxy_identity(proxy):
     """Capture exact child/config identities while the selected process lives."""
-    config_path = proxy.event_log.parent / "proxy.json"
+    config_path = proxy.audit_log.parent / "proxy.json"
     config_bytes = config_path.read_bytes()
     binary_path = Path(f"/proc/{proxy.process.pid}/exe")
     identity = {
@@ -230,12 +230,12 @@ def short_https_connections(backend, directory, count):
         request_events = []
         all_request_events = []
         while time.monotonic() < event_deadline:
-            all_request_events = [event for event in read_events(proxy.event_log)
-                                  if event.get("event") == "proxy.request"]
+            all_request_events = [event for event in read_events(proxy.audit_log)
+                                  if event.get("event") == "traffic.request_outcome"]
             # Native records CONNECT admission and the decrypted application
             # request separately. Count the application requests at the origin.
             request_events = [event for event in all_request_events
-                              if event.get("coverage") != "native_network_guard_only"]
+                              if event.get("details", {}).get("coverage") != "native_network_guard_only"]
             if len(request_events) >= expected_total:
                 break
             time.sleep(0.01)
@@ -261,7 +261,7 @@ def short_https_connections(backend, directory, count):
                     "proxy_request_events": len(request_events),
                     "proxy_events_total": len(all_request_events),
                     "connect_events": len(all_request_events) - len(request_events),
-                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                    "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
                 },
             },
             "resource_samples": resource_samples,
@@ -274,7 +274,7 @@ def short_https_connections(backend, directory, count):
                 "request_events": len(request_events),
                 "proxy_events_total": len(all_request_events),
                 "connect_events": len(all_request_events) - len(request_events),
-                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
             },
             "proxy_identity": proxy_identity(proxy),
             "limitation": "sequential fresh HTTP/1.1-over-TLS requests and one control request; no concurrent or long-duration claim",
@@ -341,8 +341,8 @@ def concurrent_short_admin_workload(
         assert not warmup_failures, warmup_failures
         warmup_latencies = [outcome["latency_ms"] for outcome in warmup_outcomes]
         warmup_request_events = len([
-            event for event in read_events(proxy.event_log)
-            if event.get("event") == "proxy.request"
+            event for event in read_events(proxy.audit_log)
+            if event.get("event") == "traffic.request_outcome"
         ])
         warmup_origin_accepts = origin.accepts
         quiet_before = runtime_resources(proxy)
@@ -351,8 +351,8 @@ def concurrent_short_admin_workload(
         quiet_after = runtime_resources(proxy)
         quiet_elapsed = time.perf_counter() - quiet_started
         quiet_request_events = len([
-            event for event in read_events(proxy.event_log)
-            if event.get("event") == "proxy.request"
+            event for event in read_events(proxy.audit_log)
+            if event.get("event") == "traffic.request_outcome"
         ])
         quiet_origin_connections_after = origin.accepts
         quiet_proxy_request_events_after = quiet_request_events
@@ -475,8 +475,8 @@ def concurrent_short_admin_workload(
         expected_requests = warmup + measured_requests
         assert origin.accepts == expected_requests
         assert len(origin.requests) == expected_requests
-        request_events = [event for event in read_events(proxy.event_log)
-                          if event.get("event") == "proxy.request"]
+        request_events = [event for event in read_events(proxy.audit_log)
+                          if event.get("event") == "traffic.request_outcome"]
         assert len(request_events) == expected_requests
         return {
             "workload": "repeated_concurrent_short_http_admin",
@@ -525,7 +525,7 @@ def concurrent_short_admin_workload(
                     "expected": expected_requests,
                     "origin_connections": origin.accepts,
                     "proxy_request_events": len(request_events),
-                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                    "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
                 },
             },
             "batches_result": batches_result,
@@ -536,7 +536,7 @@ def concurrent_short_admin_workload(
             },
             "proxy_observation": {
                 "request_events": len(request_events),
-                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                "error_responses": sum(int(event["details"]["status"]) >= 400 for event in request_events),
             },
             "proxy_identity": proxy_identity(proxy),
             "limitation": (
@@ -768,9 +768,9 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
             assert origin.stream_first_flush_at <= first_received_at < release_at
             assert control_completed_at < release_at and admin_completed_at < release_at
             assert release_at <= origin.stream_release_seen_at <= origin.stream_finished_at
-            request_events = [event for event in read_events(proxy.event_log)
-                              if event.get("event") == "proxy.request"]
-            error_events = [event for event in request_events if int(event.get("status", 200)) >= 400]
+            request_events = [event for event in read_events(proxy.audit_log)
+                              if event.get("event") == "traffic.request_outcome"]
+            error_events = [event for event in request_events if int(event["details"]["status"]) >= 400]
             assert origin.requests == [
                 {"method": "GET", "target": "/stream-slow"},
                 {"method": "GET", "target": "/control"},
@@ -891,8 +891,8 @@ def cancelled_sse_workload(backend, directory, seconds=4.0):
             event_deadline = time.monotonic() + 5
             request_events = []
             while time.monotonic() < event_deadline:
-                request_events = [event for event in read_events(proxy.event_log)
-                                  if event.get("event") == "proxy.request"]
+                request_events = [event for event in read_events(proxy.audit_log)
+                                  if event.get("event") == "traffic.request_outcome"]
                 if len(request_events) >= (2 if backend == "rust" else 1):
                     break
                 time.sleep(0.02)
@@ -994,7 +994,7 @@ def local_api_workload(backend, directory, count):
             statuses.append(status)
             assert status == 503
         elapsed = time.perf_counter() - started
-        assert proxy.events("proxy.egress") == []
+        assert proxy.events("traffic.egress") == []
         return {"workload": "local_api_unavailable_handler", "requests": count,
                 "elapsed_seconds": elapsed, "requests_per_second": count / elapsed,
                 "runtime_memory_after": runtime_memory(proxy),
@@ -1002,7 +1002,7 @@ def local_api_workload(backend, directory, count):
                 "control_observation": {
                     "response_statuses": statuses,
                     "proxy_alive_after_workload": proxy.process.poll() is None,
-                    "reserved_route_egress_events": proxy.events("proxy.egress"),
+                    "reserved_route_egress_events": proxy.events("traffic.egress"),
                 },
                 "proxy_identity": proxy_identity(proxy),
                 "limitation": "normal authenticated API and approval creation/consumption are not measured"}

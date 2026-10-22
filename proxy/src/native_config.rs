@@ -196,6 +196,12 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     let fields = value
         .as_object_mut()
         .ok_or("configuration must be a table")?;
+    // Ignore the retired diagnostic path in already-generated configurations.
+    // Historical files stay on disk; all new events use audit_log_path.
+    fields.shift_remove("event_log");
+    // Earlier init commands wrote this map path. Ignore it without reading
+    // the retired file; accepted listener configuration now owns identity.
+    fields.shift_remove("agent_map_file");
     for key in [
         "addons",
         "native_product",
@@ -268,7 +274,6 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         ("admin_api_token_file", "data/admin_token"),
         ("readiness_file", "data/ready.json"),
         ("audit_log_path", "logs/audit.jsonl"),
-        ("event_log", "logs/events.jsonl"),
         ("flow_store_db_path", "logs/flows.sqlite3"),
         ("circuit_state_file", "data/circuits.json"),
         ("gateway_builtin_services_dir", "builtin-services"),
@@ -284,14 +289,12 @@ pub fn read(path: &Path) -> Result<Config, Error> {
         "admin_api_token_file",
         "readiness_file",
         "audit_log_path",
-        "event_log",
         "flow_store_db_path",
         "circuit_state_file",
         "gateway_builtin_services_dir",
         "gateway_services_dir",
         "upstream_ca_file",
         "tls_ca_file",
-        "agent_map_file",
     ] {
         if let Some(value) = fields.get_mut(key) {
             resolve_path(value, root, key)?;
@@ -531,9 +534,9 @@ admin_api_token_file="state/operator-token"
 readiness_file="state/ready-marker.json"
 audit_log_path="records/security.jsonl"
 event_log="records/diagnostics.jsonl"
+agent_map_file="retired-map.json"
 circuit_state_file="state/circuit-state.json"
 reload_id="owned-reload"
-agent_map_file="state/agents.json"
 parent_proxy="http://127.0.0.1:18080"
 parent_proxy_agents=["alice"]
 parent_proxy_hosts=["Auth.Example.Test.", "bücher.example"]
@@ -612,10 +615,6 @@ tailnet_port=8443
         assert_eq!(config.listeners[0].source_id.as_deref(), Some("10.0.0.2"));
         assert_eq!(config.admin_port, Some(19090));
         assert_eq!(
-            config.agent_map_file,
-            directory.path().join("state/agents.json").to_str().unwrap()
-        );
-        assert_eq!(
             config.parent_proxy.as_deref(),
             Some("http://127.0.0.1:18080")
         );
@@ -643,10 +642,20 @@ tailnet_port=8443
             config.readiness_file,
             directory.path().join("state/ready-marker.json")
         );
-        assert_eq!(
-            config.event_log,
-            directory.path().join("records/diagnostics.jsonl")
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("event_log")
+                .is_none()
         );
+        assert!(!directory.path().join("records/diagnostics.jsonl").exists());
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("agent_map_file")
+                .is_none()
+        );
+        assert!(!directory.path().join("retired-map.json").exists());
         assert_eq!(config.reload_id.as_deref(), Some("owned-reload"));
         assert!(
             !config.agent_api_enabled && !config.sse_streaming_enabled && config.sse_stream_json

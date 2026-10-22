@@ -180,6 +180,38 @@ impl Fixture {
     fn url(&self) -> String {
         format!("http://{}{}", self.destination(), self.path)
     }
+    async fn pending_approval(
+        &self,
+        agent: &host_agents::Agent,
+    ) -> Result<Option<(String, Value)>, Error> {
+        let root = host_platform::config_dir();
+        let pending = operator_commands::pending(&root, Some(&agent.name)).await?;
+        let Some(approval) = pending["approvals"]
+            .as_array()
+            .ok_or("pending approvals are unavailable")?
+            .iter()
+            .find(|entry| {
+                entry["target"] == "127.0.0.1"
+                    && entry["action"]["host"] == "127.0.0.1"
+                    && entry["action"]["port"] == self.port
+                    && entry["action"]["agent_id"] == agent.id
+            })
+        else {
+            return Ok(None);
+        };
+        let id = approval["request_id"]
+            .as_str()
+            .ok_or("pending request ID is unavailable")?
+            .to_owned();
+        let view = operator_commands::approval(&root, &id, Some(&agent.name)).await?;
+        if view["action"]["host"] != "127.0.0.1"
+            || view["action"]["port"] != self.port
+            || view["action"]["agent_id"] != agent.id
+        {
+            return Err("approval action does not match the owned fixture".into());
+        }
+        Ok(Some((id, view)))
+    }
     fn delivered(&self) -> Result<Vec<Value>, Error> {
         Ok(self
             .records
@@ -490,16 +522,23 @@ impl Demo {
             );
         }
         host_lifecycle::stop(&self.agent, Some(lock)).await?;
+        let lock_directory = directory.clone();
         let lock = tokio::task::spawn_blocking(move || {
-            host_lifecycle::SetupLock::acquire_in(&directory, None)
+            host_lifecycle::SetupLock::acquire_in(&lock_directory, None)
         })
         .await??;
+        host_agents::refresh(&self.agent)?;
         if crate::host_runs::observe(&self.agent.name).await["runtime_state"] != "stopped" {
             return Err("Demo guest stop is unverified; files were preserved".into());
         }
         let metadata = fs::symlink_metadata(&self.workspace)?;
         if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != self.workspace_identity {
             return Err("Demo workspace was replaced; its files were preserved".into());
+        }
+        #[cfg(target_os = "linux")]
+        if !self.keep && self.original.is_none() {
+            // DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md
+            crate::linux_host::remove_scheduler_spool(&directory).await?;
         }
         edit_policy(|document| {
             let agents = document["agents"]
@@ -820,45 +859,28 @@ async fn session(
                 );
             }
         }
-        if approval_id.is_none() {
-            let pending =
-                operator_commands::pending(&host_platform::config_dir(), Some(name)).await?;
-            if let Some(approval) = pending["approvals"]
-                .as_array()
-                .ok_or("pending approvals are unavailable")?
-                .iter()
-                .find(|entry| entry["target"] == fixture.destination())
-            {
-                let id = approval["request_id"]
-                    .as_str()
-                    .ok_or("pending request ID is unavailable")?
-                    .to_owned();
-                let view =
-                    operator_commands::approval(&host_platform::config_dir(), &id, Some(name))
-                        .await?;
-                if view["action"]["host"] != "127.0.0.1" || view["action"]["port"] != fixture.port {
-                    return Err("approval action does not match the owned fixture".into());
-                }
-                println!(
-                    "Observation: SafeYolo requires approval; the fixture has received zero requests.\n{}\nDemo removes this fixture permission during cleanup.",
-                    serde_json::to_string_pretty(&view)?
-                );
-                match operator_commands::flow(&host_platform::config_dir(), &id, Some(name)).await {
-                    Ok(flow) if flow["status"].as_u64().is_some() => println!(
-                        "Observation: traffic request {} returned HTTP {}.",
-                        safe(&id),
-                        flow["status"]
-                    ),
-                    Ok(_) => println!(
-                        "The saved traffic response is not available yet; the canonical approval is pending."
-                    ),
-                    Err(error) => println!(
-                        "Traffic detail is unavailable: {}. The canonical approval remains pending.",
-                        safe(&error.to_string())
-                    ),
-                }
-                approval_id = Some(id);
+        if approval_id.is_none()
+            && let Some((id, view)) = fixture.pending_approval(&demo.agent).await?
+        {
+            println!(
+                "Observation: SafeYolo requires approval; the fixture has received zero requests.\n{}\nDemo removes this fixture permission during cleanup.",
+                serde_json::to_string_pretty(&view)?
+            );
+            match operator_commands::flow(&host_platform::config_dir(), &id, Some(name)).await {
+                Ok(flow) if flow["status"].as_u64().is_some() => println!(
+                    "Observation: traffic request {} returned HTTP {}.",
+                    safe(&id),
+                    flow["status"]
+                ),
+                Ok(_) => println!(
+                    "The saved traffic response is not available yet; the canonical approval is pending."
+                ),
+                Err(error) => println!(
+                    "Traffic detail is unavailable: {}. The canonical approval remains pending.",
+                    safe(&error.to_string())
+                ),
             }
+            approval_id = Some(id);
         }
         if let Some(id) = &approval_id
             && !approved

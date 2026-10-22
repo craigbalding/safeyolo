@@ -8,7 +8,7 @@ Builds the artifacts SafeYolo needs to run agent sandboxes:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)
 - `out/initramfs.cpio.gz` — minimal initramfs (macOS only)
-- `out/rootfs-base.ext4` — Debian trixie rootfs image (macOS VZ mounts this as /dev/vda)
+- `out/rootfs-base.ext4` — Debian trixie base image (macOS VZ mounts this read-only as /dev/vda; runtime writes use a separate overlay)
 - `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; files are owned by uid 100000, the subuid-root for rootless userns)
 - `out/cache-paths.txt` — absolute in-rootfs paths SafeYolo bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
 - `out/build-base.txt` — the actual digest-pinned Debian manifest used for OCI publication provenance
@@ -323,11 +323,14 @@ Eliminating sudo entirely would require either a user-namespace chroot (rootless
 ## Troubleshooting
 
 **`mkfs.ext4: No space left on device`**
-Content exceeded the sized image. The script uses a fixed 2048 MiB ext4 (see
+During a build, check free space on the build host and whether the staged
+content fits the base image. The script defaults to a 2048 MiB ext4 (see
 `ROOTFS_SIZE_MB` in `build-rootfs.sh`); override it with
 `ROOTFS_SIZE_MB=4096 ./build-rootfs.sh` if you're staging a rootfs script that
 adds bulky packages. Alternatively, trim the customize-hook or the extras
 apt-installed at the top of `build-rootfs.sh`.
+This build setting does not size an agent's writable root overlay or its
+mounted home and workspace. See [runtime storage](../docs/microvm-architecture.md#persistence).
 
 **Lima VM won't start**
 ```bash

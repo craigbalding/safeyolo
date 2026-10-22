@@ -78,14 +78,8 @@ def circuit_parent():
 
 
 def circuit_audits(proxy, backend):
-    if backend == "python":
-        rows = read_events(proxy.event_log.parent / "audit.jsonl")
-        return [(row["event"], row) for row in rows if row["event"].startswith("ops.circuit_breaker.")
-                or row["event"] == "security.circuit_breaker"]
-    rows = read_events(proxy.event_log)
-    return [(row["audit_intent"], row) for row in rows if row.get("audit_intent", "").startswith(
-        "ops.circuit_breaker."
-    ) or row.get("audit_intent") == "security.circuit_breaker"]
+    return [(row["event"], row) for row in read_events(proxy.audit_log)
+            if row["event"].startswith("ops.circuit_breaker.") or row["event"] == "security.circuit_breaker"]
 
 
 def test_parent_failure_opens_only_its_host_and_half_open_probe_recovers(proxy_backend, tmp_path):
@@ -100,13 +94,13 @@ def test_parent_failure_opens_only_its_host_and_half_open_probe_recovers(proxy_b
             def hit(agent, host, path, expected, *, forwarded):
                 target = f"http://{host}/{path}"
                 before = (parent.accepts, len(parent.requests), len(parent.request_heads),
-                          len(proxy.events("proxy.egress")))
+                          len(proxy.events("traffic.egress")))
                 status, headers, body = send_request(
                     proxy.paths[agent], target,
                     headers={"X-Fixture-Canary": "circuit-failure-recovery"},
                 )
                 after = (parent.accepts, len(parent.requests), len(parent.request_heads),
-                         len(proxy.events("proxy.egress")))
+                         len(proxy.events("traffic.egress")))
                 assert status == expected, (target, status, body)
                 assert after == tuple(value + int(forwarded) for value in before)
                 if forwarded:
@@ -157,16 +151,16 @@ def test_parent_failure_opens_only_its_host_and_half_open_probe_recovers(proxy_b
             assert recovered["domains"][FAILING_HOST]["failure_count"] == 0
             assert recovered["half_opens_total"] == recovered["recoveries_total"] == 1
             assert (parent.accepts == len(parent.requests) == len(parent.request_heads)
-                    == len(proxy.events("proxy.egress")) == 6)
-            egress = proxy.events("proxy.egress")
+                    == len(proxy.events("traffic.egress")) == 6)
+            egress = proxy.events("traffic.egress")
             if proxy_backend == "rust":
-                assert all(row["route"] == "parent" and row["host"] in {FAILING_HOST, HEALTHY_HOST}
+                assert all(row["details"]["route"] == "parent" and row["host"] in {FAILING_HOST, HEALTHY_HOST}
                            for row in egress)
             else:
-                assert all((row["host"], row["port"]) == parent.server_address for row in egress)
-            requests = [row for row in proxy.events("proxy.request")
+                assert all((row["host"], row["details"]["port"]) == parent.server_address for row in egress)
+            requests = [row for row in proxy.events("traffic.request_outcome")
                         if row["host"] in {FAILING_HOST, HEALTHY_HOST}]
-            assert [(row["agent"], row["host"], row["status"], row["request_id"]) for row in requests] == [
+            assert [(row["agent"], row["host"], row["details"]["status"], row["request_id"]) for row in requests] == [
                 (item["agent"], urlsplit(item["target"]).hostname, item["status"], item["request_id"])
                 for item in observations
             ]

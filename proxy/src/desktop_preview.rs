@@ -4,8 +4,9 @@ use crate::Error;
 use percent_encoding::percent_decode_str;
 use serde_json::json;
 use std::{
+    collections::BTreeMap,
     net::Ipv4Addr,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, Weak},
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
@@ -72,6 +73,9 @@ pub(crate) struct Access {
     token: String,
     cookie_name: String,
     unlock: Mutex<Unlock>,
+    stop: watch::Sender<bool>,
+    connections: Arc<tokio::sync::Semaphore>,
+    named_host: bool,
 }
 
 impl Access {
@@ -96,7 +100,18 @@ impl Access {
 
     fn check_run(&self) -> std::io::Result<()> {
         self.check_target()?;
-        if self.run_id.is_none() || crate::host_runs::id(&self.agent).ok() != self.run_id {
+        let run = crate::host_runs::read(&self.agent).ok().flatten();
+        if self.run_id.is_none()
+            || crate::host_runs::id(&self.agent).ok() != self.run_id
+            || run.as_ref().is_none_or(|run| {
+                run["state"] == "stopped"
+                    || run["run_id"].as_str()
+                        != self
+                            .run_id
+                            .as_deref()
+                            .and_then(|id| id.strip_prefix("safeyolo-"))
+            })
+        {
             return Err(std::io::Error::other("preview run identity is unverified"));
         }
         Ok(())
@@ -106,22 +121,72 @@ impl Access {
 pub(crate) struct Preview {
     pub(crate) url: String,
     access: Arc<Access>,
-    stop: watch::Sender<bool>,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+    shared: Option<Arc<SharedListener>>,
     tailnet: Option<crate::tailnet::Session>,
     tailnet_port: Option<u16>,
     opened: bool,
 }
 
+type NamedPreviews = Arc<StdMutex<BTreeMap<String, Weak<Access>>>>;
+
+/// One explicitly opened loopback port, with a separate browser origin per agent.
+pub(crate) struct SharedListener {
+    port: u16,
+    routes: NamedPreviews,
+    stop: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+impl SharedListener {
+    async fn start(port: u16) -> Result<Self, Error> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+        let routes = NamedPreviews::default();
+        let (stop, receiver) = watch::channel(false);
+        let task = tokio::spawn(accept(listener, Target::Named(routes.clone()), receiver));
+        Ok(Self {
+            port,
+            routes,
+            stop,
+            task,
+        })
+    }
+}
+
+impl Drop for SharedListener {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+    }
+}
+
 impl Preview {
+    pub(crate) fn shared_listener(&self, port: u16) -> Option<Arc<SharedListener>> {
+        self.shared
+            .as_ref()
+            .filter(|listener| listener.port == port && !listener.task.is_finished())
+            .cloned()
+    }
+
     pub(crate) async fn start(
         agent: &str,
         agent_id: &str,
         host_port: u16,
         tailnet_port: Option<u16>,
+        shared: Option<Arc<SharedListener>>,
     ) -> Result<Self, Error> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, host_port)).await?;
-        let port = listener.local_addr()?.port();
+        let named_host = host_port != 0 && tailnet_port.is_none();
+        let (listener, shared, port) = if named_host {
+            let shared = match shared {
+                Some(shared) => shared,
+                None => Arc::new(SharedListener::start(host_port).await?),
+            };
+            (None, Some(shared), host_port)
+        } else {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, host_port)).await?;
+            let port = listener.local_addr()?.port();
+            (Some(listener), None, port)
+        };
+        let (stop, receiver) = watch::channel(false);
         let access = Arc::new(Access {
             agent: agent.to_owned(),
             agent_id: agent_id.to_owned(),
@@ -142,15 +207,30 @@ impl Preview {
             ),
             cookie_name: format!("safeyolo_preview_token_{}", tailnet_port.unwrap_or(port)),
             unlock: Mutex::new(Unlock::new()),
-        });
-        let (stop, receiver) = watch::channel(false);
-        let running_access = access.clone();
-        let task = tokio::spawn(async move { accept(listener, running_access, receiver).await });
-        let mut preview = Self {
-            url: format!("http://127.0.0.1:{port}/_safeyolo_desktop/"),
-            access,
             stop,
+            connections: Arc::new(tokio::sync::Semaphore::new(64)),
+            named_host,
+        });
+        let task = listener.map(|listener| {
+            tokio::spawn(accept(listener, Target::Single(access.clone()), receiver))
+        });
+        if let Some(shared) = &shared {
+            shared
+                .routes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(agent.to_owned(), Arc::downgrade(&access));
+        }
+        let host = if named_host {
+            format!("{agent}.localhost")
+        } else {
+            "127.0.0.1".into()
+        };
+        let mut preview = Self {
+            url: format!("http://{host}:{port}/_safeyolo_desktop/"),
+            access,
             task,
+            shared,
             tailnet: None,
             tailnet_port,
             opened: false,
@@ -181,7 +261,11 @@ impl Preview {
     }
 
     pub(crate) fn is_running(&mut self) -> bool {
-        !self.task.is_finished()
+        self.task.as_ref().is_none_or(|task| !task.is_finished())
+            && self
+                .shared
+                .as_ref()
+                .is_none_or(|listener| !listener.task.is_finished())
             && !self
                 .access
                 .check_target()
@@ -207,8 +291,19 @@ impl Preview {
     }
 
     pub(crate) async fn close(&mut self) {
-        let _ = self.stop.send(true);
-        let _ = (&mut self.task).await;
+        self.access.stop.send_replace(true);
+        if let Some(task) = &mut self.task {
+            let _ = task.await;
+        }
+        // A shared listener can keep serving other agents. Wait only for this
+        // route's clients to release their streams before retiring the route.
+        let _closed = self.access.connections.acquire_many(64).await;
+        if let Some(mut shared) = self.shared.take()
+            && let Some(listener) = Arc::get_mut(&mut shared)
+        {
+            let _ = listener.stop.send(true);
+            let _ = (&mut listener.task).await;
+        }
         if let Some(mut tailnet) = self.tailnet.take() {
             tailnet.stop().await;
         }
@@ -232,13 +327,52 @@ impl Preview {
 
 impl Drop for Preview {
     fn drop(&mut self) {
-        let _ = self.stop.send(true);
+        self.access.stop.send_replace(true);
     }
 }
 
-async fn accept(listener: TcpListener, access: Arc<Access>, mut stop: watch::Receiver<bool>) {
+#[derive(Clone)]
+enum Target {
+    Single(Arc<Access>),
+    Named(NamedPreviews),
+}
+
+impl Target {
+    fn select(&self, request: &Request) -> Option<Arc<Access>> {
+        match self {
+            Self::Single(access) => Some(access.clone()),
+            Self::Named(routes) => {
+                let mut hosts = request
+                    .headers
+                    .iter()
+                    .filter(|header| header.name.eq_ignore_ascii_case("Host"));
+                let host = &hosts.next()?.value;
+                if hosts.next().is_some() {
+                    return None;
+                }
+                let authority = host.parse::<hyper::http::uri::Authority>().ok()?;
+                if host.contains('@') || (host.contains(':') && authority.port_u16().is_none()) {
+                    return None;
+                }
+                let host = authority.host().to_ascii_lowercase();
+                let agent = host.strip_suffix(".localhost")?;
+                if !crate::host_platform::valid_agent_name(agent) {
+                    return None;
+                }
+                routes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(agent)?
+                    .upgrade()
+            }
+        }
+    }
+}
+
+async fn accept(listener: TcpListener, target: Target, mut stop: watch::Receiver<bool>) {
     let mut connections = JoinSet::new();
-    // Bound pending HTTP clients, probes and viewer streams for this preview.
+    // Bound clients still sending their headers. Each selected preview keeps
+    // its own existing 64-connection limit.
     let slots = Arc::new(tokio::sync::Semaphore::new(64));
     loop {
         tokio::select! {
@@ -246,10 +380,9 @@ async fn accept(listener: TcpListener, access: Arc<Access>, mut stop: watch::Rec
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let Ok(slot) = slots.clone().try_acquire_owned() else { continue; };
-                    let access = access.clone();
+                    let target = target.clone();
                     connections.spawn(async move {
-                        let _slot = slot;
-                        crate::host_platform::in_config(access.config.clone(), async { let _ = connection(socket, access).await; }).await;
+                        let _ = connection(socket, target, slot).await;
                     });
                 }
                 Err(_) => break,
@@ -427,7 +560,7 @@ fn forwarded_https(request: &Request) -> bool {
             .is_some_and(|value| !value.is_empty())
 }
 
-fn local_origin(request: &Request) -> bool {
+fn local_origin(request: &Request, access: &Access) -> bool {
     if matches!(
         request.header("Sec-Fetch-Site"),
         Some("cross-site" | "same-site")
@@ -437,7 +570,7 @@ fn local_origin(request: &Request) -> bool {
     let Some(origin) = request.header("Origin") else {
         return true;
     };
-    let (scheme, host) = if forwarded_https(request) {
+    let (scheme, host) = if !access.named_host && forwarded_https(request) {
         (
             "https",
             request.header("X-Forwarded-Host").unwrap_or_default(),
@@ -533,9 +666,12 @@ async fn read_body(
     Ok(body)
 }
 
-async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Result<()> {
-    let started = Instant::now();
-    let mut request =
+async fn connection(
+    mut socket: TcpStream,
+    target: Target,
+    pending: tokio::sync::OwnedSemaphorePermit,
+) -> std::io::Result<()> {
+    let request =
         match tokio::time::timeout(Duration::from_secs(10), read_request(&mut socket)).await {
             Ok(Ok(request)) => request,
             Ok(Err(error)) => {
@@ -556,6 +692,39 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
                 ));
             }
         };
+    drop(pending);
+    let Some(access) = target.select(&request) else {
+        return reply(
+            &mut socket,
+            "404 Not Found",
+            &[("Content-Type", "application/json".into())],
+            b"{\"error\":\"no open preview for this agent host\"}",
+            request.method == "HEAD",
+        )
+        .await;
+    };
+    let Ok(_slot) = access.connections.clone().try_acquire_owned() else {
+        return Ok(());
+    };
+    let mut stop = access.stop.subscribe();
+    if *stop.borrow() {
+        return Ok(());
+    }
+    crate::host_platform::in_config(access.config.clone(), async {
+        tokio::select! {
+            result = serve(socket, request, access.clone()) => result,
+            _ = stop.changed() => Ok(()),
+        }
+    })
+    .await
+}
+
+async fn serve(
+    mut socket: TcpStream,
+    mut request: Request,
+    access: Arc<Access>,
+) -> std::io::Result<()> {
+    let started = Instant::now();
     let head_only = request.method == "HEAD";
     if request.path.starts_with("/_safeyolo_preview") {
         if request.path != "/_safeyolo_preview/unlock" {
@@ -591,7 +760,7 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
             )
             .await;
         }
-        if !local_origin(&request) {
+        if !local_origin(&request, &access) {
             let result = reply(
                 &mut socket,
                 "403 Forbidden",
@@ -717,7 +886,7 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
         }
         unlock.code = None;
         drop(unlock);
-        let secure = if forwarded_https(&request) {
+        let secure = if !access.named_host && forwarded_https(&request) {
             "; Secure"
         } else {
             ""
@@ -808,7 +977,7 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
     }
     // Preview cookies are host-scoped. A page on another localhost port must
     // not use those cookies to open this agent's legacy viewer WebSocket.
-    if !local_origin(&request) {
+    if !local_origin(&request, &access) {
         return reply(
             &mut socket,
             "403 Forbidden",
@@ -965,27 +1134,33 @@ async fn connection(mut socket: TcpStream, access: Arc<Access>) -> std::io::Resu
         started,
         0,
     );
-    let result = if viewer_asset {
-        // Dynamic imports cannot cancel their fetches. Bound the complete
-        // asset relay, including a guest that sends headers but no body.
-        tokio::time::timeout(Duration::from_secs(20), async {
-            #[cfg(target_os = "macos")]
-            let _asset_slot = access
-                .viewer_assets
-                .acquire()
-                .await
-                .map_err(std::io::Error::other)?;
+    let transfer = async {
+        if viewer_asset {
+            // Dynamic imports cannot cancel their fetches. Bound the complete
+            // asset relay, including a guest that sends headers but no body.
+            tokio::time::timeout(Duration::from_secs(20), async {
+                #[cfg(target_os = "macos")]
+                let _asset_slot = access
+                    .viewer_assets
+                    .acquire()
+                    .await
+                    .map_err(std::io::Error::other)?;
+                relay(socket, &request, &access, viewer_id).await
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "viewer asset response timed out",
+                ))
+            })
+        } else {
             relay(socket, &request, &access, viewer_id).await
-        })
-        .await
-        .unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "viewer asset response timed out",
-            ))
-        })
-    } else {
-        relay(socket, &request, &access, viewer_id).await
+        }
+    };
+    let result = tokio::select! {
+        result = transfer => result,
+        error = wait_for_run_change(&access) => Err(error),
     };
     match &result {
         Ok((status, bytes_out)) => log_preview(
@@ -1317,6 +1492,15 @@ async fn relay(
             tokio::io::copy(&mut guest, &mut socket).await?
         };
         return Ok((status, rest.len() as u64 + transferred));
+    }
+}
+
+async fn wait_for_run_change(access: &Access) -> std::io::Error {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if let Err(error) = access.check_run() {
+            return error;
+        }
     }
 }
 

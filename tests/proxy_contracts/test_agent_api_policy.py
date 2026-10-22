@@ -131,7 +131,7 @@ def test_agent_api_policy_canonical_baseline_is_shared(proxy_backend, tmp_path, 
                 bodies.append(result[2])
             assert bodies[0] == bodies[1]
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 def test_agent_api_policy_read_uses_last_valid_reload(proxy_backend, tmp_path):
@@ -148,7 +148,7 @@ def test_agent_api_policy_read_uses_last_valid_reload(proxy_backend, tmp_path):
             assert_policy_response(after_failure, HOST_BASELINE)
             assert after_failure[2] == after_reload[2]
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 @pytest.mark.parametrize("auth,body", [
@@ -289,7 +289,7 @@ def test_agent_api_policy_gateway_tokens_follow_baseline_reload(proxy_backend, t
             assert empty_canonical, "Last-grant removal did not expose the canonical empty token map"
             assert empty_shared, "Identities observed different grant-removal snapshots"
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
     tokens_private = all(read.token_values_absent_from_files(directory) for read in reads)
     assert tokens_private, "Gateway bearer values reached fixture files"
     (directory / "gateway-policy-observations.json").write_text(json.dumps({
@@ -317,7 +317,7 @@ def test_agent_api_policy_preserves_non_string_gateway_capability(proxy_backend,
             assert canonical, "Source-valid non-string capability did not survive the canonical baseline"
             assert shared, "Non-string grant baseline was filtered by caller identity"
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
     tokens_private = first.token_values_absent_from_files(directory) and other_agent.token_values_absent_from_files(directory)
     assert tokens_private, "Gateway bearer values reached fixture files"
     (directory / "gateway-policy-observations.json").write_text(json.dumps({

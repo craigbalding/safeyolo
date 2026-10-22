@@ -482,7 +482,7 @@ silently reduce accepted message sizes to a library default.
 | D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. The live [`live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_recovery`](../proxy/src/flow_runtime_tests.rs) control replaces the response-phase event sink with writable `/dev/full`: the origin still returns 200, the response marks the evidence failure, the captured row survives reopen, and a later healthy write has no stale failure marker. That live sink control covers one response-phase event sink. Native Agent API and Plumb approval submissions separately wait for the canonical audit append before reporting a pending request; [`approval_audit_delivery`](../proxy/tests/approval_audit_delivery.rs) checks an unwritable destination, empty operator views and same-process recovery. The retained Python AgentAPI now waits for append/close before claiming operator review for service access, contract binding, desktop presentation or a Plumb chat request; failed writes return 500, while ordinary audit events stay asynchronous. These waits run off the event loop so other AgentAPI calls remain available. The [real-proxy control](https://github.com/craigbalding/safeyolo/blob/e91f69ef85df55341db530bab421f67c4afb83f5/tests/proxy_migration/test_python_agent_api_approval_audit.py) checks failure, both operator views and same-process recovery. Native and retained Python service-gateway risky-route approval prompts also wait for the audit append before returning 428. With an unwritable destination, native returns its existing 502 proxy error and retained Python returns its existing 503 failure response; neither failed request appears in the operator approval views. After the destination is restored, a new prompt becomes visible in the same process. The [shared real-proxy control](../tests/proxy_contracts/test_gateway_risk_approval.py) checks failure, recovery and an ordinary allowed route on both backends. Native and retained Python network-guard egress and credential-guard prompts also wait for the canonical audit append before reporting a pending approval. If the append fails, native returns 502 and retained Python returns 503 without forwarding to the origin or adding a new request to either operator approval view. A new prompt becomes visible after storage recovers in the same process. The [shared guard control](../tests/proxy_contracts/test_guard_approval_audit.py) checks both backends, both operator views, credential isolation, and unrelated allow and deny decisions. These confirmations do not promise fsync or crash durability. |
 | D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body; the `evidence_owner_is_the_single_scope_for_search_detail_body_and_tags` witness extends that check across Alice/Bob collection, detail, body and tag paths, while [trace tests](../proxy/tests/agent_api_trace.rs) cover foreign and owner-null trace records. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
 | D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
-| D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | The owned discovery reconciler compares the accepted listener, host map and pre-stamped metadata, removes the owner from a conflict result, suppresses last-seen updates and emits the source-shaped conflict/unavailable event. Matching, fallback, stale, unreadable, malformed and replacement outcomes have direct tests; the shared request snapshot carries the result through native consumers. `stat_permission_denied_keeps_listener_authority_and_quarantines_map_fallback` proves that a permission-denied map stat preserves a trusted listener owner, suppresses map fallback, emits unavailable for an unowned request and keeps the direct report's `Permission` category. [Source permission-stat parity remains untested.] |
+| D60 | The retired source reconciled UDS identity with an agent map. | Issue #197 removes that second identity source. Accepted listener identity now reaches all consumers directly; see [agent listener reports](#agent-listener-reports). |
 | D61 | TraceStore does not enforce the per-agent cap when an initially ownerless record later acquires an owner. A capped append moves a record to the end without updating its retained timestamp; expiry stops at the first live record and can retain a later stale record. | Native owner assignment now applies the existing per-agent cap, and expiry scans all records so a stale record cannot survive behind a live record after append reordering. Capped appends retain their prior step timestamp, and the global and per-record step caps remain unchanged. The source rows remain finite witnesses for the repaired divergence. |
 | D62 | A source MemoryMonitor request decode error retains earlier counters, then escapes the shared production addon container. Later request security hooks can be skipped while the HTTP layer resumes forwarding. The retained decoder fixture proves the child failure; the wider bypass path is established by static dispatcher/HTTP control flow, not a new full-chain execution. | Native memory observation errors retain partial state and produce categorical diagnostics, while existing security decisions continue. They do not skip inspection or introduce a new rejection rule. Focused HTTP and WebSocket failure controls verify that later native context/scanner decisions still run. At `34635393`, vendored allocation/cancellation tests also pass 43 deterministic injected failures, recovery and buffer release; delegated regex cancellation remains explicitly unsupported mid-search and its observed delay is run-specific. |
 | D63 | Earlier native forced shutdown aborted outer connection tasks and dropped nested JoinSets or driver handles without joining their descendants. WebSocket close events and driver cleanup could then follow client removal or audit shutdown. | One accepted-connection task owner now retains explicit HTTP drivers, CONNECT/WS work, Hyper transport-executor jobs and actual WS scanner jobs through cancellation. Tasks registered after cancellation are dropped before their work runs. The client guard ends after that owner drains. The prior desktop-helper result covered its Python child process; issue #894 replaces that boundary with a Rust-owned preview and checks preview closure during proxy shutdown in `proxy/tests/desktop_native.rs`. Finite owner and owned H1/WS tests establish this transport scope; standalone API workers, anonymous spill-file jobs and ordinary process Drop remain outside the guarantee. The real-NATS [`coord_wait_shutdown`](../proxy/tests/coord_wait_shutdown.rs) witness now also shuts down a pending coordination subscription, independently observes its subscription removal, reopens the same state and socket paths with a distinct instance identity, repeats the wait, and verifies that neither shutdown appends a late audit or event line. The candidate `admin_api::services::tests::admitted_service_mutation_distinguishes_queue_full_submission_failure` additionally drives a real service mutation while its same-process audit FIFO is held/full: policy persistence, FIFO rows and writer reservations are observed independently, and a synchronous audit submission failure is not reported as durable service evidence. [Candidate slice; graceful process shutdown and the complete producer matrix remain open.] |
@@ -808,7 +808,7 @@ SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
 
 The Rust fixture launches `safeyolo-proxy --config PATH`. The JSON configuration
 provides `listeners` with `agent_id` and `socket_path`, `readiness_file`,
-`event_log`, and `policy_file` for native network policy. Optional
+`audit_log_path`, and `policy_file` for native network policy. Optional
 `parent_proxy`, `upstream_ca_file` and `via_token` select upstream transport.
 `tls_ca_file` selects an existing combined CA PEM for the development HTTPS path.
 The listener configuration supplies identity; request headers cannot select it.
@@ -834,8 +834,8 @@ Native guard responses preserve the source JSON bytes, status and headers.
 The shared audit writer emits canonical `security.network_guard` records for
 deny, warn, approval-required, budget and homoglyph decisions, plus allowed
 CONNECT admission. Ordinary allowed HTTP emits no network security event.
-Development `proxy.network_guard` diagnostics retain the guard intents without
-raw queries or application bytes. Approval persistence and the production pipeline are tracked by accepted issue
+Canonical `security.network_guard.evaluated` events retain evaluation metadata
+without copying security intents, raw queries or application bytes. Approval persistence and the production pipeline are tracked by accepted issue
 results and the final #640 release gates. The bounded local API reads are
 described below.
 
@@ -886,9 +886,8 @@ Operator replies use Python's indented JSON presentation and the shared scalar
 formatter. GET borrows the stored document into one sized, zeroizing response
 allocation. Task document owners and API outcomes omit Debug and general serialization.
 The shared canonical writer emits failed-authentication and accepted-task-update
-events without raw task documents or bearer values. Separate development
-`proxy.admin_api` diagnostics retain the intents. Diagnostic write failures
-preserve the response and set `X-SafeYolo-Evidence-Error`. Synchronous canonical
+events without raw task documents or bearer values. Redundant admin diagnostic
+copies are removed. Synchronous canonical
 submission exceptions terminate the operator handler before its response;
 accepted task mutations remain committed.
 
@@ -1026,10 +1025,10 @@ acceptance, macOS or real-guest validation.
 
 These requests terminate locally before ordinary inspection and egress. Disabled
 or failed handlers remain contained; CONNECT returns the source transport-guard
-403. Development `proxy.agent_api` evidence records response and audit intents
-without bearer values or URL queries. A failed evidence file write preserves the
-response and sets `X-SafeYolo-Evidence-Error`; source production audit writes also
-preserve responses when their sink fails. Native canonical producers now emit
+403. Canonical `agent.api_response` events record the response status, handler
+result and intent name without copying the intent, bearer values or URL queries.
+Canonical worker file failures remain asynchronous and preserve the response;
+the worker reports the failure to stderr. Native canonical producers emit
 auth failure, handler unavailable, declaration and clear events before traffic
 hooks. A synchronous auth submission error uses the native local guard's 503
 transition. The historical separate-addon source test does not establish the
@@ -1127,11 +1126,11 @@ Reset and atomic budget charging use the same lock across live policy snapshots.
 Reset commits before canonical `admin.budget_reset` and `admin.budgets_reset`
 submission, in that order. A synchronous failure at the first submission returns
 the source fixed 500 and suppresses the second event; a failure at the second
-terminates the handler. Neither failure rolls back the reset. A failed diagnostic write sets
-`X-SafeYolo-Evidence-Error` on the successful response; it does not roll back the
-reset. The [operator transport test](../proxy/tests/admin_transport.rs) exercises
-an actual failing diagnostic sink and recovery. Canonical worker sink failure
-uses the writer's asynchronous fallback and preserves the producer result.
+terminates the handler. Neither failure rolls back the reset.
+The [operator transport test](../proxy/tests/admin_transport.rs) checks the
+canonical reset events. [Writer lifecycle controls](../proxy/src/audit_runtime_tests.rs)
+cover sink failure and recovery. The canonical worker reports file errors to
+stderr asynchronously and preserves the producer result.
 
 The operator report preserves the source connection termination on reporting
 failure, while Agent `/budgets` retains its own error response. With the explicit
@@ -1623,8 +1622,9 @@ uses an absolute URI with IDNA authority, while the source preserves origin-form
 in this case. Wire fixtures assert both exact forms and the unchanged path/query.
 
 The fixture checks decisions, delivered bytes, destination ports, generated
-IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
-migration evidence, not replacements for production JSONL or traffic APIs.
+IDs and trusted attribution. The native fixture reads `traffic.request_outcome`
+and `traffic.egress` from the canonical event log. The historical Python
+comparator's diagnostic names remain part of its frozen migration evidence.
 The shared [HTTP/1.1 response-handoff fixture](../tests/proxy_contracts/test_http1_handoff_contract.py)
 holds a chunked event response after its first client-visible bytes. The client
 then closes, and the origin observes its own connection closing. A completed
@@ -1900,12 +1900,12 @@ The authenticated `/circuits` response reads that same owner. Existing operator
 POST `/admin/circuit-breaker/reset` deletes an exact host key without clearing
 lifetime counters or settings. Missing or falsy host fields return 400. Reads can
 advance stale circuits and emit unscoped canonical transitions. Circuit operations
-submit canonical events at their source mutation points. Development
-`proxy.circuit` records remain separate diagnostics. Reset submits its ops event
+submit canonical events at their source mutation points. Redundant circuit
+diagnostic copies are removed. Reset submits its ops event
 before the separate admin event; a non-string host uses the source minimal
-validation-fallback envelope for the ops event. Diagnostic write failure preserves committed state and valid response
-bytes. A failure known before headers adds `X-SafeYolo-Evidence-Error`; a later
-failure produces a content-free diagnostic.
+validation-fallback envelope for the ops event. Canonical writer failures use
+the existing submission and worker reporting paths. A failure does not roll
+back a committed circuit transition.
 
 Settings come from top-level `addons.circuit_breaker` fields. Refresh remains
 lazy: an unchanged hash skips, omitted fields retain their values, and exclusions
@@ -2023,8 +2023,8 @@ content yields an empty snippet. Content decoding does not change forwarded byte
 [Native HTTP tests](../tests/proxy_contracts/test_http_test_context.py) exercise
 the complete forwarding path. Parser and application tests cover resets,
 unread responses, body replay, counter ordering and evidence failures separately.
-These are implementation evidence. TestContext security events still use the
-development diagnostic sink. Non-string YAML target keys and lone JSON surrogates remain
+These are implementation evidence. TestContext security events use the
+canonical audit writer. Non-string YAML target keys and lone JSON surrogates remain
 frontend gaps. Late evidence failures cannot change headers already delivered.
 Independent acceptance and production cutover remain outstanding.
 
@@ -2242,14 +2242,15 @@ reached core operation. Open, reopen and close increment their counters before
 submission and publish their new state afterward. Half-open publishes state
 before submission; a synchronous failure then prevents the later admission slot
 or next stats entry. Reset commits before its events. Successful returned
-transition intents are already submitted and receive only separate diagnostics.
+transition intents are already submitted and are not copied into another event.
 Ops events have no attribution or decision. Response transitions carry optional
 request metadata only after its request hook has run; early responses do not
-borrow the unconditional native diagnostic ID. Circuit denial events use trusted
+borrow the unconditional ingress request ID. Circuit denial events use trusted
 UDS attribution. D55's early admission remains distinct from source body timing.
 
 TestContext decision and applied request/response events now use the canonical
-writer. Applied events have no decision or attribution object. Request metadata
+writer. Applied events retain trusted ingress attribution and have no decision.
+Request metadata
 is installed before decoding and submission; a synchronous failure retains that
 metadata but stops the terminal context counters and later request logging.
 A subsequent response can still use the metadata. Response decoding or
@@ -2280,10 +2281,10 @@ The write receipt does not promise filesystem sync or crash durability.
 checks all three stateless routes against the native admin and retained watch
 views before and after destination recovery in one process.
 
-The native `X-SafeYolo-Evidence-Error` header reports selected diagnostic failures.
-It does not cover every canonical submission exception: circuit hook failures
-and a TestContext head-hook failure can omit the header while preserving their
-existing hook continuation.
+The native `X-SafeYolo-Evidence-Error` header reports selected failures known
+before response headers are sent. It does not cover asynchronous worker file
+errors. Some hook failures keep their existing continuation and can omit the
+header.
 
 [Circuit source controls](../proxy/tests/circuit_audit_order_source.py),
 [TestContext source controls](../proxy/tests/test_context_audit_source.py),
@@ -2489,18 +2490,20 @@ step. A response that completes before request application can record
 
 Completed local denial/API replies carrying the existing traffic marker reach TestContext's
 `not_applicable` response observation after circuit response succeeds and before
-local recording and logging. Early local request returns still omit the native
-request hooks they skip; they do not reproduce the source's later
-`prior_response` request steps. Opt-in activation uses the existing local
+local recording and logging. For early local responses, native tracing records
+unreached request controls as `bypassed/prior_response`. The HTTP owner uses
+per-request call-site reachability, independently of retained trace steps. Opt-in activation uses the existing local
 header-hygiene boundary. The trace join adds no request drain or completion
 observer. Typed source-compatible errors retain their class names; native-only
 runtime, audit, allocation and poisoned-state errors remain native categories.
 Trace-store failures cannot change hook continuation or evidence-error flags.
 
 The source `not_loaded` field lists expected addon names absent from all retained
-steps; it is not a runtime installation inventory. HTTP service gateway,
-credential and pattern stages remain inactive. A stored CONNECT hook narrows
-the source expected set to NetworkGuard. Outer CONNECT and enclosed HTTP retain
+steps; it is not a runtime installation inventory. Native tracing instead
+requires explicit call-site evidence for `not_loaded` and marks missing request
+observations as incomplete. HTTP service, credential and pattern stages report
+their actual request outcomes. A stored CONNECT hook narrows the expected set
+to network admission. Outer CONNECT and enclosed HTTP retain
 separate request IDs and share the transport connection ID. Reserved local
 replies and the temporary Python policy adapter do not fabricate native guard
 traces. The diagnostic probe uses the real native producers described below.
@@ -2523,8 +2526,8 @@ ID, then records `probe-sink / evaluated / probe_terminated`. No inactive
 producer is reported as evaluated or disabled. A prior local reply whose empty
 request and logger/metrics hooks completed retains its status and records
 `probe_preempted`. Body-bearing early replies without that completion marker
-still return before the sink. Neither path fabricates the later source security
-request-hook observations skipped by native early returns.
+still return before the sink. The native HTTP owner records later controls as
+`bypassed/prior_response`; it does not claim that those controls executed.
 
 The generated response uses the same memory, circuit, TestContext, recorder and
 logger operations as a completed HTTP response. Applied context produces a real
@@ -2552,19 +2555,25 @@ The native [probe tests](../proxy/src/http/probe/tests.rs) compare source sink
 bytes and steps and exercise owned HTTP/1 requests, context response evidence,
 memory accounting and flow exclusion. [Upload controls](../proxy/src/http/probe/tests/body.rs)
 cover held chunked input, threshold crossing, truncated requests and request-hook
-errors. The opt-in [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
-uses synthetic tokens and owned UDS listeners, fetches the actual native trace,
-rejects a foreign agent's read, and feeds the fetched response to the source
-doctor classifier. It requires the retained Python source environment; ordinary
-probe tests use the pinned corpus without running Python.
+errors. The active [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
+uses synthetic tokens and owned Unix-domain socket (UDS) listeners. It runs
+native doctor, checks the actual trace and injects missing-control and trace-store
+failures. It needs no retained Python doctor. The native command tests in
+[test_native_skill_trace.py](../tests/proxy_contracts/test_native_skill_trace.py)
+run the executable with native binaries on its PATH. They cover all configured
+agent listeners, known disablement, incomplete traces, unavailable sockets and
+a pattern block before the probe sink. The probe uses the same request-inspection
+enforcement helper as ordinary requests.
 
-The production six-name doctor manifest
-remains unchanged. A native 200 with network, circuit and context receipts still
-fails doctor while service-gateway, credential-guard and pattern-scanner are
-missing. The source classifier inspects only the first request step for each
-expected producer; a later error from the same producer can remain hidden from
-its verdict. This consumer limitation is preserved in the oracle and does not
-justify fabricating a passing pipeline.
+Native doctor checks the first request observation of each expected control in
+the current native order: network, circuits, credentials, services, patterns,
+test context. It also checks every error observation, including later errors
+from a control already seen. A clean probe needs a local sink 200, complete
+evidence and every expected control accounted for. The historical source
+classifier cases remain in the corpus; they no longer define the native
+command's verdict. The store reports `not_loaded` only for explicit call-site
+observations of unavailable controls. Missing retained observations instead
+make the trace incomplete.
 
 The [source corpus](../proxy/tests/trace_source.py) exercises actual trace
 storage and Agent API dispatch. [Native API tests](../proxy/tests/agent_api_trace.rs)
@@ -2688,77 +2697,51 @@ security continuity, without reading operational process data. Actual RSS,
 load behavior, supported-host validation and independent acceptance remain
 unverified.
 
-### Agent discovery reports
+### Agent listener reports
 
-Authenticated `GET /agents` reads the [shared discovery owner](../proxy/src/agent_discovery.rs).
-It returns the complete configured map with last-seen and idle fields for observed
-entries. Query parameters and caller identity do not filter this report, matching
-the source endpoint. Agent API authentication still precedes the read. Operator
-`/stats` includes the same owner's `service-discovery` report before policy stats.
+Authenticated `GET /agents` reports the current configured listeners through
+[agent activity](../proxy/src/agent_activity.rs). Each entry keeps the source IP,
+last-seen time and idle time. Query parameters and caller identity do not filter
+this global report. Method and Agent API bearer checks still precede the read.
+The report does not expose host socket paths or opaque declaration slots.
+A source slot that is not an IP address reports `ip: null`. Operator `/stats` includes the
+same report under `agents`. The old `service-discovery` statistics and
+`agent_map_file` setting are removed with the map. The TOML loader ignores
+that retired key in existing configurations. Their file errors, map counts
+and discovery events no longer describe a product operation.
 
-The development `agent_map_file` option defaults to the empty string. It selects
-report metadata; trusted listener configuration continues to identify requests.
-The owner caches the source floating-point modification time, preserves map order
-and retains last-seen history across removal and reload. Clearing the configured
-path retains the previous report. A newly published map stays published if a
-later discovery-event submission fails. Malformed JSON and caught file errors
-retain the reached source state. A configuration-hook failure is reported without
-stopping the proxy; affected API reads retain their error response. No additional
-map limit, expiry or address restriction is introduced.
+Listener configuration fixes agent name and source address at connection
+accept. Policy, credential checks, approvals, declarations, traces, audit and
+FlowStore use that accepted owner. Request headers, guest metadata and retired
+map files cannot replace it. Agent-scoped API routes refuse a listener without a usable owner. Existing
+global network rules can still allow ownerless traffic. Such traffic cannot
+create an agent-owned flow row.
 
-Ordinary HTTP observations use the existing validated request-completion path.
-The local Agent API observes the caller after producing its response, so
-`/agents` reports the caller's previous last-seen value. CONNECT has a separate
-observation before destination policy. Completed local replies can also update
-last-seen. Early replies whose request never completes retain the existing native
-completion differences. Native network decisions occur at headers, so a later
-discovery refresh can follow their audit events even though source discovery
-precedes the network request hook. Exact cross-hook event ordering remains
-unverified. The owned discovery reconciler now exercises source identity
-outcomes before the shared request-context snapshot is consumed by guards,
-declarations, tracing and recording. Operator error reports retain source exception classes with native
-content-free messages. The messages differ from Python error text. Existing
-lone-surrogate and extreme JSON-depth differences also apply to map reads.
-Filesystem fault and concurrent-reload equivalence remain bounded by the checks
-described below.
+Ordinary HTTP observations use the existing request-completion hook. Local
+Agent API responses render before observing the caller, so `/agents` shows the
+caller's previous last-seen value. CONNECT observes activity before destination
+policy. Observations survive runtime reloads. The report omits removed
+listeners, even if this process still retains their earlier activity. A failed
+activity report returns a local error; it does not change request identity.
 
-The D60 source calls and native dispositions are:
+The host reuses its existing lifecycle and listener synchronization. New managed
+sockets use `agents/<name>/proxy/proxy.sock`. The dedicated directory keeps other
+host state outside the Linux guest mount. Startup recovers attachments from
+host-owned run and boot records only when the observed backend generation
+matches. Unknown backend state retains the existing attachment for recovery;
+a proven stop removes it. A running guest can retain its earlier
+`data/sockets/<ip>_<name>/proxy.sock` mount until it stops. Explicit operator
+listeners retain their paths. No directory scan, discovery daemon or agent map
+supplies identity.
 
-| Map state at the request boundary | Source call and result | Native owned reconciler | Last-seen/event result |
-| --- | --- | --- | --- |
-| Matching entry (`alice`/`10.0.0.1`) | `_reload_map` → `get_client_for_ip` → resolved UDS identity | `reconcile` returns `resolved`, source `uds` | Updates `alice`; no identity event |
-| Missing entry or map with a UDS owner | `get_client_for_ip` returns `unknown`; UDS remains authoritative | `reconcile` returns `resolved`, source `uds` | Updates the UDS owner; no identity event |
-| UDS owner without a client IP | Listener identity is already resolved; no host-map lookup is needed | `reconcile` skips map reload and lookup, then returns `resolved`, source `uds` | Updates the UDS owner without map or discovery-audit side effects |
-| Missing entry or map without a UDS owner | No trusted source resolves | `reconcile` returns `unavailable` | Suppresses last-seen and emits `security.agent_identity_unavailable`; an audit submission error remains a request error |
-| Unreadable file or malformed JSON syntax | `_reload_map` catches `OSError`/`JSONDecodeError` and retains the prior reverse map | `reconcile` retains the prior map and returns its prior resolution | Only a resolved owner updates; otherwise the unavailable event is emitted |
-| Invalid UTF-8 or valid JSON with a non-object top level | Request identity lookup catches its `UnicodeDecodeError`/`AttributeError`, while `/agents` retains the direct error | `reconcile` contains the reload error as `unavailable` with `lookup_error`; `/agents` retains the typed error | A trusted UDS owner remains resolved and updates only its own last-seen; without UDS no owner is published and the unavailable event is logged |
-| Stale mtime after file replacement | `_reload_map` skips the unchanged mtime and retains the prior map | `reconcile` observes the same cached owner | Existing owner updates; a later mtime change can expose conflict |
-| UDS `alice`, map `bob` for the same peer | Trusted sources disagree; owner is removed and conflict event is logged | `reconcile` returns `conflict` with no agent | Suppresses last-seen and emits `security.agent_identity_conflict` |
-| Map changes after a flow starts | `flow_attribution` keeps the request snapshot; `detect_late_attribution_change` quarantines | The shared request-context snapshot is retained through completion and consumers cannot replace it with the later map result | No retroactive owner change; a late-change event records the quarantine |
-
-The request snapshot has one projection for each existing consumer. This keeps
-the accepted listener identity available as transport provenance while preventing
-the map or a stale request field from becoming an evidence owner:
-
-| Reconciled status | Network/credential guards | Reserved Agent API and gateway | Trace, traffic and recording |
-| --- | --- | --- | --- |
-| `resolved` | Receives the reconciled owner | Uses the same owner for scoped authorization and service selection | Carries the owner and attribution snapshot |
-| `conflict` | Network guard fails closed when enabled; credential guard blocks | Scoped routes return `403`; reserved health/report routes stay local | Emits conflict attribution without an evidence owner; flow recording quarantines |
-| `unavailable` | Receives no agent identity | Route handlers preserve source ordering: valid scoped operations return `403`, while caller-body/ID validation and direct evidence ownership retain their `400`/`404` outcomes; global/report routes remain local | Emits unavailable attribution and never creates an owner-bearing flow row |
-
-The [source oracle](../proxy/tests/agent_discovery_source.py) uses owned maps,
-synthetic identities and explicit clocks. The [API tests](../proxy/tests/agent_api_discovery.rs)
-cover authentication, global reporting and unread bodies. The
-[runtime checks](../proxy/src/http/agent_audit_tests.rs) cover two-agent reports,
-local CONNECT containment, shared ownership, failed-reload recovery, caught
-audit-submission failures and two concurrent persistent UDS connections across
-a map replacement. Twenty source scenarios pass; five component tests
-include replay of fourteen applicable source workflows. The joined native
-selection passes 27 tests. The owned reconciler adds direct matching, fallback,
-conflict, stale, unreadable, malformed and last-seen suppression witnesses.
-The persistent two-agent fixture verifies the request-boundary snapshot and
-ownerless conflict events through real host-owned listeners; independent
-acceptance still needs the external black-box identity scenario.
+The [API tests](../proxy/tests/agent_api_agents.rs) cover authentication, global
+reporting and unread bodies. The [HTTP tests](../proxy/src/http/agent_audit_tests.rs)
+exercise distinct listener owners with the same source IP, forged claims,
+ownerless refusals, retired-map changes, activity and removal. The
+[transport tests](../proxy/tests/transport.rs) cover HTTP and CONNECT policy,
+stale sockets and replacement. The [credential tests](../proxy/tests/credential_http.rs)
+cover per-listener approval and audit attribution. These local source tests do
+not establish installed guest behavior on each supported platform.
 
 ### HTTP metrics in operator statistics
 
@@ -2833,8 +2816,8 @@ otherwise allowed connection. A failed start submission still leaves an end
 attempt due. Failed error/end submissions do not resurrect their sessions.
 The [transport owner](../proxy/src/http/ignored_host.rs) closes its socket before
 finalizing evidence and uses the existing shutdown lifetime. It adds no timer,
-body reader or permission decision. Legacy `proxy.tunnel` diagnostics remain
-separate from these canonical events.
+body reader or permission decision. The canonical `traffic.tunnel` event retains
+relay coverage, byte counts, duration and outcome in the same event log.
 Abrupt task teardown has no final-event drain guarantee.
 
 The current runtime scope excludes ordinary HTTP connections and inner-Host
@@ -2849,17 +2832,17 @@ remains unchanged.
 Native connection-error wording and cancellation reasons can differ from the
 Python stack. A canceled pending native attempt uses `connection cancelled`;
 this does not establish source hook/semaphore cancellation equivalence.
-A failure in the native pre-dial diagnostic write is reported as an attempt
-error while retaining its existing transport failure; the source has no
-identical diagnostic stage.
+A failed route-observation submission is reported to stderr and does not revoke
+admitted transport. Missing event evidence does not establish a route or a
+successful connection. The historical Python source has no identical stage.
 
 The focused `configured_passthrough_entry_does_not_bypass_parent_route` control
 adds one real parent-parity witness: an exact `127.0.0.1:<origin-port>`
 passthrough entry selects opaque transport while still sending the CONNECT and
 client payload to the configured parent. An independently listening origin
 accepts zero connections. The parent records the logical authority and its
-loopback peer. The single `proxy.egress` event keeps the logical host and port
-with `route: "parent"`, and the canonical start/end pair uses the logical
+loopback peer. The single `traffic.egress` event keeps the logical host and port
+with `details.route: "parent"`, and the canonical start/end pair uses the logical
 destination. Companion controls cover a verified TLS parent, a configured SNI
 alias through a parent, a same-host different-port neighbor, and exact
 parent-address/CIDR entries for an unrelated destination. A parent refusal
@@ -2890,7 +2873,7 @@ a native TLS fatal alert and then an EOF. The controlled unconfigured origin
 receives zero bytes from all three unconfigured connections. The native egress
 log records one direct configured dial and three direct unconfigured dials. The
 canonical passthrough log records only the configured start/end pair and no
-passthrough error. The only `proxy.tunnel` record is the configured opaque
+passthrough error. The only `traffic.tunnel` record is the configured opaque
 endpoint. This proves that a client-rejected interception handshake and one
 malformed TLS-handshake record do not become opaque forwarding.
 Upstream-verification, parent-route and other invalid-interception cases remain

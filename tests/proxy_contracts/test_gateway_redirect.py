@@ -289,7 +289,7 @@ def test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin
             assert (owned.accepts, untrusted.accepts) == before
             for observed in untrusted.requests:
                 _assert_untrusted_wire_has_no_gateway_secret(_wire(observed), token)
-            assert [(row["host"], row["port"]) for row in proxy.events("proxy.egress")] == [
+            assert [(row["host"], row["details"]["port"]) for row in proxy.events("traffic.egress")] == [
                 ("127.0.0.1", owned_port),
                 ("127.0.0.2", untrusted_port),
                 ("127.0.0.1", owned_port),
@@ -297,7 +297,7 @@ def test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin
             ]
 
             audit = (directory / "audit.jsonl").read_bytes()
-            events = (directory / "events.jsonl").read_bytes()
+            events = (directory / "audit.jsonl").read_bytes()
             assert sum(json.loads(line)["event"] == "gateway.allow"
                        for line in audit.splitlines()) == 1
             for secret in (VAULT_CREDENTIAL.encode(), token.encode()):
@@ -377,14 +377,14 @@ def test_client_that_reapplies_gateway_token_on_redirect_cannot_reach_new_author
             if token.encode() in owned_wire:
                 raise AssertionError("Gateway token reached the owned origin")
             assert untrusted.accepts == 0 and untrusted.requests == []
-            assert [(row["host"], row["port"]) for row in proxy.events("proxy.egress")] == [
+            assert [(row["host"], row["details"]["port"]) for row in proxy.events("traffic.egress")] == [
                 ("127.0.0.1", owned_port),
             ]
             for response in (*followed.history, followed):
                 if token.encode() in response.content or VAULT_CREDENTIAL.encode() in response.content:
                     raise AssertionError("Gateway secret appeared in a client response")
 
-        for name in ("audit.jsonl", "events.jsonl"):
+        for name in ("audit.jsonl",):
             routine = (directory / name).read_bytes()
             if token.encode() in routine or VAULT_CREDENTIAL.encode() in routine:
                 raise AssertionError(f"Gateway secret appeared in {name}")

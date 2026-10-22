@@ -31,7 +31,7 @@ fn config(directory: &Path, target_host: &str) -> Config {
             {"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}
         ],
         "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events.jsonl"),
+        "audit_log_path":directory.join("audit.jsonl"),
         "admin_api_token_file":directory.join("data/admin_token"),
         "flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),
         "test_context_block":true,"circuit_breaker_enabled":false

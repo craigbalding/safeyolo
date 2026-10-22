@@ -46,6 +46,24 @@ An allowed request receives the service's response. Bob, another destination,
 and a method or path outside the capability cannot use Alice's token. An upstream
 service can still reject a token whose vendor permissions are insufficient.
 
+## Unknown bearer credentials
+
+With the default credential controls, a nonempty `Authorization: Bearer` value
+that matches no known credential rule uses `unknown_secret`. Bearer detection
+does not depend on entropy. Short, repetitive and placeholder bearer values
+also require approval unless policy permits them. This enforces the existing
+unknown-credential requirement even when a token fails the entropy heuristic.
+The check also applies to bearer values in service requests before credential
+injection.
+
+Review the reported fingerprint and destination before granting an approval.
+An exact-token approval applies to that token and destination. A replacement
+token needs its own approval unless another applicable policy permits it.
+Token shape and claimed issuer do not establish permission. This behavior
+does not add automatic approval for Codex subscription OAuth tokens. The
+[credential controls](settings.md#named-policy-controls) retain header
+selection, exclusions, enablement and warn mode.
+
 ## Pull public images and OCI artifacts from GHCR
 
 With default credential policy, public pulls from GitHub Container Registry
@@ -101,51 +119,62 @@ credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
 ChatGPT subscription OAuth access token.
 
 The credential guard has no built-in detector or issuance binding for Codex
-subscription tokens. With standard or paranoid detection, an unrecognised
-bearer that meets the entropy thresholds is detected as `unknown_secret`.
-With `unknown_creds = "prompt"`, it needs approval for its
-exact fingerprint and destination. The guard does not verify a claimed JSON
-Web Token (JWT) issuer, audience or signature. A token's shape and requested
-destination do not prove that the token belongs to Codex or is appropriate for
-that destination. A custom detection rule also supplies no such proof.
+subscription OAuth tokens. With the [default bearer controls](#unknown-bearer-credentials),
+an unrecognised `Authorization: Bearer` value uses `unknown_secret`, regardless
+of entropy. No entropy adjustment or custom detection rule is needed.
+Detection does not verify a JSON Web Token (JWT) signature, issuer or audience.
+A claimed issuer, matching regular expression, destination or provisioned
+Codex login does not establish trusted issuance for each token. SafeYolo has
+no Codex-specific automatic-approval setting.
 
-The entropy heuristic can miss long bearer values. Its default character
-diversity threshold requires at least half of the characters to be distinct.
-For example, a 222-character synthetic JWT with 57 distinct characters does
-not meet that threshold, despite high Shannon entropy. Without a matching
-detector, that value produces no credential finding. Do not assume that every
-OAuth bearer will produce an approval request.
-
-If you need the heuristic to inspect long values without that diversity test,
-you can opt in through your host policy. Add this table once, or change its
-existing `min_charset_diversity` field:
+When trustworthy issuance evidence is unavailable, use the manual approval
+fallback. Keep `unknown_creds = "prompt"` for the intended destination.
+For example, if your authorised Codex traffic uses `chatgpt.com`, merge this
+field into that host's existing table in a copy of your host `policy.toml`:
 
 ```toml
-[controls.credentials.entropy]
-min_charset_diversity = 0.0
+[hosts."chatgpt.com"]
+unknown_creds = "prompt"
 ```
 
-This setting affects credential detection across the instance. It can produce
-more findings and approval requests for values that previously passed. It
-retains the configured minimum length and Shannon entropy thresholds, so it
-does not detect every secret. It provides no issuer verification, destination
-grant or automatic approval. Check and apply your candidate through the
-[native policy commands](installation.md#check-show-and-apply).
+Use the destination recorded for your client; this example does not authorise
+another OpenAI service or a client-selected URL. The fragment grants no network
+access. Preserve existing network permissions, credential denials and other
+host fields. [Check and apply the candidate](installation.md#check-show-and-apply),
+then retry the client's request. With network access permitted and blocking
+credential controls active, an unapproved bearer returns HTTP 428 with a
+credential fingerprint. An explicit denial returns HTTP 403.
 
-When a credential approval appears, inspect the reported agent, destination
-and fingerprint on the host. Use `credentials approve FINGERPRINT --destination
-HOST` only for the credential and destination you intend to permit, as described
-under [authorization and approval](#authorization-binding-and-risk-approval).
-Read the fingerprint from the approval or the `security.credential_guard` audit
-event. Do not extract or share a token or Codex authentication file to obtain it.
+On the host, inspect the reported agent, destination and fingerprint in the
+pending credential approval or the `security.credential_guard` audit event.
+Use `services approvals` to read pending records. `logs --agent WORKER --lines
+50 --json` returns a summary and the audit file's path; replace `WORKER` with
+your agent's name. Read the matching credential event in that host file for
+its fingerprint. Do not extract or share a token or Codex authentication file
+to obtain the fingerprint.
 
-An exact fingerprint approval covers that token at the chosen host. It does
-not establish the token's issuer, account, method or path. Existing network
-permissions, explicit credential denials and inspection of other secrets still
-apply. A replacement access token needs its own approval. Keep that fallback
-when trusted issuance cannot be established. Host-wide unknown-credential
-allowances and grants based on claimed JWT fields permit tokens without proving
-their issuer or intended use.
+For the installed instance at `$HOME/.safeyolo`, replace `FINGERPRINT` with the
+reported `hmac:` fingerprint and `HOST` with the intended destination. Approve
+only the token and destination you intend to permit:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials approve FINGERPRINT --destination HOST
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy show
+```
+
+Wait for `saved_matches_active` to be true, then let the client retry.
+The exact-fingerprint grant covers that token at the chosen host. It is a
+host-policy grant, not an agent-specific grant or proof of issuer or account.
+It does not constrain the method or path. Existing network permissions,
+explicit credential denials and inspection of other secrets still apply.
+
+Let Codex manage login and refresh. A replacement access token needs its own
+approval; approval of the preceding token does not cover it. This fallback
+does not provide approval-free rotation or prove that the upstream service will
+accept a token. Keep approvals when per-token provenance cannot be established.
+Setting `unknown_creds = "allow"`, excluding `Authorization` from inspection,
+or granting a custom token family would permit values without proving their
+issuer or intended use.
 
 ## Use a 1Password reference
 

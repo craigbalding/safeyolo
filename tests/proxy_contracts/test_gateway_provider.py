@@ -230,7 +230,7 @@ esac
                 status, _, _ = request(proxy.paths[agent], target, headers=headers)
                 assert status == 403
                 assert origin.accepts == 0
-            assert not proxy.events("proxy.egress")
+            assert not proxy.events("traffic.egress")
 
             status, _, _ = request(
                 proxy.paths["alice"], "proofspot.safeyolo.internal:8088",
@@ -238,7 +238,7 @@ esac
             )
             assert status == 403
             assert origin.accepts == 0
-            assert not proxy.events("proxy.egress")
+            assert not proxy.events("traffic.egress")
 
             status, _, body = request(
                 proxy.paths["alice"], url,
@@ -261,7 +261,7 @@ esac
             assert _header_values(wire, b"x-safeyolo-agent-name") == [b"alice"]
             assert token.encode() not in wire
             assert wire.split(b"\r\n\r\n", 1)[1] == b"provider-request-body"
-            assert not proxy.events("proxy.egress")
+            assert not proxy.events("traffic.egress")
 
             closed.touch()
             status, _, _ = request(
@@ -270,7 +270,7 @@ esac
             )
             assert status in {502, 503}
             assert origin.accepts == 1
-            assert not proxy.events("proxy.egress")
+            assert not proxy.events("traffic.egress")
 
             closed.unlink()
 
@@ -281,7 +281,7 @@ esac
             )
             assert status in {502, 503}
             assert origin.accepts == 1
-            assert not proxy.events("proxy.egress")
+            assert not proxy.events("traffic.egress")
 
         assert parent.accepts == 0
         assert parent.requests == []

@@ -5,7 +5,7 @@ use std::{
     io::Write,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Instant,
 };
@@ -21,6 +21,7 @@ use crate::{
 pub(crate) struct RequestTrace {
     store: Arc<TraceStore>,
     enabled: AtomicBool,
+    reached: AtomicU8,
     request_id: Zeroizing<String>,
     agent: Option<Zeroizing<String>>,
     connection_id: Zeroizing<String>,
@@ -43,6 +44,7 @@ impl RequestTrace {
         Self {
             store,
             enabled: AtomicBool::new(false),
+            reached: AtomicU8::new(0),
             request_id: Zeroizing::new(request_id.into()),
             agent: identity
                 .request_agent()
@@ -65,12 +67,43 @@ impl RequestTrace {
         addon: &'static str,
         hook: &'static str,
     ) -> Option<TraceHook> {
-        self.enabled.load(Ordering::Acquire).then(|| TraceHook {
-            request: self.clone(),
-            addon,
-            hook,
-            started: Instant::now(),
+        self.enabled.load(Ordering::Acquire).then(|| {
+            if hook == "request"
+                && let Some(index) = crate::trace::REQUEST_CONTROLS
+                    .iter()
+                    .position(|name| *name == addon)
+            {
+                self.reached.fetch_or(1 << index, Ordering::Relaxed);
+            }
+            TraceHook {
+                request: self.clone(),
+                addon,
+                hook,
+                started: Instant::now(),
+            }
         })
+    }
+
+    /// The HTTP owner calls this only for an actual local response. Reached
+    /// hooks keep their own outcomes; later controls did not execute.
+    pub(crate) fn prior_response(self: &Arc<Self>, responder: Option<&str>) {
+        if !self.enabled.load(Ordering::Acquire) {
+            return;
+        }
+        let reached = self.reached.load(Ordering::Relaxed);
+        for (index, control) in crate::trace::REQUEST_CONTROLS.iter().enumerate() {
+            if reached & (1 << index) == 0
+                && let Some(hook) = self.hook(control, "request")
+            {
+                hook.append(
+                    "bypassed",
+                    None,
+                    Some("prior_response"),
+                    responder.map(|name| serde_json::json!({"preempted_by":name}).into()),
+                    false,
+                );
+            }
+        }
     }
 }
 
@@ -95,6 +128,10 @@ impl TraceHook {
 
     pub(crate) fn error(&self, reason: &str) {
         self.append("error", None, Some(reason), None, true);
+    }
+
+    pub(crate) fn not_loaded(&self) {
+        self.append("not_loaded", None, None, None, false);
     }
 
     pub(crate) fn untimed_error(&self, reason: &str, details: Option<CircuitValue>) {

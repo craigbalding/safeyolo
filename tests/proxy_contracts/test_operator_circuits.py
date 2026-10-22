@@ -106,10 +106,10 @@ def circuit_proxy(backend, tmp_path, monkeypatch, *, enabled=True, policy=ALLOW)
                 with socket.socket() as closed:
                     closed.settimeout(1)
                     assert closed.connect_ex(address) != 0
-            egress = proxy.events("proxy.egress")
-            assert all((event["host"], event["port"]) == origin.server_address for event in egress)
+            egress = proxy.events("traffic.egress")
+            assert all((event["host"], event["details"]["port"]) == origin.server_address for event in egress)
             assert len(egress) == origin.accepts == len(origin.requests)
-            for name in ("events.jsonl", "audit.jsonl", "process.log", "agent-api-wire.jsonl", "circuit-wire.jsonl"):
+            for name in ("audit.jsonl", "process.log", "agent-api-wire.jsonl", "circuit-wire.jsonl"):
                 path = directory / name
                 if path.exists():
                     data = path.read_bytes()
@@ -137,15 +137,15 @@ def circuit_proxy(backend, tmp_path, monkeypatch, *, enabled=True, policy=ALLOW)
 
 
 def hit(proxy, origin, agent, path, expected):
-    before = origin.accepts, len(proxy.events("proxy.egress"))
+    before = origin.accepts, len(proxy.events("traffic.egress"))
     result = send_request(proxy.paths[agent], f"http://{HOST}:{origin.server_address[1]}{path}")
     status, headers, body = result
     assert status == expected, body
     if expected in (200, 500):
         assert body == b"hello"
     contacted = int(expected in (200, 500))
-    assert (origin.accepts, len(proxy.events("proxy.egress"))) == (before[0] + contacted, before[1] + contacted)
-    with (proxy.event_log.parent / "circuit-wire.jsonl").open("a") as output:
+    assert (origin.accepts, len(proxy.events("traffic.egress"))) == (before[0] + contacted, before[1] + contacted)
+    with (proxy.audit_log.parent / "circuit-wire.jsonl").open("a") as output:
         output.write(
             json.dumps(
                 {
@@ -165,7 +165,7 @@ def hit(proxy, origin, agent, path, expected):
 def read_circuits(
     proxy, origin, *, checks, opens, failure_count=None, state="closed", enabled=True, threshold=2, opened_after=None
 ):
-    before = origin.accepts, len(proxy.events("proxy.egress"))
+    before = origin.accepts, len(proxy.events("traffic.egress"))
     for agent in ("alice", "bob"):
         body = assert_api_response(api_request(proxy, "/circuits", agent=agent), 200)
         assert list(body) == [
@@ -201,17 +201,11 @@ def read_circuits(
                 assert 120 - (time.monotonic() - opened_after) - 1 <= remaining <= 120
             else:
                 assert remaining is None
-    assert (origin.accepts, len(proxy.events("proxy.egress"))) == before
+    assert (origin.accepts, len(proxy.events("traffic.egress"))) == before
 
 
 def circuit_audits(proxy, backend):
-    if backend == "python":
-        return [event for event in read_events(proxy.event_log.parent / "audit.jsonl") if event["event"] in AUDITS]
-    rows = [event for event in read_events(proxy.event_log) if event.get("audit_intent") in AUDITS]
-    for event in rows:
-        expected = "proxy.admin_api" if event["audit_intent"].startswith("admin.") else "proxy.circuit"
-        assert event["event"] == expected
-    return rows
+    return [event for event in read_events(proxy.audit_log) if event["event"] in AUDITS]
 
 
 def test_operator_reset_reopens_admission_for_shared_completed_failures(proxy_backend, tmp_path, monkeypatch):
@@ -236,7 +230,7 @@ def test_operator_reset_reopens_admission_for_shared_completed_failures(proxy_ba
             "message": f"Circuit breaker open for {HOST}. Service has failed 2 times. Will retry in {retry_after} seconds.",
         }
         read_circuits(proxy, origin, checks=3, opens=1, failure_count=2, state="open", opened_after=opened_after)
-        before = origin.accepts, len(proxy.events("proxy.egress"))
+        before = origin.accepts, len(proxy.events("traffic.egress"))
         assert_api_response(api_request(proxy, "/circuits", auth=None), 401)
         unauthorized = operator_wire(
             proxy, port, "POST", "/admin/circuit-breaker/reset", body=json.dumps({"host": HOST}).encode(), token=None
@@ -245,11 +239,11 @@ def test_operator_reset_reopens_admission_for_shared_completed_failures(proxy_ba
         read_circuits(proxy, origin, checks=3, opens=1, failure_count=2, state="open", opened_after=opened_after)
         assert client.reset_circuit(HOST) == {"status": "reset", "host": HOST}
         read_circuits(proxy, origin, checks=3, opens=1)
-        assert (origin.accepts, len(proxy.events("proxy.egress"))) == before
+        assert (origin.accepts, len(proxy.events("traffic.egress"))) == before
         hit(proxy, origin, "bob", "/retry", 200)
         read_circuits(proxy, origin, checks=4, opens=1)
         audits = circuit_audits(proxy, proxy_backend)
-        key = "event" if proxy_backend == "python" else "audit_intent"
+        key = "event"
         assert [event[key] for event in audits] == list(AUDITS)
         assert audits[0]["host"] == HOST and audits[0]["agent"] == "bob"
         assert audits[1]["host"] == HOST and audits[1]["agent"] == "alice"

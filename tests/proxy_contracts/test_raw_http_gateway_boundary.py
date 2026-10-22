@@ -387,10 +387,9 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                 assert framed[0] == 400, framed
             else:
                 assert framed[0] == 200, framed
-            assert len(proxy.events("proxy.egress")) == parent.accepts
+            assert len(proxy.events("traffic.egress")) == parent.accepts
             for secret in (token, VAULT_CREDENTIAL.encode()):
                 assert secret not in (directory / "audit.jsonl").read_bytes()
-                assert secret not in (directory / "events.jsonl").read_bytes()
             assert forbidden.accepts == 0 and forbidden.requests == []
 
         # This observer really routes a conflicting Host to another physical
@@ -574,15 +573,15 @@ use_default_credential_rules = false
             assert b"key-reused-connection" not in heads[1]
             assert b"key-reused-connection" in heads[2]
             assert b"key-reused-connection" not in heads[3]
-            egress = proxy.events("proxy.egress")
+            egress = proxy.events("traffic.egress")
             assert egress and all(
                 row["agent"] == "alice" and row["host"] == "127.0.0.1"
-                and row["port"] == allowed.server_address[1] for row in egress
+                and row["details"]["port"] == allowed.server_address[1] for row in egress
             ), egress
 
-        requests = proxy.events("proxy.request")
-        assert [row["status"] for row in requests] == [200, 403, 200, 428, 200, 403, 200, 403]
+        requests = proxy.events("traffic.request_outcome")
+        assert [row["details"]["status"] for row in requests] == [200, 403, 200, 428, 200, 403, 200, 403]
         assert [row["agent"] for row in requests] == ["alice"] * 7 + ["bob"]
         assert [row["request_id"] for row in requests[:7]] == identifiers
-        assert len({row["connection_id"] for row in requests[:7]}) == 1
-        assert requests[7]["connection_id"] != requests[0]["connection_id"]
+        assert len({row["details"]["connection_id"] for row in requests[:7]}) == 1
+        assert requests[7]["details"]["connection_id"] != requests[0]["details"]["connection_id"]

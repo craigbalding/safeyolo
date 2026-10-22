@@ -39,16 +39,6 @@ impl CircuitValue {
         Ok(output)
     }
 
-    /// Source AuditEvent's JSON-mode Any fields encode nonfinite floats as
-    /// null. This output-only mode leaves API/cache values and integers intact.
-    pub(crate) fn render_audit_json(&self) -> Result<String> {
-        validate_temporals(self)?;
-        let mut output = String::new();
-        write(self, &mut output, false, true)
-            .map_err(|_| invalid("cannot write circuit audit JSON output"))?;
-        Ok(output)
-    }
-
     pub fn as_object(&self) -> Option<&IndexMap<String, Self>> {
         match self {
             Self::Object(values) => Some(values),

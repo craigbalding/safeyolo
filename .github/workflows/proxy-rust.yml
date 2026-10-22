@@ -4,6 +4,19 @@ on:
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
+    inputs:
+      packages_only:
+        description: Retain production packages without running the contract matrix
+        type: boolean
+        default: false
+      source_revision:
+        description: Required full default-branch source SHA for packages_only
+        type: string
+      package_architecture:
+        description: 'Package group: amd64 is Linux; arm64 is Linux and macOS'
+        type: choice
+        default: all
+        options: [all, amd64, arm64]
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
@@ -43,17 +56,53 @@ permissions:
 
 concurrency:
   # Keep scheduled and manual contracts independent of quick branch/PR updates.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.packages_only && inputs.package_architecture || '' }}
   # A feature PR's ready transition has no job; keep its in-flight focused check.
   cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
 
 jobs:
+  package-inputs:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      architectures: ${{ steps.select.outputs.architectures }}
+    steps:
+      - name: Select package inputs
+        id: select
+        env:
+          PACKAGES_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.packages_only }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          PACKAGE_ARCHITECTURE: ${{ inputs.package_architecture }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          architectures='["amd64","arm64"]'
+          if [[ "$PACKAGES_ONLY" == true ]]; then
+            if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+              echo '::error::Package dispatch requires the default branch'
+              exit 1
+            fi
+            if [[ ! "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ || "$SOURCE_REVISION" != "$GITHUB_SHA" ]]; then
+              echo '::error::source_revision must be the full SHA of the dispatched default-branch head'
+              exit 1
+            fi
+            case "$PACKAGE_ARCHITECTURE" in
+              all) ;;
+              amd64|arm64) architectures="[\"$PACKAGE_ARCHITECTURE\"]" ;;
+              *) echo '::error::package_architecture must be all, amd64 or arm64'; exit 1 ;;
+            esac
+          fi
+          printf 'architectures=%s\n' "$architectures" >> "$GITHUB_OUTPUT"
+
   guest-inputs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      actions: read
+    needs: package-inputs
     strategy:
       fail-fast: false
       matrix:
-        architecture: [amd64, arm64]
+        architecture: ${{ fromJSON(needs.package-inputs.outputs.architectures) }}
     uses: ./.github/workflows/guest-test-inputs.yml
     with:
       revision: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -152,6 +201,21 @@ jobs:
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 
+      - name: Install Linux guest build tools
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y -qq --no-install-recommends musl-tools
+          rustup target add "$(uname -m)-unknown-linux-musl"
+
+      # Native Cargo tests write the default release binary. Run them before
+      # staging musl helpers and their checksums for the native installer.
+      - name: Check native guest command operations
+        if: steps.changes.outputs.guest == 'true'
+        run: |
+          scripts/cargo_with_space.sh test --release --manifest-path guest/command/Cargo.toml --locked
+          scripts/cargo_with_space.sh clippy --release --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
+
       - name: Build the native guest command artifact
         id: linux_guest_inputs
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
@@ -192,12 +256,6 @@ jobs:
             guest/command/target/release/safeyolo-coord*
           retention-days: 7
           if-no-files-found: error
-
-      - name: Check native guest command operations
-        if: steps.changes.outputs.guest == 'true'
-        run: |
-          scripts/cargo_with_space.sh test --release --manifest-path guest/command/Cargo.toml --locked
-          scripts/cargo_with_space.sh clippy --release --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
 
       - name: Build the native CLI for recovery and Dispatch checks
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
@@ -358,8 +416,8 @@ jobs:
     env:
       CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-    # Full regression is overnight or a trusted explicit request.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Package dispatch reuses the producer without starting full regression.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)
     strategy:
       fail-fast: false
       matrix:

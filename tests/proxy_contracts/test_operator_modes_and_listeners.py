@@ -8,14 +8,10 @@ reload marker alone is not sufficient.
 
 import json
 import time
-from dataclasses import asdict
 from pathlib import Path
 
-from safeyolo import rust_proxy
 from safeyolo.api import AdminAPI
 from safeyolo.proxy import sync_proxy_ignore_hosts
-from safeyolo.runtime_identity import process_start_token
-from safeyolo.sockets import path_for
 from tests.proxy_contracts.harness import request as send_request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_network_policy import DENY, policy_proxy
@@ -135,60 +131,3 @@ def test_retained_ignore_host_consumer_publishes_and_clears_native_entries(tmp_p
         assert updates[-2]["details"]["operator_entry_count"] == 1
         assert updates[-1]["details"]["hosts"] == []
         assert updates[-1]["details"]["operator_entry_count"] == 0
-
-
-def test_retained_listener_consumer_adds_and_removes_real_native_sockets(tmp_path, monkeypatch):
-    """sync_proxy_modes changes the live native listener set via SIGHUP."""
-    cli_root = tmp_path / "cli"
-    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(cli_root))
-    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "cli-logs"))
-    directory = tmp_path / "listeners"
-    mapping = {"alice": "10.0.0.2"}
-
-    with origin_server() as origin:
-        with policy_proxy(
-            "rust",
-            directory,
-            ALLOW,
-            agent_map=mapping,
-        ) as proxy:
-            process = rust_proxy.RustProcess(
-                pid=proxy.process.pid,
-                start_token=process_start_token(proxy.process.pid),
-                readiness_file=str(proxy.readiness_file),
-                admin_port=None,
-                admin_token_file=None,
-                config_file=str(directory / "proxy.json"),
-                working_directory=str(directory),
-            )
-            assert process.start_token
-            state_path = rust_proxy.state_file()
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_text(json.dumps(asdict(process)))
-
-            alice = Path(proxy.paths["alice"])
-            target = f"http://127.0.0.1:{origin.server_address[1]}/listener-consumer"
-            status, _, body = send_request(str(alice), target)
-            assert status == 200 and body == b"hello"
-            assert alice.exists()
-
-            mapping["bob"] = "10.0.0.3"
-            (cli_root / "data" / "agent_map.json").write_text(
-                json.dumps({name: {"ip": ip} for name, ip in mapping.items()})
-            )
-            assert rust_proxy.sync_listeners(timeout=5)
-            bob = path_for("bob", "10.0.0.3")
-            assert bob.exists()
-            status, _, body = send_request(str(bob), target)
-            assert status == 200 and body == b"hello"
-
-            del mapping["alice"]
-            (cli_root / "data" / "agent_map.json").write_text(
-                json.dumps({name: {"ip": ip} for name, ip in mapping.items()})
-            )
-            assert rust_proxy.sync_listeners(timeout=5)
-            assert not alice.exists()
-            assert bob.exists()
-            status, _, body = send_request(str(bob), target)
-            assert status == 200 and body == b"hello"
-            assert origin.accepts == 3

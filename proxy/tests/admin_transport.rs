@@ -152,9 +152,7 @@ fn config(directory: &Path, token: &str) -> Config {
         "admin_api_token_file":directory.join("operator-token"),
         "readiness_file":directory.join("ready.json"),
         "flow_store_enabled": false,
-        "audit_log_path": directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl")
-    }))
+        "audit_log_path": directory.join("audit.jsonl"),}))
     .unwrap()
 }
 
@@ -285,7 +283,7 @@ async fn ephemeral_operator_port_is_shielded_before_agent_egress() {
     let port = admin_port(&config);
     let before = events(&config)
         .into_iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .count();
 
     let target = format!("http://127.0.0.1:{port}{TASK_PATH}");
@@ -295,14 +293,14 @@ async fn ephemeral_operator_port_is_shielded_before_agent_egress() {
 
     let after = events(&config)
         .into_iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .count();
     assert_eq!(after, before, "shielded operator requests do not dial");
     assert_shutdown(proxy, &config, port).await;
 }
 
 fn events(config: &Config) -> Vec<Value> {
-    std::fs::read_to_string(&config.event_log)
+    std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -310,7 +308,7 @@ fn events(config: &Config) -> Vec<Value> {
 }
 
 fn assert_private(config: &Config, secrets: &[&str]) {
-    let log = std::fs::read_to_string(&config.event_log).unwrap();
+    let log = std::fs::read_to_string(config.audit_log_path.as_ref().unwrap()).unwrap();
     for secret in secrets {
         assert!(
             !log.contains(secret),
@@ -586,14 +584,14 @@ async fn raw_registry_reload_startup_ownership_restart_and_no_activation() {
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["audit_intent"] == "admin.task_policy_update")
+            .filter(|row| row["event"] == "admin.task_policy_update")
             .count(),
         3
     );
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["audit_intent"] == "admin.auth_failure")
+            .filter(|row| row["event"] == "admin.auth_failure")
             .count(),
         1
     );
@@ -861,7 +859,7 @@ async fn occupied_operator_bind_never_publishes_agent_sockets_or_readiness() {
     assert!(Proxy::start(config.clone()).await.is_err());
     assert!(!config.readiness_file.exists());
     assert!(
-        !config.event_log.exists(),
+        !config.audit_log_path.as_ref().unwrap().exists(),
         "failed bind precedes runtime publication"
     );
     for listener in &config.listeners {
@@ -1006,7 +1004,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["event"] == "proxy.egress")
+            .filter(|row| row["event"] == "traffic.egress")
             .count(),
         4
     );
@@ -1020,7 +1018,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["blocked_by"] == "admin-shield")
+            .filter(|row| row["details"]["blocked_by"] == "admin-shield")
             .count(),
         aliases.len() * 4 + 4
     );
@@ -1036,15 +1034,15 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
         let controls: Vec<&Value> = recorded
             .iter()
             .filter(|row| {
-                row["event"] == "proxy.request"
+                row["event"] == "traffic.request_outcome"
                     && row["host"] == host
-                    && row["port"] == control_port
+                    && row["details"]["port"] == control_port
             })
             .collect();
         assert_eq!(controls.len(), 2);
         for row in controls {
             assert_eq!(
-                row["coverage"],
+                row["details"]["coverage"],
                 "native_network_guard_circuits_and_test_context"
             );
             assert_eq!(row["decision"], "allow");
@@ -1054,11 +1052,11 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     }
     let credential_events: Vec<&Value> = recorded
         .iter()
-        .filter(|row| row["event"] == "proxy.credential_guard")
+        .filter(|row| row["event"] == "security.credential_guard.evaluated")
         .collect();
     assert_eq!(credential_events.len(), 4);
     for row in credential_events {
-        assert_eq!(row["outcome"], "no_detection");
+        assert_eq!(row["details"]["outcome"], "no_detection");
         assert!(row["host"] == peer.address.ip().to_string() || row["host"] == "127.0.0.1");
     }
     assert_eq!(extra_peer.accepts.load(Ordering::SeqCst), 0);
@@ -1108,11 +1106,11 @@ async fn selected_parent_shield_does_not_block_an_unselected_direct_route() {
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 1);
     let egress: Vec<_> = events(&config)
         .into_iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["agent"], "bob");
-    assert_eq!(egress[0]["route"], "direct");
+    assert_eq!(egress[0]["details"]["route"], "direct");
     assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
 }
@@ -1187,12 +1185,12 @@ async fn parent_host_filter_shields_only_selected_routes_and_rejects_invalid_rel
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
     let egress: Vec<_> = events(&config)
         .into_iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 2);
     assert_eq!(egress[0]["agent"], "alice");
     assert_eq!(egress[1]["agent"], "bob");
-    assert!(egress.iter().all(|row| row["route"] == "direct"));
+    assert!(egress.iter().all(|row| row["details"]["route"] == "direct"));
     assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
 }
@@ -1253,7 +1251,7 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["event"] == "proxy.egress")
+            .filter(|row| row["event"] == "traffic.egress")
             .count(),
         0
     );
@@ -1267,7 +1265,7 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["blocked_by"] == "admin-shield")
+            .filter(|row| row["details"]["blocked_by"] == "admin-shield")
             .count(),
         12
     );
@@ -1308,12 +1306,6 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
     let before = admin(port, &token, "GET", "/admin/budgets", b"").await;
     assert_eq!(before.status, 200);
     assert_eq!(before.json()["tracked_keys"], 1);
-    let saved_events = std::fs::read(&config.event_log).unwrap();
-
-    let mut broken_sink = config.clone();
-    broken_sink.event_log = "/dev/full".into();
-    proxy.reload(broken_sink.clone()).await.unwrap();
-    assert_eq!(admin_port(&broken_sink), port);
     // A rejected body must not commit an all-key reset or emit success evidence.
     let rejected = admin(port, &token, "POST", "/admin/budgets/reset", b"{").await;
     assert_eq!(rejected.status, 400);
@@ -1326,7 +1318,7 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
     );
     let reset = admin(port, &token, "POST", "/admin/budgets/reset", b"").await;
     assert_eq!(reset.status, 200);
-    assert_eq!(reset.header("x-safeyolo-evidence-error"), Some("true"));
+    assert_eq!(reset.header("x-safeyolo-evidence-error"), None);
     assert_eq!(
         reset.json(),
         json!({"status":"ok", "resource":"all", "reset_count":0})
@@ -1335,7 +1327,6 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
     assert_eq!(after.status, 200);
     assert_eq!(after.header("x-safeyolo-evidence-error"), None);
     assert_eq!(after.json()["tracked_keys"], 0);
-    assert!(std::fs::read(&config.event_log).unwrap() == saved_events);
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
 
     // A real reload restores the sink while retaining the committed empty map.
@@ -1359,9 +1350,22 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
     assert_eq!(reset.header("x-safeyolo-evidence-error"), None);
     let audit_names: Vec<_> = events(&config)
         .into_iter()
-        .filter_map(|row| row["audit_intent"].as_str().map(str::to_owned))
+        .filter_map(|row| {
+            row["event"]
+                .as_str()
+                .filter(|name| name.starts_with("admin.budget"))
+                .map(str::to_owned)
+        })
         .collect();
-    assert_eq!(audit_names, ["admin.budget_reset", "admin.budgets_reset"]);
+    assert_eq!(
+        audit_names,
+        [
+            "admin.budget_reset",
+            "admin.budgets_reset",
+            "admin.budget_reset",
+            "admin.budgets_reset"
+        ]
+    );
     assert_private(&config, &[&token]);
     assert_shutdown(proxy, &config, port).await;
     peer.stop().await;

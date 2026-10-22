@@ -16,21 +16,33 @@ import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from safeyolo.operator_approvals import approve
+from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.native_credentials import native_cli
 from tests.proxy_contracts.harness import connection, read_events
 from tests.proxy_contracts.harness import request as send_request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_network_policy import policy_proxy, replace_policy
 from tests.proxy_contracts.test_operator_consumer_approval import (
-    PROMPT_POLICY,
+    PROMPT_POLICY as NETWORK_PROMPT_POLICY,
+)
+from tests.proxy_contracts.test_operator_consumer_approval import (
     _admin_client,
     _compiled_permission,
     _pending,
 )
 from tests.proxy_contracts.test_tunnel_contract import read_all, tunnel
 from tests.proxy_contracts.test_websocket_contract import exact, read_head
+
+# The Bearer header is a forwarding canary in these network-approval checks.
+# Credential detection has separate real-wire controls.
+BEARER_CANARY_CONTROLS = '''
+[controls.credentials]
+standard_auth_headers = []
+'''
+PROMPT_POLICY = NETWORK_PROMPT_POLICY + BEARER_CANARY_CONTROLS
 
 
 class _EchoOrigin(socketserver.ThreadingTCPServer):
@@ -116,6 +128,37 @@ def _wait_for_removed_grant(api, port):
             return
         time.sleep(0.02)
     raise AssertionError("removed Alice endpoint approval was not reloaded")
+
+
+def test_continuity_wrong_port_skips_the_approved_vz_tls_authority(tmp_path):
+    """The maintained caller refuses a distinct port with no origin effect."""
+    # Use the VZ caller's adjacent authorities. The existing parent observes
+    # allowed traffic without binding either physical host port in this check.
+    http_port, tls_port = 46373, 46374
+    policy = f'''
+[hosts."*"]
+egress = "deny"
+[agents.alice]
+agent_id = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[agents.alice.hosts."fixture.test"]
+egress = "deny"
+[agents.alice.hosts."fixture.test:{http_port}"]
+egress = "allow"
+[agents.alice.hosts."fixture.test:{tls_port}"]
+egress = "allow"
+'''
+    with origin_server(capture_heads=True) as parent, policy_proxy(
+        "rust", tmp_path / "native", policy, native_product=True,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+    ) as proxy:
+        alice = Path(proxy.paths["alice"])
+        # The old target is already approved and reaches the parent.
+        status, _ = continuity.request(alice, "GET", f"http://fixture.test:{http_port + 1}/collision")
+        assert status == 200 and len(parent.requests) == 1
+        origin = SimpleNamespace(server_port=http_port, seen=parent.requests)
+        tls_origin = SimpleNamespace(server_port=tls_port, seen=parent.requests)
+        assert continuity.check_unapproved_port(alice, "fixture.test", origin, tls_origin) == 403
+        assert len(parent.requests) == 1
 
 
 def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path):
@@ -262,12 +305,12 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
                 assert status == 428, body
                 assert (origin.accepts, len(origin.requests), len(origin.request_heads)) == before_restore
 
-                events = {row["request_id"]: row for row in proxy.events("proxy.request")}
-                assert [events[identifier]["status"] for identifier in reuse_ids] == [
+                events = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
+                assert [events[identifier]["details"]["status"] for identifier in reuse_ids] == [
                     200, 428, 403, 200, 428,
                 ]
                 assert all(events[identifier]["agent"] == "alice" for identifier in reuse_ids)
-                assert len({events[identifier]["connection_id"] for identifier in reuse_ids}) == 1
+                assert len({events[identifier]["details"]["connection_id"] for identifier in reuse_ids}) == 1
                 heads = b"\n".join(origin.request_heads)
                 assert b"X-Fixture-Canary: before-remove" in heads
                 assert b"X-Fixture-Canary: after-allow" in heads
@@ -430,8 +473,8 @@ def test_expiring_host_allowance_changes_only_at_reload(proxy_backend, tmp_path)
 egress = "prompt"
 [agents.alice.hosts]
 "127.0.0.1:{port}" = {{ egress = "allow", expires = {expires} }}
-'''
-        with policy_proxy(proxy_backend, directory, PROMPT_POLICY) as proxy:
+''' + BEARER_CANARY_CONTROLS
+        with policy_proxy(proxy_backend, directory, PROMPT_POLICY, native_product=True) as proxy:
             alice = connection(proxy.paths["alice"])
             try:
                 alice_socket = alice.sock
@@ -490,9 +533,9 @@ egress = "prompt"
                     proxy_backend == "python"
                 )
 
-                runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
-                assert (runtime[global_id]["agent"], runtime[global_id]["status"]) == ("bob", 428)
-                assert (runtime[agent_id]["agent"], runtime[agent_id]["status"]) == (
+                runtime = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
+                assert (runtime[global_id]["agent"], runtime[global_id]["details"]["status"]) == ("bob", 428)
+                assert (runtime[agent_id]["agent"], runtime[agent_id]["details"]["status"]) == (
                     "alice", expected_agent_status,
                 )
                 guards = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")

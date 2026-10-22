@@ -316,6 +316,50 @@ descriptors. A rejected candidate keeps its target until it is repaired, superse
 or explicitly retired with its receipt. Source, fixtures, patches and review
 reports remain untouched.
 
+### Retain production packages in CI
+
+The shared `guest-test-inputs.yml` jobs check retained host and guest executable
+artifacts before compilation. Reuse requires the exact source, platform, profile,
+compiler, default features and build flags from `native-input.json`. The selected
+scheduled or manual default-branch build job must have succeeded. For retained
+production packages, the selected run and the original producer run must also
+have completed successfully. Reused bytes keep their original receipt. An absent,
+expired or incompatible input leaves the current-source build in place. Old raw
+artifacts without this receipt also require a build. Damaged downloads or invalid
+receipts fail the job. Consumer tests, terminal-input checks and complete package
+assembly still run.
+
+Use the `packages_only` input of `proxy-rust.yml` to produce complete host
+bundles without the contract matrix. It calls the existing
+`guest-test-inputs.yml` producer with production profile and package retention.
+First check for reusable complete bundles at the required source, profile and
+platform. Raw host or guest executable artifacts alone are not complete bundles.
+The existing Cargo cache remains available to the producer.
+
+From a machine with authenticated GitHub CLI (`gh`) and repository Actions write
+access, select the full source SHA from the default branch (`master`):
+
+```sh
+package_source=$(gh api repos/craigbalding/safeyolo/commits/master --jq .sha)
+gh workflow run proxy-rust.yml --repo craigbalding/safeyolo --ref master \
+  -F packages_only=true -f source_revision="$package_source" \
+  -f package_architecture=all
+```
+
+The request fails before compilation if the selected SHA differs from the
+dispatched head or the workflow runs outside the default branch. If the branch
+advances, select the intended new head before dispatching again.
+`all` produces Linux AMD64, Linux ARM64 and macOS ARM64 packages. `amd64`
+selects Linux AMD64 only; `arm64` selects Linux ARM64 and macOS ARM64 together.
+The existing producer shares Linux ARM64 guest executables with the Mac build.
+
+Successful producer jobs retain `nightly-host-<platform>-production` artifacts
+for 30 days. Each artifact contains the archive, `SHA256SUMS` and `build.json`
+with its source, platform, profile and producer identity. Check the selected
+run and package identities before publication or installed tests. This request
+does not publish a host release or change guest channels. Scheduled runs and
+manual runs without `packages_only=true` keep the full contract matrix.
+
 ### Disposable development instance
 
 Use the [bundle build and installation](installation.md#build-a-bundle)
@@ -339,6 +383,13 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+Doctor also sends a traced request through every configured agent Unix-domain
+socket. The reserved probe runs the normal request controls and terminates
+locally without external network access. The `pipeline` result lists each
+agent's control states and findings. Known disablement passes with its state
+shown. Missing controls, execution errors, incomplete evidence or an unavailable
+socket fail the check and make doctor exit with status 1. With no configured
+agent listener, doctor warns that it could not test the request pipeline.
 The Admin client reads the configured private token and the live readiness
 port, including an automatically assigned port. Stale ownership or an
 unavailable endpoint fails visibly. Token-file changes require a restart.
@@ -1044,8 +1095,9 @@ non-blocking. The command supplements the configured lint and static checks;
 it does not replace independent acceptance of the behaviour being changed.
 
 For a Python dependency repair, run the focused dependency controls from a
-Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish to
-exercise its activation control; the test reports a skip when fish is absent.
+Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish and
+zsh to exercise their activation controls; the tests report skips when a shell
+is absent.
 Use the configured proxy and certificate authority for package downloads.
 These commands create the two frozen environments and run the controls:
 
@@ -1059,11 +1111,18 @@ uv run --frozen --no-sync python -m unittest discover -s tools/acceptance/tests 
 Expected result: both test runs pass. The controls exercise JSON Web Token
 (JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
 HTTPS proxy certificate policy, chunked response parsing, virtualenv
-configuration and shell activation. HTTP fixtures listen on disposable
-loopback ports and close after each test. The seed-wheel test downloads the
-pip version in the acceptance lockfile from the default index, verifies its
+configuration, repeated activation-template substitution, fish quoting, zsh
+prompt substitution and Bash prompt decoding and expansion. HTTP fixtures
+listen on disposable loopback ports and close after each test. The seed-wheel
+test downloads the pip version in the acceptance lockfile from the default index, verifies its
 published PyPI digest, and checks rejection after altering the downloaded
 file. The tests remove their temporary files.
+
+A lockfile update changes the tool selected by the next frozen sync. It does
+not replace activation scripts in existing environments. After the development
+sync, run `uv run --frozen --no-sync pre-commit clean`, then the normal hook
+command to recreate cached hook environments. Recreate other environments made
+by virtualenv with the updated tool and their normal creation command.
 
 These Linux controls do not execute Windows batch activation. Upstream
 virtualenv skips downloaded-wheel digest verification for custom indexes or

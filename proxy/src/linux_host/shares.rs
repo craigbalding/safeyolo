@@ -39,8 +39,94 @@ if [ ! . -ef /proc/self/fd/0 ]; then
     exit 1
 fi
 exec </dev/null
+# This proc mount still uses the host PID namespace. Report the child's host
+# PID and birth before exec, then restore its log. The waiting launcher can
+# keep the pipe open, so the report has a NUL terminator.
+IFS= read -r identity < /proc/self/stat
+printf '%s\0' "$identity"
+exec 1>&2
 shift
 exec "$@""#;
+
+fn parse_gofer_stat(stat: &str) -> Result<(u32, u32, &str), Error> {
+    if stat.is_empty() || stat.len() >= 4096 {
+        return Err("share Gofer process stat is missing or oversized".into());
+    }
+    let pid = stat
+        .split_once(" (")
+        .ok_or("share Gofer process report has no PID")?
+        .0
+        .parse::<u32>()?;
+    let fields = stat
+        .rsplit_once(')')
+        .ok_or("share Gofer process report has no command")?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    if matches!(fields.first(), None | Some(&"Z" | &"X")) {
+        return Err("share Gofer process has exited".into());
+    }
+    let parent = fields
+        .get(1)
+        .ok_or("share Gofer parent is missing")?
+        .parse()?;
+    let birth = *fields.get(19).ok_or("share Gofer birth is missing")?;
+    if pid == 0 || parent == 0 {
+        return Err("share Gofer process report has an invalid PID or parent".into());
+    }
+    Ok((pid, parent, birth))
+}
+
+fn verify_gofer(share: &Value, report: &str) -> Result<(u32, String), Error> {
+    // The fixed pre-exec shell has a single-line command name. The later
+    // kernel stat can contain newlines in the selected executable's name.
+    if report.lines().count() != 1 {
+        return Err("share Gofer process report is missing or ambiguous".into());
+    }
+    let (pid, parent, birth) = parse_gofer_stat(report)?;
+    if share["launcher_pid"].as_u64() != Some(u64::from(parent)) {
+        return Err("share Gofer parent does not match its owned launcher".into());
+    }
+    let token = crate::host_lifecycle::process_token(i64::from(pid))
+        .ok_or("share Gofer child identity is unavailable or exited")?;
+    if token.rsplit(':').next() != Some(birth) {
+        return Err("share Gofer child birth changed".into());
+    }
+    let _launcher = pin_share_process(share, "launcher")?
+        .ok_or("share Gofer launcher exited during discovery")?;
+    let candidate = json!({"gofer_pid":pid,"gofer_token":token});
+    let _gofer = pin_share_process(&candidate, "gofer")?
+        .ok_or("share Gofer child exited during discovery")?;
+    let current = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|error| format!("could not read share Gofer child {pid} identity: {error}"))?;
+    if parse_gofer_stat(&current)? != (pid, parent, birth)
+        || crate::host_lifecycle::process_token(i64::from(parent)).as_deref()
+            != share["launcher_token"].as_str()
+    {
+        return Err("share Gofer child or launcher identity changed during discovery".into());
+    }
+    Ok((pid, token))
+}
+
+async fn discover_gofer(child: &mut Child, share: &Value) -> Result<(u32, String), Error> {
+    let output = child
+        .stdout
+        .take()
+        .ok_or("share Gofer child report pipe is unavailable")?;
+    let mut output = tokio::io::BufReader::new(output.take(4096));
+    let mut report = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), output.read_until(0, &mut report))
+        .await
+        .map_err(|_| "share Gofer child report deadline expired")?
+        .map_err(|error| format!("could not read share Gofer child report: {error}"))?;
+    if report.pop() != Some(0) {
+        return Err("share Gofer child report is incomplete or oversized".into());
+    }
+    let report = std::str::from_utf8(&report)
+        .map_err(|error| format!("could not decode share Gofer child report: {error}"))?;
+    verify_gofer(share, report)
+        .map_err(|error| format!("could not identify isolated share Gofer: {error}").into())
+}
 
 struct Run {
     name: String,
@@ -350,12 +436,12 @@ fn send_request(
     message.msg_iovlen = 1;
     if let Some(descriptor) = descriptor {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = space;
+        message.msg_controllen = space as _;
         unsafe {
             let header = libc::CMSG_FIRSTHDR(&message);
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as usize;
+            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
             std::ptr::write(libc::CMSG_DATA(header).cast::<RawFd>(), descriptor);
         }
     }
@@ -618,7 +704,7 @@ pub(crate) async fn attach(
         .arg(format!("--mounts-fd={}", mounts_gofer.as_raw_fd()))
         .arg(&run.id)
         .stdin(Stdio::from(source_fd.try_clone()?))
-        .stdout(log.try_clone()?)
+        .stdout(Stdio::piped())
         .stderr(log);
     inherit(
         &mut command,
@@ -650,12 +736,9 @@ pub(crate) async fn attach(
         let mut bytes = [0; 32];
         let count = tokio::time::timeout(Duration::from_secs(15), mounts.read(&mut bytes)).await??;
         if count == 0 || child.try_wait()?.is_some() { return Err("isolated share Gofer failed during startup; inspect its gofer.log".into()); }
-        let launcher = share["launcher_pid"].as_u64().ok_or("share launcher PID is missing")?;
-        let children = fs::read_to_string(format!("/proc/{launcher}/task/{launcher}/children"))?;
-        let children = children.split_whitespace().map(str::parse::<u32>).collect::<Result<Vec<_>, _>>()?;
-        let [pid] = children.as_slice() else { return Err("share Gofer launcher did not identify one isolated child".into()); };
-        share["gofer_pid"] = (*pid).into();
-        share["gofer_token"] = crate::host_lifecycle::process_token(i64::from(*pid)).ok_or("share Gofer child identity is unavailable")?.into();
+        let (pid, token) = discover_gofer(&mut child, &share).await?;
+        share["gofer_pid"] = pid.into();
+        share["gofer_token"] = token.into();
         share["state"] = "mounting".into();
         run.save_share(&share)?;
         let response = rpc(&run, json!({"method":"Fs.Mount","arg":{"container_id":run.id,"source":format!("safeyolo-share-{id}"),"target":guest.path,"fs_type":"gofer","flags":6 | u64::from(read_only),"data":"cache=remote_revalidating,directfs"}}), Some(connection.as_raw_fd())).await?;
@@ -1046,7 +1129,9 @@ mod tests {
         };
         let result = launch().output().await.unwrap();
         assert!(result.status.success(), "{:?}", result);
-        assert_eq!(result.stdout, b"selected");
+        let report = result.stdout.strip_suffix(&[0]).unwrap();
+        parse_gofer_stat(std::str::from_utf8(report).unwrap()).unwrap();
+        assert_eq!(result.stderr, b"selected");
 
         let moved = fixture.path().join("renamed-source");
         fs::rename(&source, &moved).unwrap();
@@ -1064,6 +1149,160 @@ mod tests {
                 .contains("extra mount source changed")
         );
         fs::set_permissions(&moved, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn gofer_discovery_verifies_the_reported_child_and_owned_cleanup() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(fixture.path())
+            .unwrap();
+        let log = fixture.path().join("gofer.log");
+        let (gofer_input, connection) = pipe().unwrap();
+        // Exercise the real fork/exec and proc boundary. Namespace creation
+        // stays in the accepted attach path; this probe needs no host privilege.
+        let mut command = Command::new("unshare");
+        command
+            .args([
+                "--fork",
+                "--kill-child=SIGKILL",
+                "--",
+                "/bin/sh",
+                "-eu",
+                "-c",
+                PIN_GOFER_SOURCE,
+                "share-gofer-source",
+            ])
+            .arg(fixture.path())
+            .args([
+                "/bin/sh",
+                "-eu",
+                "-c",
+                "printf ready; read -r release < \"/proc/self/fd/$1\" || :",
+                "gofer-probe",
+            ])
+            .arg(gofer_input.as_raw_fd().to_string())
+            .arg("--bundle")
+            .arg(fixture.path())
+            .stdin(Stdio::from(source))
+            .stdout(Stdio::piped())
+            .stderr(File::create(&log).unwrap())
+            .kill_on_drop(true);
+        inherit(&mut command, vec![gofer_input.as_raw_fd()]);
+        let mut launcher = command.spawn().unwrap();
+        drop(gofer_input);
+        let parent = launcher.id().unwrap();
+        let mut share = json!({"launcher_pid":parent,
+            "launcher_token":crate::host_lifecycle::process_token(i64::from(parent)).unwrap()});
+        let (pid, token) = discover_gofer(&mut launcher, &share).await.unwrap();
+        share["gofer_pid"] = pid.into();
+        share["gofer_token"] = token.into();
+        let report = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        assert_eq!(parse_gofer_stat(&report).unwrap().1, parent);
+        assert!(launcher.try_wait().unwrap().is_none());
+
+        for report in [
+            String::new(),
+            "not a process".into(),
+            report.repeat(2),
+            "x".repeat(4096),
+        ] {
+            assert!(verify_gofer(&share, &report).is_err(), "{report:?}");
+        }
+        let mut stale = share.clone();
+        stale["launcher_token"] =
+            format!("{}-stale", share["launcher_token"].as_str().unwrap()).into();
+        assert!(verify_gofer(&stale, &report).is_err());
+        let mut wrong_parent = share.clone();
+        wrong_parent["launcher_pid"] = std::process::id().into();
+        assert!(
+            verify_gofer(&wrong_parent, &report)
+                .unwrap_err()
+                .to_string()
+                .contains("parent")
+        );
+        let (prefix, fields) = report.rsplit_once(')').unwrap();
+        let mut fields = fields.split_whitespace().collect::<Vec<_>>();
+        fields[19] = "0";
+        assert!(
+            verify_gofer(&share, &format!("{prefix}) {}", fields.join(" ")))
+                .unwrap_err()
+                .to_string()
+                .contains("birth changed")
+        );
+
+        let mut unrelated = Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let unrelated_stat =
+            fs::read_to_string(format!("/proc/{}/stat", unrelated.id().unwrap())).unwrap();
+        assert!(
+            verify_gofer(&share, &unrelated_stat)
+                .unwrap_err()
+                .to_string()
+                .contains("parent")
+        );
+        let gofer = pin_share_process(&share, "gofer").unwrap().unwrap();
+        // Like a real Gofer, this file-server probe exits when its last
+        // connection closes. Cleanup must observe both process deaths.
+        drop(connection);
+        host_runs::wait_for_pidfd_exit(&gofer, Duration::from_secs(1))
+            .await
+            .unwrap();
+        launcher.wait().await.unwrap();
+        release_gofer(&share, fixture.path()).await.unwrap();
+        assert!(
+            verify_gofer(&share, &report).is_err(),
+            "an exited child was accepted"
+        );
+        assert!(
+            unrelated.try_wait().unwrap().is_none(),
+            "cleanup signalled an unrelated process"
+        );
+        unrelated.kill().await.unwrap();
+        assert_eq!(
+            fs::read(log).unwrap(),
+            b"ready",
+            "Gofer stdout must still reach its log"
+        );
+    }
+
+    #[test]
+    fn gofer_stat_preserves_kernel_command_spelling() {
+        let stat = fs::read_to_string("/proc/self/stat").unwrap();
+        let expected = parse_gofer_stat(&stat).unwrap();
+        let (_, fields) = stat.rsplit_once(')').unwrap();
+        for command in ["sh", "a)b", "a\nb"] {
+            let stat = format!("{} ({command}){fields}", std::process::id());
+            assert_eq!(parse_gofer_stat(&stat).unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn gofer_discovery_labels_a_missing_or_invalid_child_report() {
+        for script in [
+            "exit 0",
+            "printf 'invalid\\0'",
+            "printf '\\377\\0'",
+            "printf unterminated",
+        ] {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", script])
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let error = discover_gofer(&mut child, &json!({}))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("share Gofer"), "{error}");
+            child.wait().await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1189,7 +1428,7 @@ mod tests {
             message.msg_iov = &mut iov;
             message.msg_iovlen = 1;
             message.msg_control = control.as_mut_ptr().cast();
-            message.msg_controllen = std::mem::size_of_val(&control);
+            message.msg_controllen = std::mem::size_of_val(&control) as _;
             let count =
                 unsafe { libc::recvmsg(server.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
             assert!(count > 0);

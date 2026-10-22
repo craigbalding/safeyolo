@@ -107,13 +107,16 @@ interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYolo. No host firewall rule participates in this
 boundary.
 
-The host owns the socket directory named `<ip>_<agent>`. The CLI uses the agent
-map to configure each managed Rust listener with its socket path, agent
-identity, and source address. When the listener accepts a connection, it
-assigns the configured agent identity to that connection. The agent cannot
-choose another agent's socket path. On Linux, a synthetic loopback address
-supplies the `<ip>` attribution value. It is not an external interface or a
-direct egress path.
+The host creates each managed proxy socket at
+`~/.safeyolo/agents/<agent-name>/proxy/proxy.sock`. The native listener
+configuration binds that socket to the agent name and source address. When the
+listener accepts a connection, it fixes those values for the connection.
+Request headers, guest metadata and IP claims cannot select another owner.
+The proxy does not read an agent map to establish or reconcile identity.
+Linux mounts only the agent's dedicated proxy directory into the sandbox.
+On Linux, a synthetic loopback address supplies attribution. It is not an
+external interface or a direct egress path. Existing explicit operator
+listeners keep their configured paths.
 
 For a resolved service-gateway token, SafeYolo rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded
@@ -127,7 +130,7 @@ Algorithm (GCRA) rate limits contain runaway request loops.
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
 
 **Credential detection.**
-As a safety net, the credential guard detects credentials in request headers via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256. Routine credential events store the fingerprint, not the detected raw value. Stored flows can retain request and response content, including credentials in ordinary headers and bodies. Authorized operator views and exports can expose that retained content. The flow store redacts the gateway-injected credential header. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
+As a safety net, the credential guard detects credentials in request headers via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. In a selected, non-excluded `Authorization` header, a nonempty `Bearer` value is a credential regardless of entropy. An unclassified bearer enters the existing `unknown_secret` policy and approval path. Detection alone grants no permission. Detected credentials are fingerprinted via HMAC-SHA256. Routine credential events store the fingerprint, not the detected raw value. Stored flows can retain request and response content, including credentials in ordinary headers and bodies. Authorized operator views and exports can expose that retained content. The flow store redacts the gateway-injected credential header. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
 
 ## Out of Scope
 

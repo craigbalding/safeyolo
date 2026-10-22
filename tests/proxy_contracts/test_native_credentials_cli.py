@@ -8,6 +8,7 @@ These host listeners do not establish guest filesystem isolation or real op.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from contextlib import contextmanager
@@ -15,8 +16,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import tomlkit
 
-from tests.proxy_contracts.harness import child_process, connection, request, wait_ready
+from tests.proxy_contracts.harness import child_process, connection, read_events, request, wait_ready
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_policy_cli import NativeInstance, native_instance
 
@@ -109,7 +111,7 @@ def deliver(instance, origin, credential, *, agent="alice", path="/notes/one",
     return body
 
 
-def surfaces(instance):
+def surfaces(instance, values=(LOCAL, EXTERNAL, AUTH, DETECTED)):
     # Fixture inputs and deliberate origin observations live outside the
     # installed root. Scan generated files, routine logs and the encrypted file.
     for path in instance.root.rglob("*"):
@@ -119,7 +121,7 @@ def surfaces(instance):
             except FileNotFoundError:
                 # The proxy can atomically rename a circuit snapshot after is_file().
                 continue
-            for value in (LOCAL, EXTERNAL, AUTH, DETECTED):
+            for value in values:
                 if value.encode() in content:
                     raise AssertionError(f"credential marker in generated {path.relative_to(instance.root)}")
 
@@ -387,8 +389,18 @@ def test_installed_binding_does_not_replace_service_or_risk_approval(tmp_path):
 
 
 def test_installed_credential_policy_approval_uses_existing_native_operation(tmp_path):
+    # The outer gateway token must pass before injection can reach the separate
+    # credential check. Limit this fixture permission to its owned destination.
+    source = POLICY.replace('unknown_creds="deny"', 'unknown_creds="prompt"') + r'''
+[credential.fixture-gateway]
+match = ['\Asgw_[0-9a-f]{64}\Z']
+headers = ["authorization"]
+allowed_hosts = ["127.0.0.1"]
+[hosts."127.0.0.1"]
+allow = ["fixture-gateway:*"]
+'''
     with origin_server(capture_heads=True) as origin, native_instance(
-        tmp_path, POLICY.replace('unknown_creds="deny"', 'unknown_creds="prompt"'), services=True, capture=True,
+        tmp_path, source, services=True, capture=True,
     ) as instance:
         setup(instance, tmp_path)
         input_file = tmp_path / "recognized-value"
@@ -398,11 +410,108 @@ def test_installed_credential_policy_approval_uses_existing_native_operation(tmp
         deliver(instance, origin, token(instance), status=428)
         pending = cli(instance, "services", "approvals")["approvals"]
         credential_prompt = next(row for row in pending if row["approval"]["approval_type"] == "credential")
+        assert credential_prompt["approval"]["scope_hint"]["rule"] == "github"
         fingerprint = credential_prompt["approval"]["key"]
         cli(instance, "credentials", "approve", fingerprint, "--destination", "127.0.0.1")
-        deadline = time.monotonic() + 4
-        while not instance.show()["saved_matches_active"]:
-            assert time.monotonic() < deadline
-            time.sleep(0.02)
         deliver(instance, origin, token(instance), value=DETECTED)
         surfaces(instance)
+
+
+@pytest.mark.parametrize("caller", ["credentials", "admin", "approvals"])
+def test_installed_direct_credential_approval_activates_next_connection(tmp_path, caller):
+    _direct_credential_approval(tmp_path, caller, activation_failure=False)
+
+
+@pytest.mark.parametrize("caller", ["credentials", "admin", "approvals"])
+def test_installed_direct_credential_activation_failure_is_visible(tmp_path, caller):
+    _direct_credential_approval(tmp_path, caller, activation_failure=True)
+
+
+def _direct_credential_approval(directory, caller, *, activation_failure):
+    source = ('budget=12000\n[hosts]\n"*"={egress="allow",unknown_creds="prompt"}\n'
+              '[agents.alice]\nagent_id="ag-11111111111111111111111111111111"\n')
+    replacement = DETECTED[:-1] + "1"
+    with origin_server(capture_heads=True) as origin, native_instance(directory, source) as instance:
+        def send(current, value=DETECTED, *, status, host="127.0.0.1"):
+            before = origin.accepts
+            code, headers, body = request(
+                current.paths["alice"], f"http://{host}:{origin.server_address[1]}/held",
+                headers={"Authorization": "Bearer " + value},
+            )
+            assert code == status, (code, status)
+            assert all(secret.encode() not in body for secret in (DETECTED, replacement))
+            assert origin.accepts == before + (status == 200)
+            if status == 200 and value.encode() not in origin.request_heads[-1]:
+                raise AssertionError("held credential did not reach origin")
+            return next(value for name, value in headers.items() if name.lower() == "x-safeyolo-request-id")
+
+        request_id = send(instance, status=428)
+        deadline = time.monotonic() + 4
+        while True:
+            events = read_events(instance.root / "logs/audit.jsonl")
+            detections = [event for event in events if event["event"] == "security.credential_guard"
+                          and event.get("request_id") == request_id]
+            if detections:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        fingerprint = detections[0]["details"]["fingerprint"]
+        assert fingerprint.startswith("hmac:")
+        active = instance.show()["effective"]
+        if activation_failure:
+            # Valid policy syntax can still fail when the detector compiles.
+            # Preserve mtime to keep the independent file watcher out of setup.
+            metadata = instance.policy.stat()
+            saved = source + "\n[credential.activation_failure]\nmatch=['\\uD800']\n"
+            instance.policy.write_text(saved)
+            os.utime(instance.policy, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+        if caller == "admin":
+            result = instance.admin("POST", "/admin/policy/baseline/approve", {
+                "destination": "127.0.0.1", "cred_id": [fingerprint, fingerprint], "tier": "inferred",
+            }, expected_status=503 if activation_failure else 200)
+            if activation_failure:
+                assert result["status"] == "rejected"
+                assert result["error"] == "credential approval activation failed"
+            else:
+                assert result["status"] == "added" and result["permission_count"] == 1
+                assert result["cred_id"] == [fingerprint, fingerprint] and result["tier"] == "inferred"
+        else:
+            arguments = ("credentials", "approve", fingerprint, "--destination", "127.0.0.1") if caller == "credentials" else (
+                "approvals", "approve", request_id, "--json",
+            )
+            result = instance.cli(*arguments)
+            assert (result.returncode == 0) != activation_failure, "approval command exit did not match activation"
+            assert all(secret not in result.stdout + result.stderr for secret in (DETECTED, replacement))
+            if activation_failure:
+                assert "credential approval activation failed" in result.stderr
+            else:
+                assert json.loads(result.stdout)["status"] == ("added" if caller == "credentials" else "approved")
+
+        if activation_failure:
+            assert instance.policy.read_text() == saved
+            assert instance.show()["effective"] == active
+            send(instance, status=428)
+            events = read_events(instance.root / "logs/audit.jsonl")
+            assert not any(event["event"] == "admin.approval_added" for event in events)
+            instance.apply(source)
+            cli(instance, "credentials", "approve", fingerprint, "--destination", "127.0.0.1")
+
+        # request() opens and closes a distinct connection on every call. No
+        # policy view, watcher wait, policy apply or restart precedes this retry.
+        send(instance, status=200)
+        assert instance.process.poll() is None
+        assert instance.show()["saved_matches_active"]
+        send(instance, replacement, status=428)
+        send(instance, status=428, host="localhost")
+        with restart(instance) as resumed:
+            send(resumed, status=200)
+            send(resumed, replacement, status=428)
+            denied = tomlkit.parse(resumed.policy.read_text())
+            denied["hosts"]["127.0.0.1"]["rules"] = [{
+                "action": "credential:use", "resource": "127.0.0.1/*", "effect": "deny",
+            }]
+            resumed.apply(tomlkit.dumps(denied))
+            cli(resumed, "credentials", "approve", fingerprint, "--destination", "127.0.0.1")
+            send(resumed, status=403)
+        surfaces(instance, (DETECTED, replacement))

@@ -24,7 +24,7 @@ before this proposed baseline becomes trusted.
 
 | Map decision | Entry points and effect boundary |
 | --- | --- |
-| Identity | [CLI socket layout](../cli/src/safeyolo/sockets.py), [native listener](../proxy/src/lib.rs), [request reconciliation](../proxy/src/agent_discovery.rs) |
+| Identity | [host listener lifecycle](../proxy/src/host_commands.rs), [native listener](../proxy/src/lib.rs), [HTTP caller](../proxy/src/http.rs) |
 | Authorization | [policy decision](../proxy/src/policy.rs), [guard](../proxy/src/network_guard.rs), [DNS and dial](../proxy/src/http.rs) |
 | Interception TLS | [CA selection](../cli/src/safeyolo/rust_proxy.py), [CA load and leaf issuance](../proxy/src/tls.rs), [CONNECT handshake](../proxy/src/http.rs) |
 | Credentials | [vault](../proxy/src/credentials.rs), [gateway injection](../proxy/src/credential_injection.rs), [grant check](../proxy/src/grants.rs) |

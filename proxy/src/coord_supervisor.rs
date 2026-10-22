@@ -428,6 +428,10 @@ impl State {
             }
             Err(e) => return Err(e.into()),
         }
+        Self::read_existing(path)
+    }
+
+    pub(crate) fn read_existing(path: &Path) -> Result<Self, Error> {
         let state: Self = serde_json::from_value(read(path)?)?;
         state.validate()?;
         Ok(state)
@@ -1305,6 +1309,12 @@ pub async fn run(
     // A fresh, idle Factory also needs a readable checkpoint. Saving the
     // existing state does not consume attention or create a task.
     supervisor.state.save(state_path)?;
+    process::notice(
+        &supervisor,
+        "ready",
+        "supervisor started; checkpoint loaded",
+    )
+    .await;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {

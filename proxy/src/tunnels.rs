@@ -257,7 +257,7 @@ pub(crate) struct Prefixed {
 pub(crate) struct Classification {
     pub(crate) protocol: Protocol,
     pub(crate) client: BoxStream,
-    pub(crate) server: BoxStream,
+    pub(crate) server: Option<BoxStream>,
     pub(crate) tls_server_name: Option<String>,
 }
 impl Prefixed {
@@ -305,10 +305,31 @@ impl AsyncWrite for Prefixed {
 /// reaches that bound, its HTTP parser owns the rejection; never select raw.
 const PREFIX_LIMIT: usize = 8192 + 4096 * 100;
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+/// A client that must supply routing information cannot hold admission forever,
+/// including by sending a partial ClientHello one byte at a time.
+pub(crate) const ROUTE_WAIT: Duration = Duration::from_secs(30);
+
+#[derive(Debug)]
+pub(crate) enum RouteWaitEnded {
+    Timeout,
+    Cancelled,
+    ClientClosed,
+}
+
+impl std::fmt::Display for RouteWaitEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Timeout => "CONNECT route information timed out",
+            Self::Cancelled => "CONNECT route selection cancelled",
+            Self::ClientClosed => "client closed before CONNECT route selection",
+        })
+    }
+}
+impl std::error::Error for RouteWaitEnded {}
 
 pub(crate) async fn classify(
     mut client: BoxStream,
-    mut server: BoxStream,
+    mut server: Option<BoxStream>,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<Classification, Error> {
     let mut prefix = Vec::new();
@@ -316,6 +337,7 @@ pub(crate) async fn classify(
     let mut server_bytes = [0; 8192];
     let mut server_prefix = Vec::new();
     let mut last_activity = Instant::now();
+    let route_deadline = server.is_none().then(|| Instant::now() + ROUTE_WAIT);
     loop {
         if let Some(protocol) =
             protocol(&prefix).or_else(|| (prefix.len() >= PREFIX_LIMIT).then_some(Protocol::Http))
@@ -325,19 +347,27 @@ pub(crate) async fn classify(
             } else {
                 None
             };
-            let tls_incomplete = matches!(tls_name.as_ref(), Some(&ClientHelloName::Incomplete))
-                && prefix.len() < PREFIX_LIMIT;
+            let tls_incomplete = matches!(tls_name.as_ref(), Some(&ClientHelloName::Incomplete));
+            if matches!(tls_name, Some(ClientHelloName::Invalid))
+                || (tls_incomplete && prefix.len() >= PREFIX_LIMIT)
+            {
+                return Err("invalid or oversized TLS ClientHello during CONNECT selection".into());
+            }
             if !tls_incomplete {
                 let tls_server_name = match tls_name {
                     Some(ClientHelloName::Incomplete | ClientHelloName::Complete(None)) | None => {
                         None
                     }
                     Some(ClientHelloName::Complete(name)) => name,
+                    Some(ClientHelloName::Invalid) => {
+                        unreachable!("invalid ClientHello rejected above")
+                    }
                 };
                 return Ok(Classification {
                     protocol,
                     client: Box::new(Prefixed::new(client, prefix)),
-                    server: Box::new(Prefixed::new(server, server_prefix)),
+                    server: server
+                        .map(|server| Box::new(Prefixed::new(server, server_prefix)) as BoxStream),
                     tls_server_name,
                 });
             }
@@ -346,27 +376,38 @@ pub(crate) async fn classify(
             return Ok(Classification {
                 protocol: Protocol::Opaque,
                 client,
-                server: Box::new(Prefixed::new(server, server_prefix)),
+                server: server
+                    .map(|server| Box::new(Prefixed::new(server, server_prefix)) as BoxStream),
                 tls_server_name: None,
             });
         }
         if *stop.borrow() {
+            if route_deadline.is_some() {
+                return Err(RouteWaitEnded::Cancelled.into());
+            }
             return Err("proxy shutdown during CONNECT classification".into());
         }
         let room = client_bytes.len().min(PREFIX_LIMIT - prefix.len());
         tokio::select! {
             biased;
-            _ = stop.changed() => return Err("proxy shutdown during CONNECT classification".into()),
-            _ = tokio::time::sleep_until(last_activity + IDLE_TIMEOUT) => return Err("CONNECT classification idle timeout".into()),
+            _ = stop.changed() => return Err(if route_deadline.is_some() {
+                RouteWaitEnded::Cancelled.into()
+            } else { "proxy shutdown during CONNECT classification".into() }),
+            _ = tokio::time::sleep_until(route_deadline.unwrap_or(last_activity + IDLE_TIMEOUT)) => return Err(if route_deadline.is_some() {
+                RouteWaitEnded::Timeout.into()
+            } else { "CONNECT classification idle timeout".into() }),
             read = client.read(&mut client_bytes[..room]) => {
                 let count = read?;
                 if count == 0 {
+                    if route_deadline.is_some() {
+                        return Err(RouteWaitEnded::ClientClosed.into());
+                    }
                     return Err("client closed before CONNECT protocol selection".into());
                 }
                 prefix.extend_from_slice(&client_bytes[..count]);
                 last_activity = Instant::now();
             }
-            read = server.read(&mut server_bytes), if server_prefix.is_empty() => {
+            read = async { server.as_mut().expect("guarded server").read(&mut server_bytes).await }, if server.is_some() && server_prefix.is_empty() => {
                 let count = read?;
                 if count == 0 {
                     return Err("destination closed before CONNECT protocol selection".into());
@@ -381,95 +422,29 @@ pub(crate) async fn classify(
 enum ClientHelloName {
     Incomplete,
     Complete(Option<String>),
+    Invalid,
 }
 
-/// Read a DNS SNI from a buffered ClientHello without terminating TLS.
-/// Malformed or non-ClientHello records stay on the normal inspected path.
+/// Use the same TLS implementation as interception to identify a complete
+/// ClientHello. Malformed input cannot be mistaken for a no-SNI literal client.
 fn client_hello_server_name(prefix: &[u8]) -> ClientHelloName {
-    let mut offset = 0;
-    let mut handshake = Vec::new();
-    while offset + 5 <= prefix.len() {
-        let content_type = prefix[offset];
-        let length = u16::from_be_bytes([prefix[offset + 3], prefix[offset + 4]]) as usize;
-        let end = offset + 5 + length;
-        if end > prefix.len() {
-            return ClientHelloName::Incomplete;
-        }
-        if content_type != 22 {
-            return ClientHelloName::Complete(None);
-        }
-        handshake.extend_from_slice(&prefix[offset + 5..end]);
-        offset = end;
-        if handshake.len() < 4 {
-            continue;
-        }
-        let message_length = ((handshake[1] as usize) << 16)
-            | ((handshake[2] as usize) << 8)
-            | handshake[3] as usize;
-        if handshake.len() < 4 + message_length {
-            continue;
-        }
-        if handshake[0] != 1 {
-            return ClientHelloName::Complete(None);
-        }
-        let body = &handshake[4..4 + message_length];
-        if body.len() < 34 {
-            return ClientHelloName::Complete(None);
-        }
-        let mut cursor = 34;
-        let session_length = body[cursor] as usize;
-        cursor = cursor.saturating_add(1 + session_length);
-        if cursor + 2 > body.len() {
-            return ClientHelloName::Complete(None);
-        }
-        let cipher_length = u16::from_be_bytes([body[cursor], body[cursor + 1]]) as usize;
-        cursor = cursor.saturating_add(2 + cipher_length);
-        if cursor >= body.len() {
-            return ClientHelloName::Complete(None);
-        }
-        let compression_length = body[cursor] as usize;
-        cursor = cursor.saturating_add(1 + compression_length);
-        if cursor + 2 > body.len() {
-            return ClientHelloName::Complete(None);
-        }
-        let extensions_length = u16::from_be_bytes([body[cursor], body[cursor + 1]]) as usize;
-        cursor += 2;
-        let extensions_end = cursor.saturating_add(extensions_length);
-        if extensions_end > body.len() {
-            return ClientHelloName::Complete(None);
-        }
-        while cursor + 4 <= extensions_end {
-            let extension_type = u16::from_be_bytes([body[cursor], body[cursor + 1]]);
-            let extension_length =
-                u16::from_be_bytes([body[cursor + 2], body[cursor + 3]]) as usize;
-            cursor += 4;
-            let extension_end = cursor.saturating_add(extension_length);
-            if extension_end > extensions_end {
-                return ClientHelloName::Complete(None);
-            }
-            if extension_type == 0 {
-                let extension = &body[cursor..extension_end];
-                if extension.len() < 5 {
-                    return ClientHelloName::Complete(None);
+    let mut acceptor = rustls::server::Acceptor::default();
+    let mut input = std::io::Cursor::new(prefix);
+    loop {
+        match acceptor.read_tls(&mut input) {
+            Ok(0) => return ClientHelloName::Incomplete,
+            Err(_) => return ClientHelloName::Invalid,
+            Ok(_) => match acceptor.accept() {
+                Ok(Some(accepted)) => {
+                    return ClientHelloName::Complete(
+                        accepted.client_hello().server_name().map(str::to_owned),
+                    );
                 }
-                let list_length = u16::from_be_bytes([extension[0], extension[1]]) as usize;
-                if list_length + 2 > extension.len() || extension[2] != 0 {
-                    return ClientHelloName::Complete(None);
-                }
-                let name_length = u16::from_be_bytes([extension[3], extension[4]]) as usize;
-                if 5 + name_length > extension.len() {
-                    return ClientHelloName::Complete(None);
-                }
-                let name = &extension[5..5 + name_length];
-                return ClientHelloName::Complete(
-                    std::str::from_utf8(name).ok().map(str::to_owned),
-                );
-            }
-            cursor = extension_end;
+                Err(_) => return ClientHelloName::Invalid,
+                Ok(None) => {}
+            },
         }
-        return ClientHelloName::Complete(None);
     }
-    ClientHelloName::Incomplete
 }
 
 pub(crate) struct RelayResult {
@@ -550,41 +525,20 @@ mod tests {
     use super::*;
 
     fn client_hello_with_sni(name: &[u8]) -> Vec<u8> {
-        let mut body = vec![3, 3];
-        body.extend_from_slice(&[0; 32]);
-        body.push(0); // session ID length
-        body.extend_from_slice(&2_u16.to_be_bytes());
-        body.extend_from_slice(&[0x13, 0x01]);
-        body.extend_from_slice(&[1, 0]); // one null compression method
-
-        let mut server_name = Vec::with_capacity(name.len() + 5);
-        server_name.extend_from_slice(&((name.len() + 3) as u16).to_be_bytes());
-        server_name.push(0);
-        server_name.extend_from_slice(&(name.len() as u16).to_be_bytes());
-        server_name.extend_from_slice(name);
-        let mut extensions = Vec::with_capacity(server_name.len() + 4);
-        extensions.extend_from_slice(&0_u16.to_be_bytes());
-        extensions.extend_from_slice(&(server_name.len() as u16).to_be_bytes());
-        extensions.extend_from_slice(&server_name);
-        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
-        body.extend_from_slice(&extensions);
-
-        let mut handshake = vec![
-            1,
-            (body.len() >> 16) as u8,
-            (body.len() >> 8) as u8,
-            body.len() as u8,
-        ];
-        handshake.extend_from_slice(&body);
-        let mut record = vec![
-            22,
-            3,
-            3,
-            (handshake.len() >> 8) as u8,
-            handshake.len() as u8,
-        ];
-        record.extend_from_slice(&handshake);
-        record
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+        let name =
+            rustls::pki_types::ServerName::try_from(std::str::from_utf8(name).unwrap().to_owned())
+                .unwrap();
+        let mut client = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+        let mut hello = Vec::new();
+        client.write_tls(&mut hello).unwrap();
+        hello
     }
 
     #[test]
@@ -598,7 +552,45 @@ mod tests {
         }
         assert!(matches!(
             client_hello_server_name(&hello),
-            ClientHelloName::Complete(Some(name)) if name == "SNI.ALIAS.INVALID"
+            ClientHelloName::Complete(Some(name)) if name.eq_ignore_ascii_case("SNI.ALIAS.INVALID")
+        ));
+    }
+
+    #[test]
+    fn literal_ip_tls_has_a_complete_hello_without_dns_sni() {
+        assert!(matches!(
+            client_hello_server_name(&client_hello_with_sni(b"127.0.0.1")),
+            ClientHelloName::Complete(None)
+        ));
+        for length in 0..=64 {
+            let mut truncated = vec![22, 3, 1, 0, (length + 4) as u8, 1, 0, 0, length as u8];
+            truncated.resize(9 + length, 0);
+            assert!(matches!(
+                client_hello_server_name(&truncated),
+                ClientHelloName::Invalid
+            ));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn route_wait_deadline_does_not_restart_for_partial_client_bytes() {
+        let (mut peer, client) = tokio::io::duplex(1024);
+        let (_stop, mut receiver) = watch::channel(false);
+        let task =
+            tokio::spawn(async move { classify(Box::new(client), None, &mut receiver).await });
+        peer.write_all(b"G").await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(ROUTE_WAIT - Duration::from_secs(1)).await;
+        peer.write_all(b"E").await.unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let error = task
+            .await
+            .unwrap()
+            .err()
+            .expect("partial client must expire");
+        assert!(matches!(
+            error.downcast_ref::<RouteWaitEnded>(),
+            Some(RouteWaitEnded::Timeout)
         ));
     }
 
@@ -663,7 +655,7 @@ mod tests {
         let (_stop, mut receiver) = watch::channel(false);
         peer.write_all(b"G").await.unwrap();
         origin.write_all(b"server greeting").await.unwrap();
-        let result = classify(Box::new(client), Box::new(server), &mut receiver).await;
+        let result = classify(Box::new(client), Some(Box::new(server)), &mut receiver).await;
         assert!(matches!(result, Err(error) if error.to_string().contains("idle timeout")));
         // Undecided bytes were never forwarded in either direction.
         let mut received = Vec::new();

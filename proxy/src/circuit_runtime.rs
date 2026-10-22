@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    ConnectionIdentity, Error, Runtime, RuntimeState, circuits,
+    ConnectionIdentity, Error, RuntimeState, circuits,
     request_trace::{RequestTrace, TraceHook},
 };
 
@@ -34,67 +34,6 @@ pub(crate) fn state_path(config: &crate::Config) -> Option<&Path> {
         .circuit_state_file
         .as_deref()
         .filter(|path| !path.as_os_str().is_empty())
-}
-
-/// Transition metadata comes from the circuit operation, never upstream headers.
-pub(crate) fn record_transition(
-    runtime: &Runtime,
-    transition: &circuits::Transition,
-    scope: Option<(&ConnectionIdentity, &str)>,
-) -> Result<(), Error> {
-    let scope = scope.filter(|_| transition.event.response_scoped());
-    let mut fields = indexmap::IndexMap::from([
-        ("event".into(), serde_json::json!("proxy.circuit").into()),
-        (
-            "audit_intent".into(),
-            serde_json::json!(format!("ops.circuit_breaker.{}", transition.event.as_str())).into(),
-        ),
-        ("kind".into(), serde_json::json!("ops").into()),
-        ("severity".into(), serde_json::json!("medium").into()),
-        ("addon".into(), serde_json::json!("circuit-breaker").into()),
-        ("host".into(), serde_json::json!(transition.domain).into()),
-        (
-            "summary".into(),
-            serde_json::json!(format!(
-                "Circuit {} for {}",
-                transition.event.as_str(),
-                crate::network_guard::sanitize(&transition.domain),
-            ))
-            .into(),
-        ),
-        (
-            "details".into(),
-            transition
-                .details
-                .as_ref()
-                .map(|details| circuits::CircuitValue::Object(details.clone()))
-                .unwrap_or_else(|| serde_json::json!({}).into()),
-        ),
-    ]);
-    fields.insert(
-        "request_id".into(),
-        serde_json::json!(scope.map(|(_, request_id)| request_id)).into(),
-    );
-    fields.insert(
-        "agent".into(),
-        serde_json::json!(scope.and_then(|(identity, _)| identity.request_agent())).into(),
-    );
-    let bytes = circuits::CircuitValue::Object(fields)
-        .render_audit_json()?
-        .into_bytes();
-    runtime.record_bytes(bytes)
-}
-
-pub(crate) fn record_transitions(
-    runtime: &Runtime,
-    transitions: &[circuits::Transition],
-    scope: Option<(&ConnectionIdentity, &str)>,
-) -> bool {
-    let mut failed = false;
-    for transition in transitions {
-        failed |= record_transition(runtime, transition, scope).is_err();
-    }
-    failed
 }
 
 /// A source hook or synchronous audit submission exception stops later
@@ -190,7 +129,7 @@ fn response_operation(
         Ok(outcome) => {
             trace_response_decision(trace.as_ref(), outcome.value, status);
             ResponseOutcome::Complete {
-                evidence_failed: record_transitions(&runtime, &outcome.events, scope),
+                evidence_failed: false,
             }
         }
         Err(error) => {
@@ -199,7 +138,7 @@ fn response_operation(
             // ProductionAddons exception boundary skips later response hooks.
             eprintln!("Circuit response operation failed: {:?}", error.kind());
             ResponseOutcome::Exception {
-                evidence_failed: record_transitions(&runtime, error.events(), scope),
+                evidence_failed: matches!(error.kind(), circuits::ErrorKind::Audit(_)),
             }
         }
     };

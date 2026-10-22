@@ -105,9 +105,7 @@ esac
         "admin_api_token_file":root.join("token"),
         "readiness_file":root.join("ready.json"),
         "flow_store_enabled":false,
-        "audit_log_path":root.join("audit.jsonl"),
-        "event_log":root.join("events.jsonl")
-    }))
+        "audit_log_path":root.join("audit.jsonl"),}))
     .unwrap()
 }
 

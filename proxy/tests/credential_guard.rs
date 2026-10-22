@@ -143,6 +143,145 @@ fn default_huggingface_rule_requires_a_complete_credential() {
         .unwrap();
     assert_eq!(findings[0].credential_type.as_deref(), Some("huggingface"));
 }
+
+#[test]
+fn nonempty_bearers_are_credentials_independent_of_entropy() {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let values = [
+        format!("{}A", alphabet.repeat(2)),
+        alphabet.repeat(2),
+        format!(
+            "eyJhbGciOiJSUzI1NiJ9.{}.synthetic-signature",
+            "YQ".repeat(200)
+        ),
+        alphabet.repeat(32),
+        "x".into(),
+        "a".repeat(256),
+        "dev-placeholder".into(),
+    ];
+    let guard = configured(json!({}));
+    let prompt = policy(json!({"permissions":[
+        {"action":"credential:use","resource":"*","effect":"prompt"},
+        {"action":"network:request","resource":"*","effect":"allow"}
+    ]}));
+    let deny = policy(credential_policy("deny"));
+    for value in values {
+        let row = json!({"headers":[["Authorization", format!("Bearer {value}")]]});
+        let prompted = observed(&guard, &prompt, &row);
+        assert_eq!(prompted["outcome"]["response"]["status"], 428);
+        let finding = &prompted["outcome"]["audit"][0]["details"];
+        assert_eq!(finding["rule"], "unknown_secret");
+        assert_eq!(finding["tier"], 1);
+        assert_eq!(finding["confidence"], "high");
+        assert_eq!(
+            observed(&guard, &deny, &row)["outcome"]["response"]["status"],
+            403
+        );
+
+        let canonical = Secret::new(format!("Bearer {value}"));
+        let canonical = guard
+            .classify_headers(&[Header {
+                name: "authorization",
+                value: &canonical,
+            }])
+            .unwrap();
+        for scheme in ["Bearer ", "bEaReR \t", "BEARER   "] {
+            let header = Secret::new(format!("{scheme}{value}\t "));
+            let findings = guard
+                .classify_headers(&[Header {
+                    name: "authorization",
+                    value: &header,
+                }])
+                .unwrap();
+            assert_eq!(findings, canonical);
+        }
+        if value.len() >= 8 {
+            assert!(!serde_json::to_string(&prompted).unwrap().contains(&value));
+        }
+    }
+}
+
+#[test]
+fn bearer_detection_keeps_header_selection_exclusions_and_other_schemes() {
+    let value = Secret::new("Bearer dev-placeholder");
+    for level in ["standard", "paranoid", "patterns-only"] {
+        let guard = configured(json!({"addons": {"credential_guard": {
+            "detection_level": level,
+            "use_default_credential_rules": false,
+            "entropy": {"min_length": 4096, "min_charset_diversity": 1, "min_shannon_entropy": 20}
+        }}}));
+        let findings = guard
+            .classify_headers(&[Header {
+                name: "Authorization",
+                value: &value,
+            }])
+            .unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule, "unknown_secret");
+    }
+    for config in [
+        json!({"standard_auth_headers": []}),
+        json!({"safe_headers": {"safe_patterns": ["authoriz"]}}),
+    ] {
+        let guard = configured(json!({"addons": {"credential_guard": config}}));
+        assert!(
+            guard
+                .classify_headers(&[Header {
+                    name: "Authorization",
+                    value: &value
+                }])
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let guard = configured(json!({}));
+    for value in [
+        "",
+        "Bearer",
+        "Bearer ",
+        "Bearer \t ",
+        "Bearer\tplaceholder",
+        "Basic dXNlcjp4",
+        "Digest placeholder",
+    ] {
+        let value = Secret::new(value);
+        assert!(
+            guard
+                .classify_headers(&[Header {
+                    name: "Authorization",
+                    value: &value
+                }])
+                .unwrap()
+                .is_empty()
+        );
+    }
+    for name in ["X-Api-Key", "X-Opaque", "Cookie"] {
+        assert!(
+            guard
+                .classify_headers(&[Header {
+                    name,
+                    value: &value
+                }])
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let combined =
+        Secret::new("Bearer dev-placeholder, bEaReR another-placeholder, Bearer dev-placeholder");
+    let findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &combined,
+        }])
+        .unwrap();
+    assert_eq!(findings.len(), 2);
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.rule == "unknown_secret")
+    );
+    assert_ne!(findings[0].fingerprint, findings[1].fingerprint);
+}
 #[test]
 fn source_order_charges_credential_then_baseline_network_for_each_detection() {
     let guard = configured(sensor());

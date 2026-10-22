@@ -137,11 +137,11 @@ condition = {{ method = "CONNECT", path_prefix = "/" }}
                 with accepted:
                     accepted.settimeout(2)
                     assert accepted.recv(1) == b""
-                assert len(proxy.events("proxy.egress")) == 1
+                assert len(proxy.events("traffic.egress")) == 1
             else:
                 with pytest.raises(TimeoutError):
                     origin.accept()
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
 
 
 @pytest.mark.parametrize("certificate_host,trusted,status", [
@@ -346,7 +346,7 @@ def test_https_not_yet_valid_origin_certificate_is_rejected(proxy_backend, tmp_p
                             "application_bytes_hex": observation["application_bytes"].hex(),
                             "error": observation["error"],
                         },
-                        "proxy_egress_events": proxy.events("proxy.egress"),
+                        "proxy_egress_events": proxy.events("traffic.egress"),
                         "native_policy_provenance": provenance,
                         "limits": [
                             "This proves one trusted-by-file but not-yet-valid origin certificate rejection.",
@@ -560,7 +560,7 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
             assert len(origin.tls_failures) >= 1
             assert origin.accepts == 1 + len(origin.tls_failures)
             assert origin.requests == [{"method": "GET", "target": "/direct-mtls"}]
-            events = proxy.events("proxy.request")
+            events = proxy.events("traffic.request_outcome")
             if proxy_backend == "rust":
                 provenance = json.loads(
                     (directory / "native-policy-provenance.json").read_text()
@@ -572,10 +572,10 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
                     "temporary_policy_socket": None,
                     "temporary_policy_adapter": False,
                 }
-                error_events = [event for event in events if event["status"] == 502]
+                error_events = [event for event in events if event["details"]["status"] == 502]
                 assert len(error_events) == 1
                 assert error_events[0]["agent"] == "alice"
-                assert error_events[0]["decision"] == "error"
+                assert error_events[0]["details"]["decision"] == "error"
             (directory / "mtls-negative-observation.json").write_text(
                 json.dumps(
                     {
@@ -721,7 +721,7 @@ def test_https_tls12_origin_records_version_and_cipher(proxy_backend, tmp_path):
                             "http_requests": origin.requests,
                         },
                         "proxy_request_events": (
-                            proxy.events("proxy.request") if proxy_backend == "rust" else []
+                            proxy.events("traffic.request_outcome") if proxy_backend == "rust" else []
                         ),
                         "native_policy_provenance": provenance,
                         "limits": [

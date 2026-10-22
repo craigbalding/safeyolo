@@ -19,6 +19,7 @@ import os
 import pty
 import select
 import shlex
+import shutil
 import struct
 import subprocess
 import sys
@@ -86,9 +87,9 @@ def history(instance, room=ROOM):
     return [json.loads(line) for line in result.stdout.splitlines()]
 
 
-def agent_send(instance, body, room=ROOM, **extra):
+def agent_send(instance, body, room=ROOM, *, sender="alice", **extra):
     payload = json.dumps({"body": body, "notify": "none", **extra}).encode()
-    status, _, raw = request(instance.paths["alice"], f"http://_safeyolo.proxy.internal/api/coord/rooms/{room}/send",
+    status, _, raw = request(instance.paths[sender], f"http://_safeyolo.proxy.internal/api/coord/rooms/{room}/send",
                           method="POST", body=payload,
                           headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
     assert status == 200, raw
@@ -123,7 +124,7 @@ print(json.dumps(asyncio.run(read())))
     assert json.loads(instance.cli("coord", "status").stdout)["state"] == "running"
 
 
-async def stream_control(instance, no_ack=None):
+async def stream_control(instance, no_ack=None, *, delete=(), purge=False):
     # Only this driver reads the fixture's host-local NATS credential. Neither
     # the guest command nor test output receives it.
     credential = (instance.root / "data/coord/nats/creds").read_text().strip()
@@ -136,15 +137,19 @@ async def stream_control(instance, no_ack=None):
         if no_ack is not None:
             stream.config.no_ack = no_ack
             await js.update_stream(config=stream.config)
+        for sequence in delete:
+            await js.delete_msg(stream.config.name, sequence)
+        if purge:
+            await js.purge_stream(stream.config.name)
         return (await js.stream_info(stream.config.name)).state.messages
     finally:
         await connection.close()
 
 
 @contextmanager
-def terminal(instance, arguments=None, *, cwd=None, command=None):
+def terminal(instance, arguments=None, *, cwd=None, command=None, columns=80):
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
     process = subprocess.Popen(
         command if command is not None else [
             str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
@@ -348,6 +353,92 @@ def test_watch_timeline_payload_modes_and_cursor_reconnect(instance):
         process.wait(timeout=5)
 
 
+def read_page(instance, since=0, limit=200, *, expected_status=200):
+    status, _, raw = request(
+        instance.paths["alice"],
+        f"http://_safeyolo.proxy.internal/api/coord/rooms/{ROOM}/messages?since={since}&limit={limit}",
+        headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"},
+    )
+    assert status == expected_status, raw
+    return json.loads(raw)
+
+
+def test_history_byte_limit_returns_partial_pages_and_watch_tail(instance):
+    bodies = [f"large-{index:02d}:" + "x" * 249991 for index in range(18)] + ["recent-small"]
+    for body in bodies:
+        agent_send(instance, body)
+    for limit in (15, 16, 200):
+        cursor, messages = 0, []
+        while True:
+            page = read_page(instance, cursor, limit)
+            assert 0 < len(page["messages"]) <= limit
+            assert sum(len(json.dumps(m).encode()) for m in page["messages"]) < 4 * 1024 * 1024
+            assert page["next_cursor"] > cursor
+            assert not page["history_truncated"]
+            messages.extend(page["messages"])
+            cursor = page["next_cursor"]
+            if not page["has_more"]:
+                break
+        assert [m["sequence"] for m in messages] == list(range(1, 20))
+        assert [m["body"] for m in messages] == bodies
+        assert cursor == 19
+    for arguments, expected in ((("--since", "0"), bodies), (("--history", "30"), bodies),
+                                (("--history", "3"), bodies[-3:])):
+        watched = cli(instance, "watch", ROOM, *arguments, "--once", "--json")
+        assert watched.returncode == 0, watched.stderr
+        assert [json.loads(line)["body"] for line in watched.stdout.splitlines()] == expected
+    with terminal(instance, ["coord", "watch", ROOM, "--history", "1", "--json"]) as (_, _, until):
+        until(b"recent-small")
+        agent_send(instance, "after-large-history")
+        until(b"after-large-history")
+    assert asyncio.run(stream_control(instance)) == 20
+
+
+@pytest.mark.parametrize("retained", ["empty", "purged", "gapped"])
+def test_empty_retained_ranges_finish_and_watch_follows(instance, retained):
+    if retained != "empty":
+        for index in range(5):
+            agent_send(instance, f"retained-{index + 1}")
+        asyncio.run(stream_control(instance, purge=retained == "purged",
+                                   delete=(1, 3, 5) if retained == "gapped" else ()))
+    cursor, sequences = 0, []
+    for _ in range(4):
+        page = read_page(instance, cursor, 1)
+        assert page["history_truncated"] == (retained != "empty" and cursor == 0)
+        sequences.extend(m["sequence"] for m in page["messages"])
+        assert page["next_cursor"] >= cursor
+        if page["has_more"]:
+            assert page["next_cursor"] > cursor
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            break
+    else:
+        pytest.fail("retained range did not finish")
+    assert sequences == ([2, 4] if retained == "gapped" else [])
+    assert cursor == (0 if retained == "empty" else 5)
+    future = read_page(instance, cursor + 10)
+    assert future["messages"] == [] and future["next_cursor"] == cursor + 10 and not future["has_more"]
+    watched = cli(instance, "watch", ROOM, "--since", "0", "--once", "--json")
+    assert watched.returncode == 0, watched.stderr
+    assert [json.loads(line)["sequence"] for line in watched.stdout.splitlines()] == sequences
+    with terminal(instance, ["coord", "watch", ROOM, "--since", "0", "--json"]) as (_, _, until):
+        # The watcher must scan the old range before it can follow this event.
+        agent_send(instance, "after-empty-range")
+        until(b"after-empty-range")
+        agent_send(instance, "following-empty-range")
+        until(b"following-empty-range")
+    assert asyncio.run(stream_control(instance)) == len(sequences) + 2
+
+
+def test_history_provider_failure_remains_an_error(instance):
+    agent_send(instance, "before-provider-stop")
+    assert instance.cli("coord", "stop").returncode == 0
+    assert read_page(instance, expected_status=503)["error"] == "coordination substrate unavailable"
+    watched = cli(instance, "watch", ROOM, "--once", "--json")
+    assert watched.returncode != 0 and not watched.stdout
+    assert "coordination substrate unavailable" in watched.stderr
+
+
 @pytest.mark.skipif(
     sys.platform != "linux",
     reason="Model-turn execution belongs to the Linux guest, including VZ guests",
@@ -408,6 +499,306 @@ for event in events:
     watched = cli(instance, "watch", ROOM, "--since", str(marker), "--once")
     assert watched.returncode == 0, watched.stderr
     assert "TOOL    completed command rc=0 printf live-watcher-marker" in watched.stdout
+
+
+@pytest.fixture
+def supervised(instance, tmp_path):
+    """Stage one named worker; optional executable overrides reuse an installed fixture."""
+    for variable, name in (("SAFEYOLO_COORD_TEST_BINARY", "safeyolo-coord"),
+                           ("SAFEYOLO_COORD_TEST_CLI", "safeyolo")):
+        if source := os.environ.get(variable):
+            shutil.copy2(source, instance.root / "bin" / name)
+    policy = instance.root / "policy.toml"
+    policy.write_text(policy.read_text().replace(
+        "[agents.alice]\n", f"[agents.alice]\nfolder={json.dumps(str(tmp_path))}\nlauncher='supervisor'\n"))
+    home = instance.root / "agents/alice/home"
+    directory = home / ".safeyolo"
+    directory.mkdir(parents=True)
+    config = directory / "coord-supervisor.json"
+    config.write_text(json.dumps({"agent_name": "alice", "rooms": [ROOM], "coordinators": ["bob"],
+                                  "agent_room": ROOM, "workspace": str(tmp_path), "wait_seconds": 1,
+                                  "terminate_grace_seconds": 1, "completion_grace_seconds": 5}))
+    state = directory / "coord-supervisor-state.json"
+    environment = dict(instance.environment, HOME=str(home), CODEX_HOME=str(home / ".codex"),
+                       SAFEYOLO_COORD_SOCKET=instance.paths["alice"],
+                       SAFEYOLO_COORD_TOKEN_PATH=str(instance.root / "data/agent_token"))
+    return instance, config, state, environment
+
+
+def watch_once(instance, *arguments):
+    return subprocess.run([str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+                           "agent", "watch", "alice", "--once", "--plain", *arguments],
+                          env=instance.environment, capture_output=True, text=True, timeout=15)
+
+
+def test_agent_watch_tool_summaries_omit_private_payloads(supervised):
+    instance, _, state, _ = supervised
+    bodies, secrets = [], []
+    for index, key in enumerate(("token", "password", "delegation", "authorization", "secret", "environment")):
+        secret = f"peer-private-{index}"
+        secrets.append(secret)
+        for phase in ("started", "completed"):
+            body = json.dumps({"type": f"item.{phase}", "item": {
+                "type": "mcp_tool_call", "server": "safeyolo-coord", "tool": "read_approval",
+                "status": phase, "arguments": {"approval_id": "apr-" + "1" * 32, key: secret},
+                "result": {"structured_content": {"status": "pending", "body": secret}}}},
+                separators=(",", ":") if index % 2 else (", ", ": "))
+            agent_send(instance, body, sender="bob")
+            bodies.append(body)
+    unknown = json.dumps({"type": "unrecognized-event", "arguments": {"token": "unknown-private"}})
+    agent_send(instance, unknown, sender="bob")
+    bodies.append(unknown)
+    for harness in ("codex", "pi"):
+        for kind in ("unknown_tool_call", "unrecognized-event", "mcp_tool_call"):
+            secret = f"{harness}-oversize-private-{kind}"
+            secrets.append(secret)
+            summary = {"type": kind, "arguments": {"token": secret}, "result": {"body": secret}}
+            if kind == "mcp_tool_call":
+                summary.update(server="safeyolo-coord", tool="read_approval", status="completed",
+                               result={"structured_content": {"status": "pending", "body": secret}})
+            body = json.dumps({"type": f"safeyolo.{harness}.oversize",
+                               "original_type": "unrecognized-event" if kind == "unrecognized-event" else "item.completed",
+                               "summary": summary, "original_bytes": 65536, "omitted_middle_bytes": 64000,
+                               "sha256": "a" * 64})
+            agent_send(instance, body, sender="bob")
+            bodies.append(body)
+    before = history(instance)
+    assert [message["body"] for message in before] == bodies
+    assert all(message["sender_agent_name"] == "bob" for message in before)
+    result = watch_once(instance)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("room message from bob:") == len(bodies)
+    assert not any(secret in result.stdout for secret in [*secrets, "unknown-private"])
+    assert "safeyolo-coord.read_approval" in result.stdout and "approval_status=pending" in result.stdout
+    assert result.stdout.count("original_bytes=65536 omitted_bytes=64000") == 6
+    for choice in ("--raw", "--json", "--show-unknown"):
+        explicit = cli(instance, "watch", ROOM, "--once", choice)
+        assert explicit.returncode == 0, explicit.stderr
+        for harness in ("codex", "pi"):
+            assert f"{harness}-oversize-private-unknown_tool_call" in explicit.stdout
+        if choice == "--json":
+            assert [json.loads(line)["body"] for line in explicit.stdout.splitlines()] == bodies
+    assert history(instance) == before
+    for body in bodies:
+        agent_send(instance, body)
+    selected_history = history(instance)
+    assert [(message["sender_agent_name"], message["body"]) for message in selected_history[len(before):]] == [
+        ("alice", body) for body in bodies]
+    selected = watch_once(instance, "--since", str(before[-1]["sequence"]))
+    assert selected.returncode == 0, selected.stderr
+    assert not any(secret in selected.stdout for secret in [*secrets, "unknown-private"])
+    assert "room message from bob:" not in selected.stdout
+    assert selected.stdout.count("original_bytes=65536 omitted_bytes=64000") == 6
+    assert history(instance) == selected_history
+    assert not state.exists() and not state.with_name(state.name + ".lock").exists()
+
+
+def test_agent_watch_checkpoint_and_tool_targets_omit_url_credentials(supervised):
+    instance, _, state, _ = supervised
+    for target, shown in (
+        ("https://url-user-canary:url-pass-canary@example.test/item?url-query-canary#url-fragment-canary",
+         "https://example.test/item?<omitted>"),
+        ("http://url-user-canary@example.test:8080/item", "http://example.test:8080/item"),
+        ("https://url%40user:url%3Apass@[::1]:8443/item@route?url-query-canary",
+         "https://[::1]:8443/item@route?<omitted>"),
+        ("https://password:url-pass-canary@example.test/item", "https://example.test/item"),
+        ("ssh://url-user-canary:url-pass-canary@example.test/item", "ssh://example.test/item"),
+    ):
+        attention_id = "attn-" + "2" * 32
+        state.write_text(json.dumps({
+            "schema": "safeyolo.coord-supervisor/v1", "harness": "codex", "thread_id": None,
+            "safe_cursor": 0, "recent_attention_ids": [], "consecutive_failures": 0,
+            "owned_process": None, "repair_selection": None, "phase": "accepted", "briefs": {},
+            "in_flight": [{"attention_id": attention_id, "room_name": ROOM,
+                           "sender_agent_id": "ag-" + "b" * 32, "sender_agent_name": "bob",
+                           "sequence": 1, "body": f"TASK target={target} assignee=alice",
+                           "requires_terminal": True}],
+            "awaiting_handoffs": [{"room_name": ROOM, "request": "REVIEW_READY", "recipient_agent": "bob",
+                                   "body": f"REVIEW_READY target={target}", "correlation": {"target": target},
+                                   "parent_attention_id": attention_id}],
+        }))
+        body = json.dumps({"type": "item.completed", "item": {
+            "type": "mcp_tool_call", "server": "safeyolo-coord", "tool": "send", "status": "completed",
+            "arguments": {"body": f"DONE target={target} attention_id={attention_id}"}}})
+        agent_send(instance, body)
+        before = history(instance)
+        checkpoint = state.read_bytes()
+        result = watch_once(instance, "--since", str(before[-1]["sequence"] - 1))
+        assert result.returncode == 0, result.stderr
+        for prefix in ("pending TASK target=", "waiting for REVIEW_READY reply from bob target=", "message=DONE target="):
+            assert prefix + shown in result.stdout
+        assert not any(secret in result.stdout for secret in (
+            "url-user-canary", "url-pass-canary", "url%40user", "url%3Apass", "url-query-canary", "url-fragment-canary"))
+        assert state.read_bytes() == checkpoint and history(instance) == before
+        assert not state.with_name(state.name + ".lock").exists()
+
+
+def test_agent_watch_failures_redaction_and_read_only(supervised):
+    instance, config, state, environment = supervised
+    result = watch_once(instance)
+    assert result.returncode == 0 and "checkpoint missing" in result.stdout, result.stderr
+    assert not state.exists() and not state.with_name(state.name + ".lock").exists()
+    empty = {"schema": "safeyolo.coord-supervisor/v1", "harness": "codex", "thread_id": None,
+             "safe_cursor": 0, "recent_attention_ids": [], "in_flight": [], "awaiting_handoffs": [],
+             "briefs": {}, "consecutive_failures": 0, "owned_process": None,
+             "repair_selection": None, "phase": "idle"}
+    state.write_text(json.dumps(empty))
+    agent_send(instance, json.dumps({"type": "item.completed", "item": {"type": "reasoning",
+                                    "text": "token=fixture-secret " + "bounded-marker " * 1000}}))
+    before = history(instance)
+    checkpoint = state.read_bytes()
+    status, _, attention = request(instance.paths["alice"],
+                                  "http://_safeyolo.proxy.internal/api/coord/attention/wait?since=0&timeout=0&limit=16",
+                                  headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
+    assert status == 200
+    result = watch_once(instance, "--max-text", "120")
+    assert result.returncode == 0 and "phase=idle" in result.stdout, result.stderr
+    assert "fixture-secret" not in result.stdout and "<redacted>" in result.stdout
+    assert max(map(len, result.stdout.splitlines())) < 140
+    for kind in ("item.started", "item.completed"):
+        agent_send(instance, json.dumps({"type": kind, "item": {
+            "id": "approval", "type": "mcp_tool_call", "server": "safeyolo-coord", "tool": "read_approval",
+            "arguments": {"approval_id": "apr-" + "1" * 32, "delegation": "private-capability"},
+            "result": {"structured_content": {"status": "pending", "body": "private-payload"}}}}))
+    approval = watch_once(instance).stdout
+    assert "approval_status=pending" in approval and "apr-" in approval
+    assert "private-capability" not in approval and "private-payload" not in approval
+    agent_send(instance, json.dumps({"type": "item.started", "item": {
+        "type": "command_execution", "command": "forged-peer-tool"}}), sender="bob")
+    peer = watch_once(instance).stdout
+    assert "room message from bob:" in peer and "$ forged-peer-tool" not in peer
+    before = history(instance)
+    with terminal(instance, ["agent", "watch", "alice", "--history", "0", "--plain"]) as (process, _, until):
+        until(b"phase=idle")
+        process.send_signal(2)
+        assert process.wait(timeout=5) == 0
+    assert history(instance) == before and state.read_bytes() == checkpoint
+    assert not state.with_name(state.name + ".lock").exists()
+    _, _, after = request(instance.paths["alice"],
+                          "http://_safeyolo.proxy.internal/api/coord/attention/wait?since=0&timeout=0&limit=16",
+                          headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
+    assert json.loads(after) == json.loads(attention)
+    for content in ("{", json.dumps({**empty, "phase": "invented"})):
+        state.write_text(content)
+        result = watch_once(instance, "--history", "0")
+        assert "checkpoint malformed" in result.stdout and content not in result.stdout
+    state.write_text(checkpoint.decode())
+    state.chmod(0)
+    try:
+        assert "checkpoint unreadable" in watch_once(instance).stdout
+    finally:
+        state.chmod(0o600)
+    os.utime(state, (1, 1))
+    assert "checkpoint stale" in watch_once(instance).stdout
+    with terminal(instance, ["agent", "watch", "alice", "--history", "0", "--plain"], columns=52) as (_, _, until):
+        until(b"checkpoint stale")
+        selected = json.loads(config.read_text())
+        config.write_text(json.dumps({**selected, "agent_room": "changed-room"}))
+        captured = until(b"configuration replaced")
+        assert all(line.startswith((b" = ", " │ ".encode())) for line in captured.splitlines() if line)
+    config.unlink()
+    refused = watch_once(instance)
+    assert refused.returncode != 0 and "supervisor configuration missing" in refused.stderr
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the supervised executable runs in the Linux guest")
+def test_agent_watch_real_supervisor_restart_and_thread_replacement(supervised, tmp_path):
+    instance, config, state, environment = supervised
+    binary = instance.root / "bin/safeyolo-coord"
+    home = Path(environment["HOME"])
+    (home / ".codex").mkdir()
+    (home / ".codex/config.toml").write_text(f'''forced_chatgpt_auth=false
+model_provider="fixture"
+model="fixture-model"
+[mcp_servers.safeyolo-coord]
+command={json.dumps(str(binary))}
+[model_providers.fixture.auth]
+command="/usr/bin/true"
+args=[]
+''')
+    action = tmp_path / "action"
+    harness = tmp_path / "fixture-codex"
+    harness.write_text(f'''#!{sys.executable}
+import json,subprocess,sys
+from pathlib import Path
+if "--version" in sys.argv:
+    print("fixture-codex");sys.exit(0)
+checkpoint=json.loads(sys.stdin.read().split("Supervisor checkpoint:\\n",1)[1])
+action=Path({str(action)!r}).read_text()
+counter=Path({str(tmp_path / 'counter')!r})
+number=int(counter.read_text())+1 if counter.exists() else 1
+counter.write_text(str(number))
+def emit(event): print(json.dumps(event),flush=True)
+if action=="resume-failure":
+    assert "resume" in sys.argv
+    print("fixture session unavailable",file=sys.stderr);sys.exit(1)
+thread=sys.argv[sys.argv.index("resume")+2] if "resume" in sys.argv else f"fixture-{{number}}"
+emit({{"type":"thread.started","thread_id":thread}})
+emit({{"type":"turn.started"}})
+command="printf 'tool-marker token=fixture-secret'"
+emit({{"type":"item.started","item":{{"type":"command_execution","id":"tool","command":command}}}})
+subprocess.run(["/bin/sh","-c",command],check=True,capture_output=True)
+emit({{"type":"item.completed","item":{{"type":"command_execution","id":"tool","command":command,"exit_code":0}}}})
+if action in ("DONE","BLOCKED"):
+    task=next(p for p in checkpoint["in_flight"] if p["requires_terminal"])
+    target=task["body"].split("target=",1)[1].split()[0]
+    args={{"room_name":task["room_name"],"body":f"{{action}} target={{target}} attention_id={{task['attention_id']}}","notify":["bob"],"declared_content_type":"text/plain"}}
+    result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),text=True,capture_output=True,check=True)
+    emit({{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"completed","arguments":args,"result":{{"structured_content":json.loads(result.stdout)}}}}}})
+emit({{"type":"turn.completed"}})
+''')
+    harness.chmod(0o755)
+    environment["SAFEYOLO_CODEX_BIN"] = str(harness)
+
+    def run(*extra):
+        return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state),
+                               "--once", *extra], env=environment, capture_output=True, text=True, timeout=15)
+
+    # A real empty attention wait establishes the checkpoint without a model.
+    result = run("--confirm-fresh-identity")
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "counter").exists()
+    task = "https://example.test/activity/first"
+    agent_send(instance, f"TASK target={task} assignee=alice", sender="bob", notify=["alice"])
+    with terminal(instance, ["agent", "watch", "alice", "--history", "0", "--plain"], columns=200) as (_, _, until):
+        until(b"phase=idle")
+        action.write_text("keep")
+        result = run()
+        assert result.returncode != 0 and "incomplete or uncertain" in result.stderr
+        first = json.loads(state.read_text())
+        assert first["thread_id"] == "fixture-1" and first["phase"] == "uncertain"
+        output = until(b"pending TASK")
+        assert b"tool-marker" in output and b"fixture-secret" not in output
+        action.write_text("resume-failure")
+        assert run().returncode != 0
+        replacement = json.loads(state.read_text())
+        assert replacement["thread_id"] is None
+        assert replacement["in_flight"] == first["in_flight"]
+        until(b"fixture session unavailable")
+        action.write_text("BLOCKED")
+        result = run()
+        assert result.returncode == 0, result.stderr
+        blocked = until(b"message=BLOCKED")
+        assert b"fixture-3" in blocked and b"supervisor ready" in blocked
+        assert not json.loads(state.read_text())["in_flight"]
+        second = "https://example.test/activity/second"
+        agent_send(instance, f"TASK target={second} assignee=alice", sender="bob", notify=["alice"])
+        action.write_text("DONE")
+        result = run()
+        assert result.returncode == 0, result.stderr
+        until(b"message=DONE")
+        assert not json.loads(state.read_text())["in_flight"]
+        assert json.loads(state.read_text())["thread_id"] == "fixture-4"
+        assert run().returncode == 0
+        assert json.loads(state.read_text())["thread_id"] is None
+        until(b"thread=none tasks=0")
+        checkpoint = state.read_bytes()
+        retained = history(instance)
+    assert state.read_bytes() == checkpoint and history(instance) == retained
+    assert (tmp_path / "counter").read_text() == "4"
+    messages = history(instance)
+    assert any(m["body"].startswith(f"BLOCKED target={task}") for m in messages)
+    assert any(m["body"].startswith(f"DONE target={second}") for m in messages)
 
 
 def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):

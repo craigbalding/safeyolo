@@ -11,6 +11,32 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
 
 ## Owner priorities
 
+- **Reach the first result in two commands.** Under #237/#1053, the normal
+  quick start must reach a usable coding agent in at most two commands from
+  the recorded supported host/account/workspace setup. Keep required explanatory
+  prose within 150 words, excluding runnable commands, the task and expected
+  output. Count all required context and instructions, including any required
+  reference or wizard reading. Moving setup out of view does not meet the goal.
+- **Use the public entry and supported defaults.** Reuse the accepted #1050
+  journey. Verify changed release resolution and omitted options against its
+  underlying operations; do not require fixture names, flags or source hashes
+  in public commands. Keep exact qualification identities and remaining proof
+  limits in the reference and evidence. State applicable platform and account
+  prerequisites before action. Show the first task and host-visible result.
+  Host changes, copied authentication and access scopes belong at the software's
+  actual decisions, with refusal intact. Read the whole README as a new user;
+  matching commands and word counts do not establish a clear path.
+- **Show useful independent work in the terminal.** Choose the first task for
+  its practical value to a prospect. Use permissions already in place and tools
+  available in the guest. Show implementation, testing and execution inside the
+  sandbox, including a visible terminal result on a headless server. Keep
+  engineering acceptance fixtures separate from public example selection;
+  a proposed task is not an executed witness.
+- **Judge the whole page.** Within the existing exact-head review, Lens must
+  lead with an editorial verdict on clarity, relevance, restraint, practical
+  value and first-use flow. Read first use and the return path together.
+  Relay requires that verdict before integration. Checks support the verdict;
+  skill reads, passing checks and word counts do not establish usability.
 - **Use one product name.** Under #1053, the product is SafeYolo. Use
   `SafeYolo`, `proxy`, `installer`, `release` and `settings` as appropriate.
   Do not describe a separate “native” edition. This owner decision takes
@@ -41,11 +67,25 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
 
 ## Operational examples and evidence
 
+Craig rejected these main-README examples under #1053:
+
+- Fixture hashes and redundant default flags in normal commands: they make
+  prospects reproduce an engineering fixture instead of using the public entry.
+- A compressed approval-console tutorial and internal qualification narration:
+  they displace useful first work and make readers interpret factory evidence.
+  Do not manufacture an access request or approval pause as the demonstration.
+- Creating `index.html`, then “Open `index.html` in your browser”: this assumes
+  a GUI and asks the user to open untrusted agent output on the host. Keep
+  generated-code execution inside the sandbox. A project summary or toy
+  artifact is not a sufficient replacement merely because it is easy to test.
+
 Before enabling an entry, explain changes to authentication, forwarding, and
 login behaviour. Document the actual scope of rollback, including changes that
 remain after a helper fails. Put failure-specific prerequisites before recovery
 commands. Inspect the implementation rather than assuming an installer handles
-account checks, ACLs, or every setup stage.
+account checks, access control lists (ACLs), or every setup stage. Explain which
+host actions use sudo and why before the relevant action. Distinguish those
+operations from root privilege inside the guest.
 
 An SSH `id` result establishes account identity, not filesystem or network
 confinement. A health endpoint establishes only what it checks. Use the recorded
@@ -56,7 +96,17 @@ VM boot; keep that distinction when discussing native virtualization workloads.
 Report missing setup automation or transport integration as implementation work.
 Do not hide those gaps by adding warnings, inventing commands, or claiming that
 existing helpers perform checks they do not implement.
-For SafeYolo onboarding, identify the concrete gap and its linked owner under
-#237. Keep the actual prerequisites visible until #1050–#1052 and #239 supply
-the accepted first-agent path and tested commands. Terminology changes alone
-do not establish the two-command or 15-second outcome.
+For a longer unavoidable onboarding path, name the actual missing operation,
+its linked owner under #237, and the smallest sufficient product repair.
+Keep the actual prerequisites visible. Do not call a longer warning-filled
+quick start complete or implement a new helper outside the assigned scope.
+Reuse #1050's connected AMD64 first-task result; #1051/#1052 and #239 retain
+their own accepted scope. Default/entry equivalence is not a new installed run
+or evidence for another platform or account flow.
+Use the maintained documentation, command and forbidden-phrase checks to
+challenge drift, including an added mandatory command and an obsolete product
+qualifier. Review required prose and decisions as well as command count.
+Distinguish required reading from logs, repeated output and observer work;
+displayed-word totals do not measure required reading.
+Terminology changes and a warm return do not establish the cold 15-second
+outcome. The recorded cold target remains unmet.

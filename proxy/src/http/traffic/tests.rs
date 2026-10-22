@@ -29,7 +29,7 @@ fn config(directory: &Path, quiet: bool) -> Config {
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")},
                      {"agent_id":"bob","socket_path":directory.join("bob.sock")}],
         "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),
+        "audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":""
     }))
@@ -52,6 +52,23 @@ fn records(directory: &Path) -> Vec<Value> {
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|row: &Value| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "traffic.tunnel"
+                        | "traffic.websocket.start"
+                        | "traffic.websocket.message"
+                        | "traffic.websocket.end"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                        | "agent.api_response"
+                        | "gateway.evaluated"
+                )
+            )
+        })
         .collect()
 }
 fn cleanup(directory: &Path) {
@@ -60,20 +77,20 @@ fn cleanup(directory: &Path) {
     }
 }
 fn owned_egress(directory: &Path, host: &str, port: u16, expected: usize) {
-    let events: Vec<Value> = std::fs::read_to_string(directory.join("events"))
+    let events: Vec<Value> = std::fs::read_to_string(directory.join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     let egress: Vec<_> = events
         .iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), expected);
     assert!(
         egress
             .iter()
-            .all(|row| row["host"] == host && row["port"] == port)
+            .all(|row| row["host"] == host && row["details"]["port"] == port)
     );
     assert!(
         !events

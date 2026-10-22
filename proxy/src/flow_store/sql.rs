@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS flows (
 
     status_code INTEGER,
     reason TEXT,
+    connection_json TEXT,
 
     request_content_type TEXT,
     response_content_type TEXT,
@@ -129,7 +130,7 @@ pub(super) const INSERT: &str = r#"
             run, test, role, test_agent, suite, subject, step, intent, expect, context_json,
             source_type, flow_state,
             scheme, host, port, method, path, query_string, full_url,
-            status_code, reason,
+            status_code, reason, connection_json,
             request_content_type, response_content_type, is_websocket,
             request_headers_json, response_headers_json,
             request_body_encoding, response_body_encoding,
@@ -145,7 +146,7 @@ pub(super) const INSERT: &str = r#"
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?
+            ?, ?, ?
         )
         "#;
 
@@ -158,7 +159,7 @@ pub(super) const DETAIL: &str = r#"
                context_json,
                source_type, flow_state,
                scheme, host, port, method, path, query_string, full_url,
-               status_code, reason,
+               status_code, reason, connection_json,
                request_content_type, response_content_type, is_websocket,
                request_headers_json, response_headers_json,
                request_body_text_preview, response_body_text_preview,

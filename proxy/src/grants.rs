@@ -90,9 +90,15 @@ pub struct Grant {
     pub service: String,
     pub method: String,
     pub path: String,
+    /// Canonical approvals name an observed resource. Operator-authored grants
+    /// retain their existing pattern matching when this field is absent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub literal_path: bool,
     pub scope: GrantScope,
     pub created: String,
     pub expires: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated: Option<String>,
 }
 impl Grant {
     pub fn is_expired(&self, now: OffsetDateTime) -> bool {
@@ -103,8 +109,15 @@ impl Grant {
             && self.agent == scope.agent
             && self.service == scope.service
             && self.method.eq_ignore_ascii_case(scope.method)
-            && resource_matches(scope.path, &self.path)
+            && if self.literal_path {
+                scope.path == self.path
+            } else {
+                resource_matches(scope.path, &self.path)
+            }
     }
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 #[derive(Debug, Clone, Copy)]
 pub struct RequestScope<'a> {
@@ -440,6 +453,9 @@ impl Store {
     pub fn load_problems(&self) -> Result<Vec<String>> {
         Ok(self.lock()?.load_problems.clone())
     }
+    pub(crate) fn approval_ttl_seconds(&self) -> Result<i64> {
+        Ok(self.lock()?.ttl_seconds)
+    }
     pub fn list_grants_for_agent(
         &self,
         agent: &str,
@@ -588,6 +604,27 @@ impl Store {
         now: OffsetDateTime,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<GrantAddition> {
+        self.add_grant_record(request, now, None, activate)
+    }
+
+    pub(crate) fn add_approval_grant(
+        &self,
+        request: GrantRequest,
+        now: OffsetDateTime,
+        state: &crate::RuntimeState,
+        record: &mut crate::approvals::pending::Record,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<GrantAddition> {
+        self.add_grant_record(request, now, Some((state, record)), activate)
+    }
+
+    fn add_grant_record(
+        &self,
+        request: GrantRequest,
+        now: OffsetDateTime,
+        approval: Option<(&crate::RuntimeState, &mut crate::approvals::pending::Record)>,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<GrantAddition> {
         nonempty(&[
             &request.agent,
             &request.service,
@@ -598,18 +635,30 @@ impl Store {
             now,
             true,
             |document, state, context| {
+                let mut approval = approval;
+                if let Some((runtime, record)) = &mut approval
+                    && !crate::approvals::pending::check_saved(runtime, &document.to_string(), record)? {
+                    record.status = "superseded".into();
+                    return Err(invalid("approval is superseded; make a new request"));
+                }
                 let expires = now
                     .checked_add(Duration::seconds(state.ttl_seconds))
                     .ok_or_else(|| invalid("grant expiry overflow"))?;
+                let delegated = approval.as_ref().and_then(|(_, record)| record.result.get("issued_access"))
+                    .map(serde_json::to_string).transpose().map_err(|e| invalid(e.to_string()))?;
+                let delegated_expiry = delegated.as_deref().and_then(|s| serde_json::from_str::<crate::policy::delegation::IssuedAccess>(s).ok())
+                    .and_then(|issued| issued.expires_at.as_deref().and_then(parse_expiry));
                 let grant = Grant {
+                    delegated,
                     grant_id: identifier("grt"),
                     agent: request.agent,
                     service: request.service,
                     method: request.method,
                     path: request.path,
+                    literal_path: approval.is_some(),
                     scope: request.scope,
                     created: timestamp(now)?,
-                    expires: timestamp(expires)?,
+                    expires: timestamp(delegated_expiry.map_or(expires, |bound| bound.min(expires)))?,
                 };
                 let persistence = if grant.scope == GrantScope::Session {
                     Persistence::SessionOnly
@@ -631,6 +680,13 @@ impl Store {
                     state.ephemeral_grants.insert(grant.grant_id.clone());
                 }
                 replace_grant(&mut state.grants, grant.clone());
+                if let Some((_, record)) = approval {
+                    let issued = record.result.get("issued_access").cloned();
+                    record.result = serde_json::json!({"grant_id":grant.grant_id,"scope":grant.scope,"literal_path":grant.literal_path,
+                        "created":grant.created,"expires":grant.expires,"persistence":persistence});
+                    if let Some(issued) = issued { record.result["issued_access"] = issued; }
+                    crate::approvals::pending::save_receipt(document, record)?;
+                }
                 Ok(GrantAddition { grant, persistence })
             },
             activate,
@@ -638,9 +694,37 @@ impl Store {
     }
     pub fn approve_binding(
         &self,
+        binding: ContractBinding,
+        contract: &ContractTemplate,
+        now: OffsetDateTime,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<BindingAddition> {
+        self.approve_binding_record(binding, contract, now, None, activate)
+    }
+
+    pub(crate) fn approve_pending_binding(
+        &self,
+        binding: ContractBinding,
+        contract: &ContractTemplate,
+        state: &crate::RuntimeState,
+        pending: &mut crate::approvals::pending::Record,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<BindingAddition> {
+        self.approve_binding_record(
+            binding,
+            contract,
+            OffsetDateTime::now_utc(),
+            Some((state, pending)),
+            activate,
+        )
+    }
+
+    fn approve_binding_record(
+        &self,
         mut binding: ContractBinding,
         contract: &ContractTemplate,
         now: OffsetDateTime,
+        approval: Option<(&crate::RuntimeState, &mut crate::approvals::pending::Record)>,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<BindingAddition> {
         nonempty(&[&binding.agent, &binding.service, &binding.capability])?;
@@ -661,6 +745,15 @@ impl Store {
             now,
             true,
             |document, state, context| {
+                if let Some((runtime, pending)) = approval {
+                    if !crate::approvals::pending::check_saved(runtime, &document.to_string(), pending)? {
+                        pending.status = "superseded".into();
+                        return Err(invalid("approval is superseded; make a new request"));
+                    }
+                    pending.result = serde_json::json!({"binding_id":record.binding.binding_id,
+                        "agent":record.binding.agent,"service":record.binding.service,"capability":record.binding.capability});
+                    crate::approvals::pending::save_receipt(document, pending)?;
+                }
                 let binding = &record.binding;
                 let persistence = if upsert_record(
                     document,
@@ -775,6 +868,21 @@ impl Store {
         now: OffsetDateTime,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<Option<GrantLease>> {
+        self.check_grant_authority(scope, now, None, activate)
+    }
+
+    pub(crate) fn check_grant_authority(
+        &self,
+        scope: RequestScope<'_>,
+        now: OffsetDateTime,
+        authority: Option<(
+            &crate::policy::Policy,
+            &crate::host_runs::AgentRun,
+            &str,
+            Option<&str>,
+        )>,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<Option<GrantLease>> {
         let expired: Vec<_> = {
             let state = self.lock()?;
             state
@@ -818,6 +926,24 @@ impl Store {
                     .iter()
                     .find(|grant| {
                         grant.matches(scope, now)
+                            && match grant.delegated.as_deref() {
+                                None => true,
+                                Some(encoded) => {
+                                    authority.is_some_and(|(policy, run, capability, binding)| {
+                                        let Ok(issued) =
+                                            serde_json::from_str::<
+                                                crate::policy::delegation::IssuedAccess,
+                                            >(encoded)
+                                        else {
+                                            return false;
+                                        };
+                                        issued.beneficiary == *run
+                                            && issued.active(policy)
+                                            && issued.action["capability"] == capability
+                                            && issued.action["binding_id"].as_str() == binding
+                                    })
+                                }
+                            }
                             && !state.reservations.contains_key(&grant.grant_id)
                     })
                     .cloned()

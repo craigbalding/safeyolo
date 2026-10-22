@@ -27,9 +27,9 @@ def addon_baseline(settings):
 
 
 def local_policy_read(proxy, parent, agent="alice"):
-    before = parent.accepts, len(proxy.events("proxy.egress"))
+    before = parent.accepts, len(proxy.events("traffic.egress"))
     result = api_request(proxy, "/policy", agent=agent)
-    assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+    assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
     return result
 
 
@@ -59,7 +59,7 @@ def test_agent_api_yaml_temporal_values_preserve_source_types(proxy_backend, tmp
                 else:
                     assert_policy_response(result, baseline)
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 NETWORK_POLICY = '''permissions:
@@ -84,12 +84,12 @@ NETWORK_BASELINE = {
 def check_network_policy(proxy, parent, *, reversed_policy):
     for host, expected in (("alpha.invalid", 403 if reversed_policy else 200),
                            ("omega.invalid", 200 if reversed_policy else 403)):
-        before = parent.accepts, len(proxy.events("proxy.egress"))
+        before = parent.accepts, len(proxy.events("traffic.egress"))
         result = send_request(proxy.paths["alice"], f"http://{host}/metadata-only")
         assert result[0] == expected
         if expected == 403:
             assert_rejection(*result, 403, host)
-            assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+            assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
         else:
             assert result[2] == b"hello"
             assert parent.accepts == before[0] + 1

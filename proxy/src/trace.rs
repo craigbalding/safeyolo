@@ -10,11 +10,13 @@ use zeroize::Zeroize;
 
 use crate::circuits::{CircuitValue as C, ErrorKind as NumericError};
 
-const EXPECTED_ADDONS: [&str; 6] = [
-    "service-gateway",
+// First request observations in the native HTTP path. CONNECT only runs network
+// admission. This describes execution order, not component availability.
+pub(crate) const REQUEST_CONTROLS: [&str; 6] = [
     "network-guard",
     "circuit-breaker",
     "credential-guard",
+    "service-gateway",
     "pattern-scanner",
     "test-context",
 ];
@@ -400,13 +402,22 @@ impl TraceStore {
         let expected: &[&str] = if record.steps.iter().any(|step| step.hook == "http_connect") {
             &["network-guard"]
         } else {
-            &EXPECTED_ADDONS
+            &REQUEST_CONTROLS
         };
-        let not_loaded: Vec<_> = expected
+        // Absence can mean an unfinished request, a lost observation or a cap.
+        // Only an explicit observation at the control's call site proves absence.
+        let not_loaded: Vec<_> = record
+            .steps
             .iter()
-            .filter(|name| !record.steps.iter().any(|step| &step.addon == *name))
-            .map(|name| json!({"addon":name,"state":"not_loaded"}))
+            .filter(|step| step.state == "not_loaded")
+            .map(|step| json!({"addon":step.addon,"state":"not_loaded"}))
             .collect();
+        let incomplete = record.truncated
+            || expected.iter().any(|name| {
+                !record.steps.iter().any(|step| {
+                    step.addon == *name && matches!(step.hook.as_str(), "request" | "http_connect")
+                })
+            });
         let steps = record
             .steps
             .iter()
@@ -414,7 +425,8 @@ impl TraceStore {
             .collect::<Result<Vec<_>>>()?;
         Ok(Some(
             json!({"request_id":request_id,"agent_id":record.agent_id,
-            "created_at":created_at,"truncated":record.truncated,"steps":steps,"not_loaded":not_loaded}),
+            "created_at":created_at,"truncated":record.truncated,"incomplete":incomplete,
+            "steps":steps,"not_loaded":not_loaded}),
         ))
     }
 }

@@ -258,7 +258,9 @@ fn exchange(left: &Path, right: &Path) -> Result<(), Error> {
     let right = CString::new(right.as_os_str().as_bytes())?;
     #[cfg(target_os = "linux")]
     let result = unsafe {
-        libc::renameat2(
+        // Use the kernel call even when libc has no renameat2 wrapper.
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             left.as_ptr(),
             libc::AT_FDCWD,

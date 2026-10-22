@@ -58,7 +58,9 @@ def test_step_executor_preserves_github_default_and_explicit_bash_semantics(tmp_
 def test_manual_route_separates_acquisition_and_pins_read_only_qualification():
     assert set(WORKFLOW.get("on", WORKFLOW.get(True))) == {"workflow_dispatch"}
     assert WORKFLOW["permissions"] == {"contents": "read"}
-    assert set(WORKFLOW["jobs"]) == {"retained", "acquire-host", "installed-arm64", "public-install"}
+    assert set(WORKFLOW["jobs"]) == {
+        "clean-public-install", "installed-update", "retained", "acquire-host", "installed-arm64", "public-install",
+    }
     assert WORKFLOW.get("on", WORKFLOW.get(True))["workflow_dispatch"]["inputs"]["mode"]["default"] == "retained"
     retained = WORKFLOW["jobs"]["retained"]
     assert retained["if"] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'retained'"

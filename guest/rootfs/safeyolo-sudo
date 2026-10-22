@@ -14,6 +14,8 @@ set -eu
 
 REAL_SUDO=/usr/bin/sudo
 SETPRIV=/usr/bin/setpriv
+# Alpine's util-linux setpriv subpackage installs the helper in /bin.
+[ -x "$SETPRIV" ] || SETPRIV=/bin/setpriv
 
 if [ ! -x "$REAL_SUDO" ]; then
     echo "safeyolo-sudo: $REAL_SUDO is not installed" >&2

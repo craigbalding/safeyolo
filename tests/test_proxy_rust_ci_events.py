@@ -58,7 +58,8 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
 def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
     workflow = rust_workflow()
     assert workflow["concurrency"]["group"] == (
-        "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}"
+        "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-"
+        "${{ inputs.packages_only && inputs.package_architecture || '' }}"
     )
     assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event.action != 'ready_for_review' }}"
     assert "ready_for_review" in workflow[True]["pull_request"]["types"]
@@ -68,13 +69,15 @@ def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
 
 
 def cancels_run(workflow: dict, running_event: str, incoming_event: str,
-                ref: str = "refs/heads/master", action: str = "") -> bool:
+                ref: str = "refs/heads/master", action: str = "",
+                running_packages: str = "", incoming_packages: str = "") -> bool:
     concurrency = workflow["concurrency"]
 
-    def group(event: str) -> str:
+    def group(event: str, packages: str) -> str:
         rendered = concurrency["group"]
         for key, value in (("workflow", workflow["name"]), ("ref", ref), ("event_name", event)):
             rendered = rendered.replace("${{ github." + key + " }}", value)
+        rendered = rendered.replace("${{ inputs.packages_only && inputs.package_architecture || '' }}", packages)
         assert "${{" not in rendered, rendered
         return rendered
 
@@ -83,7 +86,17 @@ def cancels_run(workflow: dict, running_event: str, incoming_event: str,
         assert cancel == "${{ github.event.action != 'ready_for_review' }}"
         cancel = action != "ready_for_review"
     assert isinstance(cancel, bool)
-    return cancel and group(running_event) == group(incoming_event)
+    return cancel and group(running_event, running_packages) == group(incoming_event, incoming_packages)
+
+
+def test_package_dispatch_does_not_cancel_contracts_or_another_package_group():
+    workflow = rust_workflow()
+    assert not cancels_run(workflow, "workflow_dispatch", "workflow_dispatch", incoming_packages="all")
+    assert not cancels_run(workflow, "workflow_dispatch", "workflow_dispatch", running_packages="all")
+    assert not cancels_run(workflow, "workflow_dispatch", "workflow_dispatch",
+                           running_packages="amd64", incoming_packages="arm64")
+    assert cancels_run(workflow, "workflow_dispatch", "workflow_dispatch",
+                       running_packages="amd64", incoming_packages="amd64")
 
 
 @pytest.mark.parametrize("workflow_name,full_event", [
@@ -275,8 +288,6 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     build = next(step for step in steps if step.get("id") == "linux_host_inputs")
     tests = next(step for step in steps if step.get("name") == "Test installed native policy commands")
     assert steps.index(build) < steps.index(tests)
-    guest_tests = next(step for step in steps if step.get("name") == "Check native guest command operations")
-    assert steps.index(build) < steps.index(guest_tests)
     assert not tests.get("continue-on-error")
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -315,10 +326,72 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
         ]
 
 
+@pytest.mark.parametrize("packages,architecture,source,ref,expected", [
+    (True, "all", "a" * 40, "refs/heads/master", ["amd64", "arm64"]),
+    (True, "amd64", "a" * 40, "refs/heads/master", ["amd64"]),
+    (True, "arm64", "a" * 40, "refs/heads/master", ["arm64"]),
+    (False, "amd64", "", "refs/heads/master", ["amd64", "arm64"]),
+    (False, "", "", "refs/heads/ci/proxy-rust-620", ["amd64", "arm64"]),
+    (True, "all", "", "refs/heads/master", None),
+    (True, "all", "master", "refs/heads/master", None),
+    (True, "all", "a" * 7, "refs/heads/master", None),
+    (True, "all", "b" * 40, "refs/heads/master", None),
+    (True, "all", "a" * 40, "refs/heads/feature", None),
+    (True, "all", "a" * 40, "refs/tags/master", None),
+    (True, "x86_64", "a" * 40, "refs/heads/master", None),
+    (True, 'arm64"; exit 0; #', "a" * 40, "refs/heads/master", None),
+    (True, "all", "$(exit 0)", "refs/heads/master", None),
+])
+def test_package_dispatch_selects_exact_source_before_starting_producers(
+    tmp_path, packages, architecture, source, ref, expected
+):
+    job = rust_workflow()["jobs"]["package-inputs"]
+    step = job["steps"][0]
+    assert step["env"] == {
+        "PACKAGES_ONLY": "${{ github.event_name == 'workflow_dispatch' && inputs.packages_only }}",
+        "SOURCE_REVISION": "${{ inputs.source_revision }}",
+        "PACKAGE_ARCHITECTURE": "${{ inputs.package_architecture }}",
+        "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+    }
+    assert "${{" not in step["run"]
+    output = tmp_path / "github-output"
+    result = subprocess.run(["bash", "-eo", "pipefail", "-c", step["run"]],
+                            env={**os.environ, "PACKAGES_ONLY": str(packages).lower(),
+                                 "SOURCE_REVISION": source, "PACKAGE_ARCHITECTURE": architecture,
+                                 "DEFAULT_BRANCH": "master", "GITHUB_REF": ref, "GITHUB_SHA": "a" * 40,
+                                 "GITHUB_OUTPUT": str(output)},
+                            capture_output=True, text=True, timeout=10)
+    if expected is None:
+        assert result.returncode != 0 and "::error::" in result.stdout, result
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(output.read_text().removeprefix("architectures=")) == expected
+
+
+def test_package_dispatch_keeps_existing_producer_identity_profile_and_retention():
+    workflow = rust_workflow()
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["packages_only"]["default"] is False
+    assert inputs["package_architecture"]["options"] == ["all", "amd64", "arm64"]
+    job = workflow["jobs"]["guest-inputs"]
+    assert job["needs"] == "package-inputs"
+    assert workflow["jobs"]["package-inputs"]["outputs"]["architectures"] == "${{ steps.select.outputs.architectures }}"
+    assert job["strategy"]["matrix"]["architecture"] == "${{ fromJSON(needs.package-inputs.outputs.architectures) }}"
+    assert job["uses"] == "./.github/workflows/guest-test-inputs.yml"
+    assert job["with"] == {
+        "revision": "${{ github.event.pull_request.head.sha || github.sha }}",
+        "profile": "production", "architecture": "${{ matrix.architecture }}",
+        "host_inputs": True, "retain_packages": True,
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+    assert "continue-on-error" not in job
+
+
 def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
     job = rust_workflow()["jobs"]["contracts"]
     assert " ".join(job["if"].split()) == (
-        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)"
     )
     assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest"]
     checkout = job["steps"][0]

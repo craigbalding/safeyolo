@@ -5,6 +5,8 @@
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
+- [Delegated decisions](#delegated-decisions)
+- [Approval context](#approval-context)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Legacy agent collaboration with plumb](#legacy-agent-collaboration-with-plumb)
@@ -72,8 +74,93 @@ sy_api /health | jq
 ```
 
 The API permits selected self-service mutations (flow tags, access requests,
-contract submissions, and plumb messages) but cannot change policy, approve
-requests, change policy controls, or reach the admin API.
+contract submissions, and plumb messages). A reviewer can also resolve a
+canonical approval inside an operator-configured deciding delegation. The API
+cannot administer policy, create delegations, change policy controls, or reach
+the Admin API.
+
+## Delegated decisions
+
+When the operator has configured deciding authority for your durable local
+identity, the normal native Coord MCP server exposes `list_approvals`,
+`read_approval` and `resolve_approval`. Attention carries only an approval
+reference. Room membership and an Agent API bearer do not grant deciding
+authority. Direct reads and decisions each recheck your current run and one
+current delegation.
+
+Read the canonical request and its `choices`. Resolve only an offered
+`delegation` and `option`, with `decision` set to `approve`, `reject` or `defer`.
+Do not replace host, identity, credential, service or policy fields. Network and
+credential run access is reusable within its declared scope. Credential
+approval does not limit an API operation or change shared baseline approval.
+A gateway route grant is not an approval of an exact payload.
+
+The equivalent Agent API routes are `GET /approvals`,
+`GET /approvals/APPROVAL_ID` and `POST /approvals/APPROVAL_ID/resolve`.
+The decision JSON contains only `decision`, `delegation` and `option`.
+Reconcile through the canonical list after reconnect. If a reply is lost, read
+the canonical outcome before another decision. Refusal installs no policy deny
+rule. Deferral leaves the request pending. The worker must retry after an
+approval; the host does not replay its request.
+
+The host operator configures and inspects delegations with
+`approvals delegation preview|check|apply|revoke` and `approvals delegations`.
+Unsupported bounds fail before mutation. Reviewers cannot approve for
+themselves, combine partial delegations, bypass current operator denials, or
+inherit authority after identity/run replacement. Ordinary operator approval
+controls remain available when reviewer access or attention is unavailable.
+
+## Approval context
+
+The host operator can ask the requesting agent for context while its original
+approval remains pending. This does not grant permission. SafeYolo sends a fixed
+question to the existing private Coord room, such as `work-agent`, with trusted
+operator attribution. The question includes the canonical approval ID, context
+request ID and a response example. Use your own Agent API token to answer.
+
+`GET /approvals/APPROVAL_ID/context` reads your question and any saved reply.
+Use the `approval_id` from your 428 response, or its traffic `request_id`.
+Only the original requesting agent's current identity can read or answer this
+endpoint. A helper's selected evidence-read grant does not permit a reply.
+If no operator question exists, `context.status` is `not_requested`.
+
+To answer, send `POST /approvals/APPROVAL_ID/context` with this JSON shape.
+Copy `CONTEXT_ID` from the question or GET result. `reason` is required. The
+other context fields are optional. Each field is limited to 2048 UTF-8 bytes.
+
+```json
+{
+  "context_id": "CONTEXT_ID",
+  "context": {
+    "task": "How this relates to the operator's task",
+    "reason": "Why the currently requested operation helps",
+    "next_step": "What I plan to do if granted",
+    "fallback": "What I can do if denied"
+  }
+}
+```
+
+The response is untrusted task context. Do not supply authority, sender fields,
+credentials, commands for the host to execute, or a replacement security
+explanation. SafeYolo rejects unknown fields and cannot change the bound
+authority through this endpoint. Different authority requires a new traffic or
+gateway request and a new approval.
+
+If the native client is installed in your guest, you can use
+`safeyolo helper context APPROVAL_ID` to read and
+`safeyolo helper respond APPROVAL_ID --reason 'Why the operation helps'` to
+answer. These commands use `/app/agent_token` and the configured proxy route.
+The host's `safeyolo approvals context` command displays the attributed reply
+under an untrusted label, separate from SafeYolo explanation.
+
+Replies are accepted for 120 seconds while the approval remains pending.
+An identical repeated reply is idempotent. A different reply cannot overwrite
+it. Late, mismatched, superseded or terminal requests are rejected. An explicit
+operator ask after a timeout creates a new context request on the same approval;
+the old context ID cannot answer that question. The operator can approve or
+reject without waiting. No response means neither approval nor denial.
+If a write reports unavailable audit or uncertain completion, read the endpoint
+before retrying. Context remains stored separately from approval authority.
 
 ## Diagnostics and policy
 
@@ -111,6 +198,42 @@ ambiguous — the two are complementary, not redundant. See
 [`triage-request-failing.yaml`](graph/triage-request-failing.yaml) and
 [`triage-credential-guard.yaml`](graph/triage-credential-guard.yaml).
 
+## Selected-IP connection evidence
+
+Use `/explain?request_id=ID` with either the client-facing CONNECT response's
+`X-SafeYolo-Request-Id` or an inner HTTP response ID. The CONNECT ID includes
+its linked inner requests. An inner ID includes its own CONNECT without
+including sibling HTTP requests. All returned events remain scoped to the
+authenticated agent. The CONNECT ID remains usable after a TLS failure,
+before an inner HTTP request or recorded flow exists.
+
+Canonical `traffic.connection` events retain `logical_host`, `requested_ip`,
+`requested_port`, `effective_ip`, `effective_port` and `selection_source`.
+`client_connect` means the numeric CONNECT arrived on this attributed agent
+connection. `operator_mapping` means the host configuration selected the IP.
+Neither value proves who acquired the address or how it was resolved.
+
+Read `stage` and `outcome` in order. `route_wait` reports missing client
+information and `outbound: not_attempted`, including timeout/cancellation.
+`direct_connect` records the actual `direct_peer`. `parent_tcp` and
+`parent_connect` distinguish reaching the configured parent from its CONNECT
+response. The latter retains `parent_requested_target` and
+`parent_connect_status`. Through a parent, `direct_peer` is null: SafeYolo
+does not observe the parent's origin-side socket. `origin_tls` records the
+verification name and result. `http_response` records the observed HTTP
+status. A pending stage alone does not establish completion. A failed stage
+retains its reason; inspect earlier events for the last completed operation.
+For an HTTPS parent, `parent_tls` records verification of the parent itself.
+`upstream_connection` associates an inner request with its observed connection
+facts, including verified TLS when an HTTP/2 connection is reused.
+
+`status: complete` describes the retained explanation lookup. It does not
+describe network success. Missing or expired events leave a limit on the
+explanation. Eligible selected-IP FlowStore rows carry `connection_json`;
+old rows and requests without a selection leave it null. Live traffic shows
+the same selected target and reached upstream
+facts. Selection does not enable body capture or change evidence ownership.
+
 ## Trace wire vocabulary
 
 `/trace` identifies each step with `control` and `hook`. Branch on
@@ -132,15 +255,15 @@ envelope.
 | Literal | Meaning |
 |---|---|
 | `evaluated` | Control's hook ran and reported an outcome. |
-| `bypassed` | Control's hook was reached but did not evaluate (see `reason`). |
+| `bypassed` | The control did not evaluate. Its reached call site reports disablement, or the HTTP owner records that an earlier local response prevented execution (see `reason`). |
 | `error` | Reached operation reported an error. `reason` names its diagnostic, such as `CredentialGuardError` or `AuditSinkUnavailable`. It does not imply a Python exception. |
-| `not_loaded` | Expected control has no retained step. Synthesised at read time into `not_loaded[]`. Absence alone does not prove a startup failure or that the control never executed. |
+| `not_loaded` | The native call site found its required control unavailable. The step is also listed in `not_loaded[]`. An absent retained step alone never produces this state. |
 
 ### Bypass / error reasons
 
 | Literal | Meaning |
 |---|---|
-| `prior_response` | An earlier operation already produced a response; this control deferred. |
+| `prior_response` | An earlier operation produced a local response before this control ran. `details.preempted_by`, when present, identifies that responder. |
 | `policy_disabled` | Policy bypassed this control for the host/agent scope. Inspect the matching exceptions and effective policy. |
 | `control_disabled` | The control's runtime enable setting is off. Inspect the corresponding `controls.<name>.enabled` in `policy show` and `/config`. |
 | `probe_sink_failed` | Reserved-probe request-hook failsafe caught a missing/inert sink BEFORE transport was attempted. Client received a correlated 5xx with `X-SafeYolo-Request-Id`. |
@@ -195,7 +318,10 @@ the control name alone.
 | Literal | Meaning |
 |---|---|
 | `not_a_gateway_request` | Request had no `sgw_` token — passed through. |
+| `selected` | Gateway selection found an applicable service credential. This does not prove that injection or forwarding succeeded. |
 | `injected` | Gateway credential injection succeeded. |
+| `blocked` | Gateway processing produced a local block response. |
+| `redirected` | Gateway processing produced its configured redirect. |
 | `not_a_gateway_response` | Response hook saw a flow without `gateway_grant_id`. |
 | `grant_consumed` | Once-grant fired on a 2xx response. |
 | `grant_retained` | Gateway flow but grant not consumed (non-2xx or scope != once). |
@@ -217,9 +343,11 @@ additional steps and missing-control entries.
   "agent_id": "example-agent",
   "created_at": 1791500000,
   "truncated": false,
+  "incomplete": true,
   "steps": [
     {"control": "network", "hook": "request", "state": "evaluated",
-     "outcome": "allowed", "duration_us": 340}
+     "outcome": "allowed", "duration_us": 340},
+    {"control": "credentials", "hook": "request", "state": "not_loaded"}
   ],
   "not_loaded": [
     {"control": "credentials", "state": "not_loaded"}
@@ -227,11 +355,30 @@ additional steps and missing-control entries.
 }
 ```
 
-`truncated=true` means the per-record step cap was hit. The retained steps
-are incomplete; do not use an absent step to prove that a control did not
-run. Treat truncation as `fail` for automated diagnostics. A 404 means no
+The example is incomplete because several request stages have no retained
+observation. `incomplete=true` reports missing request-stage evidence or a
+step cap. `truncated=true` specifically means the per-record step cap was hit.
+Neither flag proves that an unobserved control was absent. Treat incomplete
+or truncated traces as `fail` for automated diagnostics. A 404 means no
 accessible retained trace; a 5xx means trace evidence is unavailable. Neither
 proves the request passed or failed a control.
+
+For a clean ordinary HTTP request, the native order of first observations is
+`network`, `circuits`, `credentials`, `services`, `patterns`, `test_context`.
+A control can emit more than one step. An early test-context admission failure
+can appear before pattern inspection. The trace keeps the actual observation
+order. CONNECT records its
+separate `network` admission under `hook=http_connect`. Execution timings
+measure reached operations; a bypass has no execution timing.
+
+`safeyolo doctor` sends a traced plain-HTTP probe through each configured
+agent Unix-domain socket. The reserved destination terminates locally after
+the normal request stages. It needs no external network access. Doctor accepts
+known disablement and reports it in the steps. It reports an earlier response,
+a missing control, an execution error, bad ordering, unavailable trace data or
+incomplete evidence. A failed pipeline check makes doctor exit with status 1.
+If no agent listener is configured, doctor warns that a pipeline probe could
+not run.
 
 Agent scope: `/trace` is filtered to the caller's own trace records.
 A foreign or unknown `request_id` returns `404` with the same body as
@@ -245,18 +392,18 @@ another agent's traces.
   "request_id": "req-<32hex>",
   "status": "complete" | "pending" | "incomplete_search" | "error",
   "events": [ /* audit event objects */ ],
-  "searched_lines_per_file": 10000   // only present when status=incomplete_search
+  "searched_lines_per_file": 10000   // present when a retained-file line bound was hit
 }
 ```
 
-Status precedence:
+Status precedence, highest first:
 
 | Literal | Meaning | Retry? |
 |---|---|---|
-| `complete` | Retained set fully scanned. `events` is authoritative. | No |
+| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Investigate via `safeyolo logs` |
 | `pending` | Writer still has queued/mid-flush events after the bounded drain. | Yes, briefly |
 | `incomplete_search` | Retention bound was hit while scanning. Events outside the window may exist. | Only if you can bound the time window differently |
-| `error` | File read or parse failure. Result is unreliable. | Investigate via `safeyolo logs` |
+| `complete` | Retained set fully scanned. `events` is authoritative. | No |
 
 
 ## Flow inspection
@@ -283,7 +430,7 @@ not indicate who initiated the traffic. Delegated operator traffic can remain
 agent-queryable while recording `initiator=operator`.
 
 In the normal per-agent configuration, flow results and bodies are scoped to
-the calling agent by service-discovery attribution.
+the calling agent from its accepted host-owned Unix domain socket listener.
 
 Each recorded flow carries an attribution spine in addition to the legacy
 `agent_id` alias:

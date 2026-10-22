@@ -19,14 +19,29 @@ ROOT/
 ├── agents/              # Persistent homes, overlays and owned run metadata
 ├── certs/               # Public CA and private signing key
 ├── data/                # Private tokens, instance identity and durable state
-└── logs/                # Audit, runtime diagnostics and flow storage
+└── logs/                # Canonical event log and flow storage
 ```
 
 The [settings reference](settings.md#runtime-settings) gives every
 retained key, default and consumer. Paths such as `data_dir`,
-`audit_log_path`, `event_log` and `flow_store_db_path` belong to this root by
+`audit_log_path` and `flow_store_db_path` belong to this root by
 default; the earlier Python XDG log selection is not a runtime setting.
 Keep private tokens, signing keys and service credentials on the host.
+
+The canonical audit writer records operational, security and diagnostic events
+in `audit_log_path`. `safeyolo logs` shows their summaries and details. For a
+request, `traffic.egress` records the selected direct or parent route and the
+logical destination. It describes an attempt before connection, not successful
+delivery. The requesting agent can read the same event through
+`/explain?request_id=req-<32hex>`. Neither reader requires FlowStore capture.
+`traffic.request_outcome` records the response prepared by the proxy. Response
+preparation does not establish that the body reached the client.
+
+Older generated configurations can contain `event_log`. The native TOML loader
+and the internal JSON launcher ignore that retired setting. Remove it when
+maintaining those configurations. SafeYolo does not open, append or delete the
+old diagnostic file. Existing historical files remain available for manual
+inspection; the readers use the canonical log and its existing retention rules.
 
 ## Runtime settings
 
@@ -41,8 +56,9 @@ safeyolo status
 The Admin API defaults to IPv4 loopback port 9090 and requires the selected
 `admin_api_token_file`. Port zero requests an ephemeral Admin port, reported
 in readiness. Agent listeners are Unix sockets with host-owned identity;
-request headers cannot change that identity. Agent lifecycle stages their
-listeners and the agent discovery map from the same policy/runtime state.
+request headers cannot change that identity. Agent lifecycle stages listeners
+from host-owned policy and runtime state. The proxy does not use an agent map.
+New managed sockets use `agents/<name>/proxy/proxy.sock`.
 
 To use an explicit parent or additional CA trust, set the keys:
 
@@ -98,13 +114,69 @@ rejected. IP addresses, wildcards, domain suffixes, URL paths and port filters
 are not supported. A listed host does not include its subdomains or redirect
 destinations. Selection uses the logical request destination and trusted
 listener identity. Request headers and resolved addresses cannot select the
-parent. CONNECT retains its admitted authority for inner requests. A selected
+parent. After CONNECT binds its logical name, inner requests retain that name
+and port. A selected
 parent connection, TLS or CONNECT failure does not fall back to direct egress.
 
 Runtime listeners, audit, trace and capture settings take effect on restart.
 Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
 values and zero/negative handling in [settings](settings.md).
+
+### Select a target IP
+
+On the host, edit the active instance's `config.toml` and restart SafeYolo.
+Add `target_ip_mappings` as a top-level key. In this example, replace
+`example.com` and `203.0.113.42` with the permitted hostname and owned endpoint.
+The endpoint must serve a certificate valid for that hostname. Agent `zx`
+must already exist:
+
+```toml
+target_ip_mappings = [{host="example.com", ip="203.0.113.42", port=443, agents=["zx"]}]
+```
+
+Agent `zx` can then make an ordinary `https://example.com/` request. SafeYolo
+uses that IP and retains `example.com` for TLS verification, inspection and
+hostname policy. A selected parent receives `CONNECT 203.0.113.42:443`.
+The parent needs no destination-reporting extension. IPv6 literals are also
+accepted in `ip`, without brackets. Omit `port` to match any requested port;
+the mapping does not change the port. Omit `agents`, or use `[]`, to apply the
+mapping to all agents. An empty mapping list retains ordinary routing.
+
+Hostnames match exactly, ignoring ASCII case and one final root dot. Wildcards,
+URLs and numeric mapping hostnames are invalid. Different IPs in overlapping
+hostname, port and agent scopes are rejected at startup. Duplicate entries
+that select the same IP are allowed. An explicit client IP that conflicts with
+an applicable operator mapping fails; neither selection silently replaces the
+other. Changing runtime mappings requires a restart. Policy changes take
+effect through the existing policy lifecycle. A request in an admitted tunnel
+retains its endpoint and receives current policy checks; a conflicting mapping
+refuses the request instead of moving it. New connections use the current
+configuration.
+
+Both the hostname and selected IP/port receive the applicable network checks.
+Credential and service checks retain their logical destination. Existing
+allow, deny and approval defaults apply. The selected IP can differ from DNS;
+SafeYolo does not require a DNS lookup to validate the selection. Reserved
+local destinations, protected Admin endpoints and provider routes retain
+their containment. A mapping does not redirect those routes.
+
+For client-selected addresses, agents can use ordinary curl `--connect-to`.
+See the [agent example and failure diagnosis](../cli/src/safeyolo/agent_context/skills/safeyolo/references/troubleshooting.md#select-a-target-ip).
+A numeric CONNECT waits for client protocol/name information only when that
+information is needed to choose the route. This wait has a fixed 30-second
+deadline. Timeout or cancellation closes it without an outbound attempt.
+Server-first clients cannot use this ambiguous path. Known routes retain
+server-first behavior, and literal-IP TLS can omit DNS SNI. Later HTTP
+requests remain bound to the accepted logical name, endpoint and port.
+
+The CONNECT response contains `X-SafeYolo-Request-Id`, including when later
+TLS fails. Its 2xx status acknowledges the client tunnel; use the linked
+canonical [explanation](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#selected-ip-connection-evidence)
+for actual direct/parent connection, TLS and HTTP outcomes. Eligible stored
+exchanges and live traffic retain the same target association. Existing
+capture and ownership rules still apply. Old stored rows leave new metadata
+unknown. A parent's requested endpoint is not an observed origin socket peer.
 
 ## Workspace and memory
 
@@ -141,11 +213,64 @@ busy mounts, including open files, working directories and memory mappings.
 It does not erase files copied into the guest or bytes already read into memory.
 
 `desktop.size` retains `auto` or an explicit `WIDTHxHEIGHT` preference;
-`desktop.present_host_port` selects the permitted loopback presentation port.
+`desktop.present_host_port` selects the loopback presentation port. The default,
+`0`, gives each presentation its own available port. A nonzero value shares one
+port across explicitly opened local presentations and selects each agent by
+its `<agent>.localhost` hostname.
 Use `safeyolo agent present work` for the running desktop. Web and Commander
 listener/share settings stay in the same config. Their authenticated
 Admin owners and Commander make the existing operator changes; the retired
 Python desktop/web/command-centre wrappers are not installed.
+
+### Preview through one SSH forward
+
+On the remote SafeYolo host, use the account that owns the instance. The agents
+must already exist. Their guest images must include the desktop capability.
+In the selected instance's `config.toml`, set the port before opening previews.
+If a `[desktop]` table exists, edit that table:
+
+```toml
+[desktop]
+present_host_port = 6080
+```
+
+On your client computer, add this line to the existing `Host kali` entry in
+`~/.ssh/config`. Here, `kali` is the SSH alias for the remote host. Both port
+6080 listeners must be available:
+
+```sshconfig
+Host kali
+    LocalForward 127.0.0.1:6080 127.0.0.1:6080
+```
+
+Connect with `ssh kali`. In the remote shell, open each wanted presentation.
+For existing agents named `alice` and `bob`, run:
+
+```sh
+safeyolo agent present alice
+safeyolo agent present bob
+```
+
+Each result contains a URL and a separate unlock code. In your client browser,
+open `http://alice.localhost:6080/_safeyolo_desktop/` or
+`http://bob.localhost:6080/_safeyolo_desktop/`. Enter that agent's unlock code.
+The browser must resolve `*.localhost` to loopback. Browser and operating-system
+support varies; a client that does not resolve these names needs local hostname
+resolution support. No local SafeYolo installation is needed.
+
+Both agents use the same SSH forward. Later presentations on this port use the
+same forward. Each agent has a separate browser origin and host-only session
+cookie. A path cannot select another agent. Unknown names and configured agents
+without an open presentation return 404. The endpoint ignores forwarded host
+headers; the SSH connection carries the browser's original host and origin.
+
+The first explicit presentation opens the listener on `127.0.0.1`. Proxy startup
+alone does not open it. Stopped targets cannot accept new guest connections.
+Replacing an agent or its run invalidates the old presentation. The proxy owns
+the routes and closes their connections and listener at shutdown. Existing
+presentations keep their URL until they close. The default unlock lifetime and
+failure limit still apply. Tailscale sharing retains its separate per-agent
+transport and ports.
 
 ## Shared working folder (optional)
 

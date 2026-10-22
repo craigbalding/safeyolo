@@ -2,9 +2,9 @@
 
 This document describes the software architecture of SafeYolo, an egress control proxy for AI coding agents.
 
-The current agent identity/lifecycle sources of truth and the staged plan for
-durable `agent_id` plus runtime `run_id` are documented in the
-[agent identity and run-lifecycle implementation plan](agent-lifecycle-identity-plan.md).
+The [networking reference](networking-vsock-uds.md) describes current listener
+identity. The [earlier lifecycle plan](agent-lifecycle-identity-plan.md) records
+the former Python design at its named source revision.
 
 ## Overview
 
@@ -31,7 +31,7 @@ per-agent Unix domain socket (UDS) to the Rust proxy:
 Agent sandbox -> guest forwarder -> per-agent UDS -> Rust proxy -> upstream
 ```
 
-The host-controlled listener and agent map establish request identity. A
+The host-owned Unix domain socket listener establishes request identity. A
 request header cannot select another agent. The proxy applies the configured
 network, credential, and inspection controls at their respective request
 stages; streamed bodies and TLS passthrough have narrower inspection and
@@ -54,10 +54,13 @@ and a read-only configuration share.
 - **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to the installation's selected subordinate host UID, while container UID 1000 maps to the operator. GIDs use their separately selected range. The installer reuses safe existing allocations or prepares unused ranges through the host account tools; the original archive base remains 100000.
 - **Rootfs**: a single shared directory tree at
   `~/.safeyolo/share/rootfs-tree/` is the gVisor OCI `root.path`; Linux does
-  not package it as an image. By default, writes
-  go to a per-agent file-backed overlay and persist across stop and run.
-  `--ephemeral` selects a memory-backed overlay whose rootfs writes are
-  discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
+  not package it as an image. By default, writes go to a per-agent file-backed
+  tmpfs overlay. Those rootfs writes disappear on stop; the backing file is
+  temporary. `rootfs_overlay = "memory"` selects a memory-backed upper instead.
+  Home and package-cache bind mounts persist separately. The native cron/at
+  spool has a per-agent bind under `agents/<name>/overlay/var/spool/cron` in
+  default mode; memory mode uses a fresh spool. Per-agent package caches keep
+  reinstalls cheap.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. `safeyolo doctor` reports the selected runtime.
 - **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they install a profile for the selected runtime path. Explicit KVM preparation grants the mapped root GID device access and repairs a selected root UID denial if required. The group grant survives a named-user ACL reset. If the device or its group permissions reset, run `SAFEYOLO_RUNSC_PLATFORM=kvm safeyolo host prepare` before the next sandbox creation. See [host preparation](installation.md#linux-host-preparation-in-new-source-bundles). The published release still needs [manual host preparation](installation.md#guest-prerequisites).
 

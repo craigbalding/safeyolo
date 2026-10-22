@@ -6,6 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_doc_cli_flags.py"
 
@@ -23,9 +25,60 @@ def _load_module():
 mod = _load_module()
 
 
+@pytest.mark.parametrize(("change", "expected"), [
+    ("unchanged", None),
+    ("equivalent-options", None),
+    ("explicit-defaults", None),
+    ("extra-command", "two setup commands"),
+    ("shell-chain", "without shell control flow"),
+    ("changed-source", "official public installer"),
+    ("no-download-failure", "curl's fail"),
+    ("missing-launch", "with --launch"),
+    ("unsupported-launch", "unknown flag `--invented`"),
+    ("missing-section", "section is missing"),
+    ("extra-prose", "limit 150"),
+])
+def test_readme_quick_start_drift_runs_in_existing_command_check(
+    tmp_path, monkeypatch, capsys, change, expected,
+):
+    readme = (REPO_ROOT / "README.md").read_text()
+    if change == "equivalent-options":
+        readme = readme.replace("curl -fLO", "curl --location --remote-name --fail", 1)
+        readme = readme.replace("bash install-safeyolo.sh", 'bash "install-safeyolo.sh"', 1)
+    elif change == "explicit-defaults":
+        readme = readme.replace("--launch\n", "--launch . --harness claude --launcher tmux-window\n", 1)
+    elif change == "extra-command":
+        readme = readme.replace("```sh\ncurl ", "```sh\nmkdir first\ncurl ", 1)
+    elif change == "shell-chain":
+        readme = readme.replace("--launch\n", "--launch && mkdir first\n", 1)
+    elif change == "changed-source":
+        readme = readme.replace(mod.QUICK_START_INSTALLER_URL, "https://example.com/install-safeyolo.sh", 1)
+    elif change == "no-download-failure":
+        readme = readme.replace("curl -fLO", "curl -LO", 1)
+    elif change == "missing-launch":
+        readme = readme.replace(" --launch\n", "\n", 1)
+    elif change == "unsupported-launch":
+        readme = readme.replace("--launch\n", "--launch --invented\n", 1)
+    elif change == "missing-section":
+        readme = readme.replace("## Quick start", "## Setup", 1)
+    elif change == "extra-prose":
+        readme = readme.replace("## Quick start\n", "## Quick start\n" + "Required reading. " * 76, 1)
+    (tmp_path / "README.md").write_text(readme)
+    surface = mod._load_cli_surface()
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(mod, "ALL_SHIPPED_DOCS", {"README.md"})
+    # Source lookup stays outside the temporary documentation fixture.
+    monkeypatch.setattr(mod, "_load_cli_surface", lambda: surface)
+    assert mod.main() == (1 if expected else 0)
+    if expected:
+        assert expected in capsys.readouterr().err
+
+
 def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
     surface = mod._native_cli_surface()
     for invocation in (
+        "safeyolo agent launch",
+        "safeyolo agent launch PATH --harness claude --launcher tmux-window",
         "safeyolo agent create marker --workspace PATH --memory 640",
         "safeyolo agent start marker --foreground",
         "safeyolo agent shell --persistent marker -c bash",
@@ -46,6 +99,7 @@ def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
         assert mod._validate_line(invocation, surface) is None
     assert "--root" in surface[""]
     assert mod._validate_line("safeyolo agent start marker --invented", surface)
+    assert mod._validate_line("safeyolo agent launch --invented", surface)
     assert mod._validate_line("safeyolo agent up marker", surface)
     assert mod._validate_line("safeyolo coord mattermost run --invented", surface)
     assert mod._validate_line("safeyolo lab --invented", surface)

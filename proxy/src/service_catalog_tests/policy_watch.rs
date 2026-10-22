@@ -30,7 +30,7 @@ fn poll_policy(proxy: &Proxy) -> Poll<()> {
 
 fn policy_events(runtime: &Runtime) -> Vec<Value> {
     assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());
-    std::fs::read_to_string(runtime.config.audit_log_path.as_ref().unwrap())
+    std::fs::read_to_string(runtime.audit.path())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -132,8 +132,8 @@ capabilities:
         root.join("policy.toml"),
         r#"version = '2.0'
 [hosts]
-'basic.test' = {egress='allow', service='basic'}
-'contract.test' = {egress='allow', service='contract'}
+'basic.test' = {egress='allow', service='basic', allow=['unknown:*']}
+'contract.test' = {egress='allow', service='contract', allow=['unknown:*']}
 [agents.alice]
 image='owned'
 [agents.bob]
@@ -238,6 +238,8 @@ approval_default='once'
     )
     .await;
     assert_eq!(prompt.status, 428);
+    assert_eq!(prompt.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(prompt.value()["error"], "GATEWAY_RISKY_ROUTE");
     let peer = agent_post(
         &fixture.directory.path().join("bob.sock"),
         "http://contract.test/p3/write?ticket=T-1",
@@ -246,6 +248,8 @@ approval_default='once'
     )
     .await;
     assert_eq!(peer.status, 403);
+    assert_eq!(peer.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(peer.value()["error"], "AGENT_MISMATCH");
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
 
     // Remove basic, then reauthorize it after the next loader has read the
@@ -359,7 +363,7 @@ capabilities:
         &path,
         r#"version = '2.0'
 [hosts]
-'basic.test' = {egress='allow', service='basic'}
+'basic.test' = {egress='allow', service='basic', allow=['unknown:*']}
 [agents.alice]
 image='owned'
 [agents.bob]
@@ -407,12 +411,10 @@ image='owned'
         fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
         json!({})
     );
-    assert_eq!(
-        agent_get(&fixture.directory.path().join("bob.sock"), &token)
-            .await
-            .status,
-        403
-    );
+    let peer = agent_get(&fixture.directory.path().join("bob.sock"), &token).await;
+    assert_eq!(peer.status, 403);
+    assert_eq!(peer.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(peer.value()["error"], "AGENT_MISMATCH");
 
     // The opposite admin mutation must stay gone after a concurrent prune and
     // the next watcher publication, including an already issued gateway token.
@@ -435,12 +437,10 @@ image='owned'
         fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
         json!({})
     );
-    assert_eq!(
-        agent_get(&fixture.directory.path().join("alice.sock"), &token)
-            .await
-            .status,
-        403
-    );
+    let revoked = agent_get(&fixture.directory.path().join("alice.sock"), &token).await;
+    assert_eq!(revoked.status, 403);
+    assert_eq!(revoked.blocked_by.as_deref(), Some("service-gateway"));
+    assert_eq!(revoked.value()["error"], "INVALID_TOKEN");
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
     fixture.stop().await;
 }
@@ -592,6 +592,11 @@ fn reply(response: Vec<u8>) -> Reply {
     let (head, body) = response.split_once("\r\n\r\n").unwrap();
     Reply {
         status: head.split_whitespace().nth(1).unwrap().parse().unwrap(),
+        blocked_by: head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-blocked-by")
+                .then(|| value.trim().to_owned())
+        }),
         body: body.into(),
     }
 }
@@ -848,9 +853,7 @@ async fn catalog_workflow() {
     std::fs::write(&bad_catalog, "schema_version: [").unwrap();
     std::fs::write(&ca, "owned invalid PEM").unwrap();
     std::fs::write(&inspection, "{ invalid inspection").unwrap();
-    let retained_log = fixture.directory.path().join("retained-events.jsonl");
-    std::fs::rename(&settings.event_log, &retained_log).unwrap();
-    std::fs::create_dir(&settings.event_log).unwrap();
+    settings.audit_log_path = Some(fixture.directory.path().join("unused-audit.jsonl"));
 
     write_policy(&path, &listed_policy(true), 1001);
     assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
@@ -870,7 +873,6 @@ async fn catalog_workflow() {
         initial.tls.as_ref().unwrap(),
         baseline.tls.as_ref().unwrap()
     ));
-    assert!(Arc::ptr_eq(&initial.events, &baseline.events));
     assert!(Arc::ptr_eq(&initial.audit, &baseline.audit));
     assert!(fixture.proxy.service_files == service_key);
     assert_eq!(fixture.proxy.service_check_at, service_deadline);
@@ -945,8 +947,7 @@ async fn catalog_workflow() {
     std::fs::remove_file(bad_catalog).unwrap();
     std::fs::write(&ca, pem).unwrap();
     write_json(&inspection, &json!({}));
-    std::fs::remove_dir(&settings.event_log).unwrap();
-    std::fs::rename(retained_log, &settings.event_log).unwrap();
+    assert!(!settings.audit_log_path.as_ref().unwrap().exists());
     write_policy(&path, &listed_policy(false), 1004);
     let deadline = fixture.proxy.policy_check_at;
     fixture.proxy.reload(settings.clone()).await.unwrap();

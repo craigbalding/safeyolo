@@ -29,7 +29,7 @@ pub(super) struct Traffic {
     parsed: Result<super::traffic_url::PrettyUrl, Error>,
     request_parsed: OnceLock<Result<super::traffic_url::PrettyUrl, Error>>,
     request_id: String,
-    identity_snapshot: Option<Arc<crate::agent_discovery::ReconciledIdentity>>,
+    agent: Option<String>,
     client: Option<Zeroizing<String>>,
     connection_id: Zeroizing<String>,
     memory_encoding: Result<Zeroizing<Vec<u8>>, ContentError>,
@@ -61,7 +61,7 @@ impl Traffic {
             parsed,
             request_parsed: OnceLock::new(),
             request_id: request_id.to_owned(),
-            identity_snapshot: identity.reconciled_snapshot(),
+            agent: identity.request_agent().map(str::to_owned),
             client: identity.source_id.clone().map(Zeroizing::new),
             connection_id: Zeroizing::new(identity.connection_id.clone()),
             // MemoryMonitor runs before source header hygiene. Keep this
@@ -144,13 +144,13 @@ impl Traffic {
             return started;
         }
         let started = crate::circuit_runtime::now();
-        if let Some(snapshot) = self.identity_snapshot.as_deref()
+        if let Some(agent) = self.agent.as_deref()
             && let Ok(runtime) = self.state.read()
             && let Err(error) = runtime
-                .agent_discovery
-                .observe_reconciled(snapshot, crate::circuit_runtime::now)
+                .agent_activity
+                .observe(agent, crate::circuit_runtime::now())
         {
-            eprintln!("Agent discovery observation failed: {error}");
+            eprintln!("Agent activity observation failed: {error}");
         }
         hooks.started = Some(started);
         started

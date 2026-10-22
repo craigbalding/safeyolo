@@ -10,7 +10,7 @@ microVMs. Release acceptance is recorded in
 Each sandbox has no direct external network interface. Agent HTTP clients use
 the guest forwarder at `127.0.0.1:8080`. The host gives each agent a private
 Unix domain socket (UDS) at
-`~/.safeyolo/data/sockets/<ip>_<agent>/proxy.sock`. The Rust proxy binds
+`~/.safeyolo/agents/<agent>/proxy/proxy.sock`. The Rust proxy binds
 that socket; it has no public TCP traffic listener.
 
 ```text
@@ -39,10 +39,10 @@ attribution Internet Protocol (IP) address from
 configuration. It uses the lowest free slot for a new agent and preserves a
 running legacy agent's address when possible. For network slot `N`, the
 address is `10.200.{(N+1) / 256}.{(N+1) % 256}`, using integer division.
-Slot 0 has `10.200.0.1`. The live `~/.safeyolo/data/agent_map.json` entry is
-authoritative for an agent's assigned IP and socket path. The CLI creates a
-listener entry with
-`agent_id`, `source_id`, and `socket_path` in the configuration.
+Slot 0 has `10.200.0.1`. The CLI creates a listener entry with
+`agent_id`, `source_id`, and `socket_path` in the host configuration. The
+listener supplies the request owner and source IP. The proxy does not consult
+an agent map, guest metadata, or request headers to identify the caller.
 
 The Rust proxy binds each configured path with `tokio::net::UnixListener`.
 On accept, it attaches the configured agent and source identity to the
@@ -52,13 +52,34 @@ socket. The socket directory is a host-controlled convention for the CLI;
 Rust uses the listener entry for identity. Host-local Admin application
 programming interface (API) traffic uses a separate listener.
 
-When the CLI starts or stops an agent sandbox, it updates `agent_map.json` and
-reconciles its managed listener entries with the running Rust proxy.
+When the CLI starts or stops an agent sandbox, it reconciles its managed
+listener entries with the Rust proxy. Startup uses the existing backend
+observation and matching host-owned run or boot record to restore a live
+attachment. A prepared start adds its listener before boot. A failed boot
+removes that listener while preserving any uncertain backend record. A proven
+stop removes the attachment. If the backend is unknown, the existing listener
+remains available for recovery. The host does not scan socket directories to
+discover identities.
 After writing the updated configuration, the CLI signals a running
 proxy with SIGHUP. It waits up to five seconds for the matching `reload_id`
 in the readiness marker. Listener synchronization fails if the proxy does not
 acknowledge the update. If the proxy is unavailable, the CLI saves the
 configuration for its next start. Operator-defined listener entries remain intact.
+A running guest can retain its earlier
+`data/sockets/<ip>_<agent>/proxy.sock` directory mount until stop. New starts
+use the dedicated directory under `agents/<agent>/proxy/`. Linux mounts only
+that directory, so other host agent state stays outside the guest share.
+A stale socket file does not establish an identity. The proxy binds the
+configured listener and removes a stale socket only after the existing
+connection and inode checks. Removed or replaced listeners stop accepting
+with their old configuration. In-flight requests keep the identity fixed at
+accept while their connections drain.
+
+Authenticated `/agents` reports configured listener names, source IPs and
+request activity. It does not expose host socket paths. Operator `/stats`
+retains that information under `agents`; obsolete map-file statistics and
+service-discovery events are removed.
+
 There is no `PUT /admin/proxy/mode` route or mitmproxy mode list in the current
 package.
 Built-in support for operator-created external ingress bindings is proposed in
@@ -104,7 +125,7 @@ it does not enable tracing across every proxy stage.
 | --- | --- |
 | Agent cannot connect to the proxy | Run `safeyolo agent diagnostics <name>`; inspect proxy state and the agent's proxy attachment separately from runtime state. |
 | Proxy transport passes but Agent API fails | Run the authenticated [first health check](AGENTS.md#first-health-check) inside the agent guest and require `"agent_api": "ok"`. Socket reachability or a generic HTTP response does not prove API health. |
-| Agent request is attributed to the wrong identity | Compare the host `agent_map.json` entry with the listener and the named socket. Do not rely on a guest-supplied header. |
+| Agent request is attributed to the wrong identity | Compare the host listener entry and source IP with the named socket and `agent diagnostics` attachment. Do not rely on a guest-supplied header. |
 | macOS shell hangs | Run `safeyolo agent diagnostics <name>`; inspect private control and the shell SSH-banner result before choosing recovery. |
 
 ## Platform and configuration notes
@@ -117,7 +138,7 @@ it does not enable tracing across every proxy stage.
 | Agent identity at proxy | Configured Rust listener for the private UDS | Configured Rust listener for the private UDS |
 
 `SAFEYOLO_CONFIG_DIR` selects a separate instance root, including its agent
-map and socket directories. `SAFEYOLO_VM_HELPER` can select a macOS helper
+state, listener configuration, and socket directories. `SAFEYOLO_VM_HELPER` can select a macOS helper
 binary for a development run. `SAFEYOLO_VM_DEBUG` controls the helper's
 extra relay logging.
 

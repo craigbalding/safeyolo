@@ -223,8 +223,8 @@ def test_cold_and_warm_h2_streams_reach_origin_before_gate(proxy_backend, tmp_pa
                 assert all(bytes(row["body"]) == body and row["ended_ns"] - staged_at >= 200_000_000 for row in rows)
                 assert origin.accepts == 1
                 assert len({row["connection_id"] for row in origin.requests}) == 1
-        events = proxy.events("proxy.request")
-        inner = [row for row in events if row.get("coverage") == "native_network_guard_circuits_and_test_context"]
+        events = proxy.events("traffic.request_outcome")
+        inner = [row for row in events if row.get("details", {}).get("coverage") == "native_network_guard_circuits_and_test_context"]
         assert len(inner) == 2 * count
         assert len({row["request_id"] for row in inner}) == 2 * count
         assert {row["agent"] for row in inner} == {"alice"}
@@ -326,7 +326,7 @@ condition = { agent = "alice", path_prefix = "/h2-mixed/gate/limited" }
         client.release(allowed)
         client.finish(allowed)
         assert origin.accepts == 1
-        assert {row["agent"] for row in proxy.events("proxy.request")} == {"alice"}
+        assert {row["agent"] for row in proxy.events("traffic.request_outcome")} == {"alice"}
 
 
 @pytest.mark.parametrize("budget", ["global", "host"])

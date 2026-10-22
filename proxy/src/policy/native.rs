@@ -42,6 +42,13 @@ pub(crate) fn name_control_fields(value: &mut Value) {
         if fields.get("reason").and_then(Value::as_str) == Some("addon_disabled") {
             fields.insert("reason".into(), json!("control_disabled"));
         }
+        if let Some(responder) = fields
+            .get_mut("details")
+            .and_then(|details| details.get_mut("preempted_by"))
+            && let Some(name) = responder.as_str()
+        {
+            *responder = json!(control_label(name));
+        }
         if let Some(audit) = fields.get_mut("audit") {
             name_control_fields(audit);
         }
@@ -281,6 +288,8 @@ pub(super) struct Snapshot {
     source: Zeroizing<String>,
     pub(super) authored: Value,
     pub(crate) controls: Controls,
+    pub(crate) delegations: std::collections::BTreeMap<String, super::delegation::Delegation>,
+    pub(crate) identity_root: std::path::PathBuf,
 }
 
 impl Drop for Snapshot {
@@ -382,6 +391,7 @@ impl Policy {
         }
         let mut fields = authored.as_object().expect("TOML root is a table").clone();
         fields.shift_remove("controls");
+        fields.shift_remove("approval_delegations");
         // Approval receipts belong to the saved host permission. They are not
         // evaluator fields; keep the authoritative authored copy for outcome
         // reconciliation while compiling only existing egress/rate inputs.
@@ -392,11 +402,24 @@ impl Policy {
                         if let Some(host) = host.as_object_mut() {
                             host.shift_remove("approval_request_id");
                             host.shift_remove("approval_action");
+                            host.shift_remove("approval_id");
+                            host.shift_remove("credential_approval_ids");
                         }
                     }
                 }
             }
         }
+        if let Some(hosts) = fields.get_mut("hosts").and_then(Value::as_object_mut) {
+            for host in hosts.values_mut() {
+                if let Some(host) = host.as_object_mut() {
+                    host.shift_remove("approval_id");
+                    host.shift_remove("credential_approval_ids");
+                }
+            }
+        }
+        // Approval receipts accompany committed policy effects. They are not
+        // permissions and must not enter the compiled baseline.
+        fields.shift_remove("approval_results");
         let logging: Logging =
             serde_json::from_value(fields.shift_remove("logging").unwrap_or_else(|| json!({})))
                 .map_err(|error| invalid(format!("logging: {error}")))?;
@@ -426,6 +449,8 @@ impl Policy {
             false,
         )?;
         policy.native = Some(Snapshot {
+            identity_root: path.parent().unwrap_or(Path::new(".")).to_owned(),
+            delegations: super::delegation::parse(&authored)?,
             source: Zeroizing::new(source.to_owned()),
             authored,
             controls,
@@ -444,6 +469,9 @@ impl Policy {
         replacement.budgets = self.budgets.clone();
         replacement.evaluations = self.evaluations.clone();
         replacement.task = self.task.clone();
+        if let Some(native) = &self.native {
+            replacement.set_identity_root(native.identity_root.clone());
+        }
         Ok(replacement)
     }
 
@@ -455,6 +483,23 @@ impl Policy {
         self.budgets = previous.budgets.clone();
         self.evaluations = previous.evaluations.clone();
         self.task = previous.task.clone();
+        if let Some(native) = &previous.native {
+            self.set_identity_root(native.identity_root.clone());
+        }
+    }
+
+    pub(crate) fn set_identity_root(&mut self, root: std::path::PathBuf) {
+        if let Some(native) = self.native.as_mut() {
+            native.identity_root = root;
+        }
+    }
+
+    pub(crate) fn agent_run(&self, name: &str) -> Option<crate::host_runs::AgentRun> {
+        crate::host_runs::authority(
+            &self.native.as_ref()?.identity_root,
+            name,
+            self.evidence_agent_id(name)?,
+        )
     }
 
     pub(crate) fn set_native_source(&mut self, source: String) {
@@ -571,6 +616,8 @@ impl Policy {
 }
 
 fn validate_authoring(document: &Value) -> Result<()> {
+    super::delegation::parse(document)?;
+    super::delegation::validate_grants(document)?;
     let fields = document
         .as_object()
         .ok_or_else(|| invalid("policy must be a table"))?;

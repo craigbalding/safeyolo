@@ -5,8 +5,9 @@
 pub mod admin_api;
 mod admin_listener;
 pub mod admin_shield;
+pub mod agent_activity;
 pub mod agent_api;
-pub mod agent_discovery;
+mod agent_watch;
 pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
@@ -48,6 +49,7 @@ pub mod guest_oci;
 mod host_agents;
 mod host_boot;
 pub mod host_commands;
+mod host_doctor;
 mod host_events;
 mod host_launch;
 mod host_lifecycle;
@@ -115,7 +117,6 @@ pub use config::{AgentListener, Config, Inspection, PlumbConfig};
 
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
     io::Write,
     os::unix::fs::{FileTypeExt, MetadataExt},
     os::unix::io::AsRawFd,
@@ -287,83 +288,72 @@ impl CredentialActivation {
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
+    run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
-    /// The immutable request-boundary reconciliation, when this identity is
-    /// being consumed by request hooks. Listener accept identities leave this
-    /// empty and are reconciled once for each request.
-    reconciled: Option<Arc<agent_discovery::ReconciledIdentity>>,
 }
 
 impl ConnectionIdentity {
     fn request_agent(&self) -> Option<&str> {
-        self.reconciled
-            .as_deref()
-            .map(|identity| identity.agent.as_deref())
-            .unwrap_or(Some(&self.agent_id))
-            .filter(|agent| !agent.is_empty())
-    }
-
-    /// Preserve the accepted listener label for diagnostic records. This is
-    /// transport provenance only; scoped consumers use `request_agent`, which
-    /// remains empty for unavailable or conflicting snapshots.
-    fn transport_agent(&self) -> Option<&str> {
-        self.reconciled
-            .as_deref()
-            .and_then(|identity| identity.uds_agent.as_deref())
-            .or_else(|| {
-                self.reconciled
-                    .as_deref()
-                    .filter(|identity| {
-                        identity.status == agent_discovery::IdentityStatus::Unavailable
-                    })
-                    .map(|_| self.agent_id.as_str())
-            })
-            .or_else(|| self.reconciled.is_none().then_some(self.agent_id.as_str()))
-            .filter(|agent| !agent.is_empty())
+        let agent = self.agent_id.trim();
+        (!agent.is_empty() && !matches!(agent, "unknown" | "default")).then_some(agent)
     }
 
     fn request_identity(&self) -> network_guard::Identity<'_> {
-        match self.reconciled.as_deref() {
-            Some(identity) => match identity.status {
-                agent_discovery::IdentityStatus::Resolved => network_guard::Identity::Resolved(
-                    identity.agent.as_deref().expect("resolved identity owner"),
-                ),
-                agent_discovery::IdentityStatus::Conflict => network_guard::Identity::Conflict,
-                agent_discovery::IdentityStatus::Unavailable => {
-                    network_guard::Identity::Unavailable
-                }
-            },
-            None => network_guard::Identity::Resolved(&self.agent_id),
+        if let Some(run) = &self.run {
+            return network_guard::Identity::Current(run);
         }
-    }
-
-    fn with_reconciled(mut self, identity: agent_discovery::ReconciledIdentity) -> Self {
-        self.reconciled = Some(Arc::new(identity));
-        self
-    }
-
-    fn reconciled_snapshot(&self) -> Option<Arc<agent_discovery::ReconciledIdentity>> {
-        self.reconciled.clone()
+        self.request_agent().map_or(
+            network_guard::Identity::Unavailable,
+            network_guard::Identity::Resolved,
+        )
     }
 
     fn audit_attribution(&self) -> audit::Attribution {
-        if let Some(identity) = self.reconciled.as_deref() {
-            return identity.audit_attribution();
-        }
+        let agent = self.request_agent();
         audit::Attribution {
-            evidence_owner: Some(self.agent_id.clone()),
-            trusted_transport_identity: Some(self.agent_id.clone()),
+            evidence_owner: agent.map(str::to_owned),
+            trusted_transport_identity: agent.map(str::to_owned),
             initiator: Some(audit::Initiator::Unknown),
-            status: Some(audit::AttributionStatus::Resolved),
+            status: Some(if agent.is_some() {
+                audit::AttributionStatus::Resolved
+            } else {
+                audit::AttributionStatus::Unavailable
+            }),
             provenance: Some(
-                serde_json::json!({
-                    "transport_source": "uds",
-                    "uds_agent": self.agent_id.chars().take(128).collect::<String>(),
-                })
+                match agent {
+                    Some(agent) => serde_json::json!({
+                        "transport_source": "uds",
+                        "uds_agent": agent.chars().take(128).collect::<String>(),
+                    }),
+                    None => serde_json::json!({"reason":"no_trusted_identity"}),
+                }
                 .into(),
             ),
         }
+    }
+
+    /// Correlate request observations with the accepted listener identity.
+    /// The connection ID is transport-owned, never supplied by request headers.
+    fn request_event(
+        &self,
+        name: &str,
+        kind: audit::Kind,
+        request_id: &str,
+        summary: impl Into<String>,
+        mut details: Value,
+    ) -> audit::Event {
+        let mut event = audit::Event::new(name, kind, audit::Severity::Low, summary);
+        event.agent = self.request_agent().map(str::to_owned);
+        event.request_id = Some(request_id.to_owned());
+        event.host = details
+            .get("host")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        event.attribution = Some(self.audit_attribution());
+        details["connection_id"] = json!(self.connection_id);
+        event.details = details.into();
+        event
     }
 }
 
@@ -408,7 +398,7 @@ pub(crate) struct Runtime {
     traffic_view: Arc<traffic_view::TrafficView>,
     audit: Arc<audit::Writer>,
     request_logger: Arc<request_logger::RequestLogger>,
-    agent_discovery: Arc<agent_discovery::AgentDiscovery>,
+    agent_activity: Arc<agent_activity::AgentActivity>,
     metrics: Arc<metrics::Metrics>,
     traces: Arc<trace::TraceStore>,
     memory_monitor: Arc<memory_monitor::MemoryMonitor>,
@@ -417,7 +407,6 @@ pub(crate) struct Runtime {
     /// transport, namespace, and cleanup remain stable.
     pub(crate) coord: Arc<agent_api::CoordClient>,
     via_token: String,
-    events: Arc<Mutex<File>>,
     instance_id: String,
 }
 
@@ -485,7 +474,8 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
-                .with_named_controls(config.native_product),
+                .with_named_controls(config.native_product)
+                .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),
         };
         let result = (|| {
@@ -507,6 +497,14 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            if let Some(policy) = policy.as_mut() {
+                policy.set_identity_root(
+                    config
+                        .native_config_dir
+                        .clone()
+                        .unwrap_or_else(host_platform::config_dir),
+                );
+            }
             if let Some(controls) = policy.as_ref().and_then(policy::Policy::native_controls) {
                 controls.configure(&mut config);
             }
@@ -643,9 +641,9 @@ impl Runtime {
             let request_logger = previous
                 .map(|runtime| runtime.request_logger.clone())
                 .unwrap_or_default();
-            let agent_discovery = previous
-                .map(|runtime| runtime.agent_discovery.clone())
-                .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
+            let agent_activity = previous
+                .map(|runtime| runtime.agent_activity.clone())
+                .unwrap_or_default();
             let metrics = previous
                 .map(|runtime| runtime.metrics.clone())
                 .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
@@ -741,12 +739,15 @@ impl Runtime {
             } else {
                 None
             };
-            let mut startup_transitions = Vec::new();
             if previous.is_none()
                 && let Some(path) = circuit_runtime::state_path(&config)
             {
                 match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
-                    Ok(outcome) => startup_transitions = outcome.events,
+                    Ok(outcome) => {
+                        for transition in outcome.events {
+                            audit.emit(transition.audit_event(None, None))?;
+                        }
+                    }
                     Err(_) => eprintln!("Circuit state load failed"),
                 }
             }
@@ -777,7 +778,7 @@ impl Runtime {
                 traffic_view,
                 audit: audit.clone(),
                 request_logger,
-                agent_discovery,
+                agent_activity,
                 metrics,
                 traces,
                 memory_monitor,
@@ -786,35 +787,13 @@ impl Runtime {
                     .via_token
                     .clone()
                     .unwrap_or_else(|| default_via.to_owned()),
-                events: Arc::new(Mutex::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&config.event_log)?,
-                )),
                 config,
                 instance_id: default_via.to_owned(),
             };
-            if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
-                eprintln!("Circuit startup evidence write failed");
-            }
             if previous.is_none() {
                 runtime.configure_declarations()?;
             }
-            if !runtime
-                .agent_discovery
-                .matches_path(&runtime.config.agent_map_file)?
-                && let Err(error) = runtime
-                    .agent_discovery
-                    .configure(&runtime.config.agent_map_file, &runtime.audit)
-            {
-                // The source addon dispatcher logs configuration exceptions and
-                // keeps running. Reporting metadata is not a startup requirement.
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "Agent discovery configuration failed: {error}"
-                );
-            }
+
             Ok(runtime)
         })();
         // Catalog errors can start the writer before a Runtime exists. Drain
@@ -843,20 +822,6 @@ impl Runtime {
             }
             None => self.test_context.configure_declarations(None, options)?,
         }
-        Ok(())
-    }
-
-    fn record(&self, mut event: Value) -> Result<(), Error> {
-        if self.config.native_product {
-            policy::native::name_control_fields(&mut event);
-        }
-        self.record_bytes(serde_json::to_vec(&event)?)
-    }
-
-    fn record_bytes(&self, mut bytes: Vec<u8>) -> Result<(), Error> {
-        bytes.push(b'\n');
-        let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
-        events.write_all(&bytes)?;
         Ok(())
     }
 }
@@ -979,21 +944,21 @@ pub(crate) fn edit_native_policy<T>(
     }
 }
 
-/// Service edits publish through the same store/file/runtime transaction as
-/// policy apply, preserving grants, current counters, and exact rollback.
-pub(crate) fn edit_service_policy(
+/// Document edits use the policy apply transaction, preserving grants,
+/// current counters, and exact rollback.
+pub(crate) fn edit_native_policy_document<T>(
     state: &RuntimeState,
-    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), approvals::ApprovalError>,
-) -> Result<(), Error> {
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<T, approvals::ApprovalError>,
+) -> Result<T, Error> {
     edit_native_policy(state, false, |source| {
         let (mut document, context) =
             policy::parse_toml_for_edit(source).map_err(|error| approvals::ApprovalError {
                 kind: approvals::ErrorKind::Invalid,
                 message: error.to_string(),
             })?;
-        edit(&mut document)?;
+        let result = edit(&mut document)?;
         Ok((
-            (),
+            result,
             policy::restore_large_toml_integers(&document.to_string(), &context),
         ))
     })
@@ -1539,9 +1504,11 @@ async fn accept_agents(
                 Ok((socket, _)) => {
                     let identity = ConnectionIdentity {
                         agent_id: agent_id.clone(),
+                        run: runtime.read().ok().and_then(|runtime| {
+                            runtime.policy.as_ref()?.agent_run(&agent_id)
+                        }),
                         connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
                         source_id: source_id.clone(),
-                        reconciled: None,
                     };
                     // Register before spawning so even an unpolled canceled
                     // task owns cleanup. One guard spans all inner upgrades.

@@ -3,6 +3,10 @@
 Status: planning note for issue #391, checked against
 `master@a037f5f1da6d6ede35da6520b102a05bc69308e3`.
 
+This is a historical Python planning note. Issue #197 removes the agent map
+from the native product. Use the [networking reference](networking-vsock-uds.md)
+for current listener identity and lifecycle behavior.
+
 This note plans only Steps 1–3 from the issue: trace today's agent lifecycle,
 make the durable `agent_id` available at trusted ingress, and add one minimal
 current-run identity. It does not implement a generic lifecycle framework.

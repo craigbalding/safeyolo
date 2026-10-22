@@ -27,8 +27,8 @@ def test_routine_observations_do_not_capture_unrelated_header_bytes(proxy_backen
         # proxy's routine records contain only the fields intended for
         # correlation and policy evidence.  Check every emitted text record
         # so a logging-path mutation cannot hide behind one selected sink.
-        records = [directory / "process.log", directory / "events.jsonl"]
+        records = [directory / "process.log", directory / "audit.jsonl"]
         records.extend(directory.glob("*.jsonl"))
         assert records
         assert all(CANARY not in path.read_text() for path in set(records) if path.exists())
-        assert read_events(directory / "events.jsonl")
+        assert read_events(directory / "audit.jsonl")
