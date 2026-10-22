@@ -45,6 +45,86 @@ class ObserverChecks(unittest.TestCase):
         m.cli.chmod(0o755)
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
 
+    def test_cold_setup_wrappers_preserve_real_command_success_repair_and_failure(self):
+        source = Path(__file__).resolve().parents[2] / "contrib/claude-host-setup.sh"
+        command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        tools = m.private / "tools"
+        tools.mkdir()
+        mise = tools / "mise"
+        mise.write_text('''#!/bin/bash
+case "$1 $2" in
+  'settings get') exit 0;;
+  'latest --installed') echo 2.1.235;;
+  'latest '*) echo 2.1.235;;
+  'use -g')
+    if [[ $3 == --force ]]; then
+      [[ $STUB_CASE != fail ]] || exit 31
+      [[ $STUB_CASE == repair ]] || touch "$HOME/installed"
+    fi;;
+  'where '*) echo "$HOME/install";;
+  'exec '*) touch "$HOME/installed";;
+esac
+''')
+        claude = tools / "claude"
+        claude.write_text('#!/bin/bash\n[[ -f $HOME/installed ]] || exit 9\necho "2.1.235 (Claude Code)"\n')
+        for tool in [mise, claude]:
+            tool.chmod(0o755)
+        for case in ["success", "repair", "fail"]:
+            with self.subTest(case=case):
+                observed = []
+                for instrument in [False, True]:
+                    home = m.private / f"{case}-{instrument}"
+                    (home / "install/node_modules/@anthropic-ai/claude-code").mkdir(parents=True)
+                    (home / "install/node_modules/@anthropic-ai/claude-code/install.cjs").touch()
+                    script = home / ".safeyolo-command"
+                    script.write_text(command)
+                    if instrument:
+                        m.instrument_cold_setup(script)
+                    result = subprocess.run(["bash", script, "--version"], capture_output=True, text=True, timeout=10,
+                        env={**os.environ, "HOME": str(home), "PATH": str(tools) + ":/usr/bin:/bin", "STUB_CASE": case})
+                    observed.append((result.returncode, result.stdout, result.stderr))
+                    if instrument:
+                        events = (home / ".safeyolo-cold-setup.tsv").read_text()
+                        self.assertIn("node-acquire-install\tend\t", events)
+                        self.assertIn("claude-acquire-install\tend\t", events)
+                        if case == "fail":
+                            self.assertTrue(events.rstrip().endswith("\t31"))
+                            self.assertNotIn("claude-postinstall", events)
+                        elif case == "repair":
+                            self.assertIn("claude-postinstall\tend\t", events)
+                self.assertEqual(observed[0], observed[1])
+                self.assertEqual(observed[1][0], 31 if case == "fail" else 0)
+
+    def test_cold_setup_stops_at_the_first_failed_command(self):
+        from types import SimpleNamespace
+
+        def failed(label, args, timeout, private_output=False):
+            self.assertTrue(private_output)
+            row = {"label": label, **m.stamp(), "exit": 22, "ended": m.stamp()}
+            m.x["observations"].append(row)
+            return row
+
+        with patch.object(m, "observe", autospec=True, side_effect=failed) as run:
+            m.cold_setup_run(SimpleNamespace(cold_seconds=900), m.PACKAGES["linux-arm64"])
+        run.assert_called_once()
+        self.assertEqual(m.x["diagnostic_failure"]["step"], "bootstrap-download")
+        self.assertEqual(m.x["diagnostic_failure"]["exit"], 22)
+        self.assertEqual(m.x["bootstrap_source"], m.PACKAGES["linux-arm64"]["source"])
+        self.assertEqual(m.x["expected_guest"], m.COLD_SETUP_GUEST)
+
+    def test_cold_setup_retains_incomplete_tool_intervals_without_private_output(self):
+        home = m.root / "agents/first/home"
+        home.mkdir(parents=True)
+        (home / ".safeyolo-cold-setup.tsv").write_text(
+            "node-acquire-install\tstart\t1792689000.000001\t\n"
+            "node-acquire-install\tend\t1792689002.100002\t0\n"
+            "claude-acquire-install\tstart\t1792689002.200003\t\n")
+        (m.private / "harness-cold-setup.stderr").write_text("PRIVATE_AUTH_SENTINEL")
+        m.cold_setup_operands()
+        self.assertEqual(len(m.x["cold_setup_tool_events"]), 3)
+        self.assertIsNone(m.x["cold_setup_tool_events"][-1]["exit"])
+        self.assertNotIn("PRIVATE_AUTH_SENTINEL", m.out.read_text())
+
     def canonical_task(self, error=None):
         # Operator7955 recovered these four redacted producer records from
         # successful 7843, original lines 5/23/25/43. Intermediate parent events

@@ -12,6 +12,8 @@ The default endpoint is signed out. --connected adds one foreground first task
 and live return, with --preparation supplying actual prior accounting operands.
 In connected mode, Ctrl-] triggers the fixed task once; other input stays in the
 normal product terminal. The observer never signs in or retries a task.
+--cold-setup-only measures the released ARM64 sandbox and tool setup separately.
+It uses sandbox-only start, then the shipped command with --version, without reentry.
 """
 
 import argparse
@@ -52,6 +54,12 @@ RELEASE = "host-" + SOURCE
 CONNECTED_SOURCE = "c5ce76019b6c997e282ab05cea0212b492e945d2"
 CONNECTED_PACKAGE = {"source": CONNECTED_SOURCE, "machine": "x86_64", "bytes": 191260514,
                      "sha256": "811a20c1fa75d081504b9bfa3a7766bb3c2df6e55f4740742243ad24bc217538"}
+# Exact guest operands from native run 39744720606, not today's compatibility tag.
+COLD_SETUP_GUEST = {
+    "index": "sha256:67bcb6c51460619d3c021414961cd42b1f9751adc07f69d212a1d6485b1f132a",
+    "manifest": "sha256:003c08138381c6f01cd8c30ea4b22e3a909dcc95628b097f21b6307b2b0e0dcb",
+    "archive": "sha256:455a590c4b69ffb403b32353013d659b513ac3c3a496a5c263d6339f254595a0",
+}
 TASK = ('Create /workspace/index.html as a complete HTML page with the heading '
         '"Hello from SafeYolo". Use no external dependencies.')
 CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 with curl and bash. "
@@ -1283,7 +1291,7 @@ def connected_accounting():
     save()
 
 
-def provider_intervals():
+def provider_intervals(include_downloads=False):
     requests = {}
     intervals = []
     path = root / "logs/audit.jsonl"
@@ -1293,7 +1301,7 @@ def provider_intervals():
         if not line.endswith(b"\n"):
             continue
         event = json.loads(line)
-        if event.get("host") not in {"api.anthropic.com", "mcp-proxy.anthropic.com"} or not event.get("request_id"):
+        if (not include_downloads and event.get("host") not in {"api.anthropic.com", "mcp-proxy.anthropic.com"}) or not event.get("request_id"):
             continue
         identifier = event["request_id"]
         if event.get("event") == "traffic.request":
@@ -1305,6 +1313,134 @@ def provider_intervals():
                 "status": event.get("details", {}).get("status")})
     return {"responses": intervals, "requests_without_response": requests,
             "scope": "Reached requests in this new single-agent instance; no provider-only or disjoint-wait total."}
+
+
+def instrument_cold_setup(command):
+    """Time fixed tool calls in the owned command; retain no arguments or environment."""
+    original = command.read_text()
+    timed = original
+    for label, call in [
+        ("mise-release-age", "mise settings get min_release_age"),
+        ("claude-remote-version", 'mise latest "$1"'),
+        ("claude-local-version", 'mise latest --installed "$1"'),
+        ("node-acquire-install", 'mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC"'),
+        ("claude-acquire-install", 'mise use -g --force "$sy_spec"'),
+        ("claude-fallback-install", 'mise use -g "$sy_spec"'),
+        ("claude-executable-check", "claude --version"),
+        ("claude-install-location", 'mise where "$sy_spec"'),
+        ("claude-postinstall", 'mise exec "$SAFEYOLO_CLAUDE_NODE_SPEC" -- node "$claude_postinstall"'),
+        ("claude-reshim", "mise reshim"),
+    ]:
+        if call not in original:
+            raise ValueError("Released command lacks expected timing boundary: " + label)
+        timed = timed.replace(call, "sy1050_step " + label + " " + call)
+    function = '''
+sy1050_step() {
+    local label=$1 result=0
+    shift
+    printf '%s\\tstart\\t%s\\t\\n' "$label" "$EPOCHREALTIME" >> "$HOME/.safeyolo-cold-setup.tsv"
+    "$@" || result=$?
+    printf '%s\\tend\\t%s\\t%s\\n' "$label" "$EPOCHREALTIME" "$result" >> "$HOME/.safeyolo-cold-setup.tsv"
+    return "$result"
+}
+'''
+    if timed.count("set -e\n") != 1:
+        raise ValueError("Released command has an unexpected shell entry")
+    timed = timed.replace("set -e\n", "set -e\n" + function, 1)
+    command.write_text(timed)
+    return {"original_sha256": hashlib.sha256(original.encode()).hexdigest(),
+            "instrumented_sha256": digest(command),
+            "change": "Fixed tool calls wrapped with Bash realtime start/end and exit markers; arguments and output remain private."}
+
+
+def cold_setup_run(args, package):
+    """One finite diagnostic on the existing hosted baseline, with no first-task claim."""
+    x["purpose"] = "Native cold sandbox and Claude setup diagnostic; no clean-host or first-task acceptance"
+    x["bootstrap_source"] = package["source"]
+    x["expected_guest"] = COLD_SETUP_GUEST
+    x["limits"] = [
+        "Existing non-clean runner baseline. No warm repeat, login, model task or 15-second acceptance.",
+        "Sandbox-only command includes CLI validation, staging, boot and readiness; internal staging versus boot remains unseparated.",
+        "Tool markers use Bash realtime in this same guest. Instrumentation adds file writes; elapsed values are diagnostic.",
+        "Audit response durations include proxy/request work, can overlap, and do not measure provider-only or download-only waits.",
+        "The released bootstrap's download-only path permits its unchanged installer to pin the retained guest index.",
+    ]
+    save()
+    deadline = time.monotonic() + args.cold_seconds
+
+    def step(label, command):
+        row = observe(label, command, max(0.1, deadline - time.monotonic()), private_output=True)
+        row["elapsed_seconds"] = row["ended"]["monotonic"] - row["monotonic"]
+        save()
+        if row.get("exit") != 0 or row.get("timeout"):
+            x["diagnostic_failure"] = {"step": label, "exit": row.get("exit"), "timeout": row.get("timeout", False)}
+            save()
+            return False
+        return True
+
+    download = [*DOWNLOAD[:-1], f"https://raw.githubusercontent.com/craigbalding/safeyolo/{package['source']}/install.sh"]
+    bundle = private / "released-package"
+    setup = root / "assets/contrib/claude-host-setup.sh"
+    commands = [
+        ("bootstrap-download", download),
+        ("host-package-acquisition", ["bash", "install-safeyolo.sh", "--release", "host-" + package["source"], "--download-only", bundle]),
+        ("pinned-guest-install", ["bash", bundle / "install.sh", "--root", root, "--guest-index", COLD_SETUP_GUEST["index"], "--yes"]),
+        ("harness-host-setup", ["env", "SAFEYOLO_CLAUDE_COPY_HOST_STATE=0", cli, "agent", "create", "first",
+                                "--workspace", project, "--host-script", setup, "--launcher", "tmux-window"]),
+        ("proxy-start", [cli, "start"]),
+        ("coord-start", [cli, "coord", "start"]),
+        ("guest-stage-and-boot", [cli, "agent", "start", "first", "--sandbox-only"]),
+        ("harness-cold-setup", [cli, "agent", "shell", "first", "-c", "exec /home/agent/.safeyolo-command --version"]),
+    ]
+    for label, command in commands:
+        if not step(label, command):
+            return
+        if label == "bootstrap-download":
+            x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
+        elif label == "host-package-acquisition":
+            x["host_archive"] = {"bytes": archive.stat().st_size, "sha256": digest(archive)}
+            if x["host_archive"] != {"bytes": package["bytes"], "sha256": package["sha256"]}:
+                raise ValueError("Released archive differs from retained native input")
+        elif label == "pinned-guest-install":
+            selected = read_json(root / "share/guest-selection.json")
+            x["guest_selection"] = selected
+            if any(selected[key]["digest"] != expected for key, expected in COLD_SETUP_GUEST.items()):
+                raise ValueError("Installed guest differs from retained native input")
+            x["package_info"] = text(root / "package-info")
+        elif label == "harness-host-setup":
+            # Check the setup source before changing the disposable generated command.
+            if digest(setup) != "55f36a9a8b438f7ef6de69d7868b401759cc9cda6cb0116deb617c693813b7ca":
+                raise ValueError("Claude setup script differs from released c94 input")
+            x["command_instrumentation"] = instrument_cold_setup(root / "agents/first/home/.safeyolo-command")
+        elif label == "guest-stage-and-boot":
+            x["diagnostic_runtime"] = live_record()
+        save()
+    x["diagnostic_runtime_after_setup"] = live_record()
+    before, after = x["diagnostic_runtime"], x["diagnostic_runtime_after_setup"]
+    x["same_diagnostic_runtime"] = bool(before.get("run_id") and before == after
+        and len(after["live_births"]) == 2
+        and all(pair["observed"] and pair["observed"] == pair["recorded"] for pair in after["live_births"].values()))
+    if not x["same_diagnostic_runtime"]:
+        raise ValueError("Same live sandbox identity was not established across tool setup")
+    x["observation_outcome"] = "cold setup captured; independent assessment required"
+    save()
+
+
+def cold_setup_operands():
+    home = root / "agents/first/home"
+    markers = home / ".safeyolo-cold-setup.tsv"
+    # These four fields are authored by the timing wrapper, never tool output.
+    x["cold_setup_tool_events"] = []
+    if markers.is_file():
+        for line in markers.read_text().splitlines():
+            label, event, epoch, status = line.split("\t")
+            x["cold_setup_tool_events"].append({"step": label, "event": event,
+                "epoch_seconds": epoch, "exit": int(status) if status else None})
+    installs = home / ".mise/installs"
+    x["installed_tool_versions"] = {tool: sorted(p.name for p in (installs / tool).iterdir())
+        for tool in ["node", "npm-anthropic-ai-claude-code"] if (installs / tool).is_dir()}
+    x["network_intervals"] = provider_intervals(include_downloads=True)
+    save()
 
 
 def connected_run(args, package):
@@ -1372,10 +1508,13 @@ def main():
                         help="execution mode declared by the fixture; architecture alone does not establish native execution")
     parser.add_argument("--cleanup-only", action="store_true", help="stop and inspect this observer's recorded attempt")
     parser.add_argument("--connected", action="store_true", help="foreground Ubuntu first task and live return using existing consented host authentication")
+    parser.add_argument("--cold-setup-only", action="store_true", help="native ARM64 cold sandbox and tool diagnostic; no reentry, login or model task")
     parser.add_argument("--preparation", type=Path, help="nonsecret actual preparation commands/times/reading; required with --connected")
     args = parser.parse_args()
     if args.cold_seconds <= 0:
         parser.error("--cold-seconds must be a positive whole number")
+    if args.cold_setup_only and (args.connected or args.platform != "linux-arm64"):
+        parser.error("--cold-setup-only requires signed-out linux-arm64")
     if os.uname().nodename != args.host or args.host == "sy-1050-c9-cold-428968871" or os.geteuid() == 0:
         raise SystemExit("Use only the named fresh host as its ordinary user; the retained fixture is excluded.")
     root = Path.home() / ".safeyolo"
@@ -1455,6 +1594,19 @@ def main():
     x["fixture_preparation"] = {"project": str(project), "file": None if args.connected else "onboarding-fixture.txt", **stamp()}
     x["owns_product_attempt"] = True
     save()
+    if args.cold_setup_only:
+        try:
+            cold_setup_run(args, package)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            x["observer_error"] = str(error)
+        finally:
+            try:
+                cold_setup_operands()
+            finally:
+                cleanup()
+                x["ended"] = stamp()
+                save()
+        return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
     if args.connected:
         try:
             connected_run(args, package)
