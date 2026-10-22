@@ -105,16 +105,54 @@ if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; th
         fi
         npm install --global --prefix /home/agent/.local "$SAFEYOLO_CLAUDE_NPM_PACKAGE" >&2
     else
-        mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2
+        # A fresh default install uses mise's embedded npm installer, which
+        # can acquire Claude while Node downloads. Keep configured installs,
+        # overrides and prepared tools in their existing order. A failed
+        # capability lookup also uses that order.
+        sy_node_pid=""
+        if [ "$SAFEYOLO_CLAUDE_NODE_SPEC" = node@22 ] &&
+           [ "$SAFEYOLO_CLAUDE_NPM_SPEC" = npm:@anthropic-ai/claude-code@latest ] &&
+           [ "$SAFEYOLO_CLAUDE_NPM_PACKAGE" = @anthropic-ai/claude-code@latest ] &&
+           sy_configs="$(mise config ls --no-header 2>/dev/null)" &&
+           [ -z "$sy_configs" ] &&
+           sy_installed_node="$(mise ls --installed --no-header node 2>/dev/null)" &&
+           [ -z "$sy_installed_node" ] &&
+           [ "$(mise settings get npm.package_manager 2>/dev/null)" = auto ] &&
+           [ "$(mise settings get npm.shell_out 2>/dev/null)" = false ] &&
+           [ "$(mise settings get raw 2>/dev/null)" = false ]; then
+            mise install "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2 &
+            sy_node_pid=$!
+            # Reap our acquisition on any early exit. Leave mise's verified
+            # downloads and completed installs available to a later retry.
+            trap 'wait "$sy_node_pid" || :' EXIT
+        else
+            mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2
+        fi
         sy_tool="${SAFEYOLO_CLAUDE_NPM_SPEC%@*}"
         sy_target="$(sy_remote_version "$sy_tool")"
         if [ -n "$sy_target" ]; then
             sy_spec="${sy_tool}@${sy_target}"
-            mise use -g --force "$sy_spec" >&2
+            if [ -n "$sy_node_pid" ]; then
+                sy_install_status=0
+                mise install --force "$sy_spec" >&2 || sy_install_status=$?
+                wait "$sy_node_pid" || sy_install_status=$?
+                trap - EXIT
+                [ "$sy_install_status" -eq 0 ] || exit "$sy_install_status"
+                # Configure both selected tools only after both acquisitions
+                # finish. Rebuild shared shims before the existing repair.
+                mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" "$sy_spec" >&2
+            else
+                mise use -g --force "$sy_spec" >&2
+            fi
         else
             echo "claude-host-setup: could not resolve a remote version for" \
                  "$sy_tool; falling back to $SAFEYOLO_CLAUDE_NPM_SPEC" >&2
             sy_spec="$SAFEYOLO_CLAUDE_NPM_SPEC"
+            if [ -n "$sy_node_pid" ]; then
+                wait "$sy_node_pid"
+                trap - EXIT
+                mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2
+            fi
             mise use -g "$sy_spec" >&2
         fi
 
