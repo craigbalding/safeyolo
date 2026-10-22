@@ -3049,14 +3049,25 @@ _BROKEN_CLAUDE = "#!/bin/sh\necho 'Error: could not find @anthropic-ai/claude-co
 
 _FAKE_MISE_CLAUDE = (
     "#!/usr/bin/env python3\n"
-    "import os, sys\n"
+    "import os, sys, time\n"
     "from pathlib import Path\n"
     "argv = sys.argv[1:]\n"
     "with Path(os.environ['TEST_MISE_LOG']).open('a') as f:\n"
     "    f.write(' '.join(argv) + '\\n')\n"
     "state = Path(os.environ['TEST_INSTALLED_STATE'])\n"
     "if argv[:2] == ['settings', 'get']:\n"
+    "    if os.environ.get('TEST_PARALLEL') == '1' and argv[-1] != 'min_release_age':\n"
+    "        print(os.environ.get('TEST_' + argv[-1].upper().replace('.', '_'),\n"
+    "                             'auto' if argv[-1] == 'npm.package_manager' else 'false'))\n"
+    "        sys.exit(0)\n"
     "    sys.exit(1)\n"
+    "if argv[:2] == ['config', 'ls']:\n"
+    "    config = Path(os.environ['HOME']) / '.mise/config.toml'\n"
+    "    if config.exists(): print(config)\n"
+    "    sys.exit(0)\n"
+    "if argv[:2] == ['ls', '--installed']:\n"
+    "    if os.environ.get('TEST_NODE_INSPECT_FAILURE') == '1': sys.exit(1)\n"
+    "    print(os.environ.get('TEST_NODE_VERSION', '')); sys.exit(0)\n"
     "if argv[:1] == ['latest']:\n"
     "    if '--installed' in argv:\n"
     "        v = state.read_text().strip() if state.exists() else ''\n"
@@ -3065,8 +3076,34 @@ _FAKE_MISE_CLAUDE = (
     "    remote = os.environ.get('TEST_REMOTE_VERSION', '')\n"
     "    if not remote: sys.exit(1)\n"
     "    print(remote); sys.exit(0)\n"
+    "if argv[:1] == ['install']:\n"
+    "    kind = 'node' if argv[-1].startswith('node@') else 'claude'\n"
+    "    root = Path(os.environ['TEST_MISE_LOG']).parent\n"
+    "    (root / (kind + '.pid')).write_text(str(os.getpid()))\n"
+    "    peer = root / (('claude' if kind == 'node' else 'node') + '.pid')\n"
+    "    deadline = time.monotonic() + 5\n"
+    "    if os.environ.get('TEST_REMOTE_VERSION'):\n"
+    "        while not peer.exists():\n"
+    "            if time.monotonic() > deadline: sys.exit(88)\n"
+    "            time.sleep(0.01)\n"
+    "    time.sleep(0.1)\n"
+    "    (root / (kind + '.done')).touch()\n"
+    "    if os.environ.get('TEST_FAIL_ACQUISITION') in (kind, 'both'):\n"
+    "        sys.exit(37 if kind == 'node' else 31)\n"
     "if argv[:2] == ['use', '-g'] and 'claude-code' in argv[-1]:\n"
+    "    if len(argv) == 4 and argv[2].startswith('node@'):\n"
+    "        root = Path(os.environ['TEST_MISE_LOG']).parent\n"
+    "        assert all((root / (kind + '.done')).exists() for kind in ('node', 'claude'))\n"
+    "        config = Path(os.environ['HOME']) / '.mise/config.toml'\n"
+    "        config.parent.mkdir(parents=True, exist_ok=True)\n"
+    "        config.write_text('[tools]\\nnode = \"22\"\\n')\n"
     "    state.write_text(argv[-1].split('@')[-1])\n"
+    "    shim = Path(os.environ['TEST_CLAUDE_SHIM'])\n"
+    "    if os.environ.get('TEST_REPAIR') != '1':\n"
+    "        shim.write_text(os.environ['TEST_HEALTHY_CLAUDE'])\n"
+    "    shim.chmod(0o755)\n"
+    "if argv[:1] == ['exec']:\n"
+    "    if os.environ.get('TEST_FAIL_REPAIR') == '1': sys.exit(41)\n"
     "    shim = Path(os.environ['TEST_CLAUDE_SHIM'])\n"
     "    shim.write_text(os.environ['TEST_HEALTHY_CLAUDE'])\n"
     "    shim.chmod(0o755)\n"
@@ -3161,6 +3198,89 @@ def test_claude_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> Non
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert not any(c.startswith("use ") for c in calls), f"a healthy install was upgraded: {calls}"
     assert calls.count("latest npm:@anthropic-ai/claude-code") == 1
+
+
+@pytest.mark.parametrize("failure", ["", "node", "claude", "both", "repair"])
+def test_claude_overlaps_fresh_acquisition_and_waits_before_repair_or_launch(tmp_path, failure):
+    agent_home, fake_bin = _stage_claude(tmp_path, _BROKEN_CLAUDE)
+    env = _claude_command_env(agent_home, fake_bin, tmp_path)
+    package = tmp_path / "install/node_modules/@anthropic-ai/claude-code"
+    package.mkdir(parents=True)
+    (package / "install.cjs").touch()
+    env.update(TEST_PARALLEL="1", TEST_REPAIR="1", TEST_CLAUDE_INSTALL_DIR=str(tmp_path / "install"),
+               TEST_FAIL_ACQUISITION=failure, TEST_FAIL_REPAIR="1" if failure == "repair" else "0")
+    preserved = agent_home / "keep-state"
+    preserved.write_bytes(b"existing agent state")
+    command = agent_home / ".safeyolo-command"
+    result = subprocess.run([str(command), "--probe", "two words", ""], env=env,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == {"": 0, "node": 37, "claude": 31, "both": 37, "repair": 41}[failure], result.stderr
+    for kind in ("node", "claude"):
+        assert (tmp_path / f"{kind}.done").exists()
+        with pytest.raises(ProcessLookupError):
+            os.kill(int((tmp_path / f"{kind}.pid").read_text()), 0)
+    assert preserved.read_bytes() == b"existing agent state"
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert "install node@22" in calls
+    assert "install --force npm:@anthropic-ai/claude-code@9.9.9" in calls
+    config = agent_home / ".mise/config.toml"
+    if failure in ("node", "claude", "both"):
+        assert not any(c.startswith(("use ", "exec ", "where ", "reshim")) for c in calls)
+        assert not config.exists()
+    else:
+        assert "use -g node@22 npm:@anthropic-ai/claude-code@9.9.9" in calls
+        assert any(c.startswith("exec node@22 -- node ") for c in calls)
+    if failure:
+        assert not Path(env["TEST_EXEC_LOG"]).exists()
+    else:
+        assert "reshim" in calls
+        assert Path(env["TEST_EXEC_LOG"]).read_bytes().split(b"\0")[-4:] == [b"--probe", b"two words", b"", b""]
+        config_before = config.read_bytes()
+        Path(env["TEST_MISE_LOG"]).write_text("")
+        env["TEST_REMOTE_VERSION"] = "10.0.0"
+        repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=15)
+        assert repeat.returncode == 0, repeat.stderr
+        assert "10.0.0 is available; not upgrading automatically" in repeat.stderr
+        assert config.read_bytes() == config_before
+        assert not any(c.startswith(("install ", "use ", "exec "))
+                       for c in Path(env["TEST_MISE_LOG"]).read_text().splitlines())
+
+
+@pytest.mark.parametrize("existing", ["config-with-script", "node", "node-inspection-failure", "npm-cli", "installer-override", "raw", "node-pin", "package-pin", "lookup-failure"])
+def test_claude_retains_node_first_paths_and_remote_lookup_fallback(tmp_path, existing):
+    agent_home, fake_bin = _stage_claude(tmp_path, _BROKEN_CLAUDE)
+    env = _claude_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_PARALLEL"] = "1"
+    if existing == "config-with-script":
+        config = agent_home / ".mise/config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('[hooks]\npostinstall = "node hook.cjs"\n')
+    else:
+        env.update({
+            "node": {"TEST_NODE_VERSION": "22.23.4"},
+            "node-inspection-failure": {"TEST_NODE_INSPECT_FAILURE": "1"},
+            "npm-cli": {"TEST_NPM_SHELL_OUT": "true"},
+            "installer-override": {"TEST_NPM_PACKAGE_MANAGER": "npm"},
+            "raw": {"TEST_RAW": "true"},
+            "node-pin": {"SAFEYOLO_CLAUDE_NODE_SPEC": "node@22.23.4"},
+            "package-pin": {"SAFEYOLO_CLAUDE_NPM_SPEC": "npm:@anthropic-ai/claude-code@2.1.306"},
+            "lookup-failure": {"TEST_REMOTE_VERSION": ""},
+        }[existing])
+    result = subprocess.run([str(agent_home / ".safeyolo-command"), "--probe"], env=env,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    node_use = "use -g " + env.get("SAFEYOLO_CLAUDE_NODE_SPEC", "node@22")
+    claude_use = next(c for c in calls if c.startswith("use ") and "claude-code" in c)
+    assert calls.index(node_use) < calls.index(claude_use)
+    if existing == "lookup-failure":
+        assert (tmp_path / "node.done").exists()
+        with pytest.raises(ProcessLookupError):
+            os.kill(int((tmp_path / "node.pid").read_text()), 0)
+        assert claude_use == "use -g npm:@anthropic-ai/claude-code@latest"
+        assert "could not resolve a remote version" in result.stderr
+    else:
+        assert not any(c.startswith("install ") for c in calls)
 
 
 @pytest.mark.parametrize("script_name", ["codex-host-setup.sh", "pi-host-setup.sh", "claude-host-setup.sh"])
