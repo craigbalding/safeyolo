@@ -49,7 +49,7 @@ def descriptor(data, media_type):
     return {"digest": digest(data), "size": len(data), "mediaType": media_type}
 
 
-def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None):
+def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None, encode_config=None):
     annotations = {"org.opencontainers.image.version": version,
                    "org.opencontainers.image.source": "https://github.com/craigbalding/safeyolo",
                    "org.opencontainers.image.revision": "a" * 40,
@@ -58,7 +58,7 @@ def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_chil
     manifests = []
     for os_name, architecture in (("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64")):
         platform = {"os": os_name, "architecture": architecture}
-        config = json.dumps(platform).encode()
+        config = encode_config(platform) if encode_config else json.dumps(platform).encode()
         contents["blobs/" + digest(config)] = config
         child = {"schemaVersion": 2, "mediaType": MANIFEST, "artifactType": "application/vnd.safeyolo.guest.v1",
                  "annotations": {**annotations, "dev.safeyolo.guest.build-base":
@@ -259,6 +259,89 @@ def package_info(tmp_path):
     path.write_text(f"source_commit={'a' * 40}\nprofile=debug\nplatform=linux-{architecture}\nminimum_runtime=2.34\n"
                     f"guest_compatibility=v1\nguest_repository={REPOSITORY}\nguest_discovery_tag=compat-v1\n")
     return path
+
+
+@pytest.mark.parametrize("encoding", ["publisher", "whitespace", "reordered", "escaped"])
+def test_native_acquisition_omits_only_publisher_identical_config(
+    native_cli, registry, package_info, tmp_path, guest_store, encoding,
+):
+    contents, requests, _faults, environment = registry
+
+    def encode_config(platform):
+        if encoding == "whitespace":
+            return json.dumps(platform, indent=2).encode()
+        if encoding == "reordered":
+            platform = dict(reversed(platform.items()))
+        data = json.dumps(platform, separators=(",", ":")).encode()
+        return data.replace(b"linux", br"l\u0069nux") if encoding == "escaped" else data
+
+    archive = compressed_archive()
+    data = release(archive, encode_config=encode_config)
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    index = json.loads(data["manifests/compat-v1"])
+    selected = next(child for child in index["manifests"] if child["platform"] == {
+        "os": "linux", "architecture": architecture,
+    })
+    child = json.loads(data["manifests/" + selected["digest"]])
+    config_path = "blobs/" + child["config"]["digest"]
+    if encoding == "publisher":
+        # A missing endpoint makes an accidental config request fail acquisition.
+        del data[config_path]
+    contents.update(data)
+    root = tmp_path / "installed"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode == 0, result.stderr
+    selection = json.loads((root / "share/guest-selection.json").read_bytes())
+    assert selection["index"]["digest"] == digest(data["manifests/compat-v1"])
+    assert selection["manifest"]["digest"] == selected["digest"]
+    assert selection["archive"] == {"digest": digest(archive), "size": len(archive)}
+    assert selection["platform"] == f"linux/{architecture}"
+    expected = ["manifests/compat-v1", "manifests/" + selected["digest"]]
+    if encoding != "publisher":
+        expected.append(config_path)
+    expected.append("blobs/" + digest(archive))
+    assert [path.removeprefix(PREFIX) for path in requests if path.startswith(PREFIX)] == expected
+
+
+@pytest.mark.parametrize("fault", ["size", "hash", "partial", "wrong-platform", "extra-field", "malformed"])
+def test_native_acquisition_refuses_invalid_config_before_archive(
+    native_cli, registry, package_info, tmp_path, guest_store, fault,
+):
+    contents, requests, faults, environment = registry
+
+    def encode_config(platform):
+        if fault == "wrong-platform":
+            platform = {**platform, "os": "darwin"}
+        if fault == "extra-field":
+            platform = {**platform, "extra": True}
+        if fault in ("hash", "partial"):
+            return json.dumps(platform, indent=2).encode()
+        data = json.dumps(platform, separators=(",", ":")).encode()
+        return data[:-1] if fault == "malformed" else data
+
+    archive = compressed_archive()
+    edit_child = (lambda child: child["config"].update(size=child["config"]["size"] + 1)) if fault == "size" else None
+    data = release(archive, encode_config=encode_config, edit_child=edit_child)
+    index = json.loads(data["manifests/compat-v1"])
+    architecture = "amd64" if os.uname().machine == "x86_64" else "arm64"
+    selected = next(child for child in index["manifests"] if child["platform"] == {
+        "os": "linux", "architecture": architecture,
+    })
+    child = json.loads(data["manifests/" + selected["digest"]])
+    config_path = "blobs/" + child["config"]["digest"]
+    if fault == "hash":
+        data[config_path] = b"!" + data[config_path][1:]
+    if fault == "partial":
+        faults["partial"] = config_path
+    contents.update(data)
+    root = tmp_path / "refused"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode != 0
+    assert any("/blobs/" in path for path in requests), "unmatched local bytes must use remote validation"
+    assert PREFIX + "blobs/" + digest(archive) not in requests
+    assert not (root / "share").exists()
+    assert not (root / "config.toml").exists()
+    assert not (guest_store / "trees").exists()
 
 
 @pytest.mark.parametrize("prepared_host", [False, True])
