@@ -5,7 +5,7 @@
 # <name> --workspace <folder> --host-script contrib/codex-host-setup.sh` is
 # invoked. Stages SafeYolo-owned Codex settings into the agent's persistent
 # home without importing host credentials, and writes a foreground command
-# script that installs codex via mise on first boot and
+# script that installs Codex's complete native release via mise on first boot and
 # runs it with Codex sandboxing disabled thereafter. SafeYolo remains
 # the outer containment boundary.
 #

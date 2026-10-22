@@ -239,7 +239,44 @@ a separate choice and must live outside guest-writable shares. See
 custom hooks, attach, and remote terminal behavior; see the
 [supervisor contract](../docs/codex-coord-supervisor.md) for factory recovery.
 
-For Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
+### Claude and Codex installation and updates
+
+The bundled Claude and Codex launchers use mise's Aqua backend to install
+native upstream releases in the agent's persistent home. This path does not
+acquire Node.js or npm. It retains other installed tools and their mise
+configuration. Claude keeps its staged authentication and extensions; Codex
+keeps its agent-local `.codex` configuration and authentication ownership.
+Ordinary Codex, coordinated Codex, Lab and Demo use the same launcher payload.
+
+Mise selects a release at least `SAFEYOLO_MIN_RELEASE_AGE` old (default `24h`)
+when it supports `minimum_release_age`. The launcher warns if it cannot apply
+that delay. It resolves the selected version before installation, verifies
+the GitHub release asset digest, and checks the executable before launch.
+Claude releases also publish `SHASUMS256.txt`. These checks trust upstream
+release metadata over HTTPS; they do not independently authenticate the
+publisher. Codex uses the complete `codex-package` archive, including its
+search executable, code-mode host and adjacent resources. Reentry repairs
+missing required executables and reuses a healthy selected version.
+
+To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to
+`aqua:anthropics/claude-code@VERSION`, or `SAFEYOLO_CODEX_NATIVE_SPEC` to
+`aqua:openai/codex@VERSION`, in the guest launch environment. Replace `VERSION`
+with an upstream release version. The defaults select `latest`. Update notices
+show the exact `mise use -g` command to run inside the guest; launch does not
+upgrade a healthy selection. Claude's background updater is disabled by default
+on this path to preserve mise's selection. An explicit `DISABLE_AUTOUPDATER`
+value is retained.
+Codex native pins need the complete `codex-package` layout. Older Claude pins
+that Aqua downloads directly from the vendor bucket can lack the GitHub asset
+digest check. Existing npm pins remain available through the legacy routes.
+
+An explicit `SAFEYOLO_CLAUDE_NPM_SPEC` or `SAFEYOLO_CLAUDE_NPM_PACKAGE` selects
+Claude's legacy npm route instead. The corresponding `SAFEYOLO_CODEX_NPM_SPEC`
+or `SAFEYOLO_CODEX_NPM_PACKAGE` selects Codex's legacy npm route. These selections
+take precedence over native specs. Their Node/npm dependency remains separate
+from native startup.
+
+For npm tools in Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
 try to build Node from source against musl. Use Alpine's native packages and
 a persistent home prefix instead:
 
@@ -248,7 +285,7 @@ sudo -n apk add nodejs npm
 npm install --global --prefix /home/agent/.local @example/myagent@latest
 ```
 
-The bundled Codex launcher uses apk-provided Node.js and installs Codex through
+The legacy Codex npm route uses apk-provided Node.js and installs Codex through
 mise on Alpine, even if retained mise configuration selects another Node version.
 It applies `SAFEYOLO_MIN_RELEASE_AGE` (default `24h`) when mise
 supports `minimum_release_age`. The launcher reports when mise lacks that

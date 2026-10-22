@@ -260,6 +260,10 @@ def test_mise_installed_agent_is_immediately_executable_with_context(
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "TEST_EXEC_LOG": str(exec_log),
             "TEST_TOOL_NAME": tool_name,
+            f"SAFEYOLO_{tool_name.upper()}_NPM_SPEC": (
+                "npm:@openai/codex@latest" if tool_name == "codex"
+                else "npm:@anthropic-ai/claude-code@latest"
+            ),
         }
     )
 
@@ -346,6 +350,7 @@ def test_claude_bootstrap_repairs_mise_install_with_skipped_postinstall(
             "HOME": str(agent_home),
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "TEST_CLAUDE_INSTALL_DIR": str(install_dir),
+            "SAFEYOLO_CLAUDE_NPM_SPEC": "npm:@anthropic-ai/claude-code@latest",
             "TEST_CLAUDE_SHIM": str(shim),
             "TEST_EXEC_LOG": str(exec_log),
             "TEST_MISE_LOG": str(mise_log),
@@ -2395,6 +2400,7 @@ def test_alpine_bootstrap_uses_noninteractive_guest_sudo(script_name: str) -> No
 
 
 def _codex_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict:
+    # Existing registry/wrapper regressions explicitly select the legacy route.
     # The fake installer must expose the runtime needed to read its installed
     # package identity. Resolve a mise shim before switching to a fresh HOME.
     node, mise = shutil.which("node"), shutil.which("mise")
@@ -2416,6 +2422,7 @@ def _codex_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict
             "TEST_INSTALLED_STATE": str(tmp_path / "installed-version"),
             "TEST_HEALTHY_CODEX": _HEALTHY_CODEX,
             "TEST_REMOTE_VERSION": "9.9.9",
+            "SAFEYOLO_CODEX_NPM_PACKAGE": "@openai/codex@latest",
         }
     )
     return env
@@ -2635,6 +2642,8 @@ def test_codex_repair_preserves_operator_selection(tmp_path, selection, override
         (tools / name).write_text(source)
         (tools / name).chmod(0o755)
     env = _codex_command_env(home, tools, tmp_path)
+    if override.endswith("SPEC"):
+        env.pop("SAFEYOLO_CODEX_NPM_PACKAGE")
     env.update({override: ("npm:" if override.endswith("SPEC") else "") + selection,
                 "TEST_REMOTE_VERSION": "0.130.0"})
     result = subprocess.run([str(home / ".safeyolo-command"), "--probe"], env=env, capture_output=True, text=True)
@@ -3113,6 +3122,7 @@ _FAKE_MISE_CLAUDE = (
 
 
 def _claude_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict:
+    # Existing npm postinstall and overlap regressions retain their own route.
     env = os.environ.copy()
     for key in list(env):
         if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
@@ -3127,6 +3137,7 @@ def _claude_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dic
             "TEST_INSTALLED_STATE": str(tmp_path / "claude-installed-version"),
             "TEST_HEALTHY_CLAUDE": _HEALTHY_CLAUDE,
             "TEST_REMOTE_VERSION": "9.9.9",
+            "SAFEYOLO_CLAUDE_NPM_SPEC": "npm:@anthropic-ai/claude-code@latest",
         }
     )
     return env
@@ -3144,6 +3155,165 @@ def _stage_claude(tmp_path: Path, wrapper: str):
     (fake_bin / "mise").write_text(_FAKE_MISE_CLAUDE)
     (fake_bin / "mise").chmod(0o755)
     return agent_home, fake_bin
+
+
+def _stage_native_client(tmp_path, harness, entry="ordinary"):
+    operator, home, tools = (tmp_path / name for name in ("operator", "agent", "bin"))
+    operator.mkdir()
+    tools.mkdir()
+    if entry == "supervised":
+        _seed_adopted_codex_auth(home)
+        _run_setup("codex-coord-host-setup.sh", operator, home, tmp_path,
+                   extra_env={"SAFEYOLO_CODEX_COORD_ROOMS": "backlog", "SAFEYOLO_CODEX_COORDINATORS": "relay"})
+        # Observe the transformed launch boundary without starting a factory turn.
+        (home / ".safeyolo/safeyolo-coord").write_text('#!/bin/sh\nexec codex "$@"\n')
+    else:
+        _run_setup(f"{harness}-host-setup.sh", operator, home, tmp_path)
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith(("MISE_", "__MISE_", "SAFEYOLO_CLAUDE_", "SAFEYOLO_CODEX_")) or key == "BASH_ENV":
+            env.pop(key)
+    env.update(HOME=str(home), PATH=f"{tools}:/usr/bin:/bin", TEST_HARNESS=harness,
+               TEST_MISE_LOG=str(tmp_path / "mise.log"), TEST_NATIVE_ROOT=str(tmp_path / "native"),
+               TEST_EXEC_LOG=str(tmp_path / "exec.bin"), TEST_REMOTE_VERSION="9.9.9",
+               TEST_CODEX_HOME_LOG=str(tmp_path / "codex-home"))
+    (tools / "mise").write_text('''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with Path(os.environ['TEST_MISE_LOG']).open('a') as log:
+    log.write(' '.join(args) + '\\n')
+root = Path(os.environ['TEST_NATIVE_ROOT'])
+harness = os.environ['TEST_HARNESS']
+failure = os.environ.get('TEST_NATIVE_FAILURE', '')
+if args[:2] == ['settings', 'get']:
+    assert args[2] == 'minimum_release_age'
+    assert os.environ['MISE_MINIMUM_RELEASE_AGE'] == os.environ.get('SAFEYOLO_MIN_RELEASE_AGE', '24h')
+    sys.exit(1 if failure == 'age-setting' else 0)
+if args[0] == 'where':
+    if not (root / 'installed').exists(): sys.exit(1)
+    print(root)
+elif args[0] == 'latest':
+    version = '9.9.9' if '--installed' in args else os.environ['TEST_REMOTE_VERSION']
+    if not version: sys.exit(1)
+    print(version)
+elif args[:3] == ['use', '-g', '--force']:
+    assert args[-1].startswith('aqua:')
+    if failure == 'acquire': sys.exit(31)
+    root.mkdir(exist_ok=True)
+    version = '8.8.8' if failure == 'wrong-version' else '9.9.9'
+    binary = root / ('bin/codex' if harness == 'codex' else 'claude')
+    binary.parent.mkdir(exist_ok=True)
+    identity = 'codex-cli ' + version if harness == 'codex' else version + ' (Claude Code)'
+    binary.write_text('#!/bin/sh\\nif [ "$1" = --version ]; then ' +
+                     ('exit 1' if failure == 'executable' else "echo '" + identity + "'") +
+                     '; exit; fi\\nprintf "%s\\\\0" "$@" > "$TEST_EXEC_LOG"\\n')
+    binary.chmod(0o755)
+    if harness == 'codex':
+        with binary.open('a') as output:
+            output.write('printf "%s" "$CODEX_HOME" > "$TEST_CODEX_HOME_LOG"\\n')
+        for name in ('codex-path/rg', 'bin/codex-code-mode-host', 'codex-resources/bwrap'):
+            path = root / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('#!/bin/sh\\nexit 0\\n')
+            path.chmod(0o644 if failure == name else 0o755)
+    (root / 'installed').touch()
+else:
+    sys.exit(99)
+''')
+    (tools / "mise").chmod(0o755)
+    # An earlier command on PATH must not shadow the selected native payload.
+    (tools / harness).write_text("#!/bin/sh\nexit 87\n")
+    (tools / harness).chmod(0o755)
+    for name in ("node", "npm", "sudo"):
+        (tools / name).write_text("#!/bin/sh\nexit 86\n")
+        (tools / name).chmod(0o755)
+    command = home / (".safeyolo-interactive-command" if entry == "interactive" else ".safeyolo-command")
+    return home, command, env
+
+
+@pytest.mark.parametrize(("harness", "entry"), [("claude", "ordinary"), ("codex", "ordinary"),
+                                                  ("codex", "interactive"), ("codex", "supervised")])
+@pytest.mark.parametrize("lookup_failure", [False, True])
+def test_native_clients_install_and_reenter_without_node(tmp_path, harness, entry, lookup_failure):
+    home, command, env = _stage_native_client(tmp_path, harness, entry)
+    env["TEST_REMOTE_VERSION"] = "" if lookup_failure else "9.9.9"
+    # Exercise the native default even when the guest has a musl marker.
+    alpine = tmp_path / "alpine-release"
+    alpine.touch()
+    command.write_text(command.read_text().replace("/etc/alpine-release", str(alpine)))
+    preserved = home / "user-state"
+    preserved.write_bytes(b"credentials and workspace marker")
+    first = subprocess.run([str(command), "--probe", "two words", ""], env=env, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    assert Path(env["TEST_EXEC_LOG"]).read_bytes().split(b"\0")[-4:] == [b"--probe", b"two words", b"", b""]
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    tool = "aqua:openai/codex" if harness == "codex" else "aqua:anthropics/claude-code"
+    assert f"use -g --force {tool}@{'latest' if lookup_failure else '9.9.9'}" in calls
+    assert not any("node" in call or "npm:" in call for call in calls)
+    assert not (home / ".mise/installs/node").exists()
+    assert not (home / ".mise/installs/npm-openai-codex").exists()
+    Path(env["TEST_MISE_LOG"]).write_text("")
+    env["TEST_REMOTE_VERSION"] = "10.0.0"
+    repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert repeat.returncode == 0, repeat.stderr
+    assert "10.0.0 is available; not upgrading automatically" in repeat.stderr
+    assert f"run: mise use -g {tool}@10.0.0" in repeat.stderr
+    assert not any(call.startswith(("use ", "install ")) for call in Path(env["TEST_MISE_LOG"]).read_text().splitlines())
+    assert preserved.read_bytes() == b"credentials and workspace marker"
+    if harness == "codex":
+        # The selected client owns the same agent-local configuration directory.
+        assert Path(env["TEST_CODEX_HOME_LOG"]).read_text() == str(home / ".codex")
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("unsupported_age", [False, True])
+def test_native_client_preserves_pin_and_release_age_controls(tmp_path, harness, unsupported_age):
+    home, command, env = _stage_native_client(tmp_path, harness)
+    tool = "aqua:openai/codex" if harness == "codex" else "aqua:anthropics/claude-code"
+    env[f"SAFEYOLO_{harness.upper()}_NATIVE_SPEC"] = f"{tool}@9.9.9"
+    env["SAFEYOLO_MIN_RELEASE_AGE"] = "72h"
+    if unsupported_age:
+        env["TEST_NATIVE_FAILURE"] = "age-setting"
+    result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert ("no delayed-deployment protection" in result.stderr) is unsupported_age
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert f"latest {tool}@9.9.9" in calls
+    assert f"use -g --force {tool}@9.9.9" in calls
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("failure", ["acquire", "executable", "wrong-version"])
+def test_native_client_refuses_failed_install_and_can_retry(tmp_path, harness, failure):
+    home, command, env = _stage_native_client(tmp_path, harness)
+    env["TEST_NATIVE_FAILURE"] = failure
+    failed = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert failed.returncode != 0
+    assert not Path(env["TEST_EXEC_LOG"]).exists()
+    if failure == "acquire":
+        assert failed.returncode == 31
+    # Reentry repairs the retained incomplete or wrong-version installation.
+    env.pop("TEST_NATIVE_FAILURE")
+    retried = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert retried.returncode == 0, retried.stderr
+
+
+@pytest.mark.parametrize("companion", ["codex-path/rg", "bin/codex-code-mode-host"])
+def test_native_codex_repairs_a_missing_companion_before_launch(tmp_path, companion):
+    home, command, env = _stage_native_client(tmp_path, "codex")
+    first = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    Path(env["TEST_EXEC_LOG"]).unlink()
+    (Path(env["TEST_NATIVE_ROOT"]) / companion).unlink()
+    env["TEST_NATIVE_FAILURE"] = companion
+    failed = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert failed.returncode != 0
+    assert "companion tools are incomplete" in failed.stderr
+    assert not Path(env["TEST_EXEC_LOG"]).exists()
+    env.pop("TEST_NATIVE_FAILURE")
+    retried = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert retried.returncode == 0, retried.stderr
 
 
 @pytest.mark.parametrize("broken_install", [False, True])
