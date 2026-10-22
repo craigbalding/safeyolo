@@ -89,6 +89,9 @@ fi
 sy_remote_version() { mise latest "$1" 2>/dev/null | tail -1; }
 sy_local_version()  { mise latest --installed "$1" 2>/dev/null | tail -1; }
 
+# Reuse a successful install lookup for this launch's update notice.
+sy_target=""
+
 # First-boot install. Tool installs live under persistent /home/agent. Validate
 # an existing command as well: mise 2026.7.12+ downloads npm optional
 # dependencies but denies lifecycle scripts by default, so Claude's placeholder
@@ -160,7 +163,10 @@ sy_tool="${SAFEYOLO_CLAUDE_NPM_SPEC%@*}"
 sy_running="$(sy_local_version "$sy_tool")"
 if [ -n "$sy_running" ]; then
     echo "claude-host-setup: claude $sy_running" >&2
-    sy_available="$(sy_remote_version "$sy_tool")"
+    sy_available="$sy_target"
+    if [ -z "$sy_available" ]; then
+        sy_available="$(sy_remote_version "$sy_tool")"
+    fi
     if [ -n "$sy_available" ] && [ "$sy_available" != "$sy_running" ]; then
         echo "claude-host-setup: claude $sy_available is available; not upgrading" \
              "automatically (run: mise use -g ${sy_tool}@${sy_available})" >&2
