@@ -54,6 +54,11 @@ RELEASE = "host-" + SOURCE
 CONNECTED_SOURCE = "c5ce76019b6c997e282ab05cea0212b492e945d2"
 CONNECTED_PACKAGE = {"source": CONNECTED_SOURCE, "machine": "x86_64", "bytes": 191260514,
                      "sha256": "811a20c1fa75d081504b9bfa3a7766bb3c2df6e55f4740742243ad24bc217538"}
+COLD_SETUP_PACKAGE = {"source": "621b2c717393c9fb7de47bc9cce8c823489fde6b",
+                      "machine": "aarch64", "bytes": 178081425,
+                      "sha256": "c3598361a2f8ae6822db1d68fe530a22d9286647e06a1de5c87799ab5cbc18d5"}
+COLD_SETUP_BOOTSTRAP_SHA256 = "bf38f2b52bef358c0b9ff426ac60b3d684249054ee4db790e035b384ea31c993"
+COLD_SETUP_SCRIPT_SHA256 = "ca5ac5ad046ca7d15ea88576b2480f6d66d4578a0990f9056045d262dcac3928"
 # Exact guest operands from native run 39744720606, not today's compatibility tag.
 COLD_SETUP_GUEST = {
     "index": "sha256:67bcb6c51460619d3c021414961cd42b1f9751adc07f69d212a1d6485b1f132a",
@@ -1318,22 +1323,29 @@ def provider_intervals(include_downloads=False):
 def instrument_cold_setup(command):
     """Time fixed tool calls in the owned command; retain no arguments or environment."""
     original = command.read_text()
-    timed = original
-    for label, call in [
+    calls = {call: label for label, call in [
         ("mise-release-age", "mise settings get min_release_age"),
         ("claude-remote-version", 'mise latest "$1"'),
         ("claude-local-version", 'mise latest --installed "$1"'),
-        ("node-acquire-install", 'mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC"'),
-        ("claude-acquire-install", 'mise use -g --force "$sy_spec"'),
+        ("node-acquire-install", 'mise install "$SAFEYOLO_CLAUDE_NODE_SPEC"'),
+        ("claude-acquire-install", 'mise install --force "$sy_spec"'),
+        ("node-acquisition-wait", 'wait "$sy_node_pid"'),
+        ("tools-configure", 'mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" "$sy_spec"'),
+        ("node-configure-install", 'mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC"'),
+        ("claude-configure-install", 'mise use -g --force "$sy_spec"'),
         ("claude-fallback-install", 'mise use -g "$sy_spec"'),
         ("claude-executable-check", "claude --version"),
         ("claude-install-location", 'mise where "$sy_spec"'),
         ("claude-postinstall", 'mise exec "$SAFEYOLO_CLAUDE_NODE_SPEC" -- node "$claude_postinstall"'),
         ("claude-reshim", "mise reshim"),
-    ]:
+    ]}
+    for call, label in calls.items():
         if call not in original:
             raise ValueError("Released command lacks expected timing boundary: " + label)
-        timed = timed.replace(call, "sy1050_step " + label + " " + call)
+    # Replace once, longest call first. The combined configuration contains
+    # the Node-only call; repeated replacement would wrap it a second time.
+    pattern = "|".join(re.escape(call) for call in sorted(calls, key=len, reverse=True))
+    timed = re.sub(pattern, lambda match: "sy1050_step " + calls[match[0]] + " " + match[0], original)
     function = '''
 sy1050_step() {
     local label=$1 result=0
@@ -1350,7 +1362,7 @@ sy1050_step() {
     command.write_text(timed)
     return {"original_sha256": hashlib.sha256(original.encode()).hexdigest(),
             "instrumented_sha256": digest(command),
-            "change": "Fixed tool calls wrapped with Bash realtime start/end and exit markers; arguments and output remain private."}
+            "change": "Fixed tool calls and same-shell waits wrapped with Bash realtime start/end and exit markers; arguments and output remain private."}
 
 
 def cold_setup_run(args, package):
@@ -1362,6 +1374,7 @@ def cold_setup_run(args, package):
         "Existing non-clean runner baseline. No warm repeat, login, model task or 15-second acceptance.",
         "Sandbox-only command includes CLI validation, staging, boot and readiness; internal staging versus boot remains unseparated.",
         "Tool markers use Bash realtime in this same guest. Instrumentation adds file writes; elapsed values are diagnostic.",
+        "Acquisition markers combine tool resolution, downloads and installation. Wait markers cover only the remaining child wait; neither isolates network time.",
         "Audit response durations include proxy/request work, can overlap, and do not measure provider-only or download-only waits.",
         "The released bootstrap's download-only path permits its unchanged installer to pin the retained guest index.",
     ]
@@ -1378,7 +1391,7 @@ def cold_setup_run(args, package):
             return False
         return True
 
-    download = [*DOWNLOAD[:-1], f"https://raw.githubusercontent.com/craigbalding/safeyolo/{package['source']}/install.sh"]
+    download = [*DOWNLOAD[:-1], f"https://github.com/craigbalding/safeyolo/releases/download/host-{package['source']}/install-safeyolo.sh"]
     bundle = private / "released-package"
     setup = root / "assets/contrib/claude-host-setup.sh"
     commands = [
@@ -1397,6 +1410,8 @@ def cold_setup_run(args, package):
             return
         if label == "bootstrap-download":
             x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
+            if x["bootstrap_sha256"] != COLD_SETUP_BOOTSTRAP_SHA256:
+                raise ValueError("Released bootstrap differs from the selected cold-setup input")
         elif label == "host-package-acquisition":
             x["host_archive"] = {"bytes": archive.stat().st_size, "sha256": digest(archive)}
             if x["host_archive"] != {"bytes": package["bytes"], "sha256": package["sha256"]}:
@@ -1409,11 +1424,13 @@ def cold_setup_run(args, package):
             x["package_info"] = text(root / "package-info")
         elif label == "harness-host-setup":
             # Check the setup source before changing the disposable generated command.
-            if digest(setup) != "55f36a9a8b438f7ef6de69d7868b401759cc9cda6cb0116deb617c693813b7ca":
-                raise ValueError("Claude setup script differs from released c94 input")
+            if digest(setup) != COLD_SETUP_SCRIPT_SHA256:
+                raise ValueError("Claude setup script differs from the selected cold-setup input")
             x["command_instrumentation"] = instrument_cold_setup(root / "agents/first/home/.safeyolo-command")
         elif label == "guest-stage-and-boot":
             x["diagnostic_runtime"] = live_record()
+            # A missing version result remains unknown; it does not stop setup.
+            guest("guest-mise-version", "mise --version", deadline, private_output=True)
         save()
     x["diagnostic_runtime_after_setup"] = live_record()
     before, after = x["diagnostic_runtime"], x["diagnostic_runtime_after_setup"]
@@ -1439,6 +1456,13 @@ def cold_setup_operands():
     installs = home / ".mise/installs"
     x["installed_tool_versions"] = {tool: sorted(p.name for p in (installs / tool).iterdir())
         for tool in ["node", "npm-anthropic-ai-claude-code"] if (installs / tool).is_dir()}
+    # Export version numbers only. The original command output stays private.
+    for key, filename, pattern in [
+        ("mise_version", "guest-mise-version.stdout", r"(?:mise )?(\d+\.\d+\.\d+)(?:[^\n]*)\n?"),
+        ("claude_version", "harness-cold-setup.stdout", r"(\d+\.\d+\.\d+) \(Claude Code\)\s*"),
+    ]:
+        version = re.fullmatch(pattern, text(private / filename) or "")
+        x[key] = version[1] if version else None
     x["network_intervals"] = provider_intervals(include_downloads=True)
     save()
 
@@ -1521,7 +1545,8 @@ def main():
     private = args.observation_dir or Path.home() / "239-onboarding-observation"
     project = Path.home() / "239-onboarding-project"
     cli = root / "bin/safeyolo"
-    package = CONNECTED_PACKAGE if args.connected and args.platform == "linux-amd64" else PACKAGES[args.platform]
+    package = (COLD_SETUP_PACKAGE if args.cold_setup_only else
+               CONNECTED_PACKAGE if args.connected and args.platform == "linux-amd64" else PACKAGES[args.platform])
     source = package["source"]
     LAUNCH = ["bash", "install-safeyolo.sh", "--release", "host-" + source, "--launch", ".",
               "--name", "first", "--harness", "claude", "--launcher", "tmux-window"]
