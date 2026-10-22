@@ -85,8 +85,8 @@ esac
                     observed.append((result.returncode, result.stdout, result.stderr))
                     if instrument:
                         events = (home / ".safeyolo-cold-setup.tsv").read_text()
-                        self.assertIn("node-acquire-install\tend\t", events)
-                        self.assertIn("claude-acquire-install\tend\t", events)
+                        self.assertIn("node-configure-install\tend\t", events)
+                        self.assertIn("claude-configure-install\tend\t", events)
                         if case == "fail":
                             self.assertTrue(events.rstrip().endswith("\t31"))
                             self.assertNotIn("claude-postinstall", events)
@@ -94,6 +94,95 @@ esac
                             self.assertIn("claude-postinstall\tend\t", events)
                 self.assertEqual(observed[0], observed[1])
                 self.assertEqual(observed[1][0], 31 if case == "fail" else 0)
+
+    def test_cold_setup_wrappers_preserve_overlap_wait_status_and_repair(self):
+        source = Path(__file__).resolve().parents[2] / "contrib/claude-host-setup.sh"
+        self.assertEqual(m.digest(source), m.COLD_SETUP_SCRIPT_SHA256)
+        command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        tools = m.private / "tools"
+        tools.mkdir()
+        mise = tools / "mise"
+        mise.write_text('''#!/bin/bash
+case "$1 $2" in
+  'settings get')
+    case "$3" in npm.package_manager) echo auto;; npm.shell_out|raw) echo false;; esac;;
+  'config ls'|'ls --installed') exit 0;;
+  'latest --installed'|'latest '*) echo 2.1.235;;
+  'install node@22')
+    echo "$$" > "$HOME/node-pid"
+    touch "$HOME/node-started"
+    for ((i=0; i<500; i++)); do
+      [[ ! -f $HOME/release-node ]] || break
+      sleep 0.01
+    done
+    [[ -f $HOME/claude-finished && -f $HOME/release-node ]] || exit 90
+    touch "$HOME/node-finished"
+    [[ $STUB_CASE != node-fail ]] || exit 32;;
+  'install --force')
+    for ((i=0; i<500; i++)); do
+      [[ ! -f $HOME/node-started ]] || break
+      sleep 0.01
+    done
+    [[ -f $HOME/node-started ]] || exit 91
+    [[ $STUB_CASE != success ]] || touch "$HOME/installed"
+    touch "$HOME/claude-finished"
+    [[ $STUB_CASE != claude-fail ]] || exit 31;;
+  'use -g')
+    [[ -f $HOME/node-finished && -f $HOME/claude-finished ]] || exit 92
+    touch "$HOME/configured";;
+  'where '*) echo "$HOME/install";;
+  'exec '*) touch "$HOME/installed" "$HOME/repaired";;
+esac
+''')
+        claude = tools / "claude"
+        claude.write_text('#!/bin/bash\n[[ -f $HOME/installed ]] || exit 9\necho "2.1.235 (Claude Code)"\n')
+        for tool in [mise, claude]:
+            tool.chmod(0o755)
+        for case in ["success", "repair", "node-fail", "claude-fail"]:
+            with self.subTest(case=case):
+                observed = []
+                for instrument in [False, True]:
+                    home = m.private / f"{case}-{instrument}"
+                    (home / "install/node_modules/@anthropic-ai/claude-code").mkdir(parents=True)
+                    (home / "install/node_modules/@anthropic-ai/claude-code/install.cjs").touch()
+                    script = home / ".safeyolo-command"
+                    script.write_text(command)
+                    if instrument:
+                        m.instrument_cold_setup(script)
+                    process = subprocess.Popen(["bash", script, "--version"], stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True,
+                        env={**os.environ, "HOME": str(home), "PATH": str(tools) + ":/usr/bin:/bin", "STUB_CASE": case})
+                    try:
+                        deadline = time.monotonic() + 3
+                        while not (home / "claude-finished").exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue((home / "claude-finished").exists())
+                        self.assertIsNone(process.poll(), "The owned Node acquisition must finish before exit")
+                        self.assertFalse((home / "configured").exists())
+                        self.assertFalse((home / "repaired").exists())
+                    finally:
+                        (home / "release-node").touch()
+                        stdout, stderr = process.communicate(timeout=4)
+                    observed.append((process.returncode, stdout, stderr))
+                    self.assertTrue((home / "node-finished").exists())
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(int((home / "node-pid").read_text()), 0)
+                    failed = case.endswith("fail")
+                    self.assertEqual((home / "configured").exists(), not failed)
+                    self.assertEqual((home / "repaired").exists(), case == "repair")
+                    if instrument:
+                        events = [line.split("\t") for line in (home / ".safeyolo-cold-setup.tsv").read_text().splitlines()]
+                        stamps = {(label, event): float(epoch) for label, event, epoch, status in events}
+                        statuses = {label: int(status) for label, event, epoch, status in events if event == "end"}
+                        self.assertLess(stamps["claude-acquire-install", "start"], stamps["node-acquire-install", "end"])
+                        self.assertLess(stamps["node-acquire-install", "start"], stamps["claude-acquire-install", "end"])
+                        self.assertEqual(statuses["node-acquire-install"], 32 if case == "node-fail" else 0)
+                        self.assertEqual(statuses["claude-acquire-install"], 31 if case == "claude-fail" else 0)
+                        self.assertEqual(statuses["node-acquisition-wait"], statuses["node-acquire-install"])
+                        self.assertEqual(sum(label == "tools-configure" and event == "end"
+                                             for label, event, epoch, status in events), 0 if failed else 1)
+                self.assertEqual(observed[0], observed[1])
+                self.assertEqual(observed[1][0], {"node-fail": 32, "claude-fail": 31}.get(case, 0))
 
     def test_cold_setup_stops_at_the_first_failed_command(self):
         from types import SimpleNamespace
@@ -105,12 +194,48 @@ esac
             return row
 
         with patch.object(m, "observe", autospec=True, side_effect=failed) as run:
-            m.cold_setup_run(SimpleNamespace(cold_seconds=900), m.PACKAGES["linux-arm64"])
+            m.cold_setup_run(SimpleNamespace(cold_seconds=900), m.COLD_SETUP_PACKAGE)
         run.assert_called_once()
         self.assertEqual(m.x["diagnostic_failure"]["step"], "bootstrap-download")
         self.assertEqual(m.x["diagnostic_failure"]["exit"], 22)
-        self.assertEqual(m.x["bootstrap_source"], m.PACKAGES["linux-arm64"]["source"])
+        self.assertEqual(m.x["bootstrap_source"], m.COLD_SETUP_PACKAGE["source"])
+        self.assertEqual(run.call_args.args[1][-1],
+            "https://github.com/craigbalding/safeyolo/releases/download/host-"
+            + m.COLD_SETUP_PACKAGE["source"] + "/install-safeyolo.sh")
         self.assertEqual(m.x["expected_guest"], m.COLD_SETUP_GUEST)
+
+    def test_cold_setup_rejects_changed_bootstrap_before_package_execution(self):
+        from types import SimpleNamespace
+
+        (m.project / "install-safeyolo.sh").write_text("unexpected release bytes")
+        with patch.object(m, "observe", autospec=True, return_value={"exit": 0, **m.stamp(), "ended": m.stamp()}) as run:
+            with self.assertRaisesRegex(ValueError, "Released bootstrap differs"):
+                m.cold_setup_run(SimpleNamespace(cold_seconds=900), m.COLD_SETUP_PACKAGE)
+        run.assert_called_once()
+
+    def test_cold_setup_rejects_unobserved_wait_route_without_rewriting_command(self):
+        source = Path(__file__).resolve().parents[2] / "contrib/claude-host-setup.sh"
+        command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        script = m.private / "command"
+        changed = command.replace('wait "$sy_node_pid"', "wait")
+        script.write_text(changed)
+        with self.assertRaisesRegex(ValueError, "node-acquisition-wait"):
+            m.instrument_cold_setup(script)
+        self.assertEqual(script.read_text(), changed)
+
+    def test_cold_setup_selects_new_package_before_existing_installation_refusal(self):
+        home = Path(self.scratch.name) / "home"
+        root = home / ".safeyolo"
+        root.mkdir(parents=True)
+        sentinel = root / "policy.toml"
+        sentinel.write_text("existing policy")
+        result = self.observer_cli(home, "--cold-setup-only")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        record = json.loads((home / "observation/result.json").read_text())
+        self.assertEqual(record["expected_host_package"], m.COLD_SETUP_PACKAGE)
+        self.assertEqual(record["native_source"], m.COLD_SETUP_PACKAGE["source"])
+        self.assertEqual(record["product_commands"], [])
+        self.assertEqual(sentinel.read_text(), "existing policy")
 
     def test_cold_setup_retains_incomplete_tool_intervals_without_private_output(self):
         home = m.root / "agents/first/home"
@@ -120,9 +245,20 @@ esac
             "node-acquire-install\tend\t1792689002.100002\t0\n"
             "claude-acquire-install\tstart\t1792689002.200003\t\n")
         (m.private / "harness-cold-setup.stderr").write_text("PRIVATE_AUTH_SENTINEL")
+        (m.private / "harness-cold-setup.stdout").write_text("2.1.306 (Claude Code)\n")
+        (m.private / "guest-mise-version.stdout").write_text("2026.10.13 linux-arm64 (build metadata)\n")
         m.cold_setup_operands()
         self.assertEqual(len(m.x["cold_setup_tool_events"]), 3)
         self.assertIsNone(m.x["cold_setup_tool_events"][-1]["exit"])
+        self.assertEqual(m.x["mise_version"], "2026.10.13")
+        self.assertEqual(m.x["claude_version"], "2.1.306")
+        self.assertNotIn("PRIVATE_AUTH_SENTINEL", m.out.read_text())
+        self.assertNotIn("build metadata", m.out.read_text())
+        (m.private / "harness-cold-setup.stdout").write_text("PRIVATE_AUTH_SENTINEL")
+        (m.private / "guest-mise-version.stdout").write_text("PRIVATE_AUTH_SENTINEL")
+        m.cold_setup_operands()
+        self.assertIsNone(m.x["mise_version"])
+        self.assertIsNone(m.x["claude_version"])
         self.assertNotIn("PRIVATE_AUTH_SENTINEL", m.out.read_text())
 
     def canonical_task(self, error=None):
