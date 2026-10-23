@@ -1565,26 +1565,29 @@ class MattermostAdapter:
             )
             self.state.finish_outbound(pending["coord_msg_id"], post_id)
 
-    def _inbound_body(self, *, mapping: RoomMapping, post: dict[str, Any], target_msg_id: str) -> str:
+    def _inbound_body(self, *, mapping: RoomMapping, post: dict[str, Any], target_msg_id: str | None) -> str:
         text = post.get("message")
         if not isinstance(text, str) or not text.strip():
             raise MattermostAdapterError("operator reply must contain non-empty text")
         if len(text.encode("utf-8")) > MAX_OPERATOR_TEXT_BYTES:
             raise MattermostAdapterError("operator reply is too large")
-        action, note = _parse_action(text)
+        # A channel message has no action target. Keep even action-like text
+        # as conversation until a real projected thread supplies correlation.
+        action, note = _parse_action(text) if target_msg_id is not None else (None, text)
         payload = {
             "schema": ADAPTER_SCHEMA,
             "adapter_id": self.config.adapter_id,
-            "kind": "action" if action is not None else "reply",
+            "kind": "message" if target_msg_id is None else "action" if action is not None else "reply",
             "action": action.value if action is not None else None,
             "text": note,
             "correlation": {
-                "coord_msg_id": target_msg_id,
                 "mattermost_post_id": post["id"],
                 "mattermost_root_post_id": post["root_id"],
                 "mattermost_channel_id": mapping.channel_id,
             },
         }
+        if target_msg_id is not None:
+            payload["correlation"]["coord_msg_id"] = target_msg_id
         return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
     async def _process_inbound_post(self, mapping: RoomMapping, post: dict[str, Any]) -> None:
@@ -1608,15 +1611,20 @@ class MattermostAdapter:
             self.state.ignore_inbound(post_id, mapping.coord_room, "not_configured_operator")
             return
         root_id = post.get("root_id")
-        if not isinstance(root_id, str) or not _ID_RE.fullmatch(root_id):
+        if not isinstance(root_id, str) or (root_id != "" and not _ID_RE.fullmatch(root_id)):
             self.state.ignore_inbound(post_id, mapping.coord_room, "unmapped_thread")
             return
-        projection = self.state.projection_for_root(root_id, room=mapping.coord_room, channel_id=mapping.channel_id)
-        if projection is None:
+        projection = (
+            self.state.projection_for_root(root_id, room=mapping.coord_room, channel_id=mapping.channel_id)
+            if root_id else None
+        )
+        if root_id and projection is None:
             self.state.ignore_inbound(post_id, mapping.coord_room, "unmapped_thread")
             return
         try:
-            body = self._inbound_body(mapping=mapping, post=post, target_msg_id=projection["coord_msg_id"])
+            body = self._inbound_body(
+                mapping=mapping, post=post, target_msg_id=projection["coord_msg_id"] if projection is not None else None
+            )
         except MattermostAdapterError:
             self.state.ignore_inbound(post_id, mapping.coord_room, "malformed_body_or_action")
             return
