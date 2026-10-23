@@ -253,7 +253,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
     )
     source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n'
                       f'int main(int argc,char **argv){{{host_command}{guest_command}{launch_command}puts("{identity}");return 0;}}\n')
-    subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
+    subprocess.run(["cc", "-g", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 
 
@@ -565,7 +565,10 @@ def test_workflow_consumers_validate_prepared_native_inputs(package_inputs, tmp_
         assert "safeyolo-coord" in result.stderr
 
 
+@pytest.mark.parametrize("package_inputs", ["debug", "production"], indirect=True)
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
+    runtime = Path(os.environ["PACKAGE_RUNSC_FIXTURE"])
+    upstream = {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
     assert result.returncode == 0, result.stderr
@@ -581,6 +584,15 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
             assert download.extractfile(member).read() == full.extractfile(member).read()
     with tarfile.open(archive) as stream:
         names = stream.getnames()
+        metadata = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/package-info").read().decode()
+        profile = dict(line.split("=", 1) for line in metadata.splitlines())["profile"]
+        for relative, original in upstream.items():
+            packaged = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/libexec/" + str(relative)).read()
+            assert b".debug_info\0" in original
+            assert (b".debug_info\0" in packaged) == (profile == "debug")
+            if profile == "debug":
+                assert packaged == original
+            assert (runtime / relative).read_bytes() == original
         assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
         assert not any(name.endswith(("/github_checks.py", "/github-checks.md", ".pyc")) for name in names)
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
@@ -680,6 +692,7 @@ def test_musl_package_is_refused_on_glibc_before_installation(package_inputs, tm
 
 
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "architecture", "unlisted", "empty-metadata", "missing-metadata"])
+@pytest.mark.parametrize("package_inputs", ["debug", "production"], indirect=True)
 def test_runtime_payload_refusal_preserves_other_installation(package_inputs, tmp_path, damage):
     bundle = build_bundle(package_inputs, tmp_path)
     sidecar = bundle / "libexec/gvisor-bin/gvisor_sentry"

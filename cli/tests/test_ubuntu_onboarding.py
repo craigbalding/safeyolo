@@ -1854,7 +1854,7 @@ esac
         self.assertEqual(row["codex_process"]["exit"], 1)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Native client observation reads Linux /proc")
-    def test_codex_process_observation_accepts_both_complete_native_install_locations(self):
+    def test_codex_process_observation_accepts_native_install_locations(self):
         home = m.project / "process-home"
 
         def guest(label, code, deadline):
@@ -1862,17 +1862,23 @@ esac
                                     capture_output=True, text=True, timeout=5)
             return {"exit": result.returncode, "stdout": result.stdout}
 
-        for backend in ["aqua", "github", "unrelated"]:
-            with self.subTest(backend=backend):
-                binary = home / f".mise/installs/{backend}-openai-codex/9.9.9/bin/codex"
+        for location, accepted in [
+            (".mise/installs/aqua-openai-codex/9.9.9/bin/codex", True),
+            (".mise/installs/github-openai-codex/9.9.9/bin/codex", True),
+            (".safeyolo/codex-package/payload/bin/codex", True),
+            (".mise/installs/unrelated-openai-codex/9.9.9/bin/codex", False),
+            (".safeyolo/codex-package/bin/codex", False),
+        ]:
+            with self.subTest(location=location):
+                binary = home / location
                 binary.parent.mkdir(parents=True)
                 shutil.copy2(shutil.which("sleep"), binary)
                 client = subprocess.Popen([str(binary), "10"])
                 try:
                     row = {}
                     with patch.object(m, "guest", autospec=True, side_effect=guest):
-                        self.assertEqual(m.codex_input_process("cold", row), backend != "unrelated")
-                    if backend != "unrelated":
+                        self.assertEqual(m.codex_input_process("cold", row), accepted)
+                    if accepted:
                         self.assertEqual(row["codex_process"]["stdout"], f"{client.pid}\n")
                 finally:
                     client.terminate()

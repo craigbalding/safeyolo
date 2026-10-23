@@ -86,6 +86,13 @@ if [[ $platform == linux-* ]]; then
   cp -R "$directory/gvisor-runtime/"* "$directory/libexec/"
   rm -rf "$directory/gvisor-runtime"
   chmod 0755 "$directory/libexec" "$directory/libexec/gvisor-bin"
+  if [[ $profile == production ]]; then
+    # Remove source-level debug data only from packaging copies. Keep the
+    # original upstream cache and debug bundles intact for debugging.
+    while IFS= read -r binary; do
+      objcopy --remove-section='.debug*' --remove-section='.zdebug*' "$directory/libexec/$binary"
+    done < <(runsc_files)
+  fi
 fi
 cp "$repository/scripts/tmux_runtime.sh" "$directory/bin/tmux"
 cp "$repository/scripts/watch_backlog_factory.sh" "$directory/bin/watch-backlog-factory"

@@ -609,6 +609,10 @@ does not call. `package-info` records the bundled
 version, source and origin. `assets/licenses` contains the gVisor and dependency
 notices.
 
+Linux production bundles omit gVisor source-level debug information. Debug
+bundles and the original pinned upstream archives retain that information.
+Production bundles keep runtime metadata and function symbols.
+
 The verified upstream tar is about 121 MB compressed for ARM64 and 130 MB for
 AMD64; the ARM64 payload is about 268 MB unpacked. The host package includes
 those runtime files. Its compressed size also includes the SafeYolo host
