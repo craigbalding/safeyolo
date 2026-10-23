@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -71,22 +74,42 @@ def _routing_client(instance, transport):
     scheme = "http" if transport == "http" else "https"
     curl = shutil.which("curl")
     assert curl, "the installed-proxy HTTP client is required"
-    command = [
-        curl, "--silent", "--show-error", "--location", "--max-redirs", "2", "--max-time", "40",
-        "--http2" if transport == "h2" else "--http1.1",
-        "--unix-socket", instance.paths["alice"], "--proxy", "http://proxy.invalid",
-        "--cacert", str(instance.root / "certs/mitmproxy-ca-cert.pem"),
-        "--header", "Authorization: Bearer routing-login-secret",
-        "--write-out", "\n%{http_code} %{num_redirects} %{http_version}",
-        f"{scheme}://allowed.invalid{ROUTING_PATH}",
-    ]
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as client:
+    # Curl's Unix-socket option bypasses proxy CONNECT. Use the same local TCP
+    # to trusted UDS bridge as the guest so curl exercises real HTTPS and H2.
+    socat = shutil.which("socat")
+    assert socat, "the maintained guest proxy bridge is required"
+    bridge = subprocess.Popen(
+        [socat, "-d", "-d", "TCP-LISTEN:0,bind=127.0.0.1,fork", f"UNIX-CONNECT:{instance.paths['alice']}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    try:
+        assert select.select([bridge.stderr], [], [], 5)[0], "proxy bridge did not start"
+        listening = bridge.stderr.readline()
+        assert "listening on" in listening, listening
+        port = int(listening.rsplit(":", 1)[1])
+        command = [
+            curl, "--silent", "--show-error", "--location", "--max-redirs", "2", "--max-time", "40",
+            "--http2" if transport == "h2" else "--http1.1",
+            "--proxy", f"http://127.0.0.1:{port}",
+            "--cacert", str(instance.root / "certs/mitmproxy-ca-cert.pem"),
+            "--header", "Authorization: Bearer routing-login-secret",
+            "--write-out", "\n%{http_code} %{num_redirects} %{http_version}",
+            f"{scheme}://allowed.invalid{ROUTING_PATH}",
+        ]
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as client:
+            try:
+                yield client
+            finally:
+                if client.poll() is None:
+                    client.terminate()
+                client.communicate(timeout=5)
+    finally:
         try:
-            yield client
-        finally:
-            if client.poll() is None:
-                client.terminate()
-            client.communicate(timeout=5)
+            os.killpg(bridge.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            # The owned bridge and all its connection children already exited.
+            pass
+        bridge.communicate(timeout=5)
 
 
 def _routing_pending(instance, client):
@@ -121,7 +144,7 @@ def test_codex_routing_continues_after_explicit_approval(tmp_path, transport, op
         delivered = [row for origin in origins for row in origin.requests]
         assert len(delivered) == 1
         assert f"GET {ROUTING_PATH} HTTP/1.1".encode() in delivered[0]["head"]
-        assert b"Authorization: Bearer routing-login-secret\r\n" in delivered[0]["head"]
+        assert b"authorization: bearer routing-login-secret\r\n" in delivered[0]["head"].lower()
         # A repeat needs no redirect. Current-run approval remains narrower
         # than the offered persistent instance-wide option.
         target = "http://allowed.invalid/backend-api/codex/responses"
