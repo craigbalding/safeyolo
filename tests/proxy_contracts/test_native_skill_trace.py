@@ -12,6 +12,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.blackbox import installed_host_smoke
 from tests.proxy_contracts.harness import child_process, request, wait_ready
 from tests.proxy_contracts.scenarios import origin_server
 
@@ -176,7 +178,16 @@ def test_doctor_command_runs_native_pipeline_for_every_agent(tmp_path, mode):
                 paths["bob"].unlink()
             result = subprocess.run([str(binaries / "safeyolo"), "--config", str(config), "doctor"],
                                     cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=20)
+            (tmp_path / "doctor-stdout.json").write_text(result.stdout)
             assert result.returncode == (1 if mode in ("truncated", "one-unavailable", "blocked") else 0), result.stderr
+            if mode == "healthy" and sys.platform == "linux":
+                assert len(result.stdout) > installed_host_smoke.OUTPUT_LIMIT
+                selected = json.loads(result.stdout)["linux"]
+                observed = installed_host_smoke._substrate_identity(tmp_path)
+                assert observed.get("path") == selected.get("path"), observed
+                assert observed["status"] == ("discovered" if selected["state"] == "ready" else "unavailable")
+                if selected["state"] != "ready":
+                    assert observed["reason"] == selected["error"]
             report = json.loads(result.stdout)["pipeline"]
             assert report["verdict"] == ("fail" if result.returncode else "pass"), report
             assert [agent["agent"] for agent in report["agents"]] == ["alice", "bob"]

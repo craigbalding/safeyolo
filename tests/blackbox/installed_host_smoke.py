@@ -75,8 +75,9 @@ def _run(
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
     timeout: float = COMMAND_TIMEOUT,
+    stdout_limit: int | None = OUTPUT_LIMIT,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one bounded command without a shell and cap retained output."""
+    """Run a bounded command without a shell; optionally retain whole stdout."""
     try:
         result = subprocess.run(
             command,
@@ -94,7 +95,7 @@ def _run(
     return subprocess.CompletedProcess(
         result.args,
         result.returncode,
-        (result.stdout or "")[-OUTPUT_LIMIT:],
+        (result.stdout or "")[-stdout_limit:] if stdout_limit is not None else (result.stdout or ""),
         (result.stderr or "")[-OUTPUT_LIMIT:],
     )
 
@@ -679,7 +680,8 @@ def _substrate_identity(config_dir: Path) -> dict[str, Any]:
         cli = config_dir / "bin/safeyolo"
         if cli.is_file():
             try:
-                inspection = _run([str(cli), "--root", str(config_dir), "doctor"], timeout=15)
+                # Active per-agent pipeline traces exceed the diagnostic tail.
+                inspection = _run([str(cli), "--root", str(config_dir), "doctor"], timeout=15, stdout_limit=None)
                 if inspection.returncode:
                     raise SmokeError(f"doctor exited {inspection.returncode}")
                 doctor = json.loads(inspection.stdout)

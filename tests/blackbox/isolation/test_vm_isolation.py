@@ -834,8 +834,9 @@ class TestSandboxExposure:
         """Every /dev entry is on the expected whitelist.
 
         What: Enumerate /dev; compare against the expected set
-        (plus prefixed exceptions for microVMs); assert no
-        unexpected entries.
+        (plus prefixed exceptions for microVMs). If /dev/log exists,
+        verify it is a guest-root-owned socket. Assert no unexpected
+        entries.
         Why: Novel device entries are attack surface. This test is
         deliberately allowlist-based rather than blocklist-based —
         if the runtime adds a new device, the test fails until a
@@ -888,6 +889,18 @@ class TestSandboxExposure:
 
         unexpected = []
         for entry in os.listdir("/dev"):
+            if entry == "log":
+                # The guest scheduler starts BusyBox syslogd as guest root.
+                # Its local logging socket is not a device or host mount.
+                logging_socket = os.lstat("/dev/log")
+                assert stat.S_ISSOCK(logging_socket.st_mode) and (
+                    logging_socket.st_uid, logging_socket.st_gid
+                ) == (0, 0), (
+                    "/dev/log must be a guest-root-owned syslog socket: "
+                    f"mode={logging_socket.st_mode:o} "
+                    f"uid={logging_socket.st_uid} gid={logging_socket.st_gid}"
+                )
+                continue
             if entry in whitelist:
                 continue
             if any(entry.startswith(p) for p in prefix_allow):
