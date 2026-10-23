@@ -1,4 +1,4 @@
-"""Exercise the documented manual fallback without real Codex credentials."""
+"""Exercise Codex startup approval and the manual fallback with synthetic credentials."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tests.proxy_contracts.harness import request
+from tests.proxy_contracts.harness import read_events, request
 from tests.proxy_contracts.test_authority_consistency import _connect, _peers
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
@@ -49,7 +49,7 @@ def _routing_run(instance):
         birth = Path(f"/proc/{backend.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
         boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         (agent / "runtime.json").write_text(json.dumps({
-            "agent_id": "ag-" + "a" * 32, "run_id": generation, "state": "running",
+            "name": "alice", "agent_id": "ag-" + "a" * 32, "run_id": generation, "state": "running",
             "backend_pid": backend.pid, "backend_token": f"linux:{boot}:{backend.pid}:{birth}",
         }))
         (agent / "config-share/host-launch-context.json").write_text(json.dumps({
@@ -131,9 +131,9 @@ def test_codex_routing_continues_after_explicit_approval(tmp_path, transport, op
         assert request(instance.paths["alice"], target.replace("allowed", "forbidden"), headers=headers)[0] == 428
         assert request(instance.paths["alice"], target,
                        headers={"Authorization": "Bearer replacement-login-secret"})[0] == 428
-        events = (instance.root / "logs/audit.jsonl").read_text()
+        responses = read_events(instance.root / "logs/audit.jsonl")
+        events = json.dumps(responses)
         assert "routing-login-secret" not in events and "replacement-login-secret" not in events
-        responses = [json.loads(line) for line in events.splitlines()]
         assert any(row["event"] == "traffic.response" and row["details"]["status"] == 307 for row in responses)
 
 
@@ -173,8 +173,10 @@ def test_codex_routing_wait_timeout_leaves_approval_pending_without_replay(tmp_p
         parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
         extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
     ) as instance, _routing_run(instance), _routing_client(instance, "http") as client:
+        started = time.monotonic()
         identifier = _routing_pending(instance, client)
         stdout, stderr = client.communicate(timeout=35)
+        assert time.monotonic() - started >= 29
         assert client.returncode == 0, stderr
         assert stdout.splitlines()[-1].split()[:2] == ["428", "0"]
         view = instance.admin("GET", f"/admin/approvals/{identifier}")

@@ -38,7 +38,7 @@ mod agent_audit_tests;
 #[cfg(test)]
 mod circuit_audit_tests;
 mod circuit_completion;
-mod credential_approval;
+mod codex_routing;
 #[cfg(test)]
 mod flow_lookup_tests;
 mod flow_recording;
@@ -3077,9 +3077,10 @@ where
             "query_scope": "policy_context_only"
             }),
         ))?;
-        if credential_approval::routing_discovery(request.method(), &destination.path)
+        if codex_routing::routing_discovery(request.method(), &destination.path)
             && let Some(record) = pending.as_ref()
-            && credential_approval::wait(&state, &record.approval_id, upgrades.stop.clone()).await?
+            && codex_routing::wait_for_decision(&state, &record.approval_id, upgrades.stop.clone())
+                .await?
         {
             // Codex follows same-origin redirects for this GET. Its new request
             // goes through every current admission control and gets its own

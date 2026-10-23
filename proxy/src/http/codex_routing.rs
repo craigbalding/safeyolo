@@ -6,13 +6,13 @@ pub(super) fn routing_discovery(method: &Method, path: &str) -> bool {
     method == Method::GET && path.split('?').next() == Some("/backend-api/wham/accounts/check")
 }
 
-pub(super) async fn wait(
+pub(super) async fn wait_for_decision(
     state: &RuntimeState,
     approval_id: &str,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<bool, Error> {
     // The client keeps its own HTTP deadline. On expiry, return the ordinary
-    // approval response; never infer permission from time or replay the GET.
+    // approval response. This waiter never sends application bytes upstream.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         if *stop.borrow() {
