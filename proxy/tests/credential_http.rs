@@ -81,6 +81,8 @@ use tokio::{
 
 #[path = "credential_http/boundary.rs"]
 mod boundary;
+#[path = "credential_http/codex.rs"]
+mod codex;
 #[path = "credential_http/ghcr.rs"]
 mod ghcr;
 mod test_owned_endpoint;
@@ -504,7 +506,7 @@ async fn live_receiver(
     *seen.lock().unwrap() = Some(bytes);
 }
 
-async fn response_head(stream: &mut UnixStream) -> Vec<u8> {
+async fn response_head(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -806,6 +808,8 @@ async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_bod
         "nominated header leaked: {head:?}"
     );
     assert_eq!(&wire[split..], body, "body bytes changed in transit");
+    // Shutdown drains the asynchronous audit writer before the record is read.
+    proxy.shutdown().await;
     let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_event = events
         .lines()
@@ -819,7 +823,6 @@ async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_bod
     );
     assert_eq!(guard_event["details"]["evaluations"][0]["effect"], "allow");
 
-    proxy.shutdown().await;
     origin_task.abort();
 }
 

@@ -531,14 +531,17 @@ fn existing_service_selection_and_credential_guard_see_the_injected_secret() {
     let guard = CredentialGuard::new(b"synthetic-hmac");
     guard.load_sensor_config(&json!({})).unwrap();
     let original = Secret::new("Bearer sgw_synthetic");
-    assert!(
-        guard
-            .classify_headers(&[Header {
-                name: "Authorization",
-                value: &original
-            }])
-            .unwrap()
-            .is_empty()
+    let original_findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &original,
+        }])
+        .unwrap();
+    assert_eq!(original_findings.len(), 1);
+    assert_eq!(original_findings[0].rule, "unknown_secret");
+    assert_eq!(
+        original_findings[0].credential_type.as_deref(),
+        Some("unknown")
     );
     let mut headers = HeaderMap::new();
     headers.insert(

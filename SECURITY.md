@@ -96,10 +96,14 @@ claim. Every HTTP injection under this flag emits a
 
 Coding-harness authentication is outside this vault guarantee. The bundled
 Claude Code host script can deliberately copy selected subscription state into
-the persistent agent home. The Codex host scripts do not copy host credentials:
-an operator must run `codex login` inside each agent and explicitly adopt the
-resulting agent-local credential. Operators must treat `--host-script` as an
-explicit decision to share the files that the selected script copies.
+the persistent agent home. The Codex host scripts do not copy host credentials.
+An operator must deliberately provision or create the agent-local login and
+explicitly adopt that state. An operator can separately authorize an
+explicitly selected Codex subscription login with `credentials import-codex`.
+The encrypted vault retains that authorization, bound to the agent, and keyed
+digests of verified replacements. The guest still holds the client login.
+Adoption metadata grants no proxy authority. Operators must treat `--host-script`
+as an explicit decision to share the files that the selected script copies.
 
 **Network and transport controls.**
 Agents have no direct internet access. Each sandbox has no external network
@@ -140,7 +144,7 @@ As a safety net, the credential guard detects credentials in request headers via
 | **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
 | **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
-| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. The proxy has no options to enable these scans. |
+| **Credential guard in query/body** | The credential guard scans request headers. It also checks the JSON refresh credential at the supported Codex HTTPS token endpoint. Other request bodies and URL query parameters remain outside credential scanning. |
 
 ## Reporting Security Issues
 

@@ -232,7 +232,7 @@ enum RuleEffect {
 /// In particular credential evaluation has no agent and gateway has no path.
 #[derive(Default)]
 struct Context<'a> {
-    observed_ghcr_pull: bool,
+    recognized_credential: bool,
     agent: Option<&'a str>,
     port: Option<u16>,
     method: &'a str,
@@ -1072,9 +1072,9 @@ impl Policy {
             {
                 self.emit_permission(credential, view, false)?;
                 // The host-wide unknown-credential default is distinct from
-                // an explicit credential permission. Observed anonymous GHCR
-                // pulls are known public tokens; explicit permissions, including
-                // denials and prompts, still take part in normal matching.
+                // an explicit credential permission. Recognized issuer exchanges
+                // and authorized Codex logins skip only that default. Explicit
+                // permissions, including denials and prompts, still match.
                 if credential["effect"] == "prompt" {
                     self.rules
                         .last_mut()
@@ -1419,7 +1419,7 @@ impl Policy {
                     !(task_exact && rule.exact() && !rule.simple() && rule.resource == resource)
                 }))
                 .filter(|rule| rule.action == action)
-                .filter(|rule| !(context.observed_ghcr_pull && rule.unknown_credential_prompt))
+                .filter(|rule| !(context.recognized_credential && rule.unknown_credential_prompt))
         };
         let matches = |rule: &&Rule, agent: bool, exact: bool, port_only: bool| {
             !rule.inferred
@@ -1599,17 +1599,17 @@ impl Policy {
         &self,
         request: CredentialRequest<'_>,
         now_ms: f64,
-        observed_ghcr_pull: bool,
+        recognized_credential: bool,
         run: Option<&crate::host_runs::AgentRun>,
     ) -> Result<Decision> {
-        self.evaluate_credential_inner(request, now_ms, observed_ghcr_pull, run)
+        self.evaluate_credential_inner(request, now_ms, recognized_credential, run)
     }
 
     fn evaluate_credential_inner(
         &self,
         request: CredentialRequest<'_>,
         now_ms: f64,
-        observed_ghcr_pull: bool,
+        recognized_credential: bool,
         run: Option<&crate::host_runs::AgentRun>,
     ) -> Result<Decision> {
         self.evaluations.fetch_add(1, Ordering::Relaxed);
@@ -1617,7 +1617,7 @@ impl Policy {
             return Err(invalid("budget timestamp must be finite"));
         }
         let context = Context {
-            observed_ghcr_pull,
+            recognized_credential,
             credential_type: request.credential_type,
             credential_hmac: request.credential_hmac.unwrap_or(""),
             path: request.path,
@@ -1632,7 +1632,7 @@ impl Policy {
             .or_else(|| self.matching(Action::Credential, &context, "*"));
         let mut decision = raw_decision(
             rule,
-            if observed_ghcr_pull {
+            if recognized_credential {
                 Effect::Allow
             } else {
                 Effect::Prompt
