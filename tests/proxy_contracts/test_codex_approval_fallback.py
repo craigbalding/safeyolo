@@ -162,7 +162,7 @@ def test_codex_routing_continues_after_explicit_approval(tmp_path, transport, op
 
 
 @pytest.mark.parametrize("transport", ["http", "h2"])
-@pytest.mark.parametrize("outcome", ["reject", "network_deny", "run_changed", "cancel"])
+@pytest.mark.parametrize("outcome", ["reject", "network_deny", "run_changed", "policy_allow", "cancel"])
 def test_codex_routing_wait_keeps_refusal_and_cancellation(tmp_path, transport, outcome):
     with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
         tmp_path, source=ROUTING_POLICY,
@@ -175,6 +175,8 @@ def test_codex_routing_wait_keeps_refusal_and_cancellation(tmp_path, transport, 
             state = json.loads((agent / "runtime.json").read_text())
             state["run_id"] = "1" * 32
             (agent / "runtime.json").write_text(json.dumps(state))
+        elif outcome == "policy_allow":
+            instance.apply(instance.policy.read_text().replace('unknown_creds="prompt"', 'unknown_creds="allow"'))
         else:
             if outcome == "network_deny":
                 instance.apply(instance.policy.read_text().replace('egress="allow"', 'egress="deny"'))
@@ -187,8 +189,10 @@ def test_codex_routing_wait_keeps_refusal_and_cancellation(tmp_path, transport, 
         stdout, stderr = client.communicate(timeout=5)
         if outcome != "cancel":
             assert client.returncode == 0, stderr
-            assert stdout.splitlines()[-1].split()[:2] == (["403", "1"] if outcome == "network_deny" else ["428", "0"])
-        assert not any(origin.requests for origin in origins)
+            expected = (["200", "1"] if outcome == "policy_allow" else
+                        ["403", "1"] if outcome in ("network_deny", "run_changed") else ["428", "0"])
+            assert stdout.splitlines()[-1].split()[:2] == expected
+        assert sum(len(origin.requests) for origin in origins) == (1 if outcome == "policy_allow" else 0)
 
 
 def test_codex_routing_wait_timeout_leaves_approval_pending_without_replay(tmp_path):

@@ -30,8 +30,7 @@ pub(super) async fn wait_for_decision(
                 .ok_or("credential approval unavailable")?;
             let runtime = state.read().map_err(|_| "runtime unavailable")?.clone();
             let policy = runtime.policy.as_ref().ok_or("policy unavailable")?;
-            let view =
-                crate::approvals::pending::current_view(&audit, policy, &record, Some(&state))?;
+            let view = crate::approvals::pending::current_view(&audit, policy, &record, None)?;
             // A saved receipt can precede active policy publication. The next
             // GET must not race that publication and receive another 428.
             Ok((view, record.committed(policy)?.is_some()))
@@ -43,6 +42,10 @@ pub(super) async fn wait_for_decision(
         };
         match view["status"].as_str() {
             Some("approved") if receipt_active => return Ok(view["grant_active"] != false),
+            // A concurrent decision can supersede this request's old policy
+            // snapshot. Retry the GET through the current controls; a changed
+            // run or a new denial still prevents its upstream delivery.
+            Some("superseded") => return Ok(true),
             Some("pending" | "activation_unconfirmed" | "approved") => {}
             _ => return Ok(false),
         }
