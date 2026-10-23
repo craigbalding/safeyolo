@@ -3064,11 +3064,10 @@ where
                     },
                     crate::policy::current_time_ms(),
                 )
-                .map_err(|error| {
+                .inspect_err(|_| {
                     if let Some(hook) = &guard_trace {
                         hook.error("CredentialGuardError");
                     }
-                    error
                 })?;
             outcome.audit.extend(body.audit);
             outcome.trace.extend(body.trace);

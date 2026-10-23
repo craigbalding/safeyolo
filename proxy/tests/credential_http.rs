@@ -695,6 +695,7 @@ async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
 
     let live_stats = stats(&directory).await;
     assert_eq!(live_stats["credential-guard"]["violations_total"], 0);
+    proxy.shutdown().await;
     let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let guard_event = events
         .lines()
@@ -708,7 +709,6 @@ async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
     );
     assert_eq!(guard_event["details"]["evaluations"][0]["effect"], "allow");
 
-    proxy.shutdown().await;
     origin_task.abort();
 }
 
@@ -877,12 +877,11 @@ async fn native_guard_classifies_unknown_bearers_and_keeps_other_headers_uninspe
             .any(|window| { window == b"key-known" })
     );
 
-    let first_event = std::fs::read_to_string(directory.path().join("audit.jsonl"))
-        .unwrap()
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "security.credential_guard.evaluated")
-        .unwrap();
+    let first_event = credential_event(
+        directory.path(),
+        &response_header(&known, "x-safeyolo-request-id"),
+    )
+    .await;
     assert_eq!(
         first_event["details"]["evaluations"][0]["finding"]["rule"],
         "known"
@@ -3305,6 +3304,9 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
 
     drop(sender);
     let _ = connection_task.await;
+    drop(bob_sender);
+    let _ = bob_connection_task.await;
+    proxy.shutdown().await;
     let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     assert_eq!(
         events
@@ -3355,9 +3357,6 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
         guard_events[1]["details"]["trace"][0]["outcome"],
         "detected"
     );
-    drop(bob_sender);
-    let _ = bob_connection_task.await;
-    proxy.shutdown().await;
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     assert!(audit.contains("security.credential_guard"));
     assert!(!audit.contains("key-allowed"));
@@ -3467,6 +3466,7 @@ async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
         "forbidden receiver observed a connection or application bytes"
     );
     let request_id = response_header(&forbidden_response, "x-safeyolo-request-id");
+    proxy.shutdown().await;
     let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let event = events
         .lines()
@@ -3482,7 +3482,6 @@ async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
     assert!(!events.contains("key-authorized"));
 
     forbidden_task.abort();
-    proxy.shutdown().await;
     allowed_task.abort();
 }
 
@@ -3727,6 +3726,7 @@ async fn native_guard_header_match_blocks_streaming_chunked_upload_before_live_r
         receiver_seen.lock().unwrap().is_none(),
         "streaming credential denial reached the live receiver"
     );
+    proxy.shutdown().await;
     let events = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let event = events
         .lines()
@@ -3750,7 +3750,6 @@ async fn native_guard_header_match_blocks_streaming_chunked_upload_before_live_r
     assert!(!audit.contains("streaming-body-canary"));
 
     receiver_task.abort();
-    proxy.shutdown().await;
 }
 
 #[tokio::test]
@@ -3889,16 +3888,15 @@ async fn native_guard_hmac_exception_survives_reload_and_rejects_other_credentia
     )
     .await;
     assert_eq!(first.status(), 200);
+    let first_request_id = first.headers()["x-safeyolo-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
     let _ = first.collect().await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
         .await
         .unwrap();
-    let first_event = std::fs::read_to_string(directory.path().join("audit.jsonl"))
-        .unwrap()
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| event["event"] == "security.credential_guard.evaluated")
-        .unwrap();
+    let first_event = credential_event(directory.path(), &first_request_id).await;
     let fingerprint = first_event["details"]["evaluations"][0]["finding"]["fingerprint"]
         .as_str()
         .unwrap()

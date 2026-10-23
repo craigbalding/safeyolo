@@ -277,14 +277,13 @@ pub(super) async fn connect_tls(
     } else {
         b"http/1.1".to_vec()
     }];
-    let stream = tokio_rustls::TlsConnector::from(Arc::new(tls))
+    tokio_rustls::TlsConnector::from(Arc::new(tls))
         .connect(
             rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap(),
             stream,
         )
         .await
-        .unwrap();
-    stream
+        .unwrap()
 }
 
 #[tokio::test]
