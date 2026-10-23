@@ -38,13 +38,13 @@ REPO = Path(__file__).resolve().parents[1]
 RELEASES = "/craigbalding/safeyolo/releases"
 
 
-def codex_release(tmp_path, contents):
+def codex_release(tmp_path, contents, *, young_latest=False, version="9.9.9"):
     """Complete controlled ELF package for the real native acquisition boundary."""
     payload = tmp_path / "codex-release"
     for name in ("bin/codex", "bin/codex-code-mode-host", "codex-path/rg"):
         path = payload / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        executable(path, "codex-cli 9.9.9" if name == "bin/codex" else "companion fixture")
+        executable(path, f"codex-cli {version}" if name == "bin/codex" else "companion fixture")
     (payload / "codex-resources").mkdir()
     (payload / "codex-resources/resource").write_bytes(b"adjacent resource; preserve these bytes")
     (payload / "LICENSE").write_bytes(b"upstream notice; preserve this file too")
@@ -52,14 +52,67 @@ def codex_release(tmp_path, contents):
     package = subprocess.check_output(["zstd", "-q", "-c"], input=tar)
     architecture = "x86_64" if os.uname().machine == "x86_64" else "aarch64"
     asset = f"codex-package-{architecture}-unknown-linux-musl.tar.zst"
-    path = f"/openai/codex/releases/download/rust-v9.9.9/{asset}"
-    metadata = {"id": 1, "name": "9.9.9", "tag_name": "rust-v9.9.9", "created_at": "2020-01-01T00:00:00Z",
+    path = f"/openai/codex/releases/download/rust-v{version}/{asset}"
+    metadata = {"id": 1, "name": version, "tag_name": f"rust-v{version}", "created_at": "2020-01-01T00:00:00Z",
                 "published_at": "2020-01-01T00:00:00Z", "draft": False, "prerelease": False,
                 "assets": [{"id": 2, "name": asset, "digest": digest(package), "size": len(package),
                             "url": "https://github.com" + path, "browser_download_url": "https://github.com" + path}]}
     contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
+    contents["/repos/openai/codex/releases"] = json.dumps([metadata]).encode()
+    if young_latest:
+        latest = {**metadata, "tag_name": "rust-v9.10.0",
+                  "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  "assets": [{**metadata["assets"][0], "browser_download_url":
+                              "https://github.com" + path.replace(version, "9.10.0")}]}
+        contents["/repos/openai/codex/releases/latest"] = json.dumps(latest).encode()
+        contents["/repos/openai/codex/releases"] = json.dumps([latest, metadata]).encode()
     contents[path] = package
     return payload, path, metadata
+
+
+@pytest.mark.parametrize("fault", ["young", "future", "draft", "prerelease", "tag", "date",
+                                   "missing-asset", "missing-digest", "url", "duplicate-asset",
+                                   "missing-date"])
+def test_codex_prefetch_selects_newest_eligible_complete_release(registry, native_cli, tmp_path, fault):
+    contents, requests, _faults, environment = registry
+    _payload, asset, metadata = codex_release(tmp_path, contents, version="9.10.0")
+    metadata["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 24 * 3600 - 60))
+    lower = {**metadata, "tag_name": "rust-v9.9.9", "assets": [
+        {**metadata["assets"][0], "browser_download_url": "https://github.com" + asset.replace("9.10.0", "9.9.9")}]}
+    excluded = {**metadata, "tag_name": "rust-v10.0.0", "assets": [
+        {**metadata["assets"][0], "browser_download_url": "https://github.com" + asset.replace("9.10.0", "10.0.0")}]}
+    if fault in ("young", "future"):
+        offset = -24 * 3600 + 60 if fault == "young" else 3600
+        excluded["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + offset))
+    elif fault in ("draft", "prerelease"):
+        excluded[fault] = True
+    elif fault == "tag":
+        excluded["tag_name"] += "-alpha.1"
+    elif fault == "date":
+        excluded["published_at"] = "unknown"
+    elif fault == "missing-asset":
+        excluded["assets"] = []
+    elif fault == "missing-digest":
+        del excluded["assets"][0]["digest"]
+    elif fault == "url":
+        excluded["assets"][0]["browser_download_url"] = "https://github.com" + asset
+    elif fault == "duplicate-asset":
+        excluded["assets"] *= 2
+    elif fault == "missing-date":
+        del excluded["published_at"]
+    # Neither response order nor lexicographic version order selects 9.10.0.
+    contents["/repos/openai/codex/releases"] = json.dumps([metadata, excluded, lower]).encode()
+    environment["CURL_CA_BUNDLE"] = environment["SSL_CERT_FILE"]
+    output = tmp_path / "prefetched"
+    result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
+    if fault == "missing-date":
+        assert result.returncode != 0 and not output.exists()
+        assert requests == ["/repos/openai/codex/releases"]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (output / "version").read_text().strip() == "9.10.0"
+        assert json.loads((output / "upstream.json").read_text())["assets"] == metadata["assets"]
+        assert requests == ["/repos/openai/codex/releases", asset]
 
 
 @pytest.mark.parametrize("refusal", [None, "source", "target", "existing"])
@@ -68,8 +121,7 @@ def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfe
     if not mise:
         pytest.skip("real mise is required to prove local package registration")
     contents, requests, _faults, environment = registry
-    payload, asset, metadata = codex_release(tmp_path, contents)
-    contents["/repos/openai/codex/releases"] = json.dumps([metadata]).encode()
+    payload, asset, metadata = codex_release(tmp_path, contents, young_latest=True)
     contents["/repos/openai/codex/releases/tags/rust-v9.9.9"] = json.dumps(metadata).encode()
     environment = {key: value for key, value in environment.items()
                    if not key.startswith(("MISE_", "__MISE_", "SAFEYOLO_CODEX_")) and key != "BASH_ENV"}
@@ -77,6 +129,9 @@ def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfe
     output = tmp_path / "prefetched"
     result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
     assert result.returncode == 0, result.stderr
+    assert (output / "version").read_text().strip() == "9.9.9"
+    assert json.loads((output / "upstream.json").read_text())["tag_name"] == metadata["tag_name"]
+    assert requests == ["/repos/openai/codex/releases", asset]
     home = tmp_path / "agent"
     managed = home / ".safeyolo"
     managed.mkdir(parents=True)
@@ -154,6 +209,7 @@ def test_native_codex_prefetch_verifies_complete_package_and_preserves_selection
     elif fault == "pin":
         environment["SAFEYOLO_CODEX_NATIVE_SPEC"] = "aqua:openai/codex@9.9.9"
     contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
+    contents["/repos/openai/codex/releases"] = json.dumps([metadata]).encode()
     environment["CURL_CA_BUNDLE"] = environment["SSL_CERT_FILE"]
     output = tmp_path / "prefetched"
     result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
@@ -163,6 +219,7 @@ def test_native_codex_prefetch_verifies_complete_package_and_preserves_selection
         faults["partial"] = None
         metadata["assets"][0]["digest"] = digest(contents[asset])
         contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
+        contents["/repos/openai/codex/releases"] = json.dumps([metadata]).encode()
         result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
     if fault in ("young", "custom-age", "pin"):
         assert result.returncode == 0, result.stderr
@@ -180,7 +237,7 @@ def test_native_codex_prefetch_verifies_complete_package_and_preserves_selection
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 def test_complete_codex_package_arrives_during_host_transfer_and_is_handed_to_launch(public_release, native_cli, tmp_path):
     contents, requests, faults, environment, bootstrap, root, base, archive = public_release
-    _payload, asset, _metadata = codex_release(tmp_path, contents)
+    _payload, asset, _metadata = codex_release(tmp_path, contents, young_latest=True)
     marker = tmp_path / "launch-inputs"
     handoff = tmp_path / "codex-handoff"
     environment.update(PACKAGE_CODEX_PREFETCH_CLI=str(native_cli), PACKAGE_LAUNCH_CALLS=str(marker),
@@ -196,6 +253,7 @@ def test_complete_codex_package_arrives_during_host_transfer_and_is_handed_to_la
             assert time.monotonic() < deadline, "Codex acquisition waited for host extraction or sandbox startup"
             time.sleep(0.01)
         assert not root.exists() and process.poll() is None
+        assert requests.count(asset) == 1
         faults["resume"].set()
         stdout, stderr = process.communicate(timeout=15)
         assert process.returncode == 0, stderr
