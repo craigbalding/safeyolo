@@ -1636,6 +1636,88 @@ async fn traffic(alice: &Client, port: u16) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn send_receipt_identifies_each_recipient_request() {
+    let binary = PathBuf::from(
+        std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary"),
+    );
+    unsafe {
+        std::env::set_var(
+            "SAFEYOLO_NATS_TEST_INSTANCE",
+            format!("receipt-{}", uuid::Uuid::new_v4().simple()),
+        );
+    }
+    let temp = tempfile::Builder::new()
+        .prefix("coord-receipt-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join("data")).unwrap();
+    fs::create_dir(root.join("builtin-services")).unwrap();
+    fs::write(root.join("data/instance_id"), "si-receipt").unwrap();
+    fs::write(root.join("data/agent_token"), "fixture-token").unwrap();
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n").unwrap();
+    fs::write(
+        root.join("policy.toml"),
+        "[agents.alice]\nagent_id='ag-alice'\n[agents.bob]\nagent_id='ag-bob'\n",
+    )
+    .unwrap();
+    coord_rooms::start(root, Some(&binary), None, None)
+        .await
+        .unwrap();
+    let _cleanup = NatsCleanup(root.into());
+    coord_rooms::create_room(root, "shared").await.unwrap();
+    for agent in ["alice", "bob"] {
+        coord_rooms::grant(&root.join("config.toml"), "shared", agent, &[], false).unwrap();
+    }
+    let alice = Client {
+        socket: Some(root.join("alice.sock")),
+        token_file: root.join("data/agent_token"),
+    };
+    let bob = Client {
+        socket: Some(root.join("bob.sock")),
+        token_file: root.join("data/agent_token"),
+    };
+    let proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    let mut cursor = 0;
+    let mut request_ids = Vec::new();
+    for _ in 0..2 {
+        let receipt = alice.call("send", &json!({"room_name":"shared","body":"TASK target=https://example.test/issue assignee=bob","notify":["bob"]})).await.unwrap();
+        let delivered = bob
+            .call(
+                "wait_for_coord",
+                &json!({"since_sequence":cursor,"timeout_seconds":1}),
+            )
+            .await
+            .unwrap();
+        let resolved = &delivered["objects"][0];
+        assert_eq!(resolved["object"]["msg_id"], receipt["envelope"]["msg_id"]);
+        assert_eq!(receipt["attention_status"], "ready");
+        assert_eq!(
+            receipt["attention_recipients"],
+            json!([{
+                "agent_id":"ag-bob", "attention_id":resolved["edge"]["attention_id"],
+            }])
+        );
+        request_ids.push(resolved["edge"]["attention_id"].clone());
+        cursor = delivered["next_cursor"].as_u64().unwrap();
+    }
+    assert_ne!(request_ids[0], request_ids[1]);
+    let receipt = alice
+        .call(
+            "send",
+            &json!({"room_name":"shared","body":"information only","notify":"none"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["attention_recipients"], json!([]));
+    proxy.shutdown().await;
+    coord_rooms::stop(root).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
 async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     let binary = PathBuf::from(
         std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary"),

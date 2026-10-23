@@ -102,6 +102,20 @@ Codex and Pi expose the same canonical `send` operation through their tool inter
 outbound-send event before it evaluates a terminal response or records an
 outbound handoff. Downstream behavior does not depend on the selected harness.
 
+The canonical send receipt includes `attention_recipients`, with each recipient's
+agent ID and attention ID. The supervisor stores the downstream recipient's
+attention ID as `request_attention_id` in the awaiting handoff. A response must
+repeat that exact request ID, as well as the declared room, sender, target and
+response kind. A delayed response for an earlier request leaves newer requests
+pending, including requests for the same target.
+
+An older checkpoint or send receipt can lack `request_attention_id`. The
+supervisor preserves that handoff and its parent suspension, but no response
+can complete it automatically. Retained request text alone does not establish
+the missing ID. Preserve the checkpoint and reconcile the identity from
+canonical send evidence before resuming that work. Do not replay the send or
+guess an ID from a response.
+
 A failed wait or canonical-object resolution cannot advance the safe cursor.
 Harness exit code 0 and model text are not work-completion evidence.
 

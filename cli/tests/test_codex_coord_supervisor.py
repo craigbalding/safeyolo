@@ -21,6 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 ATTENTION = "attn-" + "a" * 32
+REQUEST_ATTENTION = f"attn-{16:032x}"
 TARGET = "https://example.test/issues/818"
 TASK = f"TASK target={TARGET} assignee=forge\n\nDeliver the assigned work."
 EDGE = {"attention_id": ATTENTION, "room_id": "rm-backlog", "kind": "message", "object_id": "msg-task", "revision_or_sequence": 42, "membership_granted_at": 1}
@@ -41,6 +42,7 @@ class CoordFixture:
         self.requests = []
         self.agent_name = "forge"
         self.unknown_send = False
+        self.include_attention_recipients = True
         self.page = {"edges": [EDGE], "next_cursor": 7}
         self.bad_object = False
         self.objects = {ATTENTION: {"edge": EDGE, "object": OBJECT}}
@@ -88,7 +90,10 @@ class CoordFixture:
                     owner.messages.append({**envelope, "attention_intent": intent})
                     if owner.unknown_send:
                         return self.reply(503, {"error": "receipt unavailable", "send_outcome": "unknown"})
-                    return self.reply(200, {"envelope": envelope, "sequence": envelope["sequence"], "attention_intent": {"mode": intent["mode"]}, "attention_status": "ready"})
+                    receipt = {"envelope": envelope, "sequence": envelope["sequence"], "attention_intent": {"mode": intent["mode"]}, "attention_status": "ready"}
+                    if owner.include_attention_recipients:
+                        receipt["attention_recipients"] = [{"agent_id": agent_id, "attention_id": f"attn-{owner.sends * 16 + index:032x}"} for index, agent_id in enumerate(intent["agent_ids"])]
+                    return self.reply(200, receipt)
                 self.reply(404, {"error": "missing fixture route"})
 
             def reply(self, status, value):
@@ -624,7 +629,14 @@ def test_factory_rejects_an_other_room_even_for_an_exact_handoff(binary, fixture
 
 def awaiting_review():
     target = "https://example.test/pull/818/commits/" + "a" * 40
-    return {"room_name": "backlog", "request": "REVIEW_READY", "recipient_agent": "lens", "body": f"REVIEW_READY target={target}", "correlation": {"target": target}}
+    return {"room_name": "backlog", "request": "REVIEW_READY", "recipient_agent": "lens", "body": f"REVIEW_READY target={target}", "correlation": {"target": target}, "request_attention_id": REQUEST_ATTENTION}
+
+
+def response_page(coord, kind, target, request_attention_id, *, sequence=49, sender="lens"):
+    response_id = f"attn-{sequence:032x}"
+    edge = {**EDGE, "attention_id": response_id, "object_id": f"msg-response-{sequence}", "revision_or_sequence": sequence}
+    coord.page = {"edges": [edge], "next_cursor": sequence}
+    coord.objects[response_id] = {"edge": edge, "object": {**OBJECT, "msg_id": edge["object_id"], "sequence": sequence, "sender_agent_name": sender, "sender_agent_id": "ag-" + sender, "body": f"{kind} target={target} attention_id={request_attention_id}"}}
 
 
 def prepare_response(binary, fixture, kind, target):
@@ -635,10 +647,7 @@ def prepare_response(binary, fixture, kind, target):
     saved["awaiting_handoffs"] = [awaiting_review()]
     saved["phase"] = "accepted"
     subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(saved), text=True, check=True)
-    response_id = "attn-" + "b" * 32
-    edge = {**EDGE, "attention_id": response_id, "object_id": "msg-review", "revision_or_sequence": 49}
-    coord.page = {"edges": [edge], "next_cursor": 8}
-    coord.objects[response_id] = {"edge": edge, "object": {**OBJECT, "msg_id": "msg-review", "sequence": 49, "sender_agent_name": "lens", "sender_agent_id": "ag-lens", "body": f"{kind} target={target} attention_id={response_id}"}}
+    response_page(coord, kind, target, REQUEST_ATTENTION)
     harness_script(harness, binary, capture, terminal=False)
     return state, capture
 
@@ -662,6 +671,115 @@ def test_factory_admits_every_reviewer_to_owner_response(binary, fixture, kind):
     assert response["requires_terminal"] is False
 
 
+@pytest.mark.parametrize("request_kind", ["TASK", "REVIEW_READY"])
+@pytest.mark.parametrize("pi", [False, True])
+def test_factory_old_response_cannot_consume_new_same_target_request(binary, fixture, request_kind, pi):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    settings = json.loads(config.read_text())
+    if request_kind == "TASK":
+        settings["agent_name"] = "relay"
+        settings["factory"]["role"] = "coordinator"
+        coord.agent_name = "relay"
+        coord.objects[ATTENTION]["object"] = {**OBJECT, "sender_kind": "operator", "sender_agent_name": None, "sender_agent_id": None, "body": "Deliver the bounded fix."}
+    if pi:
+        settings["harness"] = "pi"
+    harness_args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    config.write_text(json.dumps(settings))
+    target = TARGET if request_kind == "TASK" else awaiting_review()["correlation"]["target"]
+    recipient = "forge" if request_kind == "TASK" else "lens"
+    kind = "DONE" if request_kind == "TASK" else "READY"
+    body = TASK if request_kind == "TASK" else awaiting_review()["body"]
+    harness_script(harness, binary, capture, pi=pi)
+    harness.write_text(harness.read_text().replace(repr(f"DONE target={TARGET} attention_id={ATTENTION}"), repr(body)).replace('"notify":["relay"]', f'"notify":["{recipient}"]'))
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode == 0, result.stderr
+    old_request = json.loads(state.read_text())["awaiting_handoffs"][0]
+    assert old_request["request_attention_id"] == REQUEST_ATTENTION
+
+    # The first request completes; the same turn sends a new request with the
+    # same room, worker, target and response kind, but a different receipt ID.
+    response_page(coord, kind, target, old_request["request_attention_id"], sender=recipient)
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode == 0, result.stderr
+    new_request = json.loads(state.read_text())["awaiting_handoffs"][0]
+    assert new_request["request_attention_id"] == f"attn-{32:032x}"
+    assert new_request["correlation"] == old_request["correlation"]
+    assert coord.sends == 2
+
+    # A new attention edge carries the duplicated old reply after restart.
+    # It cannot consume the newer request or release its suspended parent.
+    response_page(coord, kind, target, old_request["request_attention_id"], sequence=50, sender=recipient)
+    harness_script(harness, binary, capture, terminal=False, pi=pi)
+    result = run(binary, fixture, *harness_args)
+    # A stale review leaves the original TASK incomplete. The existing
+    # invocation contract reports uncertainty while retaining its handoff.
+    assert result.returncode == (1 if request_kind == "REVIEW_READY" else 0), result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == [new_request]
+    if request_kind == "REVIEW_READY":
+        assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert len([m for m in coord.messages if not m["body"].startswith("PROTOCOL_WARNING ")]) == 2
+
+    response_page(coord, kind, target, new_request["request_attention_id"], sequence=51, sender=recipient)
+    harness_script(harness, binary, capture, terminal=request_kind == "REVIEW_READY", pi=pi)
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == []
+    assert saved["in_flight"] == []
+    assert len([m for m in coord.messages if not m["body"].startswith("PROTOCOL_WARNING ")]) == (3 if request_kind == "REVIEW_READY" else 2)
+
+
+def test_factory_legacy_handoff_cannot_consume_a_reply_or_hide_a_new_request(binary, fixture):
+    coord, _, _, state, harness, capture = fixture
+    review = awaiting_review()
+    prepare_response(binary, fixture, "READY", review["correlation"]["target"])
+    saved = json.loads(state.read_text())
+    legacy = saved["awaiting_handoffs"][0]
+    del legacy["request_attention_id"]
+    legacy["parent_attention_id"] = ATTENTION
+    state.write_text(json.dumps(saved))  # A checkpoint from before this repair.
+    harness_script(harness, binary, capture)
+    harness.write_text(harness.read_text().replace(f"DONE target={TARGET} attention_id={ATTENTION}", review["body"]).replace('"notify":["relay"]', '"notify":["lens"]'))
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    review["request_attention_id"] = f"attn-{32:032x}"
+    assert saved["awaiting_handoffs"] == [legacy, review]
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+
+    response_page(coord, "READY", review["correlation"]["target"], review["request_attention_id"], sequence=50)
+    harness_script(harness, binary, capture, terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode != 0  # The legacy handoff still suspends its parent.
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == [legacy]
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert len([m for m in coord.messages if m["body"].startswith("REVIEW_READY ")]) == 1
+
+
+def test_factory_receipt_without_request_identity_stays_pending_after_restart(binary, fixture):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    coord.include_attention_recipients = False
+    review = awaiting_review()
+    harness_script(harness, binary, capture)
+    harness.write_text(harness.read_text().replace(f"DONE target={TARGET} attention_id={ATTENTION}", review["body"]).replace('"notify":["relay"]', '"notify":["lens"]'))
+    assert run(binary, fixture).returncode == 0
+    saved = json.loads(state.read_text())
+    assert "request_attention_id" not in saved["awaiting_handoffs"][0]
+    pending = saved["awaiting_handoffs"]
+    response_page(coord, "READY", review["correlation"]["target"], REQUEST_ATTENTION)
+    harness_script(harness, binary, capture, terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode != 0  # No request identity was proved by the receipt.
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == pending
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert len([m for m in coord.messages if m["body"].startswith("REVIEW_READY ")]) == 1
+
+
 def test_factory_handoff_survives_restart_then_terminal_is_deduplicated(binary, fixture):
     coord, _, config, state, harness, capture = fixture
     factory_configuration(config)
@@ -674,10 +792,7 @@ def test_factory_handoff_survives_restart_then_terminal_is_deduplicated(binary, 
     assert saved["awaiting_handoffs"] == [review]
     assert saved["in_flight"][0]["attention_id"] == ATTENTION
     assert saved["thread_id"] == "fixture-thread"
-    response_id = "attn-" + "b" * 32
-    edge = {**EDGE, "attention_id": response_id, "object_id": "msg-review", "revision_or_sequence": 49}
-    coord.page = {"edges": [edge], "next_cursor": 8}
-    coord.objects[response_id] = {"edge": edge, "object": {**OBJECT, "msg_id": "msg-review", "sequence": 49, "sender_agent_name": "lens", "sender_agent_id": "ag-lens", "body": f'READY target={review["correlation"]["target"]} attention_id={response_id}'}}
+    response_page(coord, "READY", review["correlation"]["target"], REQUEST_ATTENTION)
     harness_script(harness, binary, capture)
     assert run(binary, fixture).returncode == 0
     saved = json.loads(state.read_text())
@@ -686,7 +801,7 @@ def test_factory_handoff_survives_restart_then_terminal_is_deduplicated(binary, 
     assert ATTENTION in saved["recent_attention_ids"]
     assert any("resume" in json.loads(path.read_text()) for path in capture.glob("argv-*"))
     count = len(list(capture.glob("prompt-*")))
-    coord.page = {"edges": [EDGE], "next_cursor": 8}
+    coord.page = {"edges": [EDGE], "next_cursor": 49}
     assert run(binary, fixture).returncode == 0
     assert len(list(capture.glob("prompt-*"))) == count == 2
     assert coord.sends == 2

@@ -3464,6 +3464,10 @@ async fn publish_prepared(
             "attention_intent":{"mode":match prepared.attention_manifest["mode"].as_str() {
                 Some("agents") => "targeted", Some("none") => "none", _ => "room"
             }},
+            "attention_recipients":recipients.iter().map(|recipient| json!({
+                "agent_id":recipient.agent_id,
+                "attention_id":recipient.attention_id,
+            })).collect::<Vec<_>>(),
         }),
     )
 }
