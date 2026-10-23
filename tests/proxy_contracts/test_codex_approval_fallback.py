@@ -176,7 +176,12 @@ def test_codex_routing_wait_keeps_refusal_and_cancellation(tmp_path, transport, 
             state["run_id"] = "1" * 32
             (agent / "runtime.json").write_text(json.dumps(state))
         elif outcome == "policy_allow":
-            instance.apply(instance.policy.read_text().replace('unknown_creds="prompt"', 'unknown_creds="allow"'))
+            # A classified credential needs explicit permission; changing the
+            # fallback for unknown credentials would not approve this secret.
+            action = instance.admin("GET", f"/admin/approvals/{identifier}")["action"]
+            policy = tomlkit.parse(instance.policy.read_text())
+            policy["hosts"]["allowed.invalid"] = {"allow": action["credentials"]}
+            instance.apply(tomlkit.dumps(policy))
         else:
             if outcome == "network_deny":
                 instance.apply(instance.policy.read_text().replace('egress="allow"', 'egress="deny"'))
