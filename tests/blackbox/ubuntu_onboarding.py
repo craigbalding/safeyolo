@@ -14,8 +14,9 @@ In connected mode, Ctrl-] triggers the fixed task once; other input stays in the
 normal product terminal. The observer never signs in or retries a task.
 --cold-setup-only measures the released ARM64 sandbox and tool setup separately.
 It uses sandbox-only start, then the shipped command with --version, without reentry.
-Release bindings may select Codex instead. That endpoint requires its input
-display in the matching live attached pane, sends no task, and reuses only
+Release bindings may select Codex instead. That endpoint requires its nonloading
+input display in the matching live attached pane, rechecked after witness
+collection. It sends no task and reuses only
 operator-provisioned agent authentication. Codex does not import host login state.
 --prepared-codex-auth permits only the explicitly adopted authentication files
 under the future agent home. Record the actual staging operations in --preparation.
@@ -842,7 +843,10 @@ def login_label(data):
     plain = terminal_plain(data)
     if HARNESS == "codex":
         # A version/banner or sign-in/trust screen is not an input display.
-        if any(label in plain for label in [b"sign in", b"log in", b"trust this", b"trust the", b"error: ", b"reconnecting..."]):
+        # 0.163 shows the input placeholder while account/read is still loading.
+        if re.search(rb"\bloading\b", plain) or any(label in plain for label in [
+                b"sign in", b"log in", b"trust this", b"trust the", b"error: ", b"reconnecting...",
+                b"account/read failed during tui bootstrap:"]):
             return []
         legacy_fields = all(label in plain for label in [b"model:", b"directory:", "›".encode()])
         input_placeholder = "› ask codex to do anything".encode() in plain
@@ -859,7 +863,8 @@ def codex_input_process(phase, row):
     row["codex_process"] = guest(phase + "-codex-process",
         'for p in /proc/[0-9]*/exe; do '
         'target=$(readlink "$p") || continue; '
-        'case "$target" in "$HOME"/.mise/installs/aqua-openai-codex/*/bin/codex) '
+        'case "$target" in "$HOME"/.mise/installs/aqua-openai-codex/*/bin/codex|'
+        '"$HOME"/.mise/installs/github-openai-codex/*/bin/codex) '
         'pid=${p#/proc/}; printf "%s\\n" "${pid%/exe}"; exit 0;; esac; '
         'done; exit 1', time.monotonic() + 5)
     save()
@@ -1068,6 +1073,15 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     if match:
                         row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
                 console_active = terminal_open and "command_exit" not in row and not child_exited(pid)
+                # These fixed host fields retain a client failure even when q
+                # later returns zero. Terminal contents remain private.
+                harness_return = re.search(
+                    rb'Harness session: "?(failed|exited|stopped)"?\. Sandbox: "?([a-z-]+)"?\. Exit status: (null|-?\d+)\.', pending)
+                if harness_return and "harness_return" not in row:
+                    row["harness_return"] = {"agent_state": harness_return[1].decode(),
+                        "runtime_state": harness_return[2].decode(),
+                        "exit_code": None if harness_return[3] == b"null" else int(harness_return[3]), **stamp()}
+                    save()
                 if console_active and connected and operator_fd in ready:
                     data = os.read(operator_fd, 1024)
                     if not data:
@@ -1114,14 +1128,13 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     if HARNESS == "codex" and labels and not codex_input_process(phase, row):
                         labels = []
                 expired = time.monotonic() >= deadline
-                if console_active and not captured and (labels or connected_done or expired):
+                client_returned = HARNESS == "codex" and "harness_return" in row and b"SafeYolo host> " in pending
+                if console_active and not captured and (labels or connected_done or expired or client_returned):
                     if labels:
                         row["client_display"] = {"harness": HARNESS, "labels": labels, "source": label_source, **stamp()}
                         if HARNESS == "claude":
                             row["signed_out_label"] = row["client_display"]
-                        else:
-                            row["input_ready"] = row["client_display"]
-                    elif not row.get("connected_ready"):
+                    elif expired and not row.get("connected_ready"):
                         row["readiness_unclassified_at_deadline"] = stamp()
                     save()
                     started = time.monotonic()
@@ -1129,15 +1142,33 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     states = witness("before-return" if phase == "cold" else "after-reentry", phase == "cold" and not connected,
                                      **({"connected": True} if connected else {}))
                     row["capture_seconds"] = time.monotonic() - started
-                    # Capture precedes detach even for an unclassified UI.
-                    os.write(fd, b"\x02d")
-                    detached = True
-                    row["viewer_detach"] = stamp()
-                    x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
-                    pending = b""
                     deadline = time.monotonic() + 30
                     save()
-                if console_active and detached and b"SafeYolo host> " in pending and "q" not in completed:
+                    # Witness collection can outlive the client. Drain current
+                    # output and refresh state before choosing detach or host q.
+                    continue
+                at_host_controls = b"SafeYolo host> " in pending
+                if console_active and captured and not detached and "q" not in completed:
+                    live_client = True
+                    if HARNESS == "codex":
+                        capture(row, "return_pane_screen", lambda: pane_screen(phase + "-return"))
+                        screen = row["return_pane_screen"]
+                        live_client = screen.get("matching_live_visible_pane") and codex_input_process(phase + "-return", screen)
+                        at_host_controls = at_host_controls and not screen.get("matching_live_visible_pane")
+                        if at_host_controls:
+                            row["return_path"] = "host-controls-after-client-exit"
+                        if live_client and screen.get("labels") and row.get("client_display"):
+                            row["input_ready"] = row["client_display"]
+                    if live_client:
+                        os.write(fd, b"\x02d")
+                        detached = True
+                        row["viewer_detach"] = stamp()
+                        row["return_path"] = "detach-live-client"
+                        x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
+                        pending = b""
+                        at_host_controls = False
+                    save()
+                if console_active and captured and at_host_controls and "q" not in completed:
                     record_reading(phase, "host return controls")
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
@@ -1195,7 +1226,7 @@ def inventory():
             "userns": text(Path("/proc/sys/kernel/unprivileged_userns_clone")),
             "apparmor_userns": text(Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")),
             "auth_present": {p: (Path.home() / p).exists() for p in ([".codex/auth.json"] if HARNESS == "codex" else [".claude.json", ".claude/.credentials.json"])},
-            "vendor_cache_present": {p: (Path.home() / p).exists() for p in ([".mise/installs/aqua-openai-codex", ".local/bin/codex"] if HARNESS == "codex" else [".local/share/claude", ".cache/claude", ".local/bin/claude"])},
+            "vendor_cache_present": {p: (Path.home() / p).exists() for p in ([".mise/installs/aqua-openai-codex", ".mise/installs/github-openai-codex", ".local/bin/codex"] if HARNESS == "codex" else [".local/share/claude", ".cache/claude", ".local/bin/claude"])},
             "cache_present": {str(p): p.exists() for p in [root, archive.parent, store,
                 Path.home() / ".local/share/mise", Path.home() / ".cache/mise", Path.home() / ".local/share/safeyolo/tools"]},
             "credential_env_names": [p for p in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
@@ -1828,9 +1859,10 @@ def main():
         if BOOTSTRAP_SHA256 is not None and x["bootstrap_sha256"] != BOOTSTRAP_SHA256:
             raise ValueError("Downloaded bootstrap differs from the selected release source.")
         cold, state_before = entered("cold", max(1, args.cold_seconds - (time.monotonic() - started)))
+        readiness_key = "input_ready" if HARNESS == "codex" else "client_display"
         x["timings"] = {"bootstrap_seconds": first["ended"]["monotonic"] - first["monotonic"],
-                        "cold_readiness_seconds": (cold["client_display"]["monotonic"] - first["monotonic"])
-                        if cold.get("client_display") else None}
+                        "cold_readiness_seconds": (cold[readiness_key]["monotonic"] - first["monotonic"])
+                        if cold.get(readiness_key) else None}
         capture(x, "after_q_runtime", live_record)
         capture(x, "after_q_processes", processes)
         guest("after-q-marker", MARKER_QUERY, time.monotonic() + 15)
@@ -1847,10 +1879,10 @@ def main():
         save()
         # A failed/terminated first entry is not silently retried as a warm success.
         if (cold.get("ordinary_q") and cold.get("exit_code") == 0 and not cold.get("observer_terminated_viewer")
-                and (HARNESS != "codex" or cold.get("client_display"))):
+                and (HARNESS != "codex" or cold.get(readiness_key))):
             warm, state_after = entered("warm", 180)
-            x["timings"]["warm_readiness_seconds"] = (warm["client_display"]["monotonic"] - warm["monotonic"]
-                if warm.get("client_display") else None)
+            x["timings"]["warm_readiness_seconds"] = (warm[readiness_key]["monotonic"] - warm["monotonic"]
+                if warm.get(readiness_key) else None)
             x["timings"]["observer_gap_before_warm_seconds"] = warm["monotonic"] - cold["ended"]["monotonic"]
             x["selected_public_state_equality"] = {p: bool(state_before.get(p)) and state_before.get(p) == state_after.get(p) for p in PUBLIC_STATE}
             x["selected_private_state_equality"] = {p: (p in state_before and p in state_after
@@ -1865,7 +1897,7 @@ def main():
                 and all(pair["observed"] and pair["observed"] == pair["recorded"]
                         for pair in r["runtime"]["live_births"].values()) for r in [a, b])
             x["warm_returned_normally"] = bool(warm.get("ordinary_q") and warm.get("exit_code") == 0 and not warm.get("observer_terminated_viewer"))
-            complete = (cold.get("client_display") and warm.get("client_display")
+            complete = (cold.get(readiness_key) and warm.get(readiness_key)
                 and x.get("host_archive", {}).get("matches_assigned_bytes")
                 and isinstance(x.get("package_info"), str)
                 and f"source_commit={source}" in x["package_info"] and "profile=production" in x["package_info"]
@@ -1879,10 +1911,10 @@ def main():
                         and all(n["expected_result"] for n in r["network"]) for r in [a, b]))
             if complete:
                 x["observation_outcome"] = "captured; independent assessment required"
-            if not warm.get("client_display"):
+            if not warm.get(readiness_key):
                 x["warm_display_limit"] = "Unclassified display; no warm harness-readiness time is claimed. Live operands and normal return are separate."
         else:
-            x["warm_not_run"] = "First entry did not return normally; preserve reached result without retry."
+            x["warm_not_run"] = "First entry lacks the required readiness or normal return; preserve reached result without retry."
     except Exception as error:
         # This observer boundary records an unexpected error and still performs owned cleanup.
         x["observer_error"] = repr(error)

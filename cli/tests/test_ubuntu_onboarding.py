@@ -38,6 +38,8 @@ CODEX_0163_SCREEN = "\n".join([
     "  GPT-6.1-Sol default · /workspace",
     "  ? for shortcuts                                     ⚠ 2 warnings · f2 to view",
 ]).encode()
+# The 9158 screen retained the same placeholder during account/read bootstrap.
+CODEX_0163_LOADING_SCREEN = CODEX_0163_SCREEN.replace(b"GPT-6.1-Sol default", b"loading")
 
 
 class ObserverChecks(unittest.TestCase):
@@ -375,8 +377,10 @@ esac
                     for invalid in [b"OpenAI Codex v0.163.0", screen.replace("›".encode(), b""),
                                     screen.replace(b"OpenAI Codex", b"unrelated banner"),
                                     *(screen + text for text in [b"Sign in", b"Log in", b"Trust this workspace?",
-                                                                 b"Trust the directory?", b"Error: request failed", b"Reconnecting..."])]:
+                                                                 b"Trust the directory?", b"Error: request failed", b"Reconnecting...",
+                                                                 b"account/read failed during TUI bootstrap: workspace routing discovery failed"])]:
                         self.assertEqual(m.login_label(invalid), [])
+            self.assertEqual(m.login_label(CODEX_0163_LOADING_SCREEN), [])
 
     def test_prepared_codex_baseline_accepts_only_owned_adopted_auth_without_reading_it(self):
         codex = m.root / "agents/first/home/.codex"
@@ -1162,9 +1166,11 @@ esac
             cwd=home, env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, timeout=10)
 
     def test_cold_allowance_keeps_elapsed_bootstrap_warm_clock_and_saved_partial_result(self):
-        for selected, allowance in [(None, 900), (1800, 1800), (5, 5)]:
-            with self.subTest(selected=selected):
-                home = Path(self.scratch.name) / f"allowance-{selected}"
+        for selected, allowance, harness, usable in [
+                (None, 900, "claude", False), (1800, 1800, "claude", False), (5, 5, "claude", False),
+                (None, 900, "codex", False), (None, 900, "codex", True)]:
+            with self.subTest(selected=selected, harness=harness, usable=usable):
+                home = Path(self.scratch.name) / f"allowance-{selected}-{harness}-{usable}"
                 home.mkdir()
                 clock = [100.0]
 
@@ -1178,8 +1184,12 @@ esac
 
                 def entered(phase, seconds):
                     m.x["before-return" if phase == "cold" else "after-reentry"] = {}
-                    return {"monotonic": clock[0], "ended": {"monotonic": clock[0]},
-                            "ordinary_q": True, "exit_code": 0}, {}
+                    row = {"monotonic": clock[0], "ended": {"monotonic": clock[0]}, "ordinary_q": True, "exit_code": 0}
+                    if harness == "codex":
+                        row["client_display"] = {"monotonic": clock[0]}
+                        if usable:
+                            row["input_ready"] = row["client_display"]
+                    return row, {}
 
                 argv = [m.__file__, "--host", os.uname().nodename, "--platform", "linux-arm64",
                         "--observation-dir", str(home / "observation"), "--execution-mode", "qemu-tcg"]
@@ -1188,7 +1198,8 @@ esac
                 environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
                                and key not in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]}
                 uname = os.uname_result((*os.uname()[:4], "aarch64"))
-                with patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
+                with patch.object(m, "HARNESS", harness), \
+                     patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
                      patch.object(m.os, "uname", autospec=True, return_value=uname), \
                      patch.dict(os.environ, environment, clear=True), patch.object(m.time, "monotonic", autospec=True, side_effect=lambda: clock[0]), \
                      patch.object(m, "observe", autospec=True, side_effect=observe), \
@@ -1199,13 +1210,19 @@ esac
                      patch.object(m, "cleanup", autospec=True) as cleanup:
                     self.assertEqual(m.main(), 1)
                 self.assertEqual(enter.call_args_list[0].args, ("cold", max(1, allowance - 12)))
-                self.assertEqual(enter.call_args_list[1].args, ("warm", 180))
+                if harness == "codex" and not usable:
+                    self.assertEqual(enter.call_count, 1)
+                else:
+                    self.assertEqual(enter.call_args_list[1].args, ("warm", 180))
                 cleanup.assert_called_once()
                 result = json.loads((home / "observation/result.json").read_text())
                 self.assertEqual(result["cold_allowance_seconds"], allowance)
                 self.assertEqual(result["execution_mode"], "qemu-tcg")
                 self.assertEqual(result["timings"]["bootstrap_seconds"], 12)
-                self.assertIsNone(result["timings"]["cold_readiness_seconds"])
+                if usable:
+                    self.assertEqual(result["timings"]["cold_readiness_seconds"], 12)
+                else:
+                    self.assertIsNone(result["timings"]["cold_readiness_seconds"])
                 self.assertEqual(result["observation_outcome"], "partial")
                 self.assertIn("ended", result)
 
@@ -1390,7 +1407,7 @@ esac
                 process.wait(timeout=3)
                 process.stdout.close()
 
-    def run_console(self, message, seconds, phase="warm", theme=False, capture_error=False, descendant=False):
+    def run_console(self, message, seconds, phase="warm", theme=False, capture_error=False, descendant=False, client_exit=None):
         stub = m.project / "console.py"
         display_choice = ("print('Starting or resuming claude.',flush=True)\n"
             "print('Choose the text style that looks best with your terminal\\r\\n> 1. Dark mode',flush=True)\n"
@@ -1404,18 +1421,34 @@ esac
         descendant_start = ("import json,subprocess\n"
             f"helper=subprocess.Popen([sys.executable,'-c',{helper!r}],stdout=subprocess.PIPE)\n"
             f"open({str(m.project / 'descendant.json')!r},'w').write(helper.stdout.readline().decode())\n") if descendant else ""
-        stub.write_text("import os,sys,tty\ntty.setraw(0)\n" + descendant_start + display_choice +
+        exit_setup = ("import signal,select\nexited=False\n"
+            "def fail(*_):\n global exited\n exited=True\n"
+            "signal.signal(signal.SIGUSR1,fail)\n"
+            f"open({str(m.project / 'client-pid')!r},'w').write(str(os.getpid()))\n") if client_exit else ""
+        wait_for_detach = ("while b'\\x02d' not in pending and not exited:\n"
+            " if select.select([0],[],[],0.02)[0]:pending+=os.read(0,100)\n"
+            "if exited:\n"
+            " print('account/read failed during TUI bootstrap: workspace routing discovery failed (code -32603)',flush=True)\n"
+            " print('Harness session: \\\"exited\\\". Sandbox: \\\"running\\\". Exit status: 1.',flush=True)\n"
+            f" open({str(m.project / 'client-at-host')!r},'w').write('exited1')\n") if client_exit else "while b'\\x02d' not in pending:pending+=os.read(0,100)\n"
+        stub.write_text("import os,sys,tty\ntty.setraw(0)\n" + exit_setup + descendant_start + display_choice +
             f"print({message!r},flush=True)\n"
-            "pending=b''\n"
-            "while b'\\x02d' not in pending:pending+=os.read(0,100)\n"
+            "pending=b''\n" + wait_for_detach +
             "print('SafeYolo host> ',end='',flush=True)\n"
             "pending=b''\n"
-            "while b'q\\n' not in pending:pending+=os.read(0,100)\n")
+            "while b'q\\n' not in pending:pending+=os.read(0,100)\n"
+            f"open({str(m.project / 'host-input')!r},'wb').write(pending)\n")
         def record_capture(phase, start_marker=False):
             row = m.x["product_commands"][-1]
             self.assertIsNotNone(m.birth(row["console_pid"]))
             self.assertNotIn("viewer_detach", row)
             m.x[phase] = {"captured_before_detach": True}
+            if client_exit == "during-witness":
+                os.kill(int((m.project / "client-pid").read_text()), signal.SIGUSR1)
+                deadline = time.monotonic() + 2
+                while not (m.project / "client-at-host").exists() and time.monotonic() < deadline:
+                    select.select([], [], [], 0.01)
+                self.assertTrue((m.project / "client-at-host").exists())
             if descendant:
                 child = json.loads((m.project / "descendant.json").read_text())
                 child["birth"] = m.birth(child["pid"])
@@ -1819,6 +1852,74 @@ esac
             row = self.run_console("retained screen", 0.2)
         self.assertNotIn("input_ready", row)
         self.assertEqual(row["codex_process"]["exit"], 1)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Native client observation reads Linux /proc")
+    def test_codex_process_observation_accepts_both_complete_native_install_locations(self):
+        home = m.project / "process-home"
+
+        def guest(label, code, deadline):
+            result = subprocess.run(["bash", "-c", code], env={**os.environ, "HOME": str(home)},
+                                    capture_output=True, text=True, timeout=5)
+            return {"exit": result.returncode, "stdout": result.stdout}
+
+        for backend in ["aqua", "github", "unrelated"]:
+            with self.subTest(backend=backend):
+                binary = home / f".mise/installs/{backend}-openai-codex/9.9.9/bin/codex"
+                binary.parent.mkdir(parents=True)
+                shutil.copy2(shutil.which("sleep"), binary)
+                client = subprocess.Popen([str(binary), "10"])
+                try:
+                    row = {}
+                    with patch.object(m, "guest", autospec=True, side_effect=guest):
+                        self.assertEqual(m.codex_input_process("cold", row), backend != "unrelated")
+                    if backend != "unrelated":
+                        self.assertEqual(row["codex_process"]["stdout"], f"{client.pid}\n")
+                finally:
+                    client.terminate()
+                    client.wait(timeout=3)
+
+    def check_codex_client_failure_return(self, loading):
+        screen = CODEX_0163_LOADING_SCREEN if loading else CODEX_0163_SCREEN
+        signalled = False
+
+        def current_pane(phase):
+            nonlocal signalled
+            if (m.project / "client-at-host").exists():
+                return {"matching_live_visible_pane": False, "selection": {"state": "exited"}}
+            pid = m.project / "client-pid"
+            if not pid.exists():
+                return {"matching_live_visible_pane": False}
+            labels = m.login_label(screen)
+            if loading and not signalled:
+                # Preserve the actual order: loading is visible, then the
+                # account/read failure returns the client to host controls.
+                os.kill(int(pid.read_text()), signal.SIGUSR1)
+                signalled = True
+            return {"matching_live_visible_pane": True, "labels": labels}
+
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True, side_effect=current_pane), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 0, "stdout": "1234\n"}):
+            row = self.run_console(screen.decode(), 3, phase="cold",
+                                   client_exit="before-witness" if loading else "during-witness")
+        self.assertNotIn("input_ready", row)
+        self.assertNotIn("readiness_unclassified_at_deadline", row)
+        self.assertNotIn("viewer_detach", row)
+        self.assertEqual(row["return_path"], "host-controls-after-client-exit")
+        self.assertEqual(row["harness_return"]["exit_code"], 1)
+        self.assertEqual(row["harness_return"]["agent_state"], "exited")
+        self.assertEqual(row["command_exit"], 0)  # q succeeds after the client failure.
+        self.assertEqual((m.project / "host-input").read_bytes(), b"q\n")
+        self.assertNotIn("observer_terminated_viewer", row)
+        self.assertTrue(row["console_reaped"])
+        m.signed_out_accounting()
+        self.assertIsNone(m.x["timings"]["cold_product_to_input_ready_seconds"])
+
+    def test_codex_9158_loading_then_account_read_failure_keeps_readiness_null(self):
+        self.check_codex_client_failure_return(loading=True)
+
+    def test_codex_exit_during_witness_returns_through_host_controls_without_detach(self):
+        self.check_codex_client_failure_return(loading=False)
 
     def test_real_pty_early_exit_is_captured_and_reaped(self):
         with patch.object(m, "LAUNCH", [sys.executable, "-c", "raise SystemExit(3)"]), \
