@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
@@ -11,7 +11,7 @@ use std::{
 use crate::{
     Error,
     guest_oci::ConsumerPlatform,
-    linux_host::{ARCHIVE_BASE, ID_COUNT, Mapping},
+    linux_host::{ARCHIVE_BASE, Mapping},
 };
 
 fn regular(path: &Path) -> Result<(), Error> {
@@ -138,108 +138,21 @@ fn extract(
         return Err("archive rootfs-tree must be a directory, not a link".into());
     }
     if linux {
-        // The publisher uses the original subordinate-ID range. Reject owners
-        // outside that range before shifting this freshly extracted stage.
-        let mut command = if unsafe { libc::geteuid() } != 0 {
-            let mut command = Command::new("sudo");
-            command.arg("find");
-            command
-        } else {
-            Command::new("find")
-        };
-        let minimum = ARCHIVE_BASE.to_string();
-        let maximum = (ARCHIVE_BASE + ID_COUNT - 1).to_string();
-        let checked = command
+        // The private-stage remapper checks every owner and hard link before
+        // changing anything. Reuse that traversal for all mappings, including
+        // unchanged root IDs with guest-user ownership or named ACLs to shift.
+        let mut remap = Command::new("sudo");
+        remap
+            .arg("--")
+            .arg(std::env::current_exe()?)
+            .args(["host", "remap-rootfs"])
             .arg(stage.join("rootfs-tree"))
-            .args([
-                "-xdev",
-                "(",
-                "-uid",
-                &format!("-{minimum}"),
-                "-o",
-                "-uid",
-                &format!("+{maximum}"),
-                "-o",
-                "-gid",
-                &format!("-{minimum}"),
-                "-o",
-                "-gid",
-                &format!("+{maximum}"),
-                ")",
-                "-print",
-                "-quit",
-            ])
-            .output()
-            .map_err(|error| format!("cannot check rootfs ownership with find: {error}"))?;
-        if !checked.status.success() {
-            return Err("cannot check prepared rootfs ownership".into());
-        }
-        if !checked.stdout.is_empty() {
-            return Err(
-                "archive rootfs-tree ownership is outside the published subordinate-ID range 100000–165535".into(),
-            );
-        }
-        let mut needs_remap = mapping.uid_base != ARCHIVE_BASE || mapping.gid_base != ARCHIVE_BASE;
-        if !needs_remap {
-            let mut find = if unsafe { libc::geteuid() } != 0 {
-                let mut c = Command::new("sudo");
-                c.arg("find");
-                c
-            } else {
-                Command::new("find")
-            };
-            let checked = find
-                .arg(stage.join("rootfs-tree"))
-                .args([
-                    "-xdev", "(", "-uid", "101000", "-o", "-gid", "101000", ")", "-print", "-quit",
-                ])
-                .output()?;
-            if !checked.status.success() {
-                return Err("cannot check the archive's guest-user ownership".into());
-            }
-            needs_remap = !checked.stdout.is_empty();
-            if !needs_remap {
-                // A named guest-user ACL also needs the host account's ID,
-                // even when the file itself is owned by unchanged root.
-                let mut output = tempfile::tempfile_in(stage)?;
-                let status = Command::new("sudo")
-                    .args(["--", "getfacl", "-R", "-s", "-n", "-p"])
-                    .arg(stage.join("rootfs-tree"))
-                    .stdout(output.try_clone()?)
-                    .status()?;
-                if !status.success() {
-                    return Err(
-                        "cannot check named guest-user ACLs before ownership preparation".into(),
-                    );
-                }
-                output.seek(SeekFrom::Start(0))?;
-                for line in BufReader::new(output).lines() {
-                    let line = line?;
-                    if line.starts_with("user:101000:")
-                        || line.starts_with("group:101000:")
-                        || line.starts_with("default:user:101000:")
-                        || line.starts_with("default:group:101000:")
-                    {
-                        needs_remap = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if needs_remap {
-            let mut remap = Command::new("sudo");
-            remap
-                .arg("--")
-                .arg(std::env::current_exe()?)
-                .args(["host", "remap-rootfs"])
-                .arg(stage.join("rootfs-tree"))
-                .arg(mapping.uid_base.to_string())
-                .arg(mapping.gid_base.to_string())
-                .arg(mapping.host_uid.to_string())
-                .arg(mapping.host_gid.to_string());
-            if !remap.status()?.success() {
-                return Err("guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer".into());
-            }
+            .arg(mapping.uid_base.to_string())
+            .arg(mapping.gid_base.to_string())
+            .arg(mapping.host_uid.to_string())
+            .arg(mapping.host_gid.to_string());
+        if !remap.status()?.success() {
+            return Err("guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer".into());
         }
         validate_assets(stage, platform, mapping)?;
     }

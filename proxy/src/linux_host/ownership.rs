@@ -56,6 +56,9 @@ fn attributes(path: &CString) -> Result<Vec<(CString, Vec<u8>)>, Error> {
     if size < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    if size == 0 {
+        return Ok(Vec::new());
+    }
     let mut names = vec![0_u8; size as usize];
     let length = unsafe { libc::listxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
     if length < 0 {
@@ -197,17 +200,23 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
         let path_c = CString::new(path.as_os_str().as_bytes())?;
         // lchown does not remove symlink attributes. Leave them on that
         // pinned symlink; following its target would be incorrect.
-        let mut attributes = if metadata.file_type().is_symlink() {
+        let attributes = if metadata.file_type().is_symlink() {
             Vec::new()
         } else {
             attributes(&path_c)?
         };
-        for (name, value) in &mut attributes {
-            shift_attribute(name, value, mapping)?;
-        }
         let uid = shift_id(metadata.uid(), mapping.uid_base, mapping.host_uid)?;
         let gid = shift_id(metadata.gid(), mapping.gid_base, mapping.host_gid)?;
-        if (metadata.uid() != uid || metadata.gid() != gid)
+        let ownership_changes = metadata.uid() != uid || metadata.gid() != gid;
+        let mut updates = Vec::new();
+        for (name, mut value) in attributes {
+            let original = value.clone();
+            shift_attribute(&name, &mut value, mapping)?;
+            if ownership_changes || value != original {
+                updates.push((name, value));
+            }
+        }
+        if ownership_changes
             && unsafe {
                 libc::fchownat(
                     file.as_raw_fd(),
@@ -220,12 +229,13 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
         {
             return Err(std::io::Error::last_os_error().into());
         }
-        if !metadata.file_type().is_symlink() {
+        if ownership_changes && !metadata.file_type().is_symlink() {
             fs::set_permissions(&path, fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
         }
         // chown can clear set-ID bits and file capabilities. Restore the
         // archive's modes and attributes after changing the numeric owner.
-        for (name, value) in attributes {
+        // Without chown, write only attributes whose embedded IDs changed.
+        for (name, value) in updates {
             if unsafe {
                 libc::setxattr(
                     path_c.as_ptr(),
