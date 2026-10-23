@@ -60,10 +60,12 @@ def codex_release(tmp_path, contents, *, young_latest=False, version="9.9.9"):
     contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
     contents["/repos/openai/codex/releases"] = json.dumps([metadata]).encode()
     if young_latest:
-        latest = {**metadata, "tag_name": "rust-v9.10.0",
-                  "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                  "assets": [{**metadata["assets"][0], "browser_download_url":
-                              "https://github.com" + path.replace(version, "9.10.0")}]}
+        published = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        latest = {**metadata, "id": 3, "name": "9.10.0", "tag_name": "rust-v9.10.0",
+                  "created_at": published, "published_at": published,
+                  "assets": [{**metadata["assets"][0], "id": 4,
+                              "url": "https://github.com" + path.replace(version, "9.10.0"),
+                              "browser_download_url": "https://github.com" + path.replace(version, "9.10.0")}]}
         contents["/repos/openai/codex/releases/latest"] = json.dumps(latest).encode()
         contents["/repos/openai/codex/releases"] = json.dumps([latest, metadata]).encode()
     contents[path] = package
@@ -111,7 +113,7 @@ def test_codex_prefetch_selects_newest_eligible_complete_release(registry, nativ
     else:
         assert result.returncode == 0, result.stderr
         assert (output / "version").read_text().strip() == "9.10.0"
-        assert json.loads((output / "upstream.json").read_text())["assets"] == metadata["assets"]
+        assert (output / "upstream.json").read_text() == json.dumps(metadata)
         assert requests == ["/repos/openai/codex/releases", asset]
 
 

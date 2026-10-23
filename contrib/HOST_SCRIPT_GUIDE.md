@@ -272,8 +272,8 @@ Prefetch applies to the fresh default with the default release-age setting.
 It checks the first 30 upstream releases and acquires the newest stable version
 at least 24 hours old with a complete package and digest for the guest platform.
 This can select an older eligible release when the latest release is too young.
-Pins, custom age settings,
-unmatched versions and unavailable prefetch use the ordinary guest installer.
+Pins, custom age settings, unmatched versions and unavailable prefetch use the
+ordinary guest installer.
 Existing agent state, login, approval and interactive retry controls still apply.
 
 To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to

@@ -8,12 +8,12 @@ use std::{
     process::{Command, Stdio},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{Error, guest_oci::Descriptor};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct Release {
     tag_name: String,
     published_at: String,
@@ -22,7 +22,7 @@ struct Release {
     assets: Vec<Asset>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct Asset {
     name: String,
     size: u64,
@@ -163,17 +163,22 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
     if !response.status.success() {
         return Err("cannot read the upstream Codex release".into());
     }
-    let releases: Vec<Release> = serde_json::from_slice(&response.stdout)?;
+    let metadata: Vec<&serde_json::value::RawValue> = serde_json::from_slice(&response.stdout)?;
+    let releases = metadata
+        .iter()
+        .map(|json| serde_json::from_str::<Release>(json.get()))
+        .collect::<Result<Vec<_>, _>>()?;
     let target = target()?;
     let now = OffsetDateTime::now_utc();
     // GitHub lists by creation time and includes prereleases. Pick the newest
     // eligible stable version; the guest still checks its own mise selection.
-    let Some((release, _, asset)) = releases
+    let Some((index, release, _, asset)) = releases
         .iter()
-        .filter_map(|release| {
-            candidate(release, target, now).map(|(numbers, asset)| (release, numbers, asset))
+        .enumerate()
+        .filter_map(|(index, release)| {
+            candidate(release, target, now).map(|(numbers, asset)| (index, release, numbers, asset))
         })
-        .max_by_key(|(_, numbers, _)| *numbers)
+        .max_by_key(|(_, _, numbers, _)| *numbers)
     else {
         // A bounded prefetch miss leaves installation to the guest resolver.
         return Ok(());
@@ -222,7 +227,7 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
         stage.path().join("source"),
         format!("{}\n", env!("SAFEYOLO_BUILD_REVISION")),
     )?;
-    fs::write(stage.path().join("upstream.json"), serde_json::to_vec(release)?)?;
+    fs::write(stage.path().join("upstream.json"), metadata[index].get())?;
     // Destination is caller-owned temporary staging, never an installed root.
     if output.try_exists()? {
         return Err("Codex prefetch destination already exists; preserved it".into());
