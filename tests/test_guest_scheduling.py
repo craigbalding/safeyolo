@@ -181,8 +181,11 @@ def test_real_cron_at_restart_environment_coord_and_failures(image, tmp_path):
     from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, native_instance
 
     (image / "safeyolo/per-run-go").touch()
+    # Establish the package spool permissions before submission.
     with daemons(image):
-        pass  # Establish the package spool permissions before submission.
+        eventually(lambda: (image / "dev/log").is_socket())
+        logging_socket = (image / "dev/log").lstat()
+        assert (logging_socket.st_uid, logging_socket.st_gid) == (0, 0)
     launch = agent(image, "id -G; setpriv --dump").stdout
     assert launch.splitlines()[0] == "1000"
     assert "Ambient capabilities: setgid,setuid" in launch

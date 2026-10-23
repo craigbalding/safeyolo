@@ -760,8 +760,9 @@ mechanism (which varies between gVisor and VZ).
 
 - **`test_dev_whitelist`** — Every /dev entry is on the expected whitelist.
   - *Probe:* Enumerate /dev; compare against the expected set
-(plus prefixed exceptions for microVMs); assert no
-unexpected entries.
+(plus prefixed exceptions for microVMs). If /dev/log exists,
+verify it is a guest-root-owned socket. Assert no unexpected
+entries.
   - *Consequence if unasserted:* Novel device entries are attack surface. This test is
 deliberately allowlist-based rather than blocklist-based —
 if the runtime adds a new device, the test fails until a
