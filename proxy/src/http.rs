@@ -3084,7 +3084,7 @@ where
         {
             // Codex follows same-origin redirects for this GET. Its new request
             // goes through every current admission control and gets its own
-            // request ID and budget charge. No request has reached the API yet.
+            // request ID and budget charge. This GET has not reached the API.
             let mut retry = Response::builder()
                 .status(StatusCode::TEMPORARY_REDIRECT)
                 .header(header::LOCATION, &destination.path)

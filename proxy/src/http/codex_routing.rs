@@ -21,25 +21,29 @@ pub(super) async fn wait_for_decision(
         let state = state.clone();
         let id = approval_id.to_owned();
         let read = tokio::task::spawn_blocking(move || -> Result<_, Error> {
+            let audit = state
+                .read()
+                .map_err(|_| "runtime unavailable")?
+                .audit
+                .clone();
+            let record = crate::approvals::pending::lookup(&audit, &id)?
+                .ok_or("credential approval unavailable")?;
             let runtime = state.read().map_err(|_| "runtime unavailable")?.clone();
             let policy = runtime.policy.as_ref().ok_or("policy unavailable")?;
-            let record = crate::approvals::pending::lookup(&runtime.audit, &id)?
-                .ok_or("credential approval unavailable")?;
-            Ok(crate::approvals::pending::current_view(
-                &runtime.audit,
-                policy,
-                &record,
-                Some(&state),
-            )?)
+            let view =
+                crate::approvals::pending::current_view(&audit, policy, &record, Some(&state))?;
+            // A saved receipt can precede active policy publication. The next
+            // GET must not race that publication and receive another 428.
+            Ok((view, record.committed(policy)?.is_some()))
         });
-        let view = tokio::select! {
+        let (view, receipt_active) = tokio::select! {
             result = read => result??,
             _ = tokio::time::sleep_until(deadline) => return Ok(false),
             _ = stop.changed() => return Ok(false),
         };
         match view["status"].as_str() {
-            Some("approved") => return Ok(view["grant_active"] != false),
-            Some("pending") => {}
+            Some("approved") if receipt_active => return Ok(view["grant_active"] != false),
+            Some("pending" | "activation_unconfirmed" | "approved") => {}
             _ => return Ok(false),
         }
         tokio::select! {

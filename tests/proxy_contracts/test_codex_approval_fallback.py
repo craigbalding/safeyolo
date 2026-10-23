@@ -8,6 +8,7 @@ import os
 import select
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -207,6 +208,52 @@ def test_codex_routing_wait_timeout_leaves_approval_pending_without_replay(tmp_p
         decided = instance.cli("approvals", "approve", identifier, "--option", "run", "--json")
         assert decided.returncode == 0, decided.stderr
         assert not any(origin.requests for origin in origins)
+
+
+@pytest.mark.parametrize("option", ["run", "persistent"])
+def test_codex_routing_waits_for_active_approval_after_saved_receipt(tmp_path, option):
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=ROUTING_POLICY,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance, _routing_run(instance):
+        assert request(instance.paths["alice"], "http://allowed.invalid/before-routing",
+                       headers={"Authorization": "Bearer routing-login-secret"})[0] == 428
+        identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["approval_id"]
+        # Reuse the canonical recovery fault from delegated_approvals.rs: the
+        # real operator decision commits its policy receipt, but the final
+        # database status write fails. No authority or receipt is fabricated.
+        with sqlite3.connect(instance.root / "data/approvals.sqlite3") as database:
+            database.execute("CREATE TRIGGER fail_canonical_result BEFORE UPDATE ON approvals "
+                             "WHEN json_extract(NEW.record,'$.status')='approved' "
+                             "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END;")
+            decided = instance.cli("approvals", "approve", identifier, "--option", option, "--json")
+            assert decided.returncode != 0
+            approved = instance.policy.read_text()
+            assert instance.admin("GET", f"/admin/approvals/{identifier}")["status"] == "approved"
+            # Reuse the saved/live mismatch control from native_policy_cli.py.
+            # Hold the real saved receipt ahead of activation without waking
+            # the mtime watcher; policy apply remains the activation operation.
+            instance.apply(ROUTING_POLICY)
+            metadata = instance.policy.stat()
+            instance.policy.write_text(approved)
+            os.utime(instance.policy, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            assert not instance.show()["saved_matches_active"]
+            with _routing_client(instance, "http") as client:
+                deadline = time.monotonic() + 4
+                while database.execute("SELECT count(*) FROM approval_requests WHERE approval_id=?", (identifier,)).fetchone()[0] < 2:
+                    assert client.poll() is None, client.communicate()
+                    assert time.monotonic() < deadline
+                    time.sleep(0.02)
+                with pytest.raises(subprocess.TimeoutExpired):
+                    client.communicate(timeout=0.2)
+                assert not any(origin.requests for origin in origins)
+                instance.apply(approved)
+                stdout, stderr = client.communicate(timeout=5)
+                assert client.returncode == 0, stderr
+                assert stdout.splitlines()[-1].split()[:2] == ["200", "1"]
+                assert sum(len(origin.requests) for origin in origins) == 1
+            database.execute("DROP TRIGGER fail_canonical_result")
 
 
 @pytest.mark.parametrize("scheme", ["http", "https"])

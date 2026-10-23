@@ -106,8 +106,8 @@ to complete this normal Codex login before selecting `codex-coord-host-setup.sh`
 
 Codex routing discovery can require credential approval during startup. SafeYolo
 holds the routing `GET /backend-api/wham/accounts/check` for up to 30 seconds
-while its canonical approval is pending. Use the trusted host controls to inspect
-and approve or reject the request. After approval, SafeYolo returns a temporary
+while its credential approval is pending. Use the trusted host controls to inspect
+and approve or reject the request. Once approval is active, SafeYolo returns a temporary
 redirect to the same URL. Codex follows that redirect through the current access
 checks without restarting the client. The redirect does not grant access or send
 the original request upstream. Rejection, changed approval authority or timeout
