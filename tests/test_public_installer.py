@@ -221,6 +221,13 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
     try:
         assert faults["entered"].wait(timeout=10)
         assert arrived.wait(timeout=10), "guest transfer waited for the blocked host body"
+        # A server write is earlier than the native verifier's fsync/commit.
+        # Observe the completed native result before testing retained reuse.
+        deadline = time.monotonic() + 5
+        cache = Path(environment["HOME"]) / ".cache/safeyolo/host-packages"
+        while not any(path.read_text().strip() == index for path in cache.rglob("guest-index")):
+            assert time.monotonic() < deadline, "native guest download did not commit its verified index"
+            time.sleep(0.01)
         assert process.poll() is None and not root.exists()
         assert requests.count("/v2/craigbalding/safeyolo-guest/manifests/compat-v1") == 1
         if interrupt:
@@ -293,6 +300,33 @@ def test_early_guest_download_package_preserves_trust_and_legacy_paths(public_re
         assert result.returncode != 0, result.stdout
         assert not root.exists()
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("fault", ["partial", "hash", "compatibility"])
+def test_composed_guest_download_failure_never_activates_and_can_retry(public_release, native_cli, fault):
+    contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    guest = compressed_archive()
+    data = release(guest, compatibility="v2" if fault == "compatibility" else "v1")
+    blob = "blobs/" + digest(guest)
+    if fault == "partial":
+        faults["partial"] = blob
+    elif fault == "hash":
+        data[blob] = b"!" + guest[1:]
+    contents.update(data)
+    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
+    refused = run("bash", str(bootstrap), env=environment)
+    assert refused.returncode != 0 and "Guest acquisition failed" in refused.stderr
+    assert not root.exists()
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+    store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+    assert not (store / "trees").exists()
+    assert all(len(path.name) == 64 for path in (store / "blobs/sha256").glob("*"))
+    contents.update(release(guest))
+    faults["partial"] = None
+    retried = run("bash", str(bootstrap), env=environment)
+    assert retried.returncode == 0, retried.stderr
+    assert requests.count(f"{base}/{archive.name}") == 1
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
