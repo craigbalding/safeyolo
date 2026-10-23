@@ -347,6 +347,56 @@ def test_frozen_host_producer_is_verified_again_without_reselection(retained, tm
         selector.download_host(selected, tmp_path, PLATFORM, "master")
 
 
+@pytest.mark.parametrize("fault", [None, "binding", "hash", "size", "missing", "checksum"])
+def test_host_download_preserves_and_verifies_early_guest_package(retained, tmp_path, fault):
+    name = f"safeyolo-{PLATFORM}-production.tar.gz"
+    early_name = name.removesuffix(".tar.gz") + "-guest-download.tar.gz"
+    with zipfile.ZipFile(io.BytesIO(retained["zip"])) as original:
+        files = {member: original.read(member) for member in original.namelist()}
+    with tarfile.open(fileobj=io.BytesIO(files[name])) as original:
+        metadata = original.extractfile(name.removesuffix(".tar.gz") + "/package-info").read()
+    host_archive, early_archive = io.BytesIO(), io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(files[name])) as original, tarfile.open(fileobj=host_archive, mode="w:gz") as host:
+        for member in original.getmembers():
+            host.addfile(member, original.extractfile(member))
+        member = tarfile.TarInfo(name.removesuffix(".tar.gz") + "/bin/safeyolo")
+        member.size = len(b"controlled CLI bytes")
+        host.addfile(member, io.BytesIO(b"controlled CLI bytes"))
+    with tarfile.open(fileobj=early_archive, mode="w:gz") as early:
+        for relative, payload in (("package-info", metadata), ("bin/safeyolo", b"different CLI" if fault == "binding" else b"controlled CLI bytes")):
+            member = tarfile.TarInfo(name.removesuffix(".tar.gz") + "/" + relative)
+            member.size = len(payload)
+            early.addfile(member, io.BytesIO(payload))
+    build = json.loads(files["build.json"])
+    files[name], files[early_name] = host_archive.getvalue(), early_archive.getvalue()
+    build["archive"] = {"name": name, "size": len(files[name]), "sha256": hashlib.sha256(files[name]).hexdigest()}
+    build["guest_download"] = {"name": early_name, "size": len(files[early_name]), "sha256": hashlib.sha256(files[early_name]).hexdigest()}
+    files["SHA256SUMS"] = "".join(f"{item['sha256']}  {item['name']}\n" for item in (build["archive"], build["guest_download"])).encode()
+    if fault == "hash":
+        build["guest_download"]["sha256"] = "0" * 64
+    elif fault == "size":
+        build["guest_download"]["size"] += 1
+    elif fault == "missing":
+        del files[early_name]
+    elif fault == "checksum":
+        files["SHA256SUMS"] = files["SHA256SUMS"].splitlines(keepends=True)[0]
+    files["build.json"] = json.dumps(build).encode()
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as output:
+        for member, payload in files.items():
+            output.writestr(member, payload)
+    retained["zip"] = content.getvalue()
+    retained["artifact"]["digest"] = "sha256:" + hashlib.sha256(retained["zip"]).hexdigest()
+    selected = selector.select_host(PLATFORM, "master", None)
+    if fault:
+        with pytest.raises(ValueError, match="guest download package"):
+            selector.download_host(selected, tmp_path, PLATFORM, "master")
+    else:
+        result = selector.download_host(selected, tmp_path, PLATFORM, "master")
+        assert result["source_revision"] == SOURCE
+        assert (tmp_path / early_name).read_bytes() == files[early_name]
+
+
 @pytest.mark.parametrize("missing_run", [20, 21])
 def test_guest_selection_ignores_only_unselected_historical_producers(retained, tmp_path, missing_run):
     staged = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()

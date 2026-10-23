@@ -45,7 +45,7 @@ pub(crate) fn validate_prepared_linux_assets(
     archive::validate_assets(path, consumer_platform()?, mapping)
 }
 
-pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
+pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST]\nDownload and verify the compatible guest archive without extraction or host preparation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
 struct PackageGuest {
@@ -295,14 +295,12 @@ async fn blob(
     Ok(destination)
 }
 
-async fn acquire(
+async fn resolve_guest(
     client: &Client,
     package: &PackageGuest,
     store: &Path,
     index_digest: Option<&str>,
-    retained: Option<&GuestSelection>,
-    mapping: crate::linux_host::Mapping,
-) -> Result<GuestSelection, Error> {
+) -> Result<(GuestIndex, guest_oci::GuestChild), Error> {
     let reference: Reference = match index_digest {
         Some(digest) => {
             guest_oci::sha256_hex(digest)?;
@@ -340,6 +338,20 @@ async fn acquire(
         let config = blob(client, &pinned, &child.config, store).await?;
         child.validate_config(&fs::read(config)?)?;
     }
+    Ok((index, child))
+}
+
+async fn acquire(
+    client: &Client,
+    package: &PackageGuest,
+    store: &Path,
+    index_digest: Option<&str>,
+    retained: Option<&GuestSelection>,
+    mapping: crate::linux_host::Mapping,
+) -> Result<GuestSelection, Error> {
+    let (index, child) = resolve_guest(client, package, store, index_digest).await?;
+    let manifest = index.manifest(package.platform).clone();
+    let pinned: Reference = format!("{}@{}", package.repository, manifest.digest).parse()?;
     let trees = store.join("trees/sha256");
     fs::create_dir_all(&trees)?;
     let retained = retained.filter(|selected| selected.archive.digest == child.archive.digest);
@@ -470,9 +482,20 @@ fn write_selection(selection: &GuestSelection, path: &Path) -> Result<(), Error>
     Ok(())
 }
 
+fn guest_store_directory(store: Option<PathBuf>) -> Result<PathBuf, Error> {
+    Ok(match store {
+        Some(store) => store,
+        None => PathBuf::from(
+            std::env::var_os("HOME")
+                .ok_or("HOME is required for the persistent guest directory")?,
+        )
+        .join(".local/share/safeyolo/guests"),
+    })
+}
+
 pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     if matches!(arguments, [help] if help == "--help")
-        || matches!(arguments, [command, help] if matches!(command.to_str(), Some("acquire" | "upgrade" | "rollback")) && help == "--help")
+        || matches!(arguments, [command, help] if matches!(command.to_str(), Some("acquire" | "download" | "upgrade" | "rollback")) && help == "--help")
     {
         println!("{HELP}");
         return Ok(());
@@ -483,7 +506,8 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     {
         return upgrade::run(root, arguments).await;
     }
-    if arguments.first().is_none_or(|value| value != "acquire") {
+    let download_only = arguments.first().is_some_and(|value| value == "download");
+    if !download_only && arguments.first().is_none_or(|value| value != "acquire") {
         return Err(format!("unknown guest command\n{HELP}").into());
     }
     let mut package_info = None;
@@ -512,8 +536,34 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             return Err("unknown or duplicate guest acquire option".into());
         }
     }
-    let selection_file = selection_file.ok_or("--write-selection is required")?;
     let package = PackageGuest::read(&package_info.ok_or("--package-info is required")?)?;
+    if download_only && (selection_file.is_some() || host_settings.is_some()) {
+        return Err("guest download does not extract or write an installed selection".into());
+    }
+    if download_only {
+        // Drop the streaming future on cancellation so its NamedTempFile is
+        // removed. Only verified blobs persist; no tree or instance is created.
+        let store = guest_store_directory(store)?;
+        fs::create_dir_all(&store)?;
+        let _store_lock = crate::host_platform::lock_host_state(&store.join("acquire.lock"))?;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        return tokio::select! {
+            result = async {
+                let client = registry_client()?;
+                let (index, child) = resolve_guest(&client, &package, &store, index).await?;
+                let reference = format!("{}@{}", package.repository, index.manifest(package.platform).digest).parse()?;
+                blob(&client, &reference, &child.archive, &store).await?;
+                println!("{}", index.identity.digest);
+                Ok(())
+            } => result,
+            _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
+            _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
+        };
+    }
+    let selection_file = selection_file.ok_or("--write-selection is required")?;
     fs::create_dir_all(root)?;
     let _install_lock = crate::host_platform::lock_host_state(&root.join("guest-install.lock"))?;
     if let Some(selection) = installed(root, &package)? {
@@ -530,14 +580,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     if root.join("share").try_exists()? {
         return Err("guest inputs already exist; use --platform-assets for explicit inputs".into());
     }
-    let store = match store {
-        Some(store) => store,
-        None => PathBuf::from(
-            std::env::var_os("HOME")
-                .ok_or("HOME is required for the persistent guest directory")?,
-        )
-        .join(".local/share/safeyolo/guests"),
-    };
+    let store = guest_store_directory(store)?;
     fs::create_dir_all(&store)?;
     let store = store.canonicalize()?;
     let _store_lock = crate::host_platform::lock_host_state(&store.join("acquire.lock"))?;

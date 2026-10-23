@@ -198,6 +198,10 @@ fi
 verify_native_package "$directory"
 if [[ -n $output ]]; then
   tar -czf "$output/$name.tar.gz" -C "$temporary" "$name"
+  # The same CLI and discovery metadata can acquire guest bytes before the
+  # complete host archive arrives. No guest selection is frozen at build time.
+  tar -czf "$output/$name-guest-download.tar.gz" -C "$temporary" \
+    "$name/bin/safeyolo" "$name/package-info"
   # The public bootstrap stays bound to the release that supplies this package.
   # Publishing this file follows the existing host-release procedure.
   sed "s/^release=$/release=host-$revision/" \

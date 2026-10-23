@@ -6,6 +6,8 @@ root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 release=
 bundle=
 stage=
+host_pid= guest_pid= download_pid=
+download_guest=true
 download_only=
 install_arguments=()
 launch=false
@@ -29,8 +31,11 @@ while (($#)); do
       (($# >= 2)) || { echo "$1 requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$1 requires a nonempty value" >&2; exit 2; }
       [[ $1 != --bundle ]] || bundle=$2
+      [[ $1 != --platform-assets ]] || download_guest=false
       install_arguments+=("$1" "$2"); shift 2;;
-    --no-guest-download|--yes) install_arguments+=("$1"); shift;;
+    --no-guest-download|--yes)
+      [[ $1 != --no-guest-download ]] || download_guest=false
+      install_arguments+=("$1"); shift;;
     --help)
       echo 'Usage: bash install-safeyolo.sh [--root DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download] [--system-runsc PATH] [--yes] [--launch [WORKSPACE] [AGENT_LAUNCH_OPTIONS...]]'
       echo 'Downloads the production host package from the official GitHub release and runs its installer. The default instance is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat uses the installed package without checking Latest or upgrading.'
@@ -112,9 +117,14 @@ else
   archive_sha256() { local value; value=$(shasum -a 256 "$1"); printf '%s\n' "${value%% *}"; }
 fi
 download() {
-  curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --output "$2" "$1" || {
+  local status=0
+  curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --output "$2" "$1" &
+  download_pid=$!
+  wait "$download_pid" || status=$?
+  download_pid=
+  if ((status != 0)); then
     echo "Host download failed: $1. Retry this command; partial files are not installed." >&2; return 1
-  }
+  fi
 }
 if [[ -z $release ]]; then
   echo 'SafeYolo: resolving the official host release.' >&2
@@ -129,16 +139,29 @@ name=safeyolo-$platform$libc_suffix-production
 cache=${XDG_CACHE_HOME:-$HOME/.cache}/safeyolo/host-packages/$release
 mkdir -p "$cache"
 stage=$(mktemp -d "$cache/acquire.XXXXXX")
-trap 'rm -rf -- "$stage"' EXIT
+cleanup_acquisition() {
+  local child
+  for child in "$host_pid" "$guest_pid" "$download_pid"; do
+    if [[ -n $child ]]; then
+      kill -TERM "$child" 2>/dev/null || true
+      wait "$child" 2>/dev/null || true
+    fi
+  done
+  rm -rf -- "$stage"
+}
+trap cleanup_acquisition EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 base=https://github.com/craigbalding/safeyolo/releases/download/$release
 echo "SafeYolo: acquiring $name from $release." >&2
 download "$base/SHA256SUMS" "$stage/SHA256SUMS"
-expected= count=0
+expected= count=0 guest_expected= guest_count=0
 while IFS= read -r line || [[ -n $line ]]; do
   if [[ ${line:64} == "  $name.tar.gz" ]]; then
     expected=${line:0:64}; ((count += 1))
+  fi
+  if [[ ${line:64} == "  $name-guest-download.tar.gz" ]]; then
+    guest_expected=${line:0:64}; ((guest_count += 1))
   fi
 done < "$stage/SHA256SUMS"
 [[ $count == 1 && $expected =~ ^[0-9a-f]{64}$ ]] || {
@@ -146,7 +169,36 @@ done < "$stage/SHA256SUMS"
 }
 archive=$cache/$name.tar.gz
 if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; then
-  download "$base/$name.tar.gz" "$stage/$name.tar.gz"
+  # Own the curl PID directly so interruption cannot leave a download child.
+  curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' \
+    --output "$stage/$name.tar.gz" "$base/$name.tar.gz" &
+  host_pid=$!
+  if $download_guest && [[ -z $download_only && $guest_count != 0 ]]; then
+    [[ $guest_count == 1 && $guest_expected =~ ^[0-9a-f]{64}$ ]] || {
+      echo 'The release has no unique guest download package checksum. No package was installed.' >&2; exit 1
+    }
+    download "$base/$name-guest-download.tar.gz" "$stage/guest-download.tar.gz"
+    [[ $(archive_sha256 "$stage/guest-download.tar.gz") == "$guest_expected" ]] || {
+      echo 'Guest download package checksum failed. No package was installed.' >&2; exit 1
+    }
+    mkdir "$stage/early"
+    tar -xzf "$stage/guest-download.tar.gz" -C "$stage/early"
+    early=$stage/early/$name
+    for field in "source_commit=${release#host-}" "profile=production" "platform=$platform"; do
+      grep -qx "$field" "$early/package-info" || {
+        echo "Guest download package differs from its release: $field. No package was installed." >&2; exit 1
+      }
+    done
+    identity=$("$early/bin/safeyolo" --version)
+    [[ ${identity#* commit=} == "${release#host-} profile=production" ]] || {
+      echo 'Guest download executable differs from its release. No package was installed.' >&2; exit 1
+    }
+    echo 'SafeYolo: downloading the compatible guest while acquiring the host package.' >&2
+    "$early/bin/safeyolo" guest download --package-info "$early/package-info" > "$stage/guest-index" &
+    guest_pid=$!
+  fi
+  wait "$host_pid" || { echo 'Host download failed. No package was installed; retry this command.' >&2; exit 1; }
+  host_pid=
   [[ $(archive_sha256 "$stage/$name.tar.gz") == "$expected" ]] || {
     echo 'Host archive checksum failed. No package was installed. Retry to download verified bytes.' >&2; exit 1
   }
@@ -168,6 +220,16 @@ for field in guest_compatibility guest_repository guest_discovery_tag; do
 done
 source "$package/native_package.sh"
 verify_native_package "$package"
+if [[ -n $guest_pid ]]; then
+  cmp -s "$early/package-info" "$package/package-info" && cmp -s "$early/bin/safeyolo" "$package/bin/safeyolo" || {
+    echo 'Guest download inputs differ from the verified host package. No instance was activated.' >&2; exit 1
+  }
+  wait "$guest_pid" || { echo 'Guest acquisition failed. No instance was activated. Retry this command; verified inputs remain reusable.' >&2; exit 1; }
+  guest_pid=
+  guest_index=$(cat "$stage/guest-index")
+  [[ $guest_index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Guest download did not return a verified index.' >&2; exit 1; }
+  install_arguments+=(--guest-index "$guest_index")
+fi
 if [[ -n $download_only ]]; then
   mv "$package" "$download_only"
   echo "Downloaded SafeYolo package: $download_only"

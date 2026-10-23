@@ -177,6 +177,18 @@ The release producer also writes a release-bound `install-safeyolo.sh` beside
 the host archive and `SHA256SUMS`; the earlier `host-7a38` release lacks that
 bootstrap asset.
 
+New host packages also include a small `-guest-download.tar.gz` release asset.
+It contains the same compiled command and `package-info` as the complete host archive.
+The producer receipt and same-release checksums bind these bytes to that archive;
+they do not add an independent trust source. When this asset is available, the
+bootstrap verifies it and downloads the compatible guest while the host archive
+arrives. It passes the selected immutable OCI index to the normal installer.
+Guest extraction, Linux host preparation and activation retain their existing
+checks. An interruption removes partial transfers and retains verified blobs for
+retry. Earlier immutable releases use the existing serial acquisition path.
+The overlap does not establish the complete cold onboarding time; bandwidth
+contention, extraction, setup and coding-client readiness still contribute.
+
 ### Tested onboarding scope
 
 The [independent connected journey](https://github.com/craigbalding/safeyolo/issues/1050#issuecomment-6263430260)

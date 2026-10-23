@@ -199,7 +199,11 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
     source = path.with_suffix(".c")
     guest_command = ""
     if guest_exit is not None or guest_assets is not None:
-        guest_command = ('if(argc>3 && strcmp(argv[3],"guest")==0){'
+        guest_command = ('if(argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0){'
+                         'char *download=getenv("PACKAGE_GUEST_DOWNLOAD_CLI");'
+                         'if(download){execv(download,argv);return 95;}'
+                         + (f'return {guest_exit};' if guest_exit is not None else 'puts("sha256:' + 'b' * 64 + '");return 0;') + '}')
+        guest_command += ('if(argc>3 && strcmp(argv[3],"guest")==0){'
                          'char *marker=getenv("PACKAGE_GUEST_CALLS");'
                          'if(marker){FILE *out=fopen(marker,"w");if(!out)return 90;'
                          'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
@@ -227,7 +231,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         'if(!out)return 94;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
         'char *code=getenv("PACKAGE_LAUNCH_EXIT");return code?atoi(code):0;}'
     )
-    source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
+    source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n'
                       f'int main(int argc,char **argv){{{host_command}{guest_command}{launch_command}puts("{identity}");return 0;}}\n')
     subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
@@ -548,7 +552,13 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
     bootstrap = output / "install-safeyolo.sh"
     assert f"release=host-{package_inputs[5]}" in bootstrap.read_text()
     assert os.access(bootstrap, os.X_OK)
-    archive, = output.glob("*.tar.gz")
+    archive, = (path for path in output.glob("*.tar.gz") if not path.name.endswith("-guest-download.tar.gz"))
+    early = output / (archive.name.removesuffix(".tar.gz") + "-guest-download.tar.gz")
+    with tarfile.open(archive) as full, tarfile.open(early) as download:
+        assert download.getnames() == [archive.name.removesuffix(".tar.gz") + "/" + path
+                                       for path in ("bin/safeyolo", "package-info")]
+        for member in download.getnames():
+            assert download.extractfile(member).read() == full.extractfile(member).read()
     with tarfile.open(archive) as stream:
         names = stream.getnames()
         assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
@@ -595,7 +605,7 @@ def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_i
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
     assert result.returncode == 0, result.stderr
-    archive, = output.glob("*.tar.gz")
+    archive, = (path for path in output.glob("*.tar.gz") if not path.name.endswith("-guest-download.tar.gz"))
     assert archive.name.endswith("-musl-production.tar.gz")
     with tarfile.open(archive) as stream:
         metadata = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/package-info").read().decode()
@@ -615,6 +625,10 @@ def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_i
     assert receipt["archive"]["name"] == archive.name
     assert receipt["archive"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     assert receipt["source_revision"] == fields["source_commit"]
+    early = output / receipt["guest_download"]["name"]
+    assert receipt["guest_download"]["sha256"] == hashlib.sha256(early.read_bytes()).hexdigest()
+    assert receipt["guest_download"]["size"] == early.stat().st_size
+    assert len((output / "SHA256SUMS").read_text().splitlines()) == 2
 
 
 @pytest.mark.parametrize("libc,minimum,diagnosis", [
