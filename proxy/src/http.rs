@@ -2963,8 +2963,32 @@ where
         )?;
         return Ok((reply, "admin_port_access".into()));
     }
+    // Only the supported Codex token endpoint needs a bounded JSON credential
+    // view. Other requests keep their original streaming body and trailers.
+    let codex_endpoint = crate::credential_guard::codex::refresh_endpoint(
+        &destination.scheme,
+        &destination.host,
+        destination.port,
+        &destination.path,
+    );
+    let length = request.body().size_hint().exact();
+    let (parts, body) = request.into_parts();
+    let prepared = request_body::prepare_limited(
+        body,
+        length,
+        !codex_endpoint,
+        crate::credential_guard::codex::RESPONSE_LIMIT,
+    )
+    .await?;
+    let codex_request_trailers = prepared.has_captured_trailers();
+    let codex_refresh = prepared.unvalidated_content.as_ref().and_then(|body| {
+        codex_endpoint
+            .then(|| crate::credential_guard::codex::Refresh::parse(&parts.headers, body))
+            .flatten()
+    });
+    let mut request = Request::from_parts(parts, prepared.body);
     // Credential enforcement is deliberately after network and circuit
-    // admission, but before test-context observation, body buffering, or any
+    // admission, but before test-context observation or any
     // outbound connection. The ordered parser view remains alive here so the
     // guard sees each original field. Combining repeated values can hide a
     // credential from entropy detection or change its approval fingerprint.
@@ -2988,7 +3012,7 @@ where
                 },
             )
         });
-        let outcome = match guard.enforce_ordered(
+        let mut outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
             identity.request_identity(),
             &destination.policy_host,
@@ -3016,6 +3040,54 @@ where
                 return Err(error.into());
             }
         };
+        if outcome.response.is_none()
+            && let Some(refresh) = codex_refresh.as_ref()
+        {
+            let body = guard
+                .enforce_codex_refresh(
+                    crate::credential_guard::Pdp::Ready(policy),
+                    crate::credential_guard::Request {
+                        identity: identity.request_identity(),
+                        host: &destination.policy_host,
+                        port: destination.port,
+                        method: request.method().as_str(),
+                        path: &destination.path,
+                        scheme: &destination.scheme,
+                        request_id: Some(request_id),
+                        connection_id: &identity.connection_id,
+                        prior_response: false,
+                        headers: &[],
+                    },
+                    refresh,
+                    crate::credential_guard::Options {
+                        block: runtime.operator_modes.credential_block(),
+                    },
+                    crate::policy::current_time_ms(),
+                )
+                .inspect_err(|_| {
+                    if let Some(hook) = &guard_trace {
+                        hook.error("CredentialGuardError");
+                    }
+                })?;
+            outcome.audit.extend(body.audit);
+            outcome.trace.extend(body.trace);
+            outcome.evaluations.extend(body.evaluations);
+            if !matches!(
+                outcome.kind,
+                crate::credential_guard::OutcomeKind::Blocked
+                    | crate::credential_guard::OutcomeKind::Warned
+            ) {
+                outcome.kind = body.kind;
+            }
+            let refused = body.response.is_some();
+            if refused || body.kind == crate::credential_guard::OutcomeKind::Warned {
+                outcome.metadata = body.metadata;
+            }
+            if refused {
+                outcome.kind = body.kind;
+                outcome.response = body.response;
+            }
+        }
         publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
         // Canonical audit is emitted exactly once per guard intent. The
         // attribution is trusted UDS identity; no credential value enters it.
@@ -3073,7 +3145,7 @@ where
             "trace": outcome.trace,
             "metadata": outcome.metadata,
             "evaluations": outcome.evaluations,
-            "body_scope": "headers_only",
+            "body_scope": if codex_refresh.is_some() { "codex_refresh_token" } else { "headers_only" },
             "query_scope": "policy_context_only"
             }),
         ))?;
@@ -4069,6 +4141,25 @@ where
         })
         .transpose()?
         .flatten();
+    let codex_exchange = if codex_endpoint
+        && request.method() == Method::POST
+        && !codex_request_trailers
+        && gateway_injected_header.is_none()
+    {
+        // Body preparation and inspection replay the captured bytes unchanged.
+        // Recheck the final headers: hygiene may have removed Content-Type.
+        match (&runtime.credential_guard, &runtime.policy, &codex_refresh) {
+            (Some(guard), Some(policy), Some(refresh)) => guard.codex_exchange(
+                policy,
+                identity.request_identity(),
+                refresh,
+                request.headers(),
+            )?,
+            _ => None,
+        }
+    } else {
+        None
+    };
     request.extensions_mut().insert(recording.clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
@@ -4315,9 +4406,12 @@ where
     }
     let (mut parts, body) = upstream.into_parts();
     let body = body.boxed();
-    let body = if let Some(exchange) =
-        ghcr_exchange.filter(|_| parts.status == StatusCode::OK && !has_non_chunked_transfer_coding)
-    {
+    let ghcr_exchange = ghcr_exchange
+        .filter(|_| parts.status == StatusCode::OK && !has_non_chunked_transfer_coding);
+    let codex_exchange = codex_exchange
+        .filter(|_| parts.status == StatusCode::OK && !has_non_chunked_transfer_coding);
+    let observes_codex = codex_exchange.is_some();
+    let body = if ghcr_exchange.is_some() || observes_codex {
         let prepared = request_body::prepare_limited(
             body,
             response_length,
@@ -4325,10 +4419,17 @@ where
             crate::credential_guard::ghcr::RESPONSE_LIMIT,
         )
         .await?;
+        let mut codex_recorded = false;
         if let Some(content) = &prepared.unvalidated_content {
             // Body EOF alone is insufficient (notably H2 NO_ERROR reset).
             // Register before any buffered response bytes reach the client.
-            if completion.response_complete() && completion.request_body_empty() {
+            if completion.response_complete()
+                && if observes_codex {
+                    completion.request_complete()
+                } else {
+                    completion.request_body_empty()
+                }
+            {
                 let encoding = test_context::combined(&parts.headers, header::CONTENT_ENCODING)?;
                 if let Ok(decoded) = crate::http_content::decode_prefix_with_size(
                     content,
@@ -4336,17 +4437,49 @@ where
                     crate::credential_guard::ghcr::RESPONSE_LIMIT,
                 ) && decoded.total_bytes <= crate::credential_guard::ghcr::RESPONSE_LIMIT
                 {
-                    runtime
-                        .credential_guard
-                        .as_ref()
-                        .expect("selected credential guard")
-                        .observe_ghcr_response(
-                            exchange,
-                            &decoded.content,
-                            crate::policy::current_time_ms(),
-                        )?;
+                    if let Some(exchange) = ghcr_exchange {
+                        runtime
+                            .credential_guard
+                            .as_ref()
+                            .expect("selected credential guard")
+                            .observe_ghcr_response(
+                                exchange,
+                                &decoded.content,
+                                crate::policy::current_time_ms(),
+                            )?;
+                    }
+                    if let Some(exchange) = codex_exchange {
+                        let guard = runtime
+                            .credential_guard
+                            .clone()
+                            .expect("selected credential guard");
+                        let policy = runtime.policy.clone().expect("selected policy");
+                        let bound_identity = identity.clone();
+                        codex_recorded = tokio::task::spawn_blocking(move || {
+                            guard.observe_codex_response(
+                                exchange,
+                                &policy,
+                                bound_identity.request_identity(),
+                                &decoded.content,
+                            )
+                        })
+                        .await??;
+                        if codex_recorded {
+                            let mut event = identity.request_event(
+                                "security.credential_guard.codex_refreshed", crate::audit::Kind::Security, request_id,
+                                "Observed Codex refresh response from authorized issuer",
+                                json!({"host":"auth.openai.com","client_id":crate::credential_guard::codex::CLIENT_ID}),
+                            );
+                            event.addon = Some("credential-guard".into());
+                            event.decision = Some(crate::audit::Decision::Allow);
+                            runtime.audit.emit_confirmed(event).await?;
+                        }
+                    }
                 }
             }
+        }
+        if observes_codex && !codex_recorded {
+            return Err("Codex refresh response did not establish trusted replacements".into());
         }
         prepared.body.boxed()
     } else {

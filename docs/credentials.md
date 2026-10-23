@@ -118,14 +118,62 @@ credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
 `sk-svcacct-` API keys. A grant for `openai:*` does not identify or approve a
 ChatGPT subscription OAuth access token.
 
-The credential guard has no built-in detector or issuance binding for Codex
-subscription OAuth tokens. With the [default bearer controls](#unknown-bearer-credentials),
-an unrecognised `Authorization: Bearer` value uses `unknown_secret`, regardless
-of entropy. No entropy adjustment or custom detection rule is needed.
+For the supported subscription paths, an operator can authorize an explicitly
+selected login through the existing encrypted credential vault. On the operator
+host, use the instance's CLI, an existing agent with a unique `agent_id`
+in policy, and a trusted `auth.json` input selected before the guest can replace
+its contents. In this example, `alice` is that agent and
+`/secure/codex/auth.json` is the selected host input. Keep credential values out
+of command arguments and output.
+
+```sh
+safeyolo credentials import-codex codex-alice --agent alice --auth-file /secure/codex/auth.json
+```
+
+The command stores the exact access and refresh pair with the agent's identity
+and the supported issuer/client binding. It prints the agent and credential
+name, never token values. It grants proxy authorization; provision the client's
+login through the existing trusted workflow before launching the client.
+An adoption marker or a guest-writable login file does not create this authority.
+
+The default authorization is persistent until the record is removed, replaced,
+or reaches an explicitly supplied `--expires-at` time. `--scope run` instead
+binds the import to the agent's current independently verified sandbox run.
+A stopped or replaced run cannot inherit it. To revoke an import, run
+`credentials remove codex-alice` with the same instance CLI. Explicit
+credential permissions, including deny and prompt, network policy, and inspection
+of other secrets still apply.
+
+The supported native Codex transport uses a JSON refresh POST to
+`https://auth.openai.com/oauth/token` with the default Codex client ID. SafeYolo
+checks the exact imported or observed refresh credential and complete verified
+TLS exchange.
+It records keyed digests of present access/refresh replacements in the same
+encrypted record before releasing the response body. An omitted field retains
+the existing recognition. Codex performs renewal and persists its own client
+state. Malformed, duplicate, incomplete or oversized successful refresh responses
+do not establish a replacement and are refused. Token response capture is bounded
+to 64 KiB. An unsupported refresh request or an additional authentication header
+does not establish replacement authority.
+
+Access recognition is limited to HTTPS on `chatgpt.com:443`: account-check and
+usage GET requests, Codex models/rate-limit GET requests, and Codex response POST,
+compact POST and response WebSocket GET paths. It does not cover custom or
+regional endpoints selected by client configuration, unrelated paths, arbitrary
+methods, or other OpenAI services. Only exact imported or observed credentials
+receive this recognition. The issuer still decides whether a token is valid.
+
+The encrypted imported pair, replacement digests and authorization scope survive
+proxy restart. Recognition stops after revocation, expiry, an agent identity
+change, or the end of a run-scoped authorization. A replacement made without a
+qualifying observed exchange retains ordinary handling. SafeYolo never rescans
+guest replacements to create or repair authorization.
+
+With the [default bearer controls](#unknown-bearer-credentials), an unrecognised
+`Authorization: Bearer` value uses `unknown_secret`, regardless of entropy.
 Detection does not verify a JSON Web Token (JWT) signature, issuer or audience.
-A claimed issuer, matching regular expression, destination or provisioned
-Codex login does not establish trusted issuance for each token. SafeYolo has
-no Codex-specific automatic-approval setting.
+A claimed issuer, token shape, matching regular expression or destination alone
+provides no authority. No entropy adjustment or custom classifier is needed.
 
 When trustworthy issuance evidence is unavailable, use the manual approval
 fallback. Keep `unknown_creds = "prompt"` for the intended destination.

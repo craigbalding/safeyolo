@@ -132,6 +132,26 @@ pub struct Credential {
     pub client_id: Option<String>,
     pub client_secret: Option<Secret>,
     pub expires_at: Option<String>,
+    pub codex: Option<CodexAuthorization>,
+    pub(crate) codex_tokens: CodexTokens,
+}
+
+/// An explicit host import authorizes one agent's Codex login. The optional
+/// generation narrows that authorization to an independently verified run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexAuthorization {
+    pub import_id: String,
+    pub agent: String,
+    pub agent_id: String,
+    pub run_id: Option<String>,
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CodexTokens {
+    pub access: Vec<[u8; 32]>,
+    pub refresh: Vec<[u8; 32]>,
 }
 impl Credential {
     pub fn new(name: impl Into<String>, credential_type: impl Into<String>, value: Secret) -> Self {
@@ -145,6 +165,8 @@ impl Credential {
             client_id: None,
             client_secret: None,
             expires_at: None,
+            codex: None,
+            codex_tokens: CodexTokens::default(),
         }
     }
     pub fn metadata(&self) -> CredentialMetadata {
@@ -153,6 +175,7 @@ impl Credential {
             credential_type: self.credential_type.clone(),
             expires_at: self.expires_at.clone(),
             reference: self.reference.clone(),
+            codex: self.codex.clone(),
         }
     }
     /// Python treats malformed expiry as expired but raises for valid naive
@@ -187,6 +210,8 @@ pub struct CredentialMetadata {
     pub credential_type: String,
     pub expires_at: Option<String>,
     pub reference: Option<ExternalReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexAuthorization>,
 }
 
 /// Provider selection is stored by the host. Guests select only minted gateway
@@ -449,6 +474,44 @@ impl Vault {
     pub fn store(&self, credential: Credential) -> Result<()> {
         self.store_with_activation(credential, |_| Ok(()))
     }
+    /// Merge verified issuance under the existing cross-process vault lock.
+    /// The caller checks the exact imported authority against this current row;
+    /// concurrent observations must not discard each other's evidence.
+    pub(crate) fn record_codex_tokens(
+        &self,
+        name: &str,
+        access: Option<[u8; 32]>,
+        refresh: Option<[u8; 32]>,
+        authorized: impl FnOnce(&Credential) -> bool,
+    ) -> Result<bool> {
+        self.mutate(
+            None,
+            Some(name),
+            |credentials| {
+                let Some(credential) = credentials
+                    .iter_mut()
+                    .find(|credential| credential.name == name)
+                else {
+                    return false;
+                };
+                if !authorized(credential) {
+                    return false;
+                }
+                if let Some(digest) = access
+                    && !credential.codex_tokens.access.contains(&digest)
+                {
+                    credential.codex_tokens.access.push(digest);
+                }
+                if let Some(digest) = refresh
+                    && !credential.codex_tokens.refresh.contains(&digest)
+                {
+                    credential.codex_tokens.refresh.push(digest);
+                }
+                true
+            },
+            |_, _| Ok(()),
+        )
+    }
     pub fn store_with_activation(
         &self,
         credential: Credential,
@@ -659,6 +722,8 @@ fn same_credential(left: &Credential, right: &Credential) -> bool {
         && left.client_secret.as_ref().map(Secret::expose_secret)
             == right.client_secret.as_ref().map(Secret::expose_secret)
         && left.expires_at == right.expires_at
+        && left.codex == right.codex
+        && left.codex_tokens == right.codex_tokens
 }
 
 fn metadata(credentials: &[Credential]) -> Vec<CredentialMetadata> {
@@ -741,6 +806,20 @@ fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
         credential.client_id = optional(record, "client_id")?;
         credential.client_secret = optional(record, "client_secret")?.map(Secret::new);
         credential.expires_at = optional(record, "expires_at")?;
+        credential.codex = record
+            .get_mut("codex")
+            .map(Value::take)
+            .filter(|value| !value.is_null())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?;
+        credential.codex_tokens = record
+            .get_mut("codex_tokens")
+            .map(Value::take)
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?
+            .unwrap_or_default();
         upsert(&mut credentials, credential);
     }
     Ok(credentials)
@@ -850,6 +929,13 @@ fn encrypt(
             }
             plaintext.extend_from_slice(b"\"reference\":");
             serde_json::to_writer(&mut *plaintext, reference)
+                .map_err(|_| error(ErrorKind::Format))?;
+        }
+        if let Some(codex) = &credential.codex {
+            plaintext.extend_from_slice(b",\"codex\":");
+            serde_json::to_writer(&mut *plaintext, codex).map_err(|_| error(ErrorKind::Format))?;
+            plaintext.extend_from_slice(b",\"codex_tokens\":");
+            serde_json::to_writer(&mut *plaintext, &credential.codex_tokens)
                 .map_err(|_| error(ErrorKind::Format))?;
         }
         plaintext.push(b'}');

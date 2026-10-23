@@ -494,7 +494,7 @@ impl Policy {
         }
     }
 
-    pub(crate) fn agent_run(&self, name: &str) -> Option<crate::host_runs::AgentRun> {
+    pub fn agent_run(&self, name: &str) -> Option<crate::host_runs::AgentRun> {
         crate::host_runs::authority(
             &self.native.as_ref()?.identity_root,
             name,

@@ -620,7 +620,7 @@ impl Runtime {
                     key.as_ref().map(credential_hmac::HmacSecret::as_bytes),
                 )?;
                 (
-                    Some(guard),
+                    Some(guard.with_codex_vault(vault.clone())),
                     key.as_ref()
                         .is_some_and(credential_hmac::HmacSecret::is_empty),
                 )

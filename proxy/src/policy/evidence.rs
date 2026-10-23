@@ -207,7 +207,7 @@ impl Policy {
         Some(revision)
     }
 
-    pub(crate) fn evidence_agent_id(&self, name: &str) -> Option<&str> {
+    pub fn evidence_agent_id(&self, name: &str) -> Option<&str> {
         let agents = self.native.as_ref()?.authored.get("agents")?.as_object()?;
         let id = agents
             .get(name)?

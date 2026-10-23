@@ -16,7 +16,7 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials list\nsafeyolo [--root ROOT] credentials remove NAME\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.";
+pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials list\nsafeyolo [--root ROOT] credentials remove NAME\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.";
 
 pub const SERVICE_HELP: &str = "safeyolo [--root ROOT] services list\nsafeyolo [--root ROOT] services show NAME\nsafeyolo [--root ROOT] services authorize AGENT SERVICE --capability NAME [--credential NAME] [--account NAME] [--host HOST] [--allow-host-network]\nsafeyolo [--root ROOT] services authorized AGENT\nsafeyolo [--root ROOT] services revoke AGENT SERVICE\nsafeyolo [--root ROOT] services bind AGENT SERVICE CAPABILITY --bindings FILE\nsafeyolo [--root ROOT] services approvals\nsafeyolo [--root ROOT] services approve AGENT SERVICE METHOD PATH [--lifetime once|session|remembered]\nsafeyolo [--root ROOT] services grants\nsafeyolo [--root ROOT] services revoke-grant ID\n\nlist/show read the running gateway's accepted catalogue. Operator definitions override builtins with the same name. authorize selects its capability, credential reference and account; --host maps the destination (default: the definition's host). --allow-host-network explicitly permits host-wide network access; service access remains agent-scoped; existing credential policy still applies. Credential-free services omit --credential. authorized shows only this agent's minted gateway credential and scope. bind approves contract values; approve permits a risky route. Neither replaces service authorization. Revocation removes access and keeps the credential for other uses.";
 
@@ -173,6 +173,71 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             .as_deref()
             .ok_or("credential data directory is unavailable")?,
     )?;
+    if let [command, name, rest @ ..] = arguments
+        && command == "import-codex"
+    {
+        if name.is_empty() {
+            return Err("credential name is required".into());
+        }
+        let fields = options(rest)?;
+        validate_options(
+            &fields,
+            &["--agent", "--auth-file", "--scope", "--expires-at"],
+        )?;
+        let agent = fields.get("--agent").ok_or("--agent is required")?;
+        let path = fields.get("--auth-file").ok_or("--auth-file is required")?;
+        let policy = safeyolo_proxy::policy::Policy::from_native_path(
+            config
+                .policy_file
+                .as_deref()
+                .ok_or("policy file is unavailable")?,
+        )?;
+        let agent_id = policy
+            .evidence_agent_id(agent)
+            .ok_or("agent requires a unique configured identity")?
+            .to_owned();
+        let run_id = match fields.get("--scope").copied().unwrap_or("persistent") {
+            "persistent" => None,
+            "run" => Some(
+                policy
+                    .agent_run(agent)
+                    .ok_or("agent has no current verified run")?
+                    .run_id,
+            ),
+            _ => return Err("scope must be persistent or run".into()),
+        };
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = Path::new(path)
+            .canonicalize()
+            .map_err(|_| "cannot resolve Codex login input")?;
+        let input = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|_| "cannot open Codex login input")?;
+        if !input.metadata()?.is_file() {
+            return Err("Codex login input must be a regular file".into());
+        }
+        let mut record = safeyolo_proxy::credential_guard::codex::import_login(
+            input,
+            name,
+            credentials::CodexAuthorization {
+                import_id: uuid::Uuid::new_v4().to_string(),
+                agent: (*agent).into(),
+                agent_id,
+                run_id,
+            },
+        )?;
+        record.expires_at = fields.get("--expires-at").map(|value| value.to_string());
+        if record.is_expired(time::OffsetDateTime::now_utc())? {
+            return Err("Codex authorization expiry is invalid or already expired".into());
+        }
+        vault.store(record)?;
+        println!(
+            "Codex login authorized for {agent}; remove credential {name} to revoke it. Existing credential and network rules still apply."
+        );
+        return Ok(());
+    }
     match arguments {
         [command] if command == "list" => {
             println!("{}", serde_json::to_string_pretty(&vault.metadata()?)?)
