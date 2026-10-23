@@ -194,18 +194,49 @@ fi
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
-# The host can bind the instance certificate directly at the destination.
-# Matching certificate bytes do not prove that the system bundle contains it.
-# Refresh the bundle on boot, without rewriting an unchanged mounted file.
+# Debian images already contain their configured system trust. A fresh Linux
+# overlay loses only the instance CA addition on stop. Add that CA to the
+# prepared bundle and index it without rescanning every distro certificate.
+# Existing SafeYolo entries (including rotations and incomplete prior setup)
+# and custom update hooks still use the distro updater. VZ's retained overlay
+# follows that path, so image/configuration changes are not hidden by reuse.
+# The destination can be a read-only bind; matching bytes alone are not proof
+# that the bundle trusts the instance CA.
 # --------------------------------------------------------------------------
 SY_CERT_SRC=/safeyolo/mitmproxy-ca-cert.pem
 SY_CERT_DST=/usr/local/share/ca-certificates/safeyolo.crt
+SY_CERT_DIR=/etc/ssl/certs
+SY_BUNDLE=$SY_CERT_DIR/ca-certificates.crt
+SY_PEM=$SY_CERT_DIR/safeyolo.pem
 if [ -f "$SY_CERT_SRC" ]; then
     if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST"; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
     fi
-    if ! update-ca-certificates >/dev/null 2>&1; then
-        echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
+    SY_CA_READY=0
+    if [ -f /etc/debian_version ] && [ -s "$SY_BUNDLE" ] \
+       && [ ! -e "$SY_PEM" ] && [ ! -L "$SY_PEM" ] \
+       && SY_CA_HOOKS=$(run-parts --test /etc/ca-certificates/update.d 2>/dev/null) \
+       && [ -z "$SY_CA_HOOKS" ] && command -v openssl >/dev/null 2>&1; then
+        if SY_CA_TEMP=$(mktemp "$SY_BUNDLE.XXXXXX") \
+           && { cat "$SY_BUNDLE" && printf '\n' && cat "$SY_CERT_DST" && printf '\n'; } > "$SY_CA_TEMP" \
+           && chmod 644 "$SY_CA_TEMP" \
+           && ln -s "$SY_CERT_DST" "$SY_PEM" \
+           && openssl rehash "$SY_CERT_DIR" >/dev/null 2>&1 \
+           && mv -f "$SY_CA_TEMP" "$SY_BUNDLE"; then
+            SY_CA_READY=1
+        fi
+        # The distro updater repairs a partial index or failed bundle commit.
+        [ -z "$SY_CA_TEMP" ] || rm -f "$SY_CA_TEMP" || true
+    fi
+    if [ "$SY_CA_READY" = 0 ]; then
+        # Debian otherwise skips rehash when only certificate bytes changed,
+        # or a prior attempt left the named entry without a complete index.
+        if [ -f /etc/debian_version ]; then
+            rm -f "$SY_PEM" 2>/dev/null || true
+        fi
+        if ! update-ca-certificates >/dev/null 2>&1; then
+            echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
+        fi
     fi
 fi
 
