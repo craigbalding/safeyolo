@@ -208,6 +208,7 @@ SY_CERT_DST=/usr/local/share/ca-certificates/safeyolo.crt
 SY_CERT_DIR=/etc/ssl/certs
 SY_BUNDLE=$SY_CERT_DIR/ca-certificates.crt
 SY_PEM=$SY_CERT_DIR/safeyolo.pem
+SY_CA_REPAIR=$SY_CERT_DIR/.safeyolo-ca-repair-needed
 if [ -f "$SY_CERT_SRC" ]; then
     if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST"; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
@@ -215,6 +216,7 @@ if [ -f "$SY_CERT_SRC" ]; then
     SY_CA_READY=0
     if [ -f /etc/debian_version ] && [ -s "$SY_BUNDLE" ] \
        && [ ! -e "$SY_PEM" ] && [ ! -L "$SY_PEM" ] \
+       && [ ! -e "$SY_CA_REPAIR" ] && [ ! -L "$SY_CA_REPAIR" ] \
        && SY_CA_HOOKS=$(run-parts --test /etc/ca-certificates/update.d 2>/dev/null) \
        && [ -z "$SY_CA_HOOKS" ] && command -v openssl >/dev/null 2>&1; then
         if SY_CA_TEMP=$(mktemp "$SY_BUNDLE.XXXXXX") \
@@ -232,10 +234,15 @@ if [ -f "$SY_CERT_SRC" ]; then
         # Debian otherwise skips rehash when only certificate bytes changed,
         # or a prior attempt left the named entry without a complete index.
         if [ -f /etc/debian_version ]; then
+            # Record unfinished repair before removing its named entry. A
+            # failure or interruption must not admit the stale bundle as fresh.
+            touch "$SY_CA_REPAIR"
             rm -f "$SY_PEM" 2>/dev/null || true
         fi
         if ! update-ca-certificates >/dev/null 2>&1; then
             echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
+        elif [ -f /etc/debian_version ]; then
+            rm -f "$SY_CA_REPAIR" 2>/dev/null || true
         fi
     fi
 fi

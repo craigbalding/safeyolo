@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -132,6 +133,57 @@ def test_rotated_ca_replaces_old_trust(trust_store, certificates, bound_destinat
     _assert_trust(root, certificates, "system", "rotated", rejected="instance")
 
 
+@pytest.mark.parametrize("bound_destination", [False, True], ids=["copied", "read-only-bind"])
+@pytest.mark.parametrize("interrupted", [False, True], ids=["failed-update", "interrupted-removal"])
+def test_retained_rotation_retries_after_incomplete_repair(
+    trust_store, certificates, bound_destination, interrupted,
+):
+    root = trust_store
+    assert _run_ca_block(root).returncode == 0
+    retained = (root / "store/ca-certificates.crt").read_bytes()
+    shutil.copyfile(certificates / "rotated.crt", root / "source.pem")
+    if bound_destination:
+        shutil.copyfile(root / "source.pem", root / "local/safeyolo.crt")
+    if interrupted:
+        result = _run_ca_block(root, interrupt_alias_removal=True)
+        assert result.returncode == -signal.SIGKILL
+        assert not (root / "updates").exists()
+    else:
+        (root / "update-fails").touch()
+        result = _run_ca_block(root)
+        assert result.returncode == 0, result.stderr
+        assert "WARNING: update-ca-certificates failed" in (root / "console").read_text()
+        (root / "update-fails").unlink()
+    assert not (root / "store/safeyolo.pem").exists()
+    assert (root / "store/ca-certificates.crt").read_bytes() == retained
+    assert (root / "store/.safeyolo-ca-repair-needed").exists()
+
+    result = _run_ca_block(root)
+
+    assert result.returncode == 0, result.stderr
+    _assert_trust(root, certificates, "system", "rotated", rejected="instance")
+    assert (root / "updates").read_text().splitlines() == ["refresh"] * (1 if interrupted else 2)
+    assert not (root / "store/.safeyolo-ca-repair-needed").exists()
+
+
+def test_repair_state_failure_preserves_retained_entry(trust_store, certificates):
+    root = trust_store
+    assert _run_ca_block(root).returncode == 0
+    retained = (root / "store/ca-certificates.crt").read_bytes()
+    marker = root / "store/.safeyolo-ca-repair-needed"
+    marker.symlink_to(root / "absent/marker")
+    shutil.copyfile(certificates / "rotated.crt", root / "source.pem")
+    result = _run_ca_block(root)
+
+    assert result.returncode != 0
+    assert (root / "store/safeyolo.pem").is_symlink()
+    assert (root / "store/ca-certificates.crt").read_bytes() == retained
+    assert not (root / "updates").exists()
+    marker.unlink()
+    assert _run_ca_block(root).returncode == 0
+    _assert_trust(root, certificates, "system", "rotated", rejected="instance")
+
+
 def test_new_image_or_configuration_rebuilds_retained_trust(trust_store, certificates):
     root = trust_store
     assert _run_ca_block(root).returncode == 0
@@ -215,9 +267,11 @@ def test_failed_update_warns_and_next_boot_repairs(trust_store, certificates):
     assert (root / "store/ca-certificates.crt").read_bytes() == prepared
     assert not list((root / "store").glob("ca-certificates.crt.*"))
     assert not (root / "store/safeyolo.pem").exists()
+    assert (root / "store/.safeyolo-ca-repair-needed").exists()
     (root / "update-fails").unlink()
     assert _run_ca_block(root).returncode == 0
-    assert (root / "updates").read_text().splitlines() == ["refresh"]
+    assert (root / "updates").read_text().splitlines() == ["refresh", "refresh"]
+    assert not (root / "store/.safeyolo-ca-repair-needed").exists()
     _assert_trust(root, certificates, "system", "instance")
 
 
@@ -267,7 +321,7 @@ def _environment(root):
     }
 
 
-def _run_ca_block(root, *, fail_certificate_read=False):
+def _run_ca_block(root, *, fail_certificate_read=False, interrupt_alias_removal=False):
     text = (REPO_ROOT / "cli/src/safeyolo/guest-init-static.sh").read_text()
     block = text[text.index("SY_CERT_SRC="):text.index("# 4. SSH server")]
     for source, destination in (
@@ -287,6 +341,11 @@ def _run_ca_block(root, *, fail_certificate_read=False):
     )
     if fail_certificate_read:
         command += 'cat() { [ "$1" != "$SY_CERT_DST" ] && command cat "$@"; };\n'
+    if interrupt_alias_removal:
+        command += (
+            'rm() { command rm "$@"; '
+            'if [ "$2" = "$SY_PEM" ]; then kill -KILL "$$"; fi; };\n'
+        )
     return subprocess.run(
         ["/bin/bash", "-ec", command + block], env=_environment(root),
         capture_output=True, text=True, timeout=10,
