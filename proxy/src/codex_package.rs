@@ -42,7 +42,7 @@ fn candidate<'a>(
     release: &'a Release,
     target: &str,
     now: OffsetDateTime,
-) -> Option<(String, &'a Asset)> {
+) -> Option<([u64; 3], &'a Asset)> {
     let version = release.tag_name.strip_prefix("rust-v")?;
     let numbers: Vec<_> = version.split('.').collect();
     if release.draft
@@ -56,6 +56,13 @@ fn candidate<'a>(
     {
         return None;
     }
+    let numbers = numbers
+        .iter()
+        .map(|number| number.parse::<u64>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?
+        .try_into()
+        .ok()?;
     let name = format!("codex-package-{target}.tar.zst");
     let mut matches = release.assets.iter().filter(|asset| asset.name == name);
     let asset = matches.next()?;
@@ -66,7 +73,7 @@ fn candidate<'a>(
     {
         return None;
     }
-    Some((version.to_owned(), asset))
+    Some((numbers, asset))
 }
 
 fn curl(url: &str) -> tokio::process::Command {
@@ -149,18 +156,34 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let interrupted = || -> Error { "Codex prefetch interrupted; no package imported".into() };
     let response = tokio::select! {
-        result = curl("https://api.github.com/repos/openai/codex/releases/latest").output() => result?,
+        result = curl("https://api.github.com/repos/openai/codex/releases?per_page=30").output() => result?,
         _ = terminate.recv() => return Err(interrupted()),
         _ = interrupt.recv() => return Err(interrupted()),
     };
     if !response.status.success() {
         return Err("cannot read the upstream Codex release".into());
     }
-    let release: Release = serde_json::from_slice(&response.stdout)?;
-    let Some((version, asset)) = candidate(&release, target()?, OffsetDateTime::now_utc()) else {
-        // A recent release is deliberately left to mise's age-aware resolver.
+    let metadata: Vec<&serde_json::value::RawValue> = serde_json::from_slice(&response.stdout)?;
+    let releases = metadata
+        .iter()
+        .map(|json| serde_json::from_str::<Release>(json.get()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let target = target()?;
+    let now = OffsetDateTime::now_utc();
+    // GitHub lists by creation time and includes prereleases. Pick the newest
+    // eligible stable version; the guest still checks its own mise selection.
+    let Some((index, release, _, asset)) = releases
+        .iter()
+        .enumerate()
+        .filter_map(|(index, release)| {
+            candidate(release, target, now).map(|(numbers, asset)| (index, release, numbers, asset))
+        })
+        .max_by_key(|(_, _, numbers, _)| *numbers)
+    else {
+        // A bounded prefetch miss leaves installation to the guest resolver.
         return Ok(());
     };
+    let version = release.tag_name.trim_start_matches("rust-v");
     let parent = output
         .parent()
         .ok_or("Codex prefetch needs an output parent")?;
@@ -199,12 +222,12 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
     }
     fs::remove_file(stage.path().join("package.tar.zst"))?;
     fs::write(stage.path().join("version"), format!("{version}\n"))?;
-    fs::write(stage.path().join("target"), format!("{}\n", target()?))?;
+    fs::write(stage.path().join("target"), format!("{target}\n"))?;
     fs::write(
         stage.path().join("source"),
         format!("{}\n", env!("SAFEYOLO_BUILD_REVISION")),
     )?;
-    fs::write(stage.path().join("upstream.json"), &response.stdout)?;
+    fs::write(stage.path().join("upstream.json"), metadata[index].get())?;
     // Destination is caller-owned temporary staging, never an installed root.
     if output.try_exists()? {
         return Err("Codex prefetch destination already exists; preserved it".into());

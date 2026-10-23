@@ -268,9 +268,12 @@ Apple Silicon hosts acquire the Linux ARM64 package. After setup consent, launch
 moves this payload into the new agent home. The guest imports it with `mise link`
 only when mise selects that same version and its executable probes pass. This
 avoids another client download and extraction. Host mise is not required.
-Prefetch applies to the fresh default with the default release-age setting;
-it skips a latest release younger than 24 hours. Pins, custom age settings,
-unmatched versions and unavailable prefetch use the ordinary guest installer.
+Prefetch applies to the fresh default with the default release-age setting.
+It checks the first 30 upstream releases and acquires the newest stable version
+at least 24 hours old with a complete package and digest for the guest platform.
+This can select an older eligible release when the latest release is too young.
+Pins, custom age settings, unmatched versions and unavailable prefetch use the
+ordinary guest installer.
 Existing agent state, login, approval and interactive retry controls still apply.
 
 To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to
