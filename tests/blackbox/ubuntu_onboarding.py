@@ -864,7 +864,8 @@ def codex_input_process(phase, row):
         'for p in /proc/[0-9]*/exe; do '
         'target=$(readlink "$p") || continue; '
         'case "$target" in "$HOME"/.mise/installs/aqua-openai-codex/*/bin/codex|'
-        '"$HOME"/.mise/installs/github-openai-codex/*/bin/codex) '
+        '"$HOME"/.mise/installs/github-openai-codex/*/bin/codex|'
+        '"$HOME"/.safeyolo/codex-package/payload/bin/codex) '
         'pid=${p#/proc/}; printf "%s\\n" "${pid%/exe}"; exit 0;; esac; '
         'done; exit 1', time.monotonic() + 5)
     save()
