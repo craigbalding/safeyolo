@@ -171,6 +171,22 @@ def test_checksum_digest_preserves_tool_failure(checksum_bundle):
     assert result.returncode != 0 and not result.stdout
 
 
+def test_bootstrap_owned_bundle_moves_verified_files_without_copying(checksum_bundle, tmp_path):
+    bundle = checksum_bundle
+    binary = bundle / "bin/safeyolo"
+    previous = binary.stat()
+    contents = binary.read_bytes()
+    root = tmp_path / "installed"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(tmp_path / "commands"),
+                 "--no-guest-download", "--move-bundle")
+    assert result.returncode == 0, result.stderr
+    installed = root / "bin/safeyolo"
+    assert installed.read_bytes() == contents
+    assert (installed.stat().st_dev, installed.stat().st_ino) == (previous.st_dev, previous.st_ino)
+    assert not binary.exists()
+    assert result.stdout.count("Verified SafeYolo package:") == 1
+
+
 def test_only_installed_layout_allows_original_installer_omissions(checksum_bundle):
     bundle = checksum_bundle
     command = ("bash", "-c", 'source "$1"; verify_native_package "$2" "${3:-}"',
@@ -197,9 +213,11 @@ def test_only_installed_layout_allows_original_installer_omissions(checksum_bund
 def executable(path, identity, guest_exit=None, guest_assets=None):
     # Real ELF header/architecture, controlled identity; never a runtime witness.
     source = path.with_suffix(".c")
-    guest_command = ""
+    guest_command = ('if(argc>2 && strcmp(argv[1],"codex")==0 && strcmp(argv[2],"prefetch")==0){'
+                     'char *download=getenv("PACKAGE_CODEX_PREFETCH_CLI");'
+                     'if(download){execv(download,argv);return 96;}return 0;}')
     if guest_exit is not None or guest_assets is not None:
-        guest_command = ('if(argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0){'
+        guest_command += ('if(argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0){'
                          'char *download=getenv("PACKAGE_GUEST_DOWNLOAD_CLI");'
                          'if(download){execv(download,argv);return 95;}'
                          + (f'return {guest_exit};' if guest_exit is not None else 'puts("sha256:' + 'b' * 64 + '");return 0;') + '}')
@@ -229,6 +247,8 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         'if(argc>4 && strcmp(argv[3],"agent")==0 && strcmp(argv[4],"launch")==0){'
         'char *marker=getenv("PACKAGE_LAUNCH_CALLS");if(marker){FILE *out=fopen(marker,"w");'
         'if(!out)return 94;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+        'char *handoff=getenv("PACKAGE_CODEX_HANDOFF");if(handoff){FILE *out=fopen(handoff,"w");'
+        'if(!out)return 97;char *input=getenv("SAFEYOLO_CODEX_PACKAGE");if(input)fputs(input,out);fclose(out);}'
         'char *code=getenv("PACKAGE_LAUNCH_EXIT");return code?atoi(code):0;}'
     )
     source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n'
@@ -726,7 +746,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     arguments = marker.read_text().splitlines()
     staging = Path(arguments[1])
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
-    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
+    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(staging / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
                          *(["--index", guest_index] if guest_index else []),
                          "--host-settings", str(staging / "host-settings.toml")]
     assert not staging.exists()

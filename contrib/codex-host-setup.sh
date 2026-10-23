@@ -5,7 +5,7 @@
 # <name> --workspace <folder> --host-script contrib/codex-host-setup.sh` is
 # invoked. Stages SafeYolo-owned Codex settings into the agent's persistent
 # home without importing host credentials, and writes a foreground command
-# script that installs Codex's complete native release via mise on first boot and
+# script that selects Codex's complete native release via mise on first boot and
 # runs it with Codex sandboxing disabled thereafter. SafeYolo remains
 # the outer containment boundary.
 #
@@ -55,6 +55,13 @@ fi
 install -m 0755 "$SCRIPT_DIR/codex-command.sh" "$AGENT_HOME/.safeyolo-command"
 chmod +x "$AGENT_HOME/.safeyolo-command"
 install -m 0755 "$AGENT_HOME/.safeyolo-command" "$AGENT_HOME/.safeyolo-interactive-command"
+
+if [ -n "${SAFEYOLO_CODEX_PACKAGE:-}" ]; then
+    if ! "${SAFEYOLO_EXECUTABLE:?Codex import needs the installed SafeYolo executable}" \
+        codex import "$SAFEYOLO_CODEX_PACKAGE" "$AGENT_HOME"; then
+        echo 'codex-host-setup: early package import failed; using the ordinary guest installer.' >&2
+    fi
+fi
 
 if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
     "$coord_host" supervised-launcher "$AGENT_HOME/.safeyolo-command" codex

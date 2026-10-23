@@ -5,6 +5,7 @@ proof remain separate. The TLS parent serves only this fixture's local server.
 """
 
 import hashlib
+import json
 import os
 import shutil
 import signal
@@ -22,9 +23,9 @@ from tests.test_guest_acquisition import compressed_archive, digest, release
 from tests.test_guest_acquisition import guest_store as _guest_store
 from tests.test_guest_acquisition import native_cli as _native_cli
 from tests.test_guest_acquisition import registry as _registry
+from tests.test_host_packages import executable, run
 from tests.test_host_packages import musl_runtime as _musl_runtime
 from tests.test_host_packages import package_inputs as _package_inputs
-from tests.test_host_packages import run
 
 # Reuse fixtures in standalone and combined collection without plugin registration.
 guest_store = _guest_store
@@ -35,6 +36,181 @@ native_cli = _native_cli
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASES = "/craigbalding/safeyolo/releases"
+
+
+def codex_release(tmp_path, contents):
+    """Complete controlled ELF package for the real native acquisition boundary."""
+    payload = tmp_path / "codex-release"
+    for name in ("bin/codex", "bin/codex-code-mode-host", "codex-path/rg"):
+        path = payload / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        executable(path, "codex-cli 9.9.9" if name == "bin/codex" else "companion fixture")
+    (payload / "codex-resources").mkdir()
+    (payload / "codex-resources/resource").write_bytes(b"adjacent resource; preserve these bytes")
+    (payload / "LICENSE").write_bytes(b"upstream notice; preserve this file too")
+    tar = subprocess.check_output(["tar", "-cf", "-", "-C", str(payload), "."])
+    package = subprocess.check_output(["zstd", "-q", "-c"], input=tar)
+    architecture = "x86_64" if os.uname().machine == "x86_64" else "aarch64"
+    asset = f"codex-package-{architecture}-unknown-linux-musl.tar.zst"
+    path = f"/openai/codex/releases/download/rust-v9.9.9/{asset}"
+    metadata = {"id": 1, "name": "9.9.9", "tag_name": "rust-v9.9.9", "created_at": "2020-01-01T00:00:00Z",
+                "published_at": "2020-01-01T00:00:00Z", "draft": False, "prerelease": False,
+                "assets": [{"id": 2, "name": asset, "digest": digest(package), "size": len(package),
+                            "url": "https://github.com" + path, "browser_download_url": "https://github.com" + path}]}
+    contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
+    contents[path] = package
+    return payload, path, metadata
+
+
+@pytest.mark.parametrize("refusal", [None, "source", "target", "existing"])
+def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfer(registry, native_cli, tmp_path, refusal):
+    mise = shutil.which("mise")
+    if not mise:
+        pytest.skip("real mise is required to prove local package registration")
+    contents, requests, _faults, environment = registry
+    payload, asset, metadata = codex_release(tmp_path, contents)
+    contents["/repos/openai/codex/releases"] = json.dumps([metadata]).encode()
+    contents["/repos/openai/codex/releases/tags/rust-v9.9.9"] = json.dumps(metadata).encode()
+    environment = {key: value for key, value in environment.items()
+                   if not key.startswith(("MISE_", "__MISE_", "SAFEYOLO_CODEX_")) and key != "BASH_ENV"}
+    environment["CURL_CA_BUNDLE"] = environment["SSL_CERT_FILE"]
+    output = tmp_path / "prefetched"
+    result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
+    assert result.returncode == 0, result.stderr
+    home = tmp_path / "agent"
+    managed = home / ".safeyolo"
+    managed.mkdir(parents=True)
+    if refusal in ("source", "target"):
+        (output / refusal).write_text("mismatched binding\n")
+    elif refusal == "existing":
+        (managed / "codex-package").mkdir()
+        (managed / "codex-package/keep").write_bytes(b"retained agent state")
+    imported = run(str(native_cli), "codex", "import", str(output), str(home), env=environment)
+    if refusal:
+        assert imported.returncode != 0
+        assert (output / "payload/bin/codex").exists()
+        if refusal == "existing":
+            assert (managed / "codex-package/keep").read_bytes() == b"retained agent state"
+        else:
+            assert not (managed / "codex-package").exists()
+        return
+    assert imported.returncode == 0, imported.stderr
+    assert not (output / "payload").exists()
+    for path in payload.rglob("*"):
+        if path.is_file():
+            assert (managed / "codex-package/payload" / path.relative_to(payload)).read_bytes() == path.read_bytes()
+    environment.update(HOME=str(home), PATH=f"{Path(mise).parent}:/usr/bin:/bin")
+    first = run(str(REPO / "contrib/codex-command.sh"), "--probe", env=environment)
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.strip() == "codex-cli 9.9.9"
+    assert requests.count(asset) == 1
+    repeat = run(str(REPO / "contrib/codex-command.sh"), "--probe", env=environment)
+    assert repeat.returncode == 0, repeat.stderr
+    assert requests.count(asset) == 1
+    selected, = (home / ".mise/installs/github-openai-codex").glob("9.9.9*")
+    assert (selected / "bin/codex").samefile(managed / "codex-package/payload/bin/codex")
+    assert (selected / "LICENSE").read_bytes() == (payload / "LICENSE").read_bytes()
+
+
+@pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
+def test_interrupted_codex_prefetch_removes_partial_package_and_can_retry(registry, native_cli, tmp_path, interruption):
+    contents, _requests, faults, environment = registry
+    _payload, asset, _metadata = codex_release(tmp_path, contents)
+    environment["CURL_CA_BUNDLE"] = environment["SSL_CERT_FILE"]
+    output = tmp_path / "prefetched"
+    faults["pause"] = asset
+    process = subprocess.Popen([str(native_cli), "codex", "prefetch", str(output)], env=environment,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        assert faults["entered"].wait(timeout=10)
+        process.send_signal(interruption)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode != 0 and "interrupted" in stderr, (stdout, stderr)
+        assert not output.exists()
+        assert not list(tmp_path.glob("codex-*/package.tar.zst"))
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+    faults["pause"] = None
+    retried = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
+    assert retried.returncode == 0, retried.stderr
+    assert (output / "version").read_text().strip() == "9.9.9"
+
+
+@pytest.mark.parametrize("fault", [None, "digest", "partial", "young", "custom-age", "pin"])
+def test_native_codex_prefetch_verifies_complete_package_and_preserves_selection(registry, native_cli, tmp_path, fault):
+    contents, requests, faults, environment = registry
+    payload, asset, metadata = codex_release(tmp_path, contents)
+    if fault == "digest":
+        metadata["assets"][0]["digest"] = "sha256:" + "0" * 64
+    elif fault == "partial":
+        faults["partial"] = asset
+    elif fault == "young":
+        metadata["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    elif fault == "custom-age":
+        environment["SAFEYOLO_MIN_RELEASE_AGE"] = "72h"
+    elif fault == "pin":
+        environment["SAFEYOLO_CODEX_NATIVE_SPEC"] = "aqua:openai/codex@9.9.9"
+    contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
+    environment["CURL_CA_BUNDLE"] = environment["SSL_CERT_FILE"]
+    output = tmp_path / "prefetched"
+    result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
+    if fault in ("digest", "partial"):
+        assert result.returncode != 0, result.stdout
+        assert not output.exists()
+        faults["partial"] = None
+        metadata["assets"][0]["digest"] = digest(contents[asset])
+        contents["/repos/openai/codex/releases/latest"] = json.dumps(metadata).encode()
+        result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
+    if fault in ("young", "custom-age", "pin"):
+        assert result.returncode == 0, result.stderr
+        assert not output.exists() and asset not in requests
+    else:
+        assert result.returncode == 0, result.stderr
+        for path in payload.rglob("*"):
+            if path.is_file():
+                assert (output / "payload" / path.relative_to(payload)).read_bytes() == path.read_bytes()
+        assert (output / "version").read_text().strip() == "9.9.9"
+        assert requests.count(asset) == (2 if fault else 1)
+    assert not [path for path in tmp_path.glob("codex-*") if path != payload]
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+def test_complete_codex_package_arrives_during_host_transfer_and_is_handed_to_launch(public_release, native_cli, tmp_path):
+    contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    _payload, asset, _metadata = codex_release(tmp_path, contents)
+    marker = tmp_path / "launch-inputs"
+    handoff = tmp_path / "codex-handoff"
+    environment.update(PACKAGE_CODEX_PREFETCH_CLI=str(native_cli), PACKAGE_LAUNCH_CALLS=str(marker),
+                       PACKAGE_CODEX_HANDOFF=str(handoff))
+    faults["pause"] = f"{base}/{archive.name}"
+    process = subprocess.Popen(["bash", str(bootstrap), "--launch", "--harness", "codex"], env=environment,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        assert faults["entered"].wait(timeout=10)
+        cache = Path(environment["HOME"]) / ".cache/safeyolo/host-packages"
+        deadline = time.monotonic() + 5
+        while not list(cache.glob("*/acquire.*/codex/version")):
+            assert time.monotonic() < deadline, "Codex acquisition waited for host extraction or sandbox startup"
+            time.sleep(0.01)
+        assert not root.exists() and process.poll() is None
+        faults["resume"].set()
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0, stderr
+        assert stdout.count("Verified SafeYolo package:") == 1
+        arguments = marker.read_text().splitlines()
+        assert arguments[-2:] == ["--harness", "codex"]
+        assert handoff.read_text().endswith("/codex")
+        assert requests.count(asset) == 1
+        assert (root / "config.toml").is_file()
+        assert not list(cache.glob("*/acquire.*"))
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
 
 
 @pytest.fixture

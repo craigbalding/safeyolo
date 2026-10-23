@@ -129,7 +129,8 @@ def registry(tmp_path):
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName("ghcr.io"), x509.DNSName("github.com")]), False)
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(host) for host in
+                           ("ghcr.io", "github.com", "api.github.com")]), False)
             .sign(key, hashes.SHA256()))
     pem = tmp_path / "registry.pem"
     pem.touch(mode=0o600)
@@ -153,7 +154,7 @@ def registry(tmp_path):
             path = urlsplit(self.path).path
             requests.append(path)
             assert not self.headers.get("Authorization", "").startswith("Basic ")
-            if path.endswith("/releases/latest") and faults.get("host_release"):
+            if path == "/craigbalding/safeyolo/releases/latest" and faults.get("host_release"):
                 self.send_response(302)
                 self.send_header("Location", f'https://github.com/craigbalding/safeyolo/releases/tag/{faults["host_release"]}')
                 self.send_header("Content-Length", "0")
@@ -199,7 +200,7 @@ def registry(tmp_path):
 
     class RegistryParent(Request):
         def _peer(self, host, port, *, tls_origin):
-            assert tls_origin and host in ("ghcr.io", "github.com") and port == 443
+            assert tls_origin and host in ("ghcr.io", "github.com", "api.github.com") and port == 443
             return socket.create_connection(server.server_address, timeout=5), False
 
     parent = Parent(None, None, request_handler=RegistryParent)
