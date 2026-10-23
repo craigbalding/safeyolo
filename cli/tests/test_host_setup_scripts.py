@@ -3192,13 +3192,16 @@ if args[:2] == ['settings', 'get']:
     sys.exit(1 if failure == 'age-setting' else 0)
 if args[0] == 'where':
     if not (root / 'installed').exists(): sys.exit(1)
+    if (root / 'installed').read_text() != args[-1].split(':', 1)[0]: sys.exit(1)
     print(root)
 elif args[0] == 'latest':
+    if '--installed' in args and (not (root / 'installed').exists() or (root / 'installed').read_text() != args[-1].split(':', 1)[0]):
+        sys.exit(1)
     version = '9.9.9' if '--installed' in args else os.environ['TEST_REMOTE_VERSION']
     if not version: sys.exit(1)
     print(version)
 elif args[:3] == ['use', '-g', '--force']:
-    assert args[-1].startswith('aqua:')
+    assert args[-1].startswith(('aqua:', 'github:'))
     if failure == 'acquire': sys.exit(31)
     root.mkdir(exist_ok=True)
     version = '8.8.8' if failure == 'wrong-version' else '9.9.9'
@@ -3217,7 +3220,7 @@ elif args[:3] == ['use', '-g', '--force']:
             path.parent.mkdir(exist_ok=True)
             path.write_text('#!/bin/sh\\nexit 0\\n')
             path.chmod(0o644 if failure == name else 0o755)
-    (root / 'installed').touch()
+    (root / 'installed').write_text(args[-1].split(':', 1)[0])
 else:
     sys.exit(99)
 ''')
@@ -3248,8 +3251,12 @@ def test_native_clients_install_and_reenter_without_node(tmp_path, harness, entr
     assert first.returncode == 0, first.stderr
     assert Path(env["TEST_EXEC_LOG"]).read_bytes().split(b"\0")[-4:] == [b"--probe", b"two words", b"", b""]
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    tool = "aqua:openai/codex" if harness == "codex" else "aqua:anthropics/claude-code"
+    tool = next(call.removeprefix("use -g --force ").rsplit("@", 1)[0] for call in calls if call.startswith("use -g --force "))
+    assert tool.startswith("github:openai/codex[") if harness == "codex" else tool == "aqua:anthropics/claude-code"
     assert f"use -g --force {tool}@{'latest' if lookup_failure else '9.9.9'}" in calls
+    if harness == "codex":
+        # Empty installed selections do not need a possibly remote `where`.
+        assert sum(call.startswith("where ") for call in calls) == 1, calls
     assert not any("node" in call or "npm:" in call for call in calls)
     assert not (home / ".mise/installs/node").exists()
     assert not (home / ".mise/installs/npm-openai-codex").exists()
@@ -3264,6 +3271,130 @@ def test_native_clients_install_and_reenter_without_node(tmp_path, harness, entr
     if harness == "codex":
         # The selected client owns the same agent-local configuration directory.
         assert Path(env["TEST_CODEX_HOME_LOG"]).read_text() == str(home / ".codex")
+
+
+@pytest.mark.parametrize(("system", "machine", "target"), [
+    ("Linux", "x86_64", "x86_64-unknown-linux-musl"),
+    ("Linux", "aarch64", "aarch64-unknown-linux-musl"),
+    ("Darwin", "arm64", "aarch64-apple-darwin"),
+    ("Darwin", "x86_64", "x86_64-apple-darwin"),
+])
+def test_fresh_codex_selects_complete_zstd_package_for_its_platform(tmp_path, system, machine, target):
+    _, command, env = _stage_native_client(tmp_path, "codex")
+    uname = tmp_path / "bin/uname"
+    uname.write_text(f'#!/bin/sh\ncase "$1" in -m) echo {machine};; -s) echo {system};; esac\n')
+    uname.chmod(0o755)
+    result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert f"use -g --force github:openai/codex[asset_pattern=codex-package-{target}.tar.zst,version_prefix=rust-v,bin_path=bin]@9.9.9" in calls
+
+
+def test_default_codex_reuses_healthy_aqua_selection_without_acquiring_another_package(tmp_path):
+    _, command, env = _stage_native_client(tmp_path, "codex")
+    env["SAFEYOLO_CODEX_NATIVE_SPEC"] = "aqua:openai/codex@9.9.9"
+    first = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    env.pop("SAFEYOLO_CODEX_NATIVE_SPEC")
+    env["TEST_REMOTE_VERSION"] = "10.0.0"
+    Path(env["TEST_MISE_LOG"]).write_text("")
+    repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    assert repeat.returncode == 0, repeat.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert not any(call.startswith("use ") or "github:" in call for call in calls)
+    assert "10.0.0 is available; not upgrading automatically" in repeat.stderr
+
+
+@pytest.mark.parametrize("bad_digest", [False, True])
+def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_digest):
+    """Exercise full extraction, release age and digest refusal without a client download."""
+    mise, zstd = shutil.which("mise"), shutil.which("zstd")
+    if not mise or not zstd:
+        pytest.skip("Real mise and zstd are required for the native archive control")
+    home, command, env = _stage_native_client(tmp_path, "codex")
+    (tmp_path / "bin/mise").unlink()
+    (tmp_path / "bin/mise").symlink_to(Path(mise).resolve())
+    members = {"bin/codex": b'#!/bin/sh\nif [ "$1" = --version ]; then echo "codex-cli 9.9.9"; else echo ready; fi\n',
+               "bin/codex-code-mode-host": b"#!/bin/sh\nexit 0\n", "codex-path/rg": b"#!/bin/sh\nexit 0\n",
+               "codex-resources/bwrap": b"retained adjacent resource\n"}
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as archive:
+        for name, payload in members.items():
+            member = tarfile.TarInfo(name)
+            member.size, member.mode = len(payload), 0o755
+            archive.addfile(member, io.BytesIO(payload))
+    package = subprocess.check_output([zstd, "-q", "-c"], input=tar.getvalue())
+    checksum = "0" * 64 if bad_digest else hashlib.sha256(package).hexdigest()
+    asset = "codex-package-fixture.tar.zst"
+    requests = []
+
+    class Releases(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/" + asset:
+                body = package
+            else:
+                def release(version, published):
+                    url = f"http://127.0.0.1:{self.server.server_port}/{asset}"
+                    return {"id": 1, "tag_name": "rust-v" + version, "name": version,
+                            "created_at": published, "published_at": published, "draft": False, "prerelease": False,
+                            "assets": [{"id": 2, "name": asset, "size": len(package), "digest": "sha256:" + checksum,
+                                        "browser_download_url": url, "url": url}]}
+                old = release("9.9.9", "2020-01-01T00:00:00Z")
+                young = release("9.9.10", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                path = self.path.split("?", 1)[0]
+                if path.endswith("/releases/latest") or path.endswith("/tags/rust-v9.9.10"):
+                    result = young
+                elif path.endswith("/tags/rust-v9.9.9"):
+                    result = old
+                elif path.endswith("/releases"):
+                    result = [young, old]
+                else:
+                    self.send_error(404)
+                    return
+                body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Releases)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        tool = f"github:openai/codex[asset_pattern={asset},version_prefix=rust-v,bin_path=bin,api_url=http://127.0.0.1:{server.server_port}]"
+        env["SAFEYOLO_CODEX_NATIVE_SPEC"] = tool + "@latest"
+        (home / ".mise").mkdir()
+        config = home / ".mise/config.toml"
+        config.write_text('[tools]\nnode = "22.0.0"\n')
+        result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
+        if bad_digest:
+            assert result.returncode != 0, result.stdout
+            assert "checksum" in result.stderr.lower(), result.stderr
+            assert "ready" not in result.stdout
+        else:
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "ready"
+            installed = next((home / ".mise/installs/github-openai-codex").glob("9.9.9*"))
+            for name, payload in members.items():
+                assert (installed / name).read_bytes() == payload
+            assert not (home / ".mise/installs/github-openai-codex/9.9.10").exists()
+            assert tomllib.loads(config.read_text())["tools"]["node"] == "22.0.0"
+            downloads = requests.count("/" + asset)
+            repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
+            assert repeat.returncode == 0, repeat.stderr
+            assert repeat.stdout.strip() == "ready"
+            assert requests.count("/" + asset) == downloads
+        assert not (home / ".mise/installs/node").exists()
+        assert not (home / ".mise/installs/npm-openai-codex").exists()
+        assert any(path.split("?", 1)[0].endswith("/releases") for path in requests), requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])
@@ -3285,9 +3416,12 @@ def test_native_client_preserves_pin_and_release_age_controls(tmp_path, harness,
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])
 @pytest.mark.parametrize("failure", ["acquire", "executable", "wrong-version"])
-def test_native_client_refuses_failed_install_and_can_retry(tmp_path, harness, failure):
+@pytest.mark.parametrize("lookup_failure", [False, True])
+def test_native_client_refuses_failed_install_and_can_retry(tmp_path, harness, failure, lookup_failure):
     home, command, env = _stage_native_client(tmp_path, harness)
     env["TEST_NATIVE_FAILURE"] = failure
+    if lookup_failure:
+        env["TEST_REMOTE_VERSION"] = ""
     failed = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
     assert failed.returncode != 0
     assert not Path(env["TEST_EXEC_LOG"]).exists()

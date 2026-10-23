@@ -14,6 +14,8 @@ export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES="none"
 export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
 if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
+    sy_default_native=0
+    if [ -z "${SAFEYOLO_CODEX_NATIVE_SPEC:-}" ]; then sy_default_native=1; fi
     : "${SAFEYOLO_CODEX_NATIVE_SPEC:=aqua:openai/codex@latest}"
     : "${SAFEYOLO_MIN_RELEASE_AGE:=24h}"
     if MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE" \
@@ -25,8 +27,11 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
     sy_spec="$SAFEYOLO_CODEX_NATIVE_SPEC"
     sy_tool="${sy_spec%@*}"
     sy_target=""
-    sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
     sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+    sy_root=""
+    if [ -n "$sy_expected" ]; then
+        sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+    fi
     sy_native_ready() {
         [ -n "$sy_root" ] && [ -n "$sy_expected" ] &&
         [ -x "$sy_root/bin/codex-code-mode-host" ] &&
@@ -34,7 +39,27 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         sy_native_version="$("$sy_root/bin/codex" --version 2>/dev/null)" &&
         [ "${sy_native_version##* }" = "$sy_expected" ]
     }
-    if ! sy_native_ready; then
+    sy_ready=0
+    if sy_native_ready; then
+        sy_ready=1
+    elif [ "$sy_default_native" = 1 ]; then
+        # Keep a healthy Aqua selection above. For a fresh default, mise's
+        # GitHub backend can select the smaller full upstream zstd package.
+        # Both backends use the same releases and verify the asset digest.
+        sy_arch="$(uname -m)"
+        case "$sy_arch" in arm64) sy_arch=aarch64;; amd64) sy_arch=x86_64;; esac
+        sy_platform=unknown-linux-musl
+        if [ "$(uname -s)" = Darwin ]; then sy_platform=apple-darwin; fi
+        sy_tool="github:openai/codex[asset_pattern=codex-package-${sy_arch}-${sy_platform}.tar.zst,version_prefix=rust-v,bin_path=bin]"
+        sy_spec="${sy_tool}@latest"
+        sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+        sy_root=""
+        if [ -n "$sy_expected" ]; then
+            sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+        fi
+        if sy_native_ready; then sy_ready=1; fi
+    fi
+    if [ "$sy_ready" = 0 ]; then
         echo "SafeYolo: downloading or repairing native Codex and its companion tools." >&2
         sy_target="$(mise latest "$sy_spec" 2>/dev/null | tail -1)"
         if [ -n "$sy_target" ]; then
@@ -43,7 +68,7 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
             echo "codex-host-setup: could not resolve a remote version for $sy_spec; falling back to $sy_spec" >&2
         fi
         # The complete upstream package carries bin/, codex-path/ and
-        # codex-resources/. Aqua verifies its GitHub release asset digest.
+        # codex-resources/. Mise verifies its GitHub release asset digest.
         mise use -g --force "$sy_spec" >&2
         sy_root="$(mise where "$sy_spec")"
         sy_expected="$sy_target"
@@ -58,7 +83,7 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
     # Keep the complete package in place for executable-relative resources.
     # Supervised turns inherit this PATH and run the same selected Codex.
     export PATH="$sy_root/bin:$sy_root/codex-path:$PATH"
-    sy_running="$(codex --version)"
+    sy_running="$sy_native_version"
     sy_running="${sy_running##* }"
     echo "codex-host-setup: codex $sy_running" >&2
     sy_available="$sy_target"

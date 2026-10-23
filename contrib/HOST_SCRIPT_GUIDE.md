@@ -255,7 +255,10 @@ the GitHub release asset digest, and checks the executable before launch.
 Claude releases also publish `SHASUMS256.txt`. These checks trust upstream
 release metadata over HTTPS; they do not independently authenticate the
 publisher. Codex uses the complete `codex-package` archive, including its
-search executable, code-mode host and adjacent resources. Reentry repairs
+search executable, code-mode host and adjacent resources. Fresh Codex defaults
+use mise's GitHub backend to select the smaller upstream `.tar.zst` archive.
+A healthy existing Aqua selection is reused. Explicit native specs keep their
+selected backend and archive. Reentry repairs
 missing required executables and reuses a healthy selected version.
 
 To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to
