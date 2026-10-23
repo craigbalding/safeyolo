@@ -228,7 +228,15 @@ else
   echo 'SafeYolo: reusing the verified host archive.' >&2
 fi
 echo 'SafeYolo: verifying and unpacking the host package.' >&2
-tar -xzf "$archive" -C "$stage"
+if [[ -n $guest_pid ]] && "$early/bin/safeyolo" host-package --help >/dev/null 2>&1; then
+  # This same-release CLI was verified before its early guest download. Keep
+  # tar's existing extraction behavior, with the CLI's faster gzip decoder.
+  # pipefail also rejects a bad gzip trailer after tar reaches its end marker.
+  "$early/bin/safeyolo" host-package gunzip "$archive" | tar -xf - -C "$stage"
+else
+  # Earlier releases and paths without an early CLI retain their extractor.
+  tar -xzf "$archive" -C "$stage"
+fi
 package=$stage/$name
 [[ -f $package/package-info && -f $package/install.sh ]] || { echo 'The host archive is incomplete; no package was installed.' >&2; exit 1; }
 for field in "source_commit=${release#host-}" "profile=production" "platform=$platform"; do
