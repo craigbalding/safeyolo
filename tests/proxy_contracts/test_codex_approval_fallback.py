@@ -231,8 +231,10 @@ def test_codex_routing_waits_for_active_approval_after_saved_receipt(tmp_path, o
             database.execute("CREATE TRIGGER fail_canonical_result BEFORE UPDATE ON approvals "
                              "WHEN json_extract(NEW.record,'$.status')='approved' "
                              "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END;")
-            decided = instance.cli("approvals", "approve", identifier, "--option", option, "--json")
-            assert decided.returncode != 0
+            instance.cli("approvals", "approve", identifier, "--option", option, "--json")
+            # The CLI can recover success from the policy receipt. Inspect the
+            # canonical database row to establish the intended lost write.
+            assert database.execute("SELECT status FROM approvals WHERE approval_id=?", (identifier,)).fetchone()[0] == "pending"
             approved = instance.policy.read_text()
             assert instance.admin("GET", f"/admin/approvals/{identifier}")["status"] == "approved"
             # Reuse the saved/live mismatch control from native_policy_cli.py.
