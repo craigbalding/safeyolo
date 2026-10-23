@@ -3,8 +3,10 @@
 set -euo pipefail
 umask 077
 account=sy-agent
-if [[ ${1:-} == --user && $# == 2 ]]; then account=$2
-elif [[ $# != 0 ]]; then echo 'Usage: configure-client [--user ACCOUNT]' >&2; exit 2; fi
+check=no
+if [[ ${1:-} == --check && $# == 1 ]]; then check=yes
+elif [[ ${1:-} == --user && $# == 2 ]]; then account=$2
+elif [[ $# != 0 ]]; then echo 'Usage: configure-client [--user ACCOUNT | --check]' >&2; exit 2; fi
 [[ $account =~ ^[a-zA-Z0-9_.-]+$ ]] || { echo 'Invalid account name' >&2; exit 1; }
 # Ordinary installed hosts use safeyolo. Native agent setup has already staged
 # the matching Linux safeyolo-coord executable under the agent's own home.
@@ -19,6 +21,7 @@ case "$identity_line" in
   *) echo 'Selected executable is not the SafeYolo CLI/Coord runtime' >&2; exit 1;;
 esac
 "$cli" ssh-proxy --help >/dev/null
+[[ $check == no ]] || exit 0
 read -r -p 'Operator-approved Mac host/IP, as seen by the proxy: ' host
 read -r -p 'SSH port [22]: ' port
 port=${port:-22}
