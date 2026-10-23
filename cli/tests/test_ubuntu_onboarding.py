@@ -298,6 +298,103 @@ esac
         self.assertNotIn("cold_total_to_first_task_seconds", m.x["timings"])
         self.assertIn("do not measure human", m.x["timings"]["wait_limit"])
 
+    def test_acquisition_samples_survive_staging_cleanup_and_keep_overlapping_growth(self):
+        m.archive = m.private / "cache/safeyolo-linux-arm64-production.tar.gz"
+        stage = m.archive.parent / "acquire.test"
+        stage.mkdir(parents=True)
+        blobs = m.store / "blobs/sha256"
+        blobs.mkdir(parents=True)
+        host = stage / m.archive.name
+        auxiliary = stage / "guest-download.tar.gz"
+        guest = blobs / ".tmpguest"
+        for path in [host, auxiliary, guest]:
+            path.write_bytes(b"start")
+        m.sample_files("cold")
+        for path in [host, auxiliary, guest]:
+            path.write_bytes(b"completed payload")
+        m.sample_files("cold")
+        committed = blobs / m.digest(guest)
+        guest.rename(committed)
+        m.sample_files("cold")
+        host.rename(m.archive)
+        shutil.rmtree(stage)
+        m.sample_files("cold")
+        m.acquisition_accounting()
+        saved = json.loads(m.out.read_text())
+        # Raw evidence is already durable, even if a later product assertion fails.
+        self.assertEqual(len(saved["acquisition_files"]), 3)
+        self.assertTrue(all(row.get("first_absent") for row in saved["acquisition_files"].values()))
+        self.assertEqual({row["kind"] for row in m.x["acquisition"]["overlaps"]},
+                         {"guest-transfer", "auxiliary-transfer"})
+        self.assertTrue(all(row["observed_growth_span_overlap_seconds"] > 0
+                            for row in m.x["acquisition"]["overlaps"]))
+        facts = m.x["acquisition"]["committed_files"]
+        self.assertEqual([row["boundary"] for row in facts],
+                         ["blobs/" + committed.name, "host-archive-verified"])
+        self.assertEqual(facts[0]["inode"], next(row["inode"] for row in saved["acquisition_files"].values()
+                                               if row["kind"] == "guest-transfer"))
+
+    def test_missing_acquisition_samples_do_not_establish_serial_transfer_or_readiness(self):
+        m.acquisition_accounting()
+        self.assertEqual(m.x["acquisition"]["overlaps"], [])
+        self.assertIn("does not prove serial", m.x["acquisition"]["limits"])
+        m.signed_out_accounting()
+        self.assertIsNone(m.x["timings"]["cold_product_to_input_ready_seconds"])
+
+    def test_input_accounting_includes_required_preparation_and_leaves_unknown_waits(self):
+        m.x.update(product_commands=[{"at": "2026-10-23T00:00:10+00:00", "monotonic": 10},
+                                    {"phase": "cold", "input_ready": {"at": "2026-10-23T00:00:30+00:00", "monotonic": 30}}],
+            preparation={"commands": [{"role": "required-user", "started_at": "2026-10-23T00:00:00+00:00"}],
+                         "decisions": [], "required_reading": [{"text": "Required preparation", "seen_at": "2026-10-23T00:00:00+00:00"}]})
+        m.signed_out_accounting()
+        self.assertEqual(m.x["counts"]["total_required_user_commands_to_input"], 3)
+        self.assertEqual(m.x["counts"]["required_reading_words"], 2)
+        self.assertEqual(m.x["timings"]["cold_product_to_input_ready_seconds"], 20)
+        self.assertEqual(m.x["timings"]["cold_total_to_input_ready_seconds"], 30)
+        self.assertIsNone(m.x["timings"]["human_reading_seconds"])
+        self.assertIsNone(m.x["timings"]["provider_wait_seconds"])
+        m.x["preparation"]["commands"][0]["started_at"] = None
+        m.signed_out_accounting()
+        self.assertIsNone(m.x["timings"]["cold_total_to_input_ready_seconds"])
+
+    def test_codex_input_detection_rejects_signin_trust_failures_and_banner_only(self):
+        screen = "OpenAI Codex (v0.163.0)\nmodel: gpt-6\ndirectory: /workspace\n› ".encode()
+        with patch.object(m, "HARNESS", "codex"):
+            self.assertEqual(m.login_label(screen), ["Codex input display"])
+            for invalid in [b"OpenAI Codex v0.163.0", screen.replace("›".encode(), b""),
+                            *(screen + text for text in [b"Sign in", b"Log in", b"Trust this workspace?",
+                                                         b"Trust the directory?", b"Error: request failed", b"Reconnecting..."])]:
+                self.assertEqual(m.login_label(invalid), [])
+
+    def test_prepared_codex_baseline_accepts_only_owned_adopted_auth_without_reading_it(self):
+        codex = m.root / "agents/first/home/.codex"
+        codex.mkdir(parents=True)
+        auth = codex / "auth.json"
+        auth.write_text("not read by the observer")
+        auth.chmod(0o600)
+        marker = codex / ".safeyolo-provenance.json"
+        marker.write_text(json.dumps({"state": "agent-local"}))
+        marker.chmod(0o600)
+        original = Path.read_text
+        def no_auth_read(path, *args, **kwargs):
+            self.assertNotEqual(path, auth)
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "read_text", no_auth_read):
+            self.assertTrue(m.codex_auth_only_root())
+        extra = m.root / "agents/first/home/.mise"
+        extra.mkdir()
+        self.assertFalse(m.codex_auth_only_root())
+        extra.rmdir()
+        auth.chmod(0o644)
+        self.assertFalse(m.codex_auth_only_root())
+        auth.chmod(0o600)
+        marker.write_text(json.dumps({"state": "legacy-unknown"}))
+        self.assertFalse(m.codex_auth_only_root())
+        marker.write_text(json.dumps({"state": "agent-local"}))
+        auth.rename(codex / "original")
+        auth.symlink_to(codex / "original")
+        self.assertFalse(m.codex_auth_only_root())
+
     def test_canonical_submission_write_result_and_file_must_match_in_order(self):
         rows, body = self.canonical_task()
         self.assertTrue(m.task_records(rows, body)["successful_task"])
@@ -1685,6 +1782,31 @@ esac
         self.assertNotIn("readiness_unclassified_at_deadline", row)
         self.assertTrue(m.x["after-reentry"]["captured_before_detach"])
         self.assertIn("ordinary_q", row)
+
+    def test_codex_readiness_uses_attached_pane_and_never_stale_host_output(self):
+        screen = "OpenAI Codex\nmodel: gpt-6\ndirectory: /workspace\n› "
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": False}):
+            row = self.run_console(screen, 0.2)
+        self.assertNotIn("input_ready", row)
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": True, "labels": ["Codex input display"]}), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 0, "stdout": "1234\n"}):
+            row = self.run_console("no new prompt", 2)
+        self.assertEqual(row["input_ready"]["source"], "attached-pane-screen")
+        self.assertNotIn("signed_out_label", row)
+        self.assertIn("ordinary_q", row)
+
+    def test_codex_screen_without_native_guest_process_is_not_input_ready(self):
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": True, "labels": ["Codex input display"]}), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 1, "stdout": ""}):
+            row = self.run_console("retained screen", 0.2)
+        self.assertNotIn("input_ready", row)
+        self.assertEqual(row["codex_process"]["exit"], 1)
 
     def test_real_pty_early_exit_is_captured_and_reaped(self):
         with patch.object(m, "LAUNCH", [sys.executable, "-c", "raise SystemExit(3)"]), \
