@@ -141,10 +141,17 @@ fn extract(
         // The private-stage remapper checks every owner and hard link before
         // changing anything. Reuse that traversal for all mappings, including
         // unchanged root IDs with guest-user ownership or named ACLs to shift.
+        // Library tests run under libtest; only the built CLI dispatches host
+        // commands. Both native test lanes supply this existing fixture input.
+        #[cfg(test)]
+        let executable = std::env::var_os("SAFEYOLO_NATIVE_CLI")
+            .ok_or("set SAFEYOLO_NATIVE_CLI to the built native CLI for acquisition tests")?;
+        #[cfg(not(test))]
+        let executable = std::env::current_exe()?;
         let mut remap = Command::new("sudo");
         remap
             .arg("--")
-            .arg(std::env::current_exe()?)
+            .arg(executable)
             .args(["host", "remap-rootfs"])
             .arg(stage.join("rootfs-tree"))
             .arg(mapping.uid_base.to_string())

@@ -351,6 +351,8 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         timeout-minutes: 10
         working-directory: proxy
+        env:
+          SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
         run: |
           ../scripts/cargo_with_space.sh test --release --locked --test version
           ../scripts/cargo_with_space.sh test --release --locked --test agent_api_audit
