@@ -183,7 +183,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: 8c8859513e885f3b20fb9c5816930451cc4b51397182311c1622b46b373456b8
+          sha256: c31cb3e2ab1be31b6a319067f0757913373ada753d264ef1719b306edd35b705
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -219,7 +219,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
         - path: uv.lock
-          sha256: 8c8859513e885f3b20fb9c5816930451cc4b51397182311c1622b46b373456b8
+          sha256: c31cb3e2ab1be31b6a319067f0757913373ada753d264ef1719b306edd35b705
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
@@ -470,7 +470,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 91ada1101761243365bb0ae0ce5ebf99d8e97d51c59c71a56aad31013af9a5f1
         - path: uv.lock
-          sha256: 8c8859513e885f3b20fb9c5816930451cc4b51397182311c1622b46b373456b8
+          sha256: c31cb3e2ab1be31b6a319067f0757913373ada753d264ef1719b306edd35b705
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -524,7 +524,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: 8c8859513e885f3b20fb9c5816930451cc4b51397182311c1622b46b373456b8
+          sha256: c31cb3e2ab1be31b6a319067f0757913373ada753d264ef1719b306edd35b705
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -580,7 +580,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: 8c8859513e885f3b20fb9c5816930451cc4b51397182311c1622b46b373456b8
+          sha256: c31cb3e2ab1be31b6a319067f0757913373ada753d264ef1719b306edd35b705
         - path: tools/acceptance/pyproject.toml
           sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
