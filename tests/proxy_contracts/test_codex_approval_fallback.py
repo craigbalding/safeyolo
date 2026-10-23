@@ -60,6 +60,10 @@ def _routing_run(instance):
         if backend.poll() is None:
             backend.terminate()
         backend.communicate(timeout=5)
+        # Retain the controlled identity records without making the installed
+        # fixture keep runtime copies for a guest that was never booted.
+        agent.rename(instance.root / "controlled-run")
+        agent.parent.rmdir()
 
 
 @contextmanager
