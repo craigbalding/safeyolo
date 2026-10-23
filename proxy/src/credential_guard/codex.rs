@@ -131,6 +131,11 @@ fn access_path(method: &str, path: &str) -> bool {
             "GET",
             "/backend-api/wham/accounts/check"
                 | "/backend-api/wham/usage"
+                | "/backend-api/wham/rate-limit-reset-credits"
+                | "/backend-api/plugins/featured"
+                | "/backend-api/ps/plugins/installed"
+                | "/backend-api/ps/plugins/suggested/codex"
+                | "/backend-api/ps/plugins/list"
                 | "/backend-api/codex/models"
                 | "/backend-api/codex/rate_limits"
                 | "/backend-api/codex/responses"
@@ -400,5 +405,38 @@ impl Drop for Replacements {
         self.access_token.zeroize();
         self.refresh_token.zeroize();
         self.id_token.zeroize();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::access_path;
+
+    #[test]
+    fn native_discovery_paths_require_exact_get_routes() {
+        for path in [
+            "/backend-api/plugins/featured",
+            "/backend-api/ps/plugins/installed",
+            "/backend-api/ps/plugins/suggested/codex",
+            "/backend-api/ps/plugins/list",
+            "/backend-api/wham/rate-limit-reset-credits",
+        ] {
+            assert!(access_path("GET", path));
+            assert!(access_path("GET", &format!("{path}?limit=20&cursor=next")));
+            for method in ["POST", "PUT", "DELETE", "HEAD", "OPTIONS", "get"] {
+                assert!(!access_path(method, path), "{method} {path}");
+            }
+            for suffix in ["/", "/extra", "-extra", "/../unrelated"] {
+                assert!(!access_path("GET", &format!("{path}{suffix}")));
+            }
+        }
+        for path in [
+            "/backend-api/plugins",
+            "/backend-api/ps/plugins",
+            "/backend-api/ps/plugins/suggested/other",
+            "/backend-api/wham/unrelated",
+        ] {
+            assert!(!access_path("GET", path));
+        }
     }
 }

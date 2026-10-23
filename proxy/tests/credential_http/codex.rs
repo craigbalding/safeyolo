@@ -4,6 +4,13 @@ use safeyolo_proxy::credentials;
 
 const CLIENT: &str = safeyolo_proxy::credential_guard::codex::CLIENT_ID;
 const ACCOUNT: &str = "/backend-api/wham/accounts/check?workspace_id=owned";
+const NATIVE_GET_PATHS: [&str; 5] = [
+    "/backend-api/plugins/featured",
+    "/backend-api/ps/plugins/installed",
+    "/backend-api/ps/plugins/suggested/codex",
+    "/backend-api/ps/plugins/list",
+    "/backend-api/wham/rate-limit-reset-credits",
+];
 const ACCESS: [&str; 3] = [
     "codex-owned-access-0",
     "codex-owned-access-1",
@@ -272,12 +279,23 @@ async fn imported_login_two_rotations_reload_restart_and_redaction() {
         fixture.import();
         let mut proxy = Proxy::start(fixture.config.clone()).await.unwrap();
         assert_eq!(fixture.access(ACCESS[0], "GET", ACCOUNT, h2).await, 200);
+        for path in NATIVE_GET_PATHS {
+            assert_eq!(fixture.access(ACCESS[0], "GET", path, h2).await, 200);
+        }
         for index in 1..=2 {
             *fixture.response.lock().unwrap() = (
                 200,
                 json!({"access_token":ACCESS[index],"refresh_token":REFRESH[index]}).to_string(),
             );
             assert_eq!(fixture.refresh(REFRESH[index - 1], CLIENT, h2).await, 200);
+            for path in NATIVE_GET_PATHS {
+                assert_eq!(
+                    fixture
+                        .access(ACCESS[index], "GET", &format!("{path}?limit=20"), h2)
+                        .await,
+                    200
+                );
+            }
             assert_eq!(
                 fixture
                     .access(ACCESS[index], "POST", "/backend-api/codex/responses", h2)
@@ -369,8 +387,36 @@ async fn credentials_do_not_inherit_other_origins_routes_clients_or_beneficiarie
         ("POST", ACCOUNT),
         ("GET", "/unrelated"),
         ("GET", "/backend-api/codex/responses/../unrelated"),
+        ("POST", NATIVE_GET_PATHS[0]),
+        ("POST", NATIVE_GET_PATHS[1]),
+        ("POST", NATIVE_GET_PATHS[2]),
+        ("POST", NATIVE_GET_PATHS[3]),
+        ("POST", NATIVE_GET_PATHS[4]),
+        ("GET", "/backend-api/plugins/featured/extra"),
+        ("GET", "/backend-api/ps/plugins/suggested/other"),
     ] {
         assert_ne!(fixture.access(ACCESS[0], method, path, true).await, 200);
+    }
+    for path in NATIVE_GET_PATHS {
+        assert_eq!(fixture.access(ACCESS[1], "GET", path, true).await, 428);
+        for (agent, host) in [(1, "chatgpt.com"), (0, "other.test")] {
+            assert_eq!(
+                fixture
+                    .send(
+                        agent,
+                        request(
+                            host,
+                            "GET",
+                            path,
+                            &[("authorization", &format!("Bearer {}", ACCESS[0]))],
+                            vec![]
+                        ),
+                        true
+                    )
+                    .await,
+                428
+            );
+        }
     }
     assert_eq!(
         fixture
@@ -466,6 +512,9 @@ async fn credentials_do_not_inherit_other_origins_routes_clients_or_beneficiarie
         );
         std::fs::write(fixture.config.policy_file.as_ref().unwrap(), explicit).unwrap();
         proxy.reload(fixture.config.clone()).await.unwrap();
+        for path in NATIVE_GET_PATHS {
+            assert_eq!(fixture.access(ACCESS[0], "GET", path, true).await, status);
+        }
         assert_eq!(
             fixture
                 .access(ACCESS[0], "POST", "/backend-api/codex/responses", true)

@@ -158,7 +158,10 @@ does not establish replacement authority.
 
 Access recognition is limited to HTTPS on `chatgpt.com:443`: account-check and
 usage GET requests, Codex models/rate-limit GET requests, and Codex response POST,
-compact POST and response WebSocket GET paths. It does not cover custom or
+compact POST and response WebSocket GET paths. It also covers the native Codex GET
+paths `/backend-api/plugins/featured`, `/backend-api/ps/plugins/installed`,
+`/backend-api/ps/plugins/suggested/codex`, `/backend-api/ps/plugins/list` and
+`/backend-api/wham/rate-limit-reset-credits`. It does not cover custom or
 regional endpoints selected by client configuration, unrelated paths, arbitrary
 methods, or other OpenAI services. Only exact imported or observed credentials
 receive this recognition. The issuer still decides whether a token is valid.
