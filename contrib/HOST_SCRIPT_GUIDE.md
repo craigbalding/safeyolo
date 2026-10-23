@@ -104,6 +104,18 @@ Then return to the Codex terminal. Repeat the login and adoption commands after
 an explicit authentication reset. The coordinated setup requires the same agent
 to complete this normal Codex login before selecting `codex-coord-host-setup.sh`.
 
+Codex routing discovery can require credential approval during startup. SafeYolo
+holds the routing `GET /backend-api/wham/accounts/check` for up to 30 seconds
+while its credential approval is pending. Use the trusted host controls to inspect
+and approve or reject the request. Once approval is active, SafeYolo returns a
+temporary redirect to the same URL. If the run or policy changes during the wait,
+SafeYolo also redirects the GET so the current checks decide it. Codex follows
+the redirect without restarting the client. The redirect does not grant access
+or send the original request upstream. Current checks can still refuse the new
+GET. Rejection or timeout retains the ordinary approval response. Codex's own
+HTTP deadline can expire earlier. Other requests keep their existing approval
+behavior.
+
 ## Why host-side
 
 A host script can read any file that the operator can read. For example, it can

@@ -38,6 +38,7 @@ mod agent_audit_tests;
 #[cfg(test)]
 mod circuit_audit_tests;
 mod circuit_completion;
+mod codex_routing;
 #[cfg(test)]
 mod flow_lookup_tests;
 mod flow_recording;
@@ -3076,6 +3077,32 @@ where
             "query_scope": "policy_context_only"
             }),
         ))?;
+        if codex_routing::routing_discovery(request.method(), &destination.path)
+            && let Some(record) = pending.as_ref()
+            && codex_routing::wait_for_decision(&state, &record.approval_id, upgrades.stop.clone())
+                .await?
+        {
+            // Codex follows same-origin redirects for this GET. Its new request
+            // goes through every current admission control and gets its own
+            // request ID and budget charge. This GET has not reached the API.
+            let mut retry = Response::builder()
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header(header::LOCATION, &destination.path)
+                .header(header::CACHE_CONTROL, "no-store")
+                .header("x-safeyolo-approval-id", &record.approval_id)
+                .body(full(Bytes::new()))?;
+            traffic::local_reply(
+                traffic.as_ref(),
+                &mut request,
+                &mut retry,
+                None,
+                None,
+                destination,
+                true,
+                trace.as_ref(),
+            )?;
+            return Ok((prior_block(retry), "local".into()));
+        }
         if let Some(enforcement) = outcome.response {
             let body = enforcement.body_bytes();
             let mut blocked = Response::builder()
