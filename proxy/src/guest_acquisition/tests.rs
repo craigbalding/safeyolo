@@ -234,6 +234,7 @@ mod linux {
         let source = directory.join("source");
         fs::create_dir_all(source.join("rootfs-tree/usr/bin")).unwrap();
         fs::write(source.join("rootfs-tree/usr/bin/fixture"), "guest bytes").unwrap();
+        fs::write(source.join("rootfs-tree/usr/bin/guest-user"), "user bytes").unwrap();
         fs::hard_link(
             source.join("rootfs-tree/usr/bin/fixture"),
             source.join("rootfs-tree/usr/bin/hardlink"),
@@ -245,6 +246,14 @@ mod linux {
             std::process::Command::new("sudo")
                 .args(["-n", "chown", "-R", "100000:100000"])
                 .arg(source.join("rootfs-tree"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("sudo")
+                .args(["-n", "chown", "101000:101000"])
+                .arg(source.join("rootfs-tree/usr/bin/guest-user"))
                 .status()
                 .unwrap()
                 .success()
@@ -269,64 +278,74 @@ mod linux {
 
     #[tokio::test]
     async fn acquisition_installs_backend_inputs_and_reuses_selected_digests() {
-        let temp = tempfile::tempdir().unwrap();
-        let release = release(linux_archive(temp.path()));
-        let registry = Registry::new(&release);
-        let package = registry.package();
-        let store = temp.path().join("store");
-        let selection = acquire(
-            &registry.client(),
-            &package,
-            &store,
-            None,
-            None,
-            crate::linux_host::Mapping::for_bases(100000, 100000),
-        )
-        .await
-        .unwrap();
-        assert_eq!(selection.archive, release.archive);
-        let tree = selection.assets.join("rootfs-tree");
-        assert_eq!(tree.metadata().unwrap().uid(), 100000);
-        assert_eq!(tree.metadata().unwrap().gid(), 100000);
-        assert_eq!(
-            tree.join("usr/bin/fixture").metadata().unwrap().ino(),
-            tree.join("usr/bin/hardlink").metadata().unwrap().ino()
+        assert_ne!(
+            unsafe { libc::getuid() },
+            0,
+            "run acquisition as the ordinary host account"
         );
-        assert_eq!(
-            fs::read_link(tree.join("bin")).unwrap(),
-            Path::new("usr/bin")
-        );
-        assert_eq!(
-            fs::read_to_string(selection.assets.join("cache-paths.txt")).unwrap(),
-            "/var/cache/apt\n"
-        );
-        let tree_identity = selection.assets.metadata().unwrap().ino();
-        let requests = registry.requests.lock().unwrap().len();
-        let again = acquire(
-            &registry.client(),
-            &package,
-            &store,
-            None,
-            None,
-            crate::linux_host::Mapping::for_bases(100000, 100000),
-        )
-        .await
-        .unwrap();
-        assert_eq!(again.assets.metadata().unwrap().ino(), tree_identity);
-        let seen = registry.requests.lock().unwrap();
-        assert!(
-            seen[requests..]
-                .iter()
-                .all(|path| !path.contains("/blobs/"))
-        );
-        assert_eq!(
-            seen.iter()
-                .filter(|path| *path == "/v2/guest/manifests/compat-v1")
-                .count(),
-            2
-        );
-        drop(seen);
-        archive::remove_stage(&store, package.platform).unwrap();
+        for (uid_base, gid_base) in [(100000, 100000), (231072, 400000)] {
+            let temp = tempfile::tempdir().unwrap();
+            let release = release(linux_archive(temp.path()));
+            let registry = Registry::new(&release);
+            let package = registry.package();
+            let store = temp.path().join("store");
+            let selection = acquire(
+                &registry.client(),
+                &package,
+                &store,
+                None,
+                None,
+                crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+            )
+            .await
+            .unwrap();
+            assert_eq!(selection.archive, release.archive);
+            let tree = selection.assets.join("rootfs-tree");
+            assert_eq!(tree.metadata().unwrap().uid(), uid_base);
+            assert_eq!(tree.metadata().unwrap().gid(), gid_base);
+            let guest_user = tree.join("usr/bin/guest-user").metadata().unwrap();
+            assert_eq!(guest_user.uid(), unsafe { libc::getuid() });
+            assert_eq!(guest_user.gid(), unsafe { libc::getgid() });
+            assert_eq!(
+                tree.join("usr/bin/fixture").metadata().unwrap().ino(),
+                tree.join("usr/bin/hardlink").metadata().unwrap().ino()
+            );
+            assert_eq!(
+                fs::read_link(tree.join("bin")).unwrap(),
+                Path::new("usr/bin")
+            );
+            assert_eq!(
+                fs::read_to_string(selection.assets.join("cache-paths.txt")).unwrap(),
+                "/var/cache/apt\n"
+            );
+            let tree_identity = selection.assets.metadata().unwrap().ino();
+            let requests = registry.requests.lock().unwrap().len();
+            let again = acquire(
+                &registry.client(),
+                &package,
+                &store,
+                None,
+                None,
+                crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.assets.metadata().unwrap().ino(), tree_identity);
+            let seen = registry.requests.lock().unwrap();
+            assert!(
+                seen[requests..]
+                    .iter()
+                    .all(|path| !path.contains("/blobs/"))
+            );
+            assert_eq!(
+                seen.iter()
+                    .filter(|path| *path == "/v2/guest/manifests/compat-v1")
+                    .count(),
+                2
+            );
+            drop(seen);
+            archive::remove_stage(&store, package.platform).unwrap();
+        }
     }
 
     #[tokio::test]

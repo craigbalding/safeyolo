@@ -249,6 +249,10 @@ cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
+Linux library acquisition tests use the built CLI for the privileged rootfs
+remapper. Build `safeyolo` with the selected profile, then set
+`SAFEYOLO_NATIVE_CLI` to its absolute path when running those tests. Both Rust
+CI lanes supply this input.
 The input producers and native checks share the existing quick-job dependency
 cache namespace for each profile. The pinned cache action still separates
 operating systems, architectures, Rust toolchains, flags and lockfile inputs.
