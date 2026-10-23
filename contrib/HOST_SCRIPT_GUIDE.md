@@ -250,8 +250,9 @@ Ordinary Codex, coordinated Codex, Lab and Demo use the same launcher payload.
 
 Mise selects a release at least `SAFEYOLO_MIN_RELEASE_AGE` old (default `24h`)
 when it supports `minimum_release_age`. The launcher warns if it cannot apply
-that delay. It resolves the selected version before installation, verifies
-the GitHub release asset digest, and checks the executable before launch.
+that delay. It resolves the selected version before installation and checks
+the executable before launch. The installer verifies the GitHub release asset
+digest before extraction.
 Claude releases also publish `SHASUMS256.txt`. These checks trust upstream
 release metadata over HTTPS; they do not independently authenticate the
 publisher. Codex uses the complete `codex-package` archive, including its
@@ -260,6 +261,17 @@ use mise's GitHub backend to select the smaller upstream `.tar.zst` archive.
 A healthy existing Aqua selection is reused. Explicit native specs keep their
 selected backend and archive. Reentry repairs
 missing required executables and reuses a healthy selected version.
+
+During public installation with `--launch --harness codex`, SafeYolo can fetch,
+verify and extract the complete Linux client while acquiring the host and guest.
+Apple Silicon hosts acquire the Linux ARM64 package. After setup consent, launch
+moves this payload into the new agent home. The guest imports it with `mise link`
+only when mise selects that same version and its executable probes pass. This
+avoids another client download and extraction. Host mise is not required.
+Prefetch applies to the fresh default with the default release-age setting;
+it skips a latest release younger than 24 hours. Pins, custom age settings,
+unmatched versions and unavailable prefetch use the ordinary guest installer.
+Existing agent state, login, approval and interactive retry controls still apply.
 
 To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to
 `aqua:anthropics/claude-code@VERSION`, or `SAFEYOLO_CODEX_NATIVE_SPEC` to

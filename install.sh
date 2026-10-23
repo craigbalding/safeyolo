@@ -6,7 +6,7 @@ root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 release=
 bundle=
 stage=
-host_pid= guest_pid= download_pid=
+host_pid= guest_pid= download_pid= codex_pid=
 download_guest=true
 download_only=
 install_arguments=()
@@ -70,8 +70,17 @@ fi
 install_and_launch() {
   "$@" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
   if $launch; then
-    # The installed command owns its state. Download staging is no longer
-    # needed during the interactive session, and installer locks are released.
+    if [[ -n $codex_pid ]]; then
+      wait "$codex_pid" || echo 'SafeYolo: early Codex acquisition did not complete; the guest will use its ordinary installer.' >&2
+      codex_pid=
+    fi
+    if [[ -n $stage && -f $stage/codex/version ]]; then
+      # Keep this private handoff until setup consent lets launch move the
+      # payload into the new agent home. Cleanup also covers refusal/failure.
+      echo 'SafeYolo: launching the first agent from the installed instance.' >&2
+      SAFEYOLO_CODEX_PACKAGE="$stage/codex" "$root/bin/safeyolo" --root "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
+      return
+    fi
     if [[ -n $stage ]]; then
       rm -rf -- "$stage"
       trap - EXIT
@@ -79,6 +88,17 @@ install_and_launch() {
     echo 'SafeYolo: launching the first agent from the installed instance.' >&2
     exec "$root/bin/safeyolo" --root "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
   fi
+}
+start_codex_prefetch() {
+  $launch && [[ -z $codex_pid ]] || return 0
+  local index
+  for ((index=0; index<${#launch_arguments[@]}; index++)); do
+    if [[ ${launch_arguments[index]} == --harness && ${launch_arguments[index+1]:-} == codex ]]; then
+      "$1" codex prefetch "$stage/codex" &
+      codex_pid=$!
+      return
+    fi
+  done
 }
 if [[ -n $download_only ]]; then
   [[ -n $release && -z $bundle && ${#install_arguments[@]} == 0 && $launch == false ]] || {
@@ -141,7 +161,7 @@ mkdir -p "$cache"
 stage=$(mktemp -d "$cache/acquire.XXXXXX")
 cleanup_acquisition() {
   local child
-  for child in "$host_pid" "$guest_pid" "$download_pid"; do
+  for child in "$host_pid" "$guest_pid" "$download_pid" "$codex_pid"; do
     if [[ -n $child ]]; then
       kill -TERM "$child" 2>/dev/null || true
       wait "$child" 2>/dev/null || true
@@ -193,6 +213,7 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     [[ ${identity#* commit=} == "${release#host-} profile=production" ]] || {
       echo 'Guest download executable differs from its release. No package was installed.' >&2; exit 1
     }
+    start_codex_prefetch "$early/bin/safeyolo"
     echo 'SafeYolo: downloading the compatible guest while acquiring the host package.' >&2
     "$early/bin/safeyolo" guest download --package-info "$early/package-info" > "$stage/guest-index" &
     guest_pid=$!
@@ -218,8 +239,6 @@ for field in guest_compatibility guest_repository guest_discovery_tag; do
     echo "This host release lacks compatible guest acquisition metadata ($field). No instance was initialized. Use a host release that includes guest acquisition." >&2; exit 1
   }
 done
-source "$package/native_package.sh"
-verify_native_package "$package"
 if [[ -n $guest_pid ]]; then
   cmp -s "$early/package-info" "$package/package-info" && cmp -s "$early/bin/safeyolo" "$package/bin/safeyolo" || {
     echo 'Guest download inputs differ from the verified host package. No instance was activated.' >&2; exit 1
@@ -231,8 +250,13 @@ if [[ -n $guest_pid ]]; then
   install_arguments+=(--guest-index "$guest_index")
 fi
 if [[ -n $download_only ]]; then
+  source "$package/native_package.sh"
+  verify_native_package "$package"
   mv "$package" "$download_only"
   echo "Downloaded SafeYolo package: $download_only"
   exit
 fi
-install_and_launch "$package/install.sh"
+start_codex_prefetch "$package/bin/safeyolo"
+# The ordinary installer performs the complete file/layout/executable check.
+# Its private extraction can then become the installed files without a copy.
+install_and_launch "$package/install.sh" --move-bundle

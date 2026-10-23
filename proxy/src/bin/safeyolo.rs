@@ -305,6 +305,9 @@ async fn run() -> Result<(), Error> {
                 .map_err(|_| "command arguments must be UTF-8 text")
         })
         .collect::<Result<_, _>>()?;
+    if arguments.first().is_some_and(|value| value == "codex") {
+        return safeyolo_proxy::codex_package::run(&arguments[1..]).await;
+    }
     if arguments.first().is_some_and(|value| value == "host") {
         return safeyolo_proxy::linux_host::run(&root, &arguments[1..]);
     }

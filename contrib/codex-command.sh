@@ -67,9 +67,32 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         else
             echo "codex-host-setup: could not resolve a remote version for $sy_spec; falling back to $sy_spec" >&2
         fi
-        # The complete upstream package carries bin/, codex-path/ and
-        # codex-resources/. Mise verifies its GitHub release asset digest.
-        mise use -g --force "$sy_spec" >&2
+        sy_import="$HOME/.safeyolo/codex-package"
+        sy_imported=0
+        if [ "$sy_default_native" = 1 ] && [ -n "$sy_target" ] &&
+           [ -f "$sy_import/version" ] &&
+           [ "$(cat "$sy_import/version")" = "$sy_target" ] &&
+           [ "$(cat "$sy_import/target")" = "${sy_arch}-${sy_platform}" ]; then
+            # The trusted host checked the upstream asset digest and extracted
+            # its complete layout. Mise remains the guest version selector.
+            # Register that local payload through mise's existing import path.
+            sy_root="$sy_import/payload"
+            sy_expected="$sy_target"
+            if sy_native_ready && [ -d "$sy_root/codex-resources" ]; then
+                if mise link --force "$sy_spec" "$sy_root" >&2 && mise use -g "$sy_spec" >&2; then
+                    sy_imported=1
+                else
+                    echo 'codex-host-setup: could not register the prefetched package; repairing through mise.' >&2
+                fi
+            else
+                echo 'codex-host-setup: prefetched package is incomplete; repairing through mise.' >&2
+            fi
+        fi
+        if [ "$sy_imported" = 0 ]; then
+            # The complete upstream package carries bin/, codex-path/ and
+            # codex-resources/. Mise verifies its GitHub release asset digest.
+            mise use -g --force "$sy_spec" >&2
+        fi
         sy_root="$(mise where "$sy_spec")"
         sy_expected="$sy_target"
         if [ -z "$sy_expected" ]; then

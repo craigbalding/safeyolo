@@ -12,6 +12,7 @@ pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
 pub mod circuits;
+pub mod codex_package;
 mod command_centre;
 mod completion_notes;
 mod config;

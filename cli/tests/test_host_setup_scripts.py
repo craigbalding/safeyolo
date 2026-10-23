@@ -174,6 +174,40 @@ def test_codex_stages_guest_rules_without_importing_host_rules(tmp_path: Path) -
         assert json.loads(result.stdout)["decision"] == "allow", (command, result.stdout)
 
 
+@pytest.mark.parametrize("refusal", [None, "source", "existing"])
+def test_codex_host_setup_imports_early_package_or_keeps_guest_installation(tmp_path, refusal):
+    if sys.platform == "darwin" and os.uname().machine != "arm64":
+        pytest.skip("early Linux package acquisition supports Apple Silicon hosts")
+    native = Path(os.environ.get("SAFEYOLO_NATIVE_CLI", REPO_ROOT / "proxy/target/release/safeyolo"))
+    if not native.is_file():
+        pytest.skip("build the native CLI for the host import boundary")
+    revision = subprocess.check_output([str(native), "--version"], text=True).split("commit=")[1].split()[0]
+    operator, home, package = tmp_path / "operator", tmp_path / "agent", tmp_path / "package"
+    (package / "payload").mkdir(parents=True)
+    (package / "payload/keep").write_bytes(b"complete payload remains together")
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(os.uname().machine, os.uname().machine)
+    (package / "source").write_text("mismatch" if refusal == "source" else revision)
+    (package / "target").write_text(f"{architecture}-unknown-linux-musl")
+    (package / "version").write_text("9.9.9")
+    (package / "upstream.json").write_text("{}")
+    imported = home / ".safeyolo/codex-package"
+    if refusal == "existing":
+        imported.mkdir(parents=True)
+        (imported / "keep").write_bytes(b"operator state")
+    result = _run_setup("codex-host-setup.sh", operator, home, tmp_path, extra_env={
+        "SAFEYOLO_EXECUTABLE": str(native), "SAFEYOLO_CODEX_PACKAGE": str(package),
+    })
+    assert (home / ".safeyolo-command").is_file()
+    if refusal:
+        assert "early package import failed; using the ordinary guest installer" in result.stderr
+        assert (package / "payload/keep").read_bytes() == b"complete payload remains together"
+        if refusal == "existing":
+            assert (imported / "keep").read_bytes() == b"operator state"
+    else:
+        assert (imported / "payload/keep").read_bytes() == b"complete payload remains together"
+        assert not (package / "payload").exists()
+
+
 def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
     assert (agent_home / ".safeyolo/AGENTS.md").read_bytes() == BASELINE_SOURCE.read_bytes()
 
@@ -3305,8 +3339,11 @@ def test_default_codex_reuses_healthy_aqua_selection_without_acquiring_another_p
     assert "10.0.0 is available; not upgrading automatically" in repeat.stderr
 
 
-@pytest.mark.parametrize("bad_digest", [False, True])
-def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_digest):
+@pytest.mark.parametrize(("bad_digest", "prefetched"), [
+    (False, "none"), (True, "none"), (False, "match"), (False, "mismatch"), (False, "broken"),
+    (False, "installed-broken"),
+])
+def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_digest, prefetched):
     """Exercise full extraction, release age and digest refusal without a client download."""
     mise, zstd = shutil.which("mise"), shutil.which("zstd")
     if not mise or not zstd:
@@ -3325,7 +3362,9 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
             archive.addfile(member, io.BytesIO(payload))
     package = subprocess.check_output([zstd, "-q", "-c"], input=tar.getvalue())
     checksum = "0" * 64 if bad_digest else hashlib.sha256(package).hexdigest()
-    asset = "codex-package-fixture.tar.zst"
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(os.uname().machine, os.uname().machine)
+    platform = "apple-darwin" if os.uname().sysname == "Darwin" else "unknown-linux-musl"
+    asset = f"codex-package-{architecture}-{platform}.tar.zst"
     requests = []
 
     class Releases(BaseHTTPRequestHandler):
@@ -3366,8 +3405,28 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
     worker.start()
     try:
         tool = f"github:openai/codex[asset_pattern={asset},version_prefix=rust-v,bin_path=bin,api_url=http://127.0.0.1:{server.server_port}]"
-        env["SAFEYOLO_CODEX_NATIVE_SPEC"] = tool + "@latest"
+        if prefetched == "none":
+            env["SAFEYOLO_CODEX_NATIVE_SPEC"] = tool + "@latest"
+        else:
+            # Keep the real default branch. Redirect only its upstream API to
+            # this local release, as the explicit-spec control does above.
+            command.write_text(command.read_text().replace(
+                'version_prefix=rust-v,bin_path=bin]"',
+                f'version_prefix=rust-v,bin_path=bin,api_url=http://127.0.0.1:{server.server_port}]"'))
+            imported = home / ".safeyolo/codex-package"
+            imported.mkdir()
+            (imported / "version").write_text("9.9.8" if prefetched == "mismatch" else "9.9.9")
+            (imported / "target").write_text(f"{architecture}-{platform}")
+            for name, payload in members.items():
+                path = imported / "payload" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+                path.chmod(0o755)
+            if prefetched == "broken":
+                (imported / "payload/bin/codex-code-mode-host").chmod(0o644)
         (home / ".mise").mkdir()
+        if prefetched == "installed-broken":
+            (home / ".mise/installs/github-openai-codex/9.9.9").mkdir(parents=True)
         config = home / ".mise/config.toml"
         config.write_text('[tools]\nnode = "22.0.0"\n')
         result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
@@ -3384,6 +3443,7 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
             assert not (home / ".mise/installs/github-openai-codex/9.9.10").exists()
             assert tomllib.loads(config.read_text())["tools"]["node"] == "22.0.0"
             downloads = requests.count("/" + asset)
+            assert downloads == (0 if prefetched in ("match", "installed-broken") else 1)
             repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
             assert repeat.returncode == 0, repeat.stderr
             assert repeat.stdout.strip() == "ready"
