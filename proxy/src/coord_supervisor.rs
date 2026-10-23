@@ -360,6 +360,10 @@ pub struct Awaiting {
     pub recipient_agent: String,
     pub body: String,
     pub correlation: BTreeMap<String, String>,
+    // Older checkpoints and retained text have no canonical send receipt.
+    // Keep those handoffs pending until their identity is reconciled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_attention_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_attention_id: Option<String>,
 }
@@ -472,6 +476,9 @@ impl State {
                 || request_header(&a.body, &a.request, &a.recipient_agent)
                     != Some(a.correlation.clone())
                 || a.parent_attention_id
+                    .as_ref()
+                    .is_some_and(|id| !attention_id(id))
+                || a.request_attention_id
                     .as_ref()
                     .is_some_and(|id| !attention_id(id))
             {
@@ -944,6 +951,7 @@ impl Supervisor {
             a.room_name == p.room_name
                 && a.recipient_agent == p.sender_agent_name
                 && a.correlation.get("target") == fields.get("target")
+                && a.request_attention_id.as_ref() == fields.get("attention_id")
                 && f.handoffs.iter().any(|h| {
                     h.request == a.request
                         && h.source == f.role
@@ -1074,6 +1082,16 @@ impl Supervisor {
                         recipient_agent: recipient.clone(),
                         body: body.into(),
                         correlation,
+                        request_attention_id: if history {
+                            None
+                        } else {
+                            result["attention_recipients"]
+                                .as_array()
+                                .filter(|recipients| recipients.len() == 1)
+                                .and_then(|recipients| recipients[0]["attention_id"].as_str())
+                                .filter(|id| attention_id(id))
+                                .map(str::to_owned)
+                        },
                         parent_attention_id: self
                             .state
                             .repair_selection
@@ -1085,6 +1103,7 @@ impl Supervisor {
                             && a.request == awaited.request
                             && a.recipient_agent == awaited.recipient_agent
                             && a.correlation == awaited.correlation
+                            && (history || a.request_attention_id == awaited.request_attention_id)
                     }) {
                         if self.state.awaiting_handoffs.len() >= MAX_PENDING {
                             return Err("too many awaiting handoffs".into());
