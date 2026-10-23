@@ -10,6 +10,8 @@ import shutil
 import signal
 import subprocess
 import tarfile
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +20,7 @@ import pytest
 from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.test_guest_acquisition import compressed_archive, digest, release
 from tests.test_guest_acquisition import guest_store as _guest_store
+from tests.test_guest_acquisition import native_cli as _native_cli
 from tests.test_guest_acquisition import registry as _registry
 from tests.test_host_packages import musl_runtime as _musl_runtime
 from tests.test_host_packages import package_inputs as _package_inputs
@@ -28,6 +31,7 @@ guest_store = _guest_store
 registry = _registry
 package_inputs = _package_inputs
 musl_runtime = _musl_runtime
+native_cli = _native_cli
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASES = "/craigbalding/safeyolo/releases"
@@ -62,12 +66,15 @@ def public_release(package_inputs, registry, tmp_path, request):
         built = run(*package_inputs[4], "--output", str(output))
         assert built.returncode == 0, built.stderr
         tag = f"host-{package_inputs[5]}"
-    archive, = output.glob("*.tar.gz")
+    archive, = (path for path in output.glob("*.tar.gz") if not path.name.endswith("-guest-download.tar.gz"))
     base = f"{RELEASES}/download/{tag}"
     contents[f"{base}/{archive.name}"] = archive.read_bytes()
-    contents[f"{base}/SHA256SUMS"] = (
-        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n".encode()
-    )
+    archives = sorted(output.glob("*.tar.gz"))
+    for path in archives:
+        contents[f"{base}/{path.name}"] = path.read_bytes()
+    contents[f"{base}/SHA256SUMS"] = "".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in archives
+    ).encode()
     contents[f"{base}/install-safeyolo.sh"] = (output / "install-safeyolo.sh").read_bytes()
     contents[f"{RELEASES}/tag/{tag}"] = b"fixture release page"
     faults["host_release"] = tag
@@ -188,6 +195,166 @@ def test_interrupted_host_download_cleans_staging_and_can_resume(public_release)
     result = run("bash", str(bootstrap), env=environment)
     assert result.returncode == 0, result.stderr
     assert (root / "config.toml").exists()
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_guest_archive_arrives_before_host_transfer_finishes(public_release, native_cli, tmp_path, interrupt):
+    contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    guest = compressed_archive()
+    data = release(guest)
+    index = digest(data["manifests/compat-v1"])
+    contents.update(data)
+    # The producer fixture's ELF delegates only guest download to the real CLI.
+    # Existing direct native controls prove extraction and installed selection.
+    marker = tmp_path / "installer-guest-arguments"
+    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli), "PACKAGE_GUEST_CALLS": str(marker)}
+    faults["pause"] = f"{base}/{archive.name}"
+    arrived = threading.Event()
+    faults["written"]["blobs/" + digest(guest)] = arrived
+    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    started = time.monotonic()
+    try:
+        assert faults["entered"].wait(timeout=10)
+        assert arrived.wait(timeout=10), "guest transfer waited for the blocked host body"
+        # A server write is earlier than the native verifier's fsync/commit.
+        # Observe the completed native result before testing retained reuse.
+        deadline = time.monotonic() + 5
+        cache = Path(environment["HOME"]) / ".cache/safeyolo/host-packages"
+        while not any(path.read_text().strip() == index for path in cache.rglob("guest-index")):
+            assert time.monotonic() < deadline, "native guest download did not commit its verified index"
+            time.sleep(0.01)
+        assert process.poll() is None and not root.exists()
+        assert requests.count("/v2/craigbalding/safeyolo-guest/manifests/compat-v1") == 1
+        if interrupt:
+            # Signal the bootstrap alone: it owns and reaps both children.
+            process.terminate()
+        else:
+            faults["resume"].set()
+        stdout, stderr = process.communicate(timeout=15)
+        if interrupt:
+            assert process.returncode == 143, (stdout, stderr)
+            assert not root.exists()
+        else:
+            assert process.returncode == 0, stderr
+            arguments = marker.read_text().splitlines()
+            assert arguments[arguments.index("--index") + 1] == index
+            assert (root / "config.toml").exists()
+        assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+        store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+        assert not (store / "trees").exists()
+        assert all(len(path.name) == 64 for path in (store / "blobs/sha256").iterdir())
+        print(f"real TLS guest archive completed while host body was held; controlled run {time.monotonic() - started:.3f}s")
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+    if interrupt:
+        faults["pause"] = None
+        retried = run("bash", str(bootstrap), env=environment)
+        assert retried.returncode == 0, retried.stderr
+        assert requests.count("/v2/craigbalding/safeyolo-guest/blobs/" + digest(guest)) == 1
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
+def test_bootstrap_interrupt_reaps_active_guest_download(public_release, native_cli, interruption):
+    contents, _requests, faults, environment, bootstrap, root, _base, _archive = public_release
+    guest = compressed_archive()
+    contents.update(release(guest))
+    faults["pause"] = "blobs/" + digest(guest)
+    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
+    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        assert faults["entered"].wait(timeout=10), "bootstrap did not start the native guest transfer"
+        process.send_signal(interruption)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 128 + interruption, (stdout, stderr)
+        assert "guest download interrupted" in stderr
+        assert not root.exists()
+        assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+        store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+        assert not (store / "trees").exists()
+        assert all(len(path.name) == 64 for path in (store / "blobs/sha256").iterdir())
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+    faults["pause"] = None
+    retried = run("bash", str(bootstrap), env=environment)
+    assert retried.returncode == 0, retried.stderr
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("fault", ["checksum", "partial", "source", "binding", "legacy", "offline"])
+def test_early_guest_download_package_preserves_trust_and_legacy_paths(public_release, tmp_path, fault):
+    contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    early_name = archive.name.removesuffix(".tar.gz") + "-guest-download.tar.gz"
+    early_path = f"{base}/{early_name}"
+    if fault == "checksum":
+        contents[early_path] += b"damaged early package"
+    elif fault == "partial":
+        faults["partial"] = early_path
+    elif fault in ("source", "binding"):
+        expanded = tmp_path / "expanded"
+        with tarfile.open(archive.parent / early_name) as stream:
+            stream.extractall(expanded, filter="data")
+        package, = expanded.iterdir()
+        metadata = package / "package-info"
+        text = metadata.read_text()
+        text = text.replace("source_commit=", "source_commit=0") if fault == "source" else text.replace("guest_compatibility=v1", "guest_compatibility=v2")
+        metadata.write_text(text)
+        changed = tmp_path / "early.tar.gz"
+        with tarfile.open(changed, "w:gz") as stream:
+            for relative in ("bin/safeyolo", "package-info"):
+                stream.add(package / relative, arcname=package.name + "/" + relative)
+        contents[early_path] = changed.read_bytes()
+        contents[f"{base}/SHA256SUMS"] = contents[f"{base}/SHA256SUMS"].replace(
+            hashlib.sha256((archive.parent / early_name).read_bytes()).hexdigest().encode(),
+            hashlib.sha256(changed.read_bytes()).hexdigest().encode())
+    elif fault == "legacy":
+        del contents[early_path]
+        contents[f"{base}/SHA256SUMS"] = f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n".encode()
+    arguments = ["--no-guest-download"] if fault == "offline" else []
+    result = run("bash", str(bootstrap), *arguments, env=environment)
+    if fault in ("legacy", "offline"):
+        assert result.returncode == 0, result.stderr
+        assert early_path not in requests
+    else:
+        assert result.returncode != 0, result.stdout
+        assert not root.exists()
+        assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("fault", ["partial", "hash", "compatibility"])
+def test_composed_guest_download_failure_never_activates_and_can_retry(public_release, native_cli, fault):
+    contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    guest = compressed_archive()
+    data = release(guest, compatibility="v2" if fault == "compatibility" else "v1")
+    blob = "blobs/" + digest(guest)
+    if fault == "partial":
+        faults["partial"] = blob
+    elif fault == "hash":
+        data[blob] = b"!" + guest[1:]
+    contents.update(data)
+    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
+    refused = run("bash", str(bootstrap), env=environment)
+    assert refused.returncode != 0 and "Guest acquisition failed" in refused.stderr
+    assert not root.exists()
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+    store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+    assert not (store / "trees").exists()
+    assert all(len(path.name) == 64 for path in (store / "blobs/sha256").glob("*"))
+    contents.update(release(guest))
+    faults["partial"] = None
+    retried = run("bash", str(bootstrap), env=environment)
+    assert retried.returncode == 0, retried.stderr
+    assert requests.count(f"{base}/{archive.name}") == 1
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)

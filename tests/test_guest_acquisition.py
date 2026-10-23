@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -139,7 +140,7 @@ def registry(tmp_path):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(pem)
     contents, requests = {}, []
-    faults = {"partial": None, "advance": None, "pause": None,
+    faults = {"partial": None, "advance": None, "pause": None, "written": {},
               "entered": threading.Event(), "resume": threading.Event()}
 
     class RegistryRequest(BaseHTTPRequestHandler):
@@ -186,6 +187,8 @@ def registry(tmp_path):
                 faults["resume"].wait(timeout=10)
             try:
                 self.wfile.write(data[:len(data) // 2] if key == faults["partial"] else data)
+                if key in faults["written"]:
+                    faults["written"][key].set()
             except (BrokenPipeError, ConnectionResetError):
                 # The native client closes deliberate digest/size refusals early.
                 pass
@@ -476,8 +479,12 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert all("/blobs/" not in path for path in requests[before:])
 
 
-@pytest.mark.parametrize("pinned", [False, True], ids=["discovery", "index"])
-@pytest.mark.parametrize("fault", ["partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache"])
+@pytest.mark.parametrize("fault,pinned", [
+    (fault, pinned)
+    for fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache")
+    for pinned in (False, True, "download")
+    if pinned != "download" or fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size")
+])
 def test_native_acquisition_refuses_before_activation(native_cli, registry, package_info, tmp_path, fault, guest_store, pinned):
     contents, _requests, faults, environment = registry
     archive = compressed_archive(owner=0 if fault == "ownership" else 100000, missing_cache=fault == "missing-cache", child_owner=0 if fault == "child-owner" else None)
@@ -510,12 +517,16 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
         data[key] = b"!" + archive[1:]
     contents.update(data)
     arguments = []
-    if pinned:
+    if pinned is True:
         index = digest(data["manifests/compat-v1"])
         contents["manifests/" + index] = data["manifests/compat-v1"]
         arguments = ["--index", index]
     root, store = tmp_path / "refused", guest_store
-    result = install(native_cli, root, store, environment, package_info, *arguments)
+    if pinned == "download":
+        result = subprocess.run([str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(store)],
+                                env=environment, capture_output=True, text=True, timeout=30)
+    else:
+        result = install(native_cli, root, store, environment, package_info, *arguments)
     assert result.returncode != 0
     assert "panic" not in result.stderr.lower()
     assert not (root / "share").exists()
@@ -525,6 +536,58 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
     assert not trees.exists() or not list(trees.iterdir())
     blobs = store / "blobs/sha256"
     assert not blobs.exists() or all(len(path.name) == 64 for path in blobs.iterdir())
+
+
+@pytest.mark.parametrize("publisher_encoding", [True, False])
+def test_guest_download_pins_index_and_reuses_verified_archive_without_extraction(
+        native_cli, registry, package_info, tmp_path, guest_store, publisher_encoding):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    data = release(archive, encode_config=(lambda value: json.dumps(value, separators=(",", ":")).encode()) if publisher_encoding else None)
+    index = digest(data["manifests/compat-v1"])
+    contents.update(data)
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    root = tmp_path / "not-an-instance"
+    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)],
+                                env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    assert downloaded.stdout.strip() == index
+    assert not root.exists() and not (guest_store / "trees").exists()
+    assert (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).read_bytes() == archive
+    contents.update(release(compressed_archive(content=b"new compatible guest")))
+    before = list(requests)
+    acquired = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    assert acquired.returncode == 0, acquired.stderr
+    assert not any("/blobs/" in path or path.endswith("compat-v1") for path in requests[len(before):])
+    selection = json.loads((root / "share/guest-selection.json").read_bytes())
+    assert selection["index"]["digest"] == index
+    assert selection["archive"]["digest"] == digest(archive)
+
+
+@pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
+def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
+        native_cli, registry, package_info, tmp_path, guest_store, interruption):
+    contents, _requests, faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    faults["pause"] = "blobs/" + digest(archive)
+    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)]
+    process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert faults["entered"].wait(timeout=10)
+        process.send_signal(interruption)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode != 0 and "interrupted" in stderr, (stdout, stderr)
+        assert not (guest_store / "trees").exists()
+        assert all(len(path.name) == 64 for path in (guest_store / "blobs/sha256").iterdir())
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    faults["pause"] = None
+    retry = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert retry.returncode == 0, retry.stderr
 
 
 def test_first_acquisition_rejects_wrong_index_digest(native_cli, registry, package_info, tmp_path, guest_store):
