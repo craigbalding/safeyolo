@@ -844,8 +844,9 @@ def login_label(data):
         # A version/banner or sign-in/trust screen is not an input display.
         if any(label in plain for label in [b"sign in", b"log in", b"trust this", b"trust the", b"error: ", b"reconnecting..."]):
             return []
-        return ["Codex input display"] if all(label in plain for label in
-            [b"openai codex", b"model:", b"directory:", "›".encode()]) else []
+        legacy_fields = all(label in plain for label in [b"model:", b"directory:", "›".encode()])
+        input_placeholder = "› ask codex to do anything".encode() in plain
+        return ["Codex input display"] if b"openai codex" in plain and (legacy_fields or input_placeholder) else []
     # Shipped startup banners mention sign-in BEFORE the harness is installed.
     plain = b"\n".join(line for line in plain.splitlines()
                        if b"opening the session" not in line and b"first use may download tools" not in line)

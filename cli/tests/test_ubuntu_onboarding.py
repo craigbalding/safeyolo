@@ -30,6 +30,15 @@ spec = importlib.util.spec_from_file_location("observer", Path(__file__).resolve
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
+# Selected screen markers from the retained b6d Codex 0.163.0 resumption.
+CODEX_0163_SCREEN = "\n".join([
+    "  >_ OpenAI Codex (v0.163.0)",
+    "     /workspace",
+    "› Ask Codex to do anything",
+    "  GPT-6.1-Sol default · /workspace",
+    "  ? for shortcuts                                     ⚠ 2 warnings · f2 to view",
+]).encode()
+
 
 class ObserverChecks(unittest.TestCase):
     def setUp(self):
@@ -358,13 +367,16 @@ esac
         self.assertIsNone(m.x["timings"]["cold_total_to_input_ready_seconds"])
 
     def test_codex_input_detection_rejects_signin_trust_failures_and_banner_only(self):
-        screen = "OpenAI Codex (v0.163.0)\nmodel: gpt-6\ndirectory: /workspace\n› ".encode()
         with patch.object(m, "HARNESS", "codex"):
-            self.assertEqual(m.login_label(screen), ["Codex input display"])
-            for invalid in [b"OpenAI Codex v0.163.0", screen.replace("›".encode(), b""),
-                            *(screen + text for text in [b"Sign in", b"Log in", b"Trust this workspace?",
-                                                         b"Trust the directory?", b"Error: request failed", b"Reconnecting..."])]:
-                self.assertEqual(m.login_label(invalid), [])
+            for screen in [CODEX_0163_SCREEN,
+                           "OpenAI Codex (v0.163.0)\nmodel: gpt-6\ndirectory: /workspace\n› ".encode()]:
+                with self.subTest(screen=screen):
+                    self.assertEqual(m.login_label(screen), ["Codex input display"])
+                    for invalid in [b"OpenAI Codex v0.163.0", screen.replace("›".encode(), b""),
+                                    screen.replace(b"OpenAI Codex", b"unrelated banner"),
+                                    *(screen + text for text in [b"Sign in", b"Log in", b"Trust this workspace?",
+                                                                 b"Trust the directory?", b"Error: request failed", b"Reconnecting..."])]:
+                        self.assertEqual(m.login_label(invalid), [])
 
     def test_prepared_codex_baseline_accepts_only_owned_adopted_auth_without_reading_it(self):
         codex = m.root / "agents/first/home/.codex"
@@ -1784,7 +1796,7 @@ esac
         self.assertIn("ordinary_q", row)
 
     def test_codex_readiness_uses_attached_pane_and_never_stale_host_output(self):
-        screen = "OpenAI Codex\nmodel: gpt-6\ndirectory: /workspace\n› "
+        screen = CODEX_0163_SCREEN.decode()
         with patch.object(m, "HARNESS", "codex"), \
              patch.object(m, "pane_screen", autospec=True,
                           return_value={"matching_live_visible_pane": False}):
