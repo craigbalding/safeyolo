@@ -259,6 +259,8 @@ def test_mapping_remap_keeps_modes_links_and_guest_user_ids(native_cli, owned_st
     os.setxattr(root_file, "user.safeyolo-test", b"kept attribute")
     subprocess.run(["setfacl", "-m", "u:101000:r-x", str(root_file)], check=True)
     own(root_file, 100000, 100000)
+    capability = command("sudo", "-n", "setcap", "-n", "100000", "cap_net_raw=ep", root_file)
+    assert capability.returncode == 0, capability.stderr
     subprocess.run(["sudo", "-n", "chmod", "6751", str(root_file)], check=True)
     (tree / "symbolic").symlink_to("root")
     own(tree / "symbolic", 100000, 100000)
@@ -288,7 +290,33 @@ def test_mapping_remap_keeps_modes_links_and_guest_user_ids(native_cli, owned_st
     assert attribute.returncode == 0 and attribute.stdout == "kept attribute"
     acl = command("getfacl", "-ncp", root_file)
     assert f"user:{os.getuid()}:r-x" in acl.stdout
+    capability = command("getcap", "-n", root_file)
+    assert "cap_net_raw=ep" in capability.stdout and f"[rootid={uid_base}]" in capability.stdout
     assert (unrelated.stat().st_uid, unrelated.stat().st_gid) == (100000, 100000)
+
+
+def test_remap_preserves_unchanged_inode_metadata(native_cli, owned_stage):
+    _parent, stage = owned_stage
+    tree = stage / "rootfs-tree"
+    tree.mkdir()
+    plain, attributed, agent = (tree / name for name in ("plain", "attributed", "agent"))
+    for path in (plain, attributed, agent):
+        path.write_bytes(b"guest bytes")
+    os.setxattr(attributed, "user.safeyolo-test", b"unchanged")
+    subprocess.run(["setfacl", "-m", "u:42:r-x", str(attributed)], check=True)
+    for path in (tree, plain, attributed):
+        own(path, 100000, 100000)
+    own(agent, 101000, 101000)
+    before = {path: path.stat() for path in (tree, plain, attributed)}
+    result = command("sudo", "-n", native_cli, "host", "remap-rootfs", tree,
+                     100000, 100000, os.getuid(), os.getgid())
+    assert result.returncode == 0, result.stderr
+    for path, metadata in before.items():
+        after = path.stat()
+        assert (after.st_ino, after.st_mode, after.st_ctime_ns) == (
+            metadata.st_ino, metadata.st_mode, metadata.st_ctime_ns)
+    assert (agent.stat().st_uid, agent.stat().st_gid) == (os.getuid(), os.getgid())
+    assert "user:42:r-x" in command("getfacl", "-ncp", attributed).stdout
 
 
 @pytest.mark.parametrize("fault", ["shared", "outside-owner", "outside-link"])

@@ -430,6 +430,34 @@ def test_explicit_first_acquisition_selects_each_index_without_discovery(
     assert not (guest_store / "unused").exists()
 
 
+def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, registry, package_info, tmp_path, guest_store):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    sudo = shutil.which("sudo")
+    assert sudo
+    wrapper = tools / "sudo"
+    wrapper.write_text('#!/bin/sh\n'
+                       'if [ "$1" = -- ] && [ "$3" = host ] && [ "$4" = remap-rootfs ]; then\n'
+                       '  echo "fixture ownership preparation denied" >&2\n  exit 77\nfi\n'
+                       f'exec "{sudo}" "$@"\n')
+    wrapper.chmod(0o755)
+    root = tmp_path / "first"
+    denied = install(native_cli, root, guest_store,
+                     {**environment, "PATH": f"{tools}:{os.environ['PATH']}"}, package_info)
+    assert denied.returncode != 0 and "fixture ownership preparation denied" in denied.stderr
+    assert not (root / "share/guest-selection.json").exists()
+    assert not list((guest_store / "trees/sha256").iterdir())
+    blob = guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")
+    assert blob.read_bytes() == archive
+    retried = install(native_cli, root, guest_store, environment, package_info)
+    assert retried.returncode == 0, retried.stderr
+    assert (root / "share/guest-selection.json").is_file()
+    assert requests.count(PREFIX + "blobs/" + digest(archive)) == 1
+
+
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, faults, environment = registry
     first = release(compressed_archive(child_owner=101000))
