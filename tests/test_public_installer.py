@@ -60,9 +60,6 @@ def public_release(package_inputs, registry, tmp_path, request):
         (package / "SHA256SUMS").write_text(sums)
         with tarfile.open(output / f"{name}.tar.gz", "w:gz") as stream:
             stream.add(package, arcname=name)
-        with tarfile.open(output / f"{name}-guest-download.tar.gz", "w:gz") as stream:
-            for relative in ("bin/safeyolo", "package-info"):
-                stream.add(package / relative, arcname=name + "/" + relative)
         tag = f'host-{metadata["source_commit"]}'
         (output / "install-safeyolo.sh").write_text((REPO / "install.sh").read_text().replace("\nrelease=\n", f"\nrelease={tag}\n"))
     else:
@@ -259,6 +256,37 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
         retried = run("bash", str(bootstrap), env=environment)
         assert retried.returncode == 0, retried.stderr
         assert requests.count("/v2/craigbalding/safeyolo-guest/blobs/" + digest(guest)) == 1
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
+def test_bootstrap_interrupt_reaps_active_guest_download(public_release, native_cli, interruption):
+    contents, _requests, faults, environment, bootstrap, root, _base, _archive = public_release
+    guest = compressed_archive()
+    contents.update(release(guest))
+    faults["pause"] = "blobs/" + digest(guest)
+    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
+    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        assert faults["entered"].wait(timeout=10), "bootstrap did not start the native guest transfer"
+        process.send_signal(interruption)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 128 + interruption, (stdout, stderr)
+        assert "guest download interrupted" in stderr
+        assert not root.exists()
+        assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+        store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+        assert not (store / "trees").exists()
+        assert all(len(path.name) == 64 for path in (store / "blobs/sha256").iterdir())
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+    faults["pause"] = None
+    retried = run("bash", str(bootstrap), env=environment)
+    assert retried.returncode == 0, retried.stderr
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)

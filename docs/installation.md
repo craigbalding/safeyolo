@@ -177,7 +177,7 @@ The release producer also writes a release-bound `install-safeyolo.sh` beside
 the host archive and `SHA256SUMS`; the earlier `host-7a38` release lacks that
 bootstrap asset.
 
-New host packages also include a small `-guest-download.tar.gz` release asset.
+New host packages also include a `-guest-download.tar.gz` release asset.
 It contains the same compiled command and `package-info` as the complete host archive.
 The producer receipt and same-release checksums bind these bytes to that archive;
 they do not add an independent trust source. When this asset is available, the
