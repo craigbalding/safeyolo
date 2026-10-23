@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    io::{Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
@@ -112,7 +112,9 @@ fn extract(
         .spawn()?;
     let copy = (|| -> Result<(), Error> {
         let mut output = child.stdin.take().ok_or("tar input is unavailable")?;
-        let mut decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
+        let decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
+        // Give the decoder a full zstd-block buffer instead of small copy chunks.
+        let mut decoder = BufReader::with_capacity(128 * 1024, decoder);
         std::io::copy(&mut decoder, &mut output)?;
         Ok(())
     })();

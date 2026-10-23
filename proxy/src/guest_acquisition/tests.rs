@@ -401,18 +401,19 @@ mod linux {
     }
 
     #[test]
-    fn darwin_layout_decodes_finished_images_and_rejects_a_link_in_place_of_an_image() {
+    fn darwin_layout_decodes_images_and_rejects_links_and_truncated_frames() {
         // Linux GNU tar exercises the archive/layout branch; this is not an APFS witness.
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("Image"), "kernel fixture").unwrap();
-        fs::write(source.join("initramfs.cpio.gz"), "initramfs fixture").unwrap();
+        let initramfs: Vec<u8> = (0..384 * 1024 + 7).map(|n| (n % 251) as u8).collect();
+        fs::write(source.join("initramfs.cpio.gz"), &initramfs).unwrap();
         let mut image = fs::File::create(source.join("rootfs-base.ext4")).unwrap();
         image.seek(std::io::SeekFrom::Start(1024 * 1024)).unwrap();
         image.write_all(b"end").unwrap();
-        for linked in [false, true] {
-            if linked {
+        for fault in ["none", "truncated", "link"] {
+            if fault == "link" {
                 fs::remove_file(source.join("Image")).unwrap();
                 symlink("rootfs-base.ext4", source.join("Image")).unwrap();
             }
@@ -424,21 +425,23 @@ mod linux {
                 .unwrap();
             assert!(tar.status.success());
             let input = temp.path().join("archive.zst");
-            fs::write(
-                &input,
-                zstd::stream::encode_all(tar.stdout.as_slice(), 1).unwrap(),
-            )
-            .unwrap();
-            let destination = temp
-                .path()
-                .join(if linked { "refused" } else { "prepared" });
+            let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+            encoder.include_checksum(true).unwrap();
+            encoder.write_all(&tar.stdout).unwrap();
+            let mut encoded = encoder.finish().unwrap();
+            if fault == "truncated" {
+                // Tar has all its bytes; the decoder must still check the frame end.
+                encoded.pop();
+            }
+            fs::write(&input, encoded).unwrap();
+            let destination = temp.path().join(format!("prepared-{fault}"));
             let result = archive::prepare(
                 &input,
                 &destination,
                 ConsumerPlatform::DarwinArm64,
                 crate::linux_host::Mapping::for_bases(100000, 100000),
             );
-            if linked {
+            if fault != "none" {
                 assert!(result.is_err());
                 assert!(!destination.exists());
             } else {
@@ -446,6 +449,10 @@ mod linux {
                 assert_eq!(
                     fs::read_to_string(destination.join("Image")).unwrap(),
                     "kernel fixture"
+                );
+                assert_eq!(
+                    fs::read(destination.join("initramfs.cpio.gz")).unwrap(),
+                    initramfs
                 );
                 assert_eq!(
                     destination
@@ -456,6 +463,13 @@ mod linux {
                     1024 * 1024 + 3
                 );
             }
+            assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b"extract-")
+            }));
         }
     }
 }
