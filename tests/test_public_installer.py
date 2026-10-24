@@ -13,6 +13,7 @@ import select
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -709,6 +710,38 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
         retried = run("bash", str(bootstrap), env=environment)
         assert retried.returncode == 0, retried.stderr
         assert requests.count("/v2/craigbalding/safeyolo-guest/blobs/" + digest(guest)) == 1
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("help_result", ["supported", "absent", "failed"])
+def test_bootstrap_consumes_complete_guest_help_and_preserves_failure(public_release, tmp_path, help_result):
+    _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    helper = tmp_path / "guest-help"
+    completed = tmp_path / "help-completed"
+    arguments = tmp_path / "early-guest-arguments"
+    helper.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:] == ['guest', 'download', '--help']:\n"
+        f"    print({'--prepare' if help_result != 'absent' else 'guest download help'!r}, flush=True)\n"
+        # Exceed the pipe buffer after the match so an early reader exit
+        # makes the producer fail before it can complete successfully.
+        "    sys.stdout.write('Further help output.\\n' * 65536)\n"
+        "    sys.stdout.flush()\n"
+        f"    Path({str(completed)!r}).touch()\n"
+        f"    sys.exit({37 if help_result == 'failed' else 0})\n"
+        f"Path({str(arguments)!r}).write_text('\\n'.join(sys.argv[1:]))\n"
+        f"print('sha256:{'b' * 64}')\n"
+    )
+    helper.chmod(0o755)
+    result = run("bash", str(bootstrap), env={**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(helper)})
+    assert result.returncode == 0, result.stderr
+    assert completed.exists(), result.stderr
+    assert "BrokenPipeError" not in result.stderr
+    assert ("--prepare" in arguments.read_text().splitlines()) == (help_result == "supported")
+    assert (root / "config.toml").is_file()
+    assert requests.count(f"{base}/{archive.name}") == 1
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
