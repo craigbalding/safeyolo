@@ -215,7 +215,11 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     }
     start_codex_prefetch "$early/bin/safeyolo"
     echo 'SafeYolo: downloading the compatible guest while acquiring the host package.' >&2
-    "$early/bin/safeyolo" guest download --package-info "$early/package-info" > "$stage/guest-index" &
+    guest_arguments=()
+    if "$early/bin/safeyolo" guest download --help | grep -q -- '--prepare'; then
+      guest_arguments+=(--prepare)
+    fi
+    "$early/bin/safeyolo" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
     guest_pid=$!
   fi
   wait "$host_pid" || { echo 'Host download failed. No package was installed; retry this command.' >&2; exit 1; }

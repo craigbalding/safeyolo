@@ -568,8 +568,9 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
 
 
 @pytest.mark.parametrize("publisher_encoding", [True, False])
-def test_guest_download_pins_index_and_reuses_verified_archive_without_extraction(
-        native_cli, registry, package_info, tmp_path, guest_store, publisher_encoding):
+@pytest.mark.parametrize("prepare", [False, True])
+def test_guest_download_pins_index_and_reuses_verified_inputs(
+        native_cli, registry, package_info, tmp_path, guest_store, publisher_encoding, prepare):
     contents, requests, _faults, environment = registry
     archive = compressed_archive()
     data = release(archive, encode_config=(lambda value: json.dumps(value, separators=(",", ":")).encode()) if publisher_encoding else None)
@@ -577,11 +578,18 @@ def test_guest_download_pins_index_and_reuses_verified_archive_without_extractio
     contents.update(data)
     contents["manifests/" + index] = data["manifests/compat-v1"]
     root = tmp_path / "not-an-instance"
-    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)],
+    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store), *(["--prepare"] if prepare else [])],
                                 env=environment, capture_output=True, text=True, timeout=30)
     assert downloaded.returncode == 0, downloaded.stderr
     assert downloaded.stdout.strip() == index
-    assert not root.exists() and not (guest_store / "trees").exists()
+    assert not root.exists()
+    prepared_inode = None
+    if prepare:
+        tree, = (guest_store / "trees/sha256").iterdir()
+        owned_root_ids(tree / "rootfs-tree")
+        prepared_inode = (tree / "rootfs-tree").stat().st_ino
+    else:
+        assert not (guest_store / "trees").exists()
     assert (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).read_bytes() == archive
     contents.update(release(compressed_archive(content=b"new compatible guest")))
     before = list(requests)
@@ -591,6 +599,51 @@ def test_guest_download_pins_index_and_reuses_verified_archive_without_extractio
     selection = json.loads((root / "share/guest-selection.json").read_bytes())
     assert selection["index"]["digest"] == index
     assert selection["archive"]["digest"] == digest(archive)
+    if prepare:
+        assert (root / "share/rootfs-tree").stat().st_ino == prepared_inode
+
+
+@pytest.mark.parametrize("fault", ["mapping", "extraction", "remap", "cleanup"])
+def test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure(
+        native_cli, registry, package_info, tmp_path, guest_store, fault):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    data = release(archive)
+    contents.update(data)
+    index = digest(data["manifests/compat-v1"])
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    if fault == "mapping":
+        wrapper = tools / "getent"
+        wrapper.write_text("#!/bin/sh\nexit 2\n")
+    else:
+        wrapper = tools / "sudo"
+        wrapper.write_text(
+            '#!/bin/sh\nif [ "$1" = -n ]; then\n'
+            + ('if [ "$2" = tar ]; then exit 77; fi\n' if fault == "extraction" else
+               'if [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then exit 77; fi\n')
+            + ('if [ "$2" = rm ]; then exit 78; fi\n' if fault == "cleanup" else '')
+            + f'fi\nexec "{shutil.which("sudo")}" "$@"\n')
+    wrapper.chmod(0o755)
+    root = tmp_path / "not-an-instance"
+    downloaded = subprocess.run(
+        [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
+         "--package-info", str(package_info), "--store", str(guest_store)],
+        env={**environment, "PATH": f"{tools}:{os.environ['PATH']}"},
+        capture_output=True, text=True, timeout=30)
+    assert not root.exists()
+    assert (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).read_bytes() == archive
+    if fault == "cleanup":
+        assert downloaded.returncode != 0 and "staging cleanup failed" in downloaded.stderr
+        return
+    assert downloaded.returncode == 0 and downloaded.stdout.strip() == index, downloaded.stderr
+    assert "after host consent" in downloaded.stderr
+    assert not list((guest_store / "trees").rglob("extract-*"))
+    before = list(requests)
+    acquired = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    assert acquired.returncode == 0, acquired.stderr
+    owned_root_ids(root / "share/rootfs-tree")
+    assert not any("/blobs/" in path or path.endswith("compat-v1") for path in requests[len(before):])
 
 
 @pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])

@@ -440,6 +440,7 @@ mod linux {
                 &destination,
                 ConsumerPlatform::DarwinArm64,
                 crate::linux_host::Mapping::for_bases(100000, 100000),
+                None,
             );
             if fault != "none" {
                 assert!(result.is_err());

@@ -242,6 +242,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         guest_command += '}'
     host_command = (
         'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"prepare")==0){'
+        'char *code=getenv("PACKAGE_HOST_EXIT");if(code)return atoi(code);'
         'char *installed="/fixture";char *settings=NULL;'
         'for(int i=5;i+1<argc;i++){if(strcmp(argv[i],"--installed-root")==0)installed=argv[i+1];'
         'if(strcmp(argv[i],"--write-settings")==0)settings=argv[i+1];}'
