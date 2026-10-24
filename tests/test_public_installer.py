@@ -189,10 +189,10 @@ def test_codex_prefetch_selects_newest_eligible_complete_release(registry, nativ
 
 
 @pytest.mark.parametrize("refusal", [None, "source", "target", "existing"])
-def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfer(registry, native_cli, tmp_path, refusal):
+def test_verified_prefetch_reaches_guest_without_second_selection_or_transfer(registry, native_cli, tmp_path, refusal):
     mise = shutil.which("mise")
     if not mise:
-        pytest.skip("real mise is required to prove local package registration")
+        pytest.skip("real mise is required to check existing installed selections")
     contents, requests, _faults, environment = registry
     payload, asset, metadata = codex_release(tmp_path, contents, young_latest=True)
     contents["/repos/openai/codex/releases/tags/rust-v9.9.9"] = json.dumps(metadata).encode()
@@ -231,13 +231,25 @@ def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfe
     first = run(str(REPO / "contrib/codex-command.sh"), "--probe", env=environment)
     assert first.returncode == 0, first.stderr
     assert first.stdout.strip() == "codex-cli 9.9.9"
-    assert requests.count(asset) == 1
+    assert requests == ["/repos/openai/codex/releases", asset]
+    # A newly eligible version must be reported on reentry, without replacing
+    # the complete payload selected for this agent's first launch.
+    available = json.loads(contents["/repos/openai/codex/releases/latest"])
+    for field in ("published_at", "created_at"):
+        available[field] = metadata[field]
+    contents["/repos/openai/codex/releases/latest"] = json.dumps(available).encode()
+    contents["/repos/openai/codex/releases"] = json.dumps([available, metadata]).encode()
+    contents["/repos/openai/codex/releases/tags/rust-v9.10.0"] = json.dumps(available).encode()
     repeat = run(str(REPO / "contrib/codex-command.sh"), "--probe", env=environment)
     assert repeat.returncode == 0, repeat.stderr
+    assert repeat.stdout.strip() == "codex-cli 9.9.9"
+    assert "9.10.0 is available; not upgrading automatically" in repeat.stderr
+    assert f"run: mise use -g github:openai/codex[asset_pattern={Path(asset).name},version_prefix=rust-v,bin_path=bin]@9.10.0" in repeat.stderr
     assert requests.count(asset) == 1
+    assert available["assets"][0]["browser_download_url"].removeprefix("https://github.com") not in requests
     selected, = (home / ".mise/installs/github-openai-codex").glob("9.9.9*")
     assert (selected / "bin/codex").samefile(managed / "codex-package/payload/bin/codex")
-    assert (selected / "LICENSE").read_bytes() == (payload / "LICENSE").read_bytes()
+    assert (managed / "codex-package/payload/LICENSE").read_bytes() == (payload / "LICENSE").read_bytes()
 
 
 @pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])

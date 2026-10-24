@@ -3325,10 +3325,19 @@ def test_fresh_codex_selects_complete_zstd_package_for_its_platform(tmp_path, sy
 
 
 def test_default_codex_reuses_healthy_aqua_selection_without_acquiring_another_package(tmp_path):
-    _, command, env = _stage_native_client(tmp_path, "codex")
+    home, command, env = _stage_native_client(tmp_path, "codex")
     env["SAFEYOLO_CODEX_NATIVE_SPEC"] = "aqua:openai/codex@9.9.9"
     first = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
     assert first.returncode == 0, first.stderr
+    # A complete prefetched payload must not replace an installed selection.
+    imported = home / ".safeyolo/codex-package"
+    shutil.copytree(Path(env["TEST_NATIVE_ROOT"]), imported / "payload")
+    (imported / "version").write_text("8.8.8")
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(os.uname().machine, os.uname().machine)
+    platform = "apple-darwin" if os.uname().sysname == "Darwin" else "unknown-linux-musl"
+    (imported / "target").write_text(f"{architecture}-{platform}")
+    (imported / "payload/bin/codex").write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo "codex-cli 8.8.8"; else exit 88; fi\n')
     env.pop("SAFEYOLO_CODEX_NATIVE_SPEC")
     env["TEST_REMOTE_VERSION"] = "10.0.0"
     Path(env["TEST_MISE_LOG"]).write_text("")
@@ -3341,7 +3350,9 @@ def test_default_codex_reuses_healthy_aqua_selection_without_acquiring_another_p
 
 @pytest.mark.parametrize(("bad_digest", "prefetched"), [
     (False, "none"), (True, "none"), (False, "match"), (False, "mismatch"), (False, "broken"),
-    (False, "installed-broken"),
+    (False, "installed-broken"), (False, "wrong-target"), (False, "missing-resources"),
+    (False, "broken-search"), (False, "custom-age"), (False, "custom-age-young"), (False, "pin"),
+    (False, "mismatch-lookup-failure"),
 ])
 def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_digest, prefetched):
     """Exercise full extraction, release age and digest refusal without a client download."""
@@ -3370,6 +3381,9 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
     class Releases(BaseHTTPRequestHandler):
         def do_GET(self):
             requests.append(self.path)
+            if prefetched == "mismatch-lookup-failure":
+                self.send_error(404)
+                return
             if self.path == "/" + asset:
                 body = package
             else:
@@ -3380,6 +3394,8 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
                             "assets": [{"id": 2, "name": asset, "size": len(package), "digest": "sha256:" + checksum,
                                         "browser_download_url": url, "url": url}]}
                 old = release("9.9.9", "2020-01-01T00:00:00Z")
+                if prefetched == "custom-age-young":
+                    old["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 48 * 3600))
                 young = release("9.9.10", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
                 path = self.path.split("?", 1)[0]
                 if path.endswith("/releases/latest") or path.endswith("/tags/rust-v9.9.10"):
@@ -3415,8 +3431,8 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
                 f'version_prefix=rust-v,bin_path=bin,api_url=http://127.0.0.1:{server.server_port}]"'))
             imported = home / ".safeyolo/codex-package"
             imported.mkdir()
-            (imported / "version").write_text("9.9.8" if prefetched == "mismatch" else "9.9.9")
-            (imported / "target").write_text(f"{architecture}-{platform}")
+            (imported / "version").write_text("9.9.8" if prefetched in ("mismatch", "mismatch-lookup-failure") else "9.9.9")
+            (imported / "target").write_text("wrong-platform" if prefetched == "wrong-target" else f"{architecture}-{platform}")
             for name, payload in members.items():
                 path = imported / "payload" / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -3424,33 +3440,71 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
                 path.chmod(0o755)
             if prefetched == "broken":
                 (imported / "payload/bin/codex-code-mode-host").chmod(0o644)
+            elif prefetched == "broken-search":
+                (imported / "payload/codex-path/rg").chmod(0o644)
+            elif prefetched == "missing-resources":
+                shutil.rmtree(imported / "payload/codex-resources")
+            elif prefetched in ("custom-age", "custom-age-young"):
+                env["SAFEYOLO_MIN_RELEASE_AGE"] = "72h"
+            elif prefetched == "pin":
+                env["SAFEYOLO_CODEX_NATIVE_SPEC"] = tool + "@9.9.9"
         (home / ".mise").mkdir()
         if prefetched == "installed-broken":
             (home / ".mise/installs/github-openai-codex/9.9.9").mkdir(parents=True)
         config = home / ".mise/config.toml"
         config.write_text('[tools]\nnode = "22.0.0"\n')
         result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
-        if bad_digest:
+        reused = prefetched in ("match", "installed-broken", "custom-age")
+        if prefetched == "custom-age-young":
+            assert result.returncode != 0, result.stdout
+            assert "ready" not in result.stdout
+            assert requests.count("/" + asset) == 0
+        elif prefetched == "mismatch-lookup-failure":
+            assert result.returncode != 0, result.stdout
+            assert "could not resolve a remote version" in result.stderr
+            assert "ready" not in result.stdout
+            assert requests.count("/" + asset) == 0
+        elif bad_digest:
             assert result.returncode != 0, result.stdout
             assert "checksum" in result.stderr.lower(), result.stderr
             assert "ready" not in result.stdout
         else:
             assert result.returncode == 0, result.stderr
             assert result.stdout.strip() == "ready"
-            installed = next((home / ".mise/installs/github-openai-codex").glob("9.9.9*"))
+            installed = (imported / "payload" if reused else
+                         next((home / ".mise/installs/github-openai-codex").glob("9.9.9*")))
             for name, payload in members.items():
                 assert (installed / name).read_bytes() == payload
             assert not (home / ".mise/installs/github-openai-codex/9.9.10").exists()
             assert tomllib.loads(config.read_text())["tools"]["node"] == "22.0.0"
             downloads = requests.count("/" + asset)
-            assert downloads == (0 if prefetched in ("match", "installed-broken") else 1)
+            assert downloads == (0 if reused else 1)
+            if prefetched == "match":
+                assert requests == []
+            elif prefetched == "installed-broken":
+                # Mise reads exact release metadata when an installed path is
+                # damaged; it does not repeat selection or package transfer.
+                assert requests == ["/repos/openai/codex/releases/tags/rust-v9.9.9"]
             repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
             assert repeat.returncode == 0, repeat.stderr
             assert repeat.stdout.strip() == "ready"
             assert requests.count("/" + asset) == downloads
+            assert "9.9.10 is available" not in repeat.stderr
         assert not (home / ".mise/installs/node").exists()
         assert not (home / ".mise/installs/npm-openai-codex").exists()
+        if prefetched in ("match", "installed-broken"):
+            assert tomllib.loads(config.read_text()) == {"tools": {"node": "22.0.0"}}
         assert any(path.split("?", 1)[0].endswith("/releases") for path in requests), requests
+        if prefetched == "match":
+            # Reentry must repair resources removed from a linked payload too.
+            shutil.rmtree(imported / "payload/codex-resources")
+            repaired = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
+            assert repaired.returncode == 0, repaired.stderr
+            assert repaired.stdout.strip() == "ready"
+            assert requests.count("/" + asset) == downloads + 1
+            installed = next((home / ".mise/installs/github-openai-codex").glob("9.9.9*"))
+            for name, payload in members.items():
+                assert (installed / name).read_bytes() == payload
     finally:
         server.shutdown()
         server.server_close()
