@@ -376,6 +376,41 @@ def test_remap_preserves_unchanged_inode_metadata(native_cli, owned_stage):
     assert "user:42:r-x" in command("getfacl", "-ncp", attributed).stdout
 
 
+@pytest.mark.parametrize("uid_base,gid_base", [(100000, 100000), (300000, 500000)])
+def test_remap_nested_attributes_and_links_preserve_external_target(native_cli, owned_stage, uid_base, gid_base):
+    parent, stage = owned_stage
+    tree = stage / "rootfs-tree"
+    nested = tree / "nested/deeper"
+    nested.mkdir(parents=True)
+    attributed = nested / "attributed"
+    attributed.write_bytes(b"guest bytes")
+    subprocess.run(["setfacl", "-m", "u:101000:r-x,g:101000:r--", str(attributed)], check=True)
+    subprocess.run(["setfacl", "-m", "d:u:101000:r-x,d:g:101000:r--", str(nested)], check=True)
+    (tree / "hard").hardlink_to(attributed)
+    external = parent / "external"
+    external.write_bytes(b"outside bytes")
+    (nested / "outside").symlink_to(external)
+    paths = (tree, tree / "nested", nested, attributed, nested / "outside")
+    for path in paths:
+        own(path, 100000, 100000)
+    before = external.stat()
+    result = command("sudo", "-n", native_cli, "host", "remap-rootfs", tree,
+                     uid_base, gid_base, os.getuid(), os.getgid())
+    assert result.returncode == 0, result.stderr
+    assert attributed.stat().st_ino == (tree / "hard").stat().st_ino
+    for path in paths:
+        assert (path.lstat().st_uid, path.lstat().st_gid) == (uid_base, gid_base)
+    acl = command("getfacl", "-ncp", attributed).stdout
+    assert f"user:{os.getuid()}:r-x" in acl and f"group:{os.getgid()}:r--" in acl
+    default_acl = command("getfacl", "-ncp", nested).stdout
+    assert f"default:user:{os.getuid()}:r-x" in default_acl
+    assert f"default:group:{os.getgid()}:r--" in default_acl
+    assert external.read_bytes() == b"outside bytes"
+    after = external.stat()
+    assert (after.st_ino, after.st_uid, after.st_gid, after.st_mode, after.st_ctime_ns) == (
+        before.st_ino, before.st_uid, before.st_gid, before.st_mode, before.st_ctime_ns)
+
+
 @pytest.mark.parametrize("fault", ["shared", "outside-owner", "outside-link"])
 def test_remap_refuses_live_tree_and_bad_owner_before_changing_files(native_cli, owned_stage, fault):
     parent, stage = owned_stage
