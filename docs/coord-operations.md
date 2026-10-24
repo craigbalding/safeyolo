@@ -223,6 +223,12 @@ not evict another room's history to make space for a write.
 
 ## Reconcile a running proxy
 
+When the proxy is stopped, `safeyolo start` starts the proxy and managed NATS
+concurrently. The command waits for both startup attempts. Each service retains
+its own ownership and readiness checks. If Coord startup fails, the command
+warns and leaves a healthy proxy available. The first-agent launch also checks
+Coord readiness before it starts the sandbox and coding client.
+
 If the proxy is already running, `safeyolo start` reconciles the managed Coord
 runtime. A healthy NATS process stays running. If the managed NATS process is
 absent, SafeYolo starts it, bootstraps the existing Coord registry, and recovers
