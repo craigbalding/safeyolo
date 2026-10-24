@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -415,10 +416,13 @@ def test_denied_runtime_permission_reports_changes_and_retry_is_idempotent(nativ
     declined = command(native_cli, *(arg for arg in arguments if arg != "--yes"), input="n\n")
     assert declined.returncode != 0 and "declined" in declined.stderr
     assert "Host changes and attempted operations: none" in declined.stderr and not settings.exists()
+    assert not (parent / "instance/host").exists()
     denied = command(native_cli, *arguments, env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"})
     assert denied.returncode != 0 and "fixture sudo denied" in denied.stderr
     first_change = declined.stderr.split("SafeYolo needs these host changes:\n", 1)[1].splitlines()[0].strip()
-    if "AppArmor profile" in first_change:
+    if first_change.startswith("prepare namespace entry"):
+        assert "attempted load this installation's namespace AppArmor profile" in denied.stderr
+    elif "AppArmor profile" in first_change:
         assert "attempted load this runtime's AppArmor profile" in denied.stderr
     else:
         assert first_change.startswith("allow the selected sandbox-root UID")
@@ -507,10 +511,12 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
     assert observed["origin"] == "system" and "no other runtime" in observed["error"]
 
 
-def test_profile_load_failure_retains_only_its_complete_profile(native_cli, owned_stage):
+@pytest.mark.parametrize("operation,prefix", [("load-profile", "safeyolo-runsc"),
+                                               ("load-namespace-profile", "safeyolo-userns")])
+def test_profile_load_failure_retains_only_its_complete_profile(native_cli, owned_stage, operation, prefix):
     parent, _stage = owned_stage
     runtime = parent / 'runtime with "quotes"'
-    name = "safeyolo-runsc-" + hashlib.sha256(os.fsencode(runtime)).hexdigest()[:16]
+    name = prefix + "-" + hashlib.sha256(os.fsencode(runtime)).hexdigest()[:16]
     profile = Path("/etc/apparmor.d") / name
     assert not profile.exists()
     tools = parent / "tools"
@@ -521,7 +527,7 @@ def test_profile_load_failure_retains_only_its_complete_profile(native_cli, owne
     subprocess.run(["sudo", "-n", "mkdir", "-p", str(profile.parent)], check=True)
     try:
         arguments = ("-n", "env", f"PATH={tools}:{os.environ['PATH']}", native_cli,
-                     "host", "load-profile", runtime)
+                     "host", operation, runtime)
         result = command("sudo", *arguments)
         assert result.returncode != 0 and "profile file remains" in result.stderr
         original = profile.read_bytes()
@@ -533,3 +539,41 @@ def test_profile_load_failure_retains_only_its_complete_profile(native_cli, owne
         assert profile.read_bytes() == original
     finally:
         subprocess.run(["sudo", "-n", "rm", "-f", "--", str(profile)], check=True)
+
+
+def test_scoped_namespace_entry_with_both_apparmor_restrictions(native_cli, owned_stage):
+    restrictions = [Path("/proc/sys/kernel") / name for name in (
+        "apparmor_restrict_unprivileged_userns", "apparmor_restrict_unprivileged_unconfined")]
+    if not all(path.exists() and path.read_text().strip() == "1" for path in restrictions):
+        pytest.skip("requires a host with both AppArmor restrictions enabled")
+    parent, _stage = owned_stage
+    root = parent / "instance"
+    runtime = payload(parent / "runtime")
+    entry = root / "host/namespace-entry"
+    profiles = [Path("/etc/apparmor.d") / (prefix + "-" + hashlib.sha256(os.fsencode(path)).hexdigest()[:16])
+                for prefix, path in (("safeyolo-runsc", runtime), ("safeyolo-userns", entry))]
+    try:
+        prepared = command(native_cli, "--root", root, "host", "prepare", "--yes",
+                           "--system-runsc", runtime, "--write-settings", parent / "prepared.toml")
+        assert prepared.returncode == 0, prepared.stderr
+        observe = ("import json,os; from pathlib import Path; print(json.dumps({"
+                   "'user':os.readlink('/proc/self/ns/user'),'net':os.readlink('/proc/self/ns/net'),"
+                   "'uid':os.getuid(),'uid_map':Path('/proc/self/uid_map').read_text(),"
+                   "'label':Path('/proc/self/attr/current').read_text()}))")
+        entered = command(entry, "unshare", "-Urn", sys.executable, "-c", observe)
+        assert entered.returncode == 0, entered.stderr
+        observed = json.loads(entered.stdout)
+        assert observed["user"] != os.readlink("/proc/self/ns/user"), observed
+        assert observed["net"] != os.readlink("/proc/self/ns/net"), observed
+        assert observed["uid"] == 0 and list(map(int, observed["uid_map"].split())) == [0, os.getuid(), 1]
+        assert profiles[1].name in observed["label"] and "//&unconfined" not in observed["label"], observed
+        repeated = command(native_cli, "--root", root, "host", "prepare", "--yes",
+                           "--system-runsc", runtime, "--write-settings", parent / "repeated.toml")
+        assert repeated.returncode == 0, repeated.stderr
+        assert json.loads(repeated.stdout)["applied"] == []
+        assert all(path.read_text().strip() == "1" for path in restrictions)
+    finally:
+        for profile in profiles:
+            if profile.exists():
+                subprocess.run(["sudo", "-n", "apparmor_parser", "-R", str(profile)], check=True)
+                subprocess.run(["sudo", "-n", "rm", "--", str(profile)], check=True)
