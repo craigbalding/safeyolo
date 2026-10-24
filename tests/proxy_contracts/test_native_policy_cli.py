@@ -1016,7 +1016,8 @@ esac
         assert saved["capture"] == {"max_request_body_bytes": 9, "queue_max": 7}
         assert saved["trace"] == {"ttl_s": 12}
         assert saved["command_centre"]["events_port"] == events_port
-        assert json.loads((instance.root / "data/ready.json").read_text())["reload_id"] == saved["reload_id"]
+        # Unchanged custom listeners need no reload marker.
+        assert json.loads((instance.root / "data/ready.json").read_text()).get("reload_id") == saved.get("reload_id")
         # Custom ingress remains intact. The retired map cannot add another listener.
         assert {entry["socket_path"] for entry in saved["listeners"]} == {
             *instance.paths.values(),

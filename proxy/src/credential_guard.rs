@@ -505,9 +505,23 @@ impl CredentialGuard {
                 .map(crate::credentials::Secret::expose_secret),
             expires_at.as_deref(),
         ];
+        let subscription_fields = [
+            credential.subscription_client.map(|client| match client {
+                crate::credentials::SubscriptionClient::Codex => "codex",
+                crate::credentials::SubscriptionClient::Claude => "claude",
+            }),
+            credential.refresh_scope.as_deref(),
+            credential.chatgpt_account_id.as_deref(),
+        ];
+        // Records without subscription metadata retain their existing binding.
+        let subscription_fields = if subscription_fields.iter().any(Option::is_some) {
+            &subscription_fields[..]
+        } else {
+            &[]
+        };
         let mut binding = hmac::Context::with_key(&self.key);
         binding.update(b"safeyolo.pending-credential.v1");
-        for field in fields {
+        for field in fields.iter().chain(subscription_fields) {
             binding.update(&[u8::from(field.is_some())]);
             if let Some(field) = field {
                 binding.update(&(field.len() as u64).to_be_bytes());
