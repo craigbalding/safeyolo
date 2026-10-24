@@ -1181,7 +1181,6 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
                 entry.display()
             ));
         }
-        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755))?;
         fs::File::open(entry.parent().unwrap())?.sync_all()?;
         let executable = std::env::current_exe()?;
         execute(

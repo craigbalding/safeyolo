@@ -571,6 +571,12 @@ def test_scoped_namespace_entry_with_both_apparmor_restrictions(native_cli, owne
                            "--system-runsc", runtime, "--write-settings", parent / "repeated.toml")
         assert repeated.returncode == 0, repeated.stderr
         assert json.loads(repeated.stdout)["applied"] == []
+        entry.chmod(0o700)
+        subprocess.run(["sudo", "-n", "apparmor_parser", "-R", str(profiles[1])], check=True)
+        repaired = command(native_cli, "--root", root, "host", "prepare", "--yes",
+                           "--system-runsc", runtime, "--write-settings", parent / "repaired.toml")
+        assert repaired.returncode == 0, repaired.stderr
+        assert stat.S_IMODE(entry.stat().st_mode) == 0o700
         assert all(path.read_text().strip() == "1" for path in restrictions)
     finally:
         for profile in profiles:
