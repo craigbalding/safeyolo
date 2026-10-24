@@ -568,14 +568,14 @@ The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
 Run the bundle's ordinary `install.sh` as your host account. Before changing
-Ubuntu or Alpine, it lists missing packages, subordinate account ranges, file permissions
-and the AppArmor profile, then asks for consent. `--yes` accepts those listed changes
+Ubuntu or Alpine, it lists missing packages, subordinate account ranges, file permissions,
+the namespace entry and AppArmor profiles, then asks for consent. `--yes` accepts those listed changes
 for an unattended installation. The proxy and agents run without host root
 privilege. Guest root maps to subordinate host user and group IDs, not host root.
 
 Host preparation uses sudo to run `apt-get` on Ubuntu or `apk` on Alpine for missing packages, allocate
 missing unused user ID (UID) and group ID (GID) ranges, and install or load the
-required AppArmor profile. Runtime access uses `setfacl` to grant the selected
+required AppArmor profiles. Runtime access uses `setfacl` to grant the selected
 sandbox IDs traversal through private parent directories and read/execute
 access to the selected runtime. This uses sudo only for paths your account
 does not own. Activation uses the same access helper for the installed path.
@@ -605,12 +605,18 @@ Another account's allocation at 100000–165535 does not prevent installation.
 Preparation preserves that allocation and uses different bases when needed.
 It never renumbers existing accounts or changes a live guest tree.
 
-Where Ubuntu restricts unprivileged user namespaces, preparation installs and
-loads a separate AppArmor profile for this runtime's actual path. It grants
-only the selected mapped root UID needed access through private runtime
-directories. It preserves other users' and groups' effective file permissions.
-It keeps AppArmor enabled and checks global namespace settings without changing
-them. For an explicitly selected KVM backend, set
+Where Ubuntu restricts unprivileged user namespaces, preparation installs
+`host/namespace-entry` under the installation root. It loads separate AppArmor
+profiles for that entry and the selected runtime's actual path. The namespace
+probe, agent namespace holder and stopped scheduler-spool cleanup execute the
+entry so the kernel applies its profile. They do not enter the profile through
+`aa-exec`. Existing installations obtain the entry by running `safeyolo host prepare`
+from the updated bundle. The entry remains if a later preparation step fails.
+
+Preparation grants only the selected mapped root UID needed access through
+private runtime directories. It preserves other users' and groups' effective
+file permissions. It keeps AppArmor enabled and checks global namespace
+settings without changing them. For an explicitly selected KVM backend, set
 `SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
 requires `/dev/kvm` and grants the mapped root GID required read/write access.
 It repairs a selected root UID denial if required and preserves other ACL
