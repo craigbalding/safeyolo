@@ -307,7 +307,7 @@ nodes:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: c1d9440611adb4a718a74757cdfe7d11383975958843c5f41573e5e495a753af
+          sha256: f85809d9397dc50752ae68c637d4044a192d54a453fb14bf39f973c5c822ac4f
         - path: proxy/src/coord_rooms.rs
           sha256: 751d00acdaaa5e843479a15db03891c0c8990e5e59672f4dc9402a774f681a39
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."

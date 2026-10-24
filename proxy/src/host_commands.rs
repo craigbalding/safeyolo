@@ -122,11 +122,30 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     }
     let config_path = host_platform::config_path();
     let config = crate::native_config::read(&config_path)?;
-    if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
+    // Proxy initialization does not use NATS. Keep both attempts in this
+    // future and hold the instance lock until both have finished, including
+    // when one fails. Reentry must not race an unfinished service startup.
+    let (coord, proxy) = tokio::join!(
+        crate::coord_rooms::start(&root, None, None, None),
+        start_proxy_process(&root, &config_path, &config),
+    );
+    if let Err(error) = coord {
         eprintln!(
             "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
         );
     }
+    let proxy = proxy?;
+    if !proxy_live() {
+        return Err("proxy exited during startup; inspect logs/proxy.log".into());
+    }
+    Ok(proxy)
+}
+
+async fn start_proxy_process(
+    root: &Path,
+    config_path: &Path,
+    config: &crate::Config,
+) -> Result<Option<Value>, Error> {
     let readiness = &config.readiness_file;
     match fs::remove_file(readiness) {
         Ok(()) => {}
@@ -142,7 +161,7 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     command
         .args(["--config"])
         .arg(config_path)
-        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env("SAFEYOLO_CONFIG_DIR", root)
         .env_remove("SAFEYOLO_HOST_SETUP_LOCK_FD")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
