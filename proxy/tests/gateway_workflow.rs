@@ -3789,7 +3789,7 @@ target_hosts = ["localhost"]
     assert_eq!(gateway_audit["details"]["capability"], "reader");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_controls() {
     use std::os::fd::AsRawFd;
     let root = tempfile::tempdir().unwrap();
@@ -3837,10 +3837,14 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
-    let proxy = tokio::time::timeout(Duration::from_secs(5), Proxy::start(config(root)))
-        .await
-        .expect("vault lock blocked proxy readiness")
-        .unwrap();
+    let proxy = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::spawn(Proxy::start(config(root))),
+    )
+    .await
+    .expect("vault lock blocked proxy readiness")
+    .unwrap()
+    .unwrap();
     assert!(root.join("ready.json").is_file());
     let socket = root.join("alice.sock");
     let view = wait_for_alice(&socket).await;

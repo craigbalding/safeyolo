@@ -397,8 +397,9 @@ command waits for both starts to finish. A Coord failure is reported and does
 not prevent proxy startup. With `SAFEYOLO_STARTUP_TIMINGS=1`, the proxy writes
 `startup` JSON records to `logs/proxy.log`, with source, profile, monotonic stage and elapsed seconds,
 and process CPU seconds for configuration, policy, credentials, flow recording,
-inspection, TLS and readiness publication. Listener projection separates both
-configuration reads, reconciliation, writing, file sync and directory sync.
+inspection, TLS and readiness publication. Listener projection separates the
+configuration read, reconciliation, writing, file sync and directory sync.
+Unchanged listeners keep the existing configuration file and reload identifier.
 Credential preparation separates grants, HMAC key loading and detector compilation.
 Vault unlock is deferred to credential-consuming operations and does not delay
 proxy readiness. Initialization and read-only credential commands create no store.

@@ -337,8 +337,8 @@ def test_installed_credential_free_service_requires_no_store_or_provider(tmp_pat
         while not any(row["definition"]["name"] == "notes" for row in cli(instance, "services", "list")["services"]):
             assert time.monotonic() < deadline
             time.sleep(0.02)
-        (instance.root / "data/credentials.enc").unlink()
-        (instance.root / "data/credentials.key").unlink()
+        assert not (instance.root / "data/credentials.enc").exists()
+        assert not (instance.root / "data/credentials.key").exists()
         authorize(instance, None)
         credential = token(instance)
         deliver(instance, origin, credential, value=None)
