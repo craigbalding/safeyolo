@@ -134,7 +134,11 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
             "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
         );
     }
-    proxy
+    let proxy = proxy?;
+    if !proxy_live() {
+        return Err("proxy exited during startup; inspect logs/proxy.log".into());
+    }
+    Ok(proxy)
 }
 
 async fn start_proxy_process(

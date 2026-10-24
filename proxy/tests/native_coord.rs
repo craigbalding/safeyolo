@@ -808,6 +808,60 @@ async fn cold_host_start_overlaps_services_and_serializes_reentry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn cold_host_start_rejects_proxy_exit_while_coord_is_pending() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let root = temp.path();
+    let _cleanup = HostCleanup(root.into());
+    prepare_host_services(root).await;
+    let lock = hold_nats_start(root);
+    let mut starting = host_command(root, &["start"]).spawn().unwrap();
+    let proxy = wait_for_file(&root.join("data/proxy-process.json")).await;
+    wait_for_file(&root.join("data/ready.json")).await;
+    check_proxy(root).await;
+    // Let the proxy branch consume readiness while Coord remains blocked.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let pid = i32::try_from(proxy["pid"].as_i64().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let status = host_cli(root, &["status"]).await;
+            assert!(status.status.success());
+            let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+            if status["proxy_state"] == "unavailable" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(starting.try_wait().unwrap().is_none());
+    assert!(!root.join("data/coord/nats/process.json").exists());
+    let instance_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("data/proxy-start.lock"))
+        .unwrap();
+    assert!(instance_lock.try_lock().is_err());
+    drop(lock);
+    let failed = tokio::time::timeout(Duration::from_secs(15), starting.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !failed.status.success(),
+        "start reported success after the owned proxy exited: {}",
+        String::from_utf8_lossy(&failed.stdout)
+    );
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("proxy exited during startup"));
+    assert!(!String::from_utf8_lossy(&failed.stdout).contains("running"));
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
 async fn cold_host_start_keeps_failures_separate_and_resumes_after_cancellation() {
     let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let root = temp.path();
