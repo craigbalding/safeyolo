@@ -201,10 +201,15 @@ The producer receipt and same-release checksums bind these bytes to that archive
 they do not add an independent trust source. When this asset is available, the
 bootstrap verifies it and downloads the compatible guest while the host archive
 arrives. When the early command supports `guest download --prepare`, it also
-attempts guest extraction into the private cache. On Linux, this uses existing
-validated UID/GID ranges and noninteractive sudo. It does not allocate ranges,
-change host settings or ask for privilege. If setup or extraction privilege is
-missing, the normal installer prepares the verified archive after host consent.
+attempts guest cache preparation through a private staging directory. On Linux,
+this needs existing validated UID/GID ranges and tar with numeric ownership,
+ACL and extended-attribute support. Extraction, remapping and any privileged
+cleanup use noninteractive sudo.
+On macOS, cached image extraction needs no elevation. Early preparation does not
+allocate ranges, change host settings or prompt for privilege. If setup, tools
+or extraction privilege is missing, the normal installer prepares the verified
+archive after host consent.
+If staging cleanup fails, installation stops and reports the remaining path.
 The bootstrap passes the selected immutable OCI index to the normal installer.
 The installer uses its actual host settings to select and check the mapped tree
 before activation. Full host-package and guest integrity checks still apply.

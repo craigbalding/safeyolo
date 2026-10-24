@@ -590,7 +590,7 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
-@pytest.mark.parametrize("outcome", ["installed", "host-integrity", "declined"])
+@pytest.mark.parametrize("outcome", ["installed", "host-integrity", "binding", "declined"])
 def test_guest_cache_is_prepared_during_host_extraction_without_early_activation(
         public_release, native_cli, guest_store, tmp_path, outcome):
     contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
@@ -600,12 +600,21 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
     store_link.parent.mkdir(parents=True)
     guest_store.mkdir(parents=True)
     store_link.symlink_to(guest_store, target_is_directory=True)
-    if outcome == "host-integrity":
+    if outcome in ("host-integrity", "binding"):
         expanded = tmp_path / "expanded"
         with tarfile.open(archive) as stream:
             stream.extractall(expanded, filter="data")
         package, = expanded.iterdir()
-        (package / "LICENSE").write_text("changed bytes with the original inner checksum")
+        if outcome == "binding":
+            metadata = package / "package-info"
+            previous = metadata.read_bytes()
+            metadata.write_bytes(previous.replace(b"guest_compatibility=v1", b"guest_compatibility=v2")
+                                 .replace(b"guest_discovery_tag=compat-v1", b"guest_discovery_tag=compat-v2"))
+            sums = package / "SHA256SUMS"
+            sums.write_bytes(sums.read_bytes().replace(hashlib.sha256(previous).hexdigest().encode(),
+                                                      hashlib.sha256(metadata.read_bytes()).hexdigest().encode()))
+        else:
+            (package / "LICENSE").write_text("changed bytes with the original inner checksum")
         original = archive.read_bytes()
         with tarfile.open(archive, "w:gz") as stream:
             stream.add(package, arcname=package.name)
@@ -643,6 +652,8 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
         else:
             assert process.returncode != 0, (stdout, stderr)
             assert not root.exists() and not (Path(environment["HOME"]) / ".local/bin/safeyolo").exists()
+            if outcome == "binding":
+                assert "Guest download inputs differ" in stderr
         assert tree.stat().st_ino == inode
         assert not list((guest_store / "trees").rglob("extract-*"))
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
@@ -656,8 +667,8 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
-@pytest.mark.parametrize("phase", ["download", "preparation"])
-def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli, guest_store, tmp_path, interruption, phase):
+@pytest.mark.parametrize(("phase", "scope"), [("download", "bootstrap"), ("preparation", "bootstrap"), ("preparation", "group")])
+def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli, guest_store, tmp_path, interruption, phase, scope):
     contents, _requests, faults, environment, bootstrap, root, base, archive = public_release
     guest = compressed_archive()
     contents.update(release(guest))
@@ -672,10 +683,12 @@ def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli,
         store_link.symlink_to(guest_store, target_is_directory=True)
         tools = tmp_path / "tools"
         tools.mkdir()
-        wrapper = tools / "tar"
+        wrapper = tools / "sudo"
         wrapper.write_text(
-            f'#!/bin/sh\nset -e\n"{shutil.which("tar")}" "$@"\n'
-            f'if [ "$1" = -xpf ]; then touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done; fi\n')
+            '#!/bin/sh\nset -e\n'
+            'if [ "$1" = -n ] && [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then\n'
+            f'touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done\nfi\n'
+            f'exec "{shutil.which("sudo")}" "$@"\n')
         wrapper.chmod(0o755)
         environment["PATH"] = f"{tools}:{environment['PATH']}"
     process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
@@ -687,21 +700,26 @@ def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli,
             while not entered.exists():
                 assert time.monotonic() < deadline and process.poll() is None, "early extraction did not reach its held child"
                 time.sleep(0.01)
-        process.send_signal(interruption)
+        if scope == "group":
+            os.killpg(process.pid, interruption)
+        else:
+            process.send_signal(interruption)
         stderr_prefix = b""
         if phase == "preparation":
-            deadline = time.monotonic() + 5
-            while b"stopping early guest preparation" not in stderr_prefix:
-                assert select.select([process.stderr], [], [], max(0, deadline - time.monotonic()))[0], "guest preparation did not observe cancellation"
-                chunk = os.read(process.stderr.fileno(), 65536)
-                assert chunk, "guest preparation exited before joining extraction"
-                stderr_prefix += chunk
-            assert process.poll() is None, "bootstrap exited while extraction still owned its stage"
+            if scope == "bootstrap":
+                deadline = time.monotonic() + 5
+                while b"stopping early guest preparation" not in stderr_prefix:
+                    assert select.select([process.stderr], [], [], max(0, deadline - time.monotonic()))[0], "guest preparation did not observe cancellation"
+                    chunk = os.read(process.stderr.fileno(), 65536)
+                    assert chunk, "guest preparation exited before joining extraction"
+                    stderr_prefix += chunk
+                assert process.poll() is None, "bootstrap exited while extraction still owned its stage"
             resume.touch()
         stdout, stderr = process.communicate(timeout=10)
         stderr = stderr_prefix.decode() + stderr
         assert process.returncode == 128 + interruption, (stdout, stderr)
-        assert "interrupted" in stderr
+        if scope == "bootstrap":
+            assert "interrupted" in stderr
         assert not root.exists()
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
         store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"

@@ -611,6 +611,7 @@ def test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure(
     data = release(archive)
     contents.update(data)
     index = digest(data["manifests/compat-v1"])
+    contents["manifests/" + index] = data["manifests/compat-v1"]
     tools = tmp_path / "tools"
     tools.mkdir()
     if fault == "mapping":
