@@ -294,7 +294,10 @@ precedence. With the default native spec and `24h` age setting, the guest reuses
 the host-selected version after checking its platform, version, required
 executables and resources. It runs the complete payload in place and records it
 with `mise link`. This avoids another version lookup, `mise use`, client download
-and extraction on first launch.
+and extraction on first launch. If neither native installation namespace exists,
+the guest also skips installed-version queries. The guest probes mise's release-age
+support only when a repair or update notice needs a remote lookup; the imported
+default already passed the host's 24-hour selection policy.
 Host mise is not required.
 Prefetch applies to the fresh default with the default release-age setting.
 It checks the first 30 upstream releases and acquires the newest stable version
