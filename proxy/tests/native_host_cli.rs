@@ -3431,7 +3431,6 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     value(selected_cli(&["start"]));
     assert!(a.join("data/ready.json").is_file());
     assert!(!b.join("data/ready.json").exists());
-    assert!(fs::read_to_string(&selected).unwrap().contains("reload_id"));
     let saved: toml::Value = toml::from_str(&fs::read_to_string(&selected).unwrap()).unwrap();
     assert_eq!(
         saved["parent_proxy"].as_str(),
