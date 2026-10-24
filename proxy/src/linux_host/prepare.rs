@@ -975,8 +975,15 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         false
     };
     let entry_setup_needed = apparmor && (entry_missing || probe_namespace(root).is_err());
-    let load_profile_needed =
-        apparmor && (missing_profile || (!entry_missing && entry_setup_needed));
+    // The namespace entry has its own profile. Its probe cannot establish that
+    // the runtime profile is loaded. Only test profile availability with aa-exec;
+    // creating namespaces must still use the executable attachment above.
+    let load_profile_needed = apparmor
+        && (missing_profile
+            || !Command::new("aa-exec")
+                .args(["-p", &name, "--", "true"])
+                .output()
+                .is_ok_and(|output| output.status.success()));
     let mut packages = Vec::new();
     for &(package, commands) in REQUIRED_PACKAGES {
         if commands.iter().any(|name| command_path(name).is_none()) {
@@ -990,7 +997,8 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             packages.push("libsubid4");
         }
     }
-    if apparmor && command_path("apparmor_parser").is_none() {
+    if apparmor && (command_path("apparmor_parser").is_none() || command_path("aa-exec").is_none())
+    {
         packages.push("apparmor");
     }
     // Already prepared contributor hosts need no package changes and retain
