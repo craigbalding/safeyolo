@@ -172,6 +172,33 @@ def test_macos_runs_without_setsid_and_reports_stop_limitation(tmp_path: Path) -
     assert "signals Cargo only" in result.stderr
 
 
+def test_default_reserve_refuses_to_start_cargo(tmp_path: Path) -> None:
+    bin_dir, log = _fixture(tmp_path, darwin=False, with_setsid=True)
+    _write_executable(
+        bin_dir / "df",
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on'\n"
+        "printf '%s\\n' '/dev/fake 100000000 1 8082004 1% /'\n",
+    )
+
+    result = subprocess.run(
+        [str(WRAPPER), "build", "--locked"],
+        env={
+            "PATH": str(bin_dir),
+            "CARGO_FAKE_LOG": str(log),
+            "CARGO_TARGET_DIR": str(tmp_path),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 75
+    assert "8082004 KiB free" in result.stderr
+    assert "below 20 GiB reserve" in result.stderr
+    assert not log.exists(), "Cargo started below the default reserve"
+
+
 def test_source_batch_reuses_one_target_from_one_stable_source(tmp_path: Path) -> None:
     target = tmp_path / "target"
     source = tmp_path / "scratch"

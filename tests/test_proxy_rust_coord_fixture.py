@@ -410,8 +410,9 @@ def test_rust_workflow_exposes_production_inputs_and_restores_their_dependency_f
     assert 'verify_native_artifacts "$SAFEYOLO_NATIVE_ARTIFACTS" guest/command/target/release production' in production_block
 
 
-def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_path):
+def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_path, monkeypatch):
     """Observe actual Cargo test outputs and runner isolation without --target."""
+    monkeypatch.setenv("SAFEYOLO_CARGO_RESERVE_GIB", "1024")
     (tmp_path / "tests").mkdir()
     (tmp_path / "Cargo.toml").write_text(
         '[package]\nname="coord-runner-probe"\nversion="0.1.0"\nedition="2024"\n',
@@ -432,6 +433,8 @@ def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_pat
     version = subprocess.check_output(["rustc", "-vV"], text=True)
     target = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
     environment = {**os.environ, "CARGO_TARGET_DIR": str(tmp_path / "target"),
+                   # This tiny dependency-free crate must not inherit a product build's reserve.
+                   "SAFEYOLO_CARGO_RESERVE_GIB": "1",
                    "SAFEYOLO_PROXY_COORD_DATA_DIR": "owned-fixture",
                    "SAFEYOLO_PROXY_NATS_TEST_INSTANCE": "owned-instance",
                    f"CARGO_TARGET_{target.upper().replace('-', '_')}_RUNNER": str(RUNNER)}
