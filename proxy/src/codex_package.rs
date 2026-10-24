@@ -1,4 +1,4 @@
-//! Acquire the first-launch package early; mise still selects the guest version.
+//! Select and acquire the complete default first-launch package early.
 
 use std::{
     fs,
@@ -138,8 +138,8 @@ fn extract(archive: &Path, payload: &Path) -> Result<(), Error> {
 }
 
 pub async fn prefetch(output: &Path) -> Result<(), Error> {
-    // An optimization for the existing fresh default, never a replacement
-    // resolver for pins, custom age settings or already installed selections.
+    // Select only for the fresh default. Pins, custom age settings and healthy
+    // installed selections retain the guest's ordinary mise path.
     if [
         "SAFEYOLO_CODEX_NATIVE_SPEC",
         "SAFEYOLO_CODEX_NPM_SPEC",
@@ -171,7 +171,8 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
     let target = target()?;
     let now = OffsetDateTime::now_utc();
     // GitHub lists by creation time and includes prereleases. Pick the newest
-    // eligible stable version; the guest still checks its own mise selection.
+    // eligible stable version. The guest reuses this selection only under the
+    // matching default policy, after checking installed selections and payload.
     let Some((index, release, _, asset)) = releases
         .iter()
         .enumerate()
@@ -258,8 +259,8 @@ fn stage(package: &Path, home: &Path) -> Result<(), Error> {
     }
     let destination = managed.join("codex-package");
     fs::create_dir(&destination)?;
-    // Keep the selected payload in its complete layout. Mise's `link` command
-    // registers it in the guest; this host never executes the Linux client.
+    // Keep the selected payload in its complete layout for the guest launcher.
+    // This host never executes the Linux client.
     let status = Command::new("mv")
         .arg(package.join("payload"))
         .arg(&destination)

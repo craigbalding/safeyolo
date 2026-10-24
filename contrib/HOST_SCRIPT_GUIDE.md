@@ -265,8 +265,8 @@ custom hooks, attach, and remote terminal behavior; see the
 
 ### Claude and Codex installation and updates
 
-The bundled Claude and Codex launchers use mise's Aqua backend to install
-native upstream releases in the agent's persistent home. This path does not
+The bundled Claude and Codex launchers use native upstream releases in the
+agent's persistent home. Claude uses mise's Aqua backend. This path does not
 acquire Node.js or npm. It retains other installed tools and their mise
 configuration. Claude keeps its staged authentication and extensions; Codex
 keeps its agent-local `.codex` configuration and authentication ownership.
@@ -289,15 +289,22 @@ missing required executables and reuses a healthy selected version.
 During public installation with `--launch --harness codex`, SafeYolo can fetch,
 verify and extract the complete Linux client while acquiring the host and guest.
 Apple Silicon hosts acquire the Linux ARM64 package. After setup consent, launch
-moves this payload into the new agent home. The guest imports it with `mise link`
-only when mise selects that same version and its executable probes pass. This
-avoids another client download and extraction. Host mise is not required.
+moves this payload into the new agent home. A healthy installed selection keeps
+precedence. With the default native spec and `24h` age setting, the guest reuses
+the host-selected version after checking its platform, version, required
+executables and resources. It runs the complete payload in place. This avoids
+another version lookup, mise registration, client download and extraction.
+Host mise is not required.
 Prefetch applies to the fresh default with the default release-age setting.
 It checks the first 30 upstream releases and acquires the newest stable version
 at least 24 hours old with a complete package and digest for the guest platform.
 This can select an older eligible release when the latest release is too young.
-Pins, custom age settings, unmatched versions and unavailable prefetch use the
-ordinary guest installer.
+Pins, custom age settings and unavailable or invalid prefetch use the ordinary
+guest resolver and installer. After resolving a custom age setting, the guest
+can still reuse the payload if its version matches. Reentry reuses a healthy
+payload without checking upstream for update notices. The harness and its child
+commands receive the payload on `PATH`; this path does not register Codex in
+mise. An explicit mise installation takes precedence on the next launch.
 Existing agent state, login, approval and interactive retry controls still apply.
 
 To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to

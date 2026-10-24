@@ -189,10 +189,10 @@ def test_codex_prefetch_selects_newest_eligible_complete_release(registry, nativ
 
 
 @pytest.mark.parametrize("refusal", [None, "source", "target", "existing"])
-def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfer(registry, native_cli, tmp_path, refusal):
+def test_verified_prefetch_reaches_guest_without_reselection_or_registration(registry, native_cli, tmp_path, refusal):
     mise = shutil.which("mise")
     if not mise:
-        pytest.skip("real mise is required to prove local package registration")
+        pytest.skip("real mise is required to check existing installed selections")
     contents, requests, _faults, environment = registry
     payload, asset, metadata = codex_release(tmp_path, contents, young_latest=True)
     contents["/repos/openai/codex/releases/tags/rust-v9.9.9"] = json.dumps(metadata).encode()
@@ -231,13 +231,12 @@ def test_verified_prefetch_reaches_real_guest_mise_import_without_second_transfe
     first = run(str(REPO / "contrib/codex-command.sh"), "--probe", env=environment)
     assert first.returncode == 0, first.stderr
     assert first.stdout.strip() == "codex-cli 9.9.9"
-    assert requests.count(asset) == 1
+    assert requests == ["/repos/openai/codex/releases", asset]
     repeat = run(str(REPO / "contrib/codex-command.sh"), "--probe", env=environment)
     assert repeat.returncode == 0, repeat.stderr
-    assert requests.count(asset) == 1
-    selected, = (home / ".mise/installs/github-openai-codex").glob("9.9.9*")
-    assert (selected / "bin/codex").samefile(managed / "codex-package/payload/bin/codex")
-    assert (selected / "LICENSE").read_bytes() == (payload / "LICENSE").read_bytes()
+    assert requests == ["/repos/openai/codex/releases", asset]
+    assert not (home / ".mise/installs/github-openai-codex").exists()
+    assert (managed / "codex-package/payload/LICENSE").read_bytes() == (payload / "LICENSE").read_bytes()
 
 
 @pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])

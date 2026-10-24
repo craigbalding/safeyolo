@@ -39,6 +39,16 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         sy_native_version="$("$sy_root/bin/codex" --version 2>/dev/null)" &&
         [ "${sy_native_version##* }" = "$sy_expected" ]
     }
+    sy_import="$HOME/.safeyolo/codex-package"
+    sy_prefetched_ready() {
+        [ "$sy_default_native" = 1 ] && [ -n "$sy_target" ] &&
+        [ -f "$sy_import/version" ] &&
+        [ "$(cat "$sy_import/version")" = "$sy_target" ] &&
+        [ "$(cat "$sy_import/target")" = "${sy_arch}-${sy_platform}" ] || return 1
+        sy_root="$sy_import/payload"
+        sy_expected="$sy_target"
+        sy_native_ready && [ -d "$sy_root/codex-resources" ]
+    }
     sy_ready=0
     if sy_native_ready; then
         sy_ready=1
@@ -59,6 +69,14 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         fi
         if sy_native_ready; then sy_ready=1; fi
     fi
+    if [ "$sy_ready" = 0 ] && [ "$sy_default_native" = 1 ] &&
+       [ "$SAFEYOLO_MIN_RELEASE_AGE" = 24h ] && [ -f "$sy_import/version" ]; then
+        # The host selected the newest stable release at least 24h old and
+        # verified its complete package. Reuse that selection under the same
+        # policy, after checking the guest executables and platform.
+        sy_target="$(cat "$sy_import/version")"
+        if sy_prefetched_ready; then sy_ready=1; fi
+    fi
     if [ "$sy_ready" = 0 ]; then
         echo "SafeYolo: downloading or repairing native Codex and its companion tools." >&2
         sy_target="$(mise latest "$sy_spec" 2>/dev/null | tail -1)"
@@ -67,40 +85,21 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         else
             echo "codex-host-setup: could not resolve a remote version for $sy_spec; falling back to $sy_spec" >&2
         fi
-        sy_import="$HOME/.safeyolo/codex-package"
-        sy_imported=0
-        if [ "$sy_default_native" = 1 ] && [ -n "$sy_target" ] &&
-           [ -f "$sy_import/version" ] &&
-           [ "$(cat "$sy_import/version")" = "$sy_target" ] &&
-           [ "$(cat "$sy_import/target")" = "${sy_arch}-${sy_platform}" ]; then
-            # The trusted host checked the upstream asset digest and extracted
-            # its complete layout. Mise remains the guest version selector.
-            # Register that local payload through mise's existing import path.
-            sy_root="$sy_import/payload"
-            sy_expected="$sy_target"
-            if sy_native_ready && [ -d "$sy_root/codex-resources" ]; then
-                if mise link --force "$sy_spec" "$sy_root" >&2 && mise use -g "$sy_spec" >&2; then
-                    sy_imported=1
-                else
-                    echo 'codex-host-setup: could not register the prefetched package; repairing through mise.' >&2
-                fi
-            else
-                echo 'codex-host-setup: prefetched package is incomplete; repairing through mise.' >&2
-            fi
-        fi
-        if [ "$sy_imported" = 0 ]; then
+        # A changed age policy must first resolve through mise. It can still
+        # reuse complete prefetched bytes when that selection matches.
+        if ! sy_prefetched_ready; then
             # The complete upstream package carries bin/, codex-path/ and
             # codex-resources/. Mise verifies its GitHub release asset digest.
             mise use -g --force "$sy_spec" >&2
-        fi
-        sy_root="$(mise where "$sy_spec")"
-        sy_expected="$sy_target"
-        if [ -z "$sy_expected" ]; then
-            sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
-        fi
-        if ! sy_native_ready; then
-            echo "codex-host-setup: native Codex package, version or companion tools are incomplete (expected $sy_expected)" >&2
-            exit 1
+            sy_root="$(mise where "$sy_spec")"
+            sy_expected="$sy_target"
+            if [ -z "$sy_expected" ]; then
+                sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+            fi
+            if ! sy_native_ready; then
+                echo "codex-host-setup: native Codex package, version or companion tools are incomplete (expected $sy_expected)" >&2
+                exit 1
+            fi
         fi
     fi
     # Keep the complete package in place for executable-relative resources.
