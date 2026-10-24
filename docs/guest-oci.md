@@ -197,8 +197,10 @@ directories. Completed trees are renamed into their digest-addressed location;
 failed extraction removes its owned staging directory. The host's maintained
 tar extracts the selected backend members, preserving its path/link safeguards;
 Linux extraction uses sudo for numeric ownership. The ownership operation
-checks every source owner and pins file descriptors before changing a fresh
-stage. Hard links that leave that stage are refused. Existing prepared trees
+checks every source owner, hard link and attribute before changing a fresh
+stage. It then reopens only inodes that need ownership or attribute changes,
+relative to the pinned root without following symlinks. Hard links that leave
+that stage are refused. Existing prepared trees
 are checked against the selected mapping and remain unchanged. Native zstd decoding needs
 no separately installed zstd program. Explicit/offline inputs remain available
 with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.

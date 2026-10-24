@@ -5,7 +5,7 @@ use crate::{
     linux_host::{ARCHIVE_BASE, ID_COUNT, Mapping},
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::CString,
     fs,
     os::unix::{
@@ -39,16 +39,37 @@ fn fd_path(file: &fs::File) -> PathBuf {
 
 fn walk(
     file: &fs::File,
-    visit: &mut impl FnMut(&fs::File, &fs::Metadata) -> Result<(), Error>,
+    path: &Path,
+    visit: &mut impl FnMut(&fs::File, &fs::Metadata, &Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let metadata = file.metadata()?;
     if metadata.is_dir() {
         for entry in fs::read_dir(fd_path(file))? {
-            let child = open_entry(file.as_raw_fd(), &entry?.file_name())?;
-            walk(&child, visit)?;
+            let name = entry?.file_name();
+            let child = open_entry(file.as_raw_fd(), &name)?;
+            walk(&child, &path.join(name), visit)?;
         }
     }
-    visit(file, &metadata)
+    visit(file, &metadata, path)
+}
+
+struct OwnershipChange {
+    path: PathBuf,
+    metadata: fs::Metadata,
+    uid: u32,
+    gid: u32,
+    attributes: Vec<(CString, Vec<u8>)>,
+}
+
+fn reopen_entry(root: &fs::File, path: &Path) -> Result<fs::File, Error> {
+    let mut file = root.try_clone()?;
+    // Paths come from walk, relative to the pinned root. Open one component
+    // at a time: an intermediate symlink's O_PATH descriptor cannot be used
+    // as a directory, and the final symlink is never followed either.
+    for name in path {
+        file = open_entry(file.as_raw_fd(), name)?;
+    }
+    Ok(file)
 }
 
 fn attributes(path: &CString) -> Result<Vec<(CString, Vec<u8>)>, Error> {
@@ -163,16 +184,39 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
         );
     }
     let mut records: HashMap<(u64, u64), (fs::Metadata, u64)> = HashMap::new();
-    walk(&root_file, &mut |_, metadata| {
+    let mut changes = Vec::new();
+    walk(&root_file, Path::new(""), &mut |file, metadata, path| {
         if metadata.dev() != root.dev() {
             return Err("guest staging tree contains another filesystem".into());
         }
-        shift_id(metadata.uid(), mapping.uid_base, mapping.host_uid)?;
-        shift_id(metadata.gid(), mapping.gid_base, mapping.host_gid)?;
-        records
-            .entry((metadata.dev(), metadata.ino()))
-            .and_modify(|(_, count)| *count += 1)
-            .or_insert_with(|| (metadata.clone(), 1));
+        let uid = shift_id(metadata.uid(), mapping.uid_base, mapping.host_uid)?;
+        let gid = shift_id(metadata.gid(), mapping.gid_base, mapping.host_gid)?;
+        if let Some((_, count)) = records.get_mut(&(metadata.dev(), metadata.ino())) {
+            *count += 1;
+            return Ok(());
+        }
+        records.insert((metadata.dev(), metadata.ino()), (metadata.clone(), 1));
+        let ownership_changes = metadata.uid() != uid || metadata.gid() != gid;
+        let mut updates = Vec::new();
+        if !metadata.file_type().is_symlink() {
+            let path_c = CString::new(fd_path(file).as_os_str().as_bytes())?;
+            for (name, mut value) in attributes(&path_c)? {
+                let original = value.clone();
+                shift_attribute(&name, &mut value, mapping)?;
+                if ownership_changes || value != original {
+                    updates.push((name, value));
+                }
+            }
+        }
+        if ownership_changes || !updates.is_empty() {
+            changes.push(OwnershipChange {
+                path: path.to_owned(),
+                metadata: metadata.clone(),
+                uid,
+                gid,
+                attributes: updates,
+            });
+        }
         Ok(())
     })?;
     for (metadata, count) in records.values() {
@@ -180,42 +224,29 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
             return Err("guest staging tree has a hard link outside its private extraction; other installations were preserved".into());
         }
     }
-    // All owners have been checked before the first change. This is a fresh
-    // stage; the caller publishes it only after this operation succeeds.
-    let mut changed = HashSet::new();
-    walk(&root_file, &mut |file, current| {
-        let key = (current.dev(), current.ino());
-        if !changed.insert(key) {
-            return Ok(());
-        }
-        let (metadata, _) = records.get(&key).ok_or("guest staging tree changed during ownership preparation; discard this unpublished stage and retry")?;
-        if current.uid() != metadata.uid()
+    drop(records);
+    // Check every owner, hard link and attribute before the first change.
+    // Reopen only inodes that need writes instead of walking the whole tree
+    // again. The usual root mapping leaves most inodes untouched. Relative
+    // paths avoid retaining a descriptor for every inode in a large archive.
+    for change in changes {
+        let file = reopen_entry(&root_file, &change.path)?;
+        let current = file.metadata()?;
+        let metadata = change.metadata;
+        if current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
+            || current.uid() != metadata.uid()
             || current.gid() != metadata.gid()
             || current.mode() != metadata.mode()
             || current.nlink() != metadata.nlink()
         {
             return Err("guest staging inode changed during ownership preparation; discard this unpublished stage and retry".into());
         }
-        let path = fd_path(file);
+        let path = fd_path(&file);
         let path_c = CString::new(path.as_os_str().as_bytes())?;
-        // lchown does not remove symlink attributes. Leave them on that
-        // pinned symlink; following its target would be incorrect.
-        let attributes = if metadata.file_type().is_symlink() {
-            Vec::new()
-        } else {
-            attributes(&path_c)?
-        };
-        let uid = shift_id(metadata.uid(), mapping.uid_base, mapping.host_uid)?;
-        let gid = shift_id(metadata.gid(), mapping.gid_base, mapping.host_gid)?;
+        let uid = change.uid;
+        let gid = change.gid;
         let ownership_changes = metadata.uid() != uid || metadata.gid() != gid;
-        let mut updates = Vec::new();
-        for (name, mut value) in attributes {
-            let original = value.clone();
-            shift_attribute(&name, &mut value, mapping)?;
-            if ownership_changes || value != original {
-                updates.push((name, value));
-            }
-        }
         if ownership_changes
             && unsafe {
                 libc::fchownat(
@@ -235,7 +266,7 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
         // chown can clear set-ID bits and file capabilities. Restore the
         // archive's modes and attributes after changing the numeric owner.
         // Without chown, write only attributes whose embedded IDs changed.
-        for (name, value) in updates {
+        for (name, value) in change.attributes {
             if unsafe {
                 libc::setxattr(
                     path_c.as_ptr(),
@@ -249,7 +280,25 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        Ok(())
-    })?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn reopening_changes_never_follows_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("file"), "preserved").unwrap();
+        symlink(outside.path(), directory.path().join("link")).unwrap();
+        let root = open_entry(libc::AT_FDCWD, directory.path().as_os_str()).unwrap();
+        let link = reopen_entry(&root, Path::new("link")).unwrap();
+        assert!(link.metadata().unwrap().file_type().is_symlink());
+        assert!(reopen_entry(&root, Path::new("link/file")).is_err());
+        assert_eq!(fs::read(outside.path().join("file")).unwrap(), b"preserved");
+    }
 }
