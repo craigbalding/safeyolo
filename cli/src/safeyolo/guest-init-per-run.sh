@@ -153,13 +153,16 @@ if [ -x /safeyolo/guest-shell-bridge ]; then
     setsid nohup /safeyolo/guest-shell-bridge >/var/log/shell-bridge.log 2>&1 </dev/null &
     SB_PID=$!
     echo "[per-run] started guest-shell-bridge (pid=$SB_PID)" > /dev/console 2>/dev/null || true
-    sleep 0.5
-    if kill -0 "$SB_PID" 2>/dev/null; then
-        echo "[per-run] guest-shell-bridge alive" > /dev/console
-    else
-        echo "[per-run] guest-shell-bridge EXITED; log:" > /dev/console
-        cat /var/log/shell-bridge.log > /dev/console 2>/dev/null || true
-    fi
+    # This liveness diagnostic is not a readiness check. Let boot continue.
+    (
+        sleep 0.5
+        if kill -0 "$SB_PID" 2>/dev/null; then
+            echo "[per-run] guest-shell-bridge alive" > /dev/console
+        else
+            echo "[per-run] guest-shell-bridge EXITED; log:" > /dev/console
+            cat /var/log/shell-bridge.log > /dev/console 2>/dev/null || true
+        fi
+    ) &
 fi
 
 # --------------------------------------------------------------------------
