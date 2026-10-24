@@ -174,6 +174,9 @@ fn store_restart_remove_and_metadata_keep_secret_access_explicit() {
     oauth.token_url = Some("https://example.invalid/token".into());
     oauth.client_id = Some("synthetic-client".into());
     oauth.client_secret = Some(Secret::new("synthetic-client-secret"));
+    oauth.subscription_client = Some(safeyolo_proxy::credentials::SubscriptionClient::Claude);
+    oauth.refresh_scope = Some("user:inference user:profile".into());
+    oauth.chatgpt_account_id = Some("selected-host-account".into());
     oauth.expires_at = Some("2099-01-01T00:00:00+00:00".into());
     vault.store(oauth).unwrap();
     vault.store(credential("second")).unwrap();
@@ -213,6 +216,18 @@ fn store_restart_remove_and_metadata_keep_secret_access_explicit() {
         "synthetic-client-secret"
     );
     assert_eq!(loaded.client_id.as_deref(), Some("synthetic-client"));
+    assert_eq!(
+        loaded.chatgpt_account_id.as_deref(),
+        Some("selected-host-account")
+    );
+    assert!(matches!(
+        loaded.subscription_client,
+        Some(safeyolo_proxy::credentials::SubscriptionClient::Claude)
+    ));
+    assert_eq!(
+        loaded.refresh_scope.as_deref(),
+        Some("user:inference user:profile")
+    );
     assert_eq!(
         loaded.token_url.as_deref(),
         Some("https://example.invalid/token")
@@ -522,7 +537,7 @@ fn changed_reload_and_visible_external_edits_supersede_refresh() {
     let (_directory, path, vault) = setup();
     vault.store(credential("mail")).unwrap();
     let external = Vault::unlock(&path, &password()).unwrap();
-    for field in 0..8 {
+    for field in 0..11 {
         let snapshot = vault.snapshot("mail").unwrap().unwrap();
         let mut edited = snapshot.credential().clone();
         match field {
@@ -534,11 +549,17 @@ fn changed_reload_and_visible_external_edits_supersede_refresh() {
             5 => edited.client_secret = Some(Secret::new("synthetic-edited-secret")),
             6 => edited.expires_at = Some("2099-01-01T00:00:00+00:00".into()),
             7 => {
+                edited.subscription_client =
+                    Some(safeyolo_proxy::credentials::SubscriptionClient::Codex)
+            }
+            8 => edited.refresh_scope = Some("user:inference".into()),
+            9 => edited.chatgpt_account_id = Some("changed-account".into()),
+            10 => {
                 external.remove("mail").unwrap();
             }
             _ => unreachable!(),
         }
-        if field != 7 {
+        if field != 10 {
             external.store(edited).unwrap();
         }
         let original = fs::read(&path).unwrap();

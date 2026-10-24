@@ -87,6 +87,84 @@ fn initialize(root: &Path) {
 }
 
 #[test]
+fn host_subscription_import_keeps_provider_files_outside_agent_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("instance");
+    initialize(&root);
+    let input = directory.path().join("host-login.json");
+    fs::write(&input, b"{\"private\": \"synthetic-not-json").unwrap();
+    let failed = cli(
+        &root,
+        &[
+            "credentials",
+            "import-client",
+            "account",
+            "--client",
+            "codex",
+            "--auth-file",
+            input.to_str().unwrap(),
+        ],
+    );
+    assert!(!failed.status.success());
+    assert!(!root.join("data/credentials.key").exists());
+    for (client, source) in [
+        (
+            "codex",
+            serde_json::json!({"auth_mode":"chatgpt", "tokens":{
+                "access_token":"header.eyJleHAiOjIwMDAwMDAwMDB9.signature", "refresh_token":"synthetic-host-codex-refresh", "account_id":"host-account"
+            }}),
+        ),
+        (
+            "claude",
+            serde_json::json!({"claudeAiOauth":{
+                "accessToken":"synthetic-host-claude-access", "refreshToken":"synthetic-host-claude-refresh", "expiresAt":2000000000000_i64, "scopes":["user:inference"]
+            }}),
+        ),
+    ] {
+        let bytes = serde_json::to_vec(&source).unwrap();
+        fs::write(&input, &bytes).unwrap();
+        let imported = cli(
+            &root,
+            &[
+                "credentials",
+                "import-client",
+                client,
+                "--client",
+                client,
+                "--auth-file",
+                input.to_str().unwrap(),
+                "--expires-at",
+                "2020-01-01T00:00:00Z",
+            ],
+        );
+        assert!(
+            imported.status.success(),
+            "{}",
+            String::from_utf8_lossy(&imported.stderr)
+        );
+        assert_eq!(fs::read(&input).unwrap(), bytes);
+        assert!(!root.join("agents").exists());
+        let vault = safeyolo_proxy::credentials::open_existing(&root.join("data"))
+            .unwrap()
+            .unwrap();
+        let stored = vault.get(client).unwrap().unwrap();
+        assert_eq!(stored.credential_type, "oauth2");
+        assert_eq!(stored.expires_at.as_deref(), Some("2020-01-01T00:00:00Z"));
+        let listing = cli(&root, &["credentials", "list"]);
+        let output = String::from_utf8_lossy(&listing.stdout);
+        assert!(listing.status.success());
+        assert!(!output.contains("synthetic-host"));
+        assert!(!String::from_utf8_lossy(&imported.stdout).contains("synthetic-host"));
+    }
+    for service in ["codex", "claude"] {
+        assert!(
+            root.join(format!("builtin-services/{service}.yaml"))
+                .is_file()
+        );
+    }
+}
+
+#[test]
 fn host_events_preserve_configured_audit_rotation_and_retention() {
     use std::io::{Seek, SeekFrom};
 

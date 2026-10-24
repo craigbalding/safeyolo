@@ -3276,6 +3276,138 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
 }
 
 #[tokio::test]
+async fn native_subscription_json_renewal_and_account_headers_reach_only_the_origin() {
+    use safeyolo_proxy::credentials::SubscriptionClient;
+    for client in [SubscriptionClient::Codex, SubscriptionClient::Claude] {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        for directory in ["data", "builtin", "services"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        std::fs::write(root.join("admin-token"), "operator-token").unwrap();
+        std::fs::write(root.join("data/agent_token"), "agent-token").unwrap();
+        std::fs::write(root.join("data/credentials.key"), PASS).unwrap();
+        std::fs::write(
+            root.join("services/simple.yaml"),
+            SERVICE.replace(
+                "allow_http: true",
+                "allow_http: true\n  refresh_on_401: true",
+            ),
+        )
+        .unwrap();
+        let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_port = origin_listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let origin_task = tokio::spawn(origin(origin_listener, seen.clone(), origin_port));
+        let refresh_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refresh_port = refresh_listener.local_addr().unwrap().port();
+        let refresh_task = tokio::spawn(async move {
+            let (mut stream, _) = refresh_listener.accept().await.unwrap();
+            let request = read_refresh_request(&mut stream).await.unwrap();
+            let payload = br#"{"access_token":"synthetic-native-renewed","refresh_token":"synthetic-native-rotated","expires_in":3600}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(payload).await.unwrap();
+            request
+        });
+        let policy = initial_policy(origin_port, true)
+            + "\n[agents.alice.services.simple]\ncapability='reader'\ntoken='simple-secret'\n";
+        std::fs::write(root.join("policy.toml"), policy).unwrap();
+        let vault = Vault::unlock(root.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
+        let mut record = Credential::new(
+            "simple-secret",
+            "oauth2",
+            Secret::new("synthetic-native-original"),
+        );
+        record.subscription_client = Some(client);
+        record.chatgpt_account_id = Some("host-selected-account".into());
+        record.refresh_scope = Some("user:inference".into());
+        record.refresh_token = Some(Secret::new("synthetic-native-refresh"));
+        record.token_url = Some(format!("http://127.0.0.1:{refresh_port}/token"));
+        record.client_id = Some("native-client".into());
+        record.expires_at = Some("2099-01-01T00:00:00Z".into());
+        vault.store(record.clone()).unwrap();
+        let mut configuration = config(root);
+        configuration.native_product = true;
+        let proxy = Proxy::start(configuration).await.unwrap();
+        let socket = root.join("alice.sock");
+        let view = wait_for_alice(&socket).await;
+        let token = view["authorized"]["simple"]["token"].as_str().unwrap();
+        let request = agent_request_with_scheme_and_headers(
+            origin_port,
+            token,
+            "127.0.0.1",
+            "http",
+            "ChatGPT-Account-ID: guest-selected-account\r\n",
+        );
+        let first = raw_http(&socket, request.as_bytes()).await;
+        status(&first, "200");
+        record.expires_at = Some("2020-01-01T00:00:00Z".into());
+        vault.store(record).unwrap();
+        let renewed = raw_http(&socket, request.as_bytes()).await;
+        status(&renewed, "200");
+        let after = raw_http(&socket, request.as_bytes()).await;
+        status(&after, "200");
+        let raw_refresh = refresh_task.await.unwrap();
+        let head = String::from_utf8_lossy(&raw_refresh).to_ascii_lowercase();
+        assert!(head.contains("content-type: application/json"));
+        let refresh: Value = serde_json::from_slice(body(&raw_refresh)).unwrap();
+        assert_eq!(
+            refresh,
+            json!({"grant_type":"refresh_token", "refresh_token":"synthetic-native-refresh", "client_id":"native-client", "scope":"user:inference"})
+        );
+        {
+            let requests = seen.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            for request in requests.iter() {
+                let head = String::from_utf8_lossy(request).to_ascii_lowercase();
+                if client == SubscriptionClient::Codex {
+                    assert!(head.contains("chatgpt-account-id: host-selected-account"));
+                    assert!(!head.contains("guest-selected-account"));
+                } else {
+                    assert!(head.contains("chatgpt-account-id: guest-selected-account"));
+                }
+            }
+            assert!(String::from_utf8_lossy(&requests[0]).contains("synthetic-native-original"));
+            assert!(requests[1..].iter().all(|request| {
+                String::from_utf8_lossy(request).contains("synthetic-native-renewed")
+            }));
+        }
+        for response in [first, renewed, after] {
+            for secret in [
+                "synthetic-native-original",
+                "synthetic-native-renewed",
+                "synthetic-native-refresh",
+                "synthetic-native-rotated",
+            ] {
+                assert!(
+                    !response
+                        .windows(secret.len())
+                        .any(|value| value == secret.as_bytes())
+                );
+            }
+        }
+        let saved = vault.get("simple-secret").unwrap().unwrap();
+        // This reader reloads the host's persisted replacement explicitly.
+        vault.reload().unwrap();
+        let replacement = vault.get("simple-secret").unwrap().unwrap();
+        assert_ne!(
+            saved.value.expose_secret(),
+            replacement.value.expose_secret()
+        );
+        assert_eq!(
+            replacement.refresh_token.unwrap().expose_secret(),
+            "synthetic-native-rotated"
+        );
+        proxy.shutdown().await;
+        origin_task.abort();
+    }
+}
+
+#[tokio::test]
 async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
     run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
         Duration::from_secs(2),

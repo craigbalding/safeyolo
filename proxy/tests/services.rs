@@ -7,7 +7,7 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 
 fn documents() -> Vec<(String, String)> {
-    ["minifuse", "gmail", "slack"]
+    ["minifuse", "gmail", "slack", "codex", "claude"]
         .into_iter()
         .map(|name| {
             (
@@ -109,7 +109,7 @@ fn code(decision: GatewayDecision) -> String {
 #[test]
 fn shipped_schema_preserves_risk_groups_and_declared_contract_fields() {
     let registry = registry();
-    assert_eq!(registry.services.len(), 3);
+    assert_eq!(registry.services.len(), 5);
     let gmail = &registry.services["gmail"];
     assert_eq!(gmail.auth.as_ref().unwrap().header, "Authorization");
     assert!(gmail.auth.as_ref().unwrap().refresh_on_401);
@@ -170,6 +170,78 @@ fn strict_snapshot_override_and_invalid_reload_leave_previous_candidate_usable()
         )
         .is_err()
     );
+}
+
+#[test]
+fn native_subscription_services_select_only_their_inference_operations() {
+    let registry = registry();
+    for (service, host, paths, refused) in [
+        (
+            "codex",
+            "chatgpt.com",
+            [
+                "/backend-api/codex/responses",
+                "/backend-api/codex/responses/compact",
+            ],
+            "/backend-api/accounts",
+        ),
+        (
+            "claude",
+            "api.anthropic.com",
+            ["/v1/messages?beta=true", "/v1/messages/count_tokens"],
+            "/api/oauth/claude_cli/create_api_key",
+        ),
+    ] {
+        let definition = &registry.services[service];
+        assert_eq!(definition.default_host, host);
+        let auth = definition.auth.as_ref().unwrap();
+        assert_eq!(auth.kind, "bearer");
+        assert!(!auth.allow_http);
+        assert!(auth.refresh_on_401);
+        let token = token(service, "inference");
+        let headers = [("Authorization".into(), "Bearer sgw_synthetic".into())];
+        for path in paths {
+            assert_eq!(
+                code(decision(
+                    &registry,
+                    &token,
+                    TrustedIdentity::Agent("alice"),
+                    "api.example",
+                    path,
+                    "POST",
+                    &headers,
+                    &[]
+                )),
+                "selected"
+            );
+            assert_eq!(
+                code(decision(
+                    &registry,
+                    &token,
+                    TrustedIdentity::Agent("alice"),
+                    "api.example",
+                    path,
+                    "GET",
+                    &headers,
+                    &[]
+                )),
+                "ROUTE_DENIED"
+            );
+        }
+        assert_eq!(
+            code(decision(
+                &registry,
+                &token,
+                TrustedIdentity::Agent("alice"),
+                "api.example",
+                refused,
+                "POST",
+                &headers,
+                &[]
+            )),
+            "ROUTE_DENIED"
+        );
+    }
 }
 
 #[test]

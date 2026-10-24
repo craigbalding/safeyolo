@@ -102,6 +102,7 @@ mod service_catalog_tests;
 pub mod services;
 pub mod ssh_proxy;
 pub mod startup_timings;
+pub mod subscription_login;
 mod tailnet;
 pub mod tasks;
 pub mod test_context;

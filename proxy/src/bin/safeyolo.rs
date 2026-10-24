@@ -105,6 +105,14 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             "builtin-services/minifuse.yaml",
             include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
         ),
+        (
+            "builtin-services/codex.yaml",
+            include_str!("../../../cli/src/safeyolo/services/codex.yaml"),
+        ),
+        (
+            "builtin-services/claude.yaml",
+            include_str!("../../../cli/src/safeyolo/services/claude.yaml"),
+        ),
     ] {
         write_new(name, source)?;
     }

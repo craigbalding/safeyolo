@@ -94,7 +94,10 @@ private VLAN, or same-host loopback. The gateway does not verify that transport
 claim. Every HTTP injection under this flag emits a
 `gateway.http_injection_allowed` audit event.
 
-Coding-harness authentication is outside this vault guarantee. The bundled
+The opt-in [coding-client gateway integration](docs/coding-client-gateway.md)
+uses host-held subscription records and guest-held scoped service tokens.
+Its live provider compatibility remains unverified under #1219. The existing
+client-held authentication paths below remain outside this vault guarantee. The bundled
 Claude Code host script can deliberately copy selected subscription state into
 the persistent agent home. The Codex host scripts do not copy host credentials.
 An operator must deliberately provision or create the agent-local login and
