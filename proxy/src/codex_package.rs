@@ -259,8 +259,8 @@ fn stage(package: &Path, home: &Path) -> Result<(), Error> {
     }
     let destination = managed.join("codex-package");
     fs::create_dir(&destination)?;
-    // Keep the selected payload in its complete layout for the guest launcher.
-    // This host never executes the Linux client.
+    // Keep the selected payload in its complete layout. Mise's `link` command
+    // registers it in the guest; this host never executes the Linux client.
     let status = Command::new("mv")
         .arg(package.join("payload"))
         .arg(&destination)

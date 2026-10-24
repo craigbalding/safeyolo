@@ -292,8 +292,9 @@ Apple Silicon hosts acquire the Linux ARM64 package. After setup consent, launch
 moves this payload into the new agent home. A healthy installed selection keeps
 precedence. With the default native spec and `24h` age setting, the guest reuses
 the host-selected version after checking its platform, version, required
-executables and resources. It runs the complete payload in place. This avoids
-another version lookup, mise registration, client download and extraction.
+executables and resources. It runs the complete payload in place and records it
+with `mise link`. This avoids another version lookup, `mise use`, client download
+and extraction on first launch.
 Host mise is not required.
 Prefetch applies to the fresh default with the default release-age setting.
 It checks the first 30 upstream releases and acquires the newest stable version
@@ -302,9 +303,9 @@ This can select an older eligible release when the latest release is too young.
 Pins, custom age settings and unavailable or invalid prefetch use the ordinary
 guest resolver and installer. After resolving a custom age setting, the guest
 can still reuse the payload if its version matches. Reentry reuses a healthy
-payload without checking upstream for update notices. The harness and its child
-commands receive the payload on `PATH`; this path does not register Codex in
-mise. An explicit mise installation takes precedence on the next launch.
+payload and checks for newer supported versions without automatically upgrading.
+The harness and its child commands receive the payload on `PATH`. An explicit
+mise installation takes precedence on the next launch.
 Existing agent state, login, approval and interactive retry controls still apply.
 
 To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to

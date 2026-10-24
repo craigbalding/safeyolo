@@ -3479,17 +3479,32 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
             assert tomllib.loads(config.read_text())["tools"]["node"] == "22.0.0"
             downloads = requests.count("/" + asset)
             assert downloads == (0 if reused else 1)
+            if prefetched == "match":
+                assert requests == []
+            elif prefetched == "installed-broken":
+                # Mise reads exact release metadata when an installed path is
+                # damaged; it does not repeat selection or package transfer.
+                assert requests == ["/repos/openai/codex/releases/tags/rust-v9.9.9"]
             repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
             assert repeat.returncode == 0, repeat.stderr
             assert repeat.stdout.strip() == "ready"
             assert requests.count("/" + asset) == downloads
+            assert "9.9.10 is available" not in repeat.stderr
         assert not (home / ".mise/installs/node").exists()
         assert not (home / ".mise/installs/npm-openai-codex").exists()
         if prefetched in ("match", "installed-broken"):
-            assert requests == []
             assert tomllib.loads(config.read_text()) == {"tools": {"node": "22.0.0"}}
-        else:
-            assert any(path.split("?", 1)[0].endswith("/releases") for path in requests), requests
+        assert any(path.split("?", 1)[0].endswith("/releases") for path in requests), requests
+        if prefetched == "match":
+            # Reentry must repair resources removed from a linked payload too.
+            shutil.rmtree(imported / "payload/codex-resources")
+            repaired = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
+            assert repaired.returncode == 0, repaired.stderr
+            assert repaired.stdout.strip() == "ready"
+            assert requests.count("/" + asset) == downloads + 1
+            installed = next((home / ".mise/installs/github-openai-codex").glob("9.9.9*"))
+            for name, payload in members.items():
+                assert (installed / name).read_bytes() == payload
     finally:
         server.shutdown()
         server.server_close()

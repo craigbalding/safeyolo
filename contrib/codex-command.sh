@@ -35,19 +35,21 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
     sy_native_ready() {
         [ -n "$sy_root" ] && [ -n "$sy_expected" ] &&
         [ -x "$sy_root/bin/codex-code-mode-host" ] &&
+        [ -d "$sy_root/codex-resources" ] &&
         "$sy_root/codex-path/rg" --version >/dev/null 2>&1 &&
         sy_native_version="$("$sy_root/bin/codex" --version 2>/dev/null)" &&
         [ "${sy_native_version##* }" = "$sy_expected" ]
     }
     sy_import="$HOME/.safeyolo/codex-package"
-    sy_prefetched_ready() {
+    sy_link_prefetched() {
         [ "$sy_default_native" = 1 ] && [ -n "$sy_target" ] &&
         [ -f "$sy_import/version" ] &&
         [ "$(cat "$sy_import/version")" = "$sy_target" ] &&
         [ "$(cat "$sy_import/target")" = "${sy_arch}-${sy_platform}" ] || return 1
         sy_root="$sy_import/payload"
         sy_expected="$sy_target"
-        sy_native_ready && [ -d "$sy_root/codex-resources" ]
+        sy_native_ready &&
+        mise link --force "${sy_tool}@${sy_target}" "$sy_root" >&2
     }
     sy_ready=0
     if sy_native_ready; then
@@ -62,10 +64,12 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         if [ "$(uname -s)" = Darwin ]; then sy_platform=apple-darwin; fi
         sy_tool="github:openai/codex[asset_pattern=codex-package-${sy_arch}-${sy_platform}.tar.zst,version_prefix=rust-v,bin_path=bin]"
         sy_spec="${sy_tool}@latest"
-        sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+        # `link` records versions under the base GitHub tool name, without
+        # the asset options. Check that installed namespace on reentry.
+        sy_expected="$(mise latest --installed github:openai/codex 2>/dev/null | tail -1)"
         sy_root=""
         if [ -n "$sy_expected" ]; then
-            sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+            sy_root="$(mise where "${sy_tool}@${sy_expected}" 2>/dev/null)" || sy_root=""
         fi
         if sy_native_ready; then sy_ready=1; fi
     fi
@@ -75,7 +79,9 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         # verified its complete package. Reuse that selection under the same
         # policy, after checking the guest executables and platform.
         sy_target="$(cat "$sy_import/version")"
-        if sy_prefetched_ready; then sy_ready=1; fi
+        # Record the validated payload using mise's installed-tool state.
+        # Later launches reuse it and keep the ordinary update notice.
+        if sy_link_prefetched; then sy_ready=1; fi
     fi
     if [ "$sy_ready" = 0 ]; then
         echo "SafeYolo: downloading or repairing native Codex and its companion tools." >&2
@@ -87,7 +93,7 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         fi
         # A changed age policy must first resolve through mise. It can still
         # reuse complete prefetched bytes when that selection matches.
-        if ! sy_prefetched_ready; then
+        if ! sy_link_prefetched; then
             # The complete upstream package carries bin/, codex-path/ and
             # codex-resources/. Mise verifies its GitHub release asset digest.
             mise use -g --force "$sy_spec" >&2
