@@ -117,12 +117,15 @@ the issuer omits `expires_in`. Refresh responses stay on the host. A failed
 refresh returns a categorical 503; it does not send the old provider token as
 a fallback. Other policy refusals retain their existing behavior.
 
-For a controlled renewal check after an initial successful request, repeat the
-host import with `--expires-at 2020-01-01T00:00:00Z`. This sets the next refresh
+For a controlled renewal check, add `--expires-at 2020-01-01T00:00:00Z` to the
+initial host import, before any request uses that record. This sets the refresh
 deadline in the vault copy without editing the selected file. Fetch the current
-gateway token and make another real client request. Check the host's renewal
-result and the guest's files, environment and response; a configuration or
-model catalogue is insufficient proof.
+gateway token and make a real client request, which forces host renewal before
+delivery. Make a second real client request using the current gateway token.
+Check the host's renewal result and the guest's files, environment and responses;
+a configuration or model catalogue is insufficient proof. The selected file
+stays unchanged, so reimporting it after a rotating refresh can restore a stale
+refresh token.
 
 The shipped capabilities cover Codex response/compaction POSTs on `chatgpt.com`
 and Claude message/token-count POSTs on `api.anthropic.com`. Account management,
