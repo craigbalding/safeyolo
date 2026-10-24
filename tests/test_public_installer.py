@@ -6,6 +6,7 @@ proof remain separate. The TLS parent serves only this fixture's local server.
 
 import gzip
 import hashlib
+import io
 import json
 import os
 import select
@@ -76,6 +77,9 @@ def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, n
     with tarfile.open(archive) as package:
         assert (root / "bin/safeyolo").read_bytes() == package.extractfile(
             archive.name.removesuffix(".tar.gz") + "/bin/safeyolo").read()
+        for relative in ("bin", "bin/safeyolo"):
+            member = package.getmember(archive.name.removesuffix(".tar.gz") + "/" + relative)
+            assert (root / relative).stat().st_mode & 0o777 == member.mode & 0o777
     if decoder == "native":
         calls = marker.read_text().splitlines()
         assert calls[:4] == ["host-package", "--help", "host-package", "gunzip"]
@@ -490,11 +494,10 @@ def test_bad_host_download_never_activates_and_retry_preserves_another_installat
     assert not root.exists()
     assert unrelated.read_bytes() == b"operator policy; keep unchanged"
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
-    if decoder == "native":
-        if fault == "inner-checksum":
-            assert "gunzip" in marker.read_text().splitlines()
-        else:
-            assert not marker.exists(), "host archive must pass release integrity before native decoding"
+    if decoder == "native" and fault != "duplicate-checksum":
+        # Decoding may precede the outer checksum. Installation still waits
+        # for both that checksum and complete gzip/tar validation.
+        assert "gunzip" in marker.read_text().splitlines()
     contents.update(original)
     faults["partial"] = None
     retried = run("bash", str(bootstrap), env=environment)
@@ -502,6 +505,123 @@ def test_bad_host_download_never_activates_and_retry_preserves_another_installat
     assert (root / "config.toml").exists()
     assert unrelated.read_bytes() == b"operator policy; keep unchanged"
     assert requests.count(f"{base}/{archive.name}") == (1 if fault == "duplicate-checksum" else 2)
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("decoder", ["legacy", "native"])
+@pytest.mark.parametrize("outcome", ["installed", "checksum", "interrupted"])
+def test_host_unpack_overlaps_transfer_without_activating_unverified_files(
+        public_release, native_cli, tmp_path, decoder, outcome):
+    contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    path = f"{base}/{archive.name}"
+    if outcome == "checksum":
+        contents[path] += b"incorrect release bytes"
+    faults["pause_after"] = path
+    host_calls = tmp_path / "host-calls"
+    environment = {**environment, "PACKAGE_HOST_CALLS": str(host_calls)}
+    if decoder == "native":
+        environment["PACKAGE_HOST_GUNZIP_CLI"] = str(native_cli)
+    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        assert faults["entered"].wait(timeout=10), "host transfer did not reach its held suffix"
+        cache = Path(environment["HOME"]) / ".cache/safeyolo/host-packages"
+        deadline = time.monotonic() + 10
+        while not list(cache.glob("*/acquire.*/host/*/bin/safeyolo")):
+            assert time.monotonic() < deadline and process.poll() is None, "unpacking waited for the complete host transfer"
+            time.sleep(0.01)
+        assert not root.exists() and not host_calls.exists()
+        assert process.poll() is None
+        if outcome == "interrupted":
+            # Signal only the bootstrap. It must reap all of its FIFO children.
+            process.terminate()
+        else:
+            faults["resume"].set()
+        stdout, stderr = process.communicate(timeout=10)
+        if outcome == "installed":
+            assert process.returncode == 0, stderr
+            assert (root / "config.toml").is_file() and host_calls.exists()
+        else:
+            assert process.returncode == (143 if outcome == "interrupted" else 1), (stdout, stderr)
+            assert not root.exists() and not host_calls.exists()
+        assert not list(cache.rglob("acquire.*"))
+        assert requests.count(path) == 1
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("decoder", ["legacy", "native"])
+def test_rejected_host_archive_cleans_directories_without_owner_permissions(
+        public_release, native_cli, decoder):
+    contents, _requests, _faults, environment, bootstrap, root, base, archive = public_release
+    name = archive.name.removesuffix(".tar.gz")
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as package:
+        directory = tarfile.TarInfo(f"{name}/locked")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0
+        package.addfile(directory)
+        entry = tarfile.TarInfo(f"{name}/locked/file")
+        entry.mode = 0o600
+        entry.size = 1
+        package.addfile(entry, io.BytesIO(b"x"))
+    # Keep the published checksum so rejection must clean the extracted modes.
+    contents[f"{base}/{archive.name}"] = stream.getvalue()
+    if decoder == "native":
+        environment = {**environment, "PACKAGE_HOST_GUNZIP_CLI": str(native_cli)}
+    result = run("bash", str(bootstrap), env=environment)
+    assert result.returncode != 0
+    assert "Host archive checksum failed" in result.stderr
+    assert not root.exists()
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("decoder", ["legacy", "native"])
+@pytest.mark.parametrize("extractor", ["tar", "bsdtar"])
+@pytest.mark.parametrize("escape", ["parent", "absolute", "symlink", "hardlink"])
+def test_unverified_host_extraction_preserves_files_outside_its_stage(
+        public_release, native_cli, tmp_path, decoder, extractor, escape):
+    contents, _requests, _faults, environment, bootstrap, root, base, archive = public_release
+    if extractor == "bsdtar":
+        binary = shutil.which(extractor)
+        if not binary:
+            pytest.skip("install libarchive-tools to exercise the BSD tar extractor")
+        tools = tmp_path / "extractor"
+        tools.mkdir()
+        (tools / "tar").symlink_to(binary)
+        environment = {**environment, "PATH": f"{tools}:{environment['PATH']}"}
+    outside = tmp_path / "operator-data/keep"
+    outside.parent.mkdir()
+    outside.write_bytes(b"operator data")
+    name = archive.name.removesuffix(".tar.gz")
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as package:
+        if escape in ("symlink", "hardlink"):
+            link = tarfile.TarInfo(f"{name}/pivot")
+            link.type = tarfile.SYMTYPE if escape == "symlink" else tarfile.LNKTYPE
+            link.linkname = str(outside.parent if escape == "symlink" else outside)
+            package.addfile(link)
+            target = f"{name}/pivot/keep" if escape == "symlink" else f"{name}/pivot"
+        else:
+            target = str(outside) if escape == "absolute" else "../" * 20 + str(outside).lstrip("/")
+        entry = tarfile.TarInfo(target)
+        entry.size = len(b"changed")
+        package.addfile(entry, io.BytesIO(b"changed"))
+    # The expected release checksum remains unchanged. Extraction can already
+    # see these bytes, but cannot follow archive paths into operator data.
+    contents[f"{base}/{archive.name}"] = stream.getvalue()
+    if decoder == "native":
+        environment = {**environment, "PACKAGE_HOST_GUNZIP_CLI": str(native_cli)}
+    result = run("bash", str(bootstrap), env=environment)
+    assert result.returncode != 0
+    assert outside.read_bytes() == b"operator data"
+    assert not root.exists()
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
@@ -574,7 +694,9 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
             assert (root / "config.toml").exists()
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
         store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
-        assert not (store / "trees").exists()
+        # Early preparation may create the tree cache or retain a verified
+        # tree. It must not leave an incomplete extraction there.
+        assert not list((store / "trees").rglob("extract-*"))
         assert all(len(path.name) == 64 for path in (store / "blobs/sha256").iterdir())
         print(f"real TLS guest archive completed while host body was held; controlled run {time.monotonic() - started:.3f}s")
     finally:
@@ -627,21 +749,23 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
     wrapper = tools / "tar"
     wrapper.write_text(
         '#!/bin/sh\ncase "$*" in\n'
-        f'*"{archive.name}"*) touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done;;\n'
+        f'*"{archive.name}"*|*/host) touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done;;\n'
         f'esac\nexec "{shutil.which("tar")}" "$@"\n')
     wrapper.chmod(0o755)
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}",
                    "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
     if outcome == "declined":
         environment["PACKAGE_HOST_EXIT"] = "41"
+    trees = guest_store / "trees/sha256"
+    prepared = digest(guest).removeprefix("sha256:") + "*/rootfs-tree"
     process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         deadline = time.monotonic() + 10
-        while not entered.exists() or not list((guest_store / "trees/sha256").glob("*/rootfs-tree")):
+        while not entered.exists() or not list(trees.glob(prepared)):
             assert time.monotonic() < deadline and process.poll() is None, "guest preparation waited for host extraction"
             time.sleep(0.01)
-        tree, = (guest_store / "trees/sha256").glob("*/rootfs-tree")
+        tree, = trees.glob(prepared)
         inode = tree.stat().st_ino
         assert not root.exists() and process.poll() is None
         resume.touch()

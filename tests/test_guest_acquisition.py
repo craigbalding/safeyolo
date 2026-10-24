@@ -187,6 +187,12 @@ def registry(tmp_path):
                 faults["entered"].set()
                 faults["resume"].wait(timeout=10)
             try:
+                if key is not None and key == faults.get("pause_after"):
+                    self.wfile.write(data[:len(data) // 2])
+                    self.wfile.flush()
+                    faults["entered"].set()
+                    faults["resume"].wait(timeout=10)
+                    data = data[len(data) // 2:]
                 self.wfile.write(data[:len(data) // 2] if key == faults["partial"] else data)
                 if key in faults["written"]:
                     faults["written"][key].set()

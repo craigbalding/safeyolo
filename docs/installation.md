@@ -222,13 +222,18 @@ contention, extraction, setup and coding-client readiness still contribute.
 
 When the verified early command supports `host-package gunzip`, the bootstrap
 uses the command's bundled gzip decoder and pipes its output to the host's
-existing tar extractor. The complete host archive must pass its release
-checksum before decoding. A gzip or tar failure stops installation and removes
-the private extraction. The ordinary package verifier still checks the complete
-payload before activation. This uses the same `.tar.gz` assets and needs no
-additional host tool. Earlier commands and paths without an early command use
-tar's gzip extraction. Local retained-archive measurements do not establish a
-cold onboarding saving.
+existing tar extractor. During a fresh transfer, the bootstrap saves the archive
+and extracts it into a separate private directory as the bytes arrive. It does
+not source or execute those extracted files until the complete archive passes
+its release checksum. The early command retains its own verified archive and
+extraction directory. A download, checksum, gzip or tar failure stops installation
+and removes the private extraction. Interruption also stops and reaps the
+transfer and extraction children. The ordinary package verifier still checks
+the complete payload before activation. Retained archives pass the release
+checksum before extraction. This uses the same `.tar.gz` assets and standard
+host commands. Earlier commands and paths without an early command use tar's
+gzip extraction. Local retained-archive measurements do not establish a cold
+onboarding saving.
 
 ### Tested onboarding scope
 
