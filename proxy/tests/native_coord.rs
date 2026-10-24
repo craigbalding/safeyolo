@@ -1222,6 +1222,7 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     let make_root = |name: &str, agent_id: &str| {
         let root = parent.path().join(name);
         fs::create_dir_all(root.join("data")).unwrap();
+        fs::create_dir(root.join("builtin-services")).unwrap();
         fs::write(root.join("data/instance_id"), format!("si-817-{name}")).unwrap();
         fs::write(root.join("data/admin_token"), "fixture-operator-token").unwrap();
         fs::write(root.join("data/agent_token"), "fixture-agent-token").unwrap();
@@ -1888,7 +1889,8 @@ async fn traffic(alice: &Client, port: u16) {
         stream,
         &format!("127.0.0.1:{port}"),
         &format!("http://127.0.0.1:{port}/marker"),
-        "fixture-token",
+        // Application traffic needs no Agent API bearer credential.
+        "",
         hyper::Method::GET,
         Value::Null,
         Duration::from_secs(5),
@@ -2000,6 +2002,7 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
         .unwrap();
     let root = root.path();
     fs::create_dir_all(root.join("data")).unwrap();
+    fs::create_dir(root.join("builtin-services")).unwrap();
     fs::write(root.join("data/instance_id"), "si-818-native").unwrap();
     fs::write(root.join("data/admin_token"), "fixture-operator-token").unwrap();
     fs::write(root.join("data/agent_token"), "fixture-token").unwrap();
