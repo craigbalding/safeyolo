@@ -388,6 +388,27 @@ def test_package_dispatch_keeps_existing_producer_identity_profile_and_retention
     assert "continue-on-error" not in job
 
 
+@pytest.mark.parametrize("workflow_name", ["ci.yml", "proxy-rust.yml"])
+def test_linux_input_callers_pin_the_supported_ubuntu_runtime_baseline(workflow_name):
+    workflow = yaml.safe_load(WORKFLOW.with_name(workflow_name).read_text())
+    caller = workflow["jobs"]["guest-inputs"]
+    assert caller["uses"] == "./.github/workflows/guest-test-inputs.yml"
+    assert caller["with"]["architecture"] == "${{ matrix.architecture }}"
+    assert caller["with"]["profile"] == "production"
+    shared = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    assert shared[True]["workflow_call"]["inputs"]["architecture"]["default"] == "amd64"
+    build = shared["jobs"]["build"]
+    assert build["runs-on"] == (
+        "${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}"
+    )
+    steps = {step.get("name"): step for step in build["steps"]}
+    package = steps["Retain complete Linux production bundle"]["run"]
+    # Acquire tmux on the same baseline as the host build and package assembly.
+    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in package
+    assert '--artifacts proxy/target/release --guest-artifacts guest/command/target/release' in package
+    assert '--runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production' in package
+
+
 def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
     job = rust_workflow()["jobs"]["contracts"]
     assert " ".join(job["if"].split()) == (
