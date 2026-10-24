@@ -156,7 +156,9 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         });
     }
     let mut child = command.spawn()?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    // Healthy initialization can exceed five seconds on emulated hosts.
+    // Keep polling readiness so faster starts return without an added delay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while tokio::time::Instant::now() < deadline {
         if child.try_wait()?.is_some() {
             return Err("proxy exited during startup; inspect logs/proxy.log".into());
@@ -169,7 +171,7 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     child.kill().await?;
-    Err("proxy did not publish readiness within five seconds; inspect logs/proxy.log".into())
+    Err("proxy did not publish readiness within fifteen seconds; inspect logs/proxy.log".into())
 }
 
 pub(crate) async fn stop_proxy() -> Result<(), Error> {
