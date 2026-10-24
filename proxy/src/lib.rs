@@ -101,6 +101,7 @@ mod request_trace;
 mod service_catalog_tests;
 pub mod services;
 pub mod ssh_proxy;
+pub mod startup_timings;
 mod tailnet;
 pub mod tasks;
 pub mod test_context;
@@ -438,6 +439,9 @@ impl Runtime {
         event_address: Option<std::net::SocketAddr>,
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
+        let mut startup = previous
+            .is_none()
+            .then(|| startup_timings::StartupTimings::new("runtime"));
         config.validate()?;
         let mut admin_shield = admin_shield::AdminShield::new(
             config.admin_port.unwrap_or(9090),
@@ -520,6 +524,9 @@ impl Runtime {
                     .with_task_document(task.document())
                     .map_err(|error| Box::new(error) as Error)?;
                 *policy = candidate;
+            }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("policy");
             }
             // A reload with the same vault path and key material must retain
             // the old state object: its OAuth flight table is part of the
@@ -631,6 +638,9 @@ impl Runtime {
                     previous.is_none_or(|runtime| runtime.credential_key_empty),
                 )
             };
+            if let Some(timing) = startup.as_mut() {
+                timing.record("credentials");
+            }
             let network_guard = previous
                 .map(|runtime| runtime.network_guard.clone())
                 .unwrap_or_default();
@@ -699,6 +709,9 @@ impl Runtime {
                         config.flow_pruner_max_body_bytes,
                     ))
                 });
+            if let Some(timing) = startup.as_mut() {
+                timing.record("flow_store");
+            }
             let scanner = inspection::Scanner::default();
             if config.native_product {
                 if let Some(policy) = &policy {
@@ -721,6 +734,9 @@ impl Runtime {
                 };
                 let document = policy::parse_document(&source, format)?;
                 scanner.load_policy_config(&Value::Object(document))?;
+            }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("inspection");
             }
             let passthrough = Arc::new(RwLock::new(tunnels::Passthrough::new(
                 &config.ignore_hosts,
@@ -752,6 +768,9 @@ impl Runtime {
                     }
                     Err(_) => eprintln!("Circuit state load failed"),
                 }
+            }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("tls_and_circuits");
             }
             let runtime = Self {
                 parent,
@@ -794,6 +813,9 @@ impl Runtime {
             };
             if previous.is_none() {
                 runtime.configure_declarations()?;
+            }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("declarations");
             }
 
             Ok(runtime)
@@ -1711,8 +1733,10 @@ pub struct Proxy {
 
 impl Proxy {
     pub async fn start(config: Config) -> Result<Self, Error> {
+        let mut startup = startup_timings::StartupTimings::new("proxy");
         config.validate()?;
         let prepared_admin = admin_listener::Prepared::bind(&config).await?;
+        startup.record("validation_admin_bind");
         let admin_address = prepared_admin
             .as_ref()
             .map(admin_listener::Prepared::address);
@@ -1742,6 +1766,7 @@ impl Proxy {
             })
             .await??
         };
+        startup.record("runtime_load");
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
@@ -1787,6 +1812,7 @@ impl Proxy {
             proxy.circuit_snapshots =
                 Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
         }
+        startup.record("listeners_readiness");
         Ok(proxy)
     }
 

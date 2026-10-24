@@ -122,12 +122,29 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     }
     let config_path = host_platform::config_path();
     let config = crate::native_config::read(&config_path)?;
-    if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
-        eprintln!(
-            "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
-        );
-    }
-    let readiness = &config.readiness_file;
+    // Coord is optional for proxy readiness. Keep both starts owned by this
+    // command, and await both results before returning or releasing the lock.
+    let coord = async {
+        let mut timing = crate::startup_timings::StartupTimings::new("managed_nats");
+        if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
+            eprintln!(
+                "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
+            );
+        }
+        timing.record("start_complete");
+    };
+    let (_, proxy) = tokio::join!(
+        coord,
+        start_proxy_process(&root, &config_path, &config.readiness_file),
+    );
+    proxy
+}
+
+async fn start_proxy_process(
+    root: &Path,
+    config_path: &Path,
+    readiness: &Path,
+) -> Result<Option<Value>, Error> {
     match fs::remove_file(readiness) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -159,19 +176,31 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     // Healthy initialization can exceed five seconds on emulated hosts.
     // Keep polling readiness so faster starts return without an added delay.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while tokio::time::Instant::now() < deadline {
-        if child.try_wait()?.is_some() {
-            return Err("proxy exited during startup; inspect logs/proxy.log".into());
+    let result = async {
+        while tokio::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                return Err("proxy exited during startup; inspect logs/proxy.log".into());
+            }
+            if readiness.is_file() && proxy_live() {
+                // The startup lock binds this newly created incarnation. Demo can
+                // release it only while this record and all runtimes still agree.
+                return crate::guest_commands::read_state(&process_path());
+            }
+            tokio::select! {
+                status = child.wait() => {
+                    status?;
+                    return Err("proxy exited during startup; inspect logs/proxy.log".into());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
         }
-        if Path::new(readiness).is_file() && proxy_live() {
-            // The startup lock binds this newly created incarnation. Demo can
-            // release it only while this record and all runtimes still agree.
-            return crate::guest_commands::read_state(&process_path());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        Err("proxy did not publish readiness within fifteen seconds; inspect logs/proxy.log".into())
     }
-    child.kill().await?;
-    Err("proxy did not publish readiness within fifteen seconds; inspect logs/proxy.log".into())
+    .await;
+    if result.is_err() {
+        child.kill().await?;
+    }
+    result
 }
 
 pub(crate) async fn stop_proxy() -> Result<(), Error> {

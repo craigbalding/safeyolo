@@ -392,6 +392,14 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+For a fresh start, managed NATS and the proxy initialize concurrently. The
+command waits for both starts to finish. A Coord failure is reported and does
+not prevent proxy startup. The proxy writes `startup` JSON records to
+`logs/proxy.log`, with source, profile, monotonic stage and elapsed seconds,
+and process CPU seconds for configuration, policy, credentials, flow recording,
+inspection, TLS and readiness publication. CPU time covers all threads in the
+emitting process and excludes its children. Component timings are nested;
+do not add their elapsed values to obtain total startup time.
 Doctor also sends a traced request through every configured agent Unix-domain
 socket. The reserved probe runs the normal request controls and terminates
 locally without external network access. The `pipeline` result lists each

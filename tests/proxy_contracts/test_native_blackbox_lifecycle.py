@@ -7,6 +7,7 @@ Real full-platform runs still prove that leg with the same running guest.
 from __future__ import annotations
 
 import errno
+import fcntl
 import json
 import os
 import shlex
@@ -279,8 +280,11 @@ def test_native_lifecycle_consumer_retains_inactive_receipt_and_uses_configured_
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="the owned-child probe uses Linux procfs")
-@pytest.mark.parametrize("control", ["immediate", "delayed", "exited", "unready"])
-def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_path, control):
+@pytest.mark.parametrize("control,coord_control", [
+    ("immediate", "ready"), ("delayed", "ready"), ("exited", "ready"), ("unready", "ready"),
+    ("immediate", "delayed"), ("exited", "delayed"), ("delayed", "failed"),
+])
+def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_path, control, coord_control):
     # Use the existing native CLI initialization boundary. No guest payload or
     # package rebuild is needed to exercise these host-only start/stop commands.
     artifacts, _, _ = native_inputs()
@@ -307,6 +311,20 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
         coord_command += ["--binary", nats]
     coordinated = subprocess.run(coord_command, env=environment, capture_output=True, text=True, timeout=15)
     assert coordinated.returncode == 0, coordinated.stderr
+    coord_lock = None
+    if coord_control != "ready":
+        stopped = subprocess.run([*command, "coord", "stop"], env=environment, capture_output=True,
+                                 text=True, timeout=10)
+        assert stopped.returncode == 0, stopped.stderr
+        nats = root / "data/coord/nats"
+        if coord_control == "delayed":
+            coord_lock = os.open(nats / "runtime.lock", os.O_RDWR)
+            fcntl.flock(coord_lock, fcntl.LOCK_EX)
+        else:
+            # Damage only this fixture's copied NATS input. The proxy must
+            # still initialize when the managed Coord prerequisite is absent.
+            cached, = nats.glob("bin/*/nats-server")
+            cached.write_bytes(b"incorrect-reviewed-nats-pin")
     ca = root / "certs/mitmproxy-ca.pem"
     pem = ca.read_bytes()
     ca.unlink()
@@ -376,6 +394,19 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
                 assert os.write(writer, pem) == len(pem)
             os.close(writer)
             writer = None
+        if coord_lock is not None:
+            deadline = time.monotonic() + 5
+            while (Path(f"/proc/{pid}").exists() if control == "exited"
+                   else not readiness.is_file() or receipt.read_text() == previous):
+                assert startup.poll() is None, startup.communicate()
+                assert time.monotonic() < deadline, "proxy startup waited for managed NATS"
+                time.sleep(0.02)
+            # Proxy readiness or owned failure finishes independently. The
+            # command must retain the pending NATS start and its startup lock.
+            assert startup.poll() is None, "start returned before managed NATS resolved"
+            fcntl.flock(coord_lock, fcntl.LOCK_UN)
+            os.close(coord_lock)
+            coord_lock = None
         stdout, stderr = startup.communicate(timeout=20)
         elapsed = time.monotonic() - started
         if control == "unready":
@@ -401,7 +432,20 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
             assert not Path(f"/proc/{pid}").exists(), "startup did not reap its failed owned child"
             assert not readiness.exists()
             assert receipt.read_text() == previous
+        if coord_control == "failed":
+            assert "Coord unavailable: NATS executable differs from its reviewed platform pin" in stderr
+        else:
+            status = subprocess.run([*command, "coord", "status"], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            assert status.returncode == 0, status.stderr
+            assert json.loads(status.stdout)["state"] == "running"
     finally:
+        if ca.is_fifo():
+            ca.unlink()
+            ca.write_bytes(pem)
+        if coord_lock is not None:
+            fcntl.flock(coord_lock, fcntl.LOCK_UN)
+            os.close(coord_lock)
         if writer is not None:
             os.close(writer)
         if startup.poll() is None:
@@ -411,9 +455,6 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
                 except ProcessLookupError:
                     pass  # Closing the CA writer can let the child exit first.
         startup.communicate(timeout=5)
-        if ca.is_fifo():
-            ca.unlink()
-            ca.write_bytes(pem)
         stopped = subprocess.run([*command, "stop"], env=environment, capture_output=True, text=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
     if control in {"immediate", "delayed"}:
