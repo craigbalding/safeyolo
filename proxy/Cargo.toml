@@ -25,6 +25,7 @@ libc = "0.2"
 memmap2 = "0.9"
 num-bigint = "0.4"
 oci-client = { version = "=0.18.0", default-features = false, features = ["rustls-tls-no-provider"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 percent-encoding = "2"
 pulldown-cmark = { version = "=0.13.4", default-features = false }

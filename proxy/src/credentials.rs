@@ -20,10 +20,7 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::URL_SAFE};
 use fernet::Fernet;
-use ring::{
-    hmac,
-    rand::{SecureRandom, SystemRandom},
-};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
@@ -739,75 +736,11 @@ fn upsert(credentials: &mut Vec<Credential>, credential: Credential) {
         credentials.push(credential);
     }
 }
-/// PBKDF2-HMAC-SHA256 for the vault's single 32-byte output block. Keep all
-/// iterations, salt and password bytes. After U1, every HMAC input is exactly
-/// 32 bytes: reuse the keyed SHA-256 states and fixed final-block padding
-/// instead of rebuilding general-purpose digest contexts for each iteration.
+/// Derive the vault's 32-byte key with the full PBKDF2-HMAC-SHA256 count.
+/// RustCrypto owns the HMAC contexts and SHA-256 padding.
 fn derive_key(password: &[u8], salt: &[u8], iterations: NonZeroU32) -> Zeroizing<[u8; 32]> {
-    use sha2::{Digest, Sha256, block_api::compress256};
-    const INITIAL_STATE: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let hashed = Zeroizing::new(if password.len() > 64 {
-        <[u8; 32]>::from(Sha256::digest(password))
-    } else {
-        [0; 32]
-    });
-    let normalized = if password.len() > 64 {
-        hashed.as_slice()
-    } else {
-        password
-    };
-    let mut pad = Zeroizing::new([0x36u8; 64]);
-    for (byte, key) in pad.iter_mut().zip(normalized) {
-        *byte ^= key;
-    }
-    let mut inner = Zeroizing::new(INITIAL_STATE);
-    compress256(&mut inner, std::slice::from_ref(&*pad));
-    for byte in pad.iter_mut() {
-        *byte ^= 0x36 ^ 0x5c;
-    }
-    let mut outer = Zeroizing::new(INITIAL_STATE);
-    compress256(&mut outer, std::slice::from_ref(&*pad));
-
-    // U1 = HMAC(password, salt || INT_32_BE(1)); the first input can have any
-    // length. Subsequent inputs are the preceding SHA-256 HMAC output.
-    let key = hmac::Key::new(hmac::HMAC_SHA256, password);
-    let mut first = hmac::Context::with_key(&key);
-    first.update(salt);
-    first.update(&1u32.to_be_bytes());
-    let mut block = Zeroizing::new([0u8; 64]);
-    block[..32].copy_from_slice(first.sign().as_ref());
-    block[32] = 0x80;
-    // One 64-byte keyed prefix plus 32 bytes of message = 768 bits.
-    block[62..].copy_from_slice(&768u16.to_be_bytes());
-    let mut result = Zeroizing::new([0u32; 8]);
-    for (word, bytes) in result.iter_mut().zip(block[..32].chunks_exact(4)) {
-        *word = u32::from_be_bytes(bytes.try_into().unwrap());
-    }
-    let mut state = Zeroizing::new([0u32; 8]);
-    for _ in 1..iterations.get() {
-        *state = *inner;
-        compress256(&mut state, std::slice::from_ref(&*block));
-        for (word, bytes) in state.iter().zip(block[..32].chunks_exact_mut(4)) {
-            bytes.copy_from_slice(&word.to_be_bytes());
-        }
-        *state = *outer;
-        compress256(&mut state, std::slice::from_ref(&*block));
-        for ((output, word), bytes) in result
-            .iter_mut()
-            .zip(state.iter())
-            .zip(block[..32].chunks_exact_mut(4))
-        {
-            *output ^= word;
-            bytes.copy_from_slice(&word.to_be_bytes());
-        }
-    }
     let mut raw = Zeroizing::new([0u8; 32]);
-    for (word, bytes) in result.iter().zip(raw.chunks_exact_mut(4)) {
-        bytes.copy_from_slice(&word.to_be_bytes());
-    }
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password, salt, iterations.get(), raw.as_mut());
     raw
 }
 
