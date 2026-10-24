@@ -6,7 +6,7 @@ root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 release=
 bundle=
 stage=
-host_pid= guest_pid= download_pid= codex_pid=
+host_pid= copy_pid= decode_pid= unpack_pid= guest_pid= download_pid= codex_pid=
 download_guest=true
 download_only=
 install_arguments=()
@@ -127,7 +127,7 @@ if [[ -z $download_only ]] && [[ -e $root/config.toml || -L $root/config.toml ||
   install_and_launch "$root/install_native.sh" --bundle "$root"
   exit
 fi
-for tool in curl tar; do
+for tool in curl tar tee mkfifo; do
   command -v "$tool" >/dev/null || { echo "Host acquisition requires the standard $tool command; restore it and retry." >&2; exit 1; }
 done
 if command -v sha256sum >/dev/null; then
@@ -161,7 +161,7 @@ mkdir -p "$cache"
 stage=$(mktemp -d "$cache/acquire.XXXXXX")
 cleanup_acquisition() {
   local child
-  for child in "$host_pid" "$guest_pid" "$download_pid" "$codex_pid"; do
+  for child in "$host_pid" "$copy_pid" "$decode_pid" "$unpack_pid" "$guest_pid" "$download_pid" "$codex_pid"; do
     if [[ -n $child ]]; then
       kill -TERM "$child" 2>/dev/null || true
       wait "$child" 2>/dev/null || true
@@ -189,10 +189,18 @@ done < "$stage/SHA256SUMS"
 }
 archive=$cache/$name.tar.gz
 if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; then
-  # Own the curl PID directly so interruption cannot leave a download child.
+  # Unpack into a separate private directory while receiving the archive.
+  # Do not execute or source anything there until the release checksum passes.
+  # The early CLI has its own verified archive and extraction directory.
+  mkdir "$stage/host"
+  mkfifo "$stage/host-input" "$stage/host-output"
+  echo 'SafeYolo: downloading and unpacking the host package.' >&2
+  # Own every PID: failure or interruption also reaps blocked FIFO readers.
   curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' \
-    --output "$stage/$name.tar.gz" "$base/$name.tar.gz" &
+    --output "$stage/host-input" "$base/$name.tar.gz" &
   host_pid=$!
+  tee "$stage/$name.tar.gz" < "$stage/host-input" > "$stage/host-output" &
+  copy_pid=$!
   if $download_guest && [[ -z $download_only && $guest_count != 0 ]]; then
     [[ $guest_count == 1 && $guest_expected =~ ^[0-9a-f]{64}$ ]] || {
       echo 'The release has no unique guest download package checksum. No package was installed.' >&2; exit 1
@@ -222,26 +230,38 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     "$early/bin/safeyolo" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
     guest_pid=$!
   fi
+  if [[ -n $guest_pid ]] && "$early/bin/safeyolo" host-package --help >/dev/null 2>&1; then
+    mkfifo "$stage/host-tar"
+    "$early/bin/safeyolo" host-package gunzip "$stage/host-output" > "$stage/host-tar" &
+    decode_pid=$!
+    tar -xf - -C "$stage/host" < "$stage/host-tar" &
+  else
+    # Older releases and paths without an early CLI retain standard tar/gzip.
+    tar -xzf - -C "$stage/host" < "$stage/host-output" &
+  fi
+  unpack_pid=$!
   wait "$host_pid" || { echo 'Host download failed. No package was installed; retry this command.' >&2; exit 1; }
   host_pid=
+  echo 'SafeYolo: verifying and unpacking the host package.' >&2
+  wait "$copy_pid" || { echo 'Host archive could not be saved. No package was installed; retry this command.' >&2; exit 1; }
+  copy_pid=
+  if [[ -n $decode_pid ]]; then
+    wait "$decode_pid" || { echo 'Host archive could not be decoded. No package was installed; retry this command.' >&2; exit 1; }
+    decode_pid=
+  fi
+  wait "$unpack_pid" || { echo 'Host archive could not be unpacked. No package was installed; retry this command.' >&2; exit 1; }
+  unpack_pid=
   [[ $(archive_sha256 "$stage/$name.tar.gz") == "$expected" ]] || {
     echo 'Host archive checksum failed. No package was installed. Retry to download verified bytes.' >&2; exit 1
   }
   mv "$stage/$name.tar.gz" "$archive"
+  package=$stage/host/$name
 else
   echo 'SafeYolo: reusing the verified host archive.' >&2
-fi
-echo 'SafeYolo: verifying and unpacking the host package.' >&2
-if [[ -n $guest_pid ]] && "$early/bin/safeyolo" host-package --help >/dev/null 2>&1; then
-  # This same-release CLI was verified before its early guest download. Keep
-  # tar's existing extraction behavior, with the CLI's faster gzip decoder.
-  # pipefail also rejects a bad gzip trailer after tar reaches its end marker.
-  "$early/bin/safeyolo" host-package gunzip "$archive" | tar -xf - -C "$stage"
-else
-  # Earlier releases and paths without an early CLI retain their extractor.
+  echo 'SafeYolo: verifying and unpacking the host package.' >&2
   tar -xzf "$archive" -C "$stage"
+  package=$stage/$name
 fi
-package=$stage/$name
 [[ -f $package/package-info && -f $package/install.sh ]] || { echo 'The host archive is incomplete; no package was installed.' >&2; exit 1; }
 for field in "source_commit=${release#host-}" "profile=production" "platform=$platform"; do
   grep -qx "$field" "$package/package-info" || { echo "Host package differs from its release: $field. No package was installed." >&2; exit 1; }

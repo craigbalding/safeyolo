@@ -100,6 +100,7 @@ PROBES = [
 ]
 PHASE_TEXT = [
     ("host-acquisition", "SafeYolo: acquiring safeyolo-"),
+    ("host-download-unpack", "SafeYolo: downloading and unpacking the host package."),
     ("guest-download-overlap", "SafeYolo: downloading the compatible guest while acquiring the host package."),
     ("host-verification-unpack", "SafeYolo: verifying and unpacking the host package."),
     ("host-preparation-consent", "SafeYolo needs these host changes:"),

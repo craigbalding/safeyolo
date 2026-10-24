@@ -1,4 +1,4 @@
-//! Stream a verified host package through the gzip decoder already in the CLI.
+//! Stream a host package through the gzip decoder already in the CLI.
 
 use std::{
     fs::File,
@@ -8,7 +8,7 @@ use std::{
 
 use crate::Error;
 
-pub const HELP: &str = "safeyolo host-package gunzip ARCHIVE\nInstaller helper: decode an already verified host tar.gz to standard output. The caller runs tar and the complete package verifier before installation.";
+pub const HELP: &str = "safeyolo host-package gunzip ARCHIVE\nInstaller helper: decode a host tar.gz to standard output. The caller must verify the release checksum and complete package before installation.";
 
 pub fn gunzip(archive: &Path) -> Result<(), Error> {
     // Read every gzip member and its trailer, including checksum/length checks.
