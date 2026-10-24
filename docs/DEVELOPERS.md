@@ -333,6 +333,11 @@ artifacts without this receipt also require a build. Damaged downloads or invali
 receipts fail the job. Consumer tests, terminal-input checks and complete package
 assembly still run.
 
+Linux input producers use Ubuntu 24.04 on both architectures. Complete Linux
+packages acquire tmux and its private libraries on that same runner. The packager
+derives the minimum glibc version from all shipped host executables and runtime
+libraries, so a floating runner can raise the package's runtime requirement.
+
 Use the `packages_only` input of `proxy-rust.yml` to produce complete host
 bundles without the contract matrix. It calls the existing
 `guest-test-inputs.yml` producer with production profile and package retention.
