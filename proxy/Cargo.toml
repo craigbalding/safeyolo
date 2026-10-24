@@ -38,6 +38,7 @@ rustls-native-certs = "0.8"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+sha2 = { version = "0.11", features = ["zeroize"] }
 subtle = "2.6.1"
 tempfile = "3"
 toml_edit = "0.25"

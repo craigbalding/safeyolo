@@ -528,6 +528,9 @@ impl Runtime {
             if let Some(timing) = startup.as_mut() {
                 timing.record("policy");
             }
+            let mut credential_startup = previous
+                .is_none()
+                .then(|| startup_timings::StartupTimings::new("credential_preparation"));
             // A reload with the same vault path and key material must retain
             // the old state object: its OAuth flight table is part of the
             // process-owned attempt domain. A changed key/path starts a fresh
@@ -570,6 +573,9 @@ impl Runtime {
                     .activate(credentials::ActivationPhase::Candidate, &metadata)
                     .map_err(|_| "vault credential activation unavailable")?;
             }
+            if let Some(timing) = credential_startup.as_mut() {
+                timing.record("vault");
+            }
             let gateway_grants = if let Some(previous_store) = previous
                 .filter(|runtime| runtime.config.policy_file == config.policy_file)
                 .and_then(|runtime| runtime.gateway_grants.as_ref())
@@ -599,6 +605,9 @@ impl Runtime {
                 policy
                     .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
             }
+            if let Some(timing) = credential_startup.as_mut() {
+                timing.record("grants");
+            }
             // CredentialGuard is a native generation owned by the same Runtime
             // publication as the accepted Policy. Reuse the key on ordinary
             // reloads; an empty environment key deliberately retries loading
@@ -620,6 +629,9 @@ impl Runtime {
                 } else {
                     None
                 };
+                if let Some(timing) = credential_startup.as_mut() {
+                    timing.record("hmac_key");
+                }
                 let seed = previous_guard
                     .cloned()
                     .unwrap_or_else(|| credential_guard::CredentialGuard::new(&[]));
@@ -638,6 +650,9 @@ impl Runtime {
                     previous.is_none_or(|runtime| runtime.credential_key_empty),
                 )
             };
+            if let Some(timing) = credential_startup.as_mut() {
+                timing.record("guard");
+            }
             if let Some(timing) = startup.as_mut() {
                 timing.record("credentials");
             }

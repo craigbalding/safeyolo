@@ -21,7 +21,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::URL_SAFE};
 use fernet::Fernet;
 use ring::{
-    pbkdf2,
+    hmac,
     rand::{SecureRandom, SystemRandom},
 };
 use serde::{Deserialize, Serialize};
@@ -739,14 +739,83 @@ fn upsert(credentials: &mut Vec<Credential>, credential: Credential) {
         credentials.push(credential);
     }
 }
-fn derive_cipher(passphrase: &Secret, salt: &[u8; SALT_LENGTH]) -> Result<Zeroizing<Fernet>> {
+/// PBKDF2-HMAC-SHA256 for the vault's single 32-byte output block. Keep all
+/// iterations, salt and password bytes. After U1, every HMAC input is exactly
+/// 32 bytes: reuse the keyed SHA-256 states and fixed final-block padding
+/// instead of rebuilding general-purpose digest contexts for each iteration.
+fn derive_key(password: &[u8], salt: &[u8], iterations: NonZeroU32) -> Zeroizing<[u8; 32]> {
+    use sha2::{Digest, Sha256, block_api::compress256};
+    const INITIAL_STATE: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let hashed = Zeroizing::new(if password.len() > 64 {
+        <[u8; 32]>::from(Sha256::digest(password))
+    } else {
+        [0; 32]
+    });
+    let normalized = if password.len() > 64 {
+        hashed.as_slice()
+    } else {
+        password
+    };
+    let mut pad = Zeroizing::new([0x36u8; 64]);
+    for (byte, key) in pad.iter_mut().zip(normalized) {
+        *byte ^= key;
+    }
+    let mut inner = Zeroizing::new(INITIAL_STATE);
+    compress256(&mut inner, std::slice::from_ref(&*pad));
+    for byte in pad.iter_mut() {
+        *byte ^= 0x36 ^ 0x5c;
+    }
+    let mut outer = Zeroizing::new(INITIAL_STATE);
+    compress256(&mut outer, std::slice::from_ref(&*pad));
+
+    // U1 = HMAC(password, salt || INT_32_BE(1)); the first input can have any
+    // length. Subsequent inputs are the preceding SHA-256 HMAC output.
+    let key = hmac::Key::new(hmac::HMAC_SHA256, password);
+    let mut first = hmac::Context::with_key(&key);
+    first.update(salt);
+    first.update(&1u32.to_be_bytes());
+    let mut block = Zeroizing::new([0u8; 64]);
+    block[..32].copy_from_slice(first.sign().as_ref());
+    block[32] = 0x80;
+    // One 64-byte keyed prefix plus 32 bytes of message = 768 bits.
+    block[62..].copy_from_slice(&768u16.to_be_bytes());
+    let mut result = Zeroizing::new([0u32; 8]);
+    for (word, bytes) in result.iter_mut().zip(block[..32].chunks_exact(4)) {
+        *word = u32::from_be_bytes(bytes.try_into().unwrap());
+    }
+    let mut state = Zeroizing::new([0u32; 8]);
+    for _ in 1..iterations.get() {
+        *state = *inner;
+        compress256(&mut state, std::slice::from_ref(&*block));
+        for (word, bytes) in state.iter().zip(block[..32].chunks_exact_mut(4)) {
+            bytes.copy_from_slice(&word.to_be_bytes());
+        }
+        *state = *outer;
+        compress256(&mut state, std::slice::from_ref(&*block));
+        for ((output, word), bytes) in result
+            .iter_mut()
+            .zip(state.iter())
+            .zip(block[..32].chunks_exact_mut(4))
+        {
+            *output ^= word;
+            bytes.copy_from_slice(&word.to_be_bytes());
+        }
+    }
     let mut raw = Zeroizing::new([0u8; 32]);
-    pbkdf2::derive(
-        pbkdf2::PBKDF2_HMAC_SHA256,
-        NonZeroU32::new(KDF_ITERATIONS).unwrap(),
-        salt,
+    for (word, bytes) in result.iter().zip(raw.chunks_exact_mut(4)) {
+        bytes.copy_from_slice(&word.to_be_bytes());
+    }
+    raw
+}
+
+fn derive_cipher(passphrase: &Secret, salt: &[u8; SALT_LENGTH]) -> Result<Zeroizing<Fernet>> {
+    let raw = derive_key(
         passphrase.expose_secret().as_bytes(),
-        raw.as_mut(),
+        salt,
+        NonZeroU32::new(KDF_ITERATIONS).unwrap(),
     );
     let encoded = Zeroizing::new(URL_SAFE.encode(raw.as_ref()));
     Fernet::new(&encoded)
@@ -991,6 +1060,75 @@ fn restore(
     }
     activate(ActivationPhase::Rollback, &metadata(&state.credentials))
         .map_err(|_| error(ErrorKind::Rollback))
+}
+
+#[cfg(test)]
+mod key_derivation_tests {
+    use super::*;
+    use ring::pbkdf2;
+
+    fn assert_ring_key(password: &[u8], salt: &[u8], iterations: u32) {
+        let iterations = NonZeroU32::new(iterations).unwrap();
+        let mut expected = Zeroizing::new([0u8; 32]);
+        pbkdf2::derive(
+            pbkdf2::PBKDF2_HMAC_SHA256,
+            iterations,
+            salt,
+            password,
+            expected.as_mut(),
+        );
+        assert!(derive_key(password, salt, iterations).as_slice() == expected.as_slice());
+    }
+
+    #[test]
+    fn vault_key_matches_ring_at_password_and_salt_block_boundaries() {
+        for length in [0, 1, 31, 32, 63, 64, 65, 127, 128, 129, 1024] {
+            let password: Vec<_> = (0..length).map(|index| (index % 256) as u8).collect();
+            for length in [0, 16, 51, 52, 63, 64, 65, 128] {
+                let salt: Vec<_> = (0..length).map(|index| (index % 256) as u8).collect();
+                for iterations in [1, 2, 17] {
+                    assert_ring_key(&password, &salt, iterations);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vault_key_matches_ring_for_all_production_rounds() {
+        assert_eq!(KDF_ITERATIONS, 480_000);
+        let long_password = "synthetic long vault passphrase — 🙂".repeat(8);
+        for password in [
+            "synthetic-native-key-12345678901234567890123456".as_bytes(),
+            long_password.as_bytes(),
+        ] {
+            assert_ring_key(password, b"synthetic-salt!!", KDF_ITERATIONS);
+        }
+    }
+
+    #[test]
+    fn vault_key_matches_rfc7914_first_output_block() {
+        // RFC 7914 section 11 publishes 64-byte keys. This vault derives the
+        // first 32-byte block with the same PBKDF2-HMAC-SHA256 inputs.
+        // https://www.rfc-editor.org/rfc/rfc7914.html#section-11
+        for (password, salt, iterations, expected) in [
+            (
+                b"passwd".as_slice(),
+                b"salt".as_slice(),
+                1,
+                "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc",
+            ),
+            (
+                b"Password".as_slice(),
+                b"NaCl".as_slice(),
+                80_000,
+                "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56",
+            ),
+        ] {
+            let actual = derive_key(password, salt, NonZeroU32::new(iterations).unwrap());
+            let hex: String = actual.iter().map(|byte| format!("{byte:02x}")).collect();
+            assert_eq!(hex, expected);
+        }
+    }
 }
 
 #[cfg(test)]
