@@ -336,6 +336,8 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
     receipt = root / "data/proxy-process.json"
     previous = '{"pid":1,"token":"stale-birth"}'
     receipt.write_text(previous)
+    original_config = config.read_bytes()
+    original_inode = config.stat().st_ino
     writer = None
     pid = birth = None
     started = time.monotonic()
@@ -418,13 +420,17 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
         timing_lines = (root / "logs/proxy.log").read_text().splitlines() + stderr.splitlines()
         timings = [json.loads(line.removeprefix("startup ")) for line in timing_lines if line.startswith("startup ")]
         if control == "immediate" and coord_control == "delayed":
+            observed_stages = {(row["component"], row["stage"]) for row in timings}
             assert {("launcher", "configuration"), ("process", "configuration"),
-                    ("listener_projection", "configuration_read"), ("listener_projection", "configuration_reread"),
-                    ("listener_preparation", "configuration_reread"), ("listener_projection", "attachment_reconciliation"),
-                    ("listener_projection", "file_sync"), ("listener_projection", "directory_sync"),
+                    ("listener_projection", "configuration_read"), ("listener_preparation", "projection"),
+                    ("listener_projection", "attachment_reconciliation"),
                     ("runtime", "credentials"), ("runtime", "inspection"), ("runtime", "tls_and_circuits"),
-                    ("process", "process_record"), ("managed_nats", "start_complete")} <= {
-                        (row["component"], row["stage"]) for row in timings}
+                    ("process", "process_record"), ("managed_nats", "start_complete")} <= observed_stages
+            assert not {("listener_projection", stage) for stage in (
+                "configuration_reread", "projection_write", "file_sync", "projection_publish", "directory_sync",
+            )} & observed_stages
+            assert ("listener_preparation", "configuration_reread") not in observed_stages
+            assert config.read_bytes() == original_config and config.stat().st_ino == original_inode
             version = subprocess.check_output([*command, "--version"], env=environment, text=True)
             for row in timings:
                 assert f"commit={row['source']} profile={profile}" in version

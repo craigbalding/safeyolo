@@ -3792,6 +3792,7 @@ target_hosts = ["localhost"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_controls() {
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     let root = root.path();
     for name in ["data", "builtin", "services"] {
@@ -3833,13 +3834,30 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
         .write(true)
         .open(root.join("data/credentials.lock"))
         .unwrap();
+    let provider = root.join("op");
+    let provider_call = root.join("provider-called");
+    std::fs::write(
+        &provider,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = read ] && [ \"$2\" = --no-newline ] && [ \"$3\" = op://synthetic/item/field ] || exit 2\n: > '{}'\nprintf synthetic-provider-value\n",
+            provider_call.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut configuration = config(root);
+    configuration.native_config_dir = Some(root.to_owned());
+    configuration.native_settings = Some(safeyolo_proxy::native_config::Settings {
+        onepassword_executable: Some(provider.clone()),
+        ..Default::default()
+    });
     assert_eq!(
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
     let proxy = tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::spawn(Proxy::start(config(root))),
+        tokio::spawn(Proxy::start(configuration)),
     )
     .await
     .expect("vault lock blocked proxy readiness")
@@ -3854,6 +3872,7 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
         .to_owned();
     let mut selected = tokio::spawn({
         let socket = socket.clone();
+        let token = token.clone();
         async move { send_agent(&socket, port, &token, "127.0.0.1").await }
     });
     assert!(
@@ -3865,8 +3884,9 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
     let plain = raw_http(&socket, format!("GET http://127.0.0.1:{port}/independent HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).await;
     status(&plain, "200");
     let leak = raw_http(&socket, format!("GET http://127.0.0.1:{port}/independent HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Api-Key: locked-leak-secret\r\nConnection: close\r\n\r\n").as_bytes()).await;
-    status(&leak, "403");
+    status(&leak, "428");
     assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(!provider_call.exists());
     drop(lock);
     let injected = selected.await.unwrap();
     status(&injected, "200");
@@ -3875,6 +3895,31 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
             .windows(b"Bearer synthetic-stored-value".len())
             .any(|bytes| bytes == b"Bearer synthetic-stored-value")
     }));
+    let mut reference = Credential::new("simple-secret", "bearer", Secret::new(""));
+    reference.reference = Some(safeyolo_proxy::credentials::ExternalReference::Onepassword(
+        "op://synthetic/item/field".into(),
+    ));
+    vault.store(reference).unwrap();
+    status(&send_agent(&socket, port, &token, "127.0.0.1").await, "200");
+    assert!(provider_call.exists());
+    assert!(
+        seen.lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .windows(b"Bearer synthetic-provider-value".len())
+            .any(|bytes| bytes == b"Bearer synthetic-provider-value")
+    );
+    assert!(
+        !std::fs::read(root.join("data/credentials.enc"))
+            .unwrap()
+            .windows(b"synthetic-provider-value".len())
+            .any(|bytes| bytes == b"synthetic-provider-value")
+    );
+    std::fs::write(&provider, "#!/bin/sh\nexit 1\n").unwrap();
+    let before = seen.lock().unwrap().len();
+    status(&send_agent(&socket, port, &token, "127.0.0.1").await, "503");
+    assert_eq!(seen.lock().unwrap().len(), before);
     proxy.shutdown().await;
     origin_task.abort();
 }
