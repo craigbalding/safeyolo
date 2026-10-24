@@ -137,14 +137,31 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         coord,
         start_proxy_process(&root, &config_path, &config.readiness_file),
     );
-    proxy
+    let (mut child, ready) = proxy?;
+    // A proxy that became ready first can exit while NATS is still starting.
+    // Retain its child handle and recheck readiness at command completion.
+    let result = (|| {
+        if child.try_wait()?.is_some() {
+            return Err("proxy exited during startup; inspect logs/proxy.log".into());
+        }
+        if !config.readiness_file.is_file() || !proxy_live() {
+            return Err(
+                "proxy lost verified readiness during startup; inspect logs/proxy.log".into(),
+            );
+        }
+        Ok(ready)
+    })();
+    if result.is_err() {
+        child.kill().await?;
+    }
+    result
 }
 
 async fn start_proxy_process(
     root: &Path,
     config_path: &Path,
     readiness: &Path,
-) -> Result<Option<Value>, Error> {
+) -> Result<(tokio::process::Child, Option<Value>), Error> {
     match fs::remove_file(readiness) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -200,7 +217,7 @@ async fn start_proxy_process(
     if result.is_err() {
         child.kill().await?;
     }
-    result
+    result.map(|ready| (child, ready))
 }
 
 pub(crate) async fn stop_proxy() -> Result<(), Error> {

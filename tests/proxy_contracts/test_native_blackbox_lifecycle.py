@@ -282,7 +282,8 @@ def test_native_lifecycle_consumer_retains_inactive_receipt_and_uses_configured_
 @pytest.mark.skipif(sys.platform != "linux", reason="the owned-child probe uses Linux procfs")
 @pytest.mark.parametrize("control,coord_control", [
     ("immediate", "ready"), ("delayed", "ready"), ("exited", "ready"), ("unready", "ready"),
-    ("immediate", "delayed"), ("exited", "delayed"), ("delayed", "failed"),
+    ("immediate", "delayed"), ("exited", "delayed"), ("exited_after_ready", "delayed"),
+    ("delayed", "failed"),
 ])
 def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_path, control, coord_control):
     # Use the existing native CLI initialization boundary. No guest payload or
@@ -404,6 +405,11 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
             # Proxy readiness or owned failure finishes independently. The
             # command must retain the pending NATS start and its startup lock.
             assert startup.poll() is None, "start returned before managed NATS resolved"
+            if control == "exited_after_ready":
+                os.kill(pid, signal.SIGTERM)
+                while smoke._process_start_token(pid) == birth:
+                    assert time.monotonic() < deadline, "ready proxy did not exit"
+                    time.sleep(0.02)
             fcntl.flock(coord_lock, fcntl.LOCK_UN)
             os.close(coord_lock)
             coord_lock = None
@@ -413,7 +419,7 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
             assert startup.returncode != 0, stdout
             assert "did not publish readiness within fifteen seconds" in stderr
             assert 15 <= elapsed < 20
-        elif control == "exited":
+        elif control in {"exited", "exited_after_ready"}:
             assert startup.returncode != 0, stdout
             assert "proxy exited during startup" in stderr
             assert time.monotonic() - held < 5
@@ -428,10 +434,13 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
                 working_directory=tmp_path, require_running=True, require_authenticated_identity=True,
             )
             assert runtime["pid"] == pid
-        if control in {"exited", "unready"}:
+        if control in {"exited", "exited_after_ready", "unready"}:
             assert not Path(f"/proc/{pid}").exists(), "startup did not reap its failed owned child"
             assert not readiness.exists()
-            assert receipt.read_text() == previous
+            if control == "exited_after_ready":
+                assert json.loads(receipt.read_text())["pid"] == pid
+            else:
+                assert receipt.read_text() == previous
         if coord_control == "failed":
             assert "Coord unavailable: NATS executable differs from its reviewed platform pin" in stderr
         else:
