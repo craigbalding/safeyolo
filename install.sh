@@ -227,7 +227,8 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     start_codex_prefetch "$early/bin/safeyolo"
     echo 'SafeYolo: downloading the compatible guest while acquiring the host package.' >&2
     guest_arguments=()
-    if "$early/bin/safeyolo" guest download --help | grep -q -- '--prepare'; then
+    # Consume all help output to avoid a broken pipe; pipefail retains helper failures.
+    if "$early/bin/safeyolo" guest download --help | grep -F -- '--prepare' >/dev/null; then
       guest_arguments+=(--prepare)
     fi
     "$early/bin/safeyolo" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &

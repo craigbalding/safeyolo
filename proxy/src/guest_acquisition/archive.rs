@@ -7,6 +7,7 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 
 use crate::{
@@ -80,6 +81,7 @@ fn extract(
     mapping: Mapping,
     noninteractive: bool,
 ) -> Result<(), Error> {
+    let extraction_started = Instant::now();
     let linux = platform != ConsumerPlatform::DarwinArm64;
     let mut command = if linux && unsafe { libc::geteuid() } != 0 {
         let mut command = Command::new("sudo");
@@ -144,7 +146,12 @@ fn extract(
     if linux && !fs::symlink_metadata(stage.join("rootfs-tree"))?.is_dir() {
         return Err("archive rootfs-tree must be a directory, not a link".into());
     }
+    eprintln!(
+        "SafeYolo: guest archive decoded and extracted in {:.3}s.",
+        extraction_started.elapsed().as_secs_f64()
+    );
     if linux {
+        let ownership_started = Instant::now();
         // The private-stage remapper checks every owner and hard link before
         // changing anything. Reuse that traversal for all mappings, including
         // unchanged root IDs with guest-user ownership or named ACLs to shift.
@@ -172,6 +179,10 @@ fn extract(
             return Err("guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer".into());
         }
         validate_assets(stage, platform, mapping)?;
+        eprintln!(
+            "SafeYolo: guest ownership prepared in {:.3}s.",
+            ownership_started.elapsed().as_secs_f64()
+        );
     }
     Ok(())
 }

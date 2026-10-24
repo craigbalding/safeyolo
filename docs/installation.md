@@ -217,6 +217,8 @@ An interruption removes partial transfers. During early extraction, the helper
 waits for extraction/remapping and private-stage cleanup before exit. Completed
 verified blobs and trees remain reusable. Earlier immutable releases retain
 their existing acquisition path.
+Guest preparation reports separate elapsed times for archive decoding/extraction
+and Linux ownership preparation.
 The overlap does not establish the complete cold onboarding time; bandwidth
 contention, extraction, setup and coding-client readiness still contribute.
 
