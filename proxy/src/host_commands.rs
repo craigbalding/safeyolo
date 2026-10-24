@@ -182,7 +182,7 @@ async fn start_proxy_process(
     command
         .args(["--config"])
         .arg(config_path)
-        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env("SAFEYOLO_CONFIG_DIR", root)
         .env_remove("SAFEYOLO_HOST_SETUP_LOCK_FD")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
