@@ -430,31 +430,7 @@ impl Demo {
             return Err("stop the selected guest before supplying its Demo login".into());
         }
         let home = directory.join("home");
-        private_directory(&home)?;
-        let codex = home.join(".codex");
-        private_directory(&codex)?;
-        let destination = codex.join("auth.json");
-        if fs::symlink_metadata(&destination).is_ok() {
-            return Err("selected guest already has Codex authentication; use its existing login without --auth-file".into());
-        }
-        // The source is an explicit operator input. Read through a checked
-        // handle; never follow a guest-controlled destination or log its bytes.
-        let source = source.canonicalize()?;
-        let mut input = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(source)?;
-        if !input.metadata()?.is_file() {
-            return Err("Codex authentication input must be a regular file".into());
-        }
-        let mut temporary = tempfile::NamedTempFile::new_in(&codex)?;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        std::io::copy(&mut input, &mut temporary)?;
-        temporary.as_file().sync_all()?;
-        temporary.persist_noclobber(&destination)?;
-        crate::coord_setup::codex_state(&home, None, false, Some("adopt"))?;
+        crate::coord_setup::copy_codex_login(&home, source)?;
         println!(
             "Existing Codex login staged privately in the Demo guest. Login status is checked before the task."
         );

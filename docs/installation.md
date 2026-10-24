@@ -154,17 +154,35 @@ consent or privileges, and does not update an already published bundle.
 Put installer options before `--launch`. Arguments after it go to the existing
 `agent launch` command. Omitting `--launch` installs only. `--yes` accepts
 listed host changes; setup, workspace access and optional authentication copying
-still require their own host choices. The command entry works in the same
-terminal after installation. A failed download must stop the procedure: do
+and authorization still require their own host choices. The command entry works
+in the same terminal after installation. A failed download must stop the procedure: do
 not run a previous file left at the download name.
 
 In a release that includes Codex launch support, use `safeyolo agent launch .
 --harness codex` to select the shipped Codex setup and native package. The
-default harness remains Claude. Codex uses authentication and settings in the
-agent's persistent home; setup does not copy the host's `~/.codex`. For login
-and explicit adoption of selected authentication, see
-[First Codex login](../contrib/HOST_SCRIPT_GUIDE.md#first-codex-login).
+default harness remains Claude. For the two-command installer route, put
+`--launch --harness codex` on the second command; use the same public download
+command from the quick start.
+
+Current source offers a login choice before starting a stopped Codex agent.
+Select `a` to authorize a trusted login already in that agent's home, `h` to
+select the host's `CODEX_HOME/auth.json` (default `~/.codex/auth.json`), or enter
+another trusted file path. The choice uses `credentials import-codex` for the
+new agent's unique identity; it needs no separate import shell command.
+If the agent has no login, the selected host file is also copied privately. The guest
+can read the copy; the host original and an existing agent login are preserved.
+Copying or adoption alone grants no proxy authority. If authorization fails,
+the copied login remains. Enter retains the current login or allows guest sign-in
+with normal approvals. `q` cancels before services and the client start.
+The displayed import name identifies the authorization to remove for revocation.
+Existing credential and network rules still apply. The
+[credential reference](credentials.md#use-codex-with-a-chatgpt-subscription)
+explains the supported scope. Older packages lack this in-flow choice; a
+source test does not establish public packaged cold readiness or timing.
+
 Repeating the command reuses the matching agent, home, workspace and launcher.
+A live repeat leaves login and authorization unchanged. A stopped repeat
+offers the same choice; Enter does not reimport or restore a revoked grant.
 The same tmux detach and host approval controls apply to both harnesses.
 Earlier packages that report “available: claude” need an explicit update to a
 release with this support. A source change alone does not update an installation.

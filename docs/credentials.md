@@ -118,6 +118,13 @@ credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
 `sk-svcacct-` API keys. A grant for `openai:*` does not identify or approve a
 ChatGPT subscription OAuth access token.
 
+Current source's `agent launch . --harness codex` offers this authorization
+before client startup. The installer uses the same choice with
+`--launch --harness codex`, without an extra import shell command. See the
+[installation reference](installation.md#public-bootstrap-availability) for
+login choices, copying, repeat behavior and release limits. The command below
+remains available for explicit administration.
+
 For the supported subscription paths, an operator can authorize an explicitly
 selected login through the existing encrypted credential vault. On the operator
 host, use the instance's CLI, an existing agent with a unique `agent_id`

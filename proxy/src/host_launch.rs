@@ -14,8 +14,10 @@ use crate::{Error, host_agents, host_boot, host_commands, host_lifecycle, host_p
 
 pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--dangerously-allow-unowned]
 WORKSPACE defaults to the current directory. The harness defaults to Claude.
-Launch starts the installed services, asks before host setup and optional host-state copying,
-and opens the agent terminal. Codex uses its agent-local authentication and settings.
+Launch asks before host setup, workspace sharing and optional authentication copying,
+then starts the installed services and opens the agent terminal. For a stopped Codex
+agent, select a trusted subscription login to authorize before startup, or keep normal
+login/approvals. If the agent has no login, launch also copies the selected host file.
 In tmux, press Ctrl-b then d to return here for approvals.
 Numbered requests use the existing inspect/approve/reject operations. Network approval is
 agent-specific and reusable; credential approval changes persistent instance-shared policy.
@@ -202,6 +204,77 @@ async fn start(agent: &host_agents::Agent) -> Result<(), Error> {
     Ok(())
 }
 
+async fn codex_login(agent: &host_agents::Agent) -> Result<bool, Error> {
+    let root = host_platform::config_dir();
+    let directory = root.join("agents").join(&agent.name);
+    let _lock = tokio::task::spawn_blocking(move || {
+        host_lifecycle::SetupLock::acquire_in(&directory, None)
+    })
+    .await??;
+    current_selection(agent)?;
+    if host_lifecycle::runtime(agent).await?["runtime_state"] != "stopped" {
+        return Ok(true);
+    }
+    let home = root.join("agents").join(&agent.name).join("home");
+    let auth = home.join(".codex/auth.json");
+    let host_auth = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".codex")
+        })
+        .join("auth.json");
+    println!(
+        "Authorize a trusted Codex subscription login for {} ({}). Agent files can be changed by the guest. Authorization lasts until removed or replaced. Existing credential and network rules still apply. If the agent has no login, the selected host file is copied; guests can read the copy. Host originals stay unchanged. If authorization fails, the copy remains.",
+        agent.name, agent.id
+    );
+    for (label, path) in [("a: agent login", &auth), ("h: host login", &host_auth)] {
+        println!(
+            "{label}: {}",
+            crate::network_guard::sanitize_with_limit(&path.to_string_lossy(), usize::MAX)
+        );
+    }
+    loop {
+        let Some(choice) = input(
+            "Codex login [a/h/file path, Enter: guest login/normal approvals, q: cancel launch]: ",
+        )?
+        else {
+            return Ok(false);
+        };
+        let source = match choice.as_str() {
+            "" => return Ok(true),
+            "q" => return Ok(false),
+            "a" => auth.clone(),
+            "h" => host_auth.clone(),
+            _ => PathBuf::from(choice),
+        };
+        current_selection(agent)?;
+        let result = async {
+            let source = source.canonicalize().map_err(|_| "cannot resolve selected Codex login input")?;
+            if auth.canonicalize().ok().as_ref() != Some(&source) {
+                crate::coord_setup::copy_codex_login(&home, &source)?;
+            } else {
+                crate::coord_setup::codex_state(&home, None, false, Some("adopt"))?;
+            }
+            // Use the existing trusted import operation. Neither copying nor
+            // an adoption marker is evidence for an automatic credential grant.
+            let status = tokio::process::Command::new(root.join("bin/safeyolo"))
+                .arg("--config").arg(host_platform::config_path())
+                .args(["credentials", "import-codex", &format!("codex-{}", agent.id), "--agent", &agent.name, "--auth-file"])
+                .arg(&auth)
+                .kill_on_drop(true)
+                .status().await?;
+            if !status.success() {
+                return Err("selected login was not authorized; repair the agent login or keep normal approvals".into());
+            }
+            Ok::<(), Error>(())
+        }.await;
+        match result {
+            Ok(()) => return Ok(true),
+            Err(error) => eprintln!("{}", phase("Codex authorization", error)),
+        }
+    }
+}
+
 pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     if args == ["--help"] {
         println!("{HELP}");
@@ -279,7 +352,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             )?)
         } else {
             println!(
-                "Codex uses authentication and settings in this agent's ~/.codex. Setup preserves that state and does not import host credentials. Sign in inside the guest if needed; follow codex-state adopt or reset instructions if setup requests recovery."
+                "Codex uses authentication and settings in this agent's ~/.codex. Setup preserves that state; a host login choice follows."
             );
             None
         };
@@ -298,6 +371,16 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             .await
             .map_err(|error| phase("host setup", error))?
     };
+    if harness == "codex"
+        && !codex_login(&agent)
+            .await
+            .map_err(|error| phase("Codex login selection", error))?
+    {
+        println!(
+            "Launch cancelled; saved agent state is retained. Services and the coding client were not started by this launch."
+        );
+        return Ok(0);
+    }
     println!("Starting or reusing the installed services…");
     host_commands::start_proxy()
         .await
