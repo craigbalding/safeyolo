@@ -6,6 +6,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
@@ -77,10 +78,14 @@ fn extract(
     stage: &Path,
     platform: ConsumerPlatform,
     mapping: Mapping,
+    noninteractive: bool,
 ) -> Result<(), Error> {
     let linux = platform != ConsumerPlatform::DarwinArm64;
     let mut command = if linux && unsafe { libc::geteuid() } != 0 {
         let mut command = Command::new("sudo");
+        if noninteractive {
+            command.arg("-n");
+        }
         command.arg("tar");
         command
     } else {
@@ -151,6 +156,9 @@ fn extract(
         #[cfg(not(test))]
         let executable = std::env::current_exe()?;
         let mut remap = Command::new("sudo");
+        if noninteractive {
+            remap.arg("-n");
+        }
         remap
             .arg("--")
             .arg(executable)
@@ -173,6 +181,7 @@ pub(super) fn prepare(
     destination: &Path,
     platform: ConsumerPlatform,
     mapping: Mapping,
+    early_cancellation: Option<&AtomicBool>,
 ) -> Result<(), Error> {
     let parent = destination.parent().ok_or("guest tree has no parent")?;
     let stage = tempfile::Builder::new()
@@ -180,14 +189,36 @@ pub(super) fn prepare(
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?
         .keep();
-    let result = extract(input, &stage, platform, mapping)
-        .and_then(|()| {
-            fs::set_permissions(&stage, fs::Permissions::from_mode(0o755)).map_err(Into::into)
-        })
-        .and_then(|()| fs::rename(&stage, destination).map_err(Into::into));
+    // Early cache preparation cannot ask for privilege or change host settings.
+    // Finish and reap extraction/remapping before observing cancellation, so
+    // cleanup cannot race a child still writing into the private stage.
+    let result = extract(
+        input,
+        &stage,
+        platform,
+        mapping,
+        early_cancellation.is_some(),
+    )
+    .and_then(|()| {
+        if early_cancellation.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
+            Err("early guest preparation interrupted".into())
+        } else {
+            Ok(())
+        }
+    })
+    .and_then(|()| {
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o755)).map_err(Into::into)
+    })
+    .and_then(|()| fs::rename(&stage, destination).map_err(Into::into));
     if let Err(error) = result {
         if let Err(cleanup) = remove_stage(&stage, platform) {
             return Err(format!("{error}; staging cleanup failed: {cleanup}").into());
+        }
+        if early_cancellation.is_some_and(|cancelled| !cancelled.load(Ordering::Acquire)) {
+            eprintln!(
+                "SafeYolo: early guest preparation could not finish: {error}. The installer will prepare the verified archive after host consent."
+            );
+            return Ok(());
         }
         return Err(error);
     }

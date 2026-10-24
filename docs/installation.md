@@ -200,10 +200,23 @@ It contains the same compiled command and `package-info` as the complete host ar
 The producer receipt and same-release checksums bind these bytes to that archive;
 they do not add an independent trust source. When this asset is available, the
 bootstrap verifies it and downloads the compatible guest while the host archive
-arrives. It passes the selected immutable OCI index to the normal installer.
-Guest extraction, Linux host preparation and activation retain their existing
-checks. An interruption removes partial transfers and retains verified blobs for
-retry. Earlier immutable releases use the existing serial acquisition path.
+arrives. When the early command supports `guest download --prepare`, it also
+attempts guest cache preparation through a private staging directory. On Linux,
+this needs existing validated UID/GID ranges and tar with numeric ownership,
+ACL and extended-attribute support. Extraction, remapping and any privileged
+cleanup use noninteractive sudo.
+On macOS, cached image extraction needs no elevation. Early preparation does not
+allocate ranges, change host settings or prompt for privilege. If setup, tools
+or extraction privilege is missing, the normal installer prepares the verified
+archive after host consent.
+If staging cleanup fails, installation stops and reports the remaining path.
+The bootstrap passes the selected immutable OCI index to the normal installer.
+The installer uses its actual host settings to select and check the mapped tree
+before activation. Full host-package and guest integrity checks still apply.
+An interruption removes partial transfers. During early extraction, the helper
+waits for extraction/remapping and private-stage cleanup before exit. Completed
+verified blobs and trees remain reusable. Earlier immutable releases retain
+their existing acquisition path.
 The overlap does not establish the complete cold onboarding time; bandwidth
 contention, extraction, setup and coding-client readiness still contribute.
 

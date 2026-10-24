@@ -431,7 +431,7 @@ fn host_ranges(file: &str, owner: &str, uid: u32) -> Result<Vec<Allocation>, Err
 }
 
 #[cfg(target_os = "linux")]
-fn current_mapping() -> Result<Mapping, Error> {
+pub(crate) fn current_mapping() -> Result<Mapping, Error> {
     let uid = unsafe { libc::getuid() };
     let owner = login(uid)?;
     let uid_ranges = host_ranges("/etc/subuid", &owner, uid)?;

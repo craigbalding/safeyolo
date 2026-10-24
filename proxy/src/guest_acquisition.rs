@@ -5,6 +5,10 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -45,7 +49,7 @@ pub(crate) fn validate_prepared_linux_assets(
     archive::validate_assets(path, consumer_platform()?, mapping)
 }
 
-pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST]\nDownload and verify the compatible guest archive without extraction or host preparation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
+pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST] [--prepare]\nDownload and verify the compatible guest archive. By default, do not extract it.\n--prepare also attempts early cache extraction without changing host settings or asking for privilege.\nLinux uses existing validated UID/GID ranges and noninteractive sudo. Missing setup or extraction privilege defers preparation to the ordinary installer after host consent.\nThe installer checks its actual host settings and guest selection before activation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nDuring early extraction, interruption waits for extraction/remapping and private staging cleanup before exit. A completed verified tree remains reusable.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
 struct PackageGuest {
@@ -359,12 +363,7 @@ async fn acquire(
         child.archive.check_size(selected.archive.size)?;
         selected.assets.clone()
     } else {
-        let digest = guest_oci::sha256_hex(&child.archive.digest)?;
-        if package.platform == ConsumerPlatform::DarwinArm64 {
-            trees.join(digest)
-        } else {
-            trees.join(mapping.tree_name(digest))
-        }
+        prepared_tree(&trees, &child.archive, package.platform, mapping)?
     };
     // Verify a reusable archive's descriptor too. A changed index can declare
     // a wrong size even when its tree already exists from an earlier operation.
@@ -380,7 +379,7 @@ async fn acquire(
         let destination = assets.clone();
         let platform = package.platform;
         tokio::task::spawn_blocking(move || {
-            archive::prepare(&input, &destination, platform, mapping)
+            archive::prepare(&input, &destination, platform, mapping, None)
         })
         .await??;
     }
@@ -397,6 +396,73 @@ async fn acquire(
         installed_assets: None,
         previous: None,
     })
+}
+
+fn prepared_tree(
+    trees: &Path,
+    archive: &Descriptor,
+    platform: ConsumerPlatform,
+    mapping: crate::linux_host::Mapping,
+) -> Result<PathBuf, Error> {
+    let digest = guest_oci::sha256_hex(&archive.digest)?;
+    Ok(if platform == ConsumerPlatform::DarwinArm64 {
+        trees.join(digest)
+    } else {
+        trees.join(mapping.tree_name(digest))
+    })
+}
+
+async fn prepare_downloaded_guest(
+    input: PathBuf,
+    store: &Path,
+    descriptor: &Descriptor,
+    platform: ConsumerPlatform,
+    terminate: &mut tokio::signal::unix::Signal,
+    interrupt: &mut tokio::signal::unix::Signal,
+) -> Result<(), Error> {
+    // Only existing validated mappings are eligible. The ordinary installer
+    // allocates missing ranges after consent and uses its saved host settings.
+    #[cfg(target_os = "linux")]
+    let mapping = crate::linux_host::current_mapping();
+    #[cfg(not(target_os = "linux"))]
+    let mapping = Ok::<_, Error>(crate::linux_host::Mapping::for_bases(
+        crate::linux_host::ARCHIVE_BASE,
+        crate::linux_host::ARCHIVE_BASE,
+    ));
+    let mapping = match mapping {
+        Ok(mapping) => mapping,
+        Err(error) => {
+            eprintln!(
+                "SafeYolo: early guest preparation needs host setup: {error}. The installer will prepare the verified archive after host consent."
+            );
+            return Ok(());
+        }
+    };
+    let trees = store.join("trees/sha256");
+    fs::create_dir_all(&trees)?;
+    let assets = prepared_tree(&trees, descriptor, platform, mapping)?;
+    if assets.try_exists()? {
+        return archive::validate_assets(&assets, platform, mapping);
+    }
+    eprintln!("SafeYolo: preparing the verified guest cache while acquiring the host package.");
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = cancelled.clone();
+    let mut preparation = tokio::task::spawn_blocking(move || {
+        archive::prepare(&input, &assets, platform, mapping, Some(&worker_cancelled))
+    });
+    tokio::select! {
+        result = &mut preparation => return result?,
+        _ = terminate.recv() => {},
+        _ = interrupt.recv() => {},
+    }
+    cancelled.store(true, Ordering::Release);
+    eprintln!(
+        "SafeYolo: stopping early guest preparation; waiting for extraction and staging cleanup."
+    );
+    // Retain the store lock and helper until all privileged children have
+    // finished and their private extraction has been removed.
+    preparation.await??;
+    Err("guest preparation interrupted; verified blobs remain reusable".into())
 }
 
 fn installed(root: &Path, package: &PackageGuest) -> Result<Option<GuestSelection>, Error> {
@@ -514,9 +580,14 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
     let mut store = None;
     let mut selection_file = None;
     let mut host_settings = None;
+    let mut prepare_download = false;
     let mut index = None;
     let mut options = arguments[1..].iter();
     while let Some(option) = options.next() {
+        if option == "--prepare" && download_only && !prepare_download {
+            prepare_download = true;
+            continue;
+        }
         let value = options
             .next()
             .ok_or("guest acquire option requires a value")?;
@@ -550,18 +621,30 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut interrupt =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        return tokio::select! {
+        let client = registry_client()?;
+        let (index, child, input) = tokio::select! {
             result = async {
-                let client = registry_client()?;
                 let (index, child) = resolve_guest(&client, &package, &store, index).await?;
                 let reference = format!("{}@{}", package.repository, index.manifest(package.platform).digest).parse()?;
-                blob(&client, &reference, &child.archive, &store).await?;
-                println!("{}", index.identity.digest);
-                Ok(())
+                let input = blob(&client, &reference, &child.archive, &store).await?;
+                Ok::<_, Error>((index, child, input))
             } => result,
             _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
             _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
-        };
+        }?;
+        if prepare_download {
+            prepare_downloaded_guest(
+                input,
+                &store,
+                &child.archive,
+                package.platform,
+                &mut terminate,
+                &mut interrupt,
+            )
+            .await?;
+        }
+        println!("{}", index.identity.digest);
+        return Ok(());
     }
     let selection_file = selection_file.ok_or("--write-selection is required")?;
     fs::create_dir_all(root)?;

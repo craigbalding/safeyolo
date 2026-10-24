@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -589,27 +590,144 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("outcome", ["installed", "host-integrity", "binding", "declined"])
+def test_guest_cache_is_prepared_during_host_extraction_without_early_activation(
+        public_release, native_cli, guest_store, tmp_path, outcome):
+    contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    guest = compressed_archive()
+    contents.update(release(guest))
+    store_link = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+    store_link.parent.mkdir(parents=True)
+    guest_store.mkdir(parents=True)
+    store_link.symlink_to(guest_store, target_is_directory=True)
+    if outcome in ("host-integrity", "binding"):
+        expanded = tmp_path / "expanded"
+        with tarfile.open(archive) as stream:
+            stream.extractall(expanded, filter="data")
+        package, = expanded.iterdir()
+        if outcome == "binding":
+            metadata = package / "package-info"
+            previous = metadata.read_bytes()
+            metadata.write_bytes(previous.replace(b"guest_compatibility=v1", b"guest_compatibility=v2")
+                                 .replace(b"guest_discovery_tag=compat-v1", b"guest_discovery_tag=compat-v2"))
+            sums = package / "SHA256SUMS"
+            sums.write_bytes(sums.read_bytes().replace(hashlib.sha256(previous).hexdigest().encode(),
+                                                      hashlib.sha256(metadata.read_bytes()).hexdigest().encode()))
+        else:
+            (package / "LICENSE").write_text("changed bytes with the original inner checksum")
+        original = archive.read_bytes()
+        with tarfile.open(archive, "w:gz") as stream:
+            stream.add(package, arcname=package.name)
+        contents[f"{base}/{archive.name}"] = archive.read_bytes()
+        contents[f"{base}/SHA256SUMS"] = contents[f"{base}/SHA256SUMS"].replace(
+            hashlib.sha256(original).hexdigest().encode(), hashlib.sha256(archive.read_bytes()).hexdigest().encode())
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    entered, resume = tmp_path / "host-extraction", tmp_path / "resume-host"
+    wrapper = tools / "tar"
+    wrapper.write_text(
+        '#!/bin/sh\ncase "$*" in\n'
+        f'*"{archive.name}"*) touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done;;\n'
+        f'esac\nexec "{shutil.which("tar")}" "$@"\n')
+    wrapper.chmod(0o755)
+    environment = {**environment, "PATH": f"{tools}:{environment['PATH']}",
+                   "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
+    if outcome == "declined":
+        environment["PACKAGE_HOST_EXIT"] = "41"
+    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not entered.exists() or not list((guest_store / "trees/sha256").glob("*/rootfs-tree")):
+            assert time.monotonic() < deadline and process.poll() is None, "guest preparation waited for host extraction"
+            time.sleep(0.01)
+        tree, = (guest_store / "trees/sha256").glob("*/rootfs-tree")
+        inode = tree.stat().st_ino
+        assert not root.exists() and process.poll() is None
+        resume.touch()
+        stdout, stderr = process.communicate(timeout=15)
+        if outcome == "installed":
+            assert process.returncode == 0, stderr
+            assert (root / "config.toml").exists()
+        else:
+            assert process.returncode != 0, (stdout, stderr)
+            assert not root.exists() and not (Path(environment["HOME"]) / ".local/bin/safeyolo").exists()
+            if outcome == "binding":
+                assert "Guest download inputs differ" in stderr
+        assert tree.stat().st_ino == inode
+        assert not list((guest_store / "trees").rglob("extract-*"))
+        assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+        assert requests.count("/v2/craigbalding/safeyolo-guest/blobs/" + digest(guest)) == 1
+    finally:
+        resume.touch()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
-def test_bootstrap_interrupt_reaps_active_guest_download(public_release, native_cli, interruption):
-    contents, _requests, faults, environment, bootstrap, root, _base, _archive = public_release
+@pytest.mark.parametrize(("phase", "scope"), [("download", "bootstrap"), ("preparation", "bootstrap"), ("preparation", "group")])
+def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli, guest_store, tmp_path, interruption, phase, scope):
+    contents, _requests, faults, environment, bootstrap, root, base, archive = public_release
     guest = compressed_archive()
     contents.update(release(guest))
     faults["pause"] = "blobs/" + digest(guest)
     environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
+    entered, resume = tmp_path / "guest-extracted", tmp_path / "resume-guest"
+    if phase == "preparation":
+        faults["pause"] = f"{base}/{archive.name}"
+        store_link = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
+        store_link.parent.mkdir(parents=True)
+        guest_store.mkdir(parents=True)
+        store_link.symlink_to(guest_store, target_is_directory=True)
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        wrapper = tools / "sudo"
+        wrapper.write_text(
+            '#!/bin/sh\nset -e\n'
+            'if [ "$1" = -n ] && [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then\n'
+            f'touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done\nfi\n'
+            f'exec "{shutil.which("sudo")}" "$@"\n')
+        wrapper.chmod(0o755)
+        environment["PATH"] = f"{tools}:{environment['PATH']}"
     process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         assert faults["entered"].wait(timeout=10), "bootstrap did not start the native guest transfer"
-        process.send_signal(interruption)
+        if phase == "preparation":
+            deadline = time.monotonic() + 10
+            while not entered.exists():
+                assert time.monotonic() < deadline and process.poll() is None, "early extraction did not reach its held child"
+                time.sleep(0.01)
+        if scope == "group":
+            os.killpg(process.pid, interruption)
+        else:
+            process.send_signal(interruption)
+        stderr_prefix = b""
+        if phase == "preparation":
+            if scope == "bootstrap":
+                deadline = time.monotonic() + 5
+                while b"stopping early guest preparation" not in stderr_prefix:
+                    assert select.select([process.stderr], [], [], max(0, deadline - time.monotonic()))[0], "guest preparation did not observe cancellation"
+                    chunk = os.read(process.stderr.fileno(), 65536)
+                    assert chunk, "guest preparation exited before joining extraction"
+                    stderr_prefix += chunk
+                assert process.poll() is None, "bootstrap exited while extraction still owned its stage"
+            resume.touch()
         stdout, stderr = process.communicate(timeout=10)
+        stderr = stderr_prefix.decode() + stderr
         assert process.returncode == 128 + interruption, (stdout, stderr)
-        assert "guest download interrupted" in stderr
+        if scope == "bootstrap":
+            assert "interrupted" in stderr
         assert not root.exists()
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
         store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
-        assert not (store / "trees").exists()
+        assert not list((store / "trees").rglob("extract-*"))
+        assert not list((store / "trees/sha256").glob("*"))
         assert all(len(path.name) == 64 for path in (store / "blobs/sha256").iterdir())
     finally:
+        resume.touch()
         faults["resume"].set()
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
