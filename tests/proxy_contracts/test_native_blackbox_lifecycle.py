@@ -292,7 +292,7 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
         (root / "bin" / binary).symlink_to((artifacts / binary).resolve(strict=True))
     command = [str(root / "bin/safeyolo"), "--root", str(root)]
     environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_HOME=str(root),
-                       SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"))
+                       SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"), SAFEYOLO_NATS_TEST_INSTANCE=str(root))
     environment.pop("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE", None)
     initialized = subprocess.run([*command, "init"], env=environment, capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
@@ -302,6 +302,11 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
                     admin_api_token_file="data/admin_token",
                     listeners=[{"agent_id": "alice", "socket_path": str(tmp_path / "a.sock"), "source_id": "10.0.0.2"}])
     config.write_text(tomlkit.dumps(document))
+    coord_command = [*command, "coord", "start"]
+    if nats := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
+        coord_command += ["--binary", nats]
+    coordinated = subprocess.run(coord_command, env=environment, capture_output=True, text=True, timeout=15)
+    assert coordinated.returncode == 0, coordinated.stderr
     ca = root / "certs/mitmproxy-ca.pem"
     pem = ca.read_bytes()
     ca.unlink()
@@ -319,11 +324,19 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
 
     def owned_proxy_children():
         children = set()
-        for task in Path(f"/proc/{startup.pid}/task").iterdir():
+        try:
+            tasks = list(Path(f"/proc/{startup.pid}/task").iterdir())
+        except FileNotFoundError:
+            return []  # The CLI exited before this cleanup observation.
+        for task in tasks:
             try:
-                children.update(map(int, (task / "children").read_text().split()))
+                for child in (task / "children").read_text().split():
+                    # gVisor can list thread IDs here. Select their process ID
+                    # once so a multithreaded proxy remains one owned child.
+                    status = Path(f"/proc/{child}/status").read_text().splitlines()
+                    children.add(int(next(line.split()[1] for line in status if line.startswith("Tgid:"))))
             except FileNotFoundError:
-                # A finished CLI thread has no remaining child to select here.
+                # A CLI or child thread exited between these observations.
                 continue
         return [child for child in children
                 if smoke._process_executable(child) == (root / "bin/safeyolo-proxy").resolve()
@@ -376,7 +389,7 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
         else:
             assert startup.returncode == 0, stderr
             assert time.monotonic() - held < (6 if control == "delayed" else 0) + 5
-            record = json.loads(stdout)
+            record = json.loads(receipt.read_text())
             assert (record["pid"], record["token"]) == (pid, birth)
             native = smoke._native_config(config, tmp_path)
             runtime = smoke._runtime_observation(
@@ -393,13 +406,19 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
             os.close(writer)
         if startup.poll() is None:
             for child in owned_proxy_children():
-                os.kill(child, signal.SIGKILL)
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # Closing the CA writer can let the child exit first.
         startup.communicate(timeout=5)
         if ca.is_fifo():
             ca.unlink()
             ca.write_bytes(pem)
         stopped = subprocess.run([*command, "stop"], env=environment, capture_output=True, text=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
+    if control in {"immediate", "delayed"}:
+        assert receipt.is_file()
+        lifecycle.assert_proxy_stopped(root, tmp_path / "a.sock", runtime)
 
 
 @pytest.mark.parametrize("exits", [True, False])
