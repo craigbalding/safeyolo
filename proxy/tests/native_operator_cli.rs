@@ -1772,6 +1772,26 @@ async fn subscription_metadata_replacement_supersedes_pending_gateway_options_an
 
         // Rewriting the same contents keeps the offered credential selectable.
         vault.store(original.clone()).unwrap();
+        let equivalent = fixture
+            .agent(
+                "worker",
+                "POST",
+                "/gateway/request-access",
+                Some(request.clone()),
+            )
+            .await;
+        assert_eq!(equivalent.status, 202);
+        assert_eq!(
+            fixture
+                .admin(
+                    "GET",
+                    &format!("/admin/approvals/{}", equivalent.id()),
+                    None
+                )
+                .await
+                .json()["approval_id"],
+            initial["approval_id"]
+        );
         assert_eq!(
             fixture.admin("GET", &path, None).await.json()["options"][0]["status"],
             "available"
@@ -1779,6 +1799,15 @@ async fn subscription_metadata_replacement_supersedes_pending_gateway_options_an
         let snapshot = vault.snapshot("fixture").unwrap().unwrap();
         vault.store(replacement).unwrap();
         assert!(!vault.is_current(&snapshot).unwrap());
+        // New gateway requests reload the changed vault before offering it.
+        let fresh = fixture
+            .agent("worker", "POST", "/gateway/request-access", Some(request))
+            .await;
+        assert_eq!(fresh.status, 202);
+        let fresh_path = format!("/admin/approvals/{}", fresh.id());
+        let current = fixture.admin("GET", &fresh_path, None).await.json();
+        assert_eq!(current["options"][0]["status"], "available");
+        assert_ne!(current["approval_id"], initial["approval_id"]);
         let stale = fixture.admin("GET", &path, None).await.json();
         assert_eq!(stale["options"][0]["status"], "superseded", "{field}");
         assert_eq!(
@@ -1804,14 +1833,10 @@ async fn subscription_metadata_replacement_supersedes_pending_gateway_options_an
         assert_eq!(fixture.source(), policy);
 
         // A new request can authorize the replacement through the normal path.
-        let fresh = fixture
-            .agent("worker", "POST", "/gateway/request-access", Some(request))
-            .await;
-        assert_eq!(fresh.status, 202);
         let approved = fixture
             .admin(
                 "POST",
-                &format!("/admin/approvals/{}", fresh.id()),
+                &fresh_path,
                 Some(json!({"decision":"approve", "option":"credential:fixture"})),
             )
             .await;
@@ -1834,6 +1859,10 @@ async fn subscription_metadata_replacement_supersedes_pending_gateway_options_an
         );
         let policy = fixture.source();
         vault.store(original).unwrap();
+        let fresh_route = fixture
+            .request("worker", fixture.address, "POST", "/v1/alpha", &header)
+            .await;
+        assert_eq!(fresh_route.status, 428, "{}", fresh_route.json());
         assert_eq!(
             fixture.admin("GET", &route_path, None).await.json()["status"],
             "superseded",
