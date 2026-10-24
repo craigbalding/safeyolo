@@ -24,8 +24,10 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
     sy_expected=""
     sy_root=""
     # A fresh home has no selection to query. Keep mise's normal resolution
-    # whenever its default Aqua namespace exists, or the operator chose a spec.
-    if [ "$sy_default_native" = 0 ] || [ -d "$MISE_DATA_DIR/installs/aqua-openai-codex" ]; then
+    # whenever its default Aqua namespace exists, the operator chose a spec,
+    # or mise has a custom installation directory to resolve.
+    if [ "$sy_default_native" = 0 ] || [ -n "${MISE_INSTALLS_DIR:-}" ] ||
+       [ -d "$MISE_DATA_DIR/installs/aqua-openai-codex" ]; then
         sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
         if [ -n "$sy_expected" ]; then
             sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
@@ -67,7 +69,7 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         # the asset options. Check that installed namespace on reentry.
         sy_expected=""
         sy_root=""
-        if [ -d "$MISE_DATA_DIR/installs/github-openai-codex" ]; then
+        if [ -n "${MISE_INSTALLS_DIR:-}" ] || [ -d "$MISE_DATA_DIR/installs/github-openai-codex" ]; then
             sy_expected="$(mise latest --installed github:openai/codex 2>/dev/null | tail -1)"
             if [ -n "$sy_expected" ]; then
                 sy_root="$(mise where "${sy_tool}@${sy_expected}" 2>/dev/null)" || sy_root=""
