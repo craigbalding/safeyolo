@@ -2339,12 +2339,13 @@ fn is_refresh_phase_timeout(error: &Error) -> bool {
 
 async fn resolve_refresh(
     runtime: &Runtime,
+    oauth: Option<&crate::oauth::OAuthRefresh>,
     identity: &ConnectionIdentity,
     request_id: &str,
     tasks: &UpgradeTasks,
     pending: Box<crate::credential_injection::PendingInjection>,
 ) -> Result<crate::credential_injection::Start, Error> {
-    let Some(oauth) = runtime.oauth.as_ref() else {
+    let Some(oauth) = oauth else {
         return pending
             .resume_for_gateway(crate::oauth::RefreshOutcome::Rejected(
                 crate::oauth::RefreshError::State,
@@ -2987,6 +2988,22 @@ where
             .flatten()
     });
     let mut request = Request::from_parts(parts, prepared.body);
+    // Only imported Codex authentication needs the convenience vault here.
+    // Unlock on the blocking pool so independent traffic remains serviceable.
+    let codex_vault = if codex_refresh.is_some()
+        || (destination.scheme == "https"
+            && destination.policy_host == "chatgpt.com"
+            && destination.port == 443
+            && request.headers().contains_key(header::AUTHORIZATION))
+    {
+        runtime
+            .gateway_vault
+            .load_async()
+            .await?
+            .map(|loaded| loaded.vault)
+    } else {
+        None
+    };
     // Credential enforcement is deliberately after network and circuit
     // admission, but before test-context observation or any
     // outbound connection. The ordered parser view remains alive here so the
@@ -3012,6 +3029,7 @@ where
                 },
             )
         });
+        let guard = guard.clone().with_codex_vault(codex_vault.clone());
         let mut outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
             identity.request_identity(),
@@ -3113,7 +3131,7 @@ where
                 .response
                 .as_ref()
                 .is_some_and(|reply| reply.status == 428),
-            guard,
+            &guard,
         )
         .await?;
         for mut event in events {
@@ -3557,14 +3575,18 @@ where
                 // last accepted snapshot; the subsequent snapshot check and
                 // atomic refresh publication still fail closed on a visible
                 // replacement.
-                if credential.auth_kind.is_some()
-                    && let Some(vault) = runtime.vault.as_ref()
-                {
+                let loaded = if credential.auth_kind.is_some() {
+                    runtime.gateway_vault.load_async().await?
+                } else {
+                    None
+                };
+                let vault = loaded.as_ref().map(|loaded| &loaded.vault);
+                if let Some(vault) = vault {
                     let _ = vault.reload_if_changed();
                 }
                 let start = crate::credential_injection::prepare(
                     *credential,
-                    runtime.vault.as_ref(),
+                    vault,
                     crate::credential_injection::RequestInfo {
                         method: request.method().as_str(),
                         host: &destination.policy_host,
@@ -3587,22 +3609,29 @@ where
                         return Ok((prior_block(reply), "deny".into()));
                     }
                 };
-                let start = match start {
-                    crate::credential_injection::Start::External(pending) => pending
-                        .resolve(
-                            runtime
-                                .config
-                                .native_settings
-                                .as_ref()
-                                .and_then(|settings| settings.onepassword_executable.as_deref()),
-                        )
-                        .await
-                        .map_err(|error| Box::new(error) as Error),
-                    crate::credential_injection::Start::Refresh(pending) => {
-                        resolve_refresh(&runtime, identity, request_id, &upgrades, pending).await
-                    }
-                    start => Ok(start),
-                };
+                let start =
+                    match start {
+                        crate::credential_injection::Start::External(pending) => {
+                            pending
+                                .resolve(runtime.config.native_settings.as_ref().and_then(
+                                    |settings| settings.onepassword_executable.as_deref(),
+                                ))
+                                .await
+                                .map_err(|error| Box::new(error) as Error)
+                        }
+                        crate::credential_injection::Start::Refresh(pending) => {
+                            resolve_refresh(
+                                &runtime,
+                                loaded.as_ref().map(|loaded| &loaded.oauth),
+                                identity,
+                                request_id,
+                                &upgrades,
+                                pending,
+                            )
+                            .await
+                        }
+                        start => Ok(start),
+                    };
                 let start = match start {
                     Ok(start) => start,
                     Err(_) => {
@@ -3762,6 +3791,7 @@ where
                 },
             )
         });
+        let guard = guard.clone().with_codex_vault(codex_vault.clone());
         let outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
             identity.request_identity(),
@@ -3810,7 +3840,7 @@ where
                 .response
                 .as_ref()
                 .is_some_and(|reply| reply.status == 428),
-            guard,
+            &guard,
         )
         .await?;
         for mut event in events {
@@ -4149,12 +4179,15 @@ where
         // Body preparation and inspection replay the captured bytes unchanged.
         // Recheck the final headers: hygiene may have removed Content-Type.
         match (&runtime.credential_guard, &runtime.policy, &codex_refresh) {
-            (Some(guard), Some(policy), Some(refresh)) => guard.codex_exchange(
-                policy,
-                identity.request_identity(),
-                refresh,
-                request.headers(),
-            )?,
+            (Some(guard), Some(policy), Some(refresh)) => guard
+                .clone()
+                .with_codex_vault(codex_vault.clone())
+                .codex_exchange(
+                    policy,
+                    identity.request_identity(),
+                    refresh,
+                    request.headers(),
+                )?,
             _ => None,
         }
     } else {
@@ -4452,7 +4485,8 @@ where
                         let guard = runtime
                             .credential_guard
                             .clone()
-                            .expect("selected credential guard");
+                            .expect("selected credential guard")
+                            .with_codex_vault(codex_vault.clone());
                         let policy = runtime.policy.clone().expect("selected policy");
                         let bound_identity = identity.clone();
                         codex_recorded = tokio::task::spawn_blocking(move || {

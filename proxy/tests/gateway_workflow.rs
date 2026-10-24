@@ -3788,3 +3788,138 @@ target_hosts = ["localhost"]
     assert_eq!(gateway_audit["details"]["service"], "simple");
     assert_eq!(gateway_audit["details"]["capability"], "reader");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_controls() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    for name in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+    }
+    std::fs::write(root.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(root.join("data/credentials.key"), PASS).unwrap();
+    let vault = Vault::unlock(root.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
+    vault
+        .store(Credential::new(
+            "simple-secret",
+            "bearer",
+            Secret::new("synthetic-stored-value"),
+        ))
+        .unwrap();
+    std::fs::write(root.join("builtin/simple.yaml"), SERVICE).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), port));
+    let policy = bound_gateway_policy(port)
+        .replace(
+            "detection_level = \"none\"",
+            "detection_level = \"standard\"",
+        )
+        .replace(
+            "use_default_credential_rules = false",
+            "use_default_credential_rules = true",
+        )
+        .replace(
+            "standard_auth_headers = []",
+            "standard_auth_headers = [\"x-api-key\"]",
+        )
+        + "\n[credential.held-leak]\nmatch = ['locked-leak-[a-z]+']\nheaders = ['x-api-key']\nallowed_hosts = ['elsewhere.invalid']\n";
+    std::fs::write(root.join("policy.toml"), policy).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("data/credentials.lock"))
+        .unwrap();
+    let provider = root.join("op");
+    let provider_call = root.join("provider-called");
+    std::fs::write(
+        &provider,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = read ] && [ \"$2\" = --no-newline ] && [ \"$3\" = op://synthetic/item/field ] || exit 2\n: > '{}'\nprintf synthetic-provider-value\n",
+            provider_call.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut configuration = config(root);
+    configuration.native_config_dir = Some(root.to_owned());
+    configuration.native_settings = Some(safeyolo_proxy::native_config::Settings {
+        onepassword_executable: Some(provider.clone()),
+        ..Default::default()
+    });
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let proxy = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::spawn(Proxy::start(configuration)),
+    )
+    .await
+    .expect("vault lock blocked proxy readiness")
+    .unwrap()
+    .unwrap();
+    assert!(root.join("ready.json").is_file());
+    let socket = root.join("alice.sock");
+    let view = wait_for_alice(&socket).await;
+    let token = view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut selected = tokio::spawn({
+        let socket = socket.clone();
+        let token = token.clone();
+        async move { send_agent(&socket, port, &token, "127.0.0.1").await }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut selected)
+            .await
+            .is_err(),
+        "credential-consuming request did not await the held vault"
+    );
+    let plain = raw_http(&socket, format!("GET http://127.0.0.1:{port}/independent HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).await;
+    status(&plain, "200");
+    let leak = raw_http(&socket, format!("GET http://127.0.0.1:{port}/independent HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Api-Key: locked-leak-secret\r\nConnection: close\r\n\r\n").as_bytes()).await;
+    status(&leak, "428");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(!provider_call.exists());
+    drop(lock);
+    let injected = selected.await.unwrap();
+    status(&injected, "200");
+    assert!(seen.lock().unwrap().iter().any(|request| {
+        request
+            .windows(b"Bearer synthetic-stored-value".len())
+            .any(|bytes| bytes == b"Bearer synthetic-stored-value")
+    }));
+    let mut reference = Credential::new("simple-secret", "bearer", Secret::new(""));
+    reference.reference = Some(safeyolo_proxy::credentials::ExternalReference::Onepassword(
+        "op://synthetic/item/field".into(),
+    ));
+    vault.store(reference).unwrap();
+    status(&send_agent(&socket, port, &token, "127.0.0.1").await, "200");
+    assert!(provider_call.exists());
+    assert!(
+        seen.lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .windows(b"Bearer synthetic-provider-value".len())
+            .any(|bytes| bytes == b"Bearer synthetic-provider-value")
+    );
+    assert!(
+        !std::fs::read(root.join("data/credentials.enc"))
+            .unwrap()
+            .windows(b"synthetic-provider-value".len())
+            .any(|bytes| bytes == b"synthetic-provider-value")
+    );
+    std::fs::write(&provider, "#!/bin/sh\nexit 1\n").unwrap();
+    let before = seen.lock().unwrap().len();
+    status(&send_agent(&socket, port, &token, "127.0.0.1").await, "503");
+    assert_eq!(seen.lock().unwrap().len(), before);
+    proxy.shutdown().await;
+    origin_task.abort();
+}

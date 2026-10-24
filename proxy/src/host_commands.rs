@@ -35,8 +35,11 @@ pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
 pub async fn prepare_proxy(config: &mut crate::Config) -> Result<(), Error> {
     if let Some(path) = config.native_config_path.clone() {
         host_platform::in_config(path.clone(), async {
-            host_lifecycle::sync_agent_listeners(None).await?;
-            *config = crate::native_config::read(&path)?;
+            let mut timing = crate::startup_timings::StartupTimings::new("listener_preparation");
+            *config = host_lifecycle::sync_agent_listener_config(None)
+                .await?
+                .ok_or("proxy configuration disappeared during listener reconciliation")?;
+            timing.record("projection");
             Ok::<_, Error>(())
         })
         .await?;
@@ -99,6 +102,7 @@ pub(crate) fn proxy_live() -> bool {
 }
 
 pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
+    let mut timing = crate::startup_timings::StartupTimings::new("launcher");
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
     let _lock =
@@ -121,13 +125,49 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         return Ok(None);
     }
     let config_path = host_platform::config_path();
+    timing.record("ownership_start_lock");
     let config = crate::native_config::read(&config_path)?;
-    if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
-        eprintln!(
-            "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
-        );
+    timing.record("configuration");
+    // Coord is optional for proxy readiness. Keep both starts owned by this
+    // command, and await both results before returning or releasing the lock.
+    let coord = async {
+        let mut timing = crate::startup_timings::StartupTimings::new("managed_nats");
+        if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
+            eprintln!(
+                "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
+            );
+        }
+        timing.record("start_complete");
+    };
+    let (_, proxy) = tokio::join!(
+        coord,
+        start_proxy_process(&root, &config_path, &config.readiness_file),
+    );
+    let (mut child, ready) = proxy?;
+    // A proxy that became ready first can exit while NATS is still starting.
+    // Retain its child handle and recheck readiness at command completion.
+    let result = (|| {
+        if child.try_wait()?.is_some() {
+            return Err("proxy exited during startup; inspect logs/proxy.log".into());
+        }
+        if !config.readiness_file.is_file() || !proxy_live() {
+            return Err(
+                "proxy lost verified readiness during startup; inspect logs/proxy.log".into(),
+            );
+        }
+        Ok(ready)
+    })();
+    if result.is_err() {
+        child.kill().await?;
     }
-    let readiness = &config.readiness_file;
+    result
+}
+
+async fn start_proxy_process(
+    root: &Path,
+    config_path: &Path,
+    readiness: &Path,
+) -> Result<(tokio::process::Child, Option<Value>), Error> {
     match fs::remove_file(readiness) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -142,7 +182,7 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     command
         .args(["--config"])
         .arg(config_path)
-        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env("SAFEYOLO_CONFIG_DIR", root)
         .env_remove("SAFEYOLO_HOST_SETUP_LOCK_FD")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
@@ -159,19 +199,31 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     // Healthy initialization can exceed five seconds on emulated hosts.
     // Keep polling readiness so faster starts return without an added delay.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while tokio::time::Instant::now() < deadline {
-        if child.try_wait()?.is_some() {
-            return Err("proxy exited during startup; inspect logs/proxy.log".into());
+    let result = async {
+        while tokio::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                return Err("proxy exited during startup; inspect logs/proxy.log".into());
+            }
+            if readiness.is_file() && proxy_live() {
+                // The startup lock binds this newly created incarnation. Demo can
+                // release it only while this record and all runtimes still agree.
+                return crate::guest_commands::read_state(&process_path());
+            }
+            tokio::select! {
+                status = child.wait() => {
+                    status?;
+                    return Err("proxy exited during startup; inspect logs/proxy.log".into());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
         }
-        if Path::new(readiness).is_file() && proxy_live() {
-            // The startup lock binds this newly created incarnation. Demo can
-            // release it only while this record and all runtimes still agree.
-            return crate::guest_commands::read_state(&process_path());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        Err("proxy did not publish readiness within fifteen seconds; inspect logs/proxy.log".into())
     }
-    child.kill().await?;
-    Err("proxy did not publish readiness within fifteen seconds; inspect logs/proxy.log".into())
+    .await;
+    if result.is_err() {
+        child.kill().await?;
+    }
+    result.map(|ready| (child, ready))
 }
 
 pub(crate) async fn stop_proxy() -> Result<(), Error> {

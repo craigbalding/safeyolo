@@ -76,6 +76,80 @@ fn native_open_ignores_old_vault_files_and_persists_only_an_external_reference()
 }
 
 #[test]
+fn native_storage_is_created_only_for_writers_and_uses_a_marked_random_key() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE};
+    use safeyolo_proxy::credentials::{open, open_existing};
+    let directory = tempfile::tempdir().unwrap();
+    assert!(open_existing(directory.path()).unwrap().is_none());
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    let vault = open(directory.path()).unwrap();
+    vault.store(credential("native")).unwrap();
+    let key = fs::read_to_string(directory.path().join("credentials.key")).unwrap();
+    let encoded = key.strip_prefix("safeyolo-native-key-v1:").unwrap();
+    assert_eq!(URL_SAFE.decode(encoded).unwrap().len(), 32);
+    let bytes = fs::read(directory.path().join("credentials.enc")).unwrap();
+    let plaintext = fernet::Fernet::new(encoded)
+        .unwrap()
+        .decrypt(std::str::from_utf8(&bytes[16..]).unwrap())
+        .unwrap();
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&plaintext).unwrap()["credentials"][0]["name"]
+            == "native"
+    );
+    let reopened = open_existing(directory.path()).unwrap().unwrap();
+    assert!(
+        reopened
+            .get("native")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret()
+            == "synthetic-private-value-for-native"
+    );
+    fs::write(
+        directory.path().join("credentials.key"),
+        "safeyolo-native-key-v1:invalid",
+    )
+    .unwrap();
+    assert!(open_existing(directory.path()).is_err());
+    fs::remove_file(directory.path().join("credentials.key")).unwrap();
+    assert!(open(directory.path()).is_err());
+    assert!(!directory.path().join("credentials.key").exists());
+    assert!(fs::read(directory.path().join("credentials.enc")).unwrap() == bytes);
+}
+
+#[test]
+fn unmarked_native_keys_retain_existing_passphrase_ciphertext() {
+    use safeyolo_proxy::credentials::{open, open_existing};
+    for passphrase in [
+        password(),
+        Secret::new("safeyolo-native-key-v1:a-human-passphrase"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join("credentials.key");
+        fs::write(&key, passphrase.expose_secret()).unwrap();
+        let path = directory.path().join("credentials.enc");
+        let legacy = Vault::unlock(&path, &passphrase).unwrap();
+        legacy.store(credential("legacy")).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(
+            open_existing(directory.path())
+                .unwrap()
+                .unwrap()
+                .list_names()
+                .unwrap(),
+            ["legacy"]
+        );
+        assert_eq!(
+            open(directory.path()).unwrap().list_names().unwrap(),
+            ["legacy"]
+        );
+        assert!(fs::read(&path).unwrap() == bytes);
+        assert!(fs::read_to_string(&key).unwrap() == passphrase.expose_secret());
+    }
+}
+
+#[test]
 fn independent_native_command_writers_keep_each_others_edits() {
     let (_directory, path, first) = setup();
     let second = Vault::unlock(&path, &password()).unwrap();

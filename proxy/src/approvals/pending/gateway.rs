@@ -13,9 +13,11 @@ use crate::{
 
 pub(super) fn credentials_current(runtime: &Runtime, record: &Record) -> Result<bool> {
     for (name, binding) in &record.authority.credential_bindings {
-        let (Some(vault), Some(guard)) = (&runtime.vault, &runtime.credential_guard) else {
+        let loaded = runtime.gateway_vault.load().map_err(unavailable)?;
+        let (Some(loaded), Some(guard)) = (loaded.as_ref(), &runtime.credential_guard) else {
             return Err(invalid("credential binding unavailable"));
         };
+        let vault = &loaded.vault;
         let Some(snapshot) = vault.snapshot(name).map_err(unavailable)? else {
             return Ok(false);
         };
@@ -55,9 +57,11 @@ pub(super) fn option_current(runtime: &Runtime, option: &OptionScope) -> Result<
         .as_str()
         .filter(|name| !name.is_empty())
     {
-        let (Some(vault), Some(guard)) = (&runtime.vault, &runtime.credential_guard) else {
+        let loaded = runtime.gateway_vault.load().map_err(unavailable)?;
+        let (Some(loaded), Some(guard)) = (loaded.as_ref(), &runtime.credential_guard) else {
             return Err(invalid("credential binding unavailable"));
         };
+        let vault = &loaded.vault;
         let Some(snapshot) = vault.snapshot(name).map_err(unavailable)? else {
             return Ok(false);
         };
@@ -75,9 +79,11 @@ fn credential_bindings(
     let mut bindings = BTreeMap::new();
     let mut expiry: Option<time::OffsetDateTime> = None;
     for name in names.iter().filter(|name| !name.is_empty()) {
-        let (Some(vault), Some(guard)) = (&runtime.vault, &runtime.credential_guard) else {
+        let loaded = runtime.gateway_vault.load().map_err(unavailable)?;
+        let (Some(loaded), Some(guard)) = (loaded.as_ref(), &runtime.credential_guard) else {
             return Err(invalid("credential binding unavailable"));
         };
+        let vault = &loaded.vault;
         vault.reload_if_changed().map_err(unavailable)?;
         let Some(snapshot) = vault.snapshot(name).map_err(unavailable)? else {
             return Err(invalid("selected credential unavailable"));
@@ -277,7 +283,13 @@ pub(crate) async fn bind_agent_request(
         }]
     } else {
         let mut options = Vec::new();
-        if let (Some(vault), Some(guard)) = (&runtime.vault, &runtime.credential_guard) {
+        let loaded = runtime
+            .gateway_vault
+            .load_async()
+            .await
+            .map_err(unavailable)?;
+        if let (Some(loaded), Some(guard)) = (loaded.as_ref(), &runtime.credential_guard) {
+            let vault = &loaded.vault;
             vault.reload_if_changed().map_err(unavailable)?;
             for metadata in vault.metadata().map_err(unavailable)? {
                 let Some(snapshot) = vault.snapshot(&metadata.name).map_err(unavailable)? else {

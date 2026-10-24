@@ -30,9 +30,8 @@ pub(crate) fn load_native_locked(
     let mut observed = Policy::capture_native_baseline_files(path, previous)?;
     let source = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
     let now = policy::current_time_ms();
-    let mut candidate = Policy::native_source(&source, path, registry, now)?;
-    let document = policy::parse_toml_document(&source)?;
-    let expired = policy::expired_host_entries(&document, now)?;
+    let (mut candidate, expired) =
+        Policy::native_source_with_expired_hosts(&source, path, registry, now)?;
     if !expired.is_empty() {
         let replacement_time =
             policy::expiry::persist_expired_hosts_locked(path, &expired, Some(&source))?;

@@ -1,8 +1,8 @@
 //! Native encrypted credentials and host-controlled external references.
 //!
-//! Files contain a 16-byte salt followed by an authenticated Fernet token.
-//! PBKDF2-HMAC-SHA256 derives the key with 480,000 iterations. New native
-//! credentials use encrypted JSON; old vault files and keys are not loaded.
+//! Files contain a 16-byte salt or native-format header, then a Fernet token.
+//! Passphrase stores retain 480,000 PBKDF2-HMAC-SHA256 iterations. New native
+//! stores use a generated random Fernet key, marked explicitly in credentials.key.
 //! Clones share snapshots and OAuth revisions. A file lock serializes native
 //! command writes with refresh publication across processes.
 
@@ -33,6 +33,8 @@ use crate::policy::{expiry_has_offset, parse_expiry};
 
 const SALT_LENGTH: usize = 16;
 const KDF_ITERATIONS: u32 = 480_000;
+const NATIVE_KEY_PREFIX: &str = "safeyolo-native-key-v1:";
+const NATIVE_HEADER: [u8; SALT_LENGTH] = *b"SafeYolo:key:v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -248,8 +250,8 @@ fn lock_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// Fresh native state has its own names and JSON schema. Old vault keys/files
-/// are never inspected. This is the same encrypted store used by OAuth refresh.
+/// Create native storage only for an operation that will store a credential.
+/// Mark new random keys explicitly; unmarked keys keep their passphrase KDF.
 pub fn open(data_dir: &Path) -> Result<Vault> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::create_dir_all(data_dir)?;
@@ -258,11 +260,15 @@ pub fn open(data_dir: &Path) -> Result<Vault> {
     let key = match fs::read_to_string(&key_path) {
         Ok(key) => Zeroizing::new(key),
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            if data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::Authentication));
+            }
             let mut raw = Zeroizing::new([0u8; 32]);
             SystemRandom::new()
                 .fill(raw.as_mut())
                 .map_err(|_| error(ErrorKind::State))?;
-            let key = Zeroizing::new(URL_SAFE.encode(raw.as_ref()));
+            let mut key = Zeroizing::new(NATIVE_KEY_PREFIX.to_owned());
+            URL_SAFE.encode_string(raw.as_ref(), &mut key);
             let mut file = fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -278,7 +284,21 @@ pub fn open(data_dir: &Path) -> Result<Vault> {
     if key.trim().is_empty() {
         return Err(error(ErrorKind::Authentication));
     }
-    Vault::unlock(data_dir.join("credentials.enc"), &Secret::new(key.trim()))
+    Vault::unlock_native(
+        data_dir.join("credentials.enc"),
+        &Secret::new(key.trim()),
+        true,
+    )
+}
+
+/// Reading or removing a credential never creates a key or an empty store.
+pub fn open_existing(data_dir: &Path) -> Result<Option<Vault>> {
+    let path = data_dir.join("credentials.enc");
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let key = Zeroizing::new(fs::read_to_string(data_dir.join("credentials.key"))?);
+    Vault::unlock_native(path, &Secret::new(key.trim()), false).map(Some)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -335,11 +355,46 @@ pub struct Vault {
 impl Vault {
     /// Create an empty encrypted store when absent.
     pub fn unlock(path: impl Into<PathBuf>, passphrase: &Secret) -> Result<Self> {
-        let path = path.into();
+        Self::unlock_with_cipher(path.into(), true, None, |salt| {
+            derive_cipher(passphrase, salt)
+        })
+    }
+
+    pub(crate) fn unlock_native(path: PathBuf, key: &Secret, create: bool) -> Result<Self> {
+        let native = key.expose_secret().starts_with(NATIVE_KEY_PREFIX);
+        Self::unlock_with_cipher(path, create, native.then_some(NATIVE_HEADER), |salt| {
+            if salt == &NATIVE_HEADER {
+                let encoded = key
+                    .expose_secret()
+                    .strip_prefix(NATIVE_KEY_PREFIX)
+                    .ok_or_else(|| error(ErrorKind::Authentication))?;
+                let bytes = Zeroizing::new(
+                    URL_SAFE
+                        .decode(encoded)
+                        .map_err(|_| error(ErrorKind::Authentication))?,
+                );
+                if bytes.len() != 32 {
+                    return Err(error(ErrorKind::Authentication));
+                }
+                Fernet::new(encoded)
+                    .map(Zeroizing::new)
+                    .ok_or_else(|| error(ErrorKind::Authentication))
+            } else {
+                derive_cipher(key, salt)
+            }
+        })
+    }
+
+    fn unlock_with_cipher(
+        path: PathBuf,
+        create: bool,
+        new_header: Option<[u8; SALT_LENGTH]>,
+        cipher: impl FnOnce(&[u8; SALT_LENGTH]) -> Result<Zeroizing<Fernet>>,
+    ) -> Result<Self> {
         let _file_lock = lock_file(&path.with_extension("lock"))?;
         let loaded = match read_file(&path) {
             Ok(value) => Some(value),
-            Err(value) if value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
+            Err(value) if create && value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
             Err(value) => return Err(value),
         };
         let mut salt = [0; SALT_LENGTH];
@@ -348,12 +403,14 @@ impl Vault {
                 raw.get(..SALT_LENGTH)
                     .ok_or_else(|| error(ErrorKind::Authentication))?,
             );
+        } else if let Some(header) = new_header {
+            salt = header;
         } else {
             SystemRandom::new()
                 .fill(&mut salt)
                 .map_err(|_| error(ErrorKind::State))?;
         }
-        let cipher = derive_cipher(passphrase, &salt)?;
+        let cipher = cipher(&salt)?;
         let (credentials, stamp) = if let Some((raw, stamp)) = loaded {
             (decrypt(&cipher, &raw)?, stamp)
         } else {

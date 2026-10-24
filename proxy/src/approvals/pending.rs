@@ -756,7 +756,12 @@ pub(crate) fn current_view(
         }
     }
     let runtime = state
-        .map(|state| state.read().map_err(|_| invalid("runtime unavailable")))
+        .map(|state| {
+            state
+                .read()
+                .map(|runtime| runtime.clone())
+                .map_err(|_| invalid("runtime unavailable"))
+        })
         .transpose()?;
     if view["status"] == "pending"
         && let Some(runtime) = runtime.as_deref()
@@ -899,7 +904,10 @@ pub(crate) fn check_saved(
     source: &str,
     record: &Record,
 ) -> Result<bool> {
-    let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+    let runtime = state
+        .read()
+        .map_err(|_| invalid("runtime unavailable"))?
+        .clone();
     let policy = runtime
         .policy
         .as_ref()
@@ -960,7 +968,7 @@ pub(crate) fn resolve_as(
         record.status = record.current_status(&policy)?;
         if record.status == "pending" { record.status = record.current_status(&saved)?; }
         if record.status != "pending" { return Ok(()); }
-        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?.clone();
         let credentials_current = gateway::credentials_current(&runtime, record)?;
         drop(runtime);
         if !credentials_current {
@@ -1000,7 +1008,7 @@ pub(crate) fn resolve_as(
             }
         }
         let parameters = selected.parameters.clone();
-        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?.clone();
         let option_current = gateway::option_current(&runtime, selected)?;
         drop(runtime);
         if !option_current { return Err(invalid("the selected credential option expired or changed; make a new request")); }

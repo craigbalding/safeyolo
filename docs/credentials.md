@@ -31,8 +31,13 @@ In a host terminal, inspect the running service definition, then add the token:
 `--value-env` or piped stdin. Do not put the value in command arguments.
 Add replaces an existing credential with the same name. List prints only its
 name, type, expiry and external reference. Local use needs neither `op` nor
-Python. The host creates `data/credentials.key` and encrypted
-`data/credentials.enc`, both with mode 0600. It does not read old vault files.
+Python. Installation creates no vault and asks no storage question. The first
+secret or reference write creates `data/credentials.key` and encrypted
+`data/credentials.enc`, both with mode 0600. New stores use a marked random
+encryption key without password stretching. Existing unmarked keys retain their
+passphrase derivation and ciphertext; unrelated legacy vault filenames are ignored.
+Proxy readiness does not wait for storage creation or unlock. Operations that need
+stored credentials load the vault on demand and fail closed if it is unavailable.
 Ordinary proxy stop/start retains these files and service authorization.
 
 `services authorized` returns Alice's current `sgw_` credential, account,

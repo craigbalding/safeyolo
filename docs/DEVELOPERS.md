@@ -333,6 +333,11 @@ artifacts without this receipt also require a build. Damaged downloads or invali
 receipts fail the job. Consumer tests, terminal-input checks and complete package
 assembly still run.
 
+Linux input producers use Ubuntu 24.04 on both architectures. Complete Linux
+packages acquire tmux and its private libraries on that same runner. The packager
+derives the minimum glibc version from all shipped host executables and runtime
+libraries, so a floating runner can raise the package's runtime requirement.
+
 Use the `packages_only` input of `proxy-rust.yml` to produce complete host
 bundles without the contract matrix. It calls the existing
 `guest-test-inputs.yml` producer with production profile and package retention.
@@ -387,6 +392,21 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+For a fresh start, managed NATS and the proxy initialize concurrently. The
+command waits for both starts to finish. A Coord failure is reported and does
+not prevent proxy startup. With `SAFEYOLO_STARTUP_TIMINGS=1`, the proxy writes
+`startup` JSON records to `logs/proxy.log`, with source, profile, monotonic stage and elapsed seconds,
+and process CPU seconds for configuration, policy, credentials, flow recording,
+inspection, TLS and readiness publication. Listener projection separates the
+configuration read, reconciliation, writing, file sync and directory sync.
+Unchanged listeners keep the existing configuration file and reload identifier.
+Credential preparation separates grants, HMAC key loading and detector compilation.
+Vault unlock is deferred to credential-consuming operations and does not delay
+proxy readiness. Initialization and read-only credential commands create no store.
+Launcher and NATS-start timings go to the command's standard error.
+CPU time covers all threads in the emitting process and excludes its children.
+Component timings are nested;
+do not add their elapsed values to obtain total startup time.
 Doctor also sends a traced request through every configured agent Unix-domain
 socket. The reserved probe runs the normal request controls and terminates
 locally without external network access. The `pipeline` result lists each

@@ -1973,10 +1973,9 @@ pub(crate) fn current_time_ms() -> f64 {
     time::OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000.0
 }
 
-pub(crate) fn expired_host_entries(
-    document: &Value,
-    now_ms: f64,
-) -> Result<Vec<(Option<String>, String)>> {
+pub(crate) type ExpiredHosts = Vec<(Option<String>, String)>;
+
+pub(crate) fn expired_host_entries(document: &Value, now_ms: f64) -> Result<ExpiredHosts> {
     if !now_ms.is_finite() {
         return Err(invalid("expiry timestamp must be finite"));
     }
