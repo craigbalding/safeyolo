@@ -696,35 +696,43 @@ async fn cold_host_start_overlaps_services_and_serializes_reentry() {
     let _cleanup = HostCleanup(root.into());
     prepare_host_services(root).await;
     let lock = hold_nats_start(root);
-    let (first, second) = tokio::join!(host_cli(root, &["start"]), async {
-        let proxy = wait_for_file(&root.join("data/proxy-process.json")).await;
-        check_proxy(root).await;
-        assert!(!root.join("data/coord/nats/process.json").exists());
-        // A second ordinary start must stay behind the first instance lock.
-        let mut second = host_command(root, &["start"]).spawn().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(second.try_wait().unwrap().is_none());
-        drop(lock);
-        let output = second.wait_with_output().await.unwrap();
-        assert_eq!(
-            wait_for_file(&root.join("data/proxy-process.json")).await,
-            proxy
-        );
-        output
-    });
-    for output in [first, second] {
+    let mut first = host_command(root, &["start"]).spawn().unwrap();
+    let proxy = wait_for_file(&root.join("data/proxy-process.json")).await;
+    check_proxy(root).await;
+    assert!(!root.join("data/coord/nats/process.json").exists());
+    assert!(first.try_wait().unwrap().is_none());
+    let instance_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("data/proxy-start.lock"))
+        .unwrap();
+    assert!(instance_lock.try_lock().is_err());
+    // A second ordinary start must stay behind the first instance lock.
+    let mut second = host_command(root, &["start"]).spawn().unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(second.try_wait().unwrap().is_none());
+    drop(lock);
+    for child in [first, second] {
+        let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    assert_eq!(
+        wait_for_file(&root.join("data/proxy-process.json")).await,
+        proxy
+    );
     assert_eq!(coord_json(root, &["status"]).await["state"], "running");
     assert!(host_cli(root, &["stop"]).await.status.success());
     fs::remove_file(root.join("data/proxy-process.json")).unwrap();
 
     // Delay the other service without changing the managed NATS executable.
-    let retained = root.join("versions/fixture/host/bin");
+    let retained = root.join("versions/initial/host/bin");
     fs::create_dir_all(&retained).unwrap();
     fs::rename(
         root.join("bin/safeyolo-proxy"),
@@ -732,15 +740,19 @@ async fn cold_host_start_overlaps_services_and_serializes_reentry() {
     )
     .unwrap();
     let wrapper = root.join("bin/safeyolo-proxy");
-    fs::write(&wrapper, "#!/bin/sh\nwhile [ ! -f \"$SAFEYOLO_CONFIG_DIR/release-proxy\" ]; do [ -d \"$SAFEYOLO_CONFIG_DIR\" ] || exit 1; sleep 0.01; done\nexec \"$SAFEYOLO_CONFIG_DIR/versions/fixture/host/bin/safeyolo-proxy\" \"$@\"\n").unwrap();
+    fs::write(&wrapper, "#!/bin/sh\nwhile [ ! -f \"$SAFEYOLO_CONFIG_DIR/release-proxy\" ]; do [ -d \"$SAFEYOLO_CONFIG_DIR\" ] || exit 1; sleep 0.01; done\nexec \"$SAFEYOLO_CONFIG_DIR/versions/initial/host/bin/safeyolo-proxy\" \"$@\"\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
-    let (started, ()) = tokio::join!(host_cli(root, &["start"]), async {
-        wait_for_file(&root.join("data/coord/nats/process.json")).await;
-        assert_eq!(coord_json(root, &["status"]).await["state"], "running");
-        assert!(!root.join("data/proxy-process.json").exists());
-        fs::write(root.join("release-proxy"), "").unwrap();
-    });
+    let mut starting = host_command(root, &["start"]).spawn().unwrap();
+    wait_for_file(&root.join("data/coord/nats/process.json")).await;
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert!(!root.join("data/proxy-process.json").exists());
+    assert!(starting.try_wait().unwrap().is_none());
+    fs::write(root.join("release-proxy"), "").unwrap();
+    let started = tokio::time::timeout(Duration::from_secs(15), starting.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         started.status.success(),
         "{}",
