@@ -288,7 +288,7 @@ def test_native_lifecycle_consumer_retains_inactive_receipt_and_uses_configured_
 def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_path, control, coord_control):
     # Use the existing native CLI initialization boundary. No guest payload or
     # package rebuild is needed to exercise these host-only start/stop commands.
-    artifacts, _, _ = native_inputs()
+    artifacts, _, profile = native_inputs()
     if bundle := os.environ.get("SAFEYOLO_NATIVE_BUNDLE"):
         artifacts = Path(bundle) / "bin"
     root = tmp_path / "i"
@@ -298,6 +298,7 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
     command = [str(root / "bin/safeyolo"), "--root", str(root)]
     environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_HOME=str(root),
                        SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"), SAFEYOLO_NATS_TEST_INSTANCE=str(root))
+    environment["SAFEYOLO_STARTUP_TIMINGS"] = "1" if coord_control == "delayed" else "0"
     environment.pop("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE", None)
     initialized = subprocess.run([*command, "init"], env=environment, capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
@@ -414,6 +415,23 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
             os.close(coord_lock)
             coord_lock = None
         stdout, stderr = startup.communicate(timeout=20)
+        timing_lines = (root / "logs/proxy.log").read_text().splitlines() + stderr.splitlines()
+        timings = [json.loads(line.removeprefix("startup ")) for line in timing_lines if line.startswith("startup ")]
+        if control == "immediate" and coord_control == "delayed":
+            assert {("launcher", "configuration"), ("process", "configuration"),
+                    ("listener_projection", "configuration_read"), ("listener_projection", "configuration_reread"),
+                    ("listener_preparation", "configuration_reread"), ("listener_projection", "attachment_reconciliation"),
+                    ("listener_projection", "file_sync"), ("listener_projection", "directory_sync"),
+                    ("runtime", "credentials"), ("runtime", "inspection"), ("runtime", "tls_and_circuits"),
+                    ("process", "process_record"), ("managed_nats", "start_complete")} <= {
+                        (row["component"], row["stage"]) for row in timings}
+            version = subprocess.check_output([*command, "--version"], env=environment, text=True)
+            for row in timings:
+                assert f"commit={row['source']} profile={profile}" in version
+                assert row["profile"] == profile and row["elapsed_seconds"] >= row["stage_seconds"] >= 0
+                assert row["stage_cpu_seconds"] is None or row["stage_cpu_seconds"] >= 0
+        elif coord_control != "delayed":
+            assert not timings, "startup diagnostics were enabled without the explicit option"
         elapsed = time.monotonic() - started
         if control == "unready":
             assert startup.returncode != 0, stdout

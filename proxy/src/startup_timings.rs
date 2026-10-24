@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 pub struct StartupTimings {
+    enabled: bool,
     component: &'static str,
     began: Instant,
     previous: Instant,
@@ -12,15 +13,21 @@ pub struct StartupTimings {
 impl StartupTimings {
     pub fn new(component: &'static str) -> Self {
         let began = Instant::now();
+        let enabled =
+            std::env::var_os("SAFEYOLO_STARTUP_TIMINGS").is_some_and(|value| value == "1"); // DOC: docs/DEVELOPERS.md
         Self {
+            enabled,
             component,
             began,
             previous: began,
-            cpu: process_cpu(),
+            cpu: enabled.then(process_cpu).flatten(),
         }
     }
 
     pub fn record(&mut self, stage: &'static str) {
+        if !self.enabled {
+            return;
+        }
         let now = Instant::now();
         let cpu = process_cpu();
         eprintln!(

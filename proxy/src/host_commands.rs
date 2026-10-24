@@ -35,8 +35,11 @@ pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
 pub async fn prepare_proxy(config: &mut crate::Config) -> Result<(), Error> {
     if let Some(path) = config.native_config_path.clone() {
         host_platform::in_config(path.clone(), async {
+            let mut timing = crate::startup_timings::StartupTimings::new("listener_preparation");
             host_lifecycle::sync_agent_listeners(None).await?;
+            timing.record("projection");
             *config = crate::native_config::read(&path)?;
+            timing.record("configuration_reread");
             Ok::<_, Error>(())
         })
         .await?;
@@ -99,6 +102,7 @@ pub(crate) fn proxy_live() -> bool {
 }
 
 pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
+    let mut timing = crate::startup_timings::StartupTimings::new("launcher");
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
     let _lock =
@@ -121,7 +125,9 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         return Ok(None);
     }
     let config_path = host_platform::config_path();
+    timing.record("ownership_start_lock");
     let config = crate::native_config::read(&config_path)?;
+    timing.record("configuration");
     // Coord is optional for proxy readiness. Keep both starts owned by this
     // command, and await both results before returning or releasing the lock.
     let coord = async {

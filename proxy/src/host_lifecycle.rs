@@ -1717,11 +1717,13 @@ pub(crate) async fn sync_agent_listeners(
     if !path.is_absolute() {
         return Err("proxy config path must be absolute".into());
     }
+    let mut timing = crate::startup_timings::StartupTimings::new("listener_projection");
     let _same_process_lock = LISTENER_LOCK.lock().await;
     let lock_path = crate::host_platform::config_dir().join("data/native-listeners.lock");
     let _lock =
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
             .await??;
+    timing.record("locks");
     let cwd = crate::host_platform::config_dir();
     let source = std::fs::read(&path)?;
     let native = path
@@ -1732,6 +1734,7 @@ pub(crate) async fn sync_agent_listeners(
     } else {
         serde_json::from_slice(&source)?
     };
+    timing.record("configuration_read");
     let entries = config
         .get("listeners")
         .and_then(Value::as_array)
@@ -1765,11 +1768,13 @@ pub(crate) async fn sync_agent_listeners(
     // supplies its listener before the backend exists, so the guest can reach
     // the proxy from its first instruction. A failed boot removes its listener
     // without discarding an uncertain backend record. No separate map is written.
+    timing.record("retained_listeners");
     let mut current = if native {
         crate::native_config::read(&path)?
     } else {
         serde_json::from_value(config.clone())?
     };
+    timing.record("configuration_reread");
     crate::host_commands::restore_attachments(&mut current).await?;
     if let Some((name, ip)) = change {
         current.listeners.retain(|entry| {
@@ -1794,6 +1799,7 @@ pub(crate) async fn sync_agent_listeners(
     let requested = uuid::Uuid::new_v4().simple().to_string();
     config["listeners"] = Value::Array(retained);
     config["reload_id"] = requested.clone().into();
+    timing.record("attachment_reconciliation");
     let mode = std::fs::metadata(&path)?.permissions().mode();
     let parent = path.parent().ok_or("configuration has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
@@ -1820,12 +1826,16 @@ pub(crate) async fn sync_agent_listeners(
         serde_json::to_writer_pretty(&mut temporary, &config)?;
         temporary.write_all(b"\n")?;
     }
+    timing.record("projection_write");
     temporary.as_file().sync_all()?;
+    timing.record("file_sync");
     temporary
         .as_file()
         .set_permissions(std::fs::Permissions::from_mode(mode))?;
     temporary.persist(&path)?;
+    timing.record("projection_publish");
     File::open(parent)?.sync_all()?;
+    timing.record("directory_sync");
     // Stop and independent recovery can update the projection while the
     // proxy is unavailable. Startup reconstructs listeners from current runs.
     if !crate::host_commands::proxy_live() {
