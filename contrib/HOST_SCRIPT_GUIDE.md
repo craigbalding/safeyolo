@@ -85,9 +85,21 @@ files use atomic replacement too; a destination directory link stops copying.
 ### First Codex login
 
 Use the installed product and its matching Linux guest Coord assets.
-For a fresh agent using `codex-host-setup.sh`, authentication happens inside
-that agent's persistent home. After its first run installs Codex, leave it
-running and open a guest shell from a second host terminal. Replace `work` with the agent name:
+For ordinary first use, `safeyolo agent launch . --harness codex` owns setup,
+login selection and client startup. Current source offers a trusted host choice
+to authorize the selected subscription login for that agent before startup.
+It can copy a host login into an empty agent login, with explicit consent.
+The public installer invokes the same operation with `--launch --harness codex`;
+no additional import command is required. See the
+[installation reference](../docs/installation.md#public-bootstrap-availability) for release
+limits and the choices. Enter keeps guest login and normal approvals.
+Copying and `codex-state adopt` record client state; neither grants proxy
+authority. Existing credential and network rules remain applicable.
+
+For explicit setup or coordinated-agent preparation, a fresh agent can instead
+log in inside its persistent home. After its first run installs Codex, leave
+it running and open a guest shell from a second host terminal. Replace `work`
+with the agent name:
 
 ```sh
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent shell work
