@@ -25,7 +25,6 @@ libc = "0.2"
 memmap2 = "0.9"
 num-bigint = "0.4"
 oci-client = { version = "=0.18.0", default-features = false, features = ["rustls-tls-no-provider"] }
-pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 percent-encoding = "2"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
@@ -39,7 +38,6 @@ rustls-native-certs = "0.8"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
-sha2 = { version = "0.11", features = ["zeroize"] }
 subtle = "2.6.1"
 tempfile = "3"
 toml_edit = "0.25"

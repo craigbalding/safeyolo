@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -515,3 +516,35 @@ def _direct_credential_approval(directory, caller, *, activation_failure):
             cli(resumed, "credentials", "approve", fingerprint, "--destination", "127.0.0.1")
             send(resumed, status=403)
         surfaces(instance, (DETECTED, replacement))
+
+
+def test_init_and_read_only_commands_defer_storage_until_a_valid_secret_write(tmp_path):
+    from tests.proxy_contracts.test_native_policy_cli import native_inputs
+
+    artifacts, _, _ = native_inputs()
+    binary = artifacts / "safeyolo"
+    root = tmp_path / "instance"
+
+    def command(*arguments, valid=True, value=None):
+        result = subprocess.run([str(binary), "--root", str(root), *arguments],
+                                input=value, capture_output=True, text=True, timeout=15)
+        assert (result.returncode == 0) == valid, result.stderr
+        assert LOCAL not in result.stdout + result.stderr
+        return result
+
+    command("init")
+    for arguments, valid in [
+        (("credentials", "list"), True),
+        (("credentials", "remove", "missing"), False),
+        (("credentials", "invalid"), False),
+        (("credentials", "add", "invalid", "--type", "unsupported"), False),
+        (("credentials", "import-codex", "invalid"), False),
+        (("credentials", "provider", "--executable", "/bin/true"), True),
+    ]:
+        command(*arguments, valid=valid)
+        assert not (root / "data/credentials.key").exists()
+        assert not (root / "data/credentials.enc").exists()
+    command("credentials", "add", "local", "--stdin", value=LOCAL)
+    assert (root / "data/credentials.key").read_text().startswith("safeyolo-native-key-v1:")
+    assert json.loads(command("credentials", "list").stdout)[0]["name"] == "local"
+    assert LOCAL.encode() not in (root / "data/credentials.enc").read_bytes()

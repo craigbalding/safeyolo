@@ -90,7 +90,6 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             include_str!("../../config/native/config.toml")
         ),
     )?;
-    safeyolo_proxy::credentials::open(&root.join("data"))?;
     std::fs::create_dir_all(root.join("builtin-services"))?;
     std::fs::create_dir_all(root.join("services"))?;
     for (name, source) in [

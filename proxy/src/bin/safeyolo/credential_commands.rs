@@ -167,12 +167,10 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         return Ok(());
     }
     let config = native_config::read(config_path)?;
-    let vault = credentials::open(
-        config
-            .data_dir
-            .as_deref()
-            .ok_or("credential data directory is unavailable")?,
-    )?;
+    let data_dir = config
+        .data_dir
+        .as_deref()
+        .ok_or("credential data directory is unavailable")?;
     if let [command, name, rest @ ..] = arguments
         && command == "import-codex"
     {
@@ -232,7 +230,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         if record.is_expired(time::OffsetDateTime::now_utc())? {
             return Err("Codex authorization expiry is invalid or already expired".into());
         }
-        vault.store(record)?;
+        credentials::open(data_dir)?.store(record)?;
         println!(
             "Codex login authorized for {agent}; remove credential {name} to revoke it. Existing credential and network rules still apply."
         );
@@ -240,9 +238,16 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
     }
     match arguments {
         [command] if command == "list" => {
-            println!("{}", serde_json::to_string_pretty(&vault.metadata()?)?)
+            let metadata = credentials::open_existing(data_dir)?
+                .map(|vault| vault.metadata())
+                .transpose()?
+                .unwrap_or_default();
+            println!("{}", serde_json::to_string_pretty(&metadata)?)
         }
         [command, name] if command == "remove" => {
+            let Some(vault) = credentials::open_existing(data_dir)? else {
+                return Err("credential not found".into());
+            };
             if !vault.remove(name)? {
                 return Err("credential not found".into());
             }
@@ -306,7 +311,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             record.client_id = fields.get("--client-id").map(|value| value.to_string());
             record.expires_at = fields.get("--expires-at").map(|value| value.to_string());
             record.is_expired(time::OffsetDateTime::now_utc())?;
-            vault.store(record)?;
+            credentials::open(data_dir)?.store(record)?;
             println!("Credential stored: {name} (type={kind})");
         }
         _ => return Err("invalid credentials command; see credentials --help".into()),

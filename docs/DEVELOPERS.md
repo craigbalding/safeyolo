@@ -399,8 +399,9 @@ not prevent proxy startup. With `SAFEYOLO_STARTUP_TIMINGS=1`, the proxy writes
 and process CPU seconds for configuration, policy, credentials, flow recording,
 inspection, TLS and readiness publication. Listener projection separates both
 configuration reads, reconciliation, writing, file sync and directory sync.
-Credential preparation separates vault unlock and activation, grants, HMAC key
-loading and detector compilation.
+Credential preparation separates grants, HMAC key loading and detector compilation.
+Vault unlock is deferred to credential-consuming operations and does not delay
+proxy readiness. Initialization and read-only credential commands create no store.
 Launcher and NATS-start timings go to the command's standard error.
 CPU time covers all threads in the emitting process and excludes its children.
 Component timings are nested;

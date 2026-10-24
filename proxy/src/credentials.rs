@@ -1,8 +1,8 @@
 //! Native encrypted credentials and host-controlled external references.
 //!
-//! Files contain a 16-byte salt followed by an authenticated Fernet token.
-//! PBKDF2-HMAC-SHA256 derives the key with 480,000 iterations. New native
-//! credentials use encrypted JSON; old vault files and keys are not loaded.
+//! Files contain a 16-byte salt or native-format header, then a Fernet token.
+//! Passphrase stores retain 480,000 PBKDF2-HMAC-SHA256 iterations. New native
+//! stores use a generated random Fernet key, marked explicitly in credentials.key.
 //! Clones share snapshots and OAuth revisions. A file lock serializes native
 //! command writes with refresh publication across processes.
 
@@ -20,7 +20,10 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::URL_SAFE};
 use fernet::Fernet;
-use ring::rand::{SecureRandom, SystemRandom};
+use ring::{
+    pbkdf2,
+    rand::{SecureRandom, SystemRandom},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
@@ -30,6 +33,8 @@ use crate::policy::{expiry_has_offset, parse_expiry};
 
 const SALT_LENGTH: usize = 16;
 const KDF_ITERATIONS: u32 = 480_000;
+const NATIVE_KEY_PREFIX: &str = "safeyolo-native-key-v1:";
+const NATIVE_HEADER: [u8; SALT_LENGTH] = *b"SafeYolo:key:v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -245,8 +250,8 @@ fn lock_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// Fresh native state has its own names and JSON schema. Old vault keys/files
-/// are never inspected. This is the same encrypted store used by OAuth refresh.
+/// Create native storage only for an operation that will store a credential.
+/// Mark new random keys explicitly; unmarked keys keep their passphrase KDF.
 pub fn open(data_dir: &Path) -> Result<Vault> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::create_dir_all(data_dir)?;
@@ -255,11 +260,15 @@ pub fn open(data_dir: &Path) -> Result<Vault> {
     let key = match fs::read_to_string(&key_path) {
         Ok(key) => Zeroizing::new(key),
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            if data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::Authentication));
+            }
             let mut raw = Zeroizing::new([0u8; 32]);
             SystemRandom::new()
                 .fill(raw.as_mut())
                 .map_err(|_| error(ErrorKind::State))?;
-            let key = Zeroizing::new(URL_SAFE.encode(raw.as_ref()));
+            let mut key = Zeroizing::new(NATIVE_KEY_PREFIX.to_owned());
+            URL_SAFE.encode_string(raw.as_ref(), &mut key);
             let mut file = fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -275,7 +284,21 @@ pub fn open(data_dir: &Path) -> Result<Vault> {
     if key.trim().is_empty() {
         return Err(error(ErrorKind::Authentication));
     }
-    Vault::unlock(data_dir.join("credentials.enc"), &Secret::new(key.trim()))
+    Vault::unlock_native(
+        data_dir.join("credentials.enc"),
+        &Secret::new(key.trim()),
+        true,
+    )
+}
+
+/// Reading or removing a credential never creates a key or an empty store.
+pub fn open_existing(data_dir: &Path) -> Result<Option<Vault>> {
+    let path = data_dir.join("credentials.enc");
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let key = Zeroizing::new(fs::read_to_string(data_dir.join("credentials.key"))?);
+    Vault::unlock_native(path, &Secret::new(key.trim()), false).map(Some)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -332,11 +355,46 @@ pub struct Vault {
 impl Vault {
     /// Create an empty encrypted store when absent.
     pub fn unlock(path: impl Into<PathBuf>, passphrase: &Secret) -> Result<Self> {
-        let path = path.into();
+        Self::unlock_with_cipher(path.into(), true, None, |salt| {
+            derive_cipher(passphrase, salt)
+        })
+    }
+
+    pub(crate) fn unlock_native(path: PathBuf, key: &Secret, create: bool) -> Result<Self> {
+        let native = key.expose_secret().starts_with(NATIVE_KEY_PREFIX);
+        Self::unlock_with_cipher(path, create, native.then_some(NATIVE_HEADER), |salt| {
+            if salt == &NATIVE_HEADER {
+                let encoded = key
+                    .expose_secret()
+                    .strip_prefix(NATIVE_KEY_PREFIX)
+                    .ok_or_else(|| error(ErrorKind::Authentication))?;
+                let bytes = Zeroizing::new(
+                    URL_SAFE
+                        .decode(encoded)
+                        .map_err(|_| error(ErrorKind::Authentication))?,
+                );
+                if bytes.len() != 32 {
+                    return Err(error(ErrorKind::Authentication));
+                }
+                Fernet::new(encoded)
+                    .map(Zeroizing::new)
+                    .ok_or_else(|| error(ErrorKind::Authentication))
+            } else {
+                derive_cipher(key, salt)
+            }
+        })
+    }
+
+    fn unlock_with_cipher(
+        path: PathBuf,
+        create: bool,
+        new_header: Option<[u8; SALT_LENGTH]>,
+        cipher: impl FnOnce(&[u8; SALT_LENGTH]) -> Result<Zeroizing<Fernet>>,
+    ) -> Result<Self> {
         let _file_lock = lock_file(&path.with_extension("lock"))?;
         let loaded = match read_file(&path) {
             Ok(value) => Some(value),
-            Err(value) if value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
+            Err(value) if create && value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
             Err(value) => return Err(value),
         };
         let mut salt = [0; SALT_LENGTH];
@@ -345,12 +403,14 @@ impl Vault {
                 raw.get(..SALT_LENGTH)
                     .ok_or_else(|| error(ErrorKind::Authentication))?,
             );
+        } else if let Some(header) = new_header {
+            salt = header;
         } else {
             SystemRandom::new()
                 .fill(&mut salt)
                 .map_err(|_| error(ErrorKind::State))?;
         }
-        let cipher = derive_cipher(passphrase, &salt)?;
+        let cipher = cipher(&salt)?;
         let (credentials, stamp) = if let Some((raw, stamp)) = loaded {
             (decrypt(&cipher, &raw)?, stamp)
         } else {
@@ -736,19 +796,14 @@ fn upsert(credentials: &mut Vec<Credential>, credential: Credential) {
         credentials.push(credential);
     }
 }
-/// Derive the vault's 32-byte key with the full PBKDF2-HMAC-SHA256 count.
-/// RustCrypto owns the HMAC contexts and SHA-256 padding.
-fn derive_key(password: &[u8], salt: &[u8], iterations: NonZeroU32) -> Zeroizing<[u8; 32]> {
-    let mut raw = Zeroizing::new([0u8; 32]);
-    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password, salt, iterations.get(), raw.as_mut());
-    raw
-}
-
 fn derive_cipher(passphrase: &Secret, salt: &[u8; SALT_LENGTH]) -> Result<Zeroizing<Fernet>> {
-    let raw = derive_key(
-        passphrase.expose_secret().as_bytes(),
-        salt,
+    let mut raw = Zeroizing::new([0u8; 32]);
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
         NonZeroU32::new(KDF_ITERATIONS).unwrap(),
+        salt,
+        passphrase.expose_secret().as_bytes(),
+        raw.as_mut(),
     );
     let encoded = Zeroizing::new(URL_SAFE.encode(raw.as_ref()));
     Fernet::new(&encoded)
@@ -993,75 +1048,6 @@ fn restore(
     }
     activate(ActivationPhase::Rollback, &metadata(&state.credentials))
         .map_err(|_| error(ErrorKind::Rollback))
-}
-
-#[cfg(test)]
-mod key_derivation_tests {
-    use super::*;
-    use ring::pbkdf2;
-
-    fn assert_ring_key(password: &[u8], salt: &[u8], iterations: u32) {
-        let iterations = NonZeroU32::new(iterations).unwrap();
-        let mut expected = Zeroizing::new([0u8; 32]);
-        pbkdf2::derive(
-            pbkdf2::PBKDF2_HMAC_SHA256,
-            iterations,
-            salt,
-            password,
-            expected.as_mut(),
-        );
-        assert!(derive_key(password, salt, iterations).as_slice() == expected.as_slice());
-    }
-
-    #[test]
-    fn vault_key_matches_ring_at_password_and_salt_block_boundaries() {
-        for length in [0, 1, 31, 32, 63, 64, 65, 127, 128, 129, 1024] {
-            let password: Vec<_> = (0..length).map(|index| (index % 256) as u8).collect();
-            for length in [0, 16, 51, 52, 63, 64, 65, 128] {
-                let salt: Vec<_> = (0..length).map(|index| (index % 256) as u8).collect();
-                for iterations in [1, 2, 17] {
-                    assert_ring_key(&password, &salt, iterations);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn vault_key_matches_ring_for_all_production_rounds() {
-        assert_eq!(KDF_ITERATIONS, 480_000);
-        let long_password = "synthetic long vault passphrase — 🙂".repeat(8);
-        for password in [
-            "synthetic-native-key-12345678901234567890123456".as_bytes(),
-            long_password.as_bytes(),
-        ] {
-            assert_ring_key(password, b"synthetic-salt!!", KDF_ITERATIONS);
-        }
-    }
-
-    #[test]
-    fn vault_key_matches_rfc7914_first_output_block() {
-        // RFC 7914 section 11 publishes 64-byte keys. This vault derives the
-        // first 32-byte block with the same PBKDF2-HMAC-SHA256 inputs.
-        // https://www.rfc-editor.org/rfc/rfc7914.html#section-11
-        for (password, salt, iterations, expected) in [
-            (
-                b"passwd".as_slice(),
-                b"salt".as_slice(),
-                1,
-                "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc",
-            ),
-            (
-                b"Password".as_slice(),
-                b"NaCl".as_slice(),
-                80_000,
-                "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56",
-            ),
-        ] {
-            let actual = derive_key(password, salt, NonZeroU32::new(iterations).unwrap());
-            let hex: String = actual.iter().map(|byte| format!("{byte:02x}")).collect();
-            assert_eq!(hex, expected);
-        }
-    }
 }
 
 #[cfg(test)]

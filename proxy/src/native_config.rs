@@ -188,11 +188,15 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     if path.extension().and_then(|value| value.to_str()) != Some("toml") {
         return Err("configuration requires config.toml".into());
     }
+    from_source(path, &std::fs::read_to_string(path)?)
+}
+
+pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     let root = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut value = crate::policy::parse_toml_document(&std::fs::read_to_string(path)?)?;
+    let mut value = crate::policy::parse_toml_document(source)?;
     let fields = value
         .as_object_mut()
         .ok_or("configuration must be a table")?;

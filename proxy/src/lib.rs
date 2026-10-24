@@ -372,18 +372,11 @@ pub(crate) struct Runtime {
     passthrough: Arc<RwLock<tunnels::Passthrough>>,
     scanner: inspection::Scanner,
     policy: Option<policy::Policy>,
-    /// The encrypted credential snapshot is retained across policy reloads;
-    /// gateway selection consumes only the authorized vault reference.
-    vault: Option<credentials::Vault>,
-    /// One process-owned refresh coordinator shares flights across requests.
-    /// Its vault clone is the same state used for credential injection.
-    oauth: Option<oauth::OAuthRefresh>,
+    /// Lazy, process-owned vault and refresh flights. Only credential consumers
+    /// load it; Runtime publication never reads or unlocks credential storage.
+    gateway_vault: GatewayVault,
     credential_activation: CredentialActivation,
     operator_modes: Arc<OperatorModes>,
-    /// Durable identity of the loaded vault. The key fingerprint is only used
-    /// to decide whether a reload may retain the existing Vault/coordinator;
-    /// it is never included in Runtime diagnostics.
-    vault_identity: Option<VaultIdentity>,
     /// One process-owned store for contract bindings and risky grants. Clones
     /// share reservations; reloads reconcile its durable view before publish.
     gateway_grants: Option<grants::Store>,
@@ -531,51 +524,22 @@ impl Runtime {
             let mut credential_startup = previous
                 .is_none()
                 .then(|| startup_timings::StartupTimings::new("credential_preparation"));
-            // A reload with the same vault path and key material must retain
-            // the old state object: its OAuth flight table is part of the
-            // process-owned attempt domain. A changed key/path starts a fresh
-            // domain; an invalid replacement is therefore unavailable rather
-            // than silently sharing the old coordinator.
-            let vault_material = gateway_vault_material(&config);
-            let retained = previous.and_then(|runtime| {
-                vault_material
-                    .as_ref()
-                    .filter(|material| runtime.vault_identity.as_ref() == Some(&material.identity))
-                    .map(|_| runtime)
-            });
-            let loaded = if retained.is_some() {
-                None
-            } else {
-                load_gateway_vault(vault_material.as_ref())?
-            };
-            let (vault, oauth, vault_identity) = if let Some(runtime) = retained {
-                (
-                    runtime.vault.clone(),
-                    runtime.oauth.clone(),
-                    runtime.vault_identity.clone(),
-                )
-            } else if let Some(loaded) = loaded {
-                let oauth = Some(oauth::OAuthRefresh::new(loaded.vault.clone()));
-                (Some(loaded.vault), oauth, Some(loaded.identity))
-            } else {
-                (None, None, None)
-            };
             let credential_activation = previous
                 .map(|runtime| runtime.credential_activation.clone())
                 .unwrap_or_default();
+            let data_dir = config.data_dir();
+            let gateway_vault = previous
+                .filter(|runtime| runtime.gateway_vault.data_dir == data_dir)
+                .map(|runtime| runtime.gateway_vault.clone())
+                .unwrap_or_else(|| GatewayVault {
+                    data_dir,
+                    loaded: Arc::new(Mutex::new(None)),
+                    activation: credential_activation.clone(),
+                });
             let operator_modes = previous
                 .filter(|_| !config.native_product)
                 .map(|runtime| runtime.operator_modes.clone())
                 .unwrap_or_else(|| Arc::new(OperatorModes::from_config(&config)));
-            if let Some(vault) = vault.as_ref() {
-                let metadata = vault.metadata()?;
-                credential_activation
-                    .activate(credentials::ActivationPhase::Candidate, &metadata)
-                    .map_err(|_| "vault credential activation unavailable")?;
-            }
-            if let Some(timing) = credential_startup.as_mut() {
-                timing.record("vault");
-            }
             let gateway_grants = if let Some(previous_store) = previous
                 .filter(|runtime| runtime.config.policy_file == config.policy_file)
                 .and_then(|runtime| runtime.gateway_grants.as_ref())
@@ -640,7 +604,7 @@ impl Runtime {
                     key.as_ref().map(credential_hmac::HmacSecret::as_bytes),
                 )?;
                 (
-                    Some(guard.with_codex_vault(vault.clone())),
+                    Some(guard),
                     key.as_ref()
                         .is_some_and(credential_hmac::HmacSecret::is_empty),
                 )
@@ -794,11 +758,9 @@ impl Runtime {
                 passthrough,
                 scanner,
                 policy,
-                vault,
-                oauth,
+                gateway_vault,
                 credential_activation,
                 operator_modes,
-                vault_identity,
                 gateway_grants,
                 credential_guard,
                 credential_key_empty,
@@ -1280,8 +1242,7 @@ struct VaultMaterial {
     passphrase: credentials::Secret,
 }
 
-fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
-    let data_dir = config.data_dir();
+fn gateway_vault_material(data_dir: &Path) -> Option<VaultMaterial> {
     let vault_path = data_dir.join("credentials.enc");
     let key_path = data_dir.join("credentials.key");
     let passphrase = zeroize::Zeroizing::new(std::fs::read_to_string(&key_path).ok()?);
@@ -1301,36 +1262,70 @@ fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
     })
 }
 
+#[derive(Clone)]
 struct LoadedGatewayVault {
     vault: credentials::Vault,
+    oauth: oauth::OAuthRefresh,
     identity: VaultIdentity,
 }
 
-/// Load the fresh native credential material when both files are
-/// present. The passphrase is process-local configuration and is never copied
-/// into Runtime diagnostics. A missing or unusable vault leaves the gateway
-/// unavailable so a selected request fails closed at the injection boundary.
-fn load_gateway_vault(
-    material: Option<&VaultMaterial>,
-) -> Result<Option<LoadedGatewayVault>, Error> {
-    let Some(material) = material else {
-        return Ok(None);
-    };
-    if !material.identity.vault_path.exists() {
-        return Ok(None);
-    }
-    match credentials::Vault::unlock(&material.identity.vault_path, &material.passphrase) {
-        Ok(vault) => Ok(Some(LoadedGatewayVault {
-            vault,
-            identity: material.identity.clone(),
-        })),
-        Err(error) => {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Gateway vault unavailable: {error}"
-            );
-            Ok(None)
+#[derive(Clone)]
+struct GatewayVault {
+    data_dir: PathBuf,
+    loaded: Arc<Mutex<Option<LoadedGatewayVault>>>,
+    activation: CredentialActivation,
+}
+
+impl GatewayVault {
+    /// Blocking credential boundary. Serialize the first unlock and retain the
+    /// same Vault/OAuth owner across reloads. Recheck key identity on each use;
+    /// a missing or invalid replacement never falls back to the prior key.
+    fn load(&self) -> Result<Option<LoadedGatewayVault>, Error> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .map_err(|_| "credential storage unavailable")?;
+        let Some(material) = gateway_vault_material(&self.data_dir)
+            .filter(|material| material.identity.vault_path.is_file())
+        else {
+            *loaded = None;
+            return Ok(None);
+        };
+        if loaded
+            .as_ref()
+            .is_some_and(|old| old.identity == material.identity)
+        {
+            return Ok(loaded.clone());
         }
+        *loaded = None;
+        let vault = match credentials::Vault::unlock_native(
+            material.identity.vault_path.clone(),
+            &material.passphrase,
+            false,
+        ) {
+            Ok(vault) => vault,
+            Err(error) => {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Gateway vault unavailable: {error}"
+                );
+                return Ok(None);
+            }
+        };
+        self.activation
+            .activate(credentials::ActivationPhase::Candidate, &vault.metadata()?)
+            .map_err(|_| "vault credential activation unavailable")?;
+        *loaded = Some(LoadedGatewayVault {
+            oauth: oauth::OAuthRefresh::new(vault.clone()),
+            vault,
+            identity: material.identity,
+        });
+        Ok(loaded.clone())
+    }
+
+    async fn load_async(&self) -> Result<Option<LoadedGatewayVault>, Error> {
+        let owner = self.clone();
+        tokio::task::spawn_blocking(move || owner.load()).await?
     }
 }
 

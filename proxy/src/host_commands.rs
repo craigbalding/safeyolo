@@ -36,10 +36,10 @@ pub async fn prepare_proxy(config: &mut crate::Config) -> Result<(), Error> {
     if let Some(path) = config.native_config_path.clone() {
         host_platform::in_config(path.clone(), async {
             let mut timing = crate::startup_timings::StartupTimings::new("listener_preparation");
-            host_lifecycle::sync_agent_listeners(None).await?;
+            *config = host_lifecycle::sync_agent_listener_config(None)
+                .await?
+                .ok_or("proxy configuration disappeared during listener reconciliation")?;
             timing.record("projection");
-            *config = crate::native_config::read(&path)?;
-            timing.record("configuration_reread");
             Ok::<_, Error>(())
         })
         .await?;

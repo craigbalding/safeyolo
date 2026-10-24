@@ -352,6 +352,16 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
     ) -> Result<Self> {
+        Self::native_source_with_expired_hosts(source, path, registry, now_ms)
+            .map(|(policy, _)| policy)
+    }
+
+    pub(crate) fn native_source_with_expired_hosts(
+        source: &str,
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> Result<(Self, super::ExpiredHosts)> {
         let (mut authored, mut timestamps) = super::parse_toml_with_timestamps(source)?;
         validate_authoring(&authored)?;
         let controls: Controls = serde_json::from_value(
@@ -377,7 +387,7 @@ impl Policy {
             ));
         }
         let expired = super::expired_host_entries(&authored, now_ms)?;
-        for (agent, host) in expired {
+        for (agent, host) in &expired {
             let hosts = match agent.as_deref() {
                 Some(agent) => authored
                     .get_mut("agents")
@@ -386,7 +396,7 @@ impl Policy {
                 None => authored.get_mut("hosts"),
             };
             if let Some(hosts) = hosts.and_then(Value::as_object_mut) {
-                hosts.shift_remove(&host);
+                hosts.shift_remove(host);
             }
         }
         let mut fields = authored.as_object().expect("TOML root is a table").clone();
@@ -456,7 +466,7 @@ impl Policy {
             controls,
         });
         policy.baseline_path = Some(path.to_owned());
-        Ok(policy)
+        Ok((policy, expired))
     }
 
     pub(crate) fn reload_native_source(&self, source: &str, path: &Path) -> Result<Self> {
