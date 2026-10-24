@@ -167,6 +167,9 @@ cleanup_acquisition() {
       wait "$child" 2>/dev/null || true
     fi
   done
+  # Restore directory access before descending into unchecked archive modes.
+  # Do not follow links or change regular-file (including hard-link) modes.
+  find -P "$stage" -type d -exec chmod u+rwx {} \;
   rm -rf -- "$stage"
 }
 trap cleanup_acquisition EXIT

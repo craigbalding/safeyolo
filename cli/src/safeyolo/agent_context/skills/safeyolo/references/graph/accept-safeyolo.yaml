@@ -213,7 +213,7 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: e97306a58e8c5a6636e81ae418f422bf110057e222b8240387c297a33adb9ff1
+          sha256: dde47816f9a8ae1c2d489f7fc833ff17453acc3fb58ed4747cf43e5f6de03a32
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh

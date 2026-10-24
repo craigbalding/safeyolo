@@ -77,6 +77,9 @@ def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, n
     with tarfile.open(archive) as package:
         assert (root / "bin/safeyolo").read_bytes() == package.extractfile(
             archive.name.removesuffix(".tar.gz") + "/bin/safeyolo").read()
+        for relative in ("bin", "bin/safeyolo"):
+            member = package.getmember(archive.name.removesuffix(".tar.gz") + "/" + relative)
+            assert (root / relative).stat().st_mode & 0o777 == member.mode & 0o777
     if decoder == "native":
         calls = marker.read_text().splitlines()
         assert calls[:4] == ["host-package", "--help", "host-package", "gunzip"]
@@ -548,6 +551,33 @@ def test_host_unpack_overlaps_transfer_without_activating_unverified_files(
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("decoder", ["legacy", "native"])
+def test_rejected_host_archive_cleans_directories_without_owner_permissions(
+        public_release, native_cli, decoder):
+    contents, _requests, _faults, environment, bootstrap, root, base, archive = public_release
+    name = archive.name.removesuffix(".tar.gz")
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as package:
+        directory = tarfile.TarInfo(f"{name}/locked")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0
+        package.addfile(directory)
+        entry = tarfile.TarInfo(f"{name}/locked/file")
+        entry.mode = 0o600
+        entry.size = 1
+        package.addfile(entry, io.BytesIO(b"x"))
+    # Keep the published checksum so rejection must clean the extracted modes.
+    contents[f"{base}/{archive.name}"] = stream.getvalue()
+    if decoder == "native":
+        environment = {**environment, "PACKAGE_HOST_GUNZIP_CLI": str(native_cli)}
+    result = run("bash", str(bootstrap), env=environment)
+    assert result.returncode != 0
+    assert "Host archive checksum failed" in result.stderr
+    assert not root.exists()
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
