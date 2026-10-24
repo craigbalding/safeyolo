@@ -11,7 +11,7 @@ use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 fn command_path(name: &str) -> Option<PathBuf> {
@@ -695,9 +695,81 @@ fn probe_namespace(profile: Option<&str>) -> Result<(), Error> {
     } else {
         Command::new("unshare")
     };
-    let output = command.args(["-Urn", "true"]).output()?;
+    command.args(["-Urn", "true"]);
+    let started = time::OffsetDateTime::now_utc();
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pid = child.id();
+    let output = child.wait_with_output()?;
     if !output.status.success() {
-        return Err(format!("rootless namespace check failed: {}; repair the host namespace or AppArmor setup, then retry. No agent was started",String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(2048)])).into());
+        let finished = time::OffsetDateTime::now_utc();
+        let read = |path: &Path| match fs::read_to_string(path) {
+            Ok(text) => text.trim_end().to_owned(),
+            Err(error) => format!("read failed: {error}"),
+        };
+        let mut diagnosis = format!(
+            "namespace probe pid={pid} status={} started={started} finished={finished}\nsource={} command={command:?}\n",
+            output.status,
+            env!("SAFEYOLO_BUILD_REVISION"),
+        );
+        for name in [
+            "apparmor_restrict_unprivileged_userns",
+            "apparmor_restrict_unprivileged_unconfined",
+        ] {
+            diagnosis.push_str(&format!(
+                "kernel.{name}={}\n",
+                read(&Path::new("/proc/sys/kernel").join(name))
+            ));
+        }
+        // Observe the selected transition separately, without changing the
+        // namespace command or replacing its failed result.
+        let mut label = if let Some(profile) = profile {
+            let mut label = Command::new("aa-exec");
+            label.args(["-p", profile, "--", "/bin/cat"]);
+            label
+        } else {
+            Command::new("/bin/cat")
+        };
+        label.arg("/proc/self/attr/current");
+        diagnosis.push_str(&format!("AppArmor label command={label:?}\n"));
+        match label.output() {
+            Ok(label) => diagnosis.push_str(&format!(
+                "AppArmor label status={}\n{}{}",
+                label.status,
+                String::from_utf8_lossy(&label.stdout),
+                String::from_utf8_lossy(&label.stderr),
+            )),
+            Err(error) => diagnosis.push_str(&format!("AppArmor label read failed: {error}\n")),
+        }
+        // Query only this probe's AppArmor denials during its execution window.
+        // Do not request privilege or turn missing audit access into probe success.
+        let mut audit = Command::new("journalctl");
+        audit
+            .args([
+                "--dmesg",
+                "--no-pager",
+                "--output=short-iso-precise",
+                "--since",
+            ])
+            .arg(format!("@{}", started.unix_timestamp()))
+            .arg("--until")
+            .arg(format!("@{}", finished.unix_timestamp() + 1))
+            .arg("--grep")
+            .arg(format!(r#"apparmor="DENIED".* pid={pid}( |$)"#));
+        diagnosis.push_str(&format!("AppArmor audit command={audit:?}\n"));
+        match audit.output() {
+            Ok(audit) => diagnosis.push_str(&format!(
+                "AppArmor audit status={}\n{}{}",
+                audit.status,
+                String::from_utf8_lossy(&audit.stdout),
+                String::from_utf8_lossy(&audit.stderr),
+            )),
+            Err(error) => diagnosis.push_str(&format!("AppArmor audit read failed: {error}\n")),
+        }
+        return Err(format!("rootless namespace check failed: {}; repair the host namespace or AppArmor setup, then retry. No agent was started\n{diagnosis}",String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(())
 }

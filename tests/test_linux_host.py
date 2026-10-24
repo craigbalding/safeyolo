@@ -178,6 +178,63 @@ def test_relative_package_directory_selects_its_bundled_payload(native_cli, owne
     assert selected["runsc_origin"] == "bundled"
 
 
+@pytest.mark.parametrize("namespace_status,audit_status", [(0, 0), (77, 0), (77, 61)])
+def test_namespace_failure_keeps_original_result_and_observes_only_its_audit(
+    native_cli, owned_stage, namespace_status, audit_status,
+):
+    parent, _stage = owned_stage
+    runtime = payload(parent / "runtime")
+    tools = parent / "tools"
+    tools.mkdir()
+    probe_record = parent / "probe"
+    audit_record = parent / "audit"
+    original_stderr = "fixture namespace denial " + "x" * 2300
+    unshare = tools / "unshare"
+    unshare.write_text(
+        '#!/bin/sh\n[ "$1" = --kill-child=SIGKILL ] && exit 0\n'
+        'printf "%s\\n" "$$" "$*" > "$PROBE_RECORD"\n'
+        'if IFS= read -r unexpected; then echo "probe inherited caller input" >&2; exit 88; fi\n'
+        f"printf '%s\\n' '{original_stderr}' >&2\nexit {namespace_status}\n"
+    )
+    unshare.chmod(0o755)
+    journal = tools / "journalctl"
+    journal.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$AUDIT_RECORD"\n'
+        + ('echo \'fixture audit access refused\' >&2\n' if audit_status else
+           'echo \'apparmor="DENIED" fixture audit record\'\n')
+        + f"exit {audit_status}\n"
+    )
+    journal.chmod(0o755)
+    settings = parent / "prepared.toml"
+    result = command(native_cli, "--root", parent / "instance", "host", "prepare", "--yes",
+                     "--system-runsc", runtime, "--write-settings", settings,
+                     input="operator input must stay outside the namespace probe\n",
+                     env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
+                          "PROBE_RECORD": str(probe_record), "AUDIT_RECORD": str(audit_record)})
+    pid, arguments = probe_record.read_text().splitlines()
+    assert arguments == "-Urn true"
+    if namespace_status == 0:
+        assert result.returncode == 0, result.stderr
+        assert settings.exists() and not audit_record.exists()
+        assert "namespace probe" not in result.stderr
+        return
+    assert result.returncode != 0 and not settings.exists()
+    assert original_stderr in result.stderr
+    assert f"namespace probe pid={pid} status=exit status: 77" in result.stderr
+    assert "started=" in result.stderr and "finished=" in result.stderr and "source=" in result.stderr
+    for name in ("apparmor_restrict_unprivileged_userns", "apparmor_restrict_unprivileged_unconfined"):
+        assert f"kernel.{name}=" in result.stderr
+    assert "AppArmor label command=" in result.stderr and "/proc/self/attr/current" in result.stderr
+    assert "AppArmor label status=" in result.stderr or "AppArmor label read failed:" in result.stderr
+    audit_arguments = audit_record.read_text().splitlines()
+    assert audit_arguments[:3] == ["--dmesg", "--no-pager", "--output=short-iso-precise"]
+    assert audit_arguments[3] == "--since" and audit_arguments[5] == "--until"
+    assert int(audit_arguments[4][1:]) < int(audit_arguments[6][1:])
+    assert audit_arguments[7:] == ["--grep", f'apparmor="DENIED".* pid={pid}( |$)']
+    assert f"AppArmor audit status=exit status: {audit_status}" in result.stderr
+    assert ("fixture audit access refused" if audit_status else 'apparmor="DENIED" fixture audit record') in result.stderr
+
+
 @pytest.mark.parametrize("world_access", [False, True])
 def test_runtime_access_preserves_other_acl_rights_and_honors_named_denial(native_cli, owned_stage, world_access):
     parent, _stage = owned_stage
