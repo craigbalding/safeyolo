@@ -216,6 +216,13 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
     guest_command = ('if(argc>2 && strcmp(argv[1],"codex")==0 && strcmp(argv[2],"prefetch")==0){'
                      'char *download=getenv("PACKAGE_CODEX_PREFETCH_CLI");'
                      'if(download){execv(download,argv);return 96;}return 0;}')
+    guest_command += ('if(argc>1 && strcmp(argv[1],"host-package")==0){'
+                      'char *decoder=getenv("PACKAGE_HOST_GUNZIP_CLI");'
+                      'if(!decoder)return 1;'
+                      'char *marker=getenv("PACKAGE_HOST_GUNZIP_CALLS");'
+                      'if(marker){FILE *out=fopen(marker,"a");if(!out)return 98;'
+                      'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+                      'execv(decoder,argv);return 99;}')
     if guest_exit is not None or guest_assets is not None:
         guest_command += ('if(argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0){'
                          'char *download=getenv("PACKAGE_GUEST_DOWNLOAD_CLI");'

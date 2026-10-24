@@ -71,6 +71,7 @@ pub fn recover_guest_probe(
     host_lifecycle::recover_guest_probe(root, name, timeout)
 }
 pub mod host_names;
+pub mod host_package;
 mod host_platform;
 mod http;
 pub mod http_content;

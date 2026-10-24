@@ -4,6 +4,7 @@ Controlled ELF packages test the installer boundary. Clean host and first-agent
 proof remain separate. The TLS parent serves only this fixture's local server.
 """
 
+import gzip
 import hashlib
 import json
 import os
@@ -36,6 +37,76 @@ native_cli = _native_cli
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASES = "/craigbalding/safeyolo/releases"
+
+
+@pytest.mark.parametrize("encoding", ["single", "concatenated", "truncated", "checksum", "invalid"])
+def test_native_host_package_gunzip_checks_complete_stream(native_cli, tmp_path, encoding):
+    payload = bytes(range(256)) * 2049
+    compressed = gzip.compress(payload)
+    if encoding == "concatenated":
+        compressed = gzip.compress(payload[:100001]) + gzip.compress(payload[100001:])
+    elif encoding == "truncated":
+        compressed = compressed[:-4]
+    elif encoding == "checksum":
+        compressed = compressed[:-8] + bytes([compressed[-8] ^ 1]) + compressed[-7:]
+    elif encoding == "invalid":
+        compressed = b"not a gzip archive"
+    archive = tmp_path / "host package.tar.gz"
+    archive.write_bytes(compressed)
+    result = subprocess.run([str(native_cli), "host-package", "gunzip", str(archive)], capture_output=True)
+    if encoding in ("single", "concatenated"):
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == payload
+    else:
+        assert result.returncode != 0
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("decoder", ["native", "legacy"])
+def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, native_cli, tmp_path, decoder):
+    _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    marker = tmp_path / "decoder-calls"
+    environment = {**environment, "PACKAGE_HOST_GUNZIP_CALLS": str(marker)}
+    if decoder == "native":
+        environment["PACKAGE_HOST_GUNZIP_CLI"] = str(native_cli)
+    result = run("bash", str(bootstrap), env=environment)
+    assert result.returncode == 0, result.stderr
+    assert (root / "config.toml").is_file()
+    with tarfile.open(archive) as package:
+        assert (root / "bin/safeyolo").read_bytes() == package.extractfile(
+            archive.name.removesuffix(".tar.gz") + "/bin/safeyolo").read()
+    if decoder == "native":
+        calls = marker.read_text().splitlines()
+        assert calls[:4] == ["host-package", "--help", "host-package", "gunzip"]
+    else:
+        assert not marker.exists()
+    assert requests.count(f"{base}/{archive.name}") == 1
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("damage", ["gzip-trailer", "tar"])
+def test_native_gzip_or_tar_failure_stops_bootstrap_and_allows_retry(public_release, native_cli, tmp_path, damage):
+    contents, _requests, _faults, environment, bootstrap, root, base, archive = public_release
+    original = contents[f"{base}/{archive.name}"]
+    bad = original[:-4] if damage == "gzip-trailer" else gzip.compress(b"not a tar archive")
+    contents[f"{base}/{archive.name}"] = bad
+    checksums = contents[f"{base}/SHA256SUMS"]
+    contents[f"{base}/SHA256SUMS"] = checksums.replace(
+        hashlib.sha256(original).hexdigest().encode(), hashlib.sha256(bad).hexdigest().encode())
+    marker = tmp_path / "decoder-calls"
+    environment = {**environment, "PACKAGE_HOST_GUNZIP_CLI": str(native_cli),
+                   "PACKAGE_HOST_GUNZIP_CALLS": str(marker)}
+    result = run("bash", str(bootstrap), env=environment)
+    assert result.returncode != 0
+    assert "gunzip" in marker.read_text().splitlines()
+    assert not root.exists()
+    assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+    contents[f"{base}/{archive.name}"] = original
+    contents[f"{base}/SHA256SUMS"] = checksums
+    retried = run("bash", str(bootstrap), env=environment)
+    assert retried.returncode == 0, retried.stderr
+    assert (root / "config.toml").is_file()
 
 
 def codex_release(tmp_path, contents, *, young_latest=False, version="9.9.9"):
@@ -370,8 +441,14 @@ def test_bootstrap_forwards_literal_launch_arguments_and_exit_status(public_rele
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("fault", ["checksum", "duplicate-checksum", "partial", "inner-checksum"])
-def test_bad_host_download_never_activates_and_retry_preserves_another_installation(public_release, tmp_path, fault):
+@pytest.mark.parametrize("decoder", ["legacy", "native"])
+def test_bad_host_download_never_activates_and_retry_preserves_another_installation(
+        public_release, native_cli, tmp_path, fault, decoder):
     contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    marker = tmp_path / "decoder-calls"
+    if decoder == "native":
+        environment = {**environment, "PACKAGE_HOST_GUNZIP_CLI": str(native_cli),
+                       "PACKAGE_HOST_GUNZIP_CALLS": str(marker)}
     unrelated = tmp_path / "another-instance/policy.toml"
     unrelated.parent.mkdir()
     unrelated.write_bytes(b"operator policy; keep unchanged")
@@ -392,14 +469,19 @@ def test_bad_host_download_never_activates_and_retry_preserves_another_installat
         with tarfile.open(changed, "w:gz") as stream:
             stream.add(package, arcname=package.name)
         contents[f"{base}/{archive.name}"] = changed.read_bytes()
-        contents[f"{base}/SHA256SUMS"] = (
-            f"{hashlib.sha256(changed.read_bytes()).hexdigest()}  {archive.name}\n".encode()
-        )
+        contents[f"{base}/SHA256SUMS"] = contents[f"{base}/SHA256SUMS"].replace(
+            hashlib.sha256(archive.read_bytes()).hexdigest().encode(),
+            hashlib.sha256(changed.read_bytes()).hexdigest().encode())
     refused = run("bash", str(bootstrap), env=environment)
     assert refused.returncode != 0
     assert not root.exists()
     assert unrelated.read_bytes() == b"operator policy; keep unchanged"
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+    if decoder == "native":
+        if fault == "inner-checksum":
+            assert "gunzip" in marker.read_text().splitlines()
+        else:
+            assert not marker.exists(), "host archive must pass release integrity before native decoding"
     contents.update(original)
     faults["partial"] = None
     retried = run("bash", str(bootstrap), env=environment)

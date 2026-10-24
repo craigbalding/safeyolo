@@ -293,6 +293,21 @@ async fn run() -> Result<(), Error> {
     if arguments.first().is_some_and(|value| value == "guest") {
         return safeyolo_proxy::guest_acquisition::run(&root, &arguments[1..]).await;
     }
+    if arguments
+        .first()
+        .is_some_and(|value| value == "host-package")
+    {
+        return match &arguments[1..] {
+            [help] if help == "--help" => {
+                println!("{}", safeyolo_proxy::host_package::HELP);
+                Ok(())
+            }
+            [operation, archive] if operation == "gunzip" => {
+                safeyolo_proxy::host_package::gunzip(Path::new(archive))
+            }
+            _ => Err(safeyolo_proxy::host_package::HELP.into()),
+        };
+    }
     if matches!(arguments.as_slice(), [coord, kind, ..] if coord == "coord" && (kind == "completion-notes" || kind == "proposals"))
     {
         return safeyolo_proxy::factory_proposals::run_operator(&config, &arguments[1..]).await;

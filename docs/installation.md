@@ -189,6 +189,16 @@ retry. Earlier immutable releases use the existing serial acquisition path.
 The overlap does not establish the complete cold onboarding time; bandwidth
 contention, extraction, setup and coding-client readiness still contribute.
 
+When the verified early command supports `host-package gunzip`, the bootstrap
+uses the command's bundled gzip decoder and pipes its output to the host's
+existing tar extractor. The complete host archive must pass its release
+checksum before decoding. A gzip or tar failure stops installation and removes
+the private extraction. The ordinary package verifier still checks the complete
+payload before activation. This uses the same `.tar.gz` assets and needs no
+additional host tool. Earlier commands and paths without an early command use
+tar's gzip extraction. Local retained-archive measurements do not establish a
+cold onboarding saving.
+
 ### Tested onboarding scope
 
 The [independent connected journey](https://github.com/craigbalding/safeyolo/issues/1050#issuecomment-6263430260)
