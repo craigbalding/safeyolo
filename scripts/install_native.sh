@@ -10,7 +10,7 @@ cleanup_install() {
 }
 
 # The bootstrap calls this in its own shell so it can join its guest child
-# after verification and before any host preparation or activation.
+# after independent host preparation and before guest selection or activation.
 install_native() {
 local guest_download_completion=$1
 shift
@@ -101,7 +101,6 @@ else
 fi
 echo 'SafeYolo: checking the host package.' >&2
 verify_native_package "$bundle"
-if [[ -n $guest_download_completion ]]; then "$guest_download_completion"; fi
 if $existing; then
   cmp -s "$root/package-info" "$bundle/package-info" || {
     echo "Host package differs from the installed host at $root. State was preserved. Repeat is not an upgrade; use the installed command or a separate --root and --command-dir." >&2; exit 1
@@ -182,7 +181,6 @@ if ! $existing; then
   install_lock=$lock_path
   staged_root=$(mktemp -d "$(dirname -- "$root")/safeyolo-install.XXXXXX")
   guest_host_arguments=()
-  [[ -z $guest_index ]] || guest_host_arguments+=(--index "$guest_index")
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     echo 'SafeYolo: checking and preparing the Linux host.' >&2
     "$bundle/bin/safeyolo" --root "$root" host prepare --package-root "$bundle" --installed-root "$root" \
@@ -190,6 +188,11 @@ if ! $existing; then
     require_file "$staged_root/host-settings.toml"
     guest_host_arguments+=(--host-settings "$staged_root/host-settings.toml")
   fi
+  # Host preparation uses the fully verified bundle and retains its own
+  # consent. It can finish while the separate guest child downloads/extracts.
+  # Join before consuming the child's exact index or moving package files.
+  if [[ -n $guest_download_completion ]]; then "$guest_download_completion"; fi
+  [[ -z $guest_index ]] || guest_host_arguments=(--index "$guest_index" ${guest_host_arguments[@]+"${guest_host_arguments[@]}"})
   # Only the public bootstrap transfers ownership of its disposable extraction.
   # Contributor and offline bundles remain reusable, as before.
   package_inputs=("$bundle/bin" "$bundle/libexec" "$bundle/assets")

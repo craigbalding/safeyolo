@@ -837,10 +837,12 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             if held_phase == "host-extraction":
                 ready = entered.exists() and bool(list(trees.glob(prepared)))
             else:
-                message = ("stopping early guest preparation" if outcome in ("host-integrity", "binding")
+                message = ("stopping early guest preparation" if outcome in ("host-integrity", "binding", "declined")
                            else "Verified SafeYolo package:")
-                log = stderr_log if outcome in ("host-integrity", "binding") else stdout_log
+                log = stderr_log if outcome in ("host-integrity", "binding", "declined") else stdout_log
                 ready = entered.exists() and message in log.read_text()
+                if outcome == "installed":
+                    ready = ready and host_calls.exists()
             if ready:
                 break
             assert time.monotonic() < deadline and process.poll() is None, (stdout_log.read_text(), stderr_log.read_text())
@@ -851,7 +853,8 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             inode = tree.stat().st_ino
         else:
             assert not list(trees.glob(prepared))
-            assert not host_calls.exists() and not guest_calls.exists()
+            assert host_calls.exists() == (outcome == "installed")
+            assert not guest_calls.exists()
             # Discovery may advance while preparation is held. Installation
             # must still consume the index selected by the joined child.
             contents.update(release(compressed_archive(content=b"later guest")))
@@ -876,6 +879,8 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
         assert not Path(f"/proc/{held_pid}").exists()
         assert not list((guest_store / "trees").rglob("extract-*"))
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+        assert not list(root.parent.glob("safeyolo-install.*"))
+        assert not root.with_name(root.name + ".install-lock").exists()
         assert requests.count("/v2/craigbalding/safeyolo-guest/blobs/" + digest(guest)) == 1
     finally:
         resume.touch()
@@ -1029,7 +1034,7 @@ def test_early_guest_download_package_preserves_trust_and_legacy_paths(public_re
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("fault", ["partial", "hash", "compatibility"])
-def test_composed_guest_download_failure_never_activates_and_can_retry(public_release, native_cli, fault):
+def test_composed_guest_download_failure_never_activates_and_can_retry(public_release, native_cli, tmp_path, fault):
     contents, requests, faults, environment, bootstrap, root, base, archive = public_release
     guest = compressed_archive()
     data = release(guest, compatibility="v2" if fault == "compatibility" else "v1")
@@ -1039,16 +1044,40 @@ def test_composed_guest_download_failure_never_activates_and_can_retry(public_re
     elif fault == "hash":
         data[blob] = b"!" + guest[1:]
     contents.update(data)
-    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli)}
-    refused = run("bash", str(bootstrap), env=environment)
-    assert refused.returncode != 0 and "Guest acquisition failed" in refused.stderr
+    host_calls = tmp_path / "host-calls"
+    environment = {**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli),
+                   "PACKAGE_HOST_CALLS": str(host_calls)}
+    if fault != "compatibility":
+        faults["pause"] = blob
+    process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        if fault != "compatibility":
+            assert faults["entered"].wait(timeout=10), "guest transfer did not reach the held body"
+            deadline = time.monotonic() + 10
+            while not host_calls.exists():
+                assert time.monotonic() < deadline and process.poll() is None, "host preparation waited for guest transfer"
+                time.sleep(0.01)
+            assert not root.exists() and process.poll() is None
+            faults["resume"].set()
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode != 0 and "Guest acquisition failed" in stderr, (stdout, stderr)
+        assert "Completed host preparation remains as reported above" in stderr
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
     assert not root.exists()
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+    assert not list(root.parent.glob("safeyolo-install.*"))
+    assert not root.with_name(root.name + ".install-lock").exists()
     store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
     assert not (store / "trees").exists()
     assert all(len(path.name) == 64 for path in (store / "blobs/sha256").glob("*"))
     contents.update(release(guest))
     faults["partial"] = None
+    faults["pause"] = None
     retried = run("bash", str(bootstrap), env=environment)
     assert retried.returncode == 0, retried.stderr
     assert requests.count(f"{base}/{archive.name}") == 1

@@ -282,7 +282,7 @@ if [[ -n $guest_pid ]]; then
 fi
 finish_guest_download() {
   [[ -n $guest_pid ]] || return 0
-  wait "$guest_pid" || { echo 'Guest acquisition failed. No instance was activated. Retry this command; verified inputs remain reusable.' >&2; exit 1; }
+  wait "$guest_pid" || { echo 'Guest acquisition failed. No instance was activated. Completed host preparation remains as reported above. Retry this command; verified inputs remain reusable.' >&2; exit 1; }
   guest_pid=
   guest_index=$(cat "$stage/guest-index")
   [[ $guest_index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Guest download did not return a verified index.' >&2; exit 1; }
