@@ -3927,6 +3927,7 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
     use safeyolo_proxy::credentials::create_passphrase;
+    use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     for name in ["data", "builtin", "services"] {
@@ -3934,6 +3935,25 @@ async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
     }
     std::fs::write(root.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(root.join("config.toml"), "data_dir = \"data\"\nadmin_port = 0\nadmin_api_token_file = \"admin-token\"\nreadiness_file = \"ready.json\"\n").unwrap();
+    let pass_file = root.join("operator-passphrase");
+    std::fs::write(&pass_file, PASS).unwrap();
+    std::fs::set_permissions(&pass_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let input = root.join("credential-input");
+    std::fs::write(&input, "synthetic-protected-value").unwrap();
+    let cli = |arguments: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--config")
+            .arg(root.join("config.toml"))
+            .args(arguments)
+            .output()
+            .unwrap();
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(bytes).contains(PASS));
+            assert!(!String::from_utf8_lossy(bytes).contains("synthetic-protected-value"));
+        }
+        output
+    };
     let vault = create_passphrase(&root.join("data"), &Secret::new(PASS)).unwrap();
     vault
         .store(Credential::new(
@@ -3962,8 +3982,8 @@ async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
         )
         + "\n[credential.locked-leak]\nmatch = ['locked-leak-[a-z]+']\nheaders = ['x-api-key']\nallowed_hosts = ['elsewhere.invalid']\n";
     std::fs::write(root.join("policy.toml"), policy).unwrap();
-    let encrypted = std::fs::read(root.join("data/credentials.enc")).unwrap();
     for _ in 0..2 {
+        let encrypted = std::fs::read(root.join("data/credentials.enc")).unwrap();
         let proxy = Proxy::start(config(root)).await.unwrap();
         let ready: Value =
             serde_json::from_slice(&std::fs::read(root.join("ready.json")).unwrap()).unwrap();
@@ -3986,16 +4006,24 @@ async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
                 json!({"passphrase":"wrong"}).to_string(),
                 "400",
             ),
-            (
-                "operator-token",
-                json!({"passphrase":PASS}).to_string(),
-                "200",
-            ),
         ] {
             let reply = admin_http(admin_port, format!("POST /admin/credentials/unlock HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{document}", document.len()).as_bytes()).await;
             status(&reply, expected);
             assert!(!String::from_utf8_lossy(&reply).contains(PASS));
         }
+        let missing = cli(&["credentials", "unlock"]);
+        assert!(!missing.status.success());
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("--passphrase-file"));
+        assert!(
+            cli(&[
+                "credentials",
+                "unlock",
+                "--passphrase-file",
+                pass_file.to_str().unwrap()
+            ])
+            .status
+            .success()
+        );
         status(&send_agent(&socket, port, token, "127.0.0.1").await, "200");
         assert!(
             seen.lock()
@@ -4005,8 +4033,7 @@ async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
                 .windows(b"Bearer synthetic-protected-value".len())
                 .any(|bytes| bytes == b"Bearer synthetic-protected-value")
         );
-        let reply = admin_http(admin_port, b"DELETE /admin/credentials/unlock HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nConnection: close\r\n\r\n").await;
-        status(&reply, "200");
+        assert!(cli(&["credentials", "lock"]).status.success());
         let before = seen.lock().unwrap().len();
         status(&send_agent(&socket, port, token, "127.0.0.1").await, "503");
         assert_eq!(seen.lock().unwrap().len(), before);
@@ -4018,6 +4045,23 @@ async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
             std::fs::read_to_string(root.join("data/credentials.key")).unwrap(),
             safeyolo_proxy::credentials::PASSPHRASE_KEY_MARKER
         );
+        // A write with an explicitly supplied passphrase also unlocks the
+        // current process. Its encrypted publication remains a real CLI write.
+        let written = cli(&[
+            "credentials",
+            "add",
+            "simple-secret",
+            "--value-file",
+            input.to_str().unwrap(),
+            "--passphrase-file",
+            pass_file.to_str().unwrap(),
+        ]);
+        assert!(
+            written.status.success(),
+            "{}",
+            String::from_utf8_lossy(&written.stderr)
+        );
+        status(&send_agent(&socket, port, token, "127.0.0.1").await, "200");
         proxy.shutdown().await;
     }
     origin_task.abort();

@@ -237,39 +237,6 @@ def test_installed_local_first_restart_scope_revocation_removal(tmp_path):
             surfaces(resumed)
 
 
-def test_passphrase_cli_unlock_write_lock_and_ordinary_restart(tmp_path):
-    protected = "synthetic-explicit-unlock-passphrase"
-    pass_file = tmp_path / "passphrase"
-    pass_file.write_text(protected)
-    pass_file.chmod(0o600)
-    value_file = tmp_path / "value"
-    value_file.write_text(LOCAL)
-    with origin_server(capture_heads=True) as origin, native_instance(
-        tmp_path, POLICY, services=True, capture=True,
-        service_sources={"notes.yaml": json.dumps(SERVICE)},
-    ) as instance:
-        cli(instance, "credentials", "add", "local", "--storage", "passphrase",
-            "--passphrase-file", str(pass_file), "--value-file", str(value_file))
-        authorize(instance)
-        deliver(instance, origin, token(instance))
-        cli(instance, "credentials", "lock")
-        deliver(instance, origin, token(instance), status=503)
-        missing = instance.cli("credentials", "unlock")
-        assert missing.returncode != 0 and "--passphrase-file" in missing.stderr
-        pass_file.write_text("wrong")
-        wrong = instance.cli("credentials", "unlock", "--passphrase-file", str(pass_file))
-        assert wrong.returncode != 0 and protected not in wrong.stdout + wrong.stderr
-        deliver(instance, origin, token(instance), status=503)
-        pass_file.write_text(protected)
-        cli(instance, "credentials", "unlock", "--passphrase-file", str(pass_file))
-        deliver(instance, origin, token(instance))
-        with restart(instance) as resumed:
-            deliver(resumed, origin, token(resumed), status=503)
-            cli(resumed, "credentials", "unlock", "--passphrase-file", str(pass_file))
-            deliver(resumed, origin, token(resumed))
-            surfaces(resumed, (LOCAL, protected))
-
-
 def provider(path, calls, mode):
     commands = {"ok": f"printf '%s' '{EXTERNAL}'", "locked": "exit 17", "missing": "exit 1",
                 "timeout": "exec /bin/sleep 20"}
@@ -601,7 +568,7 @@ def test_init_and_read_only_commands_defer_storage_until_a_valid_secret_write(tm
         assert (root / "data/credentials.key").read_bytes() == key
 
 
-@pytest.mark.parametrize("selection", ["local", "passphrase", "cancel", "mismatch"])
+@pytest.mark.parametrize("selection", ["local", "passphrase", "cancel", "mismatch", "eof"])
 def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
     from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
     from tests.proxy_contracts.test_native_policy_cli import native_inputs
@@ -620,6 +587,9 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
         output = until(b"Choose credential storage")
         assert not (root / "data/credentials.key").exists()
         os.write(master, ("q" if selection == "cancel" else "local" if selection == "local" else "passphrase").encode() + b"\n")
+        if selection == "eof":
+            output += until(b"Storage passphrase:")
+            os.write(master, b"\x04")
         if selection in ("passphrase", "mismatch"):
             output += until(b"Storage passphrase:")
             os.write(master, protected.encode() + b"\n")
@@ -627,10 +597,10 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
             os.write(master, (protected if selection == "passphrase" else "different").encode() + b"\n")
         output = bytearray(output)
         code = wait_terminal_exit(process, master, output, timeout=5)
-        assert (b"Credential stored:" if selection in ("local", "passphrase") else b"cancelled" if selection == "cancel" else b"do not match") in output
+        assert (b"Credential stored:" if selection in ("local", "passphrase") else b"cancelled" if selection in ("cancel", "eof") else b"do not match") in output
         assert (code == 0) == (selection in ("local", "passphrase"))
         assert protected.encode() not in output and LOCAL.encode() not in output
-    if selection in ("cancel", "mismatch"):
+    if selection in ("cancel", "mismatch", "eof"):
         assert not (root / "data/credentials.key").exists()
         assert not (root / "data/credentials.enc").exists()
         return
