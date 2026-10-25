@@ -5,6 +5,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let mut startup = safeyolo_proxy::startup_timings::StartupTimings::new("process");
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
         Some("--version") => {
@@ -41,12 +42,16 @@ async fn main() -> Result<(), Error> {
         }
     };
     let mut config = read_config()?;
+    startup.record("configuration");
     safeyolo_proxy::host_commands::prepare_proxy(&mut config).await?;
+    startup.record("derived_listeners");
     let native_root = config.native_config_dir.clone();
     let mut proxy = Proxy::start(config).await?;
+    startup.record("runtime_and_listeners");
     if let Some(root) = native_root {
         safeyolo_proxy::host_commands::record_proxy(&root)?;
     }
+    startup.record("process_record");
     loop {
         tokio::select! {
             _ = terminate.recv() => break,

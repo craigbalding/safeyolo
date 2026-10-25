@@ -3338,7 +3338,7 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     let source = format!(
         "parent_proxy = \"http://127.0.0.1:18080\"\nparent_proxy_agents = [\"marker\"]\nparent_proxy_hosts = [\"auth.example.test\"]\n{source}"
     );
-    fs::write(&selected, source).unwrap();
+    fs::write(&selected, &source).unwrap();
     let a_default = fs::read(a.join("config.toml")).unwrap();
     let b_default = fs::read(b.join("config.toml")).unwrap();
     let selected_cli = |args: &[&str]| {
@@ -3353,7 +3353,8 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     value(selected_cli(&["start"]));
     assert!(a.join("data/ready.json").is_file());
     assert!(!b.join("data/ready.json").exists());
-    assert!(fs::read_to_string(&selected).unwrap().contains("reload_id"));
+    // No listener changed, so startup must preserve the selected document.
+    assert_eq!(fs::read_to_string(&selected).unwrap(), source);
     let saved: toml::Value = toml::from_str(&fs::read_to_string(&selected).unwrap()).unwrap();
     assert_eq!(
         saved["parent_proxy"].as_str(),
