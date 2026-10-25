@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 import tomlkit
 
+from safeyolo.runtime_identity import process_is_alive, process_start_token
 from tests.proxy_contracts.harness import request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
@@ -153,9 +154,9 @@ def codex_login_launch(tmp_path):
     (root / "bin/safeyolo").symlink_to(binary)
     scripts = root / "assets/contrib"
     scripts.mkdir(parents=True)
-    # Setup's command payload is immaterial to this boundary. No services or
-    # guest artifacts are installed, so successful selection must stop before
-    # client startup at the real missing-proxy diagnostic.
+    # Setup's command payload is immaterial to this boundary. No proxy or guest
+    # artifacts are installed, so successful selection must stop before client
+    # startup at the real missing-proxy diagnostic.
     script = scripts / "codex-host-setup.sh"
     script.write_text('#!/bin/sh\nset -eu\n'
                       'mkdir -p "$SAFEYOLO_AGENT_HOME/.codex"\n'
@@ -170,7 +171,8 @@ def codex_login_launch(tmp_path):
     }}) + "\n")
     login.chmod(0o600)
     instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color",
-                                                     "CODEX_HOME": str(host_codex)})
+                                                     "CODEX_HOME": str(host_codex),
+                                                     "SAFEYOLO_NATS_TEST_INSTANCE": str(root)})
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
     instance.login = login
     instance.config_path = root / "config.toml"
@@ -183,6 +185,10 @@ def codex_login_launch(tmp_path):
 
     instance.cli = cli
     try:
+        if nats_binary := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
+            # Reuse the reviewed pin without downloading it for each launch.
+            instance.cli("coord", "start", "--binary", nats_binary)
+            instance.cli("coord", "stop")
         yield instance
     finally:
         # A failed proxy spawn can still complete the independently owned NATS
@@ -191,8 +197,13 @@ def codex_login_launch(tmp_path):
         # default filename after the selected-config assertions have finished.
         if instance.config_path != root / "config.toml":
             instance.config_path.rename(root / "config.toml")
+        saved = instance.cli("coord", "status").get("process")
         subprocess.run([str(binary), "--root", str(root), "coord", "stop"],
                        env=instance.environment, capture_output=True, check=True, timeout=15)
+        assert instance.cli("coord", "status") == {"state": "stopped"}
+        if saved and process_is_alive(saved["pid"]):
+            token = process_start_token(saved["pid"])
+            assert token is not None and token != saved["token"], saved
 
 
 def _codex_choice(until, master, *, new=True):
@@ -357,7 +368,13 @@ def test_codex_login_refusal_and_failed_selection_create_no_authority(codex_logi
     assert not (instance.root / "agents/first/home/.codex/auth.json").exists()
     assert instance.login.read_bytes() == original
     assert not (instance.root / "data/proxy-process.json").exists()
-    assert not (instance.root / "data/coord/nats/process.json").exists()
+    if choice == "skip":
+        # Skipping login reaches service startup. Coord is independent of the
+        # missing proxy; a ready owned NATS is not credential authority.
+        status = instance.cli("coord", "status")
+        assert status["state"] in ("running", "stopped"), status
+    else:
+        assert not (instance.root / "data/coord/nats/process.json").exists()
 
 
 @pytest.mark.parametrize("failure", ["malformed", "existing_login", "symlink", "directory"])

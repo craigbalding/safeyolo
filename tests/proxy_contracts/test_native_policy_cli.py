@@ -983,7 +983,8 @@ def test_installed_config_help_and_named_diagnostics(tmp_path):
         assert instance.show()["effective"]["agents"]["bob"]["folder"] == "private-operator-path"
 
 
-def test_native_listener_update_preserves_other_toml_settings():
+@pytest.mark.parametrize("stale_listener", [False, True])
+def test_native_listener_update_preserves_other_toml_settings(stale_listener):
     # Exercise the changed writer through its real Admin/reload call path. The
     # fake runsc only reports/stops fixture state; this is no guest lifecycle proof.
     with socket.socket() as port:
@@ -995,6 +996,18 @@ def test_native_listener_update_preserves_other_toml_settings():
     with tempfile.TemporaryDirectory(prefix="sy-listeners-", dir=Path.home()) as directory, native_instance(
         Path(directory), source, extra_config=extra,
     ) as instance:
+        config = instance.root / "config.toml"
+        original = config.read_bytes()
+        before = json.loads((instance.root / "data/ready.json").read_text())
+        if stale_listener:
+            # A stale managed listener changes the saved projection. Custom
+            # ingress alone requires neither a write nor a reload.
+            document = tomlkit.parse(config.read_text())
+            document["listeners"].append({
+                "agent_id": "bob", "source_id": "10.0.0.3",
+                "socket_path": str(instance.root / "data/sockets/10.0.0.3_bob/proxy.sock"),
+            })
+            config.write_text(tomlkit.dumps(document))
         runner = instance.root / "bin/runsc"
         runner.write_text('''#!/bin/sh
 case "$3" in
@@ -1012,11 +1025,18 @@ esac
         (instance.root / "data/sockets/10.0.0.3_bob").mkdir(parents=True)
         stopped = instance.admin("POST", "/admin/agents/ag-11111111111111111111111111111111/stop")
         assert stopped["sandbox_state"] == "stopped"
-        saved = tomllib.loads((instance.root / "config.toml").read_text())
+        saved = tomllib.loads(config.read_text())
         assert saved["capture"] == {"max_request_body_bytes": 9, "queue_max": 7}
         assert saved["trace"] == {"ttl_s": 12}
         assert saved["command_centre"]["events_port"] == events_port
-        assert json.loads((instance.root / "data/ready.json").read_text())["reload_id"] == saved["reload_id"]
+        ready = json.loads((instance.root / "data/ready.json").read_text())
+        assert ready["pid"] == instance.process.pid
+        if stale_listener:
+            assert saved["reload_id"] != before.get("reload_id")
+            assert ready["reload_id"] == saved["reload_id"]
+        else:
+            assert config.read_bytes() == original
+            assert ready == before
         # Custom ingress remains intact. The retired map cannot add another listener.
         assert {entry["socket_path"] for entry in saved["listeners"]} == {
             *instance.paths.values(),
