@@ -3021,18 +3021,6 @@ esac
                 std::fs::write(&path, script).unwrap();
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            if launch != "missing-entry" {
-                std::fs::create_dir(root.join("host")).unwrap();
-                let entry = root.join("host/namespace-entry");
-                std::fs::write(&entry, format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}/fixture-namespace-entry'\nexec \"$@\"\n",
-                    directory.display(),
-                )).unwrap();
-                std::fs::set_permissions(entry, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
-            let _profile = (!matches!(launch.as_str(), "missing-entry" | "direct")).then(|| {
-                crate::linux_host::TestNamespaceProfile::load(&root.join("host/namespace-entry"))
-            });
             in_instance(root.clone(), async {
                 let starting = start_sandbox("alice", "10.200.0.1", 4096, true);
                 let inspect = async {
@@ -3170,6 +3158,20 @@ esac
             ("missing-entry", "succeeded"),
         ] {
             let root = tempfile::tempdir().unwrap();
+            // Prepare profiles before restricting the child's PATH to omit the
+            // mapper: loading and removing the fixture profile still need sudo.
+            let _profile = if launch != "missing-entry" {
+                std::fs::create_dir(root.path().join("host")).unwrap();
+                let entry = root.path().join("host/namespace-entry");
+                std::fs::write(&entry, format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}/fixture-namespace-entry'\nexec \"$@\"\n",
+                    root.path().join("agents/alice").display(),
+                )).unwrap();
+                std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+                (launch != "direct").then(|| crate::linux_host::TestNamespaceProfile::load(&entry))
+            } else {
+                None
+            };
             // A direct launch needs an allowed parent on restricted hosts.
             // The native and apparmor rows still enter from an unconfined parent.
             let direct_entry = root.path().join("direct-entry");

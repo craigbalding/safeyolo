@@ -42,6 +42,18 @@ CODEX_0163_SCREEN = "\n".join([
 CODEX_0163_LOADING_SCREEN = CODEX_0163_SCREEN.replace(b"GPT-6.1-Sol default", b"loading")
 
 
+def _cold_setup_bash():
+    # These guest-wrapper fixtures need the Bash clock used by the observer;
+    # macOS's system Bash predates EPOCHREALTIME.
+    for bash in (shutil.which("bash"), "/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"):
+        if bash and Path(bash).is_file():
+            result = subprocess.run([bash, "-c", '[[ ${EPOCHREALTIME:-} =~ ^[0-9]+[.][0-9]+$ ]]'],
+                                    capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return bash
+    raise AssertionError("Cold-setup fixture needs an existing Bash with EPOCHREALTIME")
+
+
 class ObserverChecks(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(prefix="239-observer-check-", dir=Path.home())
@@ -61,6 +73,7 @@ class ObserverChecks(unittest.TestCase):
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
 
     def test_cold_setup_wrappers_preserve_real_command_success_repair_and_failure(self):
+        bash = _cold_setup_bash()
         source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
         command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
         tools = m.private / "tools"
@@ -95,7 +108,7 @@ esac
                     script.write_text(command)
                     if instrument:
                         m.instrument_cold_setup(script)
-                    result = subprocess.run(["bash", script, "--version"], capture_output=True, text=True, timeout=10,
+                    result = subprocess.run([bash, script, "--version"], capture_output=True, text=True, timeout=10,
                         env={**os.environ, "HOME": str(home), "PATH": str(tools) + ":/usr/bin:/bin", "STUB_CASE": case})
                     observed.append((result.returncode, result.stdout, result.stderr))
                     if instrument:
@@ -111,6 +124,7 @@ esac
                 self.assertEqual(observed[1][0], 31 if case == "fail" else 0)
 
     def test_cold_setup_wrappers_preserve_overlap_wait_status_and_repair(self):
+        bash = _cold_setup_bash()
         source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
         self.assertEqual(m.digest(source), m.COLD_SETUP_SCRIPT_SHA256)
         command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
@@ -164,7 +178,7 @@ esac
                     script.write_text(command)
                     if instrument:
                         m.instrument_cold_setup(script)
-                    process = subprocess.Popen(["bash", script, "--version"], stdout=subprocess.PIPE,
+                    process = subprocess.Popen([bash, script, "--version"], stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE, text=True,
                         env={**os.environ, "HOME": str(home), "PATH": str(tools) + ":/usr/bin:/bin", "STUB_CASE": case})
                     try:
