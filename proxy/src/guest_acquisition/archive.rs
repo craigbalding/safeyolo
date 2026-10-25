@@ -16,6 +16,61 @@ use crate::{
     linux_host::{ARCHIVE_BASE, Mapping},
 };
 
+/// Decode download chunks without interpreting archive paths or using privilege.
+/// The anonymous tar file is usable only after the compressed blob verifies.
+pub(super) struct DownloadDecoder {
+    decoder: zstd::stream::raw::Decoder<'static>,
+    output: tokio::fs::File,
+    buffer: Vec<u8>,
+    finished_frame: bool,
+}
+
+impl DownloadDecoder {
+    pub(super) fn new(output: fs::File) -> Result<Self, Error> {
+        Ok(Self {
+            decoder: zstd::stream::raw::Decoder::new()?,
+            output: tokio::fs::File::from_std(output),
+            buffer: vec![0; 128 * 1024],
+            finished_frame: false,
+        })
+    }
+
+    pub(super) async fn write(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        use tokio::io::AsyncWriteExt;
+        use zstd::stream::raw::Operation;
+
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        loop {
+            let status = self.decoder.run_on_buffers(bytes, &mut self.buffer)?;
+            self.finished_frame = status.remaining == 0;
+            self.output
+                .write_all(&self.buffer[..status.bytes_written])
+                .await?;
+            bytes = &bytes[status.bytes_read..];
+            // Drain a full output buffer even after consuming the last input
+            // byte. A short output or frame end means more input is needed.
+            if bytes.is_empty() && (status.bytes_written < self.buffer.len() || self.finished_frame)
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    pub(super) async fn finish(mut self) -> Result<fs::File, Error> {
+        use tokio::io::AsyncWriteExt;
+
+        if !self.finished_frame {
+            return Err("incomplete guest zstd frame".into());
+        }
+        self.output.flush().await?;
+        let mut output = self.output.into_std().await;
+        output.rewind()?;
+        Ok(output)
+    }
+}
+
 fn regular(path: &Path) -> Result<(), Error> {
     if !fs::symlink_metadata(path)?.is_file() {
         return Err(format!("prepared guest file must be regular: {}", path.display()).into());
@@ -76,6 +131,7 @@ pub(super) fn remove_stage(path: &Path, platform: ConsumerPlatform) -> Result<()
 
 fn extract(
     input: &Path,
+    decoded: Option<fs::File>,
     stage: &Path,
     platform: ConsumerPlatform,
     mapping: Mapping,
@@ -119,10 +175,14 @@ fn extract(
         .spawn()?;
     let copy = (|| -> Result<(), Error> {
         let mut output = child.stdin.take().ok_or("tar input is unavailable")?;
-        let decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
-        // Give the decoder a full zstd-block buffer instead of small copy chunks.
-        let mut decoder = BufReader::with_capacity(128 * 1024, decoder);
-        std::io::copy(&mut decoder, &mut output)?;
+        if let Some(mut decoded) = decoded {
+            std::io::copy(&mut decoded, &mut output)?;
+        } else {
+            let decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
+            // Give the decoder a full zstd-block buffer instead of small copy chunks.
+            let mut decoder = BufReader::with_capacity(128 * 1024, decoder);
+            std::io::copy(&mut decoder, &mut output)?;
+        }
         Ok(())
     })();
     let status = child.wait()?;
@@ -147,7 +207,7 @@ fn extract(
         return Err("archive rootfs-tree must be a directory, not a link".into());
     }
     eprintln!(
-        "SafeYolo: guest archive decoded and extracted in {:.3}s.",
+        "SafeYolo: guest archive extracted in {:.3}s.",
         extraction_started.elapsed().as_secs_f64()
     );
     if linux {
@@ -189,6 +249,7 @@ fn extract(
 
 pub(super) fn prepare(
     input: &Path,
+    decoded: Option<fs::File>,
     destination: &Path,
     platform: ConsumerPlatform,
     mapping: Mapping,
@@ -205,6 +266,7 @@ pub(super) fn prepare(
     // cleanup cannot race a child still writing into the private stage.
     let result = extract(
         input,
+        decoded,
         &stage,
         platform,
         mapping,

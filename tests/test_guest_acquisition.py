@@ -17,6 +17,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -677,6 +678,86 @@ def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
     faults["pause"] = None
     retry = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
     assert retry.returncode == 0, retry.stderr
+
+
+@pytest.mark.parametrize("fault", ["none", "hash", "partial", "interrupt"])
+def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes(
+        native_cli, registry, package_info, tmp_path, guest_store, fault):
+    contents, requests, faults, environment = registry
+    # Several zstd blocks ensure the first half can produce decoded bytes.
+    payload = hashlib.shake_256(b"guest download overlap fixture").digest(512 * 1024)
+    archive = compressed_archive(content=payload)
+    key = "blobs/" + digest(archive)
+    contents.update(release(archive))
+    if fault == "hash":
+        contents[key] = archive[:-1] + bytes([archive[-1] ^ 1])
+    elif fault == "partial":
+        faults["partial"] = key
+    faults["pause_after"] = key
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    extraction = tmp_path / "privileged-extraction"
+    sudo = tools / "sudo"
+    sudo.write_text(f'#!/bin/sh\nif [ "$2" = tar ]; then touch "{extraction}"; fi\n'
+                    f'exec "{shutil.which("sudo")}" "$@"\n')
+    sudo.chmod(0o755)
+    environment = {**environment, "PATH": f"{tools}:{environment['PATH']}"}
+    root = tmp_path / "not-an-instance"
+    command = [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
+               "--package-info", str(package_info), "--store", str(guest_store)]
+    process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert faults["entered"].wait(timeout=10)
+        deadline = time.monotonic() + 5
+        while True:
+            # Observe the actual anonymous decoded file in the native process.
+            # No production diagnostic or extraction is needed to signal it.
+            decoded = False
+            for fd in Path(f"/proc/{process.pid}/fd").iterdir():
+                try:
+                    target = str(fd.readlink())
+                    if target.startswith(f"{guest_store}/") and target.endswith(" (deleted)"):
+                        decoded |= fd.stat().st_size > 0
+                except FileNotFoundError:
+                    continue  # The async filesystem operation closed a descriptor.
+            if decoded:
+                break
+            assert process.poll() is None and time.monotonic() < deadline, "download did not decode before EOF"
+            time.sleep(0.01)
+        assert not extraction.exists() and not root.exists()
+        assert not (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).exists()
+        assert not (guest_store / "trees").exists()
+        if fault == "interrupt":
+            process.send_signal(signal.SIGTERM)
+        else:
+            faults["resume"].set()
+        stdout, stderr = process.communicate(timeout=10)
+        if fault == "none":
+            assert process.returncode == 0, (stdout, stderr)
+        else:
+            assert process.returncode != 0 and not extraction.exists(), (stdout, stderr)
+            assert not (guest_store / "trees").exists()
+            assert all(len(path.name) == 64 for path in (guest_store / "blobs/sha256").iterdir())
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    contents[key] = archive
+    faults["partial"] = faults["pause_after"] = None
+    retried = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert retried.returncode == 0, retried.stderr
+    tree, = (guest_store / "trees/sha256").iterdir()
+    assert extraction.exists()
+    assert subprocess.check_output(["sudo", "-n", "cat", "--", str(tree / "rootfs-tree/command")]) == payload
+    owned_root_ids(tree / "rootfs-tree")
+    inode = tree.stat().st_ino
+    before = len(requests)
+    reused = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert reused.returncode == 0, reused.stderr
+    assert tree.stat().st_ino == inode and not root.exists()
+    assert not any("/blobs/" in path for path in requests[before:])
+    assert not list(guest_store.rglob("extract-*"))
 
 
 def test_first_acquisition_rejects_wrong_index_digest(native_cli, registry, package_info, tmp_path, guest_store):

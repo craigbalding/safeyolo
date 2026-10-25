@@ -1,5 +1,43 @@
 use super::*;
 
+#[tokio::test]
+async fn download_decoder_preserves_concatenated_frames_and_checks_the_last_frame() {
+    use std::io::{Read, Write};
+
+    let plain = vec![b'x'; 384 * 1024 + 7];
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+    encoder.include_checksum(true).unwrap();
+    encoder.write_all(&plain).unwrap();
+    let frame = encoder.finish().unwrap();
+    for fault in ["none", "truncated", "checksum"] {
+        let mut compressed = [frame.as_slice(), frame.as_slice()].concat();
+        if fault == "truncated" {
+            compressed.pop();
+        } else if fault == "checksum" {
+            *compressed.last_mut().unwrap() ^= 1;
+        }
+        let mut decoder = archive::DownloadDecoder::new(tempfile::tempfile().unwrap()).unwrap();
+        let mut written = Ok(());
+        for chunk in compressed.chunks(7) {
+            written = decoder.write(chunk).await;
+            if written.is_err() {
+                break;
+            }
+        }
+        let result = match written {
+            Ok(()) => decoder.finish().await,
+            Err(error) => Err(error),
+        };
+        if fault == "none" {
+            let mut actual = Vec::new();
+            result.unwrap().read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, [plain.as_slice(), plain.as_slice()].concat());
+        } else {
+            assert!(result.is_err(), "accepted {fault} frame");
+        }
+    }
+}
+
 #[test]
 fn package_guest_uses_the_existing_strict_fields() {
     let temp = tempfile::tempdir().unwrap();
@@ -437,6 +475,7 @@ mod linux {
             let destination = temp.path().join(format!("prepared-{fault}"));
             let result = archive::prepare(
                 &input,
+                None,
                 &destination,
                 ConsumerPlatform::DarwinArm64,
                 crate::linux_host::Mapping::for_bases(100000, 100000),
