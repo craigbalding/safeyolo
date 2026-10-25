@@ -605,12 +605,98 @@ def test_guest_download_pins_index_and_reuses_verified_inputs(
     before = list(requests)
     acquired = install(native_cli, root, guest_store, environment, package_info, "--index", index)
     assert acquired.returncode == 0, acquired.stderr
-    assert not any("/blobs/" in path or path.endswith("compat-v1") for path in requests[len(before):])
+    assert requests == before, "the pinned handoff must not resolve metadata or transfer blobs again"
     selection = json.loads((root / "share/guest-selection.json").read_bytes())
     assert selection["index"]["digest"] == index
     assert selection["archive"]["digest"] == digest(archive)
     if prepare:
         assert (root / "share/rootfs-tree").stat().st_ino == prepared_inode
+
+
+@pytest.mark.parametrize("part", ["index", "manifest", "config", "archive"])
+@pytest.mark.parametrize("damage", ["missing", "hash", "size", "mismatched"])
+def test_pinned_handoff_revalidates_retained_content(
+        native_cli, registry, package_info, tmp_path, guest_store, part, damage):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    data = release(archive)
+    index_bytes = data["manifests/compat-v1"]
+    index = digest(index_bytes)
+    contents.update(data)
+    contents["manifests/" + index] = index_bytes
+    downloaded = subprocess.run(
+        [str(native_cli), "guest", "download", "--prepare", "--package-info", str(package_info),
+         "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    selected = next(child for child in json.loads(index_bytes)["manifests"]
+                    if child["platform"] == {"os": "linux", "architecture": architecture})
+    manifest_bytes = data["manifests/" + selected["digest"]]
+    child = json.loads(manifest_bytes)
+    identities = {"index": index, "manifest": selected["digest"],
+                  "config": child["config"]["digest"], "archive": digest(archive)}
+    path = guest_store / "blobs/sha256" / identities[part].removeprefix("sha256:")
+    original = path.read_bytes()
+    if damage == "missing":
+        path.unlink()
+    elif damage == "hash":
+        path.write_bytes(b"!" + original[1:])
+    elif damage == "size":
+        path.write_bytes(original + b" ")
+    else:
+        # Valid content for a different release/platform is still not the
+        # content named by this path and its parent descriptor.
+        replacement = release(compressed_archive(content=b"different guest"), version="guest-2026-10-12.2")
+        other_index = json.loads(replacement["manifests/compat-v1"])
+        other_manifest = replacement["manifests/" + other_index["manifests"][0]["digest"]]
+        other_child = json.loads(other_manifest)
+        path.write_bytes({"index": replacement["manifests/compat-v1"], "manifest": other_manifest,
+                          "config": replacement["blobs/" + other_child["config"]["digest"]],
+                          "archive": compressed_archive(content=b"different guest")}[part])
+    root = tmp_path / "installed"
+    before = list(requests)
+    result = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    if damage == "missing":
+        assert result.returncode == 0, result.stderr
+        endpoint = "manifests/" if part in ("index", "manifest") else "blobs/"
+        assert [request for request in requests[len(before):] if request.startswith(PREFIX)] == [
+            PREFIX + endpoint + identities[part]]
+        assert path.read_bytes() == original
+    else:
+        assert result.returncode != 0
+        assert "mismatch" in result.stderr
+        assert requests == before
+        assert not (root / "share").exists()
+        assert not (root / "config.toml").exists()
+        assert not (root / "prepared-selection.json").exists()
+    assert not list((guest_store / "trees").rglob("extract-*"))
+
+
+def test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility(
+        native_cli, registry, package_info, tmp_path, guest_store):
+    contents, requests, _faults, environment = registry
+    data = release(compressed_archive())
+    index = digest(data["manifests/compat-v1"])
+    contents.update(data)
+    downloaded = subprocess.run(
+        [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)],
+        env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    contents.update(release(compressed_archive(content=b"new compatible guest"), version="guest-2026-10-12.2"))
+    root = tmp_path / "installed"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode == 0, result.stderr
+    selection = json.loads((root / "share/guest-selection.json").read_bytes())
+    assert selection["index"]["digest"] != index
+    assert selection["version"] == "guest-2026-10-12.2"
+    assert requests.count(PREFIX + "manifests/compat-v1") == 2
+    package_info.write_text(package_info.read_text().replace("=v1", "=v2").replace("=compat-v1", "=compat-v2"))
+    before = list(requests)
+    refused_root = tmp_path / "incompatible"
+    refused = install(native_cli, refused_root, guest_store, environment, package_info, "--index", index)
+    assert refused.returncode != 0 and "compatibility does not match" in refused.stderr
+    assert requests == before
+    assert not (refused_root / "share").exists()
 
 
 @pytest.mark.parametrize("fault", ["mapping", "extraction", "remap", "cleanup"])

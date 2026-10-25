@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -326,28 +327,49 @@ async fn resolve_guest(
         }
         None => format!("{}:{}", package.repository, package.discovery_tag).parse()?,
     };
-    let (bytes, digest) = client
-        .pull_manifest_raw(
-            &reference,
-            &RegistryAuth::Anonymous,
-            &[guest_oci::INDEX_MEDIA_TYPE],
-        )
-        .await?;
+    // Only an explicit immutable index can bypass discovery. Retained raw
+    // metadata still goes through the same digest/descriptor/compatibility
+    // validation as registry responses; its presence is not a receipt.
+    let cached_index = match index_digest {
+        Some(digest) => retained_manifest(store, digest)?.map(|bytes| (bytes, digest.to_owned())),
+        None => None,
+    };
+    let fetched_index = cached_index.is_none();
+    let (index_bytes, digest) = match cached_index {
+        Some(cached) => cached,
+        None => {
+            client
+                .pull_manifest_raw(
+                    &reference,
+                    &RegistryAuth::Anonymous,
+                    &[guest_oci::INDEX_MEDIA_TYPE],
+                )
+                .await?
+        }
+    };
     let index = GuestIndex::parse(
-        &bytes,
+        &index_bytes,
         index_digest.unwrap_or(&digest),
         &package.compatibility,
     )?;
     let manifest = index.manifest(package.platform).clone();
     let pinned: Reference = format!("{}@{}", package.repository, manifest.digest).parse()?;
-    let (bytes, _) = client
-        .pull_manifest_raw(
-            &pinned,
-            &RegistryAuth::Anonymous,
-            &[guest_oci::MANIFEST_MEDIA_TYPE],
-        )
-        .await?;
-    let child = index.validate_child(package.platform, &bytes)?;
+    let cached_child = retained_manifest(store, &manifest.digest)?;
+    let fetched_child = cached_child.is_none();
+    let child_bytes = match cached_child {
+        Some(bytes) => bytes,
+        None => {
+            client
+                .pull_manifest_raw(
+                    &pinned,
+                    &RegistryAuth::Anonymous,
+                    &[guest_oci::MANIFEST_MEDIA_TYPE],
+                )
+                .await?
+                .0
+        }
+    };
+    let child = index.validate_child(package.platform, &child_bytes)?;
     // Match publish_guest_oci.sh's exact bytes, not a canonical JSON encoding.
     // Only a full descriptor/platform match avoids the serial config request.
     let (os, architecture) = child.platform.os_architecture();
@@ -356,7 +378,35 @@ async fn resolve_guest(
         let config = blob(client, &pinned, &child.config, store, &mut None).await?;
         child.validate_config(&fs::read(config)?)?;
     }
+    if fetched_index {
+        retain_manifest(store, &index.identity.digest, &index_bytes)?;
+    }
+    if fetched_child {
+        retain_manifest(store, &manifest.digest, &child_bytes)?;
+    }
     Ok((index, child))
+}
+
+fn retained_manifest(store: &Path, digest: &str) -> Result<Option<bytes::Bytes>, Error> {
+    let path = store
+        .join("blobs/sha256")
+        .join(guest_oci::sha256_hex(digest)?);
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes.into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn retain_manifest(store: &Path, digest: &str, bytes: &[u8]) -> Result<(), Error> {
+    let directory = store.join("blobs/sha256");
+    fs::create_dir_all(&directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(directory.join(guest_oci::sha256_hex(digest)?))?;
+    fs::File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 async fn acquire(
