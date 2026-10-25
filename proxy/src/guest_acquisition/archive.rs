@@ -2,18 +2,99 @@
 
 use std::{
     fs,
-    io::{BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
+
+use bytes::Bytes;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     Error,
     guest_oci::ConsumerPlatform,
     linux_host::{ARCHIVE_BASE, Mapping},
 };
+
+/// Decode download chunks without interpreting archive paths or using privilege.
+/// The anonymous tar file is usable only after the compressed blob verifies.
+pub(super) struct DownloadDecoder {
+    input: mpsc::Sender<Option<Bytes>>,
+    worker: JoinHandle<Result<fs::File, Error>>,
+}
+
+impl DownloadDecoder {
+    pub(super) fn new(output: fs::File) -> Result<Self, Error> {
+        let mut decoder = zstd::stream::raw::Decoder::new()?;
+        // Retain at most two queued network chunks. Moving Bytes shares the
+        // existing allocation instead of copying the compressed payload.
+        let (input, mut chunks) = mpsc::channel::<Option<Bytes>>(2);
+        let worker = tokio::task::spawn_blocking(move || {
+            use zstd::stream::raw::Operation;
+
+            // Decode and write on one blocking worker. This avoids Tokio's
+            // filesystem-buffer copy and a pool round trip for each output batch.
+            let mut output = BufWriter::with_capacity(1024 * 1024, output);
+            let mut buffer = vec![0; 128 * 1024];
+            let mut finished_frame = false;
+            while let Some(chunk) = chunks.blocking_recv() {
+                let Some(chunk) = chunk else { break };
+                let mut bytes = chunk.as_ref();
+                if bytes.is_empty() {
+                    continue;
+                }
+                loop {
+                    // Dropping the sender cancels queued work, including when
+                    // compressed verification fails. No extraction child exists.
+                    if chunks.is_closed() {
+                        return Err("guest download decoding cancelled".into());
+                    }
+                    let status = decoder.run_on_buffers(bytes, &mut buffer)?;
+                    finished_frame = status.remaining == 0;
+                    output.write_all(&buffer[..status.bytes_written])?;
+                    bytes = &bytes[status.bytes_read..];
+                    // Drain a full output buffer even after consuming the last
+                    // input byte. A short output or frame end needs more input.
+                    if bytes.is_empty() && (status.bytes_written < buffer.len() || finished_frame) {
+                        break;
+                    }
+                }
+            }
+            if chunks.is_closed() {
+                return Err("guest download decoding cancelled".into());
+            }
+            if !finished_frame {
+                return Err("incomplete guest zstd frame".into());
+            }
+            output.flush()?;
+            let mut output = output.into_inner().map_err(|error| error.into_error())?;
+            output.rewind()?;
+            Ok(output)
+        });
+        Ok(Self { input, worker })
+    }
+
+    pub(super) async fn write(&mut self, bytes: Bytes) -> Result<(), Error> {
+        if self.input.send(Some(bytes)).await.is_err() {
+            // Preserve the decoder or filesystem error when the worker exits.
+            (&mut self.worker).await??;
+            return Err("guest download decoder stopped".into());
+        }
+        Ok(())
+    }
+
+    pub(super) async fn finish(self) -> Result<fs::File, Error> {
+        // An explicit end distinguishes completion from a dropped download.
+        // Keep the sender open until the worker drains and flushes its output.
+        let _ = self.input.send(None).await;
+        let result = self.worker.await?;
+        drop(self.input);
+        result
+    }
+}
 
 fn regular(path: &Path) -> Result<(), Error> {
     if !fs::symlink_metadata(path)?.is_file() {
@@ -75,11 +156,13 @@ pub(super) fn remove_stage(path: &Path, platform: ConsumerPlatform) -> Result<()
 
 fn extract(
     input: &Path,
+    decoded: Option<fs::File>,
     stage: &Path,
     platform: ConsumerPlatform,
     mapping: Mapping,
     noninteractive: bool,
 ) -> Result<(), Error> {
+    let extraction_started = Instant::now();
     let linux = platform != ConsumerPlatform::DarwinArm64;
     let mut command = if linux && unsafe { libc::geteuid() } != 0 {
         let mut command = Command::new("sudo");
@@ -95,7 +178,10 @@ fn extract(
     // Selecting only backend inputs prevents an archive from installing host state.
     command.args(["-xpf", "-", "-C"]).arg(stage);
     if linux {
+        // Use 128 KiB records instead of GNU tar's 10 KiB default to reduce
+        // archive reads and file writes when extracting the prepared tree.
         command.args([
+            "--blocking-factor=256",
             "--numeric-owner",
             "--same-owner",
             "--acls",
@@ -111,16 +197,21 @@ fn extract(
     }
     let mut errors = tempfile::tempfile_in(stage.parent().ok_or("guest stage has no parent")?)?;
     let mut child = command
-        .stdin(Stdio::piped())
+        // DownloadDecoder has finished and the compressed descriptor has
+        // verified. Let tar read that open file directly instead of copying
+        // the decoded archive through another process and pipe.
+        .stdin(decoded.map_or_else(Stdio::piped, Stdio::from))
         .stdout(Stdio::null())
         .stderr(errors.try_clone()?)
         .spawn()?;
     let copy = (|| -> Result<(), Error> {
-        let mut output = child.stdin.take().ok_or("tar input is unavailable")?;
-        let decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
-        // Give the decoder a full zstd-block buffer instead of small copy chunks.
-        let mut decoder = BufReader::with_capacity(128 * 1024, decoder);
-        std::io::copy(&mut decoder, &mut output)?;
+        // A retained compressed blob still needs streaming decompression.
+        if let Some(mut output) = child.stdin.take() {
+            let decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
+            // Give the decoder a full zstd-block buffer instead of small copy chunks.
+            let mut decoder = BufReader::with_capacity(128 * 1024, decoder);
+            std::io::copy(&mut decoder, &mut output)?;
+        }
         Ok(())
     })();
     let status = child.wait()?;
@@ -144,7 +235,12 @@ fn extract(
     if linux && !fs::symlink_metadata(stage.join("rootfs-tree"))?.is_dir() {
         return Err("archive rootfs-tree must be a directory, not a link".into());
     }
+    eprintln!(
+        "SafeYolo: guest archive extracted in {:.3}s.",
+        extraction_started.elapsed().as_secs_f64()
+    );
     if linux {
+        let ownership_started = Instant::now();
         // The private-stage remapper checks every owner and hard link before
         // changing anything. Reuse that traversal for all mappings, including
         // unchanged root IDs with guest-user ownership or named ACLs to shift.
@@ -172,12 +268,17 @@ fn extract(
             return Err("guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer".into());
         }
         validate_assets(stage, platform, mapping)?;
+        eprintln!(
+            "SafeYolo: guest ownership prepared in {:.3}s.",
+            ownership_started.elapsed().as_secs_f64()
+        );
     }
     Ok(())
 }
 
 pub(super) fn prepare(
     input: &Path,
+    decoded: Option<fs::File>,
     destination: &Path,
     platform: ConsumerPlatform,
     mapping: Mapping,
@@ -194,6 +295,7 @@ pub(super) fn prepare(
     // cleanup cannot race a child still writing into the private stage.
     let result = extract(
         input,
+        decoded,
         &stage,
         platform,
         mapping,

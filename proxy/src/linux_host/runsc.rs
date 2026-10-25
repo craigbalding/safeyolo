@@ -13,11 +13,9 @@ use std::{
 pub(super) const VERSION: &str = "release-20261005.0";
 pub(super) const FILES: &[&str] = &[
     "runsc",
-    "gvisor-bin/checkpointgofer",
     "gvisor-bin/gvisor-sentry-prewarmer",
     "gvisor-bin/gvisor_sentry",
     "gvisor-bin/runsc-fd-parking",
-    "gvisor-bin/runsc-metric-server",
 ];
 
 pub(crate) fn check_runtime(path: &Path) -> Result<String, Error> {
@@ -199,7 +197,11 @@ pub(crate) fn report() -> Value {
         };
         unavailable["version"] = json!(version);
         let mapping = super::selected_mapping()?;
-        super::prepare::check_prerequisites(settings.as_ref(), mapping)?;
+        super::prepare::check_prerequisites(
+            &crate::host_platform::config_dir(),
+            settings.as_ref(),
+            mapping,
+        )?;
         Ok(
             json!({"state":"ready", "path":path,"version":version,"origin":origin,
             "uid_base":mapping.uid_base,"gid_base":mapping.gid_base,

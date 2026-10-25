@@ -83,6 +83,10 @@ for binary in safeyolo safeyolo-proxy safeyolo-coord; do cp "$artifacts/$binary"
 cp "$runtime_artifacts/tmux" "$directory/libexec/"
 if [[ $platform == linux-* ]]; then
   "$repository/scripts/acquire_runsc.sh" "$directory/gvisor-runtime"
+  # SafeYolo uses neither cloud checkpoint storage nor the metrics server.
+  # Omit their executables from both profiles; keep the upstream cache intact.
+  rm -f -- "$directory/gvisor-runtime/gvisor-bin/checkpointgofer" \
+    "$directory/gvisor-runtime/gvisor-bin/runsc-metric-server"
   cp -R "$directory/gvisor-runtime/"* "$directory/libexec/"
   rm -rf "$directory/gvisor-runtime"
   chmod 0755 "$directory/libexec" "$directory/libexec/gvisor-bin"

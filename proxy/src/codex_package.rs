@@ -156,7 +156,8 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let interrupted = || -> Error { "Codex prefetch interrupted; no package imported".into() };
     let response = tokio::select! {
-        result = curl("https://api.github.com/repos/openai/codex/releases?per_page=30").output() => result?,
+        result = curl("https://api.github.com/repos/openai/codex/releases?per_page=30")
+            .arg("--compressed").output() => result?,
         _ = terminate.recv() => return Err(interrupted()),
         _ = interrupt.recv() => return Err(interrupted()),
     };

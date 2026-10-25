@@ -66,17 +66,24 @@ impl Drop for RestoreNatsRecord {
     }
 }
 
+fn host_command(root: &Path, arguments: &[&str]) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"));
+    command
+        .arg("--root")
+        .arg(root)
+        .args(arguments)
+        .env("SAFEYOLO_NATS_TEST_INSTANCE", root)
+        .env_remove("SAFEYOLO_NATS_TEST_PORTS")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command
+}
+
 async fn host_cli(root: &Path, arguments: &[&str]) -> std::process::Output {
     tokio::time::timeout(
         Duration::from_secs(15),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
-            .arg(root)
-            .args(arguments)
-            .env("SAFEYOLO_NATS_TEST_INSTANCE", root)
-            .env_remove("SAFEYOLO_NATS_TEST_PORTS")
-            .kill_on_drop(true)
-            .output(),
+        host_command(root, arguments).output(),
     )
     .await
     .unwrap()
@@ -617,17 +624,10 @@ responses=['DONE','BLOCKED','FAILED']
     assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
-async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state() {
+async fn prepare_host_services(root: &Path) {
     let binary = PathBuf::from(
         std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary"),
     );
-    let temp = tempfile::Builder::new()
-        .prefix("coord509-")
-        .tempdir_in(std::env::current_dir().unwrap())
-        .unwrap();
-    let root = temp.path();
     assert!(host_cli(root, &["init"]).await.status.success());
     fs::create_dir(root.join("bin")).unwrap();
     std::os::unix::fs::symlink(
@@ -637,8 +637,6 @@ async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state
     .unwrap();
     fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n").unwrap();
     fs::write(root.join("policy.toml"), "[controls.network]\nenabled=false\n[agents.alice]\nagent_id='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n[agents.bob]\nagent_id='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'\n[[permissions]]\naction='network:request'\nresource='*'\neffect='allow'\n").unwrap();
-    let _nats_cleanup = NatsCleanup(root.into());
-    let _host_cleanup = HostCleanup(root.into());
     // Acquire and verify the supplied pin once, then use only ordinary start.
     let seeded = host_cli(
         root,
@@ -651,6 +649,326 @@ async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state
         String::from_utf8_lossy(&seeded.stderr)
     );
     coord_json(root, &["stop"]).await;
+}
+
+fn hold_nats_start(root: &Path) -> fs::File {
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("data/coord/nats/runtime.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    lock
+}
+
+async fn wait_for_file(path: &Path) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(bytes) = fs::read(path)
+                && let Ok(record) = serde_json::from_slice(&bytes)
+            {
+                return record;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("startup did not publish {}", path.display()))
+}
+
+async fn check_proxy(root: &Path) {
+    safeyolo_proxy::native_client::admin(
+        &root.join("config.toml"),
+        "/admin/instance",
+        hyper::Method::GET,
+        Value::Null,
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn cold_host_start_overlaps_services_and_serializes_reentry() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let root = temp.path();
+    let _cleanup = HostCleanup(root.into());
+    prepare_host_services(root).await;
+    let lock = hold_nats_start(root);
+    let mut first = host_command(root, &["start"]).spawn().unwrap();
+    let proxy = wait_for_file(&root.join("data/proxy-process.json")).await;
+    check_proxy(root).await;
+    assert!(!root.join("data/coord/nats/process.json").exists());
+    assert!(first.try_wait().unwrap().is_none());
+    let instance_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("data/proxy-start.lock"))
+        .unwrap();
+    assert!(instance_lock.try_lock().is_err());
+    // A second ordinary start must stay behind the first instance lock.
+    let mut second = host_command(root, &["start"]).spawn().unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(second.try_wait().unwrap().is_none());
+    drop(lock);
+    for child in [first, second] {
+        let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        wait_for_file(&root.join("data/proxy-process.json")).await,
+        proxy
+    );
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    fs::remove_file(root.join("data/proxy-process.json")).unwrap();
+
+    // Delay the other service without changing the managed NATS executable.
+    let retained = root.join("versions/initial/host/bin");
+    fs::create_dir_all(&retained).unwrap();
+    fs::rename(
+        root.join("bin/safeyolo-proxy"),
+        retained.join("safeyolo-proxy"),
+    )
+    .unwrap();
+    let wrapper = root.join("bin/safeyolo-proxy");
+    fs::write(&wrapper, "#!/bin/sh\nwhile [ ! -f \"$SAFEYOLO_CONFIG_DIR/release-proxy\" ]; do [ -d \"$SAFEYOLO_CONFIG_DIR\" ] || exit 1; sleep 0.01; done\nexec \"$SAFEYOLO_CONFIG_DIR/versions/initial/host/bin/safeyolo-proxy\" \"$@\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut starting = host_command(root, &["start"]).spawn().unwrap();
+    wait_for_file(&root.join("data/coord/nats/process.json")).await;
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert!(!root.join("data/proxy-process.json").exists());
+    assert!(starting.try_wait().unwrap().is_none());
+    fs::write(root.join("release-proxy"), "").unwrap();
+    let started = tokio::time::timeout(Duration::from_secs(15), starting.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    check_proxy(root).await;
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    fs::remove_file(&wrapper).unwrap();
+    fs::rename(retained.join("safeyolo-proxy"), &wrapper).unwrap();
+    fs::remove_file(root.join("data/proxy-process.json")).unwrap();
+
+    // Native fresh-process timing excludes fixture setup and pin acquisition.
+    let start = std::time::Instant::now();
+    let ((started, combined), (proxy, coord)) = tokio::join!(
+        async {
+            let output = host_cli(root, &["start"]).await;
+            (output, start.elapsed())
+        },
+        async {
+            let (proxy, coord) = tokio::join!(
+                async {
+                    wait_for_file(&root.join("data/proxy-process.json")).await;
+                    check_proxy(root).await;
+                    start.elapsed()
+                },
+                async {
+                    wait_for_file(&root.join("data/coord/nats/process.json")).await;
+                    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+                    start.elapsed()
+                }
+            );
+            (proxy, coord)
+        }
+    );
+    assert!(started.status.success());
+    println!(
+        "native fresh-process readiness with prepared NATS: proxy={proxy:?}, Coord={coord:?}, combined caller={combined:?}; observations include 5ms polling and health checks"
+    );
+    let proxy = fs::read(root.join("data/proxy-process.json")).unwrap();
+    let nats = coord_json(root, &["status"]).await["process"].clone();
+    let reuse_start = std::time::Instant::now();
+    assert!(host_cli(root, &["start"]).await.status.success());
+    println!(
+        "native healthy service reuse caller: {:?}",
+        reuse_start.elapsed()
+    );
+    assert_eq!(
+        fs::read(root.join("data/proxy-process.json")).unwrap(),
+        proxy
+    );
+    assert_eq!(coord_json(root, &["status"]).await["process"], nats);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn cold_host_start_rejects_proxy_exit_while_coord_is_pending() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let root = temp.path();
+    let _cleanup = HostCleanup(root.into());
+    prepare_host_services(root).await;
+    let lock = hold_nats_start(root);
+    let mut starting = host_command(root, &["start"]).spawn().unwrap();
+    let proxy = wait_for_file(&root.join("data/proxy-process.json")).await;
+    wait_for_file(&root.join("data/ready.json")).await;
+    check_proxy(root).await;
+    // Let the proxy branch consume readiness while Coord remains blocked.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let pid = i32::try_from(proxy["pid"].as_i64().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let status = host_cli(root, &["status"]).await;
+            assert!(status.status.success());
+            let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+            if status["proxy_state"] == "unavailable" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(starting.try_wait().unwrap().is_none());
+    assert!(!root.join("data/coord/nats/process.json").exists());
+    let instance_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("data/proxy-start.lock"))
+        .unwrap();
+    assert!(instance_lock.try_lock().is_err());
+    drop(lock);
+    let failed = tokio::time::timeout(Duration::from_secs(15), starting.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !failed.status.success(),
+        "start reported success after the owned proxy exited: {}",
+        String::from_utf8_lossy(&failed.stdout)
+    );
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("proxy exited during startup"));
+    assert!(!String::from_utf8_lossy(&failed.stdout).contains("running"));
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn cold_host_start_keeps_failures_separate_and_resumes_after_cancellation() {
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let root = temp.path();
+    let _cleanup = HostCleanup(root.into());
+    prepare_host_services(root).await;
+    {
+        let path = root.join("data/coord/nats/creds");
+        let _restore = RestoreNatsRecord(path.clone(), fs::read(&path).unwrap());
+        fs::write(&path, "").unwrap();
+        let started = host_cli(root, &["start"]).await;
+        assert!(started.status.success());
+        let diagnostics = String::from_utf8_lossy(&started.stderr);
+        assert!(diagnostics.contains("Coord unavailable: NATS credential file is empty"));
+        assert!(diagnostics.contains("run coord status"));
+        assert!(!diagnostics.contains("Coord ready") && !diagnostics.contains("Coord restored"));
+        check_proxy(root).await;
+        assert_eq!(coord_json(root, &["status"]).await["state"], "stopped");
+    }
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    fs::remove_file(root.join("data/proxy-process.json")).unwrap();
+    let proxy = root.join("bin/safeyolo-proxy");
+    fs::remove_file(&proxy).unwrap();
+    let lock = hold_nats_start(root);
+    let mut failed = host_command(root, &["start"]).spawn().unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        failed.try_wait().unwrap().is_none(),
+        "proxy failure cancelled the Coord attempt"
+    );
+    drop(lock);
+    let failed = failed.wait_with_output().await.unwrap();
+    assert!(!failed.status.success());
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_safeyolo-proxy"), &proxy).unwrap();
+    assert!(host_cli(root, &["stop"]).await.status.success());
+
+    // Cancellation while NATS waits for its lock must not detach its startup.
+    let lock = hold_nats_start(root);
+    let mut cancelled = host_command(root, &["start"]).spawn().unwrap();
+    let record = wait_for_file(&root.join("data/proxy-process.json")).await;
+    check_proxy(root).await;
+    cancelled.kill().await.unwrap();
+    drop(lock);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!root.join("data/coord/nats/process.json").exists());
+    assert!(host_cli(root, &["start"]).await.status.success());
+    assert_eq!(
+        wait_for_file(&root.join("data/proxy-process.json")).await,
+        record
+    );
+    assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+
+    // Exercise the unchanged real proxy-readiness timeout and owned child kill.
+    assert!(host_cli(root, &["stop"]).await.status.success());
+    fs::remove_file(&proxy).unwrap();
+    fs::write(&proxy, "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$SAFEYOLO_CONFIG_DIR/timed-out-pid\"\nexec sleep 30\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&proxy, fs::Permissions::from_mode(0o700)).unwrap();
+    let failed = tokio::time::timeout(
+        Duration::from_secs(20),
+        host_command(root, &["start"]).output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr)
+            .contains("proxy did not publish readiness within fifteen seconds")
+    );
+    let pid: i32 = fs::read_to_string(root.join("timed-out-pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "timed-out proxy child is still alive"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    let nats = coord_json(root, &["status"]).await;
+    assert_eq!(nats["state"], "running");
+    fs::remove_file(&proxy).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_safeyolo-proxy"), &proxy).unwrap();
+    assert!(host_cli(root, &["start"]).await.status.success());
+    check_proxy(root).await;
+    assert_eq!(
+        coord_json(root, &["status"]).await["process"],
+        nats["process"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the reviewed NATS binary; run the focused native Coord witness"]
+async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state() {
+    let temp = tempfile::Builder::new()
+        .prefix("coord509-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    let _nats_cleanup = NatsCleanup(root.into());
+    let _host_cleanup = HostCleanup(root.into());
+    prepare_host_services(root).await;
     let started = host_cli(root, &["start"]).await;
     assert!(
         started.status.success(),
@@ -958,6 +1276,7 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     let make_root = |name: &str, agent_id: &str| {
         let root = parent.path().join(name);
         fs::create_dir_all(root.join("data")).unwrap();
+        fs::create_dir(root.join("builtin-services")).unwrap();
         fs::write(root.join("data/instance_id"), format!("si-817-{name}")).unwrap();
         fs::write(root.join("data/admin_token"), "fixture-operator-token").unwrap();
         fs::write(root.join("data/agent_token"), "fixture-agent-token").unwrap();
@@ -1624,7 +1943,8 @@ async fn traffic(alice: &Client, port: u16) {
         stream,
         &format!("127.0.0.1:{port}"),
         &format!("http://127.0.0.1:{port}/marker"),
-        "fixture-token",
+        // Application traffic needs no Agent API bearer credential.
+        "",
         hyper::Method::GET,
         Value::Null,
         Duration::from_secs(5),
@@ -1736,6 +2056,7 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
         .unwrap();
     let root = root.path();
     fs::create_dir_all(root.join("data")).unwrap();
+    fs::create_dir(root.join("builtin-services")).unwrap();
     fs::write(root.join("data/instance_id"), "si-818-native").unwrap();
     fs::write(root.join("data/admin_token"), "fixture-operator-token").unwrap();
     fs::write(root.join("data/agent_token"), "fixture-token").unwrap();
