@@ -178,7 +178,10 @@ fn extract(
     // Selecting only backend inputs prevents an archive from installing host state.
     command.args(["-xpf", "-", "-C"]).arg(stage);
     if linux {
+        // Use 128 KiB records instead of GNU tar's 10 KiB default to reduce
+        // archive reads and file writes when extracting the prepared tree.
         command.args([
+            "--blocking-factor=256",
             "--numeric-owner",
             "--same-owner",
             "--acls",
