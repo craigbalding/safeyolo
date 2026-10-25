@@ -1382,12 +1382,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     ));
                 }
             };
-            let Some(passphrase) = data
-                .0
-                .get("passphrase")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-            else {
+            let Some(passphrase) = data.0.get("passphrase").and_then(Value::as_str) else {
                 return Ok(response(
                     StatusCode::BAD_REQUEST,
                     json!({"error":"unlock requires a passphrase"}),

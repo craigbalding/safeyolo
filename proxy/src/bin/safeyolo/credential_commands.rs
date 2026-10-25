@@ -93,7 +93,9 @@ fn read_secret(fields: &BTreeMap<&str, &str>, prompt: &str) -> Result<Secret, Er
         echo = Some(TerminalEcho(original));
         eprint!("{prompt}");
         std::io::stderr().flush()?;
-        std::io::stdin().read_line(&mut value)?;
+        if std::io::stdin().read_line(&mut value)? == 0 {
+            return Err("secret input cancelled".into());
+        }
     } else {
         std::io::stdin().read_to_string(&mut value)?;
     }
@@ -116,9 +118,6 @@ fn passphrase(fields: &BTreeMap<&str, &str>, creating: bool) -> Result<Secret, E
     } else {
         return Err("passphrase storage is locked; use --passphrase-file FILE or run this command in a terminal".into());
     };
-    if value.expose_secret().is_empty() {
-        return Err("storage passphrase is empty".into());
-    }
     Ok(value)
 }
 

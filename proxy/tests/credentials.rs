@@ -153,6 +153,10 @@ fn passphrase_selection_requires_explicit_unlock_and_never_persists_a_key() {
     assert!(Vault::unlock_existing(root.join("credentials.enc"), &password()).is_err());
     assert!(credentials::open(root).is_err());
     assert!(!root.join("credentials.enc").exists());
+    // The existing public passphrase API imposes no password policy.
+    let empty = tempfile::tempdir().unwrap();
+    credentials::create_passphrase(empty.path(), &Secret::new("")).unwrap();
+    assert!(Vault::unlock_existing(empty.path().join("credentials.enc"), &Secret::new("")).is_ok());
 }
 
 #[test]

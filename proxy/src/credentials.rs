@@ -290,9 +290,6 @@ pub fn storage(data_dir: &Path) -> Result<Option<Storage>> {
 /// This creates a new store only; existing data must be explicitly unlocked.
 pub fn create_passphrase(data_dir: &Path, passphrase: &Secret) -> Result<Vault> {
     use std::os::unix::fs::OpenOptionsExt;
-    if passphrase.is_empty() {
-        return Err(error(ErrorKind::Authentication));
-    }
     fs::create_dir_all(data_dir)?;
     let _key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
     if storage(data_dir)?.is_some() {

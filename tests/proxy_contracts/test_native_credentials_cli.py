@@ -621,8 +621,9 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
             os.write(master, protected.encode() + b"\n")
             output += until(b"Confirm storage passphrase:")
             os.write(master, (protected if selection == "passphrase" else "different").encode() + b"\n")
-        output += until(b"Credential stored:" if selection in ("local", "passphrase") else b"cancelled" if selection == "cancel" else b"do not match")
-        code = wait_terminal_exit(process, master, bytearray(), timeout=5)
+        output = bytearray(output)
+        code = wait_terminal_exit(process, master, output, timeout=5)
+        assert (b"Credential stored:" if selection in ("local", "passphrase") else b"cancelled" if selection == "cancel" else b"do not match") in output
         assert (code == 0) == (selection in ("local", "passphrase"))
         assert protected.encode() not in output and LOCAL.encode() not in output
     if selection in ("cancel", "mismatch"):
