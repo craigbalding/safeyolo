@@ -222,6 +222,23 @@ and Linux ownership preparation.
 The overlap does not establish the complete cold onboarding time; bandwidth
 contention, extraction, setup and coding-client readiness still contribute.
 
+For an acquisition diagnostic, set `SAFEYOLO_GUEST_DOWNLOAD_TIMING=1` in the
+environment of the bootstrap or `guest download` command. The download command
+emits one aggregate JSON summary on standard error before extraction. Normal
+output is unchanged when the variable is absent or has another value.
+The summary includes request/setup time, compressed chunk count and bytes,
+first/last chunk and end-of-stream offsets, and cumulative time around
+`stream.try_next()`, compressed writes and decoder writes. It reports the final
+compressed flush, file sync and decoder finish separately. All times are seconds
+from the start of download setup or accumulated operation durations. Request/setup
+includes cache locking, metadata resolution, decoder setup and the blob request.
+Stream polling includes OCI digest work and task scheduling; it does not measure
+remote network time. Decoder writes include decompression and decoded-file writes.
+Cache reuse and decoder fallback have explicit status fields. A null value means
+the operation or boundary was not reached. Errors and cancellation retain partial
+timings, including a pending operation. Summary output failure does not change the
+acquisition result. These counters alone establish no performance gain or cause.
+
 When the verified early command supports `host-package gunzip`, the bootstrap
 uses the command's bundled gzip decoder and pipes its output to the host's
 existing tar extractor. During a fresh transfer, the bootstrap saves the archive

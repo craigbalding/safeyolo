@@ -32,8 +32,12 @@ use crate::{
 mod archive;
 #[path = "guest_acquisition/components.rs"]
 mod components;
+#[path = "guest_acquisition/download_timing.rs"]
+mod download_timing;
 #[path = "guest_acquisition/upgrade.rs"]
 mod upgrade;
+
+use download_timing::DownloadTiming;
 
 /// Select a complete installed host/guest pair without initializing state.
 pub async fn upgrade_components(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
@@ -260,11 +264,16 @@ async fn blob(
     descriptor: &Descriptor,
     store: &Path,
     decoding: &mut Option<archive::DownloadDecoder>,
+    mut timing: Option<&mut DownloadTiming>,
 ) -> Result<PathBuf, Error> {
     let directory = store.join("blobs/sha256");
     fs::create_dir_all(&directory)?;
     let destination = directory.join(guest_oci::sha256_hex(&descriptor.digest)?);
     if destination.try_exists()? {
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.cache_hit = true;
+            timing.decoder_status = "cached";
+        }
         // Reuse the verified compressed cache without decoding it again here.
         *decoding = None;
         // A retained blob is reusable only after its bytes still verify.
@@ -274,6 +283,10 @@ async fn blob(
         }
         descriptor.check_size(metadata.len())?;
         descriptor.verify(fs::File::open(&destination)?)?;
+        if let Some(timing) = timing {
+            timing.request_setup.finish();
+            timing.archive_verified = true;
+        }
         return Ok(destination);
     }
     let temporary = tempfile::NamedTempFile::new_in(&directory)?;
@@ -282,35 +295,95 @@ async fn blob(
         1024 * 1024,
         tokio::fs::File::from_std(temporary.reopen()?),
     );
-    let mut stream = client
+    let stream = client
         .pull_blob_stream(reference, descriptor.digest.as_str())
-        .await?;
+        .await;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.request_setup.finish();
+    }
+    let mut stream = stream?;
     if let Some(size) = stream.content_length {
         descriptor.check_size(size)?;
     }
     let mut size = 0_u64;
     // Reaching EOF consumes oci-client's streaming digest verification too.
-    while let Some(bytes) = stream.try_next().await? {
+    loop {
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.stream_try_next.start();
+        }
+        // This boundary includes OCI digest work and task scheduling. It does
+        // not measure time on the remote network.
+        let next = stream.try_next().await;
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.stream_try_next.finish();
+        }
+        let Some(bytes) = next? else {
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.eof_at_s = Some(timing.started.elapsed().as_secs_f64());
+            }
+            break;
+        };
+        if let Some(timing) = timing.as_deref_mut() {
+            let at = timing.started.elapsed().as_secs_f64();
+            timing.first_chunk_at_s.get_or_insert(at);
+            timing.last_chunk_at_s = Some(at);
+            timing.chunks += 1;
+            timing.bytes += bytes.len() as u64;
+        }
         size = size
             .checked_add(bytes.len() as u64)
             .ok_or("guest content size overflow")?;
         if size > descriptor.size {
             return Err("guest descriptor size mismatch".into());
         }
-        output.write_all(&bytes).await?;
-        if let Some(decoder) = decoding
-            && let Err(error) = decoder.write(&bytes).await
-        {
-            eprintln!("SafeYolo: guest download decoding deferred: {error}.");
-            *decoding = None;
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.compressed_write.start();
+        }
+        let written = output.write_all(&bytes).await;
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.compressed_write.finish();
+        }
+        written?;
+        if let Some(decoder) = decoding {
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.decoder_write.start();
+            }
+            let decoded = decoder.write(&bytes).await;
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.decoder_write.finish();
+            }
+            if let Err(error) = decoded {
+                eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                *decoding = None;
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.decoder_status = "write_failed";
+                }
+            }
         }
     }
     descriptor.check_size(size)?;
-    output.flush().await?;
-    output.get_ref().sync_all().await?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_flush.start();
+    }
+    let flushed = output.flush().await;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_flush.finish();
+    }
+    flushed?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_sync.start();
+    }
+    let synced = output.get_ref().sync_all().await;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_sync.finish();
+    }
+    synced?;
     drop(output);
     temporary.persist_noclobber(&destination)?;
     fs::File::open(&directory)?.sync_all()?;
+    if let Some(timing) = timing {
+        timing.archive_verified = true;
+    }
     Ok(destination)
 }
 
@@ -375,7 +448,7 @@ async fn resolve_guest(
     let (os, architecture) = child.platform.os_architecture();
     let published_config = format!(r#"{{"os":"{os}","architecture":"{architecture}"}}"#);
     if child.validate_config(published_config.as_bytes()).is_err() {
-        let config = blob(client, &pinned, &child.config, store, &mut None).await?;
+        let config = blob(client, &pinned, &child.config, store, &mut None, None).await?;
         child.validate_config(&fs::read(config)?)?;
     }
     if fetched_index {
@@ -432,7 +505,7 @@ async fn acquire(
     // Verify a reusable archive's descriptor too. A changed index can declare
     // a wrong size even when its tree already exists from an earlier operation.
     let input = if retained.is_none() {
-        Some(blob(client, &pinned, &child.archive, store, &mut None).await?)
+        Some(blob(client, &pinned, &child.archive, store, &mut None, None).await?)
     } else {
         None
     };
@@ -684,6 +757,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         return Err("guest download does not extract or write an installed selection".into());
     }
     if download_only {
+        let mut timing = DownloadTiming::from_env();
         // Drop the streaming future on cancellation so its NamedTempFile is
         // removed. Only verified blobs persist; no tree or instance is created.
         let store = guest_store_directory(store)?;
@@ -717,6 +791,15 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         } else {
             None
         };
+        if let Some(timing) = timing.as_mut() {
+            timing.decoder_status = if decoding.is_some() {
+                "streaming"
+            } else if prepare_download {
+                "unavailable"
+            } else {
+                "not_requested"
+            };
+        }
         let reference = format!(
             "{}@{}",
             package.repository,
@@ -724,12 +807,24 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         )
         .parse()?;
         let input = tokio::select! {
-            result = blob(&client, &reference, &child.archive, &store, &mut decoding) => result,
+            result = blob(&client, &reference, &child.archive, &store, &mut decoding, timing.as_mut()) => result,
             _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
             _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
         }?;
         let decoded = if let Some(decoder) = decoding {
-            match decoder.finish().await {
+            if let Some(timing) = timing.as_mut() {
+                timing.decoder_finish.start();
+            }
+            let finished = decoder.finish().await;
+            if let Some(timing) = timing.as_mut() {
+                timing.decoder_finish.finish();
+                timing.decoder_status = if finished.is_ok() {
+                    "complete"
+                } else {
+                    "finish_failed"
+                };
+            }
+            match finished {
                 Ok(output) => Some(output),
                 Err(error) => {
                     eprintln!("SafeYolo: guest download decoding deferred: {error}.");
@@ -739,6 +834,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         } else {
             None
         };
+        drop(timing);
         if prepare_download {
             prepare_downloaded_guest(
                 input,
