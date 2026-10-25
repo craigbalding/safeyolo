@@ -173,6 +173,7 @@ def codex_login_launch(tmp_path):
                                                      "CODEX_HOME": str(host_codex)})
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
     instance.login = login
+    instance.config_path = root / "config.toml"
 
     def cli(*args):
         result = subprocess.run([str(binary), "--root", str(root), *args],
@@ -181,7 +182,17 @@ def codex_login_launch(tmp_path):
         return json.loads(result.stdout) if result.stdout.startswith(("[", "{")) else result.stdout
 
     instance.cli = cli
-    return instance
+    try:
+        yield instance
+    finally:
+        # A failed proxy spawn can still complete the independently owned NATS
+        # start. Retire this fixture's Coord before pytest removes its state.
+        # Coord's root-based stop resolves config.toml. Restore the fixture's
+        # default filename after the selected-config assertions have finished.
+        if instance.config_path != root / "config.toml":
+            instance.config_path.rename(root / "config.toml")
+        subprocess.run([str(binary), "--root", str(root), "coord", "stop"],
+                       env=instance.environment, capture_output=True, check=True, timeout=15)
 
 
 def _codex_choice(until, master, *, new=True):
@@ -288,6 +299,7 @@ def test_codex_login_selection_uses_the_launch_config(codex_login_launch):
     instance = codex_login_launch
     config = instance.root / "selected.toml"
     (instance.root / "config.toml").rename(config)
+    instance.config_path = config
     binary = str(instance.root / "bin/safeyolo")
     with terminal(instance, command=[binary, "--config", str(config), *instance.arguments]) as (process, master, until):
         _codex_choice(until, master)
