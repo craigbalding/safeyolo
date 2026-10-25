@@ -2424,7 +2424,7 @@ pub(crate) async fn start_sandbox(
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "../tests/support/owned_run.rs"]
-mod guest_command_test_run;
+pub(crate) mod guest_command_test_run;
 
 #[cfg(test)]
 mod tests {
