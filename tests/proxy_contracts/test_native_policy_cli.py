@@ -241,9 +241,9 @@ def restarted_proxy(instance):
     stopped = instance.cli("stop")
     assert stopped.returncode == 0, stopped.stderr
     instance.process.wait(timeout=10)
-    started = instance.cli("start")
-    assert started.returncode == 0, started.stderr
     try:
+        started = instance.cli("start")
+        assert started.returncode == 0, started.stderr
         ready = json.loads((instance.root / "data/ready.json").read_text())
         assert ready["ready"] and ready["pid"] != original_pid
         instance.port = ready["admin_port"]
