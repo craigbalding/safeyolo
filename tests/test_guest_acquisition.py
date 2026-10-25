@@ -794,7 +794,7 @@ def test_guest_download_timing_is_opt_in(native_cli, registry, package_info, gue
     for key in ("stream_try_next_s", "compressed_write_s", "compressed_flush_s", "compressed_sync_s"):
         assert 0 <= summary[key] <= summary["elapsed_s"]
     assert summary["decoder_status"] == "not_requested"
-    assert summary["decoder_write_s"] is None and summary["decoder_finish_s"] is None
+    assert summary["decoder_enqueue_s"] is None and summary["decoder_finish_s"] is None
     # A failed diagnostic write must not change acquisition's result.
     with open("/dev/full", "w") as unavailable_stderr:
         cached = subprocess.run(command, env=environment, stdout=subprocess.PIPE, stderr=unavailable_stderr,
@@ -874,7 +874,7 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
         prefix = "SafeYolo: guest download timing "
         summary, = [json.loads(line.removeprefix(prefix)) for line in stderr.splitlines() if line.startswith(prefix)]
         assert summary["chunks"] > 0 and summary["bytes"] > 0
-        assert summary["stream_try_next_s"] > 0 and summary["decoder_write_s"] > 0
+        assert summary["stream_try_next_s"] > 0 and summary["decoder_enqueue_s"] > 0
         assert summary["archive_verified"] == (fault in ("none", "extract-interrupt"))
         if summary["archive_verified"]:
             assert summary["bytes"] == len(archive)

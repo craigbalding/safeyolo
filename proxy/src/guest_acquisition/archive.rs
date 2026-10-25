@@ -2,13 +2,16 @@
 
 use std::{
     fs,
-    io::{BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
+
+use bytes::Bytes;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     Error,
@@ -19,60 +22,77 @@ use crate::{
 /// Decode download chunks without interpreting archive paths or using privilege.
 /// The anonymous tar file is usable only after the compressed blob verifies.
 pub(super) struct DownloadDecoder {
-    decoder: zstd::stream::raw::Decoder<'static>,
-    output: tokio::io::BufWriter<tokio::fs::File>,
-    buffer: Vec<u8>,
-    finished_frame: bool,
+    input: mpsc::Sender<Option<Bytes>>,
+    worker: JoinHandle<Result<fs::File, Error>>,
 }
 
 impl DownloadDecoder {
     pub(super) fn new(output: fs::File) -> Result<Self, Error> {
-        Ok(Self {
-            decoder: zstd::stream::raw::Decoder::new()?,
-            // Keep zstd's block buffer, but batch its writes to the blocking
-            // filesystem pool so decoding does not await every 128 KiB block.
-            output: tokio::io::BufWriter::with_capacity(
-                1024 * 1024,
-                tokio::fs::File::from_std(output),
-            ),
-            buffer: vec![0; 128 * 1024],
-            finished_frame: false,
-        })
-    }
+        let mut decoder = zstd::stream::raw::Decoder::new()?;
+        // Retain at most two queued network chunks. Moving Bytes shares the
+        // existing allocation instead of copying the compressed payload.
+        let (input, mut chunks) = mpsc::channel::<Option<Bytes>>(2);
+        let worker = tokio::task::spawn_blocking(move || {
+            use zstd::stream::raw::Operation;
 
-    pub(super) async fn write(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
-        use tokio::io::AsyncWriteExt;
-        use zstd::stream::raw::Operation;
-
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        loop {
-            let status = self.decoder.run_on_buffers(bytes, &mut self.buffer)?;
-            self.finished_frame = status.remaining == 0;
-            self.output
-                .write_all(&self.buffer[..status.bytes_written])
-                .await?;
-            bytes = &bytes[status.bytes_read..];
-            // Drain a full output buffer even after consuming the last input
-            // byte. A short output or frame end means more input is needed.
-            if bytes.is_empty() && (status.bytes_written < self.buffer.len() || self.finished_frame)
-            {
-                return Ok(());
+            // Decode and write on one blocking worker. This avoids Tokio's
+            // filesystem-buffer copy and a pool round trip for each output batch.
+            let mut output = BufWriter::with_capacity(1024 * 1024, output);
+            let mut buffer = vec![0; 128 * 1024];
+            let mut finished_frame = false;
+            while let Some(chunk) = chunks.blocking_recv() {
+                let Some(chunk) = chunk else { break };
+                let mut bytes = chunk.as_ref();
+                if bytes.is_empty() {
+                    continue;
+                }
+                loop {
+                    // Dropping the sender cancels queued work, including when
+                    // compressed verification fails. No extraction child exists.
+                    if chunks.is_closed() {
+                        return Err("guest download decoding cancelled".into());
+                    }
+                    let status = decoder.run_on_buffers(bytes, &mut buffer)?;
+                    finished_frame = status.remaining == 0;
+                    output.write_all(&buffer[..status.bytes_written])?;
+                    bytes = &bytes[status.bytes_read..];
+                    // Drain a full output buffer even after consuming the last
+                    // input byte. A short output or frame end needs more input.
+                    if bytes.is_empty() && (status.bytes_written < buffer.len() || finished_frame) {
+                        break;
+                    }
+                }
             }
-        }
+            if chunks.is_closed() {
+                return Err("guest download decoding cancelled".into());
+            }
+            if !finished_frame {
+                return Err("incomplete guest zstd frame".into());
+            }
+            output.flush()?;
+            let mut output = output.into_inner().map_err(|error| error.into_error())?;
+            output.rewind()?;
+            Ok(output)
+        });
+        Ok(Self { input, worker })
     }
 
-    pub(super) async fn finish(mut self) -> Result<fs::File, Error> {
-        use tokio::io::AsyncWriteExt;
-
-        if !self.finished_frame {
-            return Err("incomplete guest zstd frame".into());
+    pub(super) async fn write(&mut self, bytes: Bytes) -> Result<(), Error> {
+        if self.input.send(Some(bytes)).await.is_err() {
+            // Preserve the decoder or filesystem error when the worker exits.
+            (&mut self.worker).await??;
+            return Err("guest download decoder stopped".into());
         }
-        self.output.flush().await?;
-        let mut output = self.output.into_inner().into_std().await;
-        output.rewind()?;
-        Ok(output)
+        Ok(())
+    }
+
+    pub(super) async fn finish(self) -> Result<fs::File, Error> {
+        // An explicit end distinguishes completion from a dropped download.
+        // Keep the sender open until the worker drains and flushes its output.
+        let _ = self.input.send(None).await;
+        let result = self.worker.await?;
+        drop(self.input);
+        result
     }
 }
 
