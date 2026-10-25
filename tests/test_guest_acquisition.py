@@ -769,6 +769,39 @@ def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
     assert retry.returncode == 0, retry.stderr
 
 
+@pytest.mark.parametrize("setting", [None, "0", "1"])
+def test_guest_download_timing_is_opt_in(native_cli, registry, package_info, guest_store, setting):
+    contents, _requests, _faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    environment = {key: value for key, value in environment.items() if key != "SAFEYOLO_GUEST_DOWNLOAD_TIMING"}
+    if setting is not None:
+        environment["SAFEYOLO_GUEST_DOWNLOAD_TIMING"] = setting
+    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)]
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == digest(contents["manifests/compat-v1"])
+    prefix = "SafeYolo: guest download timing "
+    summaries = [json.loads(line.removeprefix(prefix)) for line in result.stderr.splitlines() if line.startswith(prefix)]
+    if setting != "1":
+        assert not summaries, result.stderr
+        return
+    summary, = summaries
+    assert summary["bytes"] == len(archive) and summary["chunks"] > 0
+    assert not summary["cache_hit"] and summary["archive_verified"]
+    assert summary["request_setup_s"] <= summary["first_chunk_at_s"] <= summary["last_chunk_at_s"]
+    assert summary["last_chunk_at_s"] <= summary["eof_at_s"] <= summary["elapsed_s"]
+    for key in ("stream_try_next_s", "compressed_write_s", "compressed_flush_s", "compressed_sync_s"):
+        assert 0 <= summary[key] <= summary["elapsed_s"]
+    assert summary["decoder_status"] == "not_requested"
+    assert summary["decoder_write_s"] is None and summary["decoder_finish_s"] is None
+    # A failed diagnostic write must not change acquisition's result.
+    with open("/dev/full", "w") as unavailable_stderr:
+        cached = subprocess.run(command, env=environment, stdout=subprocess.PIPE, stderr=unavailable_stderr,
+                                text=True, timeout=30)
+    assert cached.returncode == 0 and cached.stdout == result.stdout
+
+
 @pytest.mark.parametrize("fault", ["none", "hash", "partial", "interrupt", "extract-interrupt"])
 def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes(
         native_cli, registry, package_info, tmp_path, guest_store, fault):
@@ -796,7 +829,7 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
                     + 'fi\n'
                     f'exec "{shutil.which("sudo")}" "$@"\n')
     sudo.chmod(0o755)
-    environment = {**environment, "PATH": f"{tools}:{environment['PATH']}"}
+    environment = {**environment, "PATH": f"{tools}:{environment['PATH']}", "SAFEYOLO_GUEST_DOWNLOAD_TIMING": "1"}
     root = tmp_path / "not-an-instance"
     command = [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
                "--package-info", str(package_info), "--store", str(guest_store)]
@@ -838,6 +871,18 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
                 process.wait(timeout=0.2)
             release_extraction.touch()
         stdout, stderr = process.communicate(timeout=10)
+        prefix = "SafeYolo: guest download timing "
+        summary, = [json.loads(line.removeprefix(prefix)) for line in stderr.splitlines() if line.startswith(prefix)]
+        assert summary["chunks"] > 0 and summary["bytes"] > 0
+        assert summary["stream_try_next_s"] > 0 and summary["decoder_write_s"] > 0
+        assert summary["archive_verified"] == (fault in ("none", "extract-interrupt"))
+        if summary["archive_verified"]:
+            assert summary["bytes"] == len(archive)
+            assert summary["first_chunk_at_s"] <= summary["last_chunk_at_s"] <= summary["eof_at_s"]
+            assert summary["compressed_flush_s"] >= 0 and summary["compressed_sync_s"] >= 0
+            assert summary["decoder_finish_s"] >= 0 and summary["decoder_status"] == "complete"
+        else:
+            assert summary["eof_at_s"] is None and summary["decoder_finish_s"] is None
         if fault == "none":
             assert process.returncode == 0, (stdout, stderr)
         else:
@@ -862,6 +907,9 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
         extraction.unlink()
     retried = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
     assert retried.returncode == 0, retried.stderr
+    summary, = [json.loads(line.removeprefix(prefix)) for line in retried.stderr.splitlines() if line.startswith(prefix)]
+    assert summary["archive_verified"]
+    assert summary["cache_hit"] == (fault in ("none", "extract-interrupt"))
     tree, = (guest_store / "trees/sha256").iterdir()
     assert extraction.exists()
     expected_stdin = "pipe\n" if fault == "extract-interrupt" else "file\n"
