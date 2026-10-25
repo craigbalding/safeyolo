@@ -197,9 +197,20 @@ async fn start(agent: &host_agents::Agent) -> Result<(), Error> {
     let current = current_selection(agent)?;
     // An interactive launch never replays saved task arguments. The existing
     // lifecycle still reuses a live command, regardless of this empty override.
-    let observed = host_lifecycle::start(&current, "start", Some(lock), Some(&[]), false).await?;
+    let mut observed =
+        host_lifecycle::start(&current, "start", Some(lock), Some(&[]), false).await?;
     if let Some(error) = observed["error"].as_str() {
         return Err(error.into());
+    }
+    // Lifecycle already checked this launch. Reuse its observation only for
+    // this wait; attachment reads and checks the current terminal separately.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while observed["attachable"] != true
+        && host_lifecycle::reuses_current_launch(&observed)
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        observed = host_lifecycle::runtime(&current).await?;
     }
     Ok(())
 }
@@ -410,19 +421,6 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     start(&agent)
         .await
         .map_err(|error| phase("sandbox/harness startup", error))?;
-    // Existing launchers publish their own terminal evidence. Wait briefly for
-    // the entrypoint, without mistaking a live transport for harness readiness.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let observed = host_lifecycle::runtime(&agent).await?;
-        if observed["attachable"] == true
-            || !host_lifecycle::reuses_current_launch(&observed)
-            || tokio::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
     let mut attach = true;
     loop {
         current_selection(&agent)?;
@@ -494,9 +492,128 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/owned_run.rs"]
+mod launch_test_run;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launch_wait_reuses_start_observation_and_refreshes_pending_commands() {
+        use serde_json::json;
+        use std::{fs, process::Command};
+
+        const TEST: &str = "host_launch::tests::launch_wait_reuses_start_observation_and_refreshes_pending_commands";
+        let Some(root) = std::env::var_os("SAFEYOLO_TEST_LAUNCH_OBSERVATION_ROOT") else {
+            for mode in ["ready", "delayed", "error"] {
+                let temp = tempfile::tempdir().unwrap();
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", TEST, "--nocapture"])
+                    .env("SAFEYOLO_TEST_LAUNCH_OBSERVATION_ROOT", temp.path())
+                    .env("SAFEYOLO_TEST_LAUNCH_OBSERVATION_MODE", mode)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{mode}: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        };
+        let root = PathBuf::from(root);
+        let mode = std::env::var("SAFEYOLO_TEST_LAUNCH_OBSERVATION_MODE").unwrap();
+        fs::create_dir(root.join("bin")).unwrap();
+        let mut backend = launch_test_run::OwnedRun::start(&root);
+        // Environment changes are confined to this fixture subprocess. The
+        // shared helper retains the real namespace and process-birth checks.
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("bin").display()),
+            );
+        }
+        host_platform::in_instance(root.clone(), async {
+            let workspace = root.join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            let launcher = root.join("launcher.sh");
+            let pid = std::process::id();
+            let token = host_lifecycle::process_token(i64::from(pid)).unwrap();
+            fs::write(&launcher, format!(r#"#!/bin/sh
+case "$1" in
+  launch)
+    record="$SAFEYOLO_CONFIG_DIR/agents/alice/current-launch.json"
+    sed 's/"state":"starting"/"state":"launching", "pid": {pid}, "process_token": "{token}", "runner_pid": {pid}, "runner_token": "{token}"/' "$record" > "$record.tmp" || exit
+    mv "$record.tmp" "$record" || exit
+    printf launch >> "$SAFEYOLO_CONFIG_DIR/launches";;
+  *) exit 0;;
+esac
+"#)).unwrap();
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(root.join("bin/runsc"), format!(r#"#!/bin/bash
+printf '%s\n' "$3" >> '{root}/calls'
+case "$3" in
+  state) printf '{{"id":"%s","status":"running"}}\n' "$4";;
+  exec)
+    case "${{@: -1}}" in
+      *'observe check')
+        if [ ! -e '{root}/launches' ]; then printf stopped
+        elif [ '{mode}' = error ]; then exit 2
+        elif [ '{mode}' = delayed ] && [ ! -e '{root}/checked' ]; then
+          touch '{root}/checked'; printf stopped
+        else printf running
+        fi;;
+      *) exit 2;;
+    esac;;
+  *) exit 2;;
+esac
+"#, root = root.display())).unwrap();
+            let runsc = root.join("bin/runsc");
+            fs::set_permissions(runsc, fs::Permissions::from_mode(0o700)).unwrap();
+            let agent = host_agents::configure("alice", &[
+                ("folder".into(), workspace.to_string_lossy().into()),
+                ("user_default_args".into(), r#"["saved-task-argument"]"#.into()),
+                ("launcher".into(), launcher.to_string_lossy().into()),
+            ], true, None).await.unwrap();
+            fs::create_dir_all(root.join("data")).unwrap();
+            fs::write(root.join("data/instance_id"), "fixture").unwrap();
+            let runtime = fs::read(root.join("agents/alice/runtime.json")).unwrap();
+            let result = start(&agent).await;
+            if mode == "error" {
+                assert!(result.unwrap_err().to_string().contains("coding-agent observation failed"));
+            } else {
+                result.unwrap();
+            }
+            let calls = fs::read_to_string(root.join("calls")).unwrap();
+            let observations = if mode == "delayed" { 3 } else { 2 };
+            let record_path = root.join("agents/alice/current-launch.json");
+            let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+            assert_eq!(calls.lines().filter(|call| *call == "state").count(), observations * 2, "{record}");
+            assert_eq!(calls.lines().filter(|call| *call == "exec").count(), observations, "{record}");
+            assert_eq!(record["agent_id"], agent.id);
+            assert!(!record["command"].as_str().unwrap().contains("saved-task-argument"));
+            assert_eq!(record["state"], if mode == "error" { "launching" } else { "running" });
+            if mode != "error" {
+                // Warm reentry reuses this launch and its single observation.
+                fs::write(root.join("calls"), "").unwrap();
+                start(&agent).await.unwrap();
+                assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "state\nstate\nexec\n");
+                assert_eq!(serde_json::from_slice::<Value>(&fs::read(&record_path).unwrap()).unwrap(), record);
+                assert_eq!(fs::read_to_string(root.join("launches")).unwrap(), "launch");
+                assert_eq!(fs::read(root.join("agents/alice/runtime.json")).unwrap(), runtime);
+                // A prior ready observation grants no authority to attachment.
+                record["agent_id"] = json!("ag-replacement");
+                fs::write(&record_path, record.to_string()).unwrap();
+                assert!(host_lifecycle::attach(&agent).await.unwrap_err().to_string().contains("another agent"));
+            }
+        }).await;
+        backend.child.kill().unwrap();
+        backend.assert_exited();
+    }
 
     #[test]
     fn name_is_stable_and_distinguishes_equal_basenames() {
