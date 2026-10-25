@@ -680,7 +680,7 @@ def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
     assert retry.returncode == 0, retry.stderr
 
 
-@pytest.mark.parametrize("fault", ["none", "hash", "partial", "interrupt"])
+@pytest.mark.parametrize("fault", ["none", "hash", "partial", "interrupt", "extract-interrupt"])
 def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes(
         native_cli, registry, package_info, tmp_path, guest_store, fault):
     contents, requests, faults, environment = registry
@@ -697,8 +697,14 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
     tools = tmp_path / "tools"
     tools.mkdir()
     extraction = tmp_path / "privileged-extraction"
+    release_extraction = tmp_path / "release-extraction"
     sudo = tools / "sudo"
-    sudo.write_text(f'#!/bin/sh\nif [ "$2" = tar ]; then touch "{extraction}"; fi\n'
+    sudo.write_text('#!/bin/sh\nif [ "$2" = tar ]; then\n'
+                    f'if [ -f /dev/stdin ]; then echo file > "{extraction}"; '
+                    f'else echo pipe > "{extraction}"; fi\n'
+                    + (f'while [ ! -f "{release_extraction}" ]; do sleep 0.01; done\n'
+                       if fault == "extract-interrupt" else '')
+                    + 'fi\n'
                     f'exec "{shutil.which("sudo")}" "$@"\n')
     sudo.chmod(0o755)
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}"}
@@ -731,24 +737,46 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
             process.send_signal(signal.SIGTERM)
         else:
             faults["resume"].set()
+        if fault == "extract-interrupt":
+            deadline = time.monotonic() + 5
+            while not extraction.exists():
+                assert process.poll() is None and time.monotonic() < deadline
+                time.sleep(0.01)
+            assert extraction.read_text() == "file\n"
+            process.send_signal(signal.SIGTERM)
+            # Cancellation must wait until the child stops using its stage.
+            with pytest.raises(subprocess.TimeoutExpired):
+                process.wait(timeout=0.2)
+            release_extraction.touch()
         stdout, stderr = process.communicate(timeout=10)
         if fault == "none":
             assert process.returncode == 0, (stdout, stderr)
         else:
-            assert process.returncode != 0 and not extraction.exists(), (stdout, stderr)
-            assert not (guest_store / "trees").exists()
+            assert process.returncode != 0, (stdout, stderr)
+            assert extraction.exists() == (fault == "extract-interrupt")
+            if fault == "extract-interrupt":
+                assert not list((guest_store / "trees/sha256").iterdir())
+            else:
+                assert not (guest_store / "trees").exists()
             assert all(len(path.name) == 64 for path in (guest_store / "blobs/sha256").iterdir())
     finally:
         faults["resume"].set()
+        release_extraction.touch()
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
     contents[key] = archive
     faults["partial"] = faults["pause_after"] = None
+    if fault == "extract-interrupt":
+        # Reuse the verified compressed blob after cancellation; no decoded
+        # temporary file remains, so the existing streaming fallback is used.
+        extraction.unlink()
     retried = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
     assert retried.returncode == 0, retried.stderr
     tree, = (guest_store / "trees/sha256").iterdir()
     assert extraction.exists()
+    expected_stdin = "pipe\n" if fault == "extract-interrupt" else "file\n"
+    assert extraction.read_text() == expected_stdin
     assert subprocess.check_output(["sudo", "-n", "cat", "--", str(tree / "rootfs-tree/command")]) == payload
     owned_root_ids(tree / "rootfs-tree")
     inode = tree.stat().st_ino
@@ -818,7 +846,8 @@ def test_pinned_acquisition_preserves_nonfresh_roots(
 @settings(max_examples=24, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(kind=st.sampled_from(["parent", "symlink", "hardlink"]),
        name=st.text(alphabet="abcXYZ09 _-\né", min_size=1, max_size=12))
-def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, package_info, tmp_path, guest_store, kind, name):
+@pytest.mark.parametrize("prepare", [False, True])
+def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, package_info, tmp_path, guest_store, kind, name, prepare):
     contents, _requests, _faults, environment = registry
     canary = tmp_path / "canary"
     canary.write_bytes(b"preserved host bytes")
@@ -832,6 +861,12 @@ def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, pac
     contents.clear()
     contents.update(release(compressed_archive(extra)))
     root, store = tmp_path / "generated", guest_store
+    if prepare:
+        prepared = subprocess.run(
+            [str(native_cli), "guest", "download", "--prepare", "--package-info", str(package_info),
+             "--store", str(store)], env=environment, capture_output=True, text=True, timeout=30)
+        assert prepared.returncode == 0, prepared.stderr
+        assert not list((store / "trees/sha256").iterdir())
     result = install(native_cli, root, store, environment, package_info)
     assert result.returncode != 0, result.stdout
     assert canary.read_bytes() == b"preserved host bytes"
