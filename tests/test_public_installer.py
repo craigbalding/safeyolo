@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.proxy_contracts.test_native_coord_operator import terminal
-from tests.test_guest_acquisition import compressed_archive, digest, release
+from tests.test_guest_acquisition import PREFIX, compressed_archive, digest, release
 from tests.test_guest_acquisition import guest_store as _guest_store
 from tests.test_guest_acquisition import native_cli as _native_cli
 from tests.test_guest_acquisition import registry as _registry
@@ -822,6 +822,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
     host_calls, guest_calls = tmp_path / "host-calls", tmp_path / "guest-calls"
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}",
                    "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli), "PACKAGE_HOST_CALLS": str(host_calls),
+                   "PACKAGE_GUEST_ACQUIRE_CLI": str(native_cli),
                    "PACKAGE_GUEST_CALLS": str(guest_calls)}
     if outcome == "declined":
         environment["PACKAGE_HOST_EXIT"] = "41"
@@ -867,6 +868,11 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             assert (root / "config.toml").exists()
             arguments = guest_calls.read_text().splitlines()
             assert arguments[arguments.index("--index") + 1] == selected_index
+            selection = json.loads((root / "share/guest-selection.json").read_text())
+            assert selection["index"]["digest"] == selected_index
+            assert requests.count(PREFIX + "manifests/compat-v1") == 1
+            assert sum(path.startswith(PREFIX + "manifests/") for path in requests) == 2
+            assert sum(path.startswith(PREFIX + "blobs/") for path in requests) == 2
         else:
             assert process.returncode != 0, (stdout, stderr)
             assert not root.exists() and not (Path(environment["HOME"]) / ".local/bin/safeyolo").exists()

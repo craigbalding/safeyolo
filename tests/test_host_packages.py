@@ -232,6 +232,8 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                          'char *marker=getenv("PACKAGE_GUEST_CALLS");'
                          'if(marker){FILE *out=fopen(marker,"w");if(!out)return 90;'
                          'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+                         'char *acquire=getenv("PACKAGE_GUEST_ACQUIRE_CLI");'
+                         'if(acquire){execv(acquire,argv);return 95;}'
                          )
         if guest_exit is not None:
             guest_command += f'fprintf(stderr,"controlled guest acquisition refusal\\n");return {guest_exit};'
