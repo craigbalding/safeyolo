@@ -77,7 +77,8 @@ def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_chil
     return contents
 
 
-def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_cache=False, child_owner=None):
+def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_cache=False, child_owner=None,
+                       command_pax_headers=None):
     """Use tar's real wire formats, including malicious link and path entries."""
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -93,6 +94,8 @@ def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_c
             entry.uid = entry.gid = owner
             if name == "rootfs-tree/command" and child_owner is not None:
                 entry.uid = entry.gid = child_owner
+            if name == "rootfs-tree/command" and command_pax_headers:
+                entry.pax_headers = command_pax_headers
             entry.mode = 0o644 if name == "cache-paths.txt" else (0o751 if kind in (tarfile.DIRTYPE, tarfile.REGTYPE) else 0o777)
             entry.size = len(data) if kind == tarfile.REGTYPE else 0
             archive.addfile(entry, io.BytesIO(data) if entry.size else None)
@@ -466,6 +469,45 @@ def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, regist
     retried = install(native_cli, root, guest_store, environment, package_info)
     assert retried.returncode == 0, retried.stderr
     assert (root / "share/guest-selection.json").is_file()
+    assert requests.count(PREFIX + "blobs/" + digest(archive)) == 1
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_linux_extraction_preserves_metadata_across_tar_records(
+        native_cli, registry, package_info, tmp_path, guest_store, cached):
+    contents, requests, _faults, environment = registry
+    # Cross several 128 KiB records and end inside a tar block.
+    payload = hashlib.shake_256(b"guest extraction metadata").digest(384 * 1024 + 7)
+    archive = compressed_archive(
+        extra=[("host-state", tarfile.REGTYPE, b"unselected", "")], content=payload,
+        command_pax_headers={
+            "SCHILY.xattr.user.safeyolo.fixture": "guest metadata",
+            "SCHILY.acl.access": "user::rwx,user:101000:r--,group::r-x,group:101234:--x,mask::r-x,other::--x",
+        })
+    contents.update(release(archive))
+    if cached:
+        downloaded = subprocess.run(
+            [str(native_cli), "guest", "download", "--package-info", str(package_info),
+             "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+        assert downloaded.returncode == 0, downloaded.stderr
+    root = tmp_path / "installed"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode == 0, result.stderr
+    tree = root / "share/rootfs-tree"
+    uid_base, gid_base = owned_root_ids(tree)
+    command = tree / "command"
+    assert (command.stat().st_uid, command.stat().st_gid) == (uid_base, gid_base)
+    assert command.stat().st_mode & 0o777 == 0o751
+    assert command.read_bytes() == payload  # The remapped named-user ACL grants this read.
+    assert os.getxattr(command, "user.safeyolo.fixture") == b"guest metadata"
+    acl = subprocess.check_output(["getfacl", "-ncp", str(command)], text=True).splitlines()
+    assert f"user:{os.getuid()}:r--" in acl
+    assert f"group:{gid_base + 1234}:--x" in acl
+    assert (tree / "hard").stat().st_ino == command.stat().st_ino
+    assert (tree / "symbolic").readlink() == Path("command")
+    assert (root / "share/cache-paths.txt").read_bytes() == b"/var/cache/apt\n"
+    assert not (tree.resolve().parent / "host-state").exists()
+    assert not list(guest_store.rglob("extract-*"))
     assert requests.count(PREFIX + "blobs/" + digest(archive)) == 1
 
 
