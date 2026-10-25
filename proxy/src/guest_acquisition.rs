@@ -276,7 +276,11 @@ async fn blob(
         return Ok(destination);
     }
     let temporary = tempfile::NamedTempFile::new_in(&directory)?;
-    let mut output = tokio::fs::File::from_std(temporary.reopen()?);
+    // Batch network chunks instead of scheduling a blocking file write for each one.
+    let mut output = tokio::io::BufWriter::with_capacity(
+        1024 * 1024,
+        tokio::fs::File::from_std(temporary.reopen()?),
+    );
     let mut stream = client
         .pull_blob_stream(reference, descriptor.digest.as_str())
         .await?;
@@ -301,7 +305,8 @@ async fn blob(
         }
     }
     descriptor.check_size(size)?;
-    output.sync_all().await?;
+    output.flush().await?;
+    output.get_ref().sync_all().await?;
     drop(output);
     temporary.persist_noclobber(&destination)?;
     fs::File::open(&directory)?.sync_all()?;

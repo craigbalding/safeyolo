@@ -4,7 +4,7 @@ use super::*;
 async fn download_decoder_preserves_concatenated_frames_and_checks_the_last_frame() {
     use std::io::{Read, Write};
 
-    let plain = vec![b'x'; 384 * 1024 + 7];
+    let plain = vec![b'x'; 3 * 1024 * 1024 + 7];
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
     encoder.include_checksum(true).unwrap();
     encoder.write_all(&plain).unwrap();
@@ -34,6 +34,26 @@ async fn download_decoder_preserves_concatenated_frames_and_checks_the_last_fram
             assert_eq!(actual, [plain.as_slice(), plain.as_slice()].concat());
         } else {
             assert!(result.is_err(), "accepted {fault} frame");
+        }
+    }
+}
+
+#[tokio::test]
+async fn download_decoder_reports_buffered_and_full_write_failures() {
+    // A read-only output accepts buffered bytes but must fail before returning
+    // a decoded file, including when the final buffer is the only output.
+    for size in [7, 2 * 1024 * 1024 + 7] {
+        let plain = vec![b'x'; size];
+        let compressed = zstd::stream::encode_all(plain.as_slice(), 1).unwrap();
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let mut decoder =
+            archive::DownloadDecoder::new(fs::File::open(output.path()).unwrap()).unwrap();
+        let written = decoder.write(&compressed).await;
+        if size == 7 {
+            written.unwrap();
+            assert!(decoder.finish().await.is_err(), "lost final flush failure");
+        } else {
+            assert!(written.is_err(), "lost full-buffer write failure");
         }
     }
 }
