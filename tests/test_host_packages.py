@@ -275,8 +275,8 @@ def package_inputs(tmp_path, request, monkeypatch):
     scripts.mkdir(parents=True)
     for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
-    # Only upstream acquisition is controlled. The real producer, complete
-    # payload reader, installer and architecture checks consume these bytes.
+    # Only upstream acquisition is controlled. Include its optional executables
+    # so the real producer must omit them from the package.
     (scripts / "acquire_runsc.sh").write_text(
         '#!/bin/bash\nset -euo pipefail\nmkdir "$1"\n'
         'cp -R "$PACKAGE_RUNSC_FIXTURE/"* "$1/"\n',
@@ -594,13 +594,20 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         names = stream.getnames()
         metadata = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/package-info").read().decode()
         profile = dict(line.split("=", 1) for line in metadata.splitlines())["profile"]
+        checksums = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/SHA256SUMS").read().decode()
         for relative, original in upstream.items():
-            packaged = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/libexec/" + str(relative)).read()
+            member = archive.name.removesuffix(".tar.gz") + "/libexec/" + str(relative)
+            assert (runtime / relative).read_bytes() == original
+            if relative.name in ("checkpointgofer", "runsc-metric-server"):
+                assert member not in names
+                assert f"./libexec/{relative}" not in checksums
+                continue
+            packaged = stream.extractfile(member).read()
+            assert f"{hashlib.sha256(packaged).hexdigest()}  ./libexec/{relative}\n" in checksums
             assert b".debug_info\0" in original
             assert (b".debug_info\0" in packaged) == (profile == "debug")
             if profile == "debug":
                 assert packaged == original
-            assert (runtime / relative).read_bytes() == original
         assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
         assert not any(name.endswith(("/github_checks.py", "/github-checks.md", ".pyc")) for name in names)
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]

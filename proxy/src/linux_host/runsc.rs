@@ -13,11 +13,9 @@ use std::{
 pub(super) const VERSION: &str = "release-20261005.0";
 pub(super) const FILES: &[&str] = &[
     "runsc",
-    "gvisor-bin/checkpointgofer",
     "gvisor-bin/gvisor-sentry-prewarmer",
     "gvisor-bin/gvisor_sentry",
     "gvisor-bin/runsc-fd-parking",
-    "gvisor-bin/runsc-metric-server",
 ];
 
 pub(crate) fn check_runtime(path: &Path) -> Result<String, Error> {

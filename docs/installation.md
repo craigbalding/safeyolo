@@ -557,9 +557,10 @@ Alpine host qualification is separate from the accepted Alpine guest images.
 
 ## Linux host preparation in new source bundles
 
-The tested newer Linux release and current source bundles include the complete
-gVisor `release-20261005.0` payload for the bundle's architecture. The installer checks its checksums,
-architecture, executable files and version. It uses that private runtime;
+The tested newer Linux release and current source bundles include the required
+gVisor `release-20261005.0` payload for the bundle's architecture.
+The installer checks the required files' checksums, architecture, executable
+permissions and runtime version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
 The earlier `host-7a38` manual alternative still needs its manual prerequisites.
 
@@ -657,9 +658,11 @@ archive or the installed package.
 A cold system comparison must count that common package cost and the separate
 runtime download, verification and administrator setup.
 Bundled runtime fixes arrive through normal SafeYolo host-package updates;
-there is no separate runtime updater. SafeYolo ships `runsc` and its five
-companion executables. It omits the separate containerd shim, which its launcher
-does not call. `package-info` records the bundled
+there is no separate runtime updater. Current source bundles ship `runsc`,
+`gvisor_sentry`, `gvisor-sentry-prewarmer` and `runsc-fd-parking`. They omit
+`checkpointgofer`, `runsc-metric-server` and the separate containerd shim.
+SafeYolo does not use Google Cloud Storage checkpoints, the metrics server or
+the containerd integration. `package-info` records the bundled
 version, source and origin. `assets/licenses` contains the gVisor and dependency
 notices.
 
@@ -668,8 +671,9 @@ bundles and the original pinned upstream archives retain that information.
 Production bundles keep runtime metadata and function symbols.
 
 The verified upstream tar is about 121 MB compressed for ARM64 and 130 MB for
-AMD64; the ARM64 payload is about 268 MB unpacked. The host package includes
-those runtime files. Its compressed size also includes the SafeYolo host
+AMD64; the upstream ARM64 payload is about 268 MB unpacked. Those upstream
+sizes precede the removal of unused executables and production debug data.
+The host package's compressed size also includes the SafeYolo host
 executables and assets; the upstream tar size is not the increase in the host
 archive size. Bundling avoids an extra package source, changes to an unrelated
 system runtime and system-package version drift. A system installation can
