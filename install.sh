@@ -245,6 +245,12 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     copy_pid=$!
     decode_input=$stage/host-output
   fi
+  host_tar_arguments=(-xf - -C "$stage/host")
+  if [[ $platform == linux-* ]]; then
+    # GNU tar's 10 KiB default causes small file writes even when the decoder
+    # supplies larger chunks. Match the guest extractor's 128 KiB records.
+    host_tar_arguments+=(-b 256)
+  fi
   if $native_decoder; then
     decode_arguments=(gunzip "$decode_input")
     if $stream_verified; then
@@ -253,10 +259,10 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     mkfifo "$stage/host-tar"
     "$early/bin/safeyolo" host-package "${decode_arguments[@]}" > "$stage/host-tar" &
     decode_pid=$!
-    tar -xf - -C "$stage/host" < "$stage/host-tar" &
+    tar "${host_tar_arguments[@]}" < "$stage/host-tar" &
   else
     # Older releases and paths without an early CLI retain standard tar/gzip.
-    tar -xzf - -C "$stage/host" < "$decode_input" &
+    tar -z "${host_tar_arguments[@]}" < "$decode_input" &
   fi
   unpack_pid=$!
   wait "$host_pid" || { echo 'Host download failed. No package was installed; retry this command.' >&2; exit 1; }
