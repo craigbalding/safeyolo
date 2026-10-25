@@ -60,21 +60,6 @@ rm -f /dev/fuse 2>/dev/null || true
 [ -e /dev/stdout ] || ln -s /proc/self/fd/1 /dev/stdout
 [ -e /dev/stderr ] || ln -s /proc/self/fd/2 /dev/stderr
 
-# Host-key generation needs only the guest overlay and /dev. Overlap it with
-# networking, mounts and CA setup. Join before starting sshd or completing
-# static init, including before a snapshot.
-ssh_keygen_pid=
-if command -v ssh-keygen >/dev/null 2>&1 \
-   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
-    # Repair old base images containing shared keys before generating keys
-    # local to this agent's overlay. Never reuse private keys from the image.
-    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
-    ssh-keygen -A >/dev/null 2>&1 &
-    ssh_keygen_pid=$!
-    # A failed static setup must not leave key generation running behind it.
-    trap 'kill "$ssh_keygen_pid" 2>/dev/null || true; wait "$ssh_keygen_pid" 2>/dev/null || true' EXIT
-fi
-
 # --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
@@ -204,6 +189,21 @@ if [ -f /safeyolo/host-mounts ]; then
         # layer (verified: /home/agent/.safeyolo-hooks reads+writes
         # as agent without any chown). chown on VirtioFS fails anyway.
     done < /safeyolo/host-mounts
+fi
+
+# Host mounts can replace /etc/ssh, so resolve its marker and keys only after
+# mounting. Overlap generation in that final directory with CA setup. Join
+# before starting sshd or completing static init, including before a snapshot.
+ssh_keygen_pid=
+if command -v ssh-keygen >/dev/null 2>&1 \
+   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
+    # Repair old base images containing shared keys before generating keys
+    # local to this agent's overlay or operator-selected mount.
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
+    ssh-keygen -A >/dev/null 2>&1 &
+    ssh_keygen_pid=$!
+    # A failed static setup must not leave key generation running behind it.
+    trap 'kill "$ssh_keygen_pid" 2>/dev/null || true; wait "$ssh_keygen_pid" 2>/dev/null || true' EXIT
 fi
 
 # --------------------------------------------------------------------------
