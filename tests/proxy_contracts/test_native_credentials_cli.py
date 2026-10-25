@@ -38,6 +38,10 @@ POLICY = '''budget=12000
 "*"={egress="deny", unknown_creds="deny"}
 [agents.alice]
 [agents.bob]
+[credential.gateway-fixture]
+match=['\\Asgw_[0-9a-f]{64}\\Z']
+headers=['authorization']
+allowed_hosts=['127.0.0.1']
 [[risk]]
 account="owned"
 tactics=["impact"]
@@ -242,10 +246,10 @@ def test_passphrase_cli_unlock_write_lock_and_ordinary_restart(tmp_path):
     value_file.write_text(LOCAL)
     with origin_server(capture_heads=True) as origin, native_instance(
         tmp_path, POLICY, services=True, capture=True,
+        service_sources={"notes.yaml": json.dumps(SERVICE)},
     ) as instance:
         cli(instance, "credentials", "add", "local", "--storage", "passphrase",
             "--passphrase-file", str(pass_file), "--value-file", str(value_file))
-        catalogue(instance, instance.root / "builtin-services/notes.yaml", SERVICE)
         authorize(instance)
         deliver(instance, origin, token(instance))
         cli(instance, "credentials", "lock")
