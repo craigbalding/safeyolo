@@ -305,6 +305,17 @@ async fn run() -> Result<(), Error> {
             [operation, archive] if operation == "gunzip" => {
                 safeyolo_proxy::host_package::gunzip(Path::new(archive))
             }
+            [operation, input, save, archive, checksum, expected]
+                if operation == "gunzip" && save == "--save" && checksum == "--sha256" =>
+            {
+                safeyolo_proxy::host_package::save_gunzip(
+                    Path::new(input),
+                    Path::new(archive),
+                    expected
+                        .to_str()
+                        .ok_or("host archive SHA-256 must be text")?,
+                )
+            }
             _ => Err(safeyolo_proxy::host_package::HELP.into()),
         };
     }

@@ -43,7 +43,8 @@ RELEASES = "/craigbalding/safeyolo/releases"
 
 
 @pytest.mark.parametrize("encoding", ["single", "concatenated", "truncated", "checksum", "invalid"])
-def test_native_host_package_gunzip_checks_complete_stream(native_cli, tmp_path, encoding):
+@pytest.mark.parametrize("save", [False, True])
+def test_native_host_package_gunzip_checks_complete_stream(native_cli, tmp_path, encoding, save):
     payload = bytes(range(256)) * 2049
     compressed = gzip.compress(payload)
     if encoding == "concatenated":
@@ -56,22 +57,57 @@ def test_native_host_package_gunzip_checks_complete_stream(native_cli, tmp_path,
         compressed = b"not a gzip archive"
     archive = tmp_path / "host package.tar.gz"
     archive.write_bytes(compressed)
-    result = subprocess.run([str(native_cli), "host-package", "gunzip", str(archive)], capture_output=True)
+    saved = tmp_path / "saved archive.tar.gz"
+    arguments = [str(native_cli), "host-package", "gunzip", str(archive)]
+    if save:
+        arguments += ["--save", str(saved), "--sha256", hashlib.sha256(compressed).hexdigest()]
+    result = subprocess.run(arguments, capture_output=True)
     if encoding in ("single", "concatenated"):
         assert result.returncode == 0, result.stderr
         assert result.stdout == payload
+        if save:
+            assert saved.read_bytes() == compressed
     else:
         assert result.returncode != 0
 
 
+@pytest.mark.parametrize("fault", ["digest", "save"])
+def test_native_host_package_save_failure_is_not_success(native_cli, tmp_path, fault):
+    archive = tmp_path / "host.tar.gz"
+    compressed = gzip.compress(b"complete decoded bytes")
+    archive.write_bytes(compressed)
+    saved = tmp_path / "saved.tar.gz"
+    expected = hashlib.sha256(compressed).hexdigest()
+    if fault == "digest":
+        expected = "0" * 64
+    else:
+        saved.write_bytes(b"existing archive; keep unchanged")
+    result = subprocess.run([str(native_cli), "host-package", "gunzip", str(archive),
+                             "--save", str(saved), "--sha256", expected], capture_output=True)
+    assert result.returncode != 0
+    if fault == "digest":
+        assert b"Host archive checksum failed" in result.stderr
+    else:
+        assert saved.read_bytes() == b"existing archive; keep unchanged"
+
+
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
-@pytest.mark.parametrize("decoder", ["native", "legacy"])
+@pytest.mark.parametrize("decoder", ["native", "previous-native", "legacy"])
 def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, native_cli, tmp_path, decoder):
     _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
     marker = tmp_path / "decoder-calls"
     environment = {**environment, "PACKAGE_HOST_GUNZIP_CALLS": str(marker)}
-    if decoder == "native":
+    if decoder != "legacy":
         environment["PACKAGE_HOST_GUNZIP_CLI"] = str(native_cli)
+    if decoder == "previous-native":
+        # Exercise an older verified helper that can decode but cannot save/hash.
+        previous = tmp_path / "previous-helper"
+        previous.write_text('#!/bin/sh\nif [ "$2" = --help ]; then\n'
+                            '  echo "safeyolo host-package gunzip ARCHIVE"\n'
+                            'else\n  exec "$PACKAGE_CURRENT_GUNZIP_CLI" "$@"\nfi\n')
+        previous.chmod(0o755)
+        environment.update(PACKAGE_HOST_GUNZIP_CLI=str(previous),
+                           PACKAGE_CURRENT_GUNZIP_CLI=str(native_cli))
     result = run("bash", str(bootstrap), env=environment)
     assert result.returncode == 0, result.stderr
     assert (root / "config.toml").is_file()
@@ -81,12 +117,16 @@ def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, n
         for relative in ("bin", "bin/safeyolo"):
             member = package.getmember(archive.name.removesuffix(".tar.gz") + "/" + relative)
             assert (root / relative).stat().st_mode & 0o777 == member.mode & 0o777
-    if decoder == "native":
+    if decoder != "legacy":
         calls = marker.read_text().splitlines()
         assert calls[:4] == ["host-package", "--help", "host-package", "gunzip"]
+        assert ("--save" in calls) == (decoder == "native")
+        assert ("--sha256" in calls) == (decoder == "native")
     else:
         assert not marker.exists()
     assert requests.count(f"{base}/{archive.name}") == 1
+    cached = Path(environment["HOME"]) / ".cache/safeyolo/host-packages" / base.rsplit("/", 1)[1] / archive.name
+    assert cached.read_bytes() == archive.read_bytes()
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
 
 
@@ -478,7 +518,7 @@ def test_bootstrap_forwards_literal_launch_arguments_and_exit_status(public_rele
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
-@pytest.mark.parametrize("fault", ["checksum", "duplicate-checksum", "partial", "inner-checksum"])
+@pytest.mark.parametrize("fault", ["checksum", "wrong-digest", "duplicate-checksum", "partial", "inner-checksum"])
 @pytest.mark.parametrize("decoder", ["legacy", "native"])
 def test_bad_host_download_never_activates_and_retry_preserves_another_installation(
         public_release, native_cli, tmp_path, fault, decoder):
@@ -493,6 +533,9 @@ def test_bad_host_download_never_activates_and_retry_preserves_another_installat
     original = dict(contents)
     if fault == "checksum":
         contents[f"{base}/{archive.name}"] += b"corrupt transfer"
+    elif fault == "wrong-digest":
+        contents[f"{base}/SHA256SUMS"] = contents[f"{base}/SHA256SUMS"].replace(
+            hashlib.sha256(archive.read_bytes()).hexdigest().encode(), b"0" * 64)
     elif fault == "duplicate-checksum":
         contents[f"{base}/SHA256SUMS"] *= 2
     elif fault == "partial":
@@ -553,6 +596,7 @@ def test_host_unpack_overlaps_transfer_without_activating_unverified_files(
             time.sleep(0.01)
         assert not root.exists() and not host_calls.exists()
         assert process.poll() is None
+        assert bool(list(cache.glob("*/acquire.*/host-output"))) == (decoder == "legacy")
         if outcome == "interrupted":
             # Signal only the bootstrap. It must reap all of its FIFO children.
             process.terminate()
