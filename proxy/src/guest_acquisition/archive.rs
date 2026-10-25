@@ -169,15 +169,16 @@ fn extract(
     }
     let mut errors = tempfile::tempfile_in(stage.parent().ok_or("guest stage has no parent")?)?;
     let mut child = command
-        .stdin(Stdio::piped())
+        // DownloadDecoder has finished and the compressed descriptor has
+        // verified. Let tar read that open file directly instead of copying
+        // the decoded archive through another process and pipe.
+        .stdin(decoded.map_or_else(Stdio::piped, Stdio::from))
         .stdout(Stdio::null())
         .stderr(errors.try_clone()?)
         .spawn()?;
     let copy = (|| -> Result<(), Error> {
-        let mut output = child.stdin.take().ok_or("tar input is unavailable")?;
-        if let Some(mut decoded) = decoded {
-            std::io::copy(&mut decoded, &mut output)?;
-        } else {
+        // A retained compressed blob still needs streaming decompression.
+        if let Some(mut output) = child.stdin.take() {
             let decoder = zstd::stream::read::Decoder::new(fs::File::open(input)?)?;
             // Give the decoder a full zstd-block buffer instead of small copy chunks.
             let mut decoder = BufReader::with_capacity(128 * 1024, decoder);
