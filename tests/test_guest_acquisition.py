@@ -684,8 +684,8 @@ def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
 def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes(
         native_cli, registry, package_info, tmp_path, guest_store, fault):
     contents, requests, faults, environment = registry
-    # Several zstd blocks ensure the first half can produce decoded bytes.
-    payload = hashlib.shake_256(b"guest download overlap fixture").digest(512 * 1024)
+    # Enough output to flush a decoded batch before the registry pauses.
+    payload = hashlib.shake_256(b"guest download overlap fixture").digest(3 * 1024 * 1024)
     archive = compressed_archive(content=payload)
     key = "blobs/" + digest(archive)
     contents.update(release(archive))

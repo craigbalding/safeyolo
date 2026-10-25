@@ -20,7 +20,7 @@ use crate::{
 /// The anonymous tar file is usable only after the compressed blob verifies.
 pub(super) struct DownloadDecoder {
     decoder: zstd::stream::raw::Decoder<'static>,
-    output: tokio::fs::File,
+    output: tokio::io::BufWriter<tokio::fs::File>,
     buffer: Vec<u8>,
     finished_frame: bool,
 }
@@ -29,7 +29,12 @@ impl DownloadDecoder {
     pub(super) fn new(output: fs::File) -> Result<Self, Error> {
         Ok(Self {
             decoder: zstd::stream::raw::Decoder::new()?,
-            output: tokio::fs::File::from_std(output),
+            // Keep zstd's block buffer, but batch its writes to the blocking
+            // filesystem pool so decoding does not await every 128 KiB block.
+            output: tokio::io::BufWriter::with_capacity(
+                1024 * 1024,
+                tokio::fs::File::from_std(output),
+            ),
             buffer: vec![0; 128 * 1024],
             finished_frame: false,
         })
@@ -65,7 +70,7 @@ impl DownloadDecoder {
             return Err("incomplete guest zstd frame".into());
         }
         self.output.flush().await?;
-        let mut output = self.output.into_std().await;
+        let mut output = self.output.into_inner().into_std().await;
         output.rewind()?;
         Ok(output)
     }
