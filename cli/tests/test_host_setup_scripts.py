@@ -3255,6 +3255,9 @@ elif args[:3] == ['use', '-g', '--force']:
             path.write_text('#!/bin/sh\\nexit 0\\n')
             path.chmod(0o644 if failure == name else 0o755)
     (root / 'installed').write_text(args[-1].split(':', 1)[0])
+    if harness == 'codex':
+        namespace = args[-1].split(':', 1)[0] + '-openai-codex'
+        (Path(os.environ['MISE_DATA_DIR']) / 'installs' / namespace / version).mkdir(parents=True, exist_ok=True)
 else:
     sys.exit(99)
 ''')
@@ -3352,7 +3355,8 @@ def test_default_codex_reuses_healthy_aqua_selection_without_acquiring_another_p
     (False, "none"), (True, "none"), (False, "match"), (False, "mismatch"), (False, "broken"),
     (False, "installed-broken"), (False, "wrong-target"), (False, "missing-resources"),
     (False, "broken-search"), (False, "custom-age"), (False, "custom-age-young"), (False, "pin"),
-    (False, "mismatch-lookup-failure"),
+    (False, "mismatch-lookup-failure"), (False, "healthy-github"), (False, "healthy-aqua"),
+    (False, "healthy-github-custom-installs"),
 ])
 def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_digest, prefetched):
     """Exercise full extraction, release age and digest refusal without a client download."""
@@ -3360,8 +3364,10 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
     if not mise or not zstd:
         pytest.skip("Real mise and zstd are required for the native archive control")
     home, command, env = _stage_native_client(tmp_path, "codex")
-    (tmp_path / "bin/mise").unlink()
-    (tmp_path / "bin/mise").symlink_to(Path(mise).resolve())
+    healthy = prefetched.startswith("healthy-")
+    (tmp_path / "bin/mise").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_MISE_LOG"\n'
+        f'exec {shlex.quote(str(Path(mise).resolve()))} "$@"\n')
     members = {"bin/codex": b'#!/bin/sh\nif [ "$1" = --version ]; then echo "codex-cli 9.9.9"; else echo ready; fi\n',
                "bin/codex-code-mode-host": b"#!/bin/sh\nexit 0\n", "codex-path/rg": b"#!/bin/sh\nexit 0\n",
                "codex-resources/bwrap": b"retained adjacent resource\n"}
@@ -3451,10 +3457,33 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
         (home / ".mise").mkdir()
         if prefetched == "installed-broken":
             (home / ".mise/installs/github-openai-codex/9.9.9").mkdir(parents=True)
+        installs = home / ".mise/installs"
+        expected_members = members
+        expected_output = "ready"
+        if healthy:
+            selected = tmp_path / "selected"
+            shutil.copytree(imported / "payload", selected)
+            backend = prefetched.split("-")[1]
+            selected_version = "9.9.9"
+            if backend == "github":
+                selected_version = "8.8.8"
+                expected_output = "selected-ready"
+                expected_members = dict(members)
+                expected_members["bin/codex"] = members["bin/codex"].replace(
+                    b"9.9.9", b"8.8.8").replace(b"echo ready;", b"echo selected-ready;")
+                (selected / "bin/codex").write_bytes(expected_members["bin/codex"])
+            if prefetched.endswith("-custom-installs"):
+                installs = tmp_path / "custom-installs"
+                env["MISE_INSTALLS_DIR"] = str(installs)
+            linked = subprocess.run([mise, "link", f"{backend}:openai/codex@{selected_version}", str(selected)],
+                                    env={**env, "MISE_DATA_DIR": str(home / ".mise"),
+                                         "MISE_CONFIG_DIR": str(home / ".mise")},
+                                    capture_output=True, text=True)
+            assert linked.returncode == 0, linked.stderr
         config = home / ".mise/config.toml"
         config.write_text('[tools]\nnode = "22.0.0"\n')
         result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
-        reused = prefetched in ("match", "installed-broken", "custom-age")
+        reused = healthy or prefetched in ("match", "installed-broken", "custom-age")
         if prefetched == "custom-age-young":
             assert result.returncode != 0, result.stdout
             assert "ready" not in result.stdout
@@ -3470,10 +3499,18 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
             assert "ready" not in result.stdout
         else:
             assert result.returncode == 0, result.stderr
-            assert result.stdout.strip() == "ready"
-            installed = (imported / "payload" if reused else
+            assert result.stdout.strip() == expected_output, result.stderr
+            installed = (selected if healthy else imported / "payload" if reused else
                          next((home / ".mise/installs/github-openai-codex").glob("9.9.9*")))
-            for name, payload in members.items():
+            if healthy:
+                namespace = installs / f"{backend}-openai-codex/{selected_version}"
+                assert namespace.samefile(selected), "the healthy installed selection must retain precedence"
+                assert not namespace.samefile(imported / "payload")
+                if backend == "github":
+                    assert "9.9.9 is available; not upgrading automatically" in result.stderr
+                    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+                    assert not any(call.startswith(("use ", "link ")) for call in calls), calls
+            for name, payload in expected_members.items():
                 assert (installed / name).read_bytes() == payload
             assert not (home / ".mise/installs/github-openai-codex/9.9.10").exists()
             assert tomllib.loads(config.read_text())["tools"]["node"] == "22.0.0"
@@ -3481,18 +3518,20 @@ def test_codex_full_zstd_package_with_real_mise_github_installer(tmp_path, bad_d
             assert downloads == (0 if reused else 1)
             if prefetched == "match":
                 assert requests == []
+                calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+                assert calls == [f"link --force {tool}@9.9.9 {imported / 'payload'}"], calls
             elif prefetched == "installed-broken":
                 # Mise reads exact release metadata when an installed path is
                 # damaged; it does not repeat selection or package transfer.
                 assert requests == ["/repos/openai/codex/releases/tags/rust-v9.9.9"]
             repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=30)
             assert repeat.returncode == 0, repeat.stderr
-            assert repeat.stdout.strip() == "ready"
+            assert repeat.stdout.strip() == expected_output
             assert requests.count("/" + asset) == downloads
             assert "9.9.10 is available" not in repeat.stderr
         assert not (home / ".mise/installs/node").exists()
         assert not (home / ".mise/installs/npm-openai-codex").exists()
-        if prefetched in ("match", "installed-broken"):
+        if healthy or prefetched in ("match", "installed-broken"):
             assert tomllib.loads(config.read_text()) == {"tools": {"node": "22.0.0"}}
         assert any(path.split("?", 1)[0].endswith("/releases") for path in requests), requests
         if prefetched == "match":
