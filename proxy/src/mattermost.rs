@@ -372,18 +372,21 @@ impl Adapter {
             Some("edited_or_deleted")
         } else if post["user_id"] != self.config.operator {
             Some("not_configured_operator")
-        } else if !post["root_id"].as_str().is_some_and(mm_id) {
+        } else if !post["root_id"]
+            .as_str()
+            .is_some_and(|root| root.is_empty() || mm_id(root))
+        {
             Some("unmapped_thread")
         } else {
             None
         };
         let mut reason = ignored;
-        let projection = if reason.is_none() {
+        let projection = if reason.is_none() && post["root_id"] != "" {
             self.query("SELECT * FROM outbound_projection WHERE mattermost_post_id=?1 AND coord_room=?2 AND channel_id=?3 AND status='sent'",params![required(post,"root_id")?,room.name,room.channel])?.into_iter().next()
         } else {
             None
         };
-        if projection.is_none() && reason.is_none() {
+        if post["root_id"] != "" && projection.is_none() && reason.is_none() {
             reason = Some("unmapped_thread");
         }
         let mut selected = None;
@@ -391,7 +394,7 @@ impl Adapter {
         if reason.is_none() {
             if note.trim().is_empty() || note.len() > 65536 {
                 reason = Some("malformed_body_or_action");
-            } else if note.starts_with("!safeyolo") {
+            } else if projection.is_some() && note.starts_with("!safeyolo") {
                 if let Some(rest) = note.strip_prefix("!safeyolo ") {
                     let (command, text) = rest.split_once(' ').unwrap_or((rest, ""));
                     if render::action(command) {
@@ -409,8 +412,18 @@ impl Adapter {
             self.execute("INSERT INTO inbound_post(mattermost_post_id,coord_room,status,reason,created_at) VALUES (?1,?2,'ignored',?3,?4)",params![id,room.name,reason,now()])?;
             return Ok(());
         }
-        let projection = projection.ok_or("missing inbound projection")?;
-        let body=self.operator_body(if selected.is_some(){"action"}else{"reply"},selected,note,json!({"coord_msg_id":projection["coord_msg_id"],"mattermost_post_id":id,"mattermost_root_post_id":post["root_id"],"mattermost_channel_id":room.channel}));
+        let mut correlation = json!({"mattermost_post_id":id,"mattermost_root_post_id":post["root_id"],"mattermost_channel_id":room.channel});
+        let kind = if let Some(projection) = projection {
+            correlation["coord_msg_id"] = projection["coord_msg_id"].clone();
+            if selected.is_some() {
+                "action"
+            } else {
+                "reply"
+            }
+        } else {
+            "message"
+        };
+        let body = self.operator_body(kind, selected, note, correlation);
         self.execute("INSERT INTO inbound_post(mattermost_post_id,coord_room,status,created_at) VALUES (?1,?2,'pending',?3)",params![id,room.name,now()])?;
         let result = self
             .coord
