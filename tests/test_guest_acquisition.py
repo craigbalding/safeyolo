@@ -748,7 +748,8 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
     retried = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
     assert retried.returncode == 0, retried.stderr
     tree, = (guest_store / "trees/sha256").iterdir()
-    assert (tree / "rootfs-tree/command").read_bytes() == payload
+    assert extraction.exists()
+    assert subprocess.check_output(["sudo", "-n", "cat", "--", str(tree / "rootfs-tree/command")]) == payload
     owned_root_ids(tree / "rootfs-tree")
     inode = tree.stat().st_ino
     before = len(requests)
