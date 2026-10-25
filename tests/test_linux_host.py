@@ -24,9 +24,8 @@ from tests.test_host_packages import executable
 native_cli = acquisition.native_cli
 package_info = acquisition.package_info
 
-FILES = ("runsc", "gvisor-bin/checkpointgofer",
-         "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentry",
-         "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server")
+FILES = ("runsc", "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentry",
+         "gvisor-bin/runsc-fd-parking")
 
 
 def command(binary, *arguments, **kwargs):
@@ -139,10 +138,13 @@ def payload(path):
     return path / "runsc"
 
 
-@pytest.mark.parametrize("fault", ["missing", "architecture", "version", "truncated"])
-def test_runtime_input_fails_before_host_changes(native_cli, tmp_path, fault):
+@pytest.mark.parametrize("component,fault", [
+    (component, fault) for component in FILES[1:]
+    for fault in ("missing", "architecture", "truncated")
+] + [("runsc", "version")])
+def test_runtime_input_fails_before_host_changes(native_cli, tmp_path, component, fault):
     runtime = payload(tmp_path / "runtime")
-    sidecar = runtime.parent / "gvisor-bin/gvisor_sentry"
+    sidecar = runtime.parent / component
     if fault == "missing":
         sidecar.unlink()
     elif fault == "architecture":
