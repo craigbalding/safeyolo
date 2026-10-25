@@ -49,7 +49,7 @@ pub(crate) fn validate_prepared_linux_assets(
     archive::validate_assets(path, consumer_platform()?, mapping)
 }
 
-pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST] [--prepare]\nDownload and verify the compatible guest archive. By default, do not extract it.\n--prepare also attempts early cache extraction without changing host settings or asking for privilege.\nLinux uses existing validated UID/GID ranges and noninteractive sudo. Missing setup or extraction privilege defers preparation to the ordinary installer after host consent.\nThe installer checks its actual host settings and guest selection before activation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nDuring early extraction, interruption waits for extraction/remapping and private staging cleanup before exit. A completed verified tree remains reusable.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
+pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST] [--prepare]\nDownload and verify the compatible guest archive. By default, do not extract it.\n--prepare also attempts early cache extraction without changing host settings or asking for privilege.\nDuring download, --prepare decodes into a private temporary tar file. Extraction waits for archive size and digest verification. Temporary disk use includes the decoded archive.\nLinux uses existing validated UID/GID ranges and noninteractive sudo. Missing setup or extraction privilege defers preparation to the ordinary installer after host consent.\nThe installer checks its actual host settings and guest selection before activation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nDuring early extraction, interruption waits for extraction/remapping and private staging cleanup before exit. A completed verified tree remains reusable.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
 struct PackageGuest {
@@ -258,11 +258,14 @@ async fn blob(
     reference: &Reference,
     descriptor: &Descriptor,
     store: &Path,
+    decoding: &mut Option<archive::DownloadDecoder>,
 ) -> Result<PathBuf, Error> {
     let directory = store.join("blobs/sha256");
     fs::create_dir_all(&directory)?;
     let destination = directory.join(guest_oci::sha256_hex(&descriptor.digest)?);
     if destination.try_exists()? {
+        // Reuse the verified compressed cache without decoding it again here.
+        *decoding = None;
         // A retained blob is reusable only after its bytes still verify.
         let metadata = destination.metadata()?;
         if !metadata.is_file() {
@@ -290,6 +293,12 @@ async fn blob(
             return Err("guest descriptor size mismatch".into());
         }
         output.write_all(&bytes).await?;
+        if let Some(decoder) = decoding {
+            if let Err(error) = decoder.write(&bytes).await {
+                eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                *decoding = None;
+            }
+        }
     }
     descriptor.check_size(size)?;
     output.sync_all().await?;
@@ -339,7 +348,7 @@ async fn resolve_guest(
     let (os, architecture) = child.platform.os_architecture();
     let published_config = format!(r#"{{"os":"{os}","architecture":"{architecture}"}}"#);
     if child.validate_config(published_config.as_bytes()).is_err() {
-        let config = blob(client, &pinned, &child.config, store).await?;
+        let config = blob(client, &pinned, &child.config, store, &mut None).await?;
         child.validate_config(&fs::read(config)?)?;
     }
     Ok((index, child))
@@ -368,7 +377,7 @@ async fn acquire(
     // Verify a reusable archive's descriptor too. A changed index can declare
     // a wrong size even when its tree already exists from an earlier operation.
     let input = if retained.is_none() {
-        Some(blob(client, &pinned, &child.archive, store).await?)
+        Some(blob(client, &pinned, &child.archive, store, &mut None).await?)
     } else {
         None
     };
@@ -379,7 +388,7 @@ async fn acquire(
         let destination = assets.clone();
         let platform = package.platform;
         tokio::task::spawn_blocking(move || {
-            archive::prepare(&input, &destination, platform, mapping, None)
+            archive::prepare(&input, None, &destination, platform, mapping, None)
         })
         .await??;
     }
@@ -414,6 +423,7 @@ fn prepared_tree(
 
 async fn prepare_downloaded_guest(
     input: PathBuf,
+    decoded: Option<fs::File>,
     store: &Path,
     descriptor: &Descriptor,
     platform: ConsumerPlatform,
@@ -448,7 +458,14 @@ async fn prepare_downloaded_guest(
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = cancelled.clone();
     let mut preparation = tokio::task::spawn_blocking(move || {
-        archive::prepare(&input, &assets, platform, mapping, Some(&worker_cancelled))
+        archive::prepare(
+            &input,
+            decoded,
+            &assets,
+            platform,
+            mapping,
+            Some(&worker_cancelled),
+        )
     });
     tokio::select! {
         result = &mut preparation => return result?,
@@ -622,19 +639,55 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         let mut interrupt =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let client = registry_client()?;
-        let (index, child, input) = tokio::select! {
-            result = async {
-                let (index, child) = resolve_guest(&client, &package, &store, index).await?;
-                let reference = format!("{}@{}", package.repository, index.manifest(package.platform).digest).parse()?;
-                let input = blob(&client, &reference, &child.archive, &store).await?;
-                Ok::<_, Error>((index, child, input))
-            } => result,
+        let (index, child) = tokio::select! {
+            result = resolve_guest(&client, &package, &store, index) => result,
             _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
             _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
         }?;
+        // Decompression can overlap the network transfer, but tar (including
+        // sudo tar) must not see bytes until the compressed descriptor verifies.
+        // Anonymous temporary output disappears on cancellation or verification
+        // failure. No extraction child exists during this part of the download.
+        let mut decoding = if prepare_download {
+            match tempfile::tempfile_in(&store)
+                .map_err(Error::from)
+                .and_then(archive::DownloadDecoder::new)
+            {
+                Ok(decoder) => Some(decoder),
+                Err(error) => {
+                    eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let reference = format!(
+            "{}@{}",
+            package.repository,
+            index.manifest(package.platform).digest
+        )
+        .parse()?;
+        let input = tokio::select! {
+            result = blob(&client, &reference, &child.archive, &store, &mut decoding) => result,
+            _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
+            _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
+        }?;
+        let decoded = if let Some(decoder) = decoding {
+            match decoder.finish().await {
+                Ok(output) => Some(output),
+                Err(error) => {
+                    eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         if prepare_download {
             prepare_downloaded_guest(
                 input,
+                decoded,
                 &store,
                 &child.archive,
                 package.platform,
