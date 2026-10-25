@@ -528,7 +528,8 @@ def native_binary(tmp_path):
     return binary
 
 
-def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch):
+@pytest.mark.parametrize("namespace_entry", [False, True], ids=["without-entry", "with-entry"])
+def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch, namespace_entry):
     """Prepared executables serve fresh section state through the real caller."""
     binary = os.environ.get("SAFEYOLO_TEST_NATIVE_CLI")
     if not binary:
@@ -541,6 +542,12 @@ def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch):
         (source / "bin/safeyolo").symlink_to(binary)
         (source / "assets").mkdir()
         (source / "assets/input").write_bytes(b"immutable prepared input")
+        entry = source / "host/namespace-entry"
+        if namespace_entry:
+            entry.parent.mkdir(mode=0o700)
+            entry.write_bytes(b'#!/bin/sh\nexec "$@"\n')
+            entry.chmod(0o755)
+            entry_metadata = entry.stat()
         roots = [parent / name for name in ("subject", "owner")]
         for root in roots:
             installed_sections.prepare_native_instance(source, root)
@@ -549,9 +556,32 @@ def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch):
             assert json.loads(subprocess.check_output([str(root / "bin/safeyolo"), "--root", str(root), "status"]))["agents"] == []
             assert (root / "bin/safeyolo").resolve() == Path(binary).resolve()
             assert (root / "assets/input").stat().st_ino == (source / "assets/input").stat().st_ino
+            if namespace_entry:
+                selected_entry = root / "host/namespace-entry"
+                # AppArmor attaches to the prepared executable's canonical
+                # path. A copy at a different path would lose that attachment.
+                assert selected_entry.resolve() == entry
+                assert selected_entry.stat() == entry.stat()
+                arguments = ["argument with spaces", "semi;colon", ""]
+                result = subprocess.run([str(selected_entry), sys.executable, "-c",
+                                         "import json, sys; print(json.dumps(sys.argv[1:])); sys.exit(17)",
+                                         *arguments], capture_output=True, text=True, timeout=10)
+                assert result.returncode == 17, result.stderr
+                assert json.loads(result.stdout) == arguments
+            else:
+                assert not (root / "host").exists()
         assert (roots[0] / "data/admin_token").read_bytes() != (roots[1] / "data/admin_token").read_bytes()
         assert (roots[0] / "config.toml").stat().st_ino != (roots[1] / "config.toml").stat().st_ino
         assert not (source / "config.toml").exists()
+        if namespace_entry:
+            assert installed_sections.cleanup_instance(Path(binary), roots[0]) == []
+            shutil.rmtree(roots[0])
+            installed_sections.prepare_native_instance(source, roots[0])
+            assert all((root / "host/namespace-entry").resolve() == entry for root in roots)
+            assert entry.read_bytes() == b'#!/bin/sh\nexec "$@"\n'
+            current = entry.stat()
+            assert (current.st_ino, current.st_mode, current.st_uid, current.st_gid) == (
+                entry_metadata.st_ino, entry_metadata.st_mode, entry_metadata.st_uid, entry_metadata.st_gid)
 
 
 def test_shared_approval_transport_keeps_owned_selection_when_preparation_fails(tmp_path_factory, monkeypatch):
