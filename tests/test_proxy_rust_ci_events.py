@@ -686,6 +686,9 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     ("tests/reference/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
     ("tests/reference/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}, "available"),
+    ("tests/proxy_contracts/test_native_policy_cli.py", {"rust": "true"}, "available"),
+    ("tests/proxy_contracts/test_first_agent_launch.py", {"rust": "true"}, "available"),
+    ("tests/proxy_contracts/test_readiness.py", {}, "available"),
     ("docs/DEVELOPERS.md", {}, "available"),
     ("site/index.md", {"dispatch": "true"}, "available"),
     (".github/workflows/pages.yml", {"dispatch": "true"}, "available"),
@@ -695,7 +698,8 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     ("scripts/rust_cache_command.sh", {"rust": "true", "macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {}, "missing"),
     ("proxy/src/host_platform.rs", {}, "failing"),
-], ids=["linux-only", "mac-only", "shared-native", "docs-only", "dispatch-content", "dispatch-workflow",
+], ids=["linux-only", "mac-only", "shared-native", "native-policy-only", "first-agent-only", "readiness-only",
+        "docs-only", "dispatch-content", "dispatch-workflow",
         "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "rust-cache-command", "missing-grep", "failing-grep"])
 def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected, matcher):
     def git(*args):
@@ -726,12 +730,13 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         if matcher == "failing":
             (commands / "grep").write_text("#!/bin/sh\nexit 2\n")
             (commands / "grep").chmod(0o755)
-    step = next(step for step in rust_workflow()["jobs"]["focused-pr"]["steps"]
-                if step.get("id") == "changes")
-    result = subprocess.run([str(commands / "bash"), "-euo", "pipefail", "-c", step["run"]],
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    step = next(step for step in steps if step.get("id") == "changes")
+    # Actions' unspecified Linux shell uses Bash -e, without nounset or pipefail.
+    result = subprocess.run([str(commands / "bash"), "-e", "-c", step["run"]],
                             cwd=tmp_path, capture_output=True, text=True, check=False,
                             env=dict(os.environ, PATH=str(commands), BASE=base,
-                                     RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output)))
+                                     RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output), BASH_ENV=os.devnull))
     if matcher == "available":
         assert result.returncode == 0, result.stderr
         assert not result.stderr
@@ -740,6 +745,26 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         assert "changed-path matcher failed" in result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
     assert actual == expected
+    if matcher != "available" or expected.get("guest") or expected.get("dispatch"):
+        return
+    installed = next(step for step in steps if step.get("name") == "Test installed native policy commands")
+    for name in (
+        "Install the pinned Rust toolchain", "Restore Rust dependency cache", "Install Linux guest build tools",
+        "Build the native guest command artifact", "Build Linux production inputs",
+        "Build the native CLI for recovery and Dispatch checks", "Install uv",
+        "Install the native CLI test environment", "Install preview test system dependency",
+        "Install the pinned Codex execpolicy test consumer", installed["name"],
+    ):
+        prerequisite = next(step for step in steps if step.get("name") == name)
+        assert steps.index(prerequisite) <= steps.index(installed)
+        condition = prerequisite.get("if", "true")
+        for key in ("rust", "guest", "dispatch"):
+            condition = condition.replace(f"steps.changes.outputs.{key}", shlex.quote(actual.get(key, "")))
+        # These string comparisons and disjunctions share Actions' truth table.
+        admission = subprocess.run(["bash", "-e", "-c", f"[[ {condition} ]]"],
+                                   capture_output=True, text=True, env=dict(os.environ, BASH_ENV=os.devnull))
+        selected = expected.get("rust") == "true" or "if" not in prerequisite
+        assert admission.returncode == (0 if selected else 1), (name, condition, admission.stderr)
 
 
 def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():
