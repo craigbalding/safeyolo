@@ -144,7 +144,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^(proxy/|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
