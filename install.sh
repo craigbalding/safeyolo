@@ -279,12 +279,14 @@ if [[ -n $guest_pid ]]; then
   cmp -s "$early/package-info" "$package/package-info" && cmp -s "$early/bin/safeyolo" "$package/bin/safeyolo" || {
     echo 'Guest download inputs differ from the verified host package. No instance was activated.' >&2; exit 1
   }
+fi
+finish_guest_download() {
+  [[ -n $guest_pid ]] || return 0
   wait "$guest_pid" || { echo 'Guest acquisition failed. No instance was activated. Retry this command; verified inputs remain reusable.' >&2; exit 1; }
   guest_pid=
   guest_index=$(cat "$stage/guest-index")
   [[ $guest_index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Guest download did not return a verified index.' >&2; exit 1; }
-  install_arguments+=(--guest-index "$guest_index")
-fi
+}
 if [[ -n $download_only ]]; then
   source "$package/native_package.sh"
   verify_native_package "$package"
@@ -295,4 +297,20 @@ fi
 start_codex_prefetch "$package/bin/safeyolo"
 # The ordinary installer performs the complete file/layout/executable check.
 # Its private extraction can then become the installed files without a copy.
-install_and_launch "$package/install.sh" --move-bundle
+if [[ -n $guest_pid ]] && grep -q '^install_native() {' "$package/install_native.sh"; then
+  install_acquired_package() {
+    source "$package/install_native.sh"
+    trap 'cleanup_acquisition; cleanup_install' EXIT
+    install_native finish_guest_download --bundle "$package" "$@"
+    cleanup_install
+    trap cleanup_acquisition EXIT
+  }
+  install_and_launch install_acquired_package --move-bundle
+else
+  # Older packages retain their standalone installer and sequential join.
+  if [[ -n $guest_pid ]]; then
+    finish_guest_download
+    install_arguments+=(--guest-index "$guest_index")
+  fi
+  install_and_launch "$package/install.sh" --move-bundle
+fi

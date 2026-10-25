@@ -2,6 +2,18 @@
 # Install verified files and initialize once; preserve matching installed state.
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+temporary= staged_root= install_lock=
+cleanup_install() {
+  if [[ -n $temporary ]]; then rm -rf -- "$temporary"; fi
+  if [[ -n $staged_root ]]; then rm -rf -- "$staged_root"; fi
+  if [[ -n $install_lock ]]; then rmdir "$install_lock"; fi
+}
+
+# The bootstrap calls this in its own shell so it can join its guest child
+# after verification and before any host preparation or activation.
+install_native() {
+local guest_download_completion=$1
+shift
 root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 bundle= platform_assets= command_dir= guest_index=
 download_guest=true
@@ -79,15 +91,6 @@ fi
 if $move_bundle && { $existing || [[ -z $bundle ]]; }; then
   echo '--move-bundle requires a temporary unpacked bundle and a fresh instance.' >&2; exit 2
 fi
-temporary= staged_root= install_lock=
-cleanup_install() {
-  if [[ -n $temporary ]]; then rm -rf -- "$temporary"; fi
-  if [[ -n $staged_root ]]; then rm -rf -- "$staged_root"; fi
-  if [[ -n $install_lock ]]; then rmdir "$install_lock"; fi
-}
-trap cleanup_install EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 if [[ -z $bundle ]]; then
   mkdir -p "$(dirname -- "$root")"
   temporary=$(mktemp -d "$(dirname -- "$root")/native-install.XXXXXX")
@@ -98,6 +101,7 @@ else
 fi
 echo 'SafeYolo: checking the host package.' >&2
 verify_native_package "$bundle"
+if [[ -n $guest_download_completion ]]; then "$guest_download_completion"; fi
 if $existing; then
   cmp -s "$root/package-info" "$bundle/package-info" || {
     echo "Host package differs from the installed host at $root. State was preserved. Repeat is not an upgrade; use the installed command or a separate --root and --command-dir." >&2; exit 1
@@ -270,3 +274,11 @@ check_command_entry
 echo "Installed SafeYolo: $root"
 echo "Command: $command_entry"
 "$command_entry" --version
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  trap cleanup_install EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  install_native '' "$@"
+fi
