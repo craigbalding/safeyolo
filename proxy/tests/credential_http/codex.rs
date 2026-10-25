@@ -186,6 +186,8 @@ impl Fixture {
                 "credentials",
                 "import-codex",
                 "owned-codex",
+                "--storage",
+                "local",
                 "--agent",
                 "alice",
                 "--auth-file",

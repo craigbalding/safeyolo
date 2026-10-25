@@ -119,6 +119,43 @@ fn native_storage_is_created_only_for_writers_and_uses_a_marked_random_key() {
 }
 
 #[test]
+fn passphrase_selection_requires_explicit_unlock_and_never_persists_a_key() {
+    use safeyolo_proxy::credentials::{self, Storage};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let vault = credentials::create_passphrase(root, &password()).unwrap();
+    vault.store(credential("protected")).unwrap();
+    assert!(credentials::storage(root).unwrap() == Some(Storage::Passphrase));
+    let before = fs::read(root.join("credentials.enc")).unwrap();
+    let marker = fs::read(root.join("credentials.key")).unwrap();
+    assert_eq!(marker, credentials::PASSPHRASE_KEY_MARKER.as_bytes());
+    assert!(credentials::open(root).is_err());
+    assert!(credentials::open_existing(root).is_err());
+    assert!(credentials::create_passphrase(root, &password()).is_err());
+    assert!(Vault::unlock_existing(root.join("credentials.enc"), &Secret::new("wrong")).is_err());
+    assert!(
+        Vault::unlock_existing(
+            root.join("credentials.enc"),
+            &Secret::new(credentials::PASSPHRASE_KEY_MARKER)
+        )
+        .is_err()
+    );
+    assert!(
+        Vault::unlock_existing(root.join("credentials.enc"), &password())
+            .unwrap()
+            .get("protected")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(fs::read(root.join("credentials.enc")).unwrap(), before);
+    assert_eq!(fs::read(root.join("credentials.key")).unwrap(), marker);
+    fs::remove_file(root.join("credentials.enc")).unwrap();
+    assert!(Vault::unlock_existing(root.join("credentials.enc"), &password()).is_err());
+    assert!(credentials::open(root).is_err());
+    assert!(!root.join("credentials.enc").exists());
+}
+
+#[test]
 fn unmarked_native_keys_retain_existing_passphrase_ciphertext() {
     use safeyolo_proxy::credentials::{open, open_existing};
     for passphrase in [

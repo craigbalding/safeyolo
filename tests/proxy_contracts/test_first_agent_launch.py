@@ -209,7 +209,10 @@ def test_codex_launch_authorizes_selected_login_for_created_identity_before_star
         agent = tomllib.loads(policy.decode())["agents"]["first"]
         choice = str(instance.login) if selection == "file" else "h"
         os.write(master, choice.encode() + b"\n")
-        output = until(b"First-agent services failed")
+        output = until(b"Choose credential storage")
+        assert not (instance.root / "data/credentials.key").exists()
+        os.write(master, b"local\n")
+        output += until(b"First-agent services failed")
         assert b"Codex login authorized for first" in output
         assert output.index(b"Codex login authorized") < output.index(b"Starting or reusing the installed services")
         assert b"synthetic-first-launch-access" not in output and b"synthetic-first-launch-refresh" not in output
@@ -256,6 +259,31 @@ def test_codex_launch_authorizes_selected_login_for_created_identity_before_star
     assert auth.read_bytes() == original[0]
 
 
+def test_codex_launch_offers_passphrase_storage_on_its_first_import(codex_login_launch):
+    instance = codex_login_launch
+    protected = b"synthetic-codex-storage-passphrase"
+    with terminal(instance, instance.arguments) as (process, master, until):
+        _codex_choice(until, master)
+        os.write(master, b"h\n")
+        output = until(b"Choose credential storage")
+        assert not (instance.root / "data/credentials.key").exists()
+        os.write(master, b"passphrase\n")
+        output += until(b"Storage passphrase:")
+        os.write(master, protected + b"\n")
+        output += until(b"Confirm storage passphrase:")
+        os.write(master, protected + b"\n")
+        output += until(b"First-agent services failed")
+        assert b"Codex login authorized for first" in output
+        assert protected not in output
+        assert b"synthetic-first-launch-access" not in output
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+    assert (instance.root / "data/credentials.key").read_text() == "safeyolo-passphrase-v1"
+    pass_file = instance.root.parent / "passphrase"
+    pass_file.write_bytes(protected)
+    imported, = instance.cli("credentials", "list", "--passphrase-file", str(pass_file))
+    assert imported["codex"]["agent"] == "first"
+
+
 def test_codex_login_selection_uses_the_launch_config(codex_login_launch):
     instance = codex_login_launch
     config = instance.root / "selected.toml"
@@ -264,6 +292,8 @@ def test_codex_login_selection_uses_the_launch_config(codex_login_launch):
     with terminal(instance, command=[binary, "--config", str(config), *instance.arguments]) as (process, master, until):
         _codex_choice(until, master)
         os.write(master, b"h\n")
+        until(b"Choose credential storage")
+        os.write(master, b"local\n")
         output = until(b"First-agent services failed")
         assert b"Codex login authorized for first" in output
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0

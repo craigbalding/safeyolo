@@ -1364,6 +1364,61 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             json!({"schema_version":1,"state":"active","instance_id":instance_id}),
         ));
     }
+    if matches!(*method, Method::POST | Method::DELETE) && path == "/admin/credentials/unlock" {
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"runtime is unavailable"}),
+            ));
+        };
+        let unlock = *method == Method::POST;
+        let passphrase = if unlock {
+            let data = match read_json(request).await? {
+                ParsedBody::Value(data) => data,
+                _ => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"unlock requires a passphrase"}),
+                    ));
+                }
+            };
+            let Some(passphrase) = data
+                .0
+                .get("passphrase")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            else {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"unlock requires a passphrase"}),
+                ));
+            };
+            Some(crate::credentials::Secret::new(passphrase))
+        } else {
+            None
+        };
+        let owner = state
+            .read()
+            .map_err(|_| Error::ServiceMutation)?
+            .gateway_vault
+            .clone();
+        let result = tokio::task::spawn_blocking(move || match passphrase {
+            Some(passphrase) => owner.unlock(&passphrase),
+            None => owner.lock(),
+        })
+        .await
+        .map_err(|_| Error::ServiceMutation)?;
+        return Ok(match result {
+            Ok(()) => response(
+                StatusCode::OK,
+                json!({"status":if unlock { "unlocked" } else { "locked" }}),
+            ),
+            Err(_) => response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"credential storage could not be unlocked or locked; check the selected store and passphrase"}),
+            ),
+        });
+    }
     if method == Method::PUT && path == "/admin/proxy/ignore-hosts" {
         let Some(passthrough) = passthrough else {
             return Ok(response(

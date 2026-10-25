@@ -52,7 +52,7 @@ def store_credential(data_dir: Path, name: str, value: str, *, kind: str = "bear
     with tempfile.TemporaryDirectory(prefix="credential-input-", dir=data_dir.parent) as temporary:
         root = Path(temporary)
         (root / "config.toml").write_text(f"data_dir={json.dumps(str(data_dir.resolve()))}\n")
-        command = [str(binary), "--root", str(root), "credentials", "add", name, "--type", kind]
+        command = [str(binary), "--root", str(root), "credentials", "add", name, "--storage", "local", "--type", kind]
         for field, secret in (("value", value), ("refresh-token", refresh_token), ("client-secret", client_secret)):
             if secret is not None:
                 path = root / field

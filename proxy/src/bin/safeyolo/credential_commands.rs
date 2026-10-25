@@ -16,7 +16,7 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials list\nsafeyolo [--root ROOT] credentials remove NAME\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.";
+pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials unlock [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials lock\nsafeyolo [--root ROOT] credentials list [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials remove NAME [--passphrase-file FILE]\n\nInstallation creates no credential storage. The first valid write asks for local random-key storage or passphrase protection; scripts must select --storage. Existing storage keeps its selected type. Passphrase writes explicitly unlock the current proxy; offline writes require credentials unlock after proxy start. Unlock lasts until credentials lock or proxy restart. CLI reads and writes require the passphrase again; use a hidden terminal prompt or --passphrase-file, never a passphrase argument. 1Password references keep secret values in 1Password; reference metadata uses the selected local store.\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.";
 
 pub const SERVICE_HELP: &str = "safeyolo [--root ROOT] services list\nsafeyolo [--root ROOT] services show NAME\nsafeyolo [--root ROOT] services authorize AGENT SERVICE --capability NAME [--credential NAME] [--account NAME] [--host HOST] [--allow-host-network]\nsafeyolo [--root ROOT] services authorized AGENT\nsafeyolo [--root ROOT] services revoke AGENT SERVICE\nsafeyolo [--root ROOT] services bind AGENT SERVICE CAPABILITY --bindings FILE\nsafeyolo [--root ROOT] services approvals\nsafeyolo [--root ROOT] services approve AGENT SERVICE METHOD PATH [--lifetime once|session|remembered]\nsafeyolo [--root ROOT] services grants\nsafeyolo [--root ROOT] services revoke-grant ID\n\nlist/show read the running gateway's accepted catalogue. Operator definitions override builtins with the same name. authorize selects its capability, credential reference and account; --host maps the destination (default: the definition's host). --allow-host-network explicitly permits host-wide network access; service access remains agent-scoped; existing credential policy still applies. Credential-free services omit --credential. authorized shows only this agent's minted gateway credential and scope. bind approves contract values; approve permits a risky route. Neither replaces service authorization. Revocation removes access and keeps the credential for other uses.";
 
@@ -56,6 +56,10 @@ fn file_secret(path: &str) -> Result<Secret, Error> {
 }
 
 fn read_value(fields: &BTreeMap<&str, &str>) -> Result<Secret, Error> {
+    read_secret(fields, "Credential value: ")
+}
+
+fn read_secret(fields: &BTreeMap<&str, &str>, prompt: &str) -> Result<Secret, Error> {
     if ["--value-file", "--value-env", "--stdin"]
         .iter()
         .filter(|key| fields.contains_key(**key))
@@ -87,7 +91,7 @@ fn read_value(fields: &BTreeMap<&str, &str>) -> Result<Secret, Error> {
             return Err("cannot disable terminal echo; use --value-file".into());
         }
         echo = Some(TerminalEcho(original));
-        eprint!("Credential value: ");
+        eprint!("{prompt}");
         std::io::stderr().flush()?;
         std::io::stdin().read_line(&mut value)?;
     } else {
@@ -95,6 +99,126 @@ fn read_value(fields: &BTreeMap<&str, &str>) -> Result<Secret, Error> {
     }
     drop(echo);
     Ok(Secret::new(value.trim_end_matches(['\r', '\n'])))
+}
+
+fn passphrase(fields: &BTreeMap<&str, &str>, creating: bool) -> Result<Secret, Error> {
+    let value = if let Some(path) = fields.get("--passphrase-file") {
+        file_secret(path)?
+    } else if std::io::stdin().is_terminal() {
+        let value = read_secret(&BTreeMap::new(), "Storage passphrase: ")?;
+        if creating {
+            let confirmation = read_secret(&BTreeMap::new(), "Confirm storage passphrase: ")?;
+            if value.expose_secret() != confirmation.expose_secret() {
+                return Err("passphrases do not match; storage was not created".into());
+            }
+        }
+        value
+    } else {
+        return Err("passphrase storage is locked; use --passphrase-file FILE or run this command in a terminal".into());
+    };
+    if value.expose_secret().is_empty() {
+        return Err("storage passphrase is empty".into());
+    }
+    Ok(value)
+}
+
+fn open_storage(
+    data_dir: &Path,
+    fields: &BTreeMap<&str, &str>,
+    writing: bool,
+) -> Result<Option<(credentials::Vault, Option<Secret>)>, Error> {
+    use credentials::Storage;
+    let requested = fields
+        .get("--storage")
+        .map(|value| match *value {
+            "local" => Ok(Storage::Local),
+            "passphrase" => Ok(Storage::Passphrase),
+            _ => Err("--storage must be local or passphrase"),
+        })
+        .transpose()?;
+    let existing = credentials::storage(data_dir)?;
+    if existing.is_some() && !data_dir.join("credentials.enc").try_exists()? {
+        return Err("selected credential storage is unavailable; restore its encrypted file before retrying".into());
+    }
+    if existing.is_some() && requested.is_some() && existing != requested {
+        return Err(
+            "credential storage is already selected; this command cannot change its type".into(),
+        );
+    }
+    let selected = match existing.or(requested) {
+        Some(storage) => storage,
+        None if !writing => return Ok(None),
+        None if std::io::stdin().is_terminal() => loop {
+            eprint!("Choose credential storage [local: random key on this host / passphrase: explicit unlock / q: cancel]: ");
+            std::io::stderr().flush()?;
+            let mut answer = String::new();
+            if std::io::stdin().read_line(&mut answer)? == 0 || answer.trim() == "q" {
+                return Err("credential storage selection cancelled".into());
+            }
+            match answer.trim() {
+                "local" => break Storage::Local,
+                "passphrase" => break Storage::Passphrase,
+                _ => eprintln!("Enter local, passphrase or q."),
+            }
+        },
+        None => return Err("credential storage is not selected; repeat the write with --storage local or --storage passphrase, or use a terminal".into()),
+    };
+    match selected {
+        Storage::Local => {
+            if fields.contains_key("--passphrase-file") {
+                return Err("--passphrase-file requires passphrase storage".into());
+            }
+            let vault = if writing {
+                Some(credentials::open(data_dir)?)
+            } else {
+                credentials::open_existing(data_dir)?
+            };
+            Ok(vault.map(|vault| (vault, None)))
+        }
+        Storage::Passphrase => {
+            let passphrase = passphrase(fields, existing.is_none())?;
+            let vault = if existing.is_none() {
+                credentials::create_passphrase(data_dir, &passphrase)?
+            } else {
+                credentials::Vault::unlock_existing(data_dir.join("credentials.enc"), &passphrase)?
+            };
+            Ok(Some((vault, Some(passphrase))))
+        }
+    }
+}
+
+async fn store_credential(
+    config_path: &Path,
+    config: &safeyolo_proxy::Config,
+    data_dir: &Path,
+    fields: &BTreeMap<&str, &str>,
+    record: Credential,
+) -> Result<(), Error> {
+    let (vault, passphrase) =
+        open_storage(data_dir, fields, true)?.ok_or("credential storage unavailable")?;
+    vault.store(record)?;
+    if let Some(passphrase) = passphrase {
+        if config.readiness_file.is_file() {
+            unlock_proxy(config_path, &passphrase).await.map_err(|_| "credential stored, but the running proxy is still locked; run credentials unlock before credential use")?;
+        } else {
+            eprintln!(
+                "Credential stored. After starting the proxy, run credentials unlock before credential use."
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn unlock_proxy(config_path: &Path, passphrase: &Secret) -> Result<(), Error> {
+    super::admin(
+        config_path,
+        "/admin/credentials/unlock",
+        Method::POST,
+        json!({"passphrase":passphrase.expose_secret()}),
+        Duration::from_secs(5),
+    )
+    .await?;
+    Ok(())
 }
 
 struct TerminalEcho(libc::termios);
@@ -171,6 +295,39 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         .data_dir
         .as_deref()
         .ok_or("credential data directory is unavailable")?;
+    if let [command, rest @ ..] = arguments
+        && matches!(command.as_str(), "unlock" | "lock")
+    {
+        let fields = options(rest)?;
+        validate_options(
+            &fields,
+            if command == "unlock" {
+                &["--passphrase-file"]
+            } else {
+                &[]
+            },
+        )?;
+        if credentials::storage(data_dir)? != Some(credentials::Storage::Passphrase) {
+            return Err("passphrase storage is not selected".into());
+        }
+        if command == "unlock" {
+            unlock_proxy(config_path, &passphrase(&fields, false)?).await?;
+            println!(
+                "Credential storage unlocked for this proxy process. Restart or credentials lock requires another explicit unlock."
+            );
+        } else {
+            super::admin(
+                config_path,
+                "/admin/credentials/unlock",
+                Method::DELETE,
+                Value::Null,
+                Duration::from_secs(5),
+            )
+            .await?;
+            println!("Credential storage locked.");
+        }
+        return Ok(());
+    }
     if let [command, name, rest @ ..] = arguments
         && command == "import-codex"
     {
@@ -180,7 +337,14 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         let fields = options(rest)?;
         validate_options(
             &fields,
-            &["--agent", "--auth-file", "--scope", "--expires-at"],
+            &[
+                "--agent",
+                "--auth-file",
+                "--scope",
+                "--expires-at",
+                "--storage",
+                "--passphrase-file",
+            ],
         )?;
         let agent = fields.get("--agent").ok_or("--agent is required")?;
         let path = fields.get("--auth-file").ok_or("--auth-file is required")?;
@@ -230,22 +394,26 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         if record.is_expired(time::OffsetDateTime::now_utc())? {
             return Err("Codex authorization expiry is invalid or already expired".into());
         }
-        credentials::open(data_dir)?.store(record)?;
+        store_credential(config_path, &config, data_dir, &fields, record).await?;
         println!(
             "Codex login authorized for {agent}; remove credential {name} to revoke it. Existing credential and network rules still apply."
         );
         return Ok(());
     }
     match arguments {
-        [command] if command == "list" => {
-            let metadata = credentials::open_existing(data_dir)?
-                .map(|vault| vault.metadata())
+        [command, rest @ ..] if command == "list" => {
+            let fields = options(rest)?;
+            validate_options(&fields, &["--passphrase-file"])?;
+            let metadata = open_storage(data_dir, &fields, false)?
+                .map(|(vault, _)| vault.metadata())
                 .transpose()?
                 .unwrap_or_default();
             println!("{}", serde_json::to_string_pretty(&metadata)?)
         }
-        [command, name] if command == "remove" => {
-            let Some(vault) = credentials::open_existing(data_dir)? else {
+        [command, name, rest @ ..] if command == "remove" => {
+            let fields = options(rest)?;
+            validate_options(&fields, &["--passphrase-file"])?;
+            let Some((vault, _)) = open_storage(data_dir, &fields, false)? else {
                 return Err("credential not found".into());
             };
             if !vault.remove(name)? {
@@ -256,7 +424,13 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         [command, name, rest @ ..] if matches!(command.as_str(), "add" | "reference") => {
             let fields = options(rest)?;
             let allowed: &[&str] = if command == "reference" {
-                &["--type", "--provider", "--reference"]
+                &[
+                    "--type",
+                    "--provider",
+                    "--reference",
+                    "--storage",
+                    "--passphrase-file",
+                ]
             } else {
                 &[
                     "--type",
@@ -268,6 +442,8 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
                     "--client-id",
                     "--client-secret-file",
                     "--expires-at",
+                    "--storage",
+                    "--passphrase-file",
                 ]
             };
             validate_options(&fields, allowed)?;
@@ -311,7 +487,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             record.client_id = fields.get("--client-id").map(|value| value.to_string());
             record.expires_at = fields.get("--expires-at").map(|value| value.to_string());
             record.is_expired(time::OffsetDateTime::now_utc())?;
-            credentials::open(data_dir)?.store(record)?;
+            store_credential(config_path, &config, data_dir, &fields, record).await?;
             println!("Credential stored: {name} (type={kind})");
         }
         _ => return Err("invalid credentials command; see credentials --help".into()),

@@ -169,6 +169,12 @@ Select `a` to authorize a trusted login already in that agent's home, `h` to
 select the host's `CODEX_HOME/auth.json` (default `~/.codex/auth.json`), or enter
 another trusted file path. The choice uses `credentials import-codex` for the
 new agent's unique identity; it needs no separate import shell command.
+Installation asks no storage question and creates no vault. If this import is
+the first credential write, it asks for local random-key storage or passphrase
+protection. Passphrase storage requires an explicit unlock after each proxy
+restart. If launch imports while the proxy is stopped, launch asks for that
+unlock after services become ready and before the client starts. See
+[credential storage and unlock](credentials.md#store-a-local-credential).
 If the agent has no login, the selected host file is also copied privately. The guest
 can read the copy; the host original and an existing agent login are preserved.
 Copying or adoption alone grants no proxy authority. If authorization fails,

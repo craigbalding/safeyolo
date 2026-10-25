@@ -3923,3 +3923,102 @@ async fn locked_vault_does_not_delay_readiness_independent_traffic_or_leak_contr
     proxy.shutdown().await;
     origin_task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passphrase_storage_requires_operator_unlock_after_lock_and_restart() {
+    use safeyolo_proxy::credentials::create_passphrase;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for name in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+    }
+    std::fs::write(root.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root.join("data/agent_token"), b"agent-token").unwrap();
+    let vault = create_passphrase(&root.join("data"), &Secret::new(PASS)).unwrap();
+    vault
+        .store(Credential::new(
+            "simple-secret",
+            "bearer",
+            Secret::new("synthetic-protected-value"),
+        ))
+        .unwrap();
+    std::fs::write(root.join("builtin/simple.yaml"), SERVICE).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), port));
+    let policy = bound_gateway_policy(port)
+        .replace(
+            "detection_level = \"none\"",
+            "detection_level = \"standard\"",
+        )
+        .replace(
+            "use_default_credential_rules = false",
+            "use_default_credential_rules = true",
+        )
+        .replace(
+            "standard_auth_headers = []",
+            "standard_auth_headers = [\"x-api-key\"]",
+        )
+        + "\n[credential.locked-leak]\nmatch = ['locked-leak-[a-z]+']\nheaders = ['x-api-key']\nallowed_hosts = ['elsewhere.invalid']\n";
+    std::fs::write(root.join("policy.toml"), policy).unwrap();
+    let encrypted = std::fs::read(root.join("data/credentials.enc")).unwrap();
+    for _ in 0..2 {
+        let proxy = Proxy::start(config(root)).await.unwrap();
+        let ready: Value =
+            serde_json::from_slice(&std::fs::read(root.join("ready.json")).unwrap()).unwrap();
+        let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+        let socket = root.join("alice.sock");
+        let view = wait_for_alice(&socket).await;
+        let token = view["authorized"]["simple"]["token"].as_str().unwrap();
+        let before = seen.lock().unwrap().len();
+        status(&send_agent(&socket, port, token, "127.0.0.1").await, "503");
+        assert_eq!(seen.lock().unwrap().len(), before);
+        let plain = raw_http(&socket, format!("GET http://127.0.0.1:{port}/independent HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).await;
+        status(&plain, "200");
+        let leak = raw_http(&socket, format!("GET http://127.0.0.1:{port}/independent HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Api-Key: locked-leak-secret\r\nConnection: close\r\n\r\n").as_bytes()).await;
+        status(&leak, "428");
+        for (authorization, document, expected) in [
+            ("agent-token", json!({"passphrase":PASS}).to_string(), "401"),
+            ("operator-token", format!("{{bad-{PASS}"), "400"),
+            (
+                "operator-token",
+                json!({"passphrase":"wrong"}).to_string(),
+                "400",
+            ),
+            (
+                "operator-token",
+                json!({"passphrase":PASS}).to_string(),
+                "200",
+            ),
+        ] {
+            let reply = admin_http(admin_port, format!("POST /admin/credentials/unlock HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{document}", document.len()).as_bytes()).await;
+            status(&reply, expected);
+            assert!(!String::from_utf8_lossy(&reply).contains(PASS));
+        }
+        status(&send_agent(&socket, port, token, "127.0.0.1").await, "200");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .windows(b"Bearer synthetic-protected-value".len())
+                .any(|bytes| bytes == b"Bearer synthetic-protected-value")
+        );
+        let reply = admin_http(admin_port, b"DELETE /admin/credentials/unlock HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nConnection: close\r\n\r\n").await;
+        status(&reply, "200");
+        let before = seen.lock().unwrap().len();
+        status(&send_agent(&socket, port, token, "127.0.0.1").await, "503");
+        assert_eq!(seen.lock().unwrap().len(), before);
+        assert_eq!(
+            std::fs::read(root.join("data/credentials.enc")).unwrap(),
+            encrypted
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("data/credentials.key")).unwrap(),
+            safeyolo_proxy::credentials::PASSPHRASE_KEY_MARKER
+        );
+        proxy.shutdown().await;
+    }
+    origin_task.abort();
+}

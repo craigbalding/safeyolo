@@ -17,7 +17,8 @@ WORKSPACE defaults to the current directory. The harness defaults to Claude.
 Launch asks before host setup, workspace sharing and optional authentication copying,
 then starts the installed services and opens the agent terminal. For a stopped Codex
 agent, select a trusted subscription login to authorize before startup, or keep normal
-login/approvals. If the agent has no login, launch also copies the selected host file.
+login/approvals. The first import asks for credential storage. Passphrase storage
+requires explicit unlock; installation asks no storage question. If the agent has no login, launch also copies the selected host file.
 In tmux, press Ctrl-b then d to return here for approvals.
 Numbered requests use the existing inspect/approve/reject operations. Network approval is
 agent-specific and reusable; credential approval changes persistent instance-shared policy.
@@ -215,7 +216,13 @@ async fn start(agent: &host_agents::Agent) -> Result<(), Error> {
     Ok(())
 }
 
-async fn codex_login(agent: &host_agents::Agent) -> Result<bool, Error> {
+enum CodexLogin {
+    Cancelled,
+    NormalApprovals,
+    Imported,
+}
+
+async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
     let root = host_platform::config_dir();
     let directory = root.join("agents").join(&agent.name);
     let _lock = tokio::task::spawn_blocking(move || {
@@ -224,7 +231,7 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<bool, Error> {
     .await??;
     current_selection(agent)?;
     if host_lifecycle::runtime(agent).await?["runtime_state"] != "stopped" {
-        return Ok(true);
+        return Ok(CodexLogin::NormalApprovals);
     }
     let home = root.join("agents").join(&agent.name).join("home");
     let auth = home.join(".codex/auth.json");
@@ -249,11 +256,11 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<bool, Error> {
             "Codex login [a/h/file path, Enter: guest login/normal approvals, q: cancel launch]: ",
         )?
         else {
-            return Ok(false);
+            return Ok(CodexLogin::Cancelled);
         };
         let source = match choice.as_str() {
-            "" => return Ok(true),
-            "q" => return Ok(false),
+            "" => return Ok(CodexLogin::NormalApprovals),
+            "q" => return Ok(CodexLogin::Cancelled),
             "a" => auth.clone(),
             "h" => host_auth.clone(),
             _ => PathBuf::from(choice),
@@ -280,7 +287,7 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<bool, Error> {
             Ok::<(), Error>(())
         }.await;
         match result {
-            Ok(()) => return Ok(true),
+            Ok(()) => return Ok(CodexLogin::Imported),
             Err(error) => eprintln!("{}", phase("Codex authorization", error)),
         }
     }
@@ -382,18 +389,21 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             .await
             .map_err(|error| phase("host setup", error))?
     };
-    if harness == "codex"
-        && !codex_login(&agent)
+    let login = if harness == "codex" {
+        codex_login(&agent)
             .await
             .map_err(|error| phase("Codex login selection", error))?
-    {
+    } else {
+        CodexLogin::NormalApprovals
+    };
+    if matches!(login, CodexLogin::Cancelled) {
         println!(
             "Launch cancelled; saved agent state is retained. Services and the coding client were not started by this launch."
         );
         return Ok(0);
     }
     println!("Starting or reusing the installed services…");
-    host_commands::start_proxy()
+    let started = host_commands::start_proxy()
         .await
         .map_err(|error| phase("services", error))?;
     crate::native_client::admin(
@@ -414,6 +424,30 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             "Coord readiness",
             "managed NATS is not healthy; inspect coord status and the owned NATS log",
         ));
+    }
+    // An offline import cannot unlock a future process. After readiness, ask
+    // explicitly for that process's unlock before starting the selected client.
+    // Imports into a reused proxy already unlock through the credential command.
+    if matches!(login, CodexLogin::Imported)
+        && started.is_some()
+        && crate::credentials::storage(
+            &crate::native_config::read(&host_platform::config_path())?.data_dir(),
+        )? == Some(crate::credentials::Storage::Passphrase)
+    {
+        println!("Unlock credential storage for the imported Codex login before client startup.");
+        let status = tokio::process::Command::new(root.join("bin/safeyolo"))
+            .arg("--config")
+            .arg(host_platform::config_path())
+            .args(["credentials", "unlock"])
+            .kill_on_drop(true)
+            .status()
+            .await?;
+        if !status.success() {
+            return Err(phase(
+                "credential unlock",
+                "proxy remains ready; run credentials unlock before retrying launch",
+            ));
+        }
     }
     println!(
         "Starting or resuming {harness}. First use may download tools; sign in if {client} asks. In tmux, Ctrl-b then d returns to trusted SafeYolo approvals in this terminal."

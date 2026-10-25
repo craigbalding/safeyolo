@@ -32,13 +32,40 @@ In a host terminal, inspect the running service definition, then add the token:
 Add replaces an existing credential with the same name. List prints only its
 name, type, expiry and external reference. Local use needs neither `op` nor
 Python. Installation creates no vault and asks no storage question. The first
-secret or reference write creates `data/credentials.key` and encrypted
-`data/credentials.enc`, both with mode 0600. New stores use a marked random
-encryption key without password stretching. Existing unmarked keys retain their
-passphrase derivation and ciphertext; unrelated legacy vault filenames are ignored.
+valid add, reference write or Codex import asks you to choose `local` random-key
+storage or `passphrase` protection. To cancel before creation, enter `q`.
+For a script or piped input, supply `--storage local` or `--storage passphrase`
+on the first write. No backend is selected automatically.
+
+Both choices create encrypted `data/credentials.enc` and `data/credentials.key`
+with mode 0600. Local storage keeps a marked random encryption key in the key
+file and needs no password stretching. Passphrase storage keeps only a format
+marker there. It never saves the passphrase or derived key. Enter and confirm
+the passphrase at the hidden prompt, or use `--passphrase-file FILE` with a
+host file that you protect. Never put a passphrase in command arguments.
+Existing unmarked local keys retain their existing derivation and ciphertext;
+unrelated legacy vault filenames are ignored. Reading does not migrate data.
+An existing store keeps its type; `--storage` does not convert existing data.
+
 Proxy readiness does not wait for storage creation or unlock. Operations that need
 stored credentials load the vault on demand and fail closed if it is unavailable.
 Ordinary proxy stop/start retains these files and service authorization.
+Passphrase storage starts locked after each proxy restart. On the host, after
+starting that instance, run:
+
+```sh
+safeyolo credentials unlock
+```
+
+The command prompts without echo and unlocks only the running proxy process.
+Use `credentials lock` to require another explicit unlock. Independent traffic
+and credential-leak controls remain ready while locked. A passphrase-protected
+CLI read, removal or write also needs the passphrase, even if the proxy is
+unlocked. Those commands accept `--passphrase-file FILE` for noninteractive use.
+A successful passphrase write unlocks the current proxy. If the proxy is stopped,
+start it and run `credentials unlock` before using stored credentials.
+1Password secret values remain in 1Password; reference metadata uses the selected
+local store and the existing host provider resolves values after authorization.
 
 `services authorized` returns Alice's current `sgw_` credential, account,
 credential reference name, capability and compiled routes. An agent obtains its own token from the authenticated Agent API
