@@ -346,11 +346,11 @@ async fn blob(
         written?;
         if let Some(decoder) = decoding {
             if let Some(timing) = timing.as_deref_mut() {
-                timing.decoder_write.start();
+                timing.decoder_enqueue.start();
             }
-            let decoded = decoder.write(&bytes).await;
+            let decoded = decoder.write(bytes).await;
             if let Some(timing) = timing.as_deref_mut() {
-                timing.decoder_write.finish();
+                timing.decoder_enqueue.finish();
             }
             if let Err(error) = decoded {
                 eprintln!("SafeYolo: guest download decoding deferred: {error}.");
@@ -815,7 +815,11 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             if let Some(timing) = timing.as_mut() {
                 timing.decoder_finish.start();
             }
-            let finished = decoder.finish().await;
+            let finished = tokio::select! {
+                result = decoder.finish() => result,
+                _ = terminate.recv() => return Err("guest download interrupted; verified blobs remain reusable".into()),
+                _ = interrupt.recv() => return Err("guest download interrupted; verified blobs remain reusable".into()),
+            };
             if let Some(timing) = timing.as_mut() {
                 timing.decoder_finish.finish();
                 timing.decoder_status = if finished.is_ok() {

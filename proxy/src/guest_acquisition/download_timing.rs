@@ -38,7 +38,9 @@ pub(super) struct DownloadTiming {
     pub(super) request_setup: DownloadStep,
     pub(super) stream_try_next: DownloadStep,
     pub(super) compressed_write: DownloadStep,
-    pub(super) decoder_write: DownloadStep,
+    // Queueing can overlap decode/output. It measures backpressure, not the
+    // worker's CPU or file-write time. Finish includes any remaining queued work.
+    pub(super) decoder_enqueue: DownloadStep,
     pub(super) compressed_flush: DownloadStep,
     pub(super) compressed_sync: DownloadStep,
     pub(super) decoder_finish: DownloadStep,
@@ -64,7 +66,7 @@ impl DownloadTiming {
             request_setup: DownloadStep::default(),
             stream_try_next: DownloadStep::default(),
             compressed_write: DownloadStep::default(),
-            decoder_write: DownloadStep::default(),
+            decoder_enqueue: DownloadStep::default(),
             compressed_flush: DownloadStep::default(),
             compressed_sync: DownloadStep::default(),
             decoder_finish: DownloadStep::default(),
@@ -96,7 +98,7 @@ impl Drop for DownloadTiming {
             "eof_at_s": self.eof_at_s,
             "stream_try_next_s": self.stream_try_next.seconds(),
             "compressed_write_s": self.compressed_write.seconds(),
-            "decoder_write_s": self.decoder_write.seconds(),
+            "decoder_enqueue_s": self.decoder_enqueue.seconds(),
             "compressed_flush_s": self.compressed_flush.seconds(),
             "compressed_sync_s": self.compressed_sync.seconds(),
             "decoder_finish_s": self.decoder_finish.seconds(),
