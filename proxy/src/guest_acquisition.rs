@@ -293,11 +293,11 @@ async fn blob(
             return Err("guest descriptor size mismatch".into());
         }
         output.write_all(&bytes).await?;
-        if let Some(decoder) = decoding {
-            if let Err(error) = decoder.write(&bytes).await {
-                eprintln!("SafeYolo: guest download decoding deferred: {error}.");
-                *decoding = None;
-            }
+        if let Some(decoder) = decoding
+            && let Err(error) = decoder.write(&bytes).await
+        {
+            eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+            *decoding = None;
         }
     }
     descriptor.check_size(size)?;
