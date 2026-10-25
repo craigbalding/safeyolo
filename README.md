@@ -35,10 +35,6 @@ belong to the earlier product.
 existing host login. Waits are shortened and output is summarized. This is not
 a benchmark or a raw recording. The text quick start below uses Claude.
 
-The preview reconstructs observed native build
-[`ff931e48` (prerelease)](https://github.com/craigbalding/safeyolo/releases/tag/host-ff931e4880671dae2b934af33d97eee7b0889e5c).
-The public install command shown uses Latest, which may supply a different build.
-
 ![SafeYolo installation preview: download, review access, and open Codex](docs/media/install-preview.gif)
 
 [Terminal walkthrough (.cast)](docs/media/install-preview.cast)
