@@ -149,6 +149,26 @@ def codex_release(tmp_path, contents, *, young_latest=False, version="9.9.9"):
     return payload, path, metadata
 
 
+@pytest.mark.parametrize("encoding", ["gzip", "invalid-gzip"])
+def test_codex_prefetch_decodes_compressed_metadata_before_selection(registry, native_cli, tmp_path, encoding):
+    contents, requests, faults, environment = registry
+    _payload, asset, metadata = codex_release(tmp_path, contents, young_latest=True)
+    releases = "/repos/openai/codex/releases"
+    contents[releases] = gzip.compress(contents[releases]) if encoding == "gzip" else b"invalid gzip"
+    faults["gzip"] = releases
+    environment["CURL_CA_BUNDLE"] = environment["SSL_CERT_FILE"]
+    output = tmp_path / "prefetched"
+    result = run(str(native_cli), "codex", "prefetch", str(output), env=environment)
+    if encoding == "invalid-gzip":
+        assert result.returncode != 0 and not output.exists()
+        assert requests == [releases]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (output / "version").read_text().strip() == "9.9.9"
+        assert (output / "upstream.json").read_text() == json.dumps(metadata)
+        assert requests == [releases, asset]
+
+
 @pytest.mark.parametrize("fault", ["young", "future", "draft", "prerelease", "tag", "date",
                                    "missing-asset", "missing-digest", "url", "duplicate-asset",
                                    "missing-date"])

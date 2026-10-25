@@ -177,6 +177,9 @@ def registry(tmp_path):
                 self.send_error(404)
                 return
             self.send_response(200)
+            if key is not None and key == faults.get("gzip"):
+                assert "gzip" in self.headers.get("Accept-Encoding", "")
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Docker-Content-Digest", digest(data))
             self.send_header("Connection", "close")
