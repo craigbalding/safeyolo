@@ -492,10 +492,6 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-#[path = "../tests/support/owned_run.rs"]
-mod launch_test_run;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,7 +524,7 @@ mod tests {
         let root = PathBuf::from(root);
         let mode = std::env::var("SAFEYOLO_TEST_LAUNCH_OBSERVATION_MODE").unwrap();
         fs::create_dir(root.join("bin")).unwrap();
-        let mut backend = launch_test_run::OwnedRun::start(&root);
+        let mut backend = host_platform::guest_command_test_run::OwnedRun::start(&root);
         // Environment changes are confined to this fixture subprocess. The
         // shared helper retains the real namespace and process-birth checks.
         unsafe {
