@@ -191,6 +191,21 @@ if [ -f /safeyolo/host-mounts ]; then
     done < /safeyolo/host-mounts
 fi
 
+# Host mounts can replace /etc/ssh, so resolve its marker and keys only after
+# mounting. Overlap generation in that final directory with CA setup. Join
+# before starting sshd or completing static init, including before a snapshot.
+ssh_keygen_pid=
+if command -v ssh-keygen >/dev/null 2>&1 \
+   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
+    # Repair old base images containing shared keys before generating keys
+    # local to this agent's overlay or operator-selected mount.
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
+    ssh-keygen -A >/dev/null 2>&1 &
+    ssh_keygen_pid=$!
+    # A failed static setup must not leave key generation running behind it.
+    trap 'kill "$ssh_keygen_pid" 2>/dev/null || true; wait "$ssh_keygen_pid" 2>/dev/null || true' EXIT
+fi
+
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
@@ -275,17 +290,11 @@ if [ -f /safeyolo/authorized_keys ]; then
     usermod -p '*' root 2>/dev/null || true
 fi
 
-if command -v ssh-keygen >/dev/null 2>&1 \
-   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
-    # Generate SSH host keys inside the guest overlay instead of baking
-    # reusable private keys into the base rootfs image or repo-visible
-    # rootfs-tree build output. The pre-delete repairs old base images that
-    # already contain generated host keys: overlayfs records the deletion and
-    # the regenerated keys are agent-local from then on.
-    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
-    if ssh-keygen -A >/dev/null 2>&1; then
+if [ -n "$ssh_keygen_pid" ]; then
+    if wait "$ssh_keygen_pid"; then
         touch /etc/ssh/.safeyolo-host-keys-generated 2>/dev/null || true
     fi
+    trap - EXIT
 fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above
