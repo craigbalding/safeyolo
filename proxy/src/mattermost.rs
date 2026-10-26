@@ -463,6 +463,9 @@ impl Adapter {
         }
         let projection = projection.ok_or("missing inbound projection")?;
         let body=self.operator_body(if selected.is_some(){"action"}else{"reply"},selected,note,json!({"coord_msg_id":projection["coord_msg_id"],"mattermost_post_id":id,"mattermost_root_post_id":post["root_id"],"mattermost_channel_id":room.channel}));
+        // A catch-up batch can outlive the preceding poll verification. Each
+        // new append needs a current active-human check before becoming pending.
+        self.verify_operator().await?;
         self.execute("INSERT INTO inbound_post(mattermost_post_id,coord_room,status,created_at) VALUES (?1,?2,'pending',?3)",params![id,room.name,now()])?;
         let result = self
             .coord

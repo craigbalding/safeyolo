@@ -119,6 +119,8 @@ class MattermostRequest(BaseHTTPRequestHandler):
             fault = remote.get_faults.get(path.path) if self.command == "GET" else None
             if self.command == "GET" and path.path.endswith("/posts"):
                 fault = remote.page_faults.get((path.path.split("/")[-2], int(query.get("page", [0])[0])), fault)
+        if callable(fault):
+            fault = fault()
         if fault == "disconnect":
             self.close_connection = True
             self.connection.shutdown(socket.SHUT_RDWR)
@@ -483,19 +485,48 @@ def test_native_signal_interrupts_backoff_and_releases_listener_and_lease(exchan
         until(lambda: connected(instance))
 
 
-@pytest.mark.parametrize("identity", ["deactivated", "different", "bot"])
-def test_native_confirmed_invalid_operator_is_terminal_and_fail_closed(exchange, identity):
+@pytest.mark.parametrize("identity", ["deactivated", "different", "bot", "bot_identity", "ca"])
+def test_native_invalid_identity_or_transport_configuration_is_terminal(exchange, identity):
     instance, remote = exchange
     if identity == "deactivated":
         remote.human["delete_at"] = 1
     elif identity == "different":
         remote.human["id"] = "x" * 26
-    else:
+    elif identity == "bot":
         remote.human["is_bot"] = True
+    elif identity == "bot_identity":
+        config = instance.root / "coord-mattermost.toml"
+        config.write_text(config.read_text().replace(f'bot_user_id="{BOT}"', f'bot_user_id="{"q" * 26}"'))
+    else:
+        instance.environment["SSL_CERT_FILE"] = str(instance.root / "missing-ca.pem")
     with daemon(instance) as process:
         until(lambda: process.poll() is not None)
         assert process.returncode != 0 and operator_requests(instance) == []
-    assert b"active human" in process.captured
+    expected = b"configuration" if identity == "ca" else b"active bot" if identity == "bot_identity" else b"active human"
+    assert expected in process.captured
+
+
+def test_native_authorization_outage_between_backlog_appends_retains_unsent_replies(exchange):
+    instance, remote = exchange
+    agent_send(instance, "batch authorization question")
+    assert once(instance).returncode == 0
+    root = remote.projected()[0]["id"]
+    for index in range(5):
+        remote.add(root=root, body=f"authorized reply {index}")
+
+    def unavailable_after_first_append():
+        return 502 if ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") >= 1 else None
+
+    remote.get_faults[f"/api/v4/users/{HUMAN}"] = unavailable_after_first_append
+    with daemon(instance) as process:
+        until(lambda: failed_sync(instance))
+        assert ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1
+        assert ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='pending'") == 0
+        assert len(operator_requests(instance)) == 1 and process.poll() is None
+        remote.get_faults.clear()
+        until(lambda: connected(instance))
+        assert [json.loads(message["body"])["text"] for message in operator_requests(instance)] == [
+            f"authorized reply {index}" for index in range(5)]
 
 
 def second_mapping(instance):

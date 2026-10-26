@@ -40,6 +40,24 @@ async fn retry_categories_backoff_cap_jitter_and_recovery_reset() {
         assert_eq!(get.retry_after, Some(Duration::from_secs(90)));
         assert_eq!(Failure::http(&error, true).kind, Kind::Reconcile);
     }
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidInput,
+        std::io::ErrorKind::InvalidData,
+    ] {
+        let error: Error = std::io::Error::from(kind).into();
+        assert_eq!(Failure::http(&error, false).kind, Kind::Permanent);
+    }
+    for kind in [
+        std::io::ErrorKind::ConnectionRefused,
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::UnexpectedEof,
+        std::io::ErrorKind::TimedOut,
+    ] {
+        let error: Error = std::io::Error::from(kind).into();
+        assert_eq!(Failure::http(&error, false).kind, Kind::Transient);
+    }
     for failures in [1, 2, 5, 6, 32, u32::MAX] {
         let low = retry_delay(failures, None, 0.0);
         let high = retry_delay(failures, None, 1.0);

@@ -97,14 +97,32 @@ impl Failure {
         } else if let Some(io) = error.downcast_ref::<std::io::Error>() {
             // Certificate and TLS protocol failures require configuration repair.
             let tls = io.get_ref().is_some_and(|e| e.is::<rustls::Error>());
+            let configuration = tls
+                || matches!(
+                    io.kind(),
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::PermissionDenied
+                        | std::io::ErrorKind::InvalidInput
+                        | std::io::ErrorKind::InvalidData
+                );
             Self::new(
-                if tls {
+                if configuration {
                     Kind::Permanent
                 } else {
                     Kind::Transient
                 },
-                if tls { "tls" } else { "connection" },
-                "Mattermost connection failed",
+                if tls {
+                    "tls"
+                } else if configuration {
+                    "transport_configuration"
+                } else {
+                    "connection"
+                },
+                if configuration {
+                    "Mattermost transport configuration is invalid"
+                } else {
+                    "Mattermost connection failed"
+                },
             )
         } else {
             Self::new(
