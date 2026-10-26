@@ -55,8 +55,12 @@ def trust_store(tmp_path, certificates):
     openssl = tmp_path / "bin/openssl"
     openssl.write_text(
         '#!/bin/sh\n'
-        'if [ "$1" = rehash ] && [ -f "$TEST_ROOT/rehash-fails-once" ]; then\n'
-        '    rm "$TEST_ROOT/rehash-fails-once"; exit 1\n'
+        'echo "$1" >> "$TEST_ROOT/openssl-commands"\n'
+        'if [ "$1" = x509 ] && [ -f "$TEST_ROOT/hash-fails-once" ]; then\n'
+        '    rm "$TEST_ROOT/hash-fails-once"; exit 1\n'
+        'fi\n'
+        'if [ "$1" = x509 ] && [ -f "$TEST_ROOT/unsupported-hash-fails-once" ]; then\n'
+        '    rm "$TEST_ROOT/unsupported-hash-fails-once"; echo unsupported; exit 0\n'
         'fi\n'
         'exec "$TEST_OPENSSL" "$@"\n'
     )
@@ -67,6 +71,7 @@ def trust_store(tmp_path, certificates):
         capture_output=True, timeout=10,
     )
     (tmp_path / "updates").unlink()
+    (tmp_path / "openssl-commands").unlink()
     shutil.copyfile(certificates / "instance.crt", tmp_path / "source.pem")
     shutil.copyfile(tmp_path / "source.pem", tmp_path / "local/safeyolo.crt")
     return tmp_path
@@ -81,6 +86,36 @@ def test_fresh_boot_reuses_prepared_system_trust(trust_store, certificates):
     assert not (root / "updates").exists()
     assert (root / "local/safeyolo.crt").read_bytes() == (root / "source.pem").read_bytes()
     assert (root / "store/ca-certificates.crt").read_bytes().startswith(prepared)
+    assert (root / "openssl-commands").read_text().splitlines() == ["x509"]
+    _assert_trust(root, certificates, "system", "instance")
+
+
+def test_fresh_boot_preserves_subject_hash_collisions(trust_store, certificates):
+    root = trust_store
+    links = {path.name: path.readlink() for path in (root / "store").iterdir() if path.is_symlink()}
+    assert _run_ca_block(root).returncode == 0
+    for name, target in links.items():
+        assert (root / "store" / name).readlink() == target
+    subject_hash = subprocess.check_output(
+        [OPENSSL, "x509", "-in", str(root / "source.pem"), "-noout", "-subject_hash"],
+        text=True, timeout=10,
+    ).strip()
+    assert (root / "store" / f"{subject_hash}.0").readlink() == Path("system.pem")
+    assert (root / "store" / f"{subject_hash}.1").readlink() == Path("safeyolo.pem")
+    _assert_trust(root, certificates, "system", "instance")
+
+
+def test_dangling_hash_collision_falls_back_to_distro_repair(trust_store, certificates):
+    root = trust_store
+    subject_hash = subprocess.check_output(
+        [OPENSSL, "x509", "-in", str(root / "source.pem"), "-noout", "-subject_hash"],
+        text=True, timeout=10,
+    ).strip()
+    (root / "store" / f"{subject_hash}.1").symlink_to("absent.pem")
+    result = _run_ca_block(root)
+
+    assert result.returncode == 0, result.stderr
+    assert (root / "updates").read_text() == "refresh\n"
     _assert_trust(root, certificates, "system", "instance")
 
 
@@ -244,9 +279,10 @@ def test_other_distros_keep_existing_updater(trust_store, certificates):
     _assert_trust(root, certificates, "system", "instance")
 
 
-def test_failed_index_falls_back_to_distro_repair(trust_store, certificates):
+@pytest.mark.parametrize("failure", ["hash", "unsupported-hash", "link", "commit"])
+def test_failed_index_falls_back_to_distro_repair(trust_store, certificates, failure):
     root = trust_store
-    (root / "rehash-fails-once").touch()
+    (root / f"{failure}-fails-once").touch()
     result = _run_ca_block(root)
 
     assert result.returncode == 0, result.stderr
@@ -257,7 +293,7 @@ def test_failed_index_falls_back_to_distro_repair(trust_store, certificates):
 
 def test_failed_update_warns_and_next_boot_repairs(trust_store, certificates):
     root = trust_store
-    (root / "rehash-fails-once").touch()
+    (root / "link-fails-once").touch()
     (root / "update-fails").touch()
     prepared = (root / "store/ca-certificates.crt").read_bytes()
     result = _run_ca_block(root)
@@ -338,6 +374,10 @@ def _run_ca_block(root, *, fail_certificate_read=False, interrupt_alias_removal=
     command = (
         'install() { cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" && exit 91; '
         'command install "$@"; };\n'
+        'ln() { if [ "$2" = safeyolo.pem ] && [ -f "$TEST_ROOT/link-fails-once" ]; then '
+        'rm "$TEST_ROOT/link-fails-once"; return 1; fi; command ln "$@"; };\n'
+        'mv() { if [ -f "$TEST_ROOT/commit-fails-once" ]; then '
+        'rm "$TEST_ROOT/commit-fails-once"; return 1; fi; command mv "$@"; };\n'
     )
     if fail_certificate_read:
         command += 'cat() { [ "$1" != "$SY_CERT_DST" ] && command cat "$@"; };\n'

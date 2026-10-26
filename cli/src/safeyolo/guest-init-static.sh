@@ -119,28 +119,27 @@ fi
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
 #
 # On macOS (VZ microVM), VirtioFS is the mount mechanism -- failure is
-# fatal. On Linux (gVisor), the OCI spec handles mounts via bind -- the
-# virtiofs mount calls legitimately fail and are skipped. Detect by
+# fatal. On Linux (gVisor), the OCI spec handles mounts via bind. Detect by
 # checking if /workspace is already mounted (OCI bind-mounts appear
-# before init runs).
+# before init runs). Keep that decision for all shares: mounting the VZ
+# workspace must not suppress failures on the remaining shares.
 # --------------------------------------------------------------------------
-_needs_virtiofs_mount() { ! mountpoint -q /workspace 2>/dev/null; }
+needs_virtiofs_mount=1
+if mountpoint -q /workspace 2>/dev/null; then
+    needs_virtiofs_mount=0
+fi
 
 mkdir -p /workspace
-if _needs_virtiofs_mount; then
+if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs workspace /workspace
-else
-    mount -t virtiofs workspace /workspace 2>/dev/null || true
 fi
 
 # Status share -- writable channel for guest→host signals (vm-status,
 # per-run-started, etc.). Separate from /safeyolo so the config share
 # can be read-only.
 mkdir -p /safeyolo-status
-if _needs_virtiofs_mount; then
+if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs status /safeyolo-status
-else
-    mount -t virtiofs status /safeyolo-status 2>/dev/null || true
 fi
 
 # Persistent /home/agent -- must mount before the host-config-mount
@@ -151,10 +150,8 @@ fi
 # installs persist here too. Seed missing /etc/skel entries without replacing
 # anything already written by a host setup script or the operator.
 mkdir -p /home/agent
-if _needs_virtiofs_mount; then
+if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs home /home/agent
-else
-    mount -t virtiofs home /home/agent 2>/dev/null || true
 fi
 if [ -d /etc/skel ]; then
     # `cp -r` (not `-a`) -- VirtioFS on VZ rejects utimes, which makes
@@ -163,7 +160,7 @@ if [ -d /etc/skel ]; then
     # on skel dotfiles aren't load-bearing. Copy as agent so newly seeded
     # files have the right ownership on both Linux bind mounts and VZ
     # VirtioFS. Globs cover ordinary and hidden skeleton entries.
-    su agent -c '
+    seed_home='
         for source in /etc/skel/* /etc/skel/.[!.]* /etc/skel/..?*; do
             [ -e "$source" ] || [ -L "$source" ] || continue
             name=${source##*/}
@@ -171,6 +168,14 @@ if [ -d /etc/skel ]; then
                 cp -r "$source" "/home/agent/$name"
         done
     '
+    # setpriv avoids a PAM session just to copy files. Probe the same identity
+    # and environment options so older/custom images retain the su route.
+    if command -v setpriv >/dev/null 2>&1 \
+       && setpriv --reuid=agent --regid=agent --init-groups --reset-env true >/dev/null 2>&1; then
+        setpriv --reuid=agent --regid=agent --init-groups --reset-env /bin/sh -c "$seed_home"
+    else
+        su agent -c "$seed_home"
+    fi
 fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
@@ -178,10 +183,8 @@ if [ -f /safeyolo/host-mounts ]; then
     while IFS=: read -r tag guest_path; do
         [ -z "$tag" ] && continue
         mkdir -p "$guest_path"
-        if _needs_virtiofs_mount; then
+        if [ "$needs_virtiofs_mount" = 1 ]; then
             mount -t virtiofs "$tag" "$guest_path"
-        else
-            mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
         fi
         # No chown: on gVisor the userns map (container uid 1000 →
         # host operator uid) already presents host-owned files as
@@ -224,6 +227,18 @@ SY_CERT_DIR=/etc/ssl/certs
 SY_BUNDLE=$SY_CERT_DIR/ca-certificates.crt
 SY_PEM=$SY_CERT_DIR/safeyolo.pem
 SY_CA_REPAIR=$SY_CERT_DIR/.safeyolo-ca-repair-needed
+index_instance_ca() {
+    local hash index=0
+    hash=$(openssl x509 -in "$SY_CERT_DST" -noout -subject_hash) || return 1
+    [[ "$hash" =~ ^[0-9a-fA-F]{8}$ ]] || return 1
+    # Keep existing collision entries. A dangling link needs distro repair
+    # before CApath lookup can reach the new certificate.
+    while [ -e "$SY_CERT_DIR/$hash.$index" ] || [ -L "$SY_CERT_DIR/$hash.$index" ]; do
+        [ -e "$SY_CERT_DIR/$hash.$index" ] || return 1
+        index=$((index + 1))
+    done
+    ln -s safeyolo.pem "$SY_CERT_DIR/$hash.$index"
+}
 if [ -f "$SY_CERT_SRC" ]; then
     if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST"; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
@@ -238,7 +253,7 @@ if [ -f "$SY_CERT_SRC" ]; then
            && { cat "$SY_BUNDLE" && printf '\n' && cat "$SY_CERT_DST" && printf '\n'; } > "$SY_CA_TEMP" \
            && chmod 644 "$SY_CA_TEMP" \
            && ln -s "$SY_CERT_DST" "$SY_PEM" \
-           && openssl rehash "$SY_CERT_DIR" >/dev/null 2>&1 \
+           && index_instance_ca \
            && mv -f "$SY_CA_TEMP" "$SY_BUNDLE"; then
             SY_CA_READY=1
         fi

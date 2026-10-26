@@ -1,12 +1,14 @@
 """Run static init with real Bash/keygen and controlled mounts and CA setup."""
 
 import os
+import pwd
 import re
 import select
 import shutil
 import signal
 import stat
 import subprocess
+import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -47,8 +49,18 @@ def guest(tmp_path):
     (tmp_path / "safeyolo/per-run-go").touch()
     commands = {
         "hostname": "echo fixture-guest\n",
-        "mountpoint": "exit 0\n",
-        "mount": "exit 0\n",
+        "mountpoint": (
+            '[ "$TEST_PREBOUND" = 1 ] || [ -f "$TEST_ROOT/workspace-mounted" ]\n'
+        ),
+        "mount": (
+            'echo "$3" >> "$TEST_ROOT/mounts"\n'
+            '[ "$3" != "$TEST_FAIL_MOUNT" ] || exit 24\n'
+            '[ "$3" != workspace ] || touch "$TEST_ROOT/workspace-mounted"\n'
+            'if [ "$3" = extra0 ] && [ -d "$TEST_ROOT/mounted-ssh" ]; then\n'
+            '    mv "$4" "$TEST_ROOT/hidden-ssh"\n'
+            '    mv "$TEST_ROOT/mounted-ssh" "$4"\n'
+            'fi\n'
+        ),
         "chown": "exit 0\n",
         "sysctl": "exit 0\n",
         "prlimit": "exit 0\n",
@@ -88,10 +100,11 @@ def guest(tmp_path):
 
 
 @contextmanager
-def _boot(root, *, fail_keygen=False, ca_status=0):
+def _boot(root, *, fail_keygen=False, ca_status=0, prebound=True, fail_mount=""):
     for marker in (
         "sshd-started", "safeyolo-status/static-init-done", "per-run-started",
         "usr/local/share/ca-certificates/safeyolo.crt",
+        "mounts", "workspace-mounted",
     ):
         (root / marker).unlink(missing_ok=True)
     with ExitStack() as stack:
@@ -107,6 +120,7 @@ def _boot(root, *, fail_keygen=False, ca_status=0):
             "TEST_KEYGEN_GATE": str(keygen), "TEST_CA_GATE": str(ca),
             "TEST_KEYGEN_FAIL": str(int(fail_keygen)),
             "TEST_CA_STATUS": str(ca_status),
+            "TEST_PREBOUND": str(int(prebound)), "TEST_FAIL_MOUNT": fail_mount,
         }
         process = subprocess.Popen(
             ["/bin/bash", str(root / "safeyolo/guest-init")], env=environment,
@@ -234,6 +248,111 @@ def test_keygen_failure_remains_retryable(guest):
     assert (guest / "etc/ssh/.safeyolo-host-keys-generated").is_file()
 
 
+def test_oci_prebound_shares_need_no_virtiofs_attempts(guest):
+    extra = guest / "extra"
+    (guest / "safeyolo/host-mounts").write_text(f"extra0:{extra}\n")
+    with _boot(guest) as (process, events, keygen, ca):
+        _wait_events(events, "keygen-started", "ca-started")
+        os.write(keygen, b"continue\n")
+        os.write(ca, b"continue\n")
+        _wait_events(events, "keygen-finished", "authorized-keys-ready", "sshd-started")
+        _finish(process)
+    assert not (guest / "mounts").exists()
+    for directory in ("workspace", "safeyolo-status", "home/agent", "extra"):
+        assert (guest / directory).is_dir()
+    assert (guest / "per-run-started").exists()
+
+
+@pytest.mark.parametrize("failed", ["workspace", "status", "home", "extra0"])
+def test_vz_mount_failure_stops_static_init(guest, failed):
+    (guest / "safeyolo/host-mounts").write_text(f"extra0:{guest / 'extra'}\n")
+    with _boot(guest, prebound=False, fail_mount=failed) as (process, _events, _keygen, _ca):
+        _finish(process, expected_status=24)
+    expected = ["workspace", "status", "home", "extra0"]
+    assert (guest / "mounts").read_text().splitlines() == expected[:expected.index(failed) + 1]
+    assert (guest / "workspace-mounted").exists() == (failed != "workspace")
+    for marker in (
+        "keygen-pid", "sshd-started", "safeyolo-status/static-init-done", "per-run-started",
+    ):
+        assert not (guest / marker).exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Real Linux guest identity transitions")
+@pytest.mark.parametrize("helper", ["setpriv", "missing", "unusable"])
+def test_home_skeleton_uses_agent_identity_and_preserves_retained_entries(tmp_path, helper):
+    account = pwd.getpwuid(os.getuid())
+    if account.pw_uid == 0:
+        pytest.skip("Ownership control needs an ordinary test account")
+    sudo, setpriv, su = (shutil.which(name) for name in ("sudo", "setpriv", "su"))
+    if not sudo or subprocess.run([sudo, "-n", "true"], capture_output=True, timeout=10).returncode:
+        pytest.skip("Ownership control needs passwordless guest sudo")
+    assert setpriv and su, "Home controls require setpriv and su"
+    skel, home, commands = (tmp_path / name for name in ("skel", "home", "bin"))
+    for directory in (skel, home, commands):
+        directory.mkdir()
+    for name in ("ordinary", ".hidden", "..hidden", "retained", "dangling"):
+        (skel / name).write_text(f"skeleton {name}\n")
+    (skel / "directory").mkdir()
+    (skel / "directory/nested").write_text("nested\n")
+    (skel / ".new-directory").mkdir()
+    (skel / ".new-directory/nested").write_text("new nested file\n")
+    (skel / "link").symlink_to("absent-source-target")
+    (home / "dangling").symlink_to("absent-retained-target")
+    (home / "retained").write_text("operator file\n")
+    (home / "retained").chmod(0o640)
+    # A root-owned retained file also catches an unwanted recursive chown.
+    subprocess.run(
+        [sudo, "-n", "chown", f"0:{account.pw_gid}", str(home / "retained")], check=True,
+        capture_output=True, timeout=10,
+    )
+    retained = (home / "retained").stat()
+    (home / "directory").mkdir()
+    (home / "directory/retained").write_text("operator directory\n")
+    calls = tmp_path / "identity-calls"
+    for name, executable in (("setpriv", setpriv), ("su", su)):
+        path = commands / name
+        path.write_text(
+            f'#!/bin/sh\necho {name} >> "{calls}"\n' +
+            ("exit 1\n" if name == "setpriv" and helper == "unusable" else
+             f'exec "{executable}" "$@"\n'),
+        )
+        path.chmod(0o755)
+    source = (REPO_ROOT / "cli/src/safeyolo/guest-init-static.sh").read_text()
+    block = source[source.index("if [ -d /etc/skel ]"):source.index("# Host config directory mounts")]
+    block = re.sub(
+        r"/etc/skel|/home/agent", lambda match: str(skel if match[0] == "/etc/skel" else home), block,
+    )
+    block = block.replace("--reuid=agent", f"--reuid={account.pw_uid}")
+    block = block.replace("--regid=agent", f"--regid={account.pw_gid}")
+    block = block.replace("su agent", f"su {account.pw_name}")
+    if helper == "missing":
+        block = (
+            'command() { if [ "$1" = -v ] && [ "$2" = setpriv ]; then return 1; fi; '
+            'builtin command "$@"; };\n' + block
+        )
+    result = subprocess.run(
+        [sudo, "-n", "env", f"PATH={commands}:{os.environ['PATH']}", "/bin/bash", "-ec", block],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls.read_text().splitlines() == {
+        "setpriv": ["setpriv", "setpriv"], "missing": ["su"], "unusable": ["setpriv", "su"],
+    }[helper]
+    for name in ("ordinary", ".hidden", "..hidden", ".new-directory/nested"):
+        path = home / name
+        assert path.read_bytes() == (skel / name).read_bytes()
+        assert (path.stat().st_uid, path.stat().st_gid) == (account.pw_uid, account.pw_gid)
+    assert (home / "link").readlink() == Path("absent-source-target")
+    assert (home / "link").lstat().st_uid == account.pw_uid
+    assert (home / "dangling").readlink() == Path("absent-retained-target")
+    assert (home / "retained").read_text() == "operator file\n"
+    after = (home / "retained").stat()
+    assert (after.st_uid, after.st_gid, after.st_mode, after.st_mtime_ns) == (
+        retained.st_uid, retained.st_gid, retained.st_mode, retained.st_mtime_ns,
+    )
+    assert list((home / "directory").iterdir()) == [home / "directory/retained"]
+
+
 @pytest.mark.parametrize("retained_keys", [False, True], ids=["empty-mount", "retained-mount"])
 def test_host_keys_and_generated_marker_use_final_mounted_directory(guest, retained_keys):
     mounted = guest / "mounted-ssh"
@@ -255,16 +374,9 @@ def test_host_keys_and_generated_marker_use_final_mounted_directory(guest, retai
     config = visible / "sshd_config"
     (mounted / config.name).write_text(f"HostKey {visible / 'ssh_host_ed25519_key'}\n")
     (guest / "safeyolo/host-mounts").write_text(f"extra0:{visible}\n")
-    (guest / "bin/mount").write_text(
-        '#!/bin/bash\nset -e\n'
-        'if [ "$3" = extra0 ]; then\n'
-        '    mv "$4" "$TEST_ROOT/hidden-ssh"\n'
-        '    mv "$TEST_ROOT/mounted-ssh" "$4"\n'
-        'fi\n'
-    )
     # Renaming directories models the visibility change of a successful VZ
     # overmount. It requires no real mount or host privilege.
-    with _boot(guest) as (process, events, keygen, ca):
+    with _boot(guest, prebound=False) as (process, events, keygen, ca):
         if retained_keys:
             _wait_events(events, "ca-started")
         else:
@@ -279,6 +391,7 @@ def test_host_keys_and_generated_marker_use_final_mounted_directory(guest, retai
     assert (visible / marker).is_file()
     assert (visible / public_key).is_file()
     assert (guest / "safeyolo-status/static-init-done").is_file()
+    assert (guest / "mounts").read_text().splitlines() == ["workspace", "status", "home", "extra0"]
     if retained_keys:
         assert (visible / public_key).read_bytes() == retained_public
     assert not list((guest / "hidden-ssh").glob("ssh_host_*_key"))
