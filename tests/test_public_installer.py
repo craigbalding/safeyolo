@@ -93,8 +93,17 @@ def test_native_host_package_save_failure_is_not_success(native_cli, tmp_path, f
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("decoder", ["native", "previous-native", "legacy"])
-def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, native_cli, tmp_path, decoder):
+@pytest.mark.parametrize("extractor", ["tar", "bsdtar"])
+def test_bootstrap_uses_available_verified_native_gzip_decoder(public_release, native_cli, tmp_path, decoder, extractor):
     _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    if extractor == "bsdtar":
+        binary = shutil.which(extractor)
+        if not binary:
+            pytest.skip("install libarchive-tools to exercise the BSD tar extractor")
+        tools = tmp_path / "extractor"
+        tools.mkdir()
+        (tools / "tar").symlink_to(binary)
+        environment = {**environment, "PATH": f"{tools}:{environment['PATH']}"}
     marker = tmp_path / "decoder-calls"
     environment = {**environment, "PACKAGE_HOST_GUNZIP_CALLS": str(marker)}
     if decoder != "legacy":
