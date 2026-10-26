@@ -271,9 +271,40 @@ where
     json(response, deadline).await
 }
 
-/// Host REST requests use the configured HTTPS proxy and the same native TLS
-/// trust loader as upstream connections. No redirects or automatic retries:
-/// callers own uncertain-write reconciliation. Credentials are header-only.
+/// HTTP status and retry timing, without response bodies or credentials.
+#[derive(Debug)]
+pub(crate) struct RestStatusError {
+    pub status: u16,
+    pub retry_after: Option<Duration>,
+}
+impl std::fmt::Display for RestStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "REST request failed with HTTP {}", self.status)
+    }
+}
+impl std::error::Error for RestStatusError {}
+
+fn retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let format = time::format_description::parse_borrowed::<2>(
+        "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
+    )
+    .ok()?;
+    let date = time::PrimitiveDateTime::parse(value, &format)
+        .ok()?
+        .assume_utc();
+    Some(Duration::from_secs_f64(
+        (date - time::OffsetDateTime::now_utc())
+            .as_seconds_f64()
+            .max(0.0),
+    ))
+}
+
+/// Host REST requests use the configured HTTPS proxy and native TLS trust.
+/// There are no redirects or automatic retries. Callers reconcile uncertain
+/// writes. Credentials are header-only.
 pub(crate) async fn https_json(
     url: &str,
     token: &str,
@@ -367,7 +398,11 @@ pub(crate) async fn https_json(
             }
             let status = status_line.next().and_then(|v| v.parse::<u16>().ok());
             if !status.is_some_and(|v| (200..300).contains(&v)) {
-                return Err("HTTPS proxy refused CONNECT".into());
+                return Err(RestStatusError {
+                    status: status.ok_or("HTTPS proxy response is invalid")?,
+                    retry_after: None,
+                }
+                .into());
             }
             stream
         } else {
@@ -382,7 +417,15 @@ pub(crate) async fn https_json(
         let (response, _connection) = send(socket, &authority, path, token, method, body).await?;
         let status = response.status();
         if !matches!(status.as_u16(), 200 | 201) {
-            return Err(format!("REST request failed with HTTP {}", status.as_u16()).into());
+            return Err(RestStatusError {
+                status: status.as_u16(),
+                retry_after: response
+                    .headers()
+                    .get(hyper::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(retry_after),
+            }
+            .into());
         }
         let bytes = response.into_body().collect().await?.to_bytes();
         Ok(serde_json::from_slice(&bytes)?)
@@ -451,4 +494,27 @@ pub async fn helper_timeout(
         timeout,
     )
     .await
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_seconds_and_http_date() {
+        assert_eq!(retry_after("120"), Some(Duration::from_secs(120)));
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(Duration::ZERO)
+        );
+        let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(120);
+        let format = time::format_description::parse_borrowed::<2>(
+            "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
+        )
+        .unwrap();
+        let delay = retry_after(&future.format(&format).unwrap()).unwrap();
+        assert!((Duration::from_secs(118)..=Duration::from_secs(120)).contains(&delay));
+        assert_eq!(retry_after("not a date or seconds"), None);
+        assert_eq!(retry_after("-1"), None);
+    }
 }

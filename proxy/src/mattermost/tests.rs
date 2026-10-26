@@ -18,6 +18,79 @@ fn request() -> Value {
     json!({"schema":render::REQUEST_SCHEMA,"kind":"decision","title":"Ready","summary":"Source is ready","reference":"PR #1","details":["Focused check"],"allowed_actions":["approve","reject","revise"]})
 }
 
+#[tokio::test(start_paused = true)]
+async fn retry_categories_backoff_cap_jitter_and_recovery_reset() {
+    use recovery::{Failure, Kind, SyncStatus, retry_delay};
+    use std::time::Duration;
+    for status in [408, 429, 500, 502, 503, 599, 400, 401, 403, 404, 407] {
+        let error: Error = crate::native_client::RestStatusError {
+            status,
+            retry_after: Some(Duration::from_secs(90)),
+        }
+        .into();
+        let get = Failure::http(&error, false);
+        assert_eq!(
+            get.kind,
+            if matches!(status, 408 | 429 | 500..=599) {
+                Kind::Transient
+            } else {
+                Kind::Permanent
+            }
+        );
+        assert_eq!(get.retry_after, Some(Duration::from_secs(90)));
+        assert_eq!(Failure::http(&error, true).kind, Kind::Reconcile);
+    }
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidInput,
+        std::io::ErrorKind::InvalidData,
+    ] {
+        let error: Error = std::io::Error::from(kind).into();
+        assert_eq!(Failure::http(&error, false).kind, Kind::Permanent);
+    }
+    for kind in [
+        std::io::ErrorKind::ConnectionRefused,
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::UnexpectedEof,
+        std::io::ErrorKind::TimedOut,
+    ] {
+        let error: Error = std::io::Error::from(kind).into();
+        assert_eq!(Failure::http(&error, false).kind, Kind::Transient);
+    }
+    for failures in [1, 2, 5, 6, 32, u32::MAX] {
+        let low = retry_delay(failures, None, 0.0);
+        let high = retry_delay(failures, None, 1.0);
+        assert!(low >= Duration::from_millis(800) && low <= high);
+        assert!(high <= Duration::from_secs(30));
+    }
+    assert_eq!(
+        retry_delay(99, Some(Duration::from_secs(90)), 1.0),
+        Duration::from_secs(90)
+    );
+    let error = Err(Failure::new(Kind::Transient, "timeout", "synthetic timeout").into());
+    let mut status = SyncStatus::new();
+    for _ in 0..9 {
+        status.update("test", &error, Duration::from_secs(1));
+    }
+    status.update("test", &Ok(()), Duration::from_secs(1));
+    assert_eq!(status.status, "connected");
+    assert!(status.last_success.is_some());
+    status.update("test", &error, Duration::from_secs(1));
+    let remaining = status
+        .next_attempt
+        .unwrap()
+        .duration_since(tokio::time::Instant::now());
+    assert!((Duration::from_millis(800)..=Duration::from_millis(1200)).contains(&remaining));
+    status.update(
+        "test",
+        &Err("invalid identity".into()),
+        Duration::from_secs(1),
+    );
+    assert_eq!(status.status, "blocked");
+    assert!(status.next_attempt.is_none());
+}
+
 #[test]
 fn strict_config_preserves_paths_and_existing_constraints() {
     let root = tempfile::tempdir().unwrap();
