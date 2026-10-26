@@ -818,8 +818,7 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
         200
     );
     let approved = assert_grant_readback(&f, &id, "delegated_once", true).await;
-    // Native policy publication rotates gateway bearer tokens. Refresh through
-    // the existing gateway client path before retrying the approved route.
+    // Read the current service view before retrying the approved route.
     let current = f
         .agent("worker", "GET", "/gateway/services", None)
         .await
@@ -1250,6 +1249,330 @@ async fn native(f: &Fixture, args: &[&str]) -> std::process::Output {
     .await
     .unwrap()
     .unwrap()
+}
+
+#[tokio::test]
+async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscription_renewal() {
+    use safeyolo_proxy::credentials::{Credential, Secret, SubscriptionClient, Vault};
+    let mut f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    fs::write(f.root.path().join("config.toml"), format!(
+        "admin_port={}\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n", f.admin)).unwrap();
+    let host = f.address.ip().to_string();
+    fs::write(f.root.path().join("services/subscription.yaml"), format!(
+        "schema_version: 1\nname: subscription\ndefault_host: {host}\nauth:\n  type: bearer\n  allow_http: true\n  refresh_on_401: true\ncapabilities:\n  inference:\n    routes:\n      - methods: [GET]\n        path: /marker\n")).unwrap();
+    assert!(f.proxy.reload_services_if_changed().await.unwrap());
+    // Keep ordinary bearer detection enabled. The synthetic provider has a
+    // detection rule; neither its value nor the minted sgw token is preapproved.
+    let source = format!(
+        "{}\n[credential.fixture-provider]\nmatch=['synthetic-subscription-[a-z]+']\nheaders=['authorization']\nallowed_hosts=['{host}']\n",
+        f.source()
+            .replace("egress='prompt'", "egress='allow'")
+            .replace("enabled=false", "enabled=true")
+            .replace("budget=40", "budget=4000")
+    );
+    f.apply(&source).await;
+    let refresh = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let refresh_address = refresh.local_addr().unwrap();
+    fs::write(
+        f.root.path().join("data/credentials.key"),
+        "synthetic-subscription-key",
+    )
+    .unwrap();
+    let vault = Vault::unlock(
+        f.root.path().join("data/credentials.enc"),
+        &Secret::new("synthetic-subscription-key"),
+    )
+    .unwrap();
+    let mut record = Credential::new(
+        "provider",
+        "oauth2",
+        Secret::new("synthetic-subscription-original"),
+    );
+    record.subscription_client = Some(SubscriptionClient::Codex);
+    record.chatgpt_account_id = Some("host-account".into());
+    record.refresh_token = Some(Secret::new("synthetic-subscription-refresh"));
+    record.expires_at = Some("2020-01-01T00:00:00Z".into());
+    record.token_url = Some(format!("http://{refresh_address}/token"));
+    record.client_id = Some("native-client".into());
+    vault.store(record).unwrap();
+    let authorized = native(
+        &f,
+        &[
+            "services",
+            "authorize",
+            "worker",
+            "subscription",
+            "--capability",
+            "inference",
+            "--credential",
+            "provider",
+        ],
+    )
+    .await;
+    assert!(
+        authorized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&authorized.stderr)
+    );
+    let view = f
+        .agent("worker", "GET", "/gateway/services", None)
+        .await
+        .json();
+    let token = view["authorized"]["subscription"]["token"]
+        .as_str()
+        .unwrap();
+    assert!(token.starts_with("sgw_"));
+    let header = format!("Authorization: Bearer {token}\r\nChatGPT-Account-ID: guest-account\r\n");
+    let blocked = f
+        .request("worker", f.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    let pending = f
+        .admin("GET", &format!("/admin/approvals/{}", blocked.id()), None)
+        .await
+        .json();
+    assert_eq!(pending["action"]["kind"], "credential_allow");
+    assert!(
+        pending["action"]["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value.as_str().unwrap().starts_with("hmac:"))
+    );
+    no_origin(&f).await;
+    assert!(
+        timeout(Duration::from_millis(30), refresh.accept())
+            .await
+            .is_err()
+    );
+    let approved = native(
+        &f,
+        &[
+            "approvals",
+            "approve",
+            &blocked.id(),
+            "--option",
+            "run",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(
+        approved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approved.stderr)
+    );
+    let approved: Value = serde_json::from_slice(&approved.stdout).unwrap();
+    assert_eq!(approved["status"], "approved");
+    assert_eq!(approved["grant_active"], true);
+    assert_eq!(approved["result"]["permission_changed"], true);
+    let current = f
+        .agent("worker", "GET", "/gateway/services", None)
+        .await
+        .json();
+    assert!(
+        current["authorized"]["subscription"]["token"].as_str() == Some(token),
+        "credential approval replaced its own gateway fingerprint"
+    );
+    let refresh_task = tokio::spawn(async move {
+        let (mut stream, _) = timeout(LIMIT, refresh.accept()).await.unwrap().unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        let head = String::from_utf8(head).unwrap();
+        let length: usize = head
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map(|(_, value)| value.trim().parse().unwrap())
+            })
+            .unwrap();
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("content-type: application/json")
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"grant_type":"refresh_token","refresh_token":"synthetic-subscription-refresh","client_id":"native-client"})
+        );
+        let payload = r#"{"access_token":"synthetic-subscription-renewed","refresh_token":"synthetic-subscription-rotated","expires_in":3600}"#;
+        stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).as_bytes()).await.unwrap();
+    });
+    let provider_pending = f
+        .request("worker", f.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(provider_pending.status, 428, "{}", provider_pending.json());
+    let provider = f
+        .admin(
+            "GET",
+            &format!("/admin/approvals/{}", provider_pending.id()),
+            None,
+        )
+        .await
+        .json();
+    assert_eq!(provider["action"]["kind"], "credential_allow");
+    assert_ne!(
+        provider["action"]["credentials"],
+        pending["action"]["credentials"],
+        "retry repeated the scoped-token approval: {}",
+        provider_pending.json()
+    );
+    refresh_task.await.unwrap();
+    no_origin(&f).await;
+    let approved = native(
+        &f,
+        &[
+            "approvals",
+            "approve",
+            &provider_pending.id(),
+            "--option",
+            "run",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(
+        approved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approved.stderr)
+    );
+    let approved: Value = serde_json::from_slice(&approved.stdout).unwrap();
+    assert_eq!(approved["grant_active"], true);
+    let current = f
+        .agent("worker", "GET", "/gateway/services", None)
+        .await
+        .json();
+    assert!(current["authorized"]["subscription"]["token"].as_str() == Some(token));
+    fs::write(
+        f.root.path().join("policy.toml"),
+        format!("{}\n# watcher reload\n", f.source()),
+    )
+    .unwrap();
+    assert!(f.proxy.reload_policy_if_changed().await.unwrap());
+    let watched = f
+        .agent("worker", "GET", "/gateway/services", None)
+        .await
+        .json();
+    assert!(watched["authorized"]["subscription"]["token"].as_str() == Some(token));
+    for _ in 0..2 {
+        let observed = tokio::spawn(origin(f.origin.clone()));
+        let response = f
+            .request("worker", f.address, "GET", "/marker", &header)
+            .await;
+        assert_eq!(
+            response.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+        assert!(!String::from_utf8_lossy(&response.body).contains("synthetic-subscription-"));
+        let request = String::from_utf8(observed.await.unwrap())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer synthetic-subscription-renewed"));
+        assert!(request.contains("chatgpt-account-id: host-account"));
+        assert!(!request.contains("guest-account"));
+        assert!(!request.contains(token));
+    }
+    vault.reload().unwrap();
+    assert!(
+        vault
+            .get("provider")
+            .unwrap()
+            .unwrap()
+            .refresh_token
+            .unwrap()
+            .expose_secret()
+            == "synthetic-subscription-rotated"
+    );
+    assert_eq!(
+        f.request("peer", f.address, "GET", "/marker", &header)
+            .await
+            .status,
+        428
+    );
+    assert_eq!(
+        f.request("worker", f.address, "DELETE", "/marker", &header)
+            .await
+            .status,
+        403
+    );
+    let (_other, address) = test_owned_endpoint::bind().await;
+    assert_eq!(
+        f.request("worker", address, "GET", "/marker", &header)
+            .await
+            .status,
+        403
+    );
+    no_origin(&f).await;
+    // A rule publication must still enforce a deny against the retained token.
+    let source = f.source();
+    let mut denied: toml_edit::DocumentMut = source.parse().unwrap();
+    let rule: toml_edit::DocumentMut = format!("rules=[{{action='credential:use',resource='{host}/*',effect='deny',condition={{credential='unknown:*'}}}}]").parse().unwrap();
+    denied["hosts"][&host]["rules"] = rule["rules"].clone();
+    f.apply(&denied.to_string()).await;
+    let denied = f
+        .agent("worker", "GET", "/gateway/services", None)
+        .await
+        .json();
+    assert!(denied["authorized"]["subscription"]["token"].as_str() == Some(token));
+    assert_eq!(
+        f.request("worker", f.address, "GET", "/marker", &header)
+            .await
+            .status,
+        403
+    );
+    f.apply(&source).await;
+    // Retaining the service token does not extend either run-scoped approval.
+    let path = f.root.path().join("agents/worker/runtime.json");
+    let mut run: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    run["state"] = json!("stopped");
+    fs::write(&path, run.to_string()).unwrap();
+    assert_eq!(
+        f.request("worker", f.address, "GET", "/marker", &header)
+            .await
+            .status,
+        428
+    );
+    run["state"] = json!("running");
+    fs::write(&path, run.to_string()).unwrap();
+    let revoked = native(&f, &["services", "revoke", "worker", "subscription"]).await;
+    assert!(
+        revoked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&revoked.stderr)
+    );
+    assert!(
+        f.agent("worker", "GET", "/gateway/services", None)
+            .await
+            .json()["authorized"]
+            .get("subscription")
+            .is_none()
+    );
+    assert_eq!(
+        f.request("worker", f.address, "GET", "/marker", &header)
+            .await
+            .status,
+        403
+    );
+    no_origin(&f).await;
+    assert!(!f.source().contains(token));
+    f.proxy.shutdown().await;
+    let audit = fs::read_to_string(f.root.path().join("audit.jsonl")).unwrap();
+    for secret in [
+        token,
+        "synthetic-subscription-original",
+        "synthetic-subscription-renewed",
+        "synthetic-subscription-refresh",
+        "synthetic-subscription-rotated",
+    ] {
+        assert!(!audit.contains(secret));
+    }
 }
 
 #[tokio::test]

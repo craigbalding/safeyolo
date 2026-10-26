@@ -68,7 +68,10 @@ The commands below run inside Alice's guest with `jq` and the documented
 [`sy_api` helper](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#calling-the-api).
 Stop if token retrieval fails. Keep scoped tokens out of terminal output,
 source files and logs. Fetch the current token again after catalogue activation,
-policy activation or proxy restart.
+gateway configuration changes, named-list input changes or proxy restart.
+Gateway configuration includes service bindings, agent identities, host routing
+and contract bindings. An ordinary credential or network approval keeps the token
+when those gateway inputs stay unchanged.
 
 For Codex, merge these settings into the guest's `.codex/config.toml`, retaining
 the selected model and unrelated settings. Before running the shipped Codex
@@ -116,6 +119,32 @@ the OAuth capability in `anthropic-beta`. The ordinary
 [gateway credential variables](https://code.claude.com/docs/en/llm-gateway)
 select a different authentication path. Neither local observation establishes
 that the provider accepts the substituted host subscription.
+
+## Approve the first request
+
+The first client request can stop for an existing network, credential or risky-route
+approval. Service authorization does not grant those approvals. A scoped gateway
+token is still subject to credential detection before the gateway selects a route.
+
+On the host, use `safeyolo approvals list --agent alice --json` to find the pending
+request. Replace `APPROVAL_ID` below with its approval ID. Inspect the destination,
+agent, credential fingerprints and offered options before approving. If the pending
+request is a credential approval for a running agent, the `run` option grants the
+selected fingerprints for that agent's current run. Other request kinds have their
+own offered options. Use `run` only when the displayed request and lifetime match
+your intent:
+
+```sh
+safeyolo approvals show APPROVAL_ID --json
+safeyolo approvals approve APPROVAL_ID --option run --json
+```
+
+Expected result: the selected approval reports `approved` and `grant_active=true`.
+Retry the client request with the same scoped token. If another approval is required,
+inspect that request separately. The initial scoped-token approval does not approve
+an injected provider credential or a risky route. Explicit denies still refuse the
+request. If gateway inputs changed in the meantime, retrieve the current scoped
+token again and inspect any resulting approval.
 
 ## Renewal, refusal and limits
 
