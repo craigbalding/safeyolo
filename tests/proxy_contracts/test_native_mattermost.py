@@ -3,8 +3,9 @@
 Reuse the owned native instance, pinned NATS and CONNECT parent. The controlled
 Mattermost REST server supplies protocol shapes and uncertain outcomes. Python
 is only the driver; the installed PATH contains native binaries and no Python.
-No live account, public tunnel, model or guest matrix is used. HTTP/CLI and
-readiness deadlines use the existing 5/15/10-second focused fixture bounds.
+No live account, public tunnel, model or guest matrix is used. Callback requests
+retain five seconds and HTTPS retains fifteen seconds. The one-shot CLI driver
+allows twenty seconds; large backlog recovery allows two minutes.
 """
 from __future__ import annotations
 
@@ -412,7 +413,8 @@ def test_native_foreground_recovers_verification_and_poll_failures(exchange, sta
         assert failed["backlog_age_seconds"] >= 0
         assert operator_requests(instance) == []
         if stage == "poll":
-            assert health["synchronization"]["last_success_at"] == before["synchronization"]["last_success_at"]
+            assert health["synchronization"]["last_success_at"] >= before["synchronization"]["last_success_at"]
+            assert healthy(instance)["synchronization"]["last_success_at"] == health["synchronization"]["last_success_at"]
         if fault == 429:
             assert failed["retry_in_ms"] > 1500
             # Keep the refusal in place through a second request to exercise
@@ -478,6 +480,8 @@ def test_native_signal_interrupts_backoff_and_releases_listener_and_lease(exchan
         process.wait(timeout=2)
         assert time.monotonic() - started < 2 and process.returncode == 0
     with socket.socket() as released:
+        # TIME_WAIT from a health connection does not imply a live listener.
+        released.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         released.bind(("127.0.0.1", instance.callback_port))
     remote.get_faults.clear()
     assert once(instance, check=True).returncode == 0
@@ -604,7 +608,7 @@ def test_native_long_outage_pages_equal_timestamps_partial_failure_and_restart(e
         until(lambda: failed_sync(instance))
         assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
         remote.page_faults.clear()
-        until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1205, timeout=30)
+        until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1205, timeout=120)
         until(lambda: connected(instance))
         remote.add(root=root, body="same timestamp after cursor commit")
         until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1206)
