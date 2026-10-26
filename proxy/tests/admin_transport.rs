@@ -281,24 +281,20 @@ async fn ephemeral_operator_port_is_shielded_before_agent_egress() {
     let config = config(directory.path(), &token);
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let port = admin_port(&config);
-    let before = events(&config)
-        .into_iter()
-        .filter(|row| row["event"] == "traffic.egress")
-        .count();
-
     let target = format!("http://127.0.0.1:{port}{TASK_PATH}");
     let host = format!("127.0.0.1:{port}");
     assert_blocked(&agent(&config, "alice", "GET", &target, &host, Some(&token), b"").await);
     assert_blocked(&agent(&config, "bob", "CONNECT", &host, &host, Some(&token), b"").await);
 
+    assert_shutdown(proxy, &config, port).await;
     let after = events(&config)
         .into_iter()
         .filter(|row| row["event"] == "traffic.egress")
         .count();
-    assert_eq!(after, before, "shielded operator requests do not dial");
-    assert_shutdown(proxy, &config, port).await;
+    assert_eq!(after, 0, "shielded operator requests do not dial");
 }
 
+// Read after assert_shutdown has drained the asynchronous audit writer.
 fn events(config: &Config) -> Vec<Value> {
     std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
         .unwrap()
@@ -580,6 +576,7 @@ async fn raw_registry_reload_startup_ownership_restart_and_no_activation() {
     );
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
 
+    assert_shutdown(proxy, &config, port).await;
     let recorded = events(&config);
     assert_eq!(
         recorded
@@ -596,7 +593,6 @@ async fn raw_registry_reload_startup_ownership_restart_and_no_activation() {
         1
     );
     assert_private(&config, &[&token, &replacement_token, &secret]);
-    assert_shutdown(proxy, &config, port).await;
     drop(occupied);
     config.admin_port = Some(0);
     let proxy = Proxy::start(config.clone()).await.unwrap();
@@ -1000,6 +996,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     assert_eq!(admin(port, &token, "GET", TASK_PATH, b"").await.status, 404);
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
     assert_eq!(different_port_peer.accepts.load(Ordering::SeqCst), 2);
+    assert_shutdown(proxy, &config, port).await;
     let recorded = events(&config);
     assert_eq!(
         recorded
@@ -1018,7 +1015,10 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["details"]["blocked_by"] == "admin-shield")
+            .filter(|row| {
+                row["event"] == "traffic.request_outcome"
+                    && row["details"]["blocked_by"] == "admin-shield"
+            })
             .count(),
         aliases.len() * 4 + 4
     );
@@ -1046,8 +1046,8 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
                 "native_network_guard_circuits_and_test_context"
             );
             assert_eq!(row["decision"], "allow");
-            assert!(row.get("blocked_by").is_none());
-            assert!(row.get("block_reason").is_none());
+            assert!(row["details"].get("blocked_by").is_none());
+            assert!(row["details"].get("block_reason").is_none());
         }
     }
     let credential_events: Vec<&Value> = recorded
@@ -1061,7 +1061,6 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     }
     assert_eq!(extra_peer.accepts.load(Ordering::SeqCst), 0);
     assert_private(&config, &[&token, &secret]);
-    assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
     different_port_peer.stop().await;
     extra_peer.stop().await;
@@ -1104,6 +1103,7 @@ async fn selected_parent_shield_does_not_block_an_unselected_direct_route() {
         .await,
     );
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 1);
+    assert_shutdown(proxy, &config, port).await;
     let egress: Vec<_> = events(&config)
         .into_iter()
         .filter(|row| row["event"] == "traffic.egress")
@@ -1111,7 +1111,6 @@ async fn selected_parent_shield_does_not_block_an_unselected_direct_route() {
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["agent"], "bob");
     assert_eq!(egress[0]["details"]["route"], "direct");
-    assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
 }
 
@@ -1183,6 +1182,7 @@ async fn parent_host_filter_shields_only_selected_routes_and_rejects_invalid_rel
         }
     }
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
+    assert_shutdown(proxy, &config, port).await;
     let egress: Vec<_> = events(&config)
         .into_iter()
         .filter(|row| row["event"] == "traffic.egress")
@@ -1191,7 +1191,6 @@ async fn parent_host_filter_shields_only_selected_routes_and_rejects_invalid_rel
     assert_eq!(egress[0]["agent"], "alice");
     assert_eq!(egress[1]["agent"], "bob");
     assert!(egress.iter().all(|row| row["details"]["route"] == "direct"));
-    assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
 }
 
@@ -1247,6 +1246,7 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
             );
         }
     }
+    assert_shutdown(proxy, &config, port).await;
     let recorded = events(&config);
     assert_eq!(
         recorded
@@ -1265,13 +1265,15 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
     assert_eq!(
         recorded
             .iter()
-            .filter(|row| row["details"]["blocked_by"] == "admin-shield")
+            .filter(|row| {
+                row["event"] == "traffic.request_outcome"
+                    && row["details"]["blocked_by"] == "admin-shield"
+            })
             .count(),
         12
     );
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 0);
     assert_private(&config, &[&token]);
-    assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
 }
 
@@ -1348,6 +1350,7 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
     let reset = admin(port, &token, "POST", "/admin/budgets/reset", b"{}").await;
     assert_eq!(reset.status, 200);
     assert_eq!(reset.header("x-safeyolo-evidence-error"), None);
+    assert_shutdown(proxy, &config, port).await;
     let audit_names: Vec<_> = events(&config)
         .into_iter()
         .filter_map(|row| {
@@ -1367,6 +1370,5 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
         ]
     );
     assert_private(&config, &[&token]);
-    assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
 }
