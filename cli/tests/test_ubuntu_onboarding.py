@@ -1870,11 +1870,12 @@ esac
     @unittest.skipUnless(sys.platform.startswith("linux"), "Native client observation reads Linux /proc")
     def test_codex_process_observation_accepts_native_install_locations(self):
         home = m.project / "process-home"
+        bash = shutil.which("bash")
 
         def guest(label, code, deadline):
             result = subprocess.run(["bash", "-c", code], env={**os.environ, "HOME": str(home)},
                                     capture_output=True, text=True, timeout=5)
-            return {"exit": result.returncode, "stdout": result.stdout}
+            return {"exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
         for location, accepted in [
             (".mise/installs/aqua-openai-codex/9.9.9/bin/codex", True),
@@ -1886,17 +1887,32 @@ esac
             with self.subTest(location=location):
                 binary = home / location
                 binary.parent.mkdir(parents=True)
-                shutil.copy2(shutil.which("sleep"), binary)
-                client = subprocess.Popen([str(binary), "10"])
+                shutil.copy2(bash, binary)
+                # Renamed multicall sleep binaries can exit before observation.
+                # Bash builtins announce readiness, then wait for owned pipe input.
+                client = subprocess.Popen([str(binary), "-c", "printf 'ready\\n'; read -r"],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True)
+                row = {"fixture_source": bash, "fixture_pid": client.pid}
                 try:
-                    row = {}
+                    readable = select.select([client.stdout], [], [], 3)[0]
+                    row["fixture_ready"] = client.stdout.readline() if readable else None
                     with patch.object(m, "guest", autospec=True, side_effect=guest):
-                        self.assertEqual(m.codex_input_process("cold", row), accepted)
-                    if accepted:
-                        self.assertEqual(row["codex_process"]["stdout"], f"{client.pid}\n")
+                        observed = m.codex_input_process("cold", row)
+                    row["fixture_exit"] = client.poll()
+                    row["fixture_executable"] = os.path.realpath(f"/proc/{client.pid}/exe")
                 finally:
                     client.terminate()
-                    client.wait(timeout=3)
+                    row["fixture_stdout"], row["fixture_stderr"] = client.communicate(timeout=3)
+                self.assertEqual(row["fixture_ready"], "ready\n", row)
+                self.assertIsNone(row["fixture_exit"], row)
+                self.assertEqual(row["fixture_executable"], str(binary.resolve()), row)
+                self.assertEqual(observed, accepted, row)
+                if accepted:
+                    self.assertEqual(row["codex_process"]["stdout"], f"{client.pid}\n", row)
+                stopped_row = {}
+                with patch.object(m, "guest", autospec=True, side_effect=guest):
+                    self.assertFalse(m.codex_input_process("cold", stopped_row), stopped_row)
 
     def check_codex_client_failure_return(self, loading):
         screen = CODEX_0163_LOADING_SCREEN if loading else CODEX_0163_SCREEN
