@@ -2,6 +2,7 @@
 //! Mattermost has no Coord principal, agent identity or Admin mutation route.
 mod config;
 mod listener;
+mod recovery;
 mod render;
 mod state;
 #[cfg(test)]
@@ -9,11 +10,13 @@ mod tests;
 
 use crate::{Error, agent_api::coord::OperatorCoord};
 use config::{Config, Room, coord_id, hex64, mm_id};
+use recovery::{Failure, Kind, SyncStatus, blocked};
 use render::{OPERATOR_SCHEMA, PROJECTION_SCHEMA};
 use rusqlite::params;
 use serde_json::{Value, json};
 use state::{State, now};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -37,6 +40,7 @@ impl Api {
     ) -> Result<Value, Error> {
         // Never display a remote response body or transport error containing a
         // request/header. The credential is neither in URLs nor diagnostics.
+        let write = method != hyper::Method::GET;
         crate::native_client::https_json(
             &format!("{}/api/v4{path}", self.base),
             &self.token,
@@ -44,26 +48,16 @@ impl Api {
             body,
         )
         .await
-        .map_err(|_| {
-            "Mattermost HTTP request failed; backend, authentication or response is unavailable"
-                .into()
-        })
+        .map_err(|error| Failure::http(&error, write).into())
     }
     async fn get(&self, path: &str) -> Result<Value, Error> {
         self.request(hyper::Method::GET, path, Value::Null).await
     }
-    async fn posts(
-        &self,
-        channel: &str,
-        since: Option<i64>,
-        per_page: u16,
-    ) -> Result<Vec<Value>, Error> {
-        let query = since.map_or_else(
-            || format!("page=0&per_page={per_page}"),
-            |v| format!("since={}", v.max(1)),
-        );
+    async fn posts(&self, channel: &str, page: u64, per_page: u16) -> Result<Vec<Value>, Error> {
         let value = self
-            .get(&format!("/channels/{channel}/posts?{query}"))
+            .get(&format!(
+                "/channels/{channel}/posts?page={page}&per_page={per_page}&skipFetchThreads=true"
+            ))
             .await?;
         let order = value["order"]
             .as_array()
@@ -89,6 +83,55 @@ impl Api {
         }
         Ok(result)
     }
+    async fn catch_up(&self, channel: &str, since: i64) -> Result<Vec<Value>, Error> {
+        // The since endpoint is limited and can leave holes. before/after use
+        // strict creation timestamps, which lose ties across page boundaries.
+        // Walk ordinary pages through the entire lower timestamp boundary.
+        let mut result = Vec::new();
+        let mut seen = BTreeSet::new();
+        let first = self.posts(channel, 0, 200).await?;
+        let mut posts = first.clone();
+        let mut page = 0;
+        loop {
+            let mut oldest = i64::MAX;
+            for post in &posts {
+                let created = created(post)?;
+                timestamp(post)?;
+                oldest = oldest.min(created);
+                if !seen.insert(required(post, "id")?.to_owned()) {
+                    return Err(Failure::new(
+                        Kind::Transient,
+                        "catch_up_changed",
+                        "Mattermost pages changed; cursor retained",
+                    )
+                    .into());
+                }
+                if created >= since {
+                    result.push(post.clone());
+                }
+            }
+            if posts.is_empty() || oldest < since {
+                break;
+            }
+            page += 1;
+            posts = self.posts(channel, page, 200).await?;
+        }
+        // New posts can shift offsets while reading. Retry the interval rather
+        // than advancing a cursor over a moving channel head.
+        if page > 0 && self.posts(channel, 0, 200).await? != first {
+            return Err(Failure::new(
+                Kind::Transient,
+                "catch_up_changed",
+                "Mattermost pages changed; cursor retained",
+            )
+            .into());
+        }
+        result.sort_by(|a, b| {
+            (a["create_at"].as_i64(), a["id"].as_str())
+                .cmp(&(b["create_at"].as_i64(), b["id"].as_str()))
+        });
+        Ok(result)
+    }
 }
 struct Adapter {
     config: Config,
@@ -96,6 +139,7 @@ struct Adapter {
     api: Api,
     coord: Arc<OperatorCoord>,
     listener_healthy: AtomicBool,
+    sync: Mutex<BTreeMap<String, SyncStatus>>,
 }
 impl Adapter {
     fn state<T>(&self, call: impl FnOnce(&mut State) -> Result<T, Error>) -> Result<T, Error> {
@@ -127,7 +171,7 @@ impl Adapter {
         }
         Ok(())
     }
-    async fn verify(&self) -> Result<(), Error> {
+    async fn verify_identity(&self) -> Result<(), Error> {
         let bot = self.api.get("/users/me").await?;
         if bot["id"] != self.config.bot
             || bot["is_bot"] != true
@@ -136,13 +180,21 @@ impl Adapter {
             return Err("Mattermost token does not identify the configured active bot".into());
         }
         self.verify_operator().await?;
+        Ok(())
+    }
+    async fn verify_mapping(&self, room: &Room) -> Result<(), Error> {
+        let channel = self.api.get(&format!("/channels/{}", room.channel)).await?;
+        if channel["id"] != room.channel || channel["delete_at"].as_i64() != Some(0) {
+            return Err("configured Mattermost channel is unavailable".into());
+        }
+        self.coord.require_send_receive(&room.name).await?;
+        Ok(())
+    }
+    async fn verify(&self) -> Result<(), Error> {
+        self.verify_identity().await?;
         for room in &self.config.rooms {
-            let channel = self.api.get(&format!("/channels/{}", room.channel)).await?;
-            if channel["id"] != room.channel || channel["delete_at"].as_i64() != Some(0) {
-                return Err("configured Mattermost channel is unavailable".into());
-            }
-            self.api.posts(&room.channel, None, 1).await?;
-            self.coord.require_send_receive(&room.name).await?;
+            self.verify_mapping(room).await?;
+            self.api.posts(&room.channel, 0, 1).await?;
         }
         Ok(())
     }
@@ -158,10 +210,10 @@ impl Adapter {
         if current["initialized"] == 1 {
             return Ok(());
         }
-        let posts = self.api.posts(&room.channel, None, 1).await?;
+        let posts = self.api.posts(&room.channel, 0, 1).await?;
         let mut inbound = 0;
         for post in &posts {
-            inbound = inbound.max(timestamp(post)?);
+            inbound = inbound.max(created(post)?);
         }
         let mut cursor = 0;
         if !room.backfill {
@@ -200,24 +252,21 @@ impl Adapter {
         }
         Ok(id.to_owned())
     }
-    async fn reconcile(&self) -> Result<(), Error> {
+    async fn reconcile(&self, room: &Room) -> Result<(), Error> {
         for pending in self.query(
-            "SELECT * FROM outbound_projection WHERE status='pending' ORDER BY created_at",
-            [],
+            "SELECT * FROM outbound_projection WHERE status='pending' AND coord_room=?1 ORDER BY created_at",
+            [&room.name],
         )? {
             let channel = required(&pending, "channel_id")?;
             let key = required(&pending, "projection_key")?;
             let posts = self
                 .api
-                .posts(
+                .catch_up(
                     channel,
-                    Some(
-                        pending["created_at"]
+                    pending["created_at"]
                             .as_i64()
                             .ok_or("invalid pending projection time")?
                             .saturating_sub(60000),
-                    ),
-                    200,
                 )
                 .await?;
             let matches: Vec<_> = posts
@@ -225,7 +274,7 @@ impl Adapter {
                 .filter(|post| post["props"]["safeyolo_coord"]["projection_key"] == key)
                 .collect();
             if matches.len() != 1 {
-                return Err("uncertain or duplicate Mattermost projection requires operator reconciliation; no automatic retry".into());
+                return Err(blocked("projection_unknown", "uncertain or duplicate Mattermost projection requires operator reconciliation; no automatic retry"));
             }
             let post = self.validate_post(matches[0], channel, key)?;
             self.state(|s| s.finish_projection(required(&pending, "coord_msg_id")?, &post))?;
@@ -269,10 +318,10 @@ impl Adapter {
                     continue;
                 }
                 if existing.is_some() {
-                    return Err(
-                        "uncertain Mattermost projection remains pending; no automatic retry"
-                            .into(),
-                    );
+                    return Err(blocked(
+                        "projection_unknown",
+                        "uncertain Mattermost projection remains pending; no automatic retry",
+                    ));
                 }
                 let key = crate::coord_setup::sha256(
                     format!("{}\0{}\0{msg}", self.config.id, room.name).as_bytes(),
@@ -354,7 +403,10 @@ impl Adapter {
         )?;
         if let Some(existing) = existing.first() {
             if existing["status"] == "pending" {
-                return Err("uncertain Coord append remains pending; no automatic replay".into());
+                return Err(blocked(
+                    "coord_append_unknown",
+                    "uncertain Coord append remains pending; no automatic replay",
+                ));
             }
             return Ok(());
         }
@@ -421,59 +473,117 @@ impl Adapter {
         Ok(())
     }
     async fn poll(&self, room: &Room) -> Result<(), Error> {
-        self.verify_operator().await?;
         let since = self.room(room)?["inbound_since"]
             .as_i64()
             .ok_or("invalid inbound cursor")?;
-        let mut posts = self
+        let posts = self
             .api
-            .posts(&room.channel, Some(since.saturating_sub(5000)), 200)
+            .catch_up(&room.channel, since.saturating_sub(5000))
             .await?;
-        for post in &posts {
-            timestamp(post)?;
-        }
-        posts.sort_by(|a, b| {
-            (a["update_at"].as_i64(), a["id"].as_str())
-                .cmp(&(b["update_at"].as_i64(), b["id"].as_str()))
-        });
+        // Verification must succeed after the remote read, before accepting
+        // any replies. Downtime never grants authority from a cached identity.
+        self.verify_operator().await?;
         let mut observed = since;
+        let mut blocked_append = None;
         for post in &posts {
-            self.inbound(room, post).await?;
-            observed = observed.max(timestamp(post)?);
+            if let Err(error) = self.inbound(room, post).await {
+                if Failure::classify(&error).kind != Kind::Reconcile {
+                    return Err(error);
+                }
+                blocked_append.get_or_insert(error);
+            }
+            observed = observed.max(created(post)?);
+        }
+        if let Some(error) = blocked_append {
+            return Err(error);
+        }
+        if !self.query("SELECT mattermost_post_id FROM inbound_post WHERE status='pending' AND coord_room=?1", [&room.name])?.is_empty() {
+            return Err(blocked("coord_append_unknown", "uncertain Coord append remains pending; inspect canonical room before recovery; no automatic replay"));
         }
         self.execute(
             "UPDATE room_state SET inbound_since=MAX(inbound_since,?2) WHERE coord_room=?1",
-            params![room.name, observed.saturating_add(1)],
+            params![room.name, observed],
         )?;
         Ok(())
     }
     async fn cycle(&self) -> Result<(), Error> {
-        if !self
-            .query(
-                "SELECT mattermost_post_id FROM inbound_post WHERE status='pending'",
-                [],
-            )?
-            .is_empty()
-        {
-            return Err("uncertain Coord append remains pending; inspect canonical room before recovery; no automatic replay".into());
-        }
         for room in &self.config.rooms {
-            self.bootstrap(room).await?;
-        }
-        self.reconcile().await?;
-        for room in &self.config.rooms {
-            self.poll(room).await?;
-            self.project(room).await?;
+            self.sync_room(room).await?;
         }
         Ok(())
     }
+    async fn sync_room(&self, room: &Room) -> Result<(), Error> {
+        self.verify_mapping(room).await?;
+        self.bootstrap(room).await?;
+        let reconciliation = self.reconcile(room).await;
+        if let Err(error) = &reconciliation
+            && Failure::classify(error).kind != Kind::Reconcile
+        {
+            return reconciliation;
+        }
+        let inbound = self.poll(room).await;
+        if let Err(error) = &inbound
+            && Failure::classify(error).kind != Kind::Reconcile
+        {
+            return inbound;
+        }
+        // An uncertain inbound append does not prevent independent outward
+        // projection. An uncertain outward projection cannot be posted again.
+        let outbound = if reconciliation.is_ok() {
+            self.project(room).await
+        } else {
+            Ok(())
+        };
+        reconciliation.and(inbound).and(outbound)
+    }
     fn health(&self) -> Result<Value, Error> {
         let rows = self.query(
-            "SELECT COUNT(*) AS count FROM action_capability WHERE status='pending'",
+            "SELECT (SELECT COUNT(*) FROM action_capability WHERE status='pending') AS actions, (SELECT COUNT(*) FROM inbound_post WHERE status='pending') AS inbound, (SELECT COUNT(*) FROM outbound_projection WHERE status='pending') AS outbound",
             [],
         )?;
+        let counts = rows.first().ok_or("missing reconciliation counts")?;
+        let sync = self
+            .sync
+            .lock()
+            .map_err(|_| "Mattermost sync status is unavailable")?;
+        let identity = sync.get("").ok_or("missing identity status")?;
+        let rooms: BTreeMap<_, _> = sync
+            .iter()
+            .filter(|(name, _)| !name.is_empty())
+            .map(|(name, status)| (name, status.json()))
+            .collect();
+        let connected = rooms
+            .values()
+            .filter(|v| v["status"] == "connected")
+            .count();
+        let status = if identity.status != "connected" {
+            identity.status
+        } else if connected == rooms.len() {
+            "connected"
+        } else if connected > 0 {
+            "degraded"
+        } else if rooms.values().any(|v| v["status"] == "retrying") {
+            "retrying"
+        } else {
+            "blocked"
+        };
+        let pending = ["actions", "inbound", "outbound"]
+            .iter()
+            .any(|k| counts[*k].as_i64().unwrap_or(0) > 0);
+        let status = if status == "connected" && pending {
+            "degraded"
+        } else {
+            status
+        };
+        let last_success = rooms
+            .values()
+            .map(|v| v["last_success_at"].as_i64())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|v| v.into_iter().min());
         Ok(
-            json!({"adapter":"ready","listener":if self.listener_healthy.load(Ordering::Acquire){"healthy"}else{"failed"},"pending_action_reconciliation":rows.first().ok_or("missing action count")?["count"]}),
+            json!({"adapter":status,"listener":if self.listener_healthy.load(Ordering::Acquire){"healthy"}else{"failed"},
+            "synchronization":{"status":status,"last_success_at":last_success,"identity":identity.json(),"rooms":rooms},
+            "pending_action_reconciliation":counts["actions"],"pending_inbound_reconciliation":counts["inbound"],"pending_projection_reconciliation":counts["outbound"]}),
         )
     }
     async fn callback(&self, payload: &Value) -> (u16, Value) {
@@ -516,10 +626,19 @@ impl Adapter {
             Ok(mut s) => s.begin_action(payload, &self.config.id, false),
             Err(_) => Err(503),
         };
-        if let Err(status) = validation {
-            return error(status);
-        }
-        if self.verify_operator().await.is_err() {
+        let validation = match validation {
+            Ok(record) => record,
+            Err(status) => return error(status),
+        };
+        let Some(room) = self
+            .config
+            .rooms
+            .iter()
+            .find(|room| validation["coord_room"] == room.name)
+        else {
+            return error(403);
+        };
+        if self.verify_identity().await.is_err() || self.verify_mapping(room).await.is_err() {
             return error(503);
         }
         let record = match self.state.lock() {
@@ -602,8 +721,61 @@ impl Adapter {
         };
         let work = async {
             loop {
-                self.cycle().await?;
-                tokio::time::sleep(self.config.interval).await;
+                let identity_due = self
+                    .sync
+                    .lock()
+                    .map_err(|_| "Mattermost sync status is unavailable")?[""]
+                    .due();
+                if identity_due {
+                    let result = self.verify_identity().await;
+                    self.sync
+                        .lock()
+                        .map_err(|_| "Mattermost sync status is unavailable")?
+                        .get_mut("")
+                        .ok_or("missing identity status")?
+                        .update("identity", &result, self.config.interval);
+                    if let Err(error) = result
+                        && Failure::classify(&error).kind == Kind::Permanent
+                    {
+                        return Err(error);
+                    }
+                }
+                let authorized = self
+                    .sync
+                    .lock()
+                    .map_err(|_| "Mattermost sync status is unavailable")?[""]
+                    .status
+                    == "connected";
+                if authorized {
+                    for room in &self.config.rooms {
+                        let due = self
+                            .sync
+                            .lock()
+                            .map_err(|_| "Mattermost sync status is unavailable")?[&room.name]
+                            .due();
+                        if due {
+                            let result = self.sync_room(room).await;
+                            self.sync
+                                .lock()
+                                .map_err(|_| "Mattermost sync status is unavailable")?
+                                .get_mut(&room.name)
+                                .ok_or("missing room status")?
+                                .update(&room.name, &result, self.config.interval);
+                        }
+                    }
+                }
+                let next = {
+                    let sync = self
+                        .sync
+                        .lock()
+                        .map_err(|_| "Mattermost sync status is unavailable")?;
+                    sync.iter()
+                        .filter(|(name, _)| name.is_empty() || authorized)
+                        .filter_map(|(_, status)| status.next_attempt)
+                        .min()
+                        .ok_or("missing Mattermost retry time")?
+                };
+                tokio::time::sleep_until(next).await;
             }
         };
         let result = tokio::select! {result=work=>result,signal=tokio::signal::ctrl_c()=>signal.map_err(|_|"Mattermost interrupt listener unavailable".into()),_=terminate.recv()=>Ok(())};
@@ -625,6 +797,12 @@ fn timestamp(post: &Value) -> Result<i64, Error> {
         .as_i64()
         .filter(|v| *v >= 0)
         .ok_or_else(|| "Mattermost update_at is invalid".into())
+}
+fn created(post: &Value) -> Result<i64, Error> {
+    post["create_at"]
+        .as_i64()
+        .filter(|v| *v >= 0)
+        .ok_or_else(|| "Mattermost create_at is invalid".into())
 }
 fn accepted_id(result: &Value) -> Result<&str, Error> {
     result["envelope"]["msg_id"]
@@ -668,6 +846,14 @@ pub async fn run(native_config: &Path, arguments: &[String]) -> Result<(), Error
     let token=state::token(&config.token).map_err(|_|"Mattermost bot_token_file must be private, regular, operator-owned and contain one token")?;
     let state=State::open(&config).map_err(|_|"Mattermost state is unavailable, owned by another adapter, unsafe or bound to different configuration; preserve it and check state_file/lease")?;
     let coord = Arc::new(OperatorCoord::open(native_config)?);
+    let sync = std::iter::once((String::new(), SyncStatus::new()))
+        .chain(
+            config
+                .rooms
+                .iter()
+                .map(|room| (room.name.clone(), SyncStatus::new())),
+        )
+        .collect();
     let adapter = Arc::new(Adapter {
         api: Api {
             base: config.server.clone(),
@@ -677,10 +863,11 @@ pub async fn run(native_config: &Path, arguments: &[String]) -> Result<(), Error
         state: Mutex::new(state),
         coord: coord.clone(),
         listener_healthy: AtomicBool::new(false),
+        sync: Mutex::new(sync),
     });
     let result = async {
-        adapter.verify().await?;
         if command == "check" {
+            adapter.verify().await?;
             if let Some(actions) = &adapter.config.actions {
                 drop(
                     listener::bind(actions)
@@ -691,6 +878,7 @@ pub async fn run(native_config: &Path, arguments: &[String]) -> Result<(), Error
             println!("Mattermost adapter configuration is valid.");
             Ok(())
         } else if once {
+            adapter.verify().await?;
             adapter.cycle().await
         } else {
             adapter.foreground().await
