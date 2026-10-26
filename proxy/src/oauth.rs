@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::credentials::{
     ActivationPhase, Credential, CredentialMetadata, CredentialSnapshot,
-    ErrorKind as VaultErrorKind, Secret, Vault, VaultError, wipe_json,
+    ErrorKind as VaultErrorKind, Secret, SubscriptionClient, Vault, VaultError, wipe_json,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +169,8 @@ pub enum Authority {
 /// ```
 pub struct RefreshRequest {
     endpoint: Secret,
-    form: Secret,
+    body: Secret,
+    content_type: &'static str,
 }
 impl RefreshRequest {
     pub fn authority(&self) -> Authority {
@@ -179,16 +180,16 @@ impl RefreshRequest {
         "POST"
     }
     pub fn content_type(&self) -> &'static str {
-        "application/x-www-form-urlencoded"
+        self.content_type
     }
     pub fn endpoint(&self) -> &Secret {
         &self.endpoint
     }
-    pub fn form_body(&self) -> &Secret {
-        &self.form
+    pub fn body(&self) -> &Secret {
+        &self.body
     }
     pub fn content_length(&self) -> usize {
-        self.form.expose_secret().len()
+        self.body.expose_secret().len()
     }
     /// HTTPX's timeout=10 configures each connect/read/write/pool phase. It is
     /// not a total refresh deadline. The transport owner enforces these phases.
@@ -199,6 +200,33 @@ impl RefreshRequest {
         false
     }
     fn from_credential(credential: &Credential) -> Self {
+        if credential.subscription_client.is_some() {
+            let mut document = serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": credential.refresh_token.as_ref().unwrap().expose_secret(),
+            });
+            for (name, value) in [
+                ("client_id", credential.client_id.as_deref()),
+                (
+                    "client_secret",
+                    credential.client_secret.as_ref().map(Secret::expose_secret),
+                ),
+                ("scope", credential.refresh_scope.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    document[name] = Value::String(value.into());
+                }
+            }
+            // This document contains only JSON strings, whose encoding cannot
+            // fail. Wipe its owned copies after constructing the secret body.
+            let body = Secret::new(serde_json::to_string(&document).unwrap());
+            wipe_json(&mut document);
+            return Self {
+                endpoint: Secret::new(credential.token_url.as_deref().unwrap()),
+                body,
+                content_type: "application/json",
+            };
+        }
         let fields = [
             ("grant_type", "refresh_token"),
             (
@@ -225,7 +253,8 @@ impl RefreshRequest {
         }
         Self {
             endpoint: Secret::new(credential.token_url.as_deref().unwrap()),
-            form: Secret::new(form),
+            body: Secret::new(form),
+            content_type: "application/x-www-form-urlencoded",
         }
     }
 }
@@ -371,7 +400,11 @@ impl RefreshAttempt {
             Ok(response) if !(200..300).contains(&response.status) => {
                 RefreshOutcome::Retained(RefreshError::HttpStatus(response.status))
             }
-            Ok(response) => match decode_response(&response.body, now) {
+            Ok(response) => match decode_response(
+                &response.body,
+                now,
+                self.snapshot.credential().subscription_client,
+            ) {
                 Err(error @ (RefreshError::Json | RefreshError::JsonEncoding)) => {
                     RefreshOutcome::Retained(error)
                 }
@@ -431,14 +464,22 @@ struct TokenUpdate {
     refresh: Option<Option<Secret>>,
     expiry: Option<String>,
 }
-fn decode_response(body: &[u8], now: OffsetDateTime) -> Result<TokenUpdate> {
+fn decode_response(
+    body: &[u8],
+    now: OffsetDateTime,
+    client: Option<SubscriptionClient>,
+) -> Result<TokenUpdate> {
     let text = decode_json_text(body)?;
     let mut value = crate::policy::parse_json(&text, false).map_err(|_| RefreshError::Json)?;
-    let result = decode_tokens(&mut value, now);
+    let result = decode_tokens(&mut value, now, client);
     wipe_json(&mut value);
     result
 }
-fn decode_tokens(value: &mut Value, now: OffsetDateTime) -> Result<TokenUpdate> {
+fn decode_tokens(
+    value: &mut Value,
+    now: OffsetDateTime,
+    client: Option<SubscriptionClient>,
+) -> Result<TokenUpdate> {
     let object = value.as_object_mut().ok_or(RefreshError::ResponseShape)?;
     // Validate every field before taking any secret or mutating the vault.
     let access = object
@@ -453,10 +494,16 @@ fn decode_tokens(value: &mut Value, now: OffsetDateTime) -> Result<TokenUpdate> 
     {
         return Err(RefreshError::RefreshTokenType);
     }
-    let expiry = object
+    let mut expiry = object
         .get("expires_in")
         .map(|value| expires_at(value, now))
         .transpose()?;
+    if expiry.is_none() && client == Some(SubscriptionClient::Codex) {
+        expiry = Some(
+            crate::subscription_login::codex_access_expiry(access.as_str().unwrap())
+                .map_err(|_| RefreshError::ExpiryType)?,
+        );
+    }
     let Value::String(access) = object.get_mut("access_token").unwrap().take() else {
         unreachable!()
     };

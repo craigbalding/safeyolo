@@ -138,9 +138,19 @@ pub struct Credential {
     pub token_url: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<Secret>,
+    pub subscription_client: Option<SubscriptionClient>,
+    pub refresh_scope: Option<String>,
+    pub chatgpt_account_id: Option<String>,
     pub expires_at: Option<String>,
     pub codex: Option<CodexAuthorization>,
     pub(crate) codex_tokens: CodexTokens,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionClient {
+    Codex,
+    Claude,
 }
 
 /// An explicit host import authorizes one agent's Codex login. The optional
@@ -171,6 +181,9 @@ impl Credential {
             token_url: None,
             client_id: None,
             client_secret: None,
+            subscription_client: None,
+            refresh_scope: None,
+            chatgpt_account_id: None,
             expires_at: None,
             codex: None,
             codex_tokens: CodexTokens::default(),
@@ -854,6 +867,9 @@ fn same_credential(left: &Credential, right: &Credential) -> bool {
         && left.client_id == right.client_id
         && left.client_secret.as_ref().map(Secret::expose_secret)
             == right.client_secret.as_ref().map(Secret::expose_secret)
+        && left.subscription_client == right.subscription_client
+        && left.refresh_scope == right.refresh_scope
+        && left.chatgpt_account_id == right.chatgpt_account_id
         && left.expires_at == right.expires_at
         && left.codex == right.codex
         && left.codex_tokens == right.codex_tokens
@@ -938,6 +954,15 @@ fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
         credential.token_url = optional(record, "token_url")?;
         credential.client_id = optional(record, "client_id")?;
         credential.client_secret = optional(record, "client_secret")?.map(Secret::new);
+        credential.subscription_client = record
+            .get_mut("subscription_client")
+            .map(Value::take)
+            .filter(|value| !value.is_null())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?;
+        credential.refresh_scope = optional(record, "refresh_scope")?;
+        credential.chatgpt_account_id = optional(record, "chatgpt_account_id")?;
         credential.expires_at = optional(record, "expires_at")?;
         credential.codex = record
             .get_mut("codex")
@@ -1041,6 +1066,11 @@ fn encrypt(
                     .as_deref()
                     .filter(|value| !value.is_empty()),
             ),
+            ("refresh_scope", credential.refresh_scope.as_deref()),
+            (
+                "chatgpt_account_id",
+                credential.chatgpt_account_id.as_deref(),
+            ),
         ];
         let mut comma = false;
         for (key, value) in fields {
@@ -1069,6 +1099,11 @@ fn encrypt(
             serde_json::to_writer(&mut *plaintext, codex).map_err(|_| error(ErrorKind::Format))?;
             plaintext.extend_from_slice(b",\"codex_tokens\":");
             serde_json::to_writer(&mut *plaintext, &credential.codex_tokens)
+                .map_err(|_| error(ErrorKind::Format))?;
+        }
+        if let Some(client) = credential.subscription_client {
+            plaintext.extend_from_slice(b",\"subscription_client\":");
+            serde_json::to_writer(&mut *plaintext, &client)
                 .map_err(|_| error(ErrorKind::Format))?;
         }
         plaintext.push(b'}');

@@ -56,12 +56,12 @@ fn request_preserves_host_management_form_timeout_and_eligibility() {
     assert_eq!(request.io_timeout(), std::time::Duration::from_secs(10));
     assert!(!request.follow_redirects());
     assert_eq!(
-        request.form_body().expose_secret(),
+        request.body().expose_secret(),
         "grant_type=refresh_token&refresh_token=synthetic-refresh+%2B%2F%C3%A9%F0%9F%98%80%26%3D%25~&client_id=synthetic+client&client_secret=synthetic+secret%26%3D"
     );
     assert_eq!(
         request.content_length(),
-        request.form_body().expose_secret().len()
+        request.body().expose_secret().len()
     );
     drop(attempt);
     for (change, reason) in [
@@ -100,6 +100,101 @@ fn request_preserves_host_management_form_timeout_and_eligibility() {
     malformed.expires_at = Some("invalid expiry".into());
     vault.store(malformed).unwrap();
     drop(leader(&oauth));
+}
+
+#[test]
+fn json_subscription_refresh_keeps_scope_and_uses_the_existing_owner() {
+    let (_directory, vault, oauth) = setup();
+    let mut value = credential();
+    value.subscription_client = Some(safeyolo_proxy::credentials::SubscriptionClient::Claude);
+    value.refresh_scope = Some("user:inference user:profile".into());
+    value.client_secret = None;
+    vault.store(value).unwrap();
+    let attempt = leader(&oauth);
+    let request = attempt.request();
+    assert_eq!(request.content_type(), "application/json");
+    assert_eq!(request.authority(), Authority::HostCredentialManagement);
+    assert!(!request.follow_redirects());
+    let body: Value = serde_json::from_str(request.body().expose_secret()).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "grant_type": "refresh_token",
+            "refresh_token": "synthetic-refresh +/é😀&=%~",
+            "client_id": "synthetic client",
+            "scope": "user:inference user:profile",
+        })
+    );
+    assert_eq!(
+        request.content_length(),
+        request.body().expose_secret().len()
+    );
+    assert!(matches!(
+        oauth.begin("mail", now()).unwrap(),
+        RefreshStart::Follower(_)
+    ));
+    assert_eq!(
+        attempt.complete(
+            response(json!({
+                "access_token":"synthetic-subscription-new",
+                "refresh_token":"synthetic-subscription-rotated",
+                "expires_in":3600
+            })),
+            now()
+        ),
+        RefreshOutcome::Refreshed
+    );
+    let saved = vault.get("mail").unwrap().unwrap();
+    assert_eq!(saved.value.expose_secret(), "synthetic-subscription-new");
+    assert_eq!(
+        saved.refresh_token.as_ref().unwrap().expose_secret(),
+        "synthetic-subscription-rotated"
+    );
+    assert_eq!(
+        saved.refresh_scope.as_deref(),
+        Some("user:inference user:profile")
+    );
+    assert!(!saved.is_expired(now()).unwrap());
+}
+
+#[test]
+fn codex_renewal_without_expires_in_uses_the_new_access_expiry_and_rejects_invalid_claims() {
+    let (directory, vault, oauth) = setup();
+    let mut value = credential();
+    value.subscription_client = Some(safeyolo_proxy::credentials::SubscriptionClient::Codex);
+    vault.store(value).unwrap();
+    let path = directory.path().join("vault.enc");
+    let original = std::fs::read(&path).unwrap();
+    assert_eq!(
+        leader(&oauth).complete(
+            response(json!({
+                "access_token": "synthetic-not-a-jwt", "refresh_token": "synthetic-invalid-refresh"
+            })),
+            now()
+        ),
+        RefreshOutcome::Rejected(RefreshError::ExpiryType)
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        leader(&oauth).complete(
+            response(json!({
+                "access_token": "header.eyJleHAiOjIwMDAwMDAwMDB9.signature",
+                "refresh_token": "synthetic-codex-rotated"
+            })),
+            now()
+        ),
+        RefreshOutcome::Refreshed
+    );
+    let saved = vault.get("mail").unwrap().unwrap();
+    assert_eq!(saved.expires_at.as_deref(), Some("2033-05-18T03:33:20Z"));
+    assert_eq!(
+        saved.refresh_token.unwrap().expose_secret(),
+        "synthetic-codex-rotated"
+    );
+    assert!(matches!(
+        oauth.begin("mail", now()).unwrap(),
+        RefreshStart::NotNeeded(NotNeeded::NotExpired)
+    ));
 }
 
 #[tokio::test]

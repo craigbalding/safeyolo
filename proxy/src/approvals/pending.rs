@@ -1149,6 +1149,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn credential_binding_preserves_records_without_subscription_metadata() {
+        let guard = crate::credential_guard::CredentialGuard::new(b"legacy-binding-test");
+        let credential = crate::credentials::Credential::new(
+            "legacy",
+            "bearer",
+            crate::credentials::Secret::new("synthetic"),
+        );
+        assert_eq!(
+            guard.approval_binding(&credential),
+            "hmac256:57e9407cfc1f3222841e5477db83459e989d1e3d47737e37ada673f2615e52b5"
+        );
+    }
+
+    #[test]
+    fn subscription_credential_binding_distinguishes_values_and_absence() {
+        use crate::credentials::{Credential, Secret, SubscriptionClient};
+
+        let guard = crate::credential_guard::CredentialGuard::new(b"subscription-binding-test");
+        let mut bindings = std::collections::BTreeSet::new();
+        for client in [
+            None,
+            Some(SubscriptionClient::Codex),
+            Some(SubscriptionClient::Claude),
+        ] {
+            for scope in [None, Some(""), Some("value")] {
+                for account in [None, Some(""), Some("value")] {
+                    let mut credential =
+                        Credential::new("fixture", "oauth2", Secret::new("synthetic"));
+                    credential.subscription_client = client;
+                    credential.refresh_scope = scope.map(str::to_owned);
+                    credential.chatgpt_account_id = account.map(str::to_owned);
+                    assert!(bindings.insert(guard.approval_binding(&credential)));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn credential_expiry_keeps_subsecond_precision() {
         let now = crate::policy::parse_expiry("2026-10-20T05:00:00.500Z").unwrap();
         assert!(!expired_at(Some("2026-10-20T05:00:00.750Z"), now));

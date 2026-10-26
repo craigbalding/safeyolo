@@ -428,7 +428,7 @@ pub struct Policy {
 
 /// The shared list compiler retains the exact inputs and interpreted members
 /// of the published policy. Native show compares these inputs without reload.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct HostList {
     path: PathBuf,
     source: zeroize::Zeroizing<String>,
@@ -502,6 +502,7 @@ impl Policy {
             None,
             None,
             true,
+            None,
         )
         .expect("empty policy matches its schema");
         policy.baseline = None;
@@ -531,7 +532,7 @@ impl Policy {
     ) -> Result<Self> {
         let mut parsed = parse_policy_document(source, format)?;
         prune_parsed_document(&mut parsed, now_ms)?;
-        Self::from_document(parsed, None, registry, false)
+        Self::from_document(parsed, None, registry, false, None)
     }
 
     /// Reloaded rule snapshots keep the same host/global budget counters.
@@ -618,7 +619,7 @@ impl Policy {
             parsed.timestamps.remove_under(&[key]);
         }
         let enabled = addon_enabled_values(parsed.document.get("addons"))?;
-        let task = Self::from_document(parsed, None, None, true)?;
+        let task = Self::from_document(parsed, None, None, true, None)?;
         let mut replacement = self.clone();
         replacement.task = Some(TaskPolicy {
             baseline: task.baseline.expect("loaded task has a canonical model"),
@@ -751,7 +752,7 @@ impl Policy {
                     .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
             }
         }
-        let mut policy = Self::from_document(parsed, path.parent(), registry, false)
+        let mut policy = Self::from_document(parsed, path.parent(), registry, false, None)
             .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
         policy.baseline_path = Some(path.to_owned());
         Ok(policy)
@@ -783,6 +784,7 @@ impl Policy {
         list_base_dir: Option<&Path>,
         registry: Option<Arc<crate::services::Registry>>,
         is_task: bool,
+        gateway_policy: Option<&Self>,
     ) -> Result<Self> {
         let document = &mut parsed.document;
         let timestamps = &mut parsed.timestamps;
@@ -878,13 +880,21 @@ impl Policy {
             )?;
         }
         if !is_task {
-            let gateway = crate::services::GatewaySnapshot::from_typed_document(
-                document,
-                host_centric,
-                registry,
-                timestamps,
-            )
-            .map_err(|_| invalid("gateway snapshot failed to load"))?;
+            let retained_gateway = gateway_policy
+                .filter(|previous| previous.list_files.iter().eq(policy.list_files.iter()))
+                .and_then(|previous| previous.gateway.clone());
+            let gateway = match retained_gateway {
+                Some(gateway) => gateway,
+                None => Arc::new(
+                    crate::services::GatewaySnapshot::from_typed_document(
+                        document,
+                        host_centric,
+                        registry,
+                        timestamps,
+                    )
+                    .map_err(|_| invalid("gateway snapshot failed to load"))?,
+                ),
+            };
             view.document["gateway"] = gateway.canonical_gateway().clone();
             view.timestamps.remove_under(&["gateway"]);
             view.timestamps
@@ -892,7 +902,7 @@ impl Policy {
             for route in gateway.compiled_routes() {
                 policy.emit_gateway_route(route, &mut view);
             }
-            policy.gateway = Some(Arc::new(gateway));
+            policy.gateway = Some(gateway);
         }
         let baseline = view.finish()?;
         let fields = baseline.value.as_object().expect("canonical baseline");

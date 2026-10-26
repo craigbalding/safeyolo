@@ -16,7 +16,7 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials unlock [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials lock\nsafeyolo [--root ROOT] credentials list [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials remove NAME [--passphrase-file FILE]\n\nInstallation creates no credential storage. The first valid write asks for local random-key storage or passphrase protection; scripts must select --storage. Existing storage keeps its selected type. Passphrase writes explicitly unlock the current proxy; offline writes require credentials unlock after proxy start. Unlock lasts until credentials lock or proxy restart. CLI reads and writes require the passphrase again; use a hidden terminal prompt or --passphrase-file, never a passphrase argument. 1Password references keep secret values in 1Password; reference metadata uses the selected local store.\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.";
+pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials import-client NAME --client codex|claude --auth-file FILE [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials unlock [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials lock\nsafeyolo [--root ROOT] credentials list [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials remove NAME [--passphrase-file FILE]\n\nInstallation creates no credential storage. The first valid write asks for local random-key storage or passphrase protection; scripts must select --storage. Existing storage keeps its selected type. Passphrase writes explicitly unlock the current proxy; offline writes require credentials unlock after proxy start. Unlock lasts until credentials lock or proxy restart. CLI reads and writes require the passphrase again; use a hidden terminal prompt or --passphrase-file, never a passphrase argument. 1Password references keep secret values in 1Password; reference metadata uses the selected local store.\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.\n\nimport-client stores a selected host subscription for the services gateway and its host-owned renewal. It does not copy a provider login or grant service access. Configure the native client with its scoped gateway token. The selected host file stays unchanged; after a rotating refresh, a client using the old file may need to sign in again.";
 
 pub const SERVICE_HELP: &str = "safeyolo [--root ROOT] services list\nsafeyolo [--root ROOT] services show NAME\nsafeyolo [--root ROOT] services authorize AGENT SERVICE --capability NAME [--credential NAME] [--account NAME] [--host HOST] [--allow-host-network]\nsafeyolo [--root ROOT] services authorized AGENT\nsafeyolo [--root ROOT] services revoke AGENT SERVICE\nsafeyolo [--root ROOT] services bind AGENT SERVICE CAPABILITY --bindings FILE\nsafeyolo [--root ROOT] services approvals\nsafeyolo [--root ROOT] services approve AGENT SERVICE METHOD PATH [--lifetime once|session|remembered]\nsafeyolo [--root ROOT] services grants\nsafeyolo [--root ROOT] services revoke-grant ID\n\nlist/show read the running gateway's accepted catalogue. Operator definitions override builtins with the same name. authorize selects its capability, credential reference and account; --host maps the destination (default: the definition's host). --allow-host-network explicitly permits host-wide network access; service access remains agent-scoped; existing credential policy still applies. Credential-free services omit --credential. authorized shows only this agent's minted gateway credential and scope. bind approves contract values; approve permits a risky route. Neither replaces service authorization. Revocation removes access and keeps the credential for other uses.";
 
@@ -53,6 +53,22 @@ fn file_secret(path: &str) -> Result<Secret, Error> {
         std::fs::read_to_string(path).map_err(|_| "cannot read credential input file")?,
     );
     Ok(Secret::new(value.trim_end_matches(['\r', '\n'])))
+}
+
+fn login_input(path: &Path) -> Result<std::fs::File, Error> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = path
+        .canonicalize()
+        .map_err(|_| "cannot resolve selected login input")?;
+    let input = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| "cannot open selected login input")?;
+    if !input.metadata()?.is_file() {
+        return Err("login input must be a regular file".into());
+    }
+    Ok(input)
 }
 
 fn read_value(fields: &BTreeMap<&str, &str>) -> Result<Secret, Error> {
@@ -294,6 +310,42 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         .data_dir
         .as_deref()
         .ok_or("credential data directory is unavailable")?;
+    if let [command, name, rest @ ..] = arguments
+        && command == "import-client"
+    {
+        if name.is_empty() {
+            return Err("credential name is required".into());
+        }
+        let fields = options(rest)?;
+        validate_options(
+            &fields,
+            &[
+                "--client",
+                "--auth-file",
+                "--expires-at",
+                "--storage",
+                "--passphrase-file",
+            ],
+        )?;
+        use safeyolo_proxy::subscription_login::{self, Client};
+        let client = match fields.get("--client").copied() {
+            Some("codex") => Client::Codex,
+            Some("claude") => Client::Claude,
+            _ => return Err("--client must be codex or claude".into()),
+        };
+        let path = fields.get("--auth-file").ok_or("--auth-file is required")?;
+        let mut record =
+            subscription_login::import_login(client, name, login_input(Path::new(path))?)?;
+        if let Some(expiry) = fields.get("--expires-at") {
+            record.expires_at = Some((*expiry).into());
+            record.is_expired(time::OffsetDateTime::now_utc())?;
+        }
+        store_credential(config_path, &config, data_dir, &fields, record).await?;
+        println!(
+            "Host subscription stored: {name}. Authorize its service separately; keep the provider login outside agent mounts. The gateway renews its vault copy. The selected host file stays unchanged; a client using that old refresh token may need to sign in again."
+        );
+        return Ok(());
+    }
     if let [command, rest @ ..] = arguments
         && matches!(command.as_str(), "unlock" | "lock")
     {

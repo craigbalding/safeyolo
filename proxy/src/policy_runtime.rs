@@ -31,7 +31,7 @@ pub(crate) fn load_native_locked(
     let source = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
     let now = policy::current_time_ms();
     let (mut candidate, expired) =
-        Policy::native_source_with_expired_hosts(&source, path, registry, now)?;
+        Policy::native_source_with_expired_hosts(&source, path, registry, now, previous)?;
     if !expired.is_empty() {
         let replacement_time =
             policy::expiry::persist_expired_hosts_locked(path, &expired, Some(&source))?;

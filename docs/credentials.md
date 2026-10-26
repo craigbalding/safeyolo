@@ -32,7 +32,7 @@ In a host terminal, inspect the running service definition, then add the token:
 Add replaces an existing credential with the same name. List prints only its
 name, type, expiry and external reference. Local use needs neither `op` nor
 Python. Installation creates no vault and asks no storage question. The first
-valid add, reference write or Codex import asks you to choose `local` random-key
+valid add, reference write or client import asks you to choose `local` random-key
 storage or `passphrase` protection. To cancel before creation, enter `q`.
 For a script or piped input, supply `--storage local` or `--storage passphrase`
 on the first write. No backend is selected automatically.
@@ -141,6 +141,15 @@ handling. Clear that client's cached registry token or start a fresh client
 session, then repeat its anonymous token exchange through the proxy to restore
 automatic recognition. Registry login credentials and personal access tokens
 retain their existing approval requirements.
+
+## Keep coding-client provider tokens on the host
+
+The opt-in [coding-client gateway integration](coding-client-gateway.md) uses
+`credentials import-client` and scoped service tokens with native Codex or
+Claude Code. The host stores and renews the selected provider login; the guest
+receives its gateway token. The guide records the tested client versions,
+subscription limits and platform. The client-held Codex flow below retains its
+existing scope.
 
 ## Use Codex with a ChatGPT subscription
 

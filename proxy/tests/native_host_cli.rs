@@ -87,6 +87,127 @@ fn initialize(root: &Path) {
 }
 
 #[test]
+fn host_subscription_import_keeps_provider_files_outside_agent_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let passphrase_file = directory.path().join("storage-passphrase");
+    fs::write(
+        &passphrase_file,
+        "synthetic-subscription-storage-passphrase",
+    )
+    .unwrap();
+    for storage in ["local", "passphrase"] {
+        let root = directory.path().join(storage);
+        initialize(&root);
+        let input = directory.path().join("host-login.json");
+        fs::write(&input, b"{\"private\": \"synthetic-not-json").unwrap();
+        let failed = cli(
+            &root,
+            &[
+                "credentials",
+                "import-client",
+                "account",
+                "--client",
+                "codex",
+                "--auth-file",
+                input.to_str().unwrap(),
+            ],
+        );
+        assert!(!failed.status.success());
+        assert!(!root.join("data/credentials.key").exists());
+        for (client, source) in [
+            (
+                "codex",
+                serde_json::json!({"auth_mode":"chatgpt", "tokens":{
+                    "access_token":"header.eyJleHAiOjIwMDAwMDAwMDB9.signature", "refresh_token":"synthetic-host-codex-refresh", "account_id":"host-account"
+                }}),
+            ),
+            (
+                "claude",
+                serde_json::json!({"claudeAiOauth":{
+                    "accessToken":"synthetic-host-claude-access", "refreshToken":"synthetic-host-claude-refresh", "expiresAt":2000000000000_i64, "scopes":["user:inference"]
+                }}),
+            ),
+        ] {
+            let bytes = serde_json::to_vec(&source).unwrap();
+            fs::write(&input, &bytes).unwrap();
+            let mut arguments = vec![
+                "credentials",
+                "import-client",
+                client,
+                "--client",
+                client,
+                "--auth-file",
+                input.to_str().unwrap(),
+                "--expires-at",
+                "2020-01-01T00:00:00Z",
+            ];
+            if !root.join("data/credentials.key").exists() {
+                let unselected = cli(&root, &arguments);
+                assert!(!unselected.status.success());
+                assert!(String::from_utf8_lossy(&unselected.stderr).contains("--storage"));
+                assert!(!root.join("data/credentials.key").exists());
+                assert!(!root.join("data/credentials.enc").exists());
+            }
+            arguments.extend(["--storage", storage]);
+            if storage == "passphrase" {
+                arguments.extend(["--passphrase-file", passphrase_file.to_str().unwrap()]);
+            }
+            let imported = cli(&root, &arguments);
+            assert!(
+                imported.status.success(),
+                "{}",
+                String::from_utf8_lossy(&imported.stderr)
+            );
+            assert_eq!(fs::read(&input).unwrap(), bytes);
+            assert!(!root.join("agents").exists());
+            let vault = if storage == "local" {
+                safeyolo_proxy::credentials::open_existing(&root.join("data"))
+                    .unwrap()
+                    .unwrap()
+            } else {
+                assert!(safeyolo_proxy::credentials::open_existing(&root.join("data")).is_err());
+                let ciphertext = fs::read(root.join("data/credentials.enc")).unwrap();
+                let wrong = directory.path().join("wrong-passphrase");
+                fs::write(&wrong, "synthetic-wrong-passphrase").unwrap();
+                let mut rejected = arguments.clone();
+                *rejected.last_mut().unwrap() = wrong.to_str().unwrap();
+                assert!(!cli(&root, &rejected).status.success());
+                assert_eq!(
+                    fs::read(root.join("data/credentials.enc")).unwrap(),
+                    ciphertext
+                );
+                safeyolo_proxy::credentials::Vault::unlock_existing(
+                    root.join("data/credentials.enc"),
+                    &safeyolo_proxy::credentials::Secret::new(
+                        fs::read_to_string(&passphrase_file).unwrap(),
+                    ),
+                )
+                .unwrap()
+            };
+            let stored = vault.get(client).unwrap().unwrap();
+            assert_eq!(stored.credential_type, "oauth2");
+            assert_eq!(stored.expires_at.as_deref(), Some("2020-01-01T00:00:00Z"));
+            let mut listing_arguments = vec!["credentials", "list"];
+            if storage == "passphrase" {
+                listing_arguments.extend(["--passphrase-file", passphrase_file.to_str().unwrap()]);
+                assert!(String::from_utf8_lossy(&imported.stderr).contains("credentials unlock"));
+            }
+            let listing = cli(&root, &listing_arguments);
+            let output = String::from_utf8_lossy(&listing.stdout);
+            assert!(listing.status.success());
+            assert!(!output.contains("synthetic-host"));
+            assert!(!String::from_utf8_lossy(&imported.stdout).contains("synthetic-host"));
+        }
+        for service in ["codex", "claude"] {
+            assert!(
+                root.join(format!("builtin-services/{service}.yaml"))
+                    .is_file()
+            );
+        }
+    }
+}
+
+#[test]
 fn host_events_preserve_configured_audit_rotation_and_retention() {
     use std::io::{Seek, SeekFrom};
 

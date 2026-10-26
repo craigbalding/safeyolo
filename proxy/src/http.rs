@@ -2261,7 +2261,7 @@ async fn execute_refresh(
         outbound.h1_request_form,
     )
     .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
-    let body = Bytes::copy_from_slice(refresh.form_body().expose_secret().as_bytes());
+    let body = Bytes::copy_from_slice(refresh.body().expose_secret().as_bytes());
     let request = Request::builder()
         .method(Method::POST)
         .uri(request_uri)
@@ -3647,6 +3647,7 @@ where
                 match start {
                     crate::credential_injection::Start::Ready(replacement) => {
                         let name = replacement.name().clone();
+                        let changed_headers: Vec<_> = replacement.changed_headers().collect();
                         gateway_recording_header = Some(name.clone());
                         let evidence = match replacement.apply(request.headers_mut()) {
                             Ok(evidence) => evidence,
@@ -3660,11 +3661,16 @@ where
                                 return Ok((prior_block(reply), "deny".into()));
                             }
                         };
-                        if let Some(value) = request.headers().get(&name) {
-                            ordered_headers.replace_value(&name, value.as_bytes());
+                        for changed in changed_headers {
+                            if let Some(value) = request.headers().get(&changed) {
+                                ordered_headers.replace_value(&changed, value.as_bytes());
+                            } else {
+                                ordered_headers.remove(&changed);
+                            }
+                        }
+                        if request.headers().contains_key(&name) {
                             gateway_injected_header = Some(name);
                         } else {
-                            ordered_headers.remove(&name);
                             // A service without an auth stanza deliberately
                             // removes the gateway Authorization token. There
                             // is no materialized credential to re-evaluate in

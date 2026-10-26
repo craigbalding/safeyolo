@@ -1,0 +1,17 @@
+schema_version: 1
+name: claude
+description: "Claude Code inference using a host-held Claude subscription"
+default_host: api.anthropic.com
+
+auth:
+  type: bearer
+  refresh_on_401: true
+
+capabilities:
+  inference:
+    description: "Create Claude messages and count their input tokens"
+    routes:
+      - methods: [POST]
+        path: /v1/messages
+      - methods: [POST]
+        path: /v1/messages/count_tokens
