@@ -608,8 +608,8 @@ def test_native_long_outage_pages_equal_timestamps_partial_failure_and_restart(e
         until(lambda: failed_sync(instance))
         assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
         remote.page_faults.clear()
-        until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1205, timeout=120)
-        until(lambda: connected(instance))
+        until(lambda: connected(instance), timeout=120)
+        assert ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1205
         remote.add(root=root, body="same timestamp after cursor commit")
         until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1206)
     messages = operator_requests(instance)
