@@ -114,7 +114,19 @@ impl Api {
                 break;
             }
             page += 1;
-            posts = self.posts(channel, page, 200).await?;
+            let next = self.posts(channel, page, 200).await?;
+            // Deletions on any earlier page can pull an unread post behind
+            // this offset without changing the channel head. Validate the
+            // preceding page after reading across its boundary.
+            if self.posts(channel, page - 1, 200).await? != posts {
+                return Err(Failure::new(
+                    Kind::Transient,
+                    "catch_up_changed",
+                    "Mattermost pages changed; cursor retained",
+                )
+                .into());
+            }
+            posts = next;
         }
         // New posts can shift offsets while reading. Retry the interval rather
         // than advancing a cursor over a moving channel head.
@@ -314,7 +326,6 @@ impl Adapter {
                     || existing.as_ref().is_some_and(|v| v["status"] == "sent")
                 {
                     cursor = sequence;
-                    self.state(|s| s.set_coord_cursor(&room.name, cursor))?;
                     continue;
                 }
                 if existing.is_some() {
@@ -378,8 +389,10 @@ impl Adapter {
                 let post = self.validate_post(&post, &room.channel, &key)?;
                 self.state(|s| s.finish_projection(msg, &post))?;
                 cursor = sequence;
-                self.state(|s| s.set_coord_cursor(&room.name, cursor))?;
             }
+            // Sent/pending delivery records still protect an interrupted page;
+            // persist its cursor once, including pages of our own inbound echoes.
+            self.state(|s| s.set_coord_cursor(&room.name, cursor))?;
             if page["has_more"] != true {
                 break;
             }

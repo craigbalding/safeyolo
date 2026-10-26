@@ -166,7 +166,8 @@ class MattermostRequest(BaseHTTPRequestHandler):
                 if not path.path.endswith("/posts"):
                     self.respond(200, {"id": channel, "delete_at": 0})
                     return
-                posts = sorted((post for post in remote.posts if post["channel_id"] == channel),
+                posts = sorted((post for post in remote.posts if post["channel_id"] == channel
+                                and post["delete_at"] == 0),
                                key=lambda post: (post["create_at"], post["id"]), reverse=True)
                 if "since" in query:
                     assert not {"page", "per_page", "before", "after"}.intersection(query)
@@ -184,6 +185,8 @@ class MattermostRequest(BaseHTTPRequestHandler):
                 remote.creates += 1
                 remote.create_attempts.append(payload["channel_id"])
                 outcome = remote.fail_create_channels.get(payload["channel_id"], remote.fail_create)
+                if callable(outcome):
+                    outcome = outcome()
                 if outcome == "absent":
                     self.respond(500, {"error": f"not accepted {TOKEN}"})
                     return
@@ -583,6 +586,52 @@ def test_native_mapping_failure_or_reconciliation_keeps_safe_mapping_and_callbac
         assert remote.create_attempts.count(CHANNEL) <= 1
 
 
+@pytest.mark.parametrize("deleted_page", [None, 0, 1])
+def test_native_paging_deletion_retains_cursor_and_recovers_after_restart(exchange, deleted_page):
+    instance, remote = exchange
+    remote.clock = int(time.time() * 1000) - 3600000
+    agent_send(instance, "paging deletion question")
+    assert once(instance).returncode == 0
+    assert once(instance).returncode == 0
+    root = remote.projected()[0]["id"]
+    baseline = ledger(instance, "SELECT inbound_since FROM room_state")
+    remote.clock = baseline + 1000
+    reply = remote.add(root=root, body="surviving oldest reply")
+    newer = []
+    for index in range(400):
+        remote.clock = reply["create_at"] + 6000 + index
+        newer.append(remote.add(user="u" * 26, body="ineligible newer post"))
+
+    if deleted_page is not None:
+        # Delete an already-read post just before offset 400 is fetched. The
+        # surviving reply shifts to 399; deleting on page 1 leaves page 0 intact.
+        def delete_read_post():
+            with remote.lock:
+                remote.page_faults.pop((CHANNEL, 2))
+                deleted_id = newer[350 if deleted_page == 0 else 150]["id"]
+                post = next(post for post in remote.posts if post["id"] == deleted_id)
+                post["delete_at"] = remote.clock
+        remote.page_faults[CHANNEL, 2] = delete_read_post
+
+    result = once(instance)
+    if deleted_page is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0 and "pages changed" in result.stderr
+        assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
+        assert operator_requests(instance) == []
+        assert next(post for post in remote.posts if post["id"] == reply["id"]) == reply
+    # A fresh daemon retries the retained interval and commits only after the
+    # stable traversal. A further restart must not append the reply again.
+    with daemon(instance):
+        until(lambda: connected(instance))
+    messages = operator_requests(instance)
+    assert [json.loads(message["body"])["text"] for message in messages] == [reply["message"]]
+    assert ledger(instance, "SELECT inbound_since FROM room_state") == remote.clock
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 1
+
+
 def test_native_long_outage_pages_equal_timestamps_partial_failure_and_restart(exchange):
     instance, remote = exchange
     remote.clock = int(time.time() * 1000) - 3600000
@@ -817,6 +866,27 @@ def test_native_uncertain_projection_reconciles_or_refuses_retry(exchange, outco
     if outcome != "lost":
         assert "reconciliation" in result.stderr and once(instance).returncode != 0
         assert remote.creates == 1
+
+
+def test_native_interrupted_projection_page_reconciles_without_reposting(exchange):
+    instance, remote = exchange
+    first = agent_send(instance, "first projection confirmed")["envelope"]
+    second = agent_send(instance, "second projection receipt withheld")["envelope"]
+    outcomes = iter((None, "lost"))
+    remote.fail_create = lambda: next(outcomes)
+    assert once(instance).returncode != 0
+    assert remote.creates == 2
+    assert ledger(instance, "SELECT coord_cursor FROM room_state") == "0"
+    assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='sent'") == 1
+    assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='pending'") == 1
+    remote.fail_create = None
+    assert once(instance).returncode == 0
+    assert ledger(instance, "SELECT coord_cursor FROM room_state") == str(second["sequence"])
+    assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='sent'") == 2
+    assert [post["props"]["safeyolo_coord"]["coord_msg_id"] for post in remote.projected()] == [
+        first["msg_id"], second["msg_id"]]
+    assert once(instance).returncode == 0
+    assert remote.creates == 2 and operator_requests(instance) == []
 
 
 def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):
