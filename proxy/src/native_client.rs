@@ -271,9 +271,7 @@ where
     json(response, deadline).await
 }
 
-/// Host REST requests use the configured HTTPS proxy and the same native TLS
-/// trust loader as upstream connections. No redirects or automatic retries:
-/// callers own uncertain-write reconciliation. Credentials are header-only.
+/// HTTP status and retry timing, without response bodies or credentials.
 #[derive(Debug)]
 pub(crate) struct RestStatusError {
     pub status: u16,
@@ -297,10 +295,10 @@ fn retry_after(value: &str) -> Option<Duration> {
     let date = time::PrimitiveDateTime::parse(value, &format)
         .ok()?
         .assume_utc();
-    Some(Duration::from_secs(
+    Some(Duration::from_secs_f64(
         (date - time::OffsetDateTime::now_utc())
-            .whole_seconds()
-            .max(0) as u64,
+            .as_seconds_f64()
+            .max(0.0),
     ))
 }
 
@@ -327,6 +325,9 @@ mod rest_tests {
     }
 }
 
+/// Host REST requests use the configured HTTPS proxy and native TLS trust.
+/// There are no redirects or automatic retries. Callers reconcile uncertain
+/// writes. Credentials are header-only.
 pub(crate) async fn https_json(
     url: &str,
     token: &str,

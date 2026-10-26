@@ -110,7 +110,7 @@ impl Api {
                     result.push(post.clone());
                 }
             }
-            if posts.is_empty() || oldest < since {
+            if posts.len() < 200 || oldest < since {
                 break;
             }
             page += 1;
