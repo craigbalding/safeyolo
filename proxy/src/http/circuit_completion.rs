@@ -428,6 +428,17 @@ impl Completion {
     }
 }
 
+impl Drop for Completion {
+    fn drop(&mut self) {
+        let _ = self.try_finish();
+        let mut observation = self.lock();
+        // The last owner cannot finish a still-pending upload. Its unreached
+        // request hooks must not discard an independently validated response.
+        observation.request = None;
+        self.finish_evidence(&mut observation);
+    }
+}
+
 struct Driving<F> {
     completion: Arc<Completion>,
     connection: Option<Pin<Box<F>>>,

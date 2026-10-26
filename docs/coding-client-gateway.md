@@ -110,7 +110,7 @@ For Claude Code:
 ```sh
 CLAUDE_CODE_OAUTH_TOKEN=$(sy_api /gateway/services | jq -er '.authorized.claude.token')
 export CLAUDE_CODE_OAUTH_TOKEN
-claude -p --tools '' 'Reply READY.'
+printf '%s\n' 'Reply READY.' | claude -p --tools ''
 ```
 
 Leave `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unset for this subscription
