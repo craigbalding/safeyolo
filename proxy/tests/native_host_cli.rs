@@ -89,7 +89,7 @@ fn initialize(root: &Path) {
 #[test]
 fn host_subscription_import_keeps_provider_files_outside_agent_state() {
     let directory = tempfile::tempdir().unwrap();
-    let passphrase_file = directory.path().join("passphrase");
+    let passphrase_file = directory.path().join("storage-passphrase");
     fs::write(
         &passphrase_file,
         "synthetic-subscription-storage-passphrase",
