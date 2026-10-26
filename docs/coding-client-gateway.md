@@ -5,11 +5,12 @@ credential store. The guest client sends its scoped service token. The existing
 gateway replaces that token after authorization and renews the provider login
 on the host. Browser and device login run on the host.
 
-Live subscription requests and renewal remain unverified under
-[#1219](https://github.com/craigbalding/safeyolo/issues/1219). The protocol checks
-use standalone Codex 0.163.0 and Claude Code 2.1.306. They establish client
-request formats, not provider acceptance or subscription entitlement. This
-route does not substitute separately billed API access.
+Native Codex 0.163.0 and Claude Code 2.1.306 completed real subscription
+requests after host-owned renewal on Ubuntu AMD64. The recorded proof uses
+SafeYolo production source `3215530dceadadd98cfe6063bf14490fd983aff7`;
+[#1219](https://github.com/craigbalding/safeyolo/issues/1219) records the evidence
+and source acceptance. These results cover the selected subscriptions and
+client versions. This route does not substitute separately billed API access.
 
 ## Authorize on the host
 
@@ -117,8 +118,8 @@ Leave `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unset for this subscription
 route. In the checked client, `CLAUDE_CODE_OAUTH_TOKEN` sends a bearer token and
 the OAuth capability in `anthropic-beta`. The ordinary
 [gateway credential variables](https://code.claude.com/docs/en/llm-gateway)
-select a different authentication path. Neither local observation establishes
-that the provider accepts the substituted host subscription.
+select a different authentication path. The successful subscription request
+used `CLAUDE_CODE_OAUTH_TOKEN` with the scoped gateway credential shown above.
 
 ## Approve the first request
 
