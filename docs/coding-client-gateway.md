@@ -71,9 +71,13 @@ source files and logs. Fetch the current token again after catalogue activation,
 policy activation or proxy restart.
 
 For Codex, merge these settings into the guest's `.codex/config.toml`, retaining
-the selected model and unrelated settings:
+the selected model and unrelated settings. Before running the shipped Codex
+setup or Model Context Protocol registration again, set `forced_chatgpt_auth = false`. SafeYolo's
+existing setup uses that setting to retain external-provider authentication
+without requiring a guest `auth.json`:
 
 ```toml
+forced_chatgpt_auth = false
 model_provider = "safeyolo"
 
 [model_providers.safeyolo]
