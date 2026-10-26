@@ -147,8 +147,9 @@ retain their existing approval requirements.
 The opt-in [coding-client gateway integration](coding-client-gateway.md) uses
 `credentials import-client` and scoped service tokens with native Codex or
 Claude Code. The host stores and renews the selected provider login; the guest
-receives its gateway token. Live subscription compatibility remains unverified
-under #1219. The client-held Codex flow below retains its existing scope.
+receives its gateway token. The guide records the tested client versions,
+subscription limits and platform. The client-held Codex flow below retains its
+existing scope.
 
 ## Use Codex with a ChatGPT subscription
 

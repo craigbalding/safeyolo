@@ -96,8 +96,9 @@ claim. Every HTTP injection under this flag emits a
 
 The opt-in [coding-client gateway integration](docs/coding-client-gateway.md)
 uses host-held subscription records and guest-held scoped service tokens.
-Its live provider compatibility remains unverified under #1219. The existing
-client-held authentication paths below remain outside this vault guarantee. The bundled
+The guide records the tested client versions, subscription limits and platform.
+The existing client-held authentication paths below remain outside this vault
+guarantee. The bundled
 Claude Code host script can deliberately copy selected subscription state into
 the persistent agent home. The Codex host scripts do not copy host credentials.
 An operator must deliberately provision or create the agent-local login and
