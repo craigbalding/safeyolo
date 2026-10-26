@@ -26,7 +26,7 @@ echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 # --------------------------------------------------------------------------
 _agent_name=""
 if [ -f /safeyolo/agent-name ]; then
-    _agent_name=$(cat /safeyolo/agent-name 2>/dev/null || echo "")
+    _agent_name=$(< /safeyolo/agent-name) 2>/dev/null || _agent_name=""
     if [ -n "$_agent_name" ]; then
         hostname "$_agent_name" 2>/dev/null || true
         echo "$_agent_name" > /etc/hostname 2>/dev/null || true
@@ -45,9 +45,8 @@ fi
 # before dropping to agent-user context. We run as root at this
 # point (pre-per-run) with CAP_MKNOD + CAP_DAC_OVERRIDE, which is
 # sufficient to unlink.
-rm -f /dev/net/tun 2>/dev/null || true
+rm -f /dev/net/tun /dev/fuse 2>/dev/null || true
 rmdir /dev/net 2>/dev/null || true
-rm -f /dev/fuse 2>/dev/null || true
 
 # Standard /dev symlinks -- normally created by udev or systemd-tmpfiles
 # at boot, but this VM uses a minimal init with neither. Without these,
@@ -129,7 +128,7 @@ if mountpoint -q /workspace 2>/dev/null; then
     needs_virtiofs_mount=0
 fi
 
-mkdir -p /workspace
+[ -d /workspace ] || mkdir -p /workspace
 if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs workspace /workspace
 fi
@@ -137,7 +136,7 @@ fi
 # Status share -- writable channel for guest→host signals (vm-status,
 # per-run-started, etc.). Separate from /safeyolo so the config share
 # can be read-only.
-mkdir -p /safeyolo-status
+[ -d /safeyolo-status ] || mkdir -p /safeyolo-status
 if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs status /safeyolo-status
 fi
@@ -149,7 +148,7 @@ fi
 # $HOME/.mise (see /etc/profile.d/mise.sh + vsock-term), so mise
 # installs persist here too. Seed missing /etc/skel entries without replacing
 # anything already written by a host setup script or the operator.
-mkdir -p /home/agent
+[ -d /home/agent ] || mkdir -p /home/agent
 if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs home /home/agent
 fi
@@ -256,6 +255,7 @@ if [ -f "$SY_CERT_SRC" ]; then
            && index_instance_ca \
            && mv -f "$SY_CA_TEMP" "$SY_BUNDLE"; then
             SY_CA_READY=1
+            SY_CA_TEMP=
         fi
         # The distro updater repairs a partial index or failed bundle commit.
         [ -z "$SY_CA_TEMP" ] || rm -f "$SY_CA_TEMP" || true
@@ -321,14 +321,19 @@ fi
 # in a userns that lacks CAP_CHOWN over the file's original inode —
 # set -e kills guest-init before per-run. Skip the chown when it
 # would be a no-op; only invoke when the current owner differs.
+ssh_host_keys=()
 for keyfile in /etc/ssh/ssh_host_*_key; do
     [ -f "$keyfile" ] || continue
-    owner=$(stat -c '%u:%g' "$keyfile" 2>/dev/null || echo "")
-    if [ "$owner" != "0:0" ]; then
+    # Static init runs as guest uid/gid 0. Bash can check both owners without
+    # starting stat for each key, including through a user namespace.
+    if [ ! -O "$keyfile" ] || [ ! -G "$keyfile" ]; then
         chown root:root "$keyfile" 2>/dev/null || true
     fi
-    chmod 600 "$keyfile" 2>/dev/null || true
+    ssh_host_keys+=("$keyfile")
 done
+if [ "${#ssh_host_keys[@]}" -gt 0 ]; then
+    chmod 600 "${ssh_host_keys[@]}" 2>/dev/null || true
+fi
 
 # Refresh guest-root support at boot so existing base images gain the current
 # sudo shim and policy without requiring a rootfs rebuild. On gVisor the shim
@@ -337,10 +342,10 @@ done
 if [ -x /usr/bin/sudo ] && [ -r /safeyolo/guest-sudo ]; then
     install -d -m 0755 /usr/local/bin /etc/sudoers.d
     install -m 0755 /safeyolo/guest-sudo /usr/local/bin/sudo
-    cat > /etc/sudoers.d/safeyolo-agent <<'SUDOERS'
-agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
-SUDOERS
+    printf '%s\n' \
+        'agent ALL=(ALL) NOPASSWD:ALL' \
+        'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"' \
+        > /etc/sudoers.d/safeyolo-agent
     chmod 0440 /etc/sudoers.d/safeyolo-agent
 fi
 
@@ -353,8 +358,6 @@ mkdir -p /run/sshd
 /usr/sbin/sshd -D -e >/var/log/sshd.log 2>&1 &
 echo "[static] sshd launched pid=$!" > /dev/console 2>/dev/null || true
 
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-
 # Restore classic same-uid ptrace semantics INSIDE the sandbox. Debian
 # and Ubuntu ship Linux YAMA's `ptrace_scope=1` by default (parent-only
 # attach). Inside a per-agent gVisor sandbox that policy is
@@ -364,7 +367,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # itself -- gVisor's sentry serves its own /proc/sys view, so this
 # write does NOT touch the host's YAMA policy.
 # Silent-fail so hosts / kernels without YAMA compiled in do not error.
-sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
 
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
 # to exec after a restore. VirtioFS file reads are unreliable post-
@@ -373,14 +376,16 @@ sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
 # which triggers a kernel panic in init). /run is tmpfs, part of the
 # captured memory image, so the staged copy survives the save/restore
 # round trip.
-mkdir -p /run/safeyolo
+[ -d /run/safeyolo ] || mkdir -p /run/safeyolo
+guest_run_files=()
 if [ -f /safeyolo/guest-init-per-run ]; then
-    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run
-    chmod +x /run/safeyolo/guest-init-per-run
+    guest_run_files+=(/safeyolo/guest-init-per-run)
 fi
 if [ -f /safeyolo/safeyolo-guest ]; then
-    cp /safeyolo/safeyolo-guest /run/safeyolo/safeyolo-guest
-    chmod +x /run/safeyolo/safeyolo-guest
+    guest_run_files+=(/safeyolo/safeyolo-guest)
+fi
+if [ "${#guest_run_files[@]}" -gt 0 ]; then
+    install -m 0755 "${guest_run_files[@]}" /run/safeyolo/
 fi
 
 # --------------------------------------------------------------------------
